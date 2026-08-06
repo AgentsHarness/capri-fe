@@ -1,0 +1,156 @@
+@import "tailwindcss";
+
+/*
+ * Semantic color tokens (defaults = GrokNight).
+ * Runtime theme switch overwrites these on :root via applyTokens().
+ * Ported from xai-grok-pager-render themes.
+ */
+@theme {
+  --color-gn-bg: #0a0a0a;
+  --color-gn-bg-base: #141414;
+  --color-gn-bg-dark: #0c0c0c;
+  --color-gn-bg-highlight: #242424;
+  --color-gn-bg-code: #1c1c1c;
+  --color-gn-bg-hover: #2c2c2c;
+  --color-gn-bg-visual: #363636;
+
+  --color-gn-fg: #e1e1e1;
+  --color-gn-fg2: #c8c8c8;
+  --color-gn-muted: #6c6c6c;
+  --color-gn-gray: #787878;
+  --color-gn-gray-dim: #585858;
+  --color-gn-gutter: #414141;
+
+  --color-gn-magenta: #bb9af7;
+  --color-gn-blue: #7aa2f7;
+  --color-gn-cyan: #7dcfff;
+  --color-gn-green: #9ece6a;
+  --color-gn-green1: #73daca;
+  --color-gn-orange: #ff9e64;
+  --color-gn-yellow: #e0af68;
+  --color-gn-red: #f7768e;
+  --color-gn-teal: #1abc9c;
+  --color-gn-purple: #9d7cd8;
+  --color-gn-plan: #ffdb8d;
+
+  --color-gn-prompt-border: #323237;
+  --color-gn-prompt-border-active: #505058;
+  --color-gn-selection: #3c3c41;
+  --color-gn-hover-border: #1e1e22;
+
+  --color-gn-diff-del-bg: #420e14;
+  --color-gn-diff-del-fg: #f7768e;
+  --color-gn-diff-ins-bg: #063806;
+  --color-gn-diff-ins-fg: #9ece6a;
+
+  --color-gn-link: #7aa6da;
+
+  /* Theme accent slots (mirrors xai-grok-pager-render Theme) */
+  --color-gn-accent-running: #bb9af7;
+  --color-gn-accent-tool: #787878;
+  --color-gn-accent-success: #9ece6a;
+  --color-gn-accent-error: #f7768e;
+  --color-gn-accent-thinking: #bb9af7;
+  --color-gn-accent-assistant: #bb9af7;
+  --color-gn-accent-user: #c8c8c8;
+  --color-gn-accent-system: #7aa2f7;
+  --color-gn-accent-skill: #7aa2f7;
+  --color-gn-accent-plan: #ffdb8d;
+  --color-gn-accent-verify: #bb9af7;
+  --color-gn-accent-feedback: #73daca;
+  --color-gn-accent-remember: #9ece6a;
+  --color-gn-accent-model: #1abc9c;
+  --color-gn-warning: #e0af68;
+  --color-gn-path: #ff9e64;
+  --color-gn-md-code: #3a95ab;
+
+  --font-ui: "SF Mono", "Menlo", "Cascadia Code", "Consolas", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", ui-monospace, monospace;
+  --font-prose: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+
+/* Smooth theme transitions on chrome surfaces */
+html {
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-gn-bg-base);
+  color: var(--color-gn-fg);
+  font-family: var(--font-ui);
+  font-size: 13.5px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* Scrollbar — GrokNight scrollbar_bg / scrollbar_fg */
+.gn-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.gn-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.gn-scroll::-webkit-scrollbar-thumb {
+  background: var(--color-gn-bg-highlight);
+  border-radius: 4px;
+}
+.gn-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--color-gn-gray-dim);
+}
+
+/* Scrollable region with no visible scrollbar (thought preview). */
+.gn-no-scrollbar {
+  scrollbar-width: none;
+}
+.gn-no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.safe-pb {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+/* Screen-reader only (user prompt collapse affordance). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Markdown body (agent) — GrokNight md_* tokens */
+.gn-md {
+  color: var(--color-gn-fg2);
+  font-family: var(--font-prose);
+  font-size: 14px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+.gn-md > :first-child {
+  margin-top: 0;
+}
+.gn-md > :last-child {
+  margin-bottom: 0;
+}
+
+/* Prefer reduced motion: AccentRail freezes wave via prefers-reduced-motion
+   is handled in JS by still painting solid when frozen; CSS pulse suppressed. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse {
+    animation: none !important;
+  }
+}

@@ -1,0 +1,31 @@
+- generic [ref=f1e3]:
+  - banner [ref=f1e4]:
+    - generic [ref=f1e5]: grok build
+    - generic [ref=f1e6]: "|"
+    - button "Local Host ▾" [ref=f1e8]:
+      - generic [ref=f1e9]: Local Host
+      - generic [ref=f1e10]: ▾
+    - generic "连接中…" [ref=f1e11]
+    - generic [ref=f1e12]: 连接中…
+    - button "Grok Night ▾" [ref=f1e14]:
+      - generic [ref=f1e15]: Grok Night
+      - generic [ref=f1e16]: ▾
+    - button "mcp" [ref=f1e17]
+    - button "new" [ref=f1e18]
+    - button "history" [ref=f1e20]
+  - main [ref=f1e21]:
+    - listbox "Scrollback" [ref=f1e22]:
+      - generic [ref=f1e23]:
+        - generic [ref=f1e24]: grok
+        - paragraph [ref=f1e25]:
+          - text: Agent Client Protocol · GrokNight
+          - text: 工具由 Host 上的 Agent 执行
+        - paragraph [ref=f1e26]: tab 滚动区 · j/k 选中 · ←/→ 收起/展开 · enter 弹窗全文
+    - generic [ref=f1e29]:
+      - generic [ref=f1e30]:
+        - generic [ref=f1e31]:
+          - img [ref=f1e34]
+          - textbox [active] [ref=f1e36]
+        - generic "connecting…":
+          - generic: connecting…
+      - generic [ref=f1e37]: enter send · tab scrollback · ←/→ fold · enter view · esc cancel
