@@ -550,6 +550,44 @@ export class LocalTransport {
     }
     return data
   }
+
+  /**
+   * Memory system — /flush (TUI /flush): ask the host to persist the
+   * session's knowledge to memory right now (LLM summary of the most
+   * important content). The host may not implement this yet (parallel
+   * work — 404s degrade gracefully in the caller).
+   */
+  async memoryFlush(sessionId: string) {
+    const res = await fetch(this.url('/api/memory-flush'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId }),
+    })
+    const data = await res.json()
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `memory flush failed (${res.status})`)
+    }
+    return data
+  }
+
+  /**
+   * Memory system — /dream (TUI /dream): memory consolidation. The FE
+   * currently routes /dream through the prompt path (no wire method the
+   * agent understands); this endpoint is reserved for when the host
+   * implements memory consolidation directly.
+   */
+  async memoryRewrite(sessionId: string) {
+    const res = await fetch(this.url('/api/memory-rewrite'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId }),
+    })
+    const data = await res.json()
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `memory rewrite failed (${res.status})`)
+    }
+    return data
+  }
 }
 
 /**
