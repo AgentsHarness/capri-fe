@@ -578,6 +578,47 @@ type EntryViewProps = {
   inGroup?: boolean
 }
 
+/**
+ * Inline images for a conversation row. `size` selects the layout:
+ * assistant rows get wide images (max 65%), user rows small thumbnails
+ * (max-h-24, hover scale). Click opens the block viewer for the owning
+ * entry — the full-size view with byte/mime meta lives there.
+ */
+function InlineImages({
+  images,
+  size,
+  onOpen,
+}: {
+  images: Array<{ data: string; mimeType?: string }>
+  size: 'assistant' | 'user'
+  onOpen: () => void
+}) {
+  if (!images.length) return null
+  return (
+    <div
+      className={`flex flex-wrap ${
+        size === 'assistant' ? 'items-start gap-2' : 'items-end gap-1.5'
+      }`}
+    >
+      {images.map((img, i) => (
+        <img
+          key={i}
+          src={img.data}
+          alt={img.mimeType ? `image (${img.mimeType})` : 'image'}
+          loading="lazy"
+          onClick={onOpen}
+          title="点击放大查看"
+          className={
+            size === 'assistant'
+              ? 'max-w-[65%] cursor-zoom-in rounded border border-gn-prompt-border'
+              : 'max-h-24 max-w-[45%] cursor-zoom-in rounded border border-gn-prompt-border object-contain transition-transform duration-150 hover:scale-110'
+          }
+        />
+      ))}
+    </div>
+  )
+}
+
 /** Whether an entry is inside its finish-flash window (needs clock ticks). */
 function entryFlashActive(e: ScrollEntry, now: number): boolean {
   if (e.kind !== 'tool' && e.kind !== 'thought') return false
@@ -751,6 +792,17 @@ const EntryView = memo(function EntryView({
             </span>
           )}
         </button>
+        {/* User-sent images (echoed back / attached): thumbnails under the
+            prompt text, aligned with the text column (icon col + gap). */}
+        {e.images?.length ? (
+          <div className="pb-2 pl-[22px]">
+            <InlineImages
+              images={e.images}
+              size="user"
+              onOpen={() => openViewer(e.id)}
+            />
+          </div>
+        ) : null}
       </EntryShell>
     )
   }
@@ -763,10 +815,44 @@ const EntryView = memo(function EntryView({
             under it; the hover expansion still overlays content by design. */}
         <div className="group relative min-w-0 sm:pr-9">
           <Markdown source={e.text} />
+          {/* Agent-embedded images render below the text. */}
+          {e.images?.length ? (
+            <div className="mt-1.5">
+              <InlineImages
+                images={e.images}
+                size="assistant"
+                onOpen={() => openViewer(e.id)}
+              />
+            </div>
+          ) : null}
           {/* TUI right-aligned message time; tool/thought blocks get none.
               Hidden on mobile (sm: = desktop), unlike user prompt times. */}
           <PromptTime ts={e.ts} className="top-[3.5px] hidden sm:inline" />
         </div>
+      </EntryShell>
+    )
+  }
+
+  if (e.kind === 'image') {
+    // Standalone image entry (no open assistant / user row to attach to):
+    // centered large image + mimeType caption; click → fullscreen viewer.
+    return (
+      <EntryShell {...shell}>
+        <figure className="flex flex-col items-center gap-1 py-1.5">
+          <img
+            src={e.data}
+            alt={e.mimeType ? `image (${e.mimeType})` : 'image'}
+            loading="lazy"
+            onClick={() => openViewer(e.id)}
+            title="点击放大查看"
+            className="max-h-[55vh] w-auto max-w-full cursor-zoom-in rounded border border-gn-prompt-border object-contain"
+          />
+          {e.mimeType ? (
+            <figcaption className="font-mono text-[11px] text-gn-muted">
+              {e.mimeType}
+            </figcaption>
+          ) : null}
+        </figure>
       </EntryShell>
     )
   }

@@ -11,7 +11,7 @@
 import { useEffect, useRef } from 'react'
 import { planTodos, useChatStore, type ViewerTask } from '../store/chat'
 import type { ScrollEntry } from '../api/types'
-import { ToolDetail } from './ToolDetail'
+import { ToolDetail, fmtBytes } from './ToolDetail'
 import { Markdown } from './Markdown'
 import { Glyphs, toolHeader } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
@@ -194,6 +194,7 @@ function viewerChrome(e: ScrollEntry): { title: string; subtitle?: string } {
   }
   if (e.kind === 'user') return { title: 'User prompt' }
   if (e.kind === 'assistant') return { title: 'Assistant' }
+  if (e.kind === 'image') return { title: 'Image', subtitle: e.mimeType }
   if (e.kind === 'error') return { title: 'Error' }
   if (e.kind === 'plan') return { title: 'Plan' }
   if (e.kind === 'bg_task') {
@@ -235,7 +236,17 @@ function ViewerBody({ entry }: { entry: ScrollEntry }) {
       </pre>
     )
   }
-  if (entry.kind === 'thought' || entry.kind === 'user' || entry.kind === 'error') {
+  if (entry.kind === 'user') {
+    return (
+      <div className="space-y-3">
+        <div className="whitespace-pre-wrap break-words text-[13.5px] leading-relaxed text-gn-fg font-ui">
+          {entry.text || <span className="text-gn-muted">(empty)</span>}
+        </div>
+        {entry.images?.length ? <ViewerImages images={entry.images} /> : null}
+      </div>
+    )
+  }
+  if (entry.kind === 'thought' || entry.kind === 'error') {
     return (
       <div className="whitespace-pre-wrap break-words text-[13.5px] leading-relaxed text-gn-fg font-ui">
         {entry.text || <span className="text-gn-muted">(empty)</span>}
@@ -243,7 +254,15 @@ function ViewerBody({ entry }: { entry: ScrollEntry }) {
     )
   }
   if (entry.kind === 'assistant') {
-    return <Markdown source={entry.text} />
+    return (
+      <div className="space-y-3">
+        <Markdown source={entry.text} />
+        {entry.images?.length ? <ViewerImages images={entry.images} /> : null}
+      </div>
+    )
+  }
+  if (entry.kind === 'image') {
+    return <ViewerImages images={[{ data: entry.data, mimeType: entry.mimeType }]} />
   }
   if (entry.kind === 'plan') {
     // Same structured todo list as the scrollback block (TUI todo pane).
@@ -339,5 +358,47 @@ function ViewerBody({ entry }: { entry: ScrollEntry }) {
     <pre className="whitespace-pre-wrap font-mono text-[12px] text-gn-muted">
       {JSON.stringify(entry, null, 2)}
     </pre>
+  )
+}
+
+/** Estimated decoded byte size of a data URI / base64 payload. */
+function imageBytes(data: string): number {
+  const comma = data.indexOf(',')
+  const body = comma >= 0 ? data.slice(comma + 1) : data
+  let padding = 0
+  if (body.endsWith('==')) padding = 2
+  else if (body.endsWith('=')) padding = 1
+  return Math.max(0, Math.floor((body.length * 3) / 4) - padding)
+}
+
+/** "mimeType · 12.3 KB" caption for a viewer image. */
+function imageMeta(img: { data: string; mimeType?: string }): string {
+  const parts: string[] = []
+  if (img.mimeType) parts.push(img.mimeType)
+  parts.push(fmtBytes(imageBytes(img.data)))
+  return parts.join(' · ')
+}
+
+/** Full-size images for assistant / user / standalone image entries. */
+function ViewerImages({
+  images,
+}: {
+  images: Array<{ data: string; mimeType?: string }>
+}) {
+  return (
+    <div className="space-y-4">
+      {images.map((img, i) => (
+        <figure key={i} className="space-y-1">
+          <img
+            src={img.data}
+            alt={img.mimeType ? `image (${img.mimeType})` : 'image'}
+            className="max-h-[75vh] w-auto max-w-full rounded border border-gn-prompt-border object-contain"
+          />
+          <figcaption className="font-mono text-[11px] text-gn-muted">
+            {imageMeta(img)}
+          </figcaption>
+        </figure>
+      ))}
+    </div>
   )
 }

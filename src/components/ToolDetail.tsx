@@ -148,6 +148,25 @@ function StdoutPanel({
 
 // ── read ─────────────────────────────────────────────────────────────
 
+/**
+ * Turn read-tool image content (data URI or bare base64) into a usable
+ * <img> src; undefined when the content is not image-shaped (→ the
+ * existing "(image)" text fallback).
+ */
+function readImageSrc(content?: string): string | undefined {
+  const c = content?.trim()
+  if (!c) return undefined
+  if (c.startsWith('data:')) return c
+  // Stray "image/png;base64,…" prefix without the data: scheme.
+  const m = c.match(/^([\w.+-]+\/[\w.+-]+);base64,(.+)$/)
+  if (m) return `data:${m[1]};base64,${m[2]}`
+  // Long base64-shaped payload → wrap with image/png.
+  if (c.length > 64 && /^[A-Za-z0-9+/=\s]+$/.test(c)) {
+    return `data:image/png;base64,${c.replace(/\s+/g, '')}`
+  }
+  return undefined
+}
+
 function ReadBody({
   d,
   full,
@@ -156,7 +175,23 @@ function ReadBody({
   full: boolean
 }) {
   if (d.error) return <ErrorLine text={d.error} />
-  if (d.media === 'image') return <MetaLine>(image)</MetaLine>
+  if (d.media === 'image') {
+    const src = readImageSrc(d.content)
+    if (src) {
+      // Real image preview (base64 / data URI content) — no max-h clip
+      // like text panels; the image caps itself at 55vh.
+      return (
+        <div className="bg-gn-bg-dark px-0 py-1">
+          <img
+            src={src}
+            alt="read image"
+            className="mx-auto max-h-[55vh] max-w-full rounded object-contain"
+          />
+        </div>
+      )
+    }
+    return <MetaLine>(image)</MetaLine>
+  }
   if (d.media === 'pdf') return <MetaLine>(pdf)</MetaLine>
   if (d.empty) return <MetaLine>(empty)</MetaLine>
   if (!d.content) return <MetaLine>(no content)</MetaLine>
@@ -441,7 +476,7 @@ function FetchBody({
   )
 }
 
-function fmtBytes(n: number): string {
+export function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
   return `${(n / (1024 * 1024)).toFixed(1)} MB`

@@ -33,6 +33,16 @@ const components: Components = {
       {children}
     </a>
   ),
+  // react-markdown renders images by default; this only adds the
+  // rounded/bordered chrome so inline markdown images match the
+  // conversation's image entries.
+  img: ({ src, alt }) => (
+    <img
+      src={src}
+      alt={alt || ''}
+      className="my-1.5 max-w-full rounded border border-gn-prompt-border"
+    />
+  ),
   strong: ({ children }) => <strong className="font-bold text-gn-fg">{children}</strong>,
   em: ({ children }) => <em className="italic">{children}</em>,
   ul: ({ children }) => <ul className="my-1.5 list-disc pl-5 marker:text-gn-muted">{children}</ul>,
