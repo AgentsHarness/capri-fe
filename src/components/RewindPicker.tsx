@@ -1,81 +1,281 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useChatStore } from '../store/chat'
 import type { RewindPoint } from '../api/types'
 
 /**
- * /rewind picker modal (TUI /rewind) — lists candidate rewind points from
- * POST /api/rewind-points (newest first) and executes the chosen one via
- * POST /api/rewind-execute. On success the store reloads the current
- * session's history and the modal closes; failures render inline (an
- * agent without rewind support shows the error + retry) with the same
- * audit row in the scrollback.
+ * /rewind picker modal (TUI /rewind — views/rewind.rs state machine,
+ * dispatch/rewind.rs flow).
+ *
+ * Phases:
+ *   cancel-offer — the host is busy when the picker opens: ask whether to
+ *     cancel the running turn before rewinding (y) or let it finish (n —
+ *     closes the panel). Confirming cancels the turn (cancelTurn) and then
+ *     loads the rewind points, like the TUI's CancelTurnThenProceed.
+ *   loading → picker (j/k move, Enter selects) → confirm (y/a/n) →
+ *     executing → modal closes on success; failures render the error
+ *     phase with retry (existing inline-error behavior preserved).
+ *
+ * confirm-before-rewind is a persistent setting: the confirm layer's
+ * "Yes, and don't ask again" flips `acpfe.confirmBeforeRewind` to false
+ * in localStorage (TUI confirm_before_rewind); later rewinds execute
+ * immediately without the confirm layer.
+ *
+ * Draft custody: while the picker is open the composer's draft is parked
+ * in the store (`stashedDraft`) and restored on close — see Composer.
  */
+const CONFIRM_KEY = 'acpfe.confirmBeforeRewind'
+
+function confirmBeforeRewind(): boolean {
+  try {
+    return localStorage.getItem(CONFIRM_KEY) !== 'false'
+  } catch {
+    return true
+  }
+}
+
+function disableConfirmBeforeRewind(): void {
+  try {
+    localStorage.setItem(CONFIRM_KEY, 'false')
+  } catch {
+    /* private mode / quota — session-only */
+  }
+}
+
+type Phase = 'cancel-offer' | 'loading' | 'picker' | 'confirm' | 'executing' | 'error'
+
 export function RewindPicker() {
   const open = useChatStore((s) => s.rewindOpen)
   const closeRewind = useChatStore((s) => s.closeRewind)
   const sessionId = useChatStore((s) => s.sessionId)
   const rewindPoints = useChatStore((s) => s.rewindPoints)
   const rewindExecute = useChatStore((s) => s.rewindExecute)
-  const [loading, setLoading] = useState(false)
+  const cancelTurn = useChatStore((s) => s.cancelTurn)
+  const [phase, setPhase] = useState<Phase>('loading')
   const [error, setError] = useState<string>()
   const [points, setPoints] = useState<RewindPoint[]>([])
-  const [executing, setExecuting] = useState<number | null>(null)
+  // Picker cursor / radio cursors (TUI RewindPhase cursors).
+  const [cursor, setCursor] = useState(0)
+  const [offerCursor, setOfferCursor] = useState(0)
+  const [confirmCursor, setConfirmCursor] = useState(0)
+  // Point awaiting confirmation / execution + the confirm mode for retry.
+  const [pending, setPending] = useState<{
+    point: RewindPoint
+    mode: 'yes' | 'always'
+  }>()
+  const [executing, setExecuting] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
   const reqSeq = useRef(0)
+  // One-shot open flow (busy check + initial fetch) per open.
+  const wasOpen = useRef(false)
+  // Re-entrancy guard for execute (double-Enter / double-click).
+  const executingRef = useRef(false)
 
   const fetchPoints = useCallback(async () => {
     if (!sessionId) return
     const seq = ++reqSeq.current
-    setLoading(true)
     setError(undefined)
-    setExecuting(null)
     try {
       const list = await rewindPoints()
       // A newer open superseded this one (or the modal closed mid-flight).
-      if (seq === reqSeq.current) setPoints(list)
+      if (seq === reqSeq.current) {
+        setPoints(list)
+        setCursor(0)
+        setPhase('picker')
+      }
     } catch (e) {
       if (seq === reqSeq.current) {
         setPoints([])
+        setPhase('loading')
         setError(e instanceof Error ? e.message : String(e))
       }
-    } finally {
-      if (seq === reqSeq.current) setLoading(false)
     }
   }, [sessionId, rewindPoints])
 
+  /** Open flow: busy at open → cancel-offer layer; otherwise fetch. */
+  useEffect(() => {
+    if (!open) {
+      wasOpen.current = false
+      return
+    }
+    if (wasOpen.current) return
+    wasOpen.current = true
+    setPoints([])
+    setError(undefined)
+    setPending(undefined)
+    setExecuting(false)
+    executingRef.current = false
+    if (!sessionId) {
+      // No active session — the picker renders the no-session notice.
+      setPhase('loading')
+      return
+    }
+    if (useChatStore.getState().conn === 'busy') {
+      setPhase('cancel-offer')
+      setOfferCursor(0)
+    } else {
+      setPhase('loading')
+      void fetchPoints()
+    }
+    panelRef.current?.focus()
+  }, [open, sessionId, fetchPoints])
+
+  /** Execute the rewind (shared by confirm Yes / Always / direct). */
+  const execute = useCallback(
+    async (point: RewindPoint, mode: 'yes' | 'always') => {
+      if (executingRef.current) return
+      executingRef.current = true
+      if (mode === 'always') disableConfirmBeforeRewind()
+      setExecuting(true)
+      setError(undefined)
+      setPending({ point, mode })
+      setPhase('executing')
+      try {
+        await rewindExecute(point.index)
+        // The store reloads the session history; close to reveal it.
+        closeRewind()
+      } catch (e) {
+        executingRef.current = false
+        setExecuting(false)
+        setPhase('error')
+        setError(e instanceof Error ? e.message : String(e))
+      }
+    },
+    [rewindExecute, closeRewind],
+  )
+
+  /** Row click / Enter in the picker: confirm layer or direct execute. */
+  const selectPoint = useCallback(
+    (p: RewindPoint) => {
+      if (executingRef.current) return
+      if (confirmBeforeRewind()) {
+        setPending({ point: p, mode: 'yes' })
+        setConfirmCursor(0)
+        setPhase('confirm')
+      } else {
+        void execute(p, 'yes')
+      }
+    },
+    [execute],
+  )
+
+  /** Cancel-offer "y": cancel the running turn, then proceed to rewind. */
+  const cancelTurnThenProceed = useCallback(async () => {
+    setPhase('loading')
+    await cancelTurn()
+    void fetchPoints()
+  }, [cancelTurn, fetchPoints])
+
+  // Newest first (倒序) — highest index on top. Cursor/rows/keyboard all
+  // index this same sorted list.
+  const list = useMemo(
+    () => [...points].sort((a, b) => b.index - a.index),
+    [points],
+  )
+
   useEffect(() => {
     if (!open) return
-    void fetchPoints()
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      const prevent = () => {
         e.preventDefault()
         e.stopPropagation()
+      }
+      if (e.key === 'Escape') {
+        if (phase === 'executing') return // in-flight rewind is uninterruptible
+        prevent()
         closeRewind()
+        return
+      }
+      switch (phase) {
+        case 'cancel-offer': {
+          if (e.key === 'j' || e.key === 'k' || e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            prevent()
+            setOfferCursor((c) => (c + 1) % 2)
+          } else if (e.key === 'y' || (e.key === 'Enter' && offerCursor === 0)) {
+            prevent()
+            void cancelTurnThenProceed()
+          } else if (e.key === 'n' || (e.key === 'Enter' && offerCursor === 1)) {
+            prevent()
+            closeRewind()
+          }
+          break
+        }
+        case 'confirm': {
+          if (e.key === 'j' || e.key === 'ArrowDown') {
+            prevent()
+            setConfirmCursor((c) => Math.min(2, c + 1))
+          } else if (e.key === 'k' || e.key === 'ArrowUp') {
+            prevent()
+            setConfirmCursor((c) => Math.max(0, c - 1))
+          } else if (e.key === 'y') {
+            prevent()
+            if (pending) void execute(pending.point, 'yes')
+          } else if (e.key === 'a') {
+            prevent()
+            if (pending) void execute(pending.point, 'always')
+          } else if (e.key === 'n') {
+            prevent()
+            setPending(undefined)
+            setPhase('picker')
+          } else if (e.key === 'Enter') {
+            prevent()
+            if (!pending) return
+            if (confirmCursor === 0) void execute(pending.point, 'yes')
+            else if (confirmCursor === 1) void execute(pending.point, 'always')
+            else {
+              setPending(undefined)
+              setPhase('picker')
+            }
+          }
+          break
+        }
+        case 'picker': {
+          const max = list.length - 1
+          if (e.key === 'j' || e.key === 'ArrowDown') {
+            prevent()
+            setCursor((c) => Math.min(max, c + 1))
+          } else if (e.key === 'k' || e.key === 'ArrowUp') {
+            prevent()
+            setCursor((c) => Math.max(0, c - 1))
+          } else if (e.key === 'Enter') {
+            const p = list[cursor]
+            if (p) {
+              prevent()
+              selectPoint(p)
+            }
+          }
+          break
+        }
+        case 'error': {
+          if (e.key === 'Enter' || e.key === 'r') {
+            prevent()
+            if (pending) void execute(pending.point, pending.mode)
+          }
+          break
+        }
+        case 'loading':
+        case 'executing':
+          break
       }
     }
     window.addEventListener('keydown', onKey, true)
     panelRef.current?.focus()
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [open, fetchPoints, closeRewind])
+  }, [
+    open,
+    phase,
+    cursor,
+    offerCursor,
+    confirmCursor,
+    pending,
+    list,
+    closeRewind,
+    selectPoint,
+    execute,
+    cancelTurnThenProceed,
+    fetchPoints,
+  ])
 
   if (!open) return null
-
-  // Newest first (倒序) — highest index on top.
-  const sorted = [...points].sort((a, b) => b.index - a.index)
-
-  const pick = async (p: RewindPoint) => {
-    if (executing != null) return
-    setExecuting(p.index)
-    setError(undefined)
-    try {
-      await rewindExecute(p.index)
-      // The store reloads the session history; close to reveal it.
-      closeRewind()
-    } catch (e) {
-      setExecuting(null)
-      setError(e instanceof Error ? e.message : String(e))
-    }
-  }
 
   return (
     <div
@@ -84,7 +284,7 @@ export function RewindPicker() {
       aria-modal="true"
       aria-label="rewind"
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) closeRewind()
+        if (e.target === e.currentTarget && phase !== 'executing') closeRewind()
       }}
     >
       <div
@@ -109,33 +309,123 @@ export function RewindPicker() {
             <div className="px-4 py-6 text-center text-[12px] text-gn-muted">
               暂无活动会话
             </div>
-          ) : loading ? (
+          ) : phase === 'cancel-offer' ? (
+            <div className="px-4 py-5">
+              <div className="text-[13px] font-bold text-gn-fg">
+                当前有回合正在运行
+              </div>
+              <div className="mt-1 text-[12px] leading-snug text-gn-muted">
+                取消当前回合并回卷？还是等它完成？
+              </div>
+              <div className="mt-3 space-y-1">
+                <RadioRow
+                  k="y"
+                  label="取消回合并回卷"
+                  active={offerCursor === 0}
+                  onClick={() => void cancelTurnThenProceed()}
+                />
+                <RadioRow
+                  k="n"
+                  label="等它完成"
+                  active={offerCursor === 1}
+                  onClick={closeRewind}
+                />
+              </div>
+            </div>
+          ) : phase === 'loading' ? (
+            error ? (
+              <div className="px-4 py-5 text-center">
+                <div className="text-[12px] text-gn-red">{error}</div>
+                <button
+                  type="button"
+                  onClick={() => void fetchPoints()}
+                  className="mt-2 rounded border border-gn-prompt-border px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                >
+                  重试
+                </button>
+              </div>
+            ) : (
+              <div className="px-4 py-6 text-center text-[12px] text-gn-muted">
+                加载回退点…
+              </div>
+            )
+          ) : phase === 'confirm' && pending ? (
+            <div className="px-4 py-5">
+              <div className="text-[12px] leading-snug text-gn-fg">
+                回退到{' '}
+                <span className="font-mono text-gn-cyan">#{pending.point.index}</span>
+                {pending.point.summary ? ` — ${pending.point.summary}` : ''}？
+              </div>
+              <div className="mt-1 font-mono text-[10px] text-gn-muted">
+                {formatPointTime(pending.point.timestamp)}
+              </div>
+              <div className="mt-3 space-y-1">
+                <RadioRow
+                  k="y"
+                  label="是"
+                  active={confirmCursor === 0}
+                  onClick={() => void execute(pending.point, 'yes')}
+                />
+                <RadioRow
+                  k="a"
+                  label="是，且不再询问（下次直接回卷）"
+                  active={confirmCursor === 1}
+                  onClick={() => void execute(pending.point, 'always')}
+                />
+                <RadioRow
+                  k="n"
+                  label="否"
+                  active={confirmCursor === 2}
+                  onClick={() => {
+                    setPending(undefined)
+                    setPhase('picker')
+                  }}
+                />
+              </div>
+            </div>
+          ) : phase === 'executing' ? (
             <div className="px-4 py-6 text-center text-[12px] text-gn-muted">
-              加载回退点…
+              回退中…
             </div>
-          ) : error ? (
+          ) : phase === 'error' ? (
             <div className="px-4 py-5 text-center">
-              <div className="text-[12px] text-gn-red">{error}</div>
-              <button
-                type="button"
-                onClick={() => void fetchPoints()}
-                className="mt-2 rounded border border-gn-prompt-border px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-              >
-                重试
-              </button>
+              <div className="text-[12px] text-gn-red">回退失败 · {error}</div>
+              {pending && (
+                <div className="mt-2 flex items-center justify-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void execute(pending.point, pending.mode)}
+                    className="rounded border border-gn-prompt-border px-3 py-1 text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg"
+                  >
+                    重试
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPending(undefined)
+                      setPhase('picker')
+                    }}
+                    className="rounded border border-gn-prompt-border px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                  >
+                    返回列表
+                  </button>
+                </div>
+              )}
             </div>
-          ) : sorted.length === 0 ? (
+          ) : list.length === 0 ? (
             <div className="px-4 py-6 text-center text-[12px] text-gn-muted">
               没有可用的回退点
             </div>
           ) : (
-            sorted.map((p) => (
+            list.map((p, i) => (
               <button
                 key={p.index}
                 type="button"
-                disabled={executing != null}
-                onClick={() => void pick(p)}
-                className="flex w-full items-start gap-3 border-b border-gn-prompt-border/50 px-4 py-2 text-left hover:bg-gn-bg-highlight disabled:opacity-50"
+                disabled={executing}
+                onClick={() => selectPoint(p)}
+                className={`flex w-full items-start gap-3 border-b border-gn-prompt-border/50 px-4 py-2 text-left hover:bg-gn-bg-highlight disabled:opacity-50 ${
+                  i === cursor ? 'bg-gn-bg-highlight' : ''
+                }`}
                 title={`回退到索引 ${p.index} — 删除该点之后的对话内容`}
               >
                 <span className="shrink-0 rounded border border-gn-prompt-border px-1 font-mono text-[10px] leading-[16px] text-gn-cyan">
@@ -149,7 +439,7 @@ export function RewindPicker() {
                   ) : null}
                   <span className="block pt-0.5 font-mono text-[10px] text-gn-muted">
                     {formatPointTime(p.timestamp)}
-                    {executing === p.index ? ' · 回退中…' : ''}
+                    {pending?.point.index === p.index && executing ? ' · 回退中…' : ''}
                   </span>
                 </span>
               </button>
@@ -158,10 +448,51 @@ export function RewindPicker() {
         </div>
 
         <footer className="rounded-b border-t border-gn-prompt-border px-4 py-2 text-[11px] text-gn-gutter">
-          回退将删除目标点之后的对话内容 · 与 TUI /rewind 一致
+          {phase === 'cancel-offer'
+            ? 'y 取消回合并回卷 · n 等它完成 · j/k 移动'
+            : phase === 'confirm'
+              ? 'y 是 · a 是且不再询问 · n 否 · j/k 移动 · esc 关闭'
+              : phase === 'error'
+                ? 'enter/r 重试 · esc 关闭'
+                : phase === 'picker'
+                  ? 'j/k 选择 · enter 确认 · esc 关闭'
+                  : '回退将删除目标点之后的对话内容 · 与 TUI /rewind 一致'}
         </footer>
       </div>
     </div>
+  )
+}
+
+/** TUI render_radio_row port: key · (●/○) label, cursor-highlighted. */
+function RadioRow({
+  k,
+  label,
+  active,
+  onClick,
+}: {
+  k: string
+  label: string
+  active: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex w-full items-center gap-2 rounded border px-3 py-1.5 text-left text-[12px] ${
+        active
+          ? 'border-gn-prompt-border-active bg-gn-bg-highlight text-gn-fg'
+          : 'border-gn-prompt-border text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg'
+      }`}
+    >
+      <span className={`font-mono text-[11px] ${active ? 'text-gn-cyan' : 'text-gn-muted'}`}>
+        {k}
+      </span>
+      <span className="text-gn-muted" aria-hidden>
+        {active ? '●' : '○'}
+      </span>
+      <span className="min-w-0 flex-1">{label}</span>
+    </button>
   )
 }
 

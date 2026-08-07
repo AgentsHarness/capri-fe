@@ -5,10 +5,12 @@ import type {
   HostInfo,
   ModelOption,
   PendingReq,
+  PermissionScope,
   RewindPoint,
   ScheduledTask,
   ScrollEntry,
   SessionInfo,
+  SessionInfoDetail,
   TaskTimelineEvent,
   ToolCall,
   TopTask,
@@ -49,6 +51,21 @@ function persistLastViewedAt(map: Record<string, number>): void {
     window.localStorage.setItem(LAST_VIEWED_KEY, JSON.stringify(map))
   } catch {
     // Private mode / quota — the in-memory copy still works this session.
+  }
+}
+
+// ── cancel-turn preference (TUI cancel_subagents_on_turn_cancel) ────
+// Saved by the cancel panel's "Always stop" / "Always continue" options.
+// Once saved, Esc / [stop] act directly and the panel never opens.
+const CANCEL_SUBAGENTS_PREF_KEY = 'acpfe.cancelSubagentsOnTurnCancel'
+
+function loadCancelSubagentsPref(): boolean | null {
+  try {
+    const raw = window.localStorage.getItem(CANCEL_SUBAGENTS_PREF_KEY)
+    if (raw == null) return null
+    return raw === 'true'
+  } catch {
+    return null
   }
 }
 
@@ -138,6 +155,54 @@ export function formatTurnDuration(ms: number): string {
   const secs = totalSecs % 60
   if (mins < 60) return `${mins}m${secs}s`
   return `${Math.floor(mins / 60)}h${mins % 60}m`
+}
+
+/** TUI context_bar fmt_tokens: "500", "5.2k", "48.8k", "1.2M". */
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) {
+    return n >= 10_000_000 ? `${Math.round(n / 1_000_000)}M` : `${(n / 1_000_000).toFixed(1)}M`
+  }
+  if (n >= 1_000) {
+    return n >= 10_000 ? `${Math.round(n / 1_000)}k` : `${(n / 1_000).toFixed(1)}k`
+  }
+  return String(n)
+}
+
+/**
+ * TUI /session-info (format_session_info): the host's SessionInfoDetail
+ * rendered as a plain text block (fields on separate lines) that gets
+ * pushed into the scrollback — fields render exactly as the host
+ * reports them.
+ */
+function formatSessionInfo(info: SessionInfoDetail): string {
+  const lines: string[] = ['Session info']
+  if (info.title) lines.push(`  Title: ${info.title}`)
+  if (info.sessionId) lines.push(`  Session ID: ${info.sessionId}`)
+  if (info.cwd) lines.push(`  Workspace: ${info.cwd}`)
+  if (info.model) {
+    const m = info.model
+    const label = [m.name || m.modelId, m.reasoningEffort].filter(Boolean).join(' · ')
+    lines.push(`  Model: ${label}`)
+  }
+  const ctxSize = info.contextSize || info.model?.contextWindow || 0
+  if (ctxSize > 0) {
+    const used = info.contextUsed ?? 0
+    const pct = Math.round((used / ctxSize) * 100)
+    lines.push(`  Context: ${fmtTokens(used)} / ${fmtTokens(ctxSize)} tokens (${pct}%)`)
+  }
+  if (info.gitBranch) {
+    const wt =
+      info.gitIsWorktree && info.gitMainRepo
+        ? ` (worktree of ${info.gitMainRepo})`
+        : info.gitIsWorktree
+          ? ' (worktree)'
+          : ''
+    lines.push(`  Git: ${info.gitBranch}${wt}`)
+  }
+  if (info.hostName || info.hostId) {
+    lines.push(`  Host: ${[info.hostName, info.hostId].filter(Boolean).join(' · ')}`)
+  }
+  return lines.join('\n')
 }
 
 /**
@@ -650,8 +715,20 @@ export type WorkflowRun = {
   progress?: number
   /** Script payload from workflow_updated — the "save script" source. */
   script?: string
-  /** Agent roster (TUI shows it per row when the event carries it). */
+  /** Workflow objective (wire `objective`). */
+  objective?: string
+  /** Agent roster labels (TUI shows it per row when the event carries it). */
   agents?: string[]
+  /**
+   * Structured agent roster (WorkflowAgentInfo wire shape: label / state /
+   * tokens_used). Same source as `agents` — plain labels when the wire
+   * only ships strings, full objects when it ships the roster.
+   */
+  agentRoster?: { name: string; status?: string; tokens?: number }[]
+  /** Phase rail (WorkflowPhaseInfo wire shape: title / state). */
+  phases?: { title: string; state: string }[]
+  /** Wire elapsed_ms — elapsed fallback when the wire has no started_at. */
+  elapsedMs?: number
   /** Started-at epoch ms from the wire. */
   startedAt?: number
   /** Local first-seen epoch ms — start-time fallback when the wire has none. */
@@ -760,7 +837,7 @@ type ChatState = {
   // ── model catalog (agentInfo._meta.modelState.availableModels) ─────
   models: ModelOption[]
   /** Memory files from memory_files (TUI memory modal). */
-  memoryFiles?: { name: string; path?: string; size?: number; updatedAt?: unknown }[]
+  memoryFiles?: { name: string; path?: string; size?: number; updatedAt?: unknown; source?: string }[]
   /** Memory modal visibility (TUI /memory). */
   memoryOpen: boolean
   openMemory: () => void
@@ -780,9 +857,20 @@ type ChatState = {
   closeDiffReview: () => void
   /** Workflow runs keyed by run_id (TUI workflows pane). */
   workflowRuns: Record<string, WorkflowRun>
+  /**
+   * Run shown in the /workflows detail view (TUI detail_run_id). Undefined
+   * keeps the panel on the run list; Esc in the detail returns to it.
+   */
+  selectedWorkflowRunId?: string
+  setSelectedWorkflowRunId: (id: string | undefined) => void
   /** /goal detail panel visibility (GoalChip dropdown; /goal opens it). */
   goalPanelOpen: boolean
   setGoalPanelOpen: (open: boolean) => void
+  /**
+   * goal_updated receive time — elapsed fallback when the wire carries
+   * neither elapsed_ms nor started_at (defensive chain).
+   */
+  goalReceivedAt?: number
   /** /workflows run-dashboard modal visibility. */
   workflowPanelOpen: boolean
   setWorkflowPanelOpen: (open: boolean) => void
@@ -851,24 +939,66 @@ type ChatState = {
   openRewind: () => void
   closeRewind: () => void
   /**
+   * Composer draft parked while the /rewind picker is open (TUI
+   * StashedPrompt). The Composer moves its local buffer here on open and
+   * restores it on close — a rewind reloads the session history and must
+   * not eat the user's in-progress text.
+   */
+  stashedDraft: string | null
+  setStashedDraft: (text: string | null) => void
+  /**
    * Cancel-turn panel (TUI CancelTurnPanel): Esc / [stop] while busy opens
-   * it instead of cancelling immediately. While open it owns the keyboard
-   * (1-4 / ↑↓ / Enter confirm, Esc = keep running).
+   * it instead of cancelling immediately — only when the current turn has
+   * running subagents AND no saved preference (see cancelSubagentsPref).
+   * While open it owns the keyboard (1-4 / ↑↓ / Enter confirm, Esc =
+   * keep running, Ctrl+C = direct cancel).
    */
   cancelPanelOpen: boolean
   openCancelPanel: () => void
   closeCancelPanel: () => void
+  /**
+   * Saved cancel-turn preference (TUI `cancel_subagents_on_turn_cancel`):
+   * true = cancel running subagents with the turn, false = keep them
+   * running, null = ask via the panel (only when subagents are running).
+   * With a saved preference the panel never opens — Esc / [stop] act
+   * directly per it. Persisted to localStorage acpfe.cancelSubagentsOnTurnCancel.
+   */
+  cancelSubagentsPref: boolean | null
+  setCancelSubagentsPref: (stop: boolean) => void
+  /** True when at least one subagent of the current turn is still running
+   *  (scrollback `subagent` entries via subagentIndex; TUI subagent_sessions). */
+  hasRunningSubagent: () => boolean
+  /**
+   * Esc / [stop] flow (TUI dispatch_cancel_turn): saved preference → cancel
+   * per it; no preference + running subagents → open the cancel panel;
+   * otherwise cancel the turn directly (nothing to prompt about).
+   */
+  requestCancelTurn: () => Promise<void>
+  /** Transient "Switched to mode: X" banner (TUI notices.rs mode_switch_banner). */
+  modeBanner: string | null
+  showModeBanner: (text: string) => void
+  clearModeBanner: () => void
+  /** Composer queue dropdown visibility (TUI queue pane). */
+  queuePanelOpen: boolean
+  setQueuePanelOpen: (open: boolean) => void
   /**
    * Local plan-mode flag (Shift+Tab cycle / /plan). Driven by the host's
    * toggle-plan-mode result when available; otherwise kept local and
    * nudged by yolo_mode_changed / modes_update payloads.
    */
   planMode: boolean
-  /** Cancel the running turn — cancel panel options 1-3. */
-  cancelTurn: (opts?: { stopTasks?: boolean; clearQueue?: boolean }) => Promise<void>
+  /** Cancel the running turn — cancel panel options 1 / 3 / 4 (+ Ctrl+C). */
+  cancelTurn: (opts?: {
+    /** Also cancel every running subagent (panel "Stop running" / "Always stop"). */
+    cancelSubagents?: boolean
+    /** Legacy: additionally kill every running bg_task (incl. top strip). */
+    stopTasks?: boolean
+    /** Empty the composer send queue. */
+    clearQueue?: boolean
+  }) => Promise<void>
   /** Enter/leave plan mode (toggle-plan-mode preferred, set-mode fallback). */
   togglePlanMode: () => Promise<void>
-  /** Shift+Tab mode cycle: Normal → Plan → Always-approve → Normal. */
+  /** Shift+Tab mode cycle: Normal → Plan → Auto → Always-approve → Normal. */
   cycleMode: () => Promise<void>
   /** POST /api/set-mode {modeId:'normal'}. */
   setNormalMode: () => Promise<void>
@@ -914,8 +1044,13 @@ type ChatState = {
     requestId: string,
     optionId?: string,
     cancelled?: boolean,
-    /** "Always allow" scope text picked with ←/→ on the permission card. */
-    scope?: string,
+    /**
+     * Structured "always allow" scope picked with ←/→ on the permission
+     * card (TUI BashCommandSelectedTerms) — sent only for always options.
+     */
+    scope?: PermissionScope,
+    /** Optional followup message on a reject (TUI RejectOnce followup). */
+    followupMessage?: string,
   ) => Promise<void>
   /** Respond to a forwarded x.ai/* request with a raw result (or error). */
   respondXai: (requestId: string, result?: Record<string, unknown>, error?: string) => Promise<void>
@@ -1022,6 +1157,12 @@ type ChatState = {
   /** Open / close the /session-info modal. */
   openSessionInfo: () => void
   closeSessionInfo: () => void
+  /**
+   * TUI /session-info: fetch session details (POST /api/session-info) and
+   * append them to the scrollback as a read-only text block (kind 'status')
+   * — the TUI pushes a plain text block into the scrollback, no modal.
+   */
+  showSessionInfo: () => Promise<void>
   // ── MCP management (TUI /mcps modal; host endpoints may be unsupported —
   //    every method rethrows so the panel renders the failure inline) ──
   /** GET /api/mcp/list — configured servers (host reads config.toml). */
@@ -1106,6 +1247,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   mcpVersion: 0,
   models: [],
   workflowRuns: {},
+  selectedWorkflowRunId: undefined,
+  setSelectedWorkflowRunId: (id) => set({ selectedWorkflowRunId: id }),
+  goalReceivedAt: undefined,
   hooksVersion: 0,
   toolIndex: {},
   focusMode: 'prompt',
@@ -1126,9 +1270,46 @@ export const useChatStore = create<ChatState>((set, get) => ({
   rewindOpen: false,
   openRewind: () => set({ rewindOpen: true }),
   closeRewind: () => set({ rewindOpen: false }),
+  stashedDraft: null,
+  setStashedDraft: (text) => set({ stashedDraft: text }),
   cancelPanelOpen: false,
   openCancelPanel: () => set({ cancelPanelOpen: true }),
   closeCancelPanel: () => set({ cancelPanelOpen: false }),
+  cancelSubagentsPref: loadCancelSubagentsPref(),
+  setCancelSubagentsPref: (stop) => {
+    try {
+      window.localStorage.setItem(CANCEL_SUBAGENTS_PREF_KEY, stop ? 'true' : 'false')
+    } catch {
+      /* storage unavailable — the preference stays in-memory */
+    }
+    set({ cancelSubagentsPref: stop })
+  },
+  hasRunningSubagent: () =>
+    get().entries.some(
+      (e) => e.kind === 'subagent' && e.running === true && !!e.subagentId,
+    ),
+  requestCancelTurn: async () => {
+    const s = get()
+    if (s.conn !== 'busy') return
+    const pref = s.cancelSubagentsPref
+    if (pref != null) {
+      // Saved preference: act directly, never show the panel.
+      await s.cancelTurn({ cancelSubagents: pref })
+      return
+    }
+    if (s.hasRunningSubagent()) {
+      // Running subagents + no preference → the panel decides.
+      set({ cancelPanelOpen: true })
+      return
+    }
+    // Nothing to prompt about — cancel the turn directly.
+    await s.cancelTurn({})
+  },
+  modeBanner: null,
+  showModeBanner: (text) => set({ modeBanner: text }),
+  clearModeBanner: () => set({ modeBanner: null }),
+  queuePanelOpen: false,
+  setQueuePanelOpen: (open) => set({ queuePanelOpen: open }),
   planMode: false,
 
   // ── goal mode — PROMPT-PATH control (see ChatState docs) ────────────
@@ -1348,6 +1529,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       topTasks: [],
       scheduledTasks: [],
       cancelPanelOpen: false,
+      queuePanelOpen: false,
       planMode: false,
     })
     // Apply the host's status snapshot through the normal hello path so
@@ -1407,6 +1589,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   openSessionInfo: () => set({ sessionInfoOpen: true }),
   closeSessionInfo: () => set({ sessionInfoOpen: false }),
+
+  showSessionInfo: async () => {
+    try {
+      const info = await transport.sessionInfo()
+      appendEntry(set, { kind: 'status', text: formatSessionInfo(info) })
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      appendEntry(set, { kind: 'error', text: `/session-info 失败: ${msg}` })
+    }
+  },
 
   /** Dismiss the top error/status banner (user acknowledged the message). */
   dismissNotice: () => set({ error: undefined, statusWarning: undefined }),
@@ -2254,6 +2446,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
           openAssistantId: undefined,
           openThoughtId: undefined,
           turnStartedAt: undefined,
+          // Turn end: the host resolved every outstanding permission request
+          // (approval timeout / completion), so a non-empty pending queue
+          // here is stale — drop it (TUI drain_permission_queue).
+          pending: [],
           entries: [
             ...settleTurnEntries(s.entries),
             ...(marker ? [marker] : []),
@@ -2317,6 +2513,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           openThoughtId: undefined,
           turnStartedAt: undefined,
           xaiRequests: [], // host answered every pending x.ai request already
+          pending: [], // …and every pending permission request (turn cancelled)
           entries: [
             ...s.entries.map((e) => {
               if (e.kind === 'thought' && e.streaming) {
@@ -2480,7 +2677,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
             break
           }
           case 'auto_compact_completed': {
-            appendEntry(set, { kind: 'session_event', text: '自动压缩完成' })
+            // TUI CompactionCompleted: tokens_before/tokens_after/
+            // elapsed_ms are optional on the wire — keep the plain line
+            // when the data is absent.
+            const before = fields.tokens_before ?? fields.tokensBefore
+            const after = fields.tokens_after ?? fields.tokensAfter
+            const elapsedMs = fields.elapsed_ms ?? fields.elapsedMs
+            let text = '自动压缩完成'
+            if (typeof after === 'number' && after > 0) {
+              const beforePart =
+                typeof before === 'number' && before > 0
+                  ? `${fmtTokens(before)} → `
+                  : ''
+              text = `自动压缩完成: ${beforePart}${fmtTokens(after)} tokens`
+              if (typeof elapsedMs === 'number' && elapsedMs >= 0) {
+                text += ` (${(elapsedMs / 1000).toFixed(1)}s)`
+              }
+            }
+            appendEntry(set, { kind: 'session_event', text })
             break
           }
           case 'auto_compact_failed': {
@@ -2511,9 +2725,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
           case 'session_recap': {
             const summary = typeof fields.summary === 'string' ? fields.summary : ''
             if (!summary.trim()) break
+            // Two-part recap block: bold "Recap" header + muted body
+            // (TUI session_event Recap). The body IS the summary text;
+            // the scrollback renders the header separately.
             appendEntry(set, {
               kind: 'session_event',
-              text: `摘要: ${summary}`,
+              text: summary,
               recap: true,
               open: false,
             })
@@ -2557,14 +2774,42 @@ export const useChatStore = create<ChatState>((set, get) => ({
           }
           case 'memory_files': {
             const files = Array.isArray(fields.files) ? fields.files : []
-            set({ memoryFiles: files as { name: string; path?: string; size?: number; updatedAt?: unknown }[] })
-            const names = files
-              .map((f) => (f as { name?: unknown }).name)
-              .filter((n): n is string => typeof n === 'string')
-              .join(', ')
+            // Wire shape is TUI MemoryFileInfo {path, source, size_bytes,
+            // modified_epoch_secs} — normalize to the modal's display
+            // fields (name = path basename) and keep `source` so the
+            // memory modal can group Global / Workspace / Sessions.
+            const normalized = files
+              .filter((f): f is Record<string, unknown> => !!f && typeof f === 'object')
+              .map((f) => {
+                const path = typeof f.path === 'string' ? f.path : ''
+                const name =
+                  typeof f.name === 'string' && f.name
+                    ? f.name
+                    : path.split(/[\\/]/).filter(Boolean).pop() ?? path
+                const size =
+                  typeof f.size === 'number'
+                    ? f.size
+                    : typeof f.size_bytes === 'number'
+                      ? f.size_bytes
+                      : undefined
+                return {
+                  name,
+                  ...(path ? { path } : {}),
+                  ...(size !== undefined ? { size } : {}),
+                  ...(f.updatedAt !== undefined
+                    ? { updatedAt: f.updatedAt }
+                    : f.modified_epoch_secs !== undefined
+                      ? { updatedAt: f.modified_epoch_secs }
+                      : {}),
+                  ...(typeof f.source === 'string' && f.source ? { source: f.source } : {}),
+                }
+              })
+              .filter((f) => f.name)
+            set({ memoryFiles: normalized })
+            const names = normalized.map((f) => f.name).join(', ')
             appendEntry(set, {
               kind: 'session_event',
-              text: `记忆文件 ${files.length} 个${names ? `（${names.slice(0, 80)}）` : ''}`,
+              text: `记忆文件 ${normalized.length} 个${names ? `（${names.slice(0, 80)}）` : ''}`,
             })
             break
           }
@@ -2715,10 +2960,65 @@ export const useChatStore = create<ChatState>((set, get) => ({
               : Array.isArray(f.agent_roster)
                 ? f.agent_roster
                 : undefined
-            const agents = rawAgents
-              ?.map((a) => String(a))
-              .filter((a) => a.length > 0)
+            // Agents may be plain labels (older producers) or full
+            // WorkflowAgentInfo objects {label, state, tokens_used, …}.
+            // Both collapse into the same roster; the list-row labels come
+            // from the same source (TUI shows them per row).
+            const agentRoster = rawAgents
+              ?.map((a) => {
+                if (a && typeof a === 'object' && !Array.isArray(a)) {
+                  const o = a as Record<string, unknown>
+                  const name =
+                    (typeof o.label === 'string' && o.label.trim()) ||
+                    (typeof o.name === 'string' && o.name.trim()) ||
+                    (typeof o.agent_id === 'string' ? o.agent_id : '')
+                  if (!name) return null
+                  const tokensRaw = o.tokens_used ?? o.tokensUsed ?? o.tokens
+                  return {
+                    name,
+                    status: typeof o.state === 'string' ? o.state : undefined,
+                    tokens:
+                      tokensRaw != null &&
+                      tokensRaw !== '' &&
+                      Number.isFinite(Number(tokensRaw))
+                        ? Number(tokensRaw)
+                        : undefined,
+                  }
+                }
+                const s = String(a).trim()
+                return s ? { name: s } : null
+              })
+              .filter(
+                (a): a is { name: string; status?: string; tokens?: number } =>
+                  !!a,
+              )
+            const agents = agentRoster?.map((a) => a.name)
             const script = typeof f.script === 'string' ? f.script : undefined
+            const objective =
+              typeof f.objective === 'string' && f.objective.trim()
+                ? f.objective
+                : undefined
+            const rawPhases = Array.isArray(f.phases) ? f.phases : undefined
+            const phases = rawPhases
+              ?.map((p) => {
+                if (!p || typeof p !== 'object' || Array.isArray(p)) return null
+                const o = p as Record<string, unknown>
+                const title = typeof o.title === 'string' ? o.title.trim() : ''
+                if (!title) return null
+                return {
+                  title,
+                  state: typeof o.state === 'string' ? o.state : 'pending',
+                }
+              })
+              .filter((p): p is { title: string; state: string } => !!p)
+            const rawElapsed = f.elapsed_ms ?? f.elapsedMs
+            const elapsedMs =
+              rawElapsed != null &&
+              rawElapsed !== '' &&
+              Number.isFinite(Number(rawElapsed)) &&
+              Number(rawElapsed) >= 0
+                ? Number(rawElapsed)
+                : undefined
             const rawStart = f.started_at ?? f.startedAt ?? f.start_time
             const sNum = typeof rawStart === 'number' ? rawStart : Number(rawStart)
             const startedAt =
@@ -2739,7 +3039,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   phase,
                   progress,
                   agents,
+                  agentRoster,
+                  phases,
+                  objective,
                   script,
+                  elapsedMs,
                   startedAt,
                   // Start-time fallback: first event that introduced the run.
                   firstSeenAt: prev?.firstSeenAt ?? Date.now(),
@@ -2772,7 +3076,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
             const f = fields as Record<string, unknown>
             const status = typeof f.status === 'string' ? f.status : ''
             const objective = typeof f.objective === 'string' ? f.objective : ''
-            set({ goalState: f })
+            // goalReceivedAt anchors the elapsed fallback chain (wire
+            // elapsed_ms / started_at absent → receive time).
+            set({ goalState: f, goalReceivedAt: Date.now() })
             if (status === 'complete') {
               appendEntry(set, {
                 kind: 'session_event',
@@ -3051,6 +3357,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
           openAssistantId: undefined,
           openThoughtId: undefined,
           turnStartedAt: undefined,
+          // Turn end (scheduled-injection path): outstanding permission
+          // requests were resolved host-side — drop any stale queue entry.
+          pending: [],
           entries: [...settleTurnEntries(sealed.entries), marker],
         })
         break
@@ -3123,7 +3432,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  send: async (text: string, blocks?: ContentBlock[]) => {
+  send: async (text: string, blocks?: ContentBlock[], opts?: { fromShell?: boolean }) => {
     const t = text.trim()
     if (!t) return
     // Seal any leftover thought from prior turn, then append user + Thinking… shell.
@@ -3131,11 +3440,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const sealed = sealThought(get())
     const userId = nid()
     const thoughtId = nid()
+    // Shell-mode submissions (Composer `!` mode → prompt path) mark the
+    // user row so the scrollback renders it with the TUI `$ ` prefix.
+    const userEntry = {
+      id: userId,
+      kind: 'user' as const,
+      text: t,
+      ts: Date.now(),
+      ...(opts?.fromShell ? { isShell: true } : {}),
+    }
     set({
       ...sealed,
       entries: [
         ...sealed.entries,
-        { id: userId, kind: 'user', text: t, ts: Date.now() },
+        userEntry,
         {
           id: thoughtId,
           kind: 'thought',
@@ -3189,9 +3507,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   /**
-   * Cancel-turn panel execution (options 1-3). Always cancels the running
-   * turn; `stopTasks` additionally kills every running bg_task (incl.
-   * restored top-strip tasks) and cancels running subagents; `clearQueue`
+   * Cancel the running turn (panel options 1 / 3 / 4, Ctrl+C, and the
+   * saved-preference fast path). Always cancels the turn; `cancelSubagents`
+   * additionally cancels every running subagent ("Stop running" / "Always
+   * stop"); `stopTasks` (legacy) kills running bg_tasks too; `clearQueue`
    * empties the composer's send queue. The panel closes either way.
    */
   cancelTurn: async (opts) => {
@@ -3216,6 +3535,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Restored top-strip tasks are running by definition (host probe).
       for (const t of s.topTasks) {
         if (t.taskId) void get().killTask(t.taskId)
+      }
+    } else if (opts?.cancelSubagents) {
+      const s = get()
+      for (const e of s.entries) {
+        if (e.kind === 'subagent' && e.running && e.subagentId) {
+          void get().cancelSubagent(e.subagentId)
+        }
       }
     }
     if (opts?.clearQueue) usePromptQueue.getState().clear()
@@ -3249,21 +3575,37 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  /** Shift+Tab mode cycle (TUI: Normal → Plan → Always-approve). */
+  /**
+   * Shift+Tab mode cycle (TUI modes.rs): Normal → Plan → Auto →
+   * Always-approve → Normal. Each arm shows the "Switched to mode: X"
+   * banner (TUI notices.rs) optimistically, like the TUI's
+   * show_mode_switch_banner.
+   */
   cycleMode: async () => {
     const s = get()
     const inPlan = s.planMode === true || s.permissionMode === 'plan'
     const perm = (s.permissionMode || '').toLowerCase()
+    // Yolo wins over auto on the wire (TUI effective_auto), so the Auto
+    // arm only applies while always-approve is not active.
     const inAlways =
       s.yoloMode === true ||
-      s.autoMode === true ||
       perm === 'always-approve' ||
       perm === 'always_approve' ||
-      perm === 'yolo' ||
-      perm === 'auto'
-    if (inPlan) await get().setAlwaysApproveMode()
-    else if (inAlways) await get().setNormalMode()
-    else await get().togglePlanMode()
+      perm === 'yolo'
+    const inAuto = !inAlways && (s.autoMode === true || perm === 'auto')
+    if (inPlan) {
+      get().showModeBanner('Switched to mode: Auto')
+      await get().setAutoMode()
+    } else if (inAuto) {
+      get().showModeBanner('Switched to mode: Always-Approve')
+      await get().setAlwaysApproveMode()
+    } else if (inAlways) {
+      get().showModeBanner('Switched to mode: Normal')
+      await get().setNormalMode()
+    } else {
+      get().showModeBanner('Switched to mode: Plan')
+      await get().togglePlanMode()
+    }
   },
 
   setNormalMode: async () => {
@@ -3323,8 +3665,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  respondPermission: async (requestId, optionId, cancelled, scope) => {
-    await transport.respondPermission(requestId, optionId, cancelled, scope)
+  respondPermission: async (requestId, optionId, cancelled, scope, followupMessage) => {
+    await transport.respondPermission(requestId, optionId, cancelled, scope, followupMessage)
     set({ pending: get().pending.filter((p) => p.requestId !== requestId) })
   },
 

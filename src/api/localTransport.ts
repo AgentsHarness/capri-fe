@@ -1,4 +1,12 @@
-import type { AcpEvent, ContentBlock, HostInfo, RewindPoint, SessionInfo, SessionInfoDetail } from './types'
+import type {
+  AcpEvent,
+  ContentBlock,
+  HostInfo,
+  PermissionScope,
+  RewindPoint,
+  SessionInfo,
+  SessionInfoDetail,
+} from './types'
 
 export type TransportHandler = (ev: AcpEvent) => void
 
@@ -101,8 +109,15 @@ export class LocalTransport {
     requestId: string,
     optionId?: string,
     cancelled?: boolean,
-    /** "Always allow" scope text picked with ←/→ on the permission card. */
-    scope?: string,
+    /**
+     * Structured "always allow" scope (TUI BashCommandSelectedTerms) —
+     * sent only when an always-allow option is selected. Host contract
+     * (parallel): `scope: { commandParts: string[], isGlob: boolean }`,
+     * parsed verbatim — field names must match exactly.
+     */
+    scope?: PermissionScope,
+    /** Optional followup message on a reject (TUI RejectOnce followup). */
+    followupMessage?: string,
   ) {
     const res = await fetch(this.url('/api/permission-response'), {
       method: 'POST',
@@ -112,6 +127,7 @@ export class LocalTransport {
         optionId,
         cancelled,
         ...(scope ? { scope } : {}),
+        ...(followupMessage ? { followupMessage } : {}),
       }),
     })
     const data = await res.json()
