@@ -8,6 +8,7 @@ import { Scrollback } from './components/Scrollback'
 import { Composer } from './components/Composer'
 import { ApprovalStrip } from './components/ApprovalStrip'
 import { PlanApproval } from './components/PlanApproval'
+import { CancelPanel } from './components/CancelPanel'
 import { QuestionModal } from './components/QuestionModal'
 import { McpPanel } from './components/McpPanel'
 import { BlockViewer } from './components/BlockViewer'
@@ -46,6 +47,7 @@ export default function App() {
           <Scrollback />
           <ApprovalStrip />
           <PlanApproval />
+          <CancelPanel />
           <Composer />
         </main>
       </div>

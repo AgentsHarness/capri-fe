@@ -14,6 +14,7 @@ import type {
   TopTask,
 } from '../api/types'
 import { transport } from '../api/localTransport'
+import { usePromptQueue } from './promptQueue'
 import { toolHeader } from '../theme/glyphs'
 import {
   projectDisplayRows,
@@ -187,6 +188,64 @@ export function planTodos(entries: unknown): { items: TodoItem[]; counts?: TodoC
     items,
     counts: total === 0 && items.length === 0 ? undefined : { total, inProgress, pending, completed },
   }
+}
+
+/** Known non-plan permission modes (a `permissionMode` payload with one of
+ *  these means the agent is NOT in plan mode). */
+const NON_PLAN_MODES = new Set([
+  'ask',
+  'default',
+  'normal',
+  'always-approve',
+  'always_approve',
+  'yolo',
+  'auto',
+])
+
+/**
+ * Best-effort plan/permission flags out of an opaque `modes` payload
+ * (hello / ready / modes_update). The host may ship the mode state under
+ * several key spellings; anything unrecognized is left alone so the local
+ * `planMode` value survives.
+ */
+function extractModeFlags(
+  modes: unknown,
+): Partial<
+  Pick<ChatState, 'planMode' | 'permissionMode' | 'yoloMode' | 'autoMode'>
+> | null {
+  if (!modes || typeof modes !== 'object' || Array.isArray(modes)) return null
+  const o = modes as Record<string, unknown>
+  const out: Partial<
+    Pick<ChatState, 'planMode' | 'permissionMode' | 'yoloMode' | 'autoMode'>
+  > = {}
+  const read = (...keys: string[]): unknown => {
+    for (const k of keys) {
+      const v = o[k]
+      if (v !== undefined && v !== null) return v
+    }
+    return undefined
+  }
+  const plan = read('planMode', 'plan_mode', 'isPlanMode')
+  if (typeof plan === 'boolean') out.planMode = plan
+  // Explicitly permission-y keys; the generic `mode` key is only trusted
+  // for plan-mode derivation below.
+  const perm = read('permissionMode', 'permission_mode', 'modeId', 'mode_id')
+  if (typeof perm === 'string' && perm) {
+    out.permissionMode = perm
+    if (perm === 'plan') out.planMode = true
+    else if (NON_PLAN_MODES.has(perm)) out.planMode = false
+  }
+  // `mode`/'current_mode' as a plan indicator only (e.g. { mode: 'plan' }).
+  const mode = read('mode', 'currentMode', 'current_mode')
+  if (typeof mode === 'string' && mode) {
+    if (mode === 'plan') out.planMode = true
+    else if (NON_PLAN_MODES.has(mode)) out.planMode = false
+  }
+  const yolo = read('yoloMode', 'yolo_mode')
+  if (typeof yolo === 'boolean') out.yoloMode = yolo
+  const auto = read('autoMode', 'auto_mode')
+  if (typeof auto === 'boolean') out.autoMode = auto
+  return Object.keys(out).length > 0 ? out : null
 }
 
 function extractTarget(tc: ToolCall): string {
@@ -736,6 +795,34 @@ type ChatState = {
   rewindOpen: boolean
   openRewind: () => void
   closeRewind: () => void
+  /**
+   * Cancel-turn panel (TUI CancelTurnPanel): Esc / [stop] while busy opens
+   * it instead of cancelling immediately. While open it owns the keyboard
+   * (1-4 / ↑↓ / Enter confirm, Esc = keep running).
+   */
+  cancelPanelOpen: boolean
+  openCancelPanel: () => void
+  closeCancelPanel: () => void
+  /**
+   * Local plan-mode flag (Shift+Tab cycle / /plan). Driven by the host's
+   * toggle-plan-mode result when available; otherwise kept local and
+   * nudged by yolo_mode_changed / modes_update payloads.
+   */
+  planMode: boolean
+  /** Cancel the running turn — cancel panel options 1-3. */
+  cancelTurn: (opts?: { stopTasks?: boolean; clearQueue?: boolean }) => Promise<void>
+  /** Enter/leave plan mode (toggle-plan-mode preferred, set-mode fallback). */
+  togglePlanMode: () => Promise<void>
+  /** Shift+Tab mode cycle: Normal → Plan → Always-approve → Normal. */
+  cycleMode: () => Promise<void>
+  /** POST /api/set-mode {modeId:'normal'}. */
+  setNormalMode: () => Promise<void>
+  /** always-approve candidates: always_approve → yolo → always-approve. */
+  setAlwaysApproveMode: () => Promise<void>
+  /** POST /api/set-mode {modeId:'auto'}. */
+  setAutoMode: () => Promise<void>
+  /** POST /api/permissions-reset — forget remembered permission rules. */
+  resetPermissions: () => Promise<void>
 
   init: () => () => void
   send: (text: string, blocks?: ContentBlock[]) => Promise<void>
@@ -749,7 +836,13 @@ type ChatState = {
     kind: 'user' | 'session_event' | 'error'
     text: string
   }) => void
-  respondPermission: (requestId: string, optionId?: string, cancelled?: boolean) => Promise<void>
+  respondPermission: (
+    requestId: string,
+    optionId?: string,
+    cancelled?: boolean,
+    /** "Always allow" scope text picked with ←/→ on the permission card. */
+    scope?: string,
+  ) => Promise<void>
   /** Respond to a forwarded x.ai/* request with a raw result (or error). */
   respondXai: (requestId: string, result?: Record<string, unknown>, error?: string) => Promise<void>
   /** Cancel a forwarded x.ai/* request (outcome:cancelled / error). */
@@ -916,6 +1009,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   rewindOpen: false,
   openRewind: () => set({ rewindOpen: true }),
   closeRewind: () => set({ rewindOpen: false }),
+  cancelPanelOpen: false,
+  openCancelPanel: () => set({ cancelPanelOpen: true }),
+  closeCancelPanel: () => set({ cancelPanelOpen: false }),
+  planMode: false,
 
   init: () => {
     const unsub = transport.onEvent((ev) => {
@@ -1012,6 +1109,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       bgTaskIndex: {},
       topTasks: [],
       scheduledTasks: [],
+      cancelPanelOpen: false,
+      planMode: false,
     })
     // Apply the host's status snapshot through the normal hello path so
     // model state, pending requests and busy flags hydrate consistently.
@@ -1110,6 +1209,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       yoloMode: undefined,
       autoMode: undefined,
       permissionMode: undefined,
+      planMode: false,
       mcpServers: [],
       selectedId: null,
       focusMode: 'prompt',
@@ -1429,6 +1529,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           error: ev.error,
           statusWarning: undefined,
           ...modelSnap,
+          ...extractModeFlags(ev.modes),
         })
         if (ev.busy) {
           // Preserve an existing turn timer across mid-turn re-busy/reconnect;
@@ -1471,6 +1572,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           error: undefined,
           statusWarning: undefined,
           ...modelSnap,
+          ...extractModeFlags(ev.modes),
         })
         void get().refreshHosts()
         void get().refreshGitInfo()
@@ -1858,10 +1960,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // badge). Matches the TUI: plan entries never land in the
         // scrollback — the TopBar TodoChip is the single display surface.
         const { items, counts } = planTodos(ev.entries)
+        const planFlag = (ev as unknown as { planMode?: unknown }).planMode
         set({
           openAssistantId: undefined,
           todoCounts: counts,
           todos: items,
+          // Some hosts piggyback the plan-mode flag on the plan event —
+          // apply it when present, otherwise keep the local value.
+          ...(typeof planFlag === 'boolean' ? { planMode: planFlag } : {}),
         })
         break
       }
@@ -2531,7 +2637,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
           typeof p.permissionMode === 'string' && p.permissionMode
             ? p.permissionMode
             : undefined
-        set({ yoloMode: yolo, autoMode: auto, permissionMode: perm })
+        // Plan mode rides on the same wire: permissionMode 'plan' means the
+        // agent is in plan mode (Shift+Tab cycle gear + prompt flag).
+        const planMode =
+          perm === 'plan' ? true : perm != null && perm !== '' ? false : undefined
+        set({
+          yoloMode: yolo,
+          autoMode: auto,
+          permissionMode: perm,
+          ...(planMode !== undefined ? { planMode } : {}),
+        })
         break
       }
       case 'mcp_server_status': {
@@ -2664,7 +2779,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         break
       }
       case 'modes_update':
-        set({ modes: ev.modes })
+        set({ modes: ev.modes, ...extractModeFlags(ev.modes) })
         break
       case 'session_info':
         if (ev.title != null && String(ev.title).trim()) {
@@ -2782,8 +2897,143 @@ export const useChatStore = create<ChatState>((set, get) => ({
     await transport.cancel()
   },
 
-  respondPermission: async (requestId, optionId, cancelled) => {
-    await transport.respondPermission(requestId, optionId, cancelled)
+  /**
+   * Cancel-turn panel execution (options 1-3). Always cancels the running
+   * turn; `stopTasks` additionally kills every running bg_task (incl.
+   * restored top-strip tasks) and cancels running subagents; `clearQueue`
+   * empties the composer's send queue. The panel closes either way.
+   */
+  cancelTurn: async (opts) => {
+    set({ cancelPanelOpen: false })
+    try {
+      await transport.cancel()
+    } catch (e) {
+      appendEntry(set, {
+        kind: 'error',
+        text: `取消失败: ${e instanceof Error ? e.message : String(e)}`,
+      })
+    }
+    if (opts?.stopTasks) {
+      const s = get()
+      for (const e of s.entries) {
+        if (e.kind === 'bg_task' && e.running && e.taskId) {
+          void get().killTask(e.taskId)
+        } else if (e.kind === 'subagent' && e.running && e.subagentId) {
+          void get().cancelSubagent(e.subagentId)
+        }
+      }
+      // Restored top-strip tasks are running by definition (host probe).
+      for (const t of s.topTasks) {
+        if (t.taskId) void get().killTask(t.taskId)
+      }
+    }
+    if (opts?.clearQueue) usePromptQueue.getState().clear()
+  },
+
+  /**
+   * Enter/leave plan mode. Prefers the host's toggle-plan-mode endpoint
+   * (its `planMode` reply is authoritative when present); falls back to
+   * /api/set-mode {modeId:'plan'|'normal'}. Total failure → error row.
+   */
+  togglePlanMode: async () => {
+    const s = get()
+    const wantPlan = !s.planMode
+    try {
+      const r = await transport.togglePlanMode(s.sessionId)
+      const planMode = typeof r.planMode === 'boolean' ? r.planMode : wantPlan
+      set({ planMode, statusText: planMode ? '已切换到 plan 模式' : '已切换到 normal 模式' })
+    } catch {
+      try {
+        await transport.setMode(wantPlan ? 'plan' : 'normal')
+        set({
+          planMode: wantPlan,
+          statusText: wantPlan ? '已切换到 plan 模式' : '已切换到 normal 模式',
+        })
+      } catch (e2) {
+        appendEntry(set, {
+          kind: 'error',
+          text: `切换计划模式失败: ${e2 instanceof Error ? e2.message : String(e2)}`,
+        })
+      }
+    }
+  },
+
+  /** Shift+Tab mode cycle (TUI: Normal → Plan → Always-approve). */
+  cycleMode: async () => {
+    const s = get()
+    const inPlan = s.planMode === true || s.permissionMode === 'plan'
+    const perm = (s.permissionMode || '').toLowerCase()
+    const inAlways =
+      s.yoloMode === true ||
+      s.autoMode === true ||
+      perm === 'always-approve' ||
+      perm === 'always_approve' ||
+      perm === 'yolo' ||
+      perm === 'auto'
+    if (inPlan) await get().setAlwaysApproveMode()
+    else if (inAlways) await get().setNormalMode()
+    else await get().togglePlanMode()
+  },
+
+  setNormalMode: async () => {
+    try {
+      await transport.setMode('normal')
+      set({ planMode: false, statusText: '已切换到 normal 模式' })
+    } catch (e) {
+      appendEntry(set, {
+        kind: 'error',
+        text: `切换普通模式失败: ${e instanceof Error ? e.message : String(e)}`,
+      })
+    }
+  },
+
+  /**
+   * Always-approve mode. The host may accept different ids across builds —
+   * try in order and use the first that succeeds.
+   */
+  setAlwaysApproveMode: async () => {
+    for (const modeId of ['always_approve', 'yolo', 'always-approve']) {
+      try {
+        await transport.setMode(modeId)
+        set({ planMode: false, statusText: '已切换到 always-approve 模式' })
+        return
+      } catch {
+        // try the next candidate id
+      }
+    }
+    appendEntry(set, {
+      kind: 'error',
+      text: 'host 暂不支持运行时切换 always-approve',
+    })
+  },
+
+  setAutoMode: async () => {
+    try {
+      await transport.setMode('auto')
+      set({ statusText: '已切换到 auto 模式' })
+    } catch (e) {
+      appendEntry(set, {
+        kind: 'error',
+        text: `切换 auto 模式失败: ${e instanceof Error ? e.message : String(e)}`,
+      })
+    }
+  },
+
+  /** Forget every remembered permission rule (always-allow patterns…). */
+  resetPermissions: async () => {
+    try {
+      await transport.permissionsReset(get().sessionId)
+      set({ statusText: '已重置已记忆的权限规则' })
+    } catch (e) {
+      appendEntry(set, {
+        kind: 'error',
+        text: `重置权限规则失败: ${e instanceof Error ? e.message : String(e)}`,
+      })
+    }
+  },
+
+  respondPermission: async (requestId, optionId, cancelled, scope) => {
+    await transport.respondPermission(requestId, optionId, cancelled, scope)
     set({ pending: get().pending.filter((p) => p.requestId !== requestId) })
   },
 
@@ -3180,6 +3430,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       yoloMode: undefined,
       autoMode: undefined,
       permissionMode: undefined,
+      planMode: false,
       mcpServers: [],
       selectedId: null,
       focusMode: 'prompt',

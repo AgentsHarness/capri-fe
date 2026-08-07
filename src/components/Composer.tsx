@@ -256,7 +256,6 @@ export function Composer() {
   // onSelect/keyup/mouseup mirror it here for the paste preview overlay.
   const [caretPos, setCaretPos] = useState(0)
   const send = useChatStore((s) => s.send)
-  const cancel = useChatStore((s) => s.cancel)
   const conn = useChatStore((s) => s.conn)
   const usage = useChatStore((s) => s.usage)
   const statusText = useChatStore((s) => s.statusText)
@@ -270,6 +269,7 @@ export function Composer() {
   const permissionMode = useChatStore((s) => s.permissionMode)
   const yoloMode = useChatStore((s) => s.yoloMode)
   const autoMode = useChatStore((s) => s.autoMode)
+  const planMode = useChatStore((s) => s.planMode)
   const focusMode = useChatStore((s) => s.focusMode)
   const turnStartedAt = useChatStore((s) => s.turnStartedAt)
   const models = useChatStore((s) => s.models)
@@ -954,13 +954,18 @@ export function Composer() {
     if (usage?.used != null && usage?.size != null) {
       out.push({ text: `${fmtTok(usage.used)}/${fmtTok(usage.size)}` })
     }
+    // Plan mode (Shift+Tab cycle / toggle-plan-mode) — TUI prompt mode flag.
+    const inPlan = planMode === true || permissionMode === 'plan'
+    if (inPlan) {
+      out.push({ text: 'plan', color: 'var(--color-gn-cyan)' })
+    }
     // Permission mode from x.ai/yolo_mode_changed (TUI prompt mode flag:
     // ask / auto / always-approve). Only non-default modes are surfaced.
     const mode =
       permissionMode ||
       (yoloMode ? 'always-approve' : undefined) ||
       (autoMode ? 'auto' : undefined)
-    if (mode && mode !== 'ask' && mode !== 'default') {
+    if (mode && mode !== 'plan' && mode !== 'ask' && mode !== 'default') {
       out.push({ text: mode, color: 'var(--color-gn-cyan)' })
     }
     // busy / 待处理 live in the history sidebar state icons — not the prompt flags.
@@ -968,7 +973,7 @@ export function Composer() {
       out.push({ text: statusText || 'offline', color: 'var(--color-gn-red)' })
     }
     return out
-  }, [usage, conn, statusText, permissionMode, yoloMode, autoMode])
+  }, [usage, conn, statusText, permissionMode, yoloMode, autoMode, planMode])
 
   return (
     <div className="safe-pb bg-gn-bg-base pt-1">
@@ -1036,7 +1041,7 @@ export function Composer() {
                 {busy && (
                   <button
                     type="button"
-                    onClick={() => void cancel()}
+                    onClick={() => useChatStore.getState().openCancelPanel()}
                     className="rounded px-1.5 py-[2px] text-gn-gray hover:bg-gn-bg-highlight hover:text-gn-red min-h-6 sm:min-h-0"
                   >
                     [stop]
@@ -1290,6 +1295,14 @@ export function Composer() {
                   // browsers): keyCode 229 lingers on some Chromium builds
                   // after composition ends and would swallow plain Enter.
                   if (e.nativeEvent.isComposing) return
+                  // TUI Shift+Tab (prompt focused): cycle mode
+                  // Normal → Plan → Always-approve (store.cycleMode).
+                  if (e.key === 'Tab' && e.shiftKey) {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    void useChatStore.getState().cycleMode()
+                    return
+                  }
                   const el = taRef.current
                   // TUI Ctrl+Enter: send NOW (cancel the running turn,
                   // background tasks keep running).
@@ -1546,10 +1559,12 @@ export function Composer() {
                       setShellMode(false)
                       return
                     }
+                    // TUI: Esc while busy opens the cancel-turn panel
+                    // (immediate cancel only after the panel resolves).
                     if (busy) {
                       e.preventDefault()
                       e.stopPropagation()
-                      void cancel()
+                      useChatStore.getState().openCancelPanel()
                     }
                   }
                 }}

@@ -321,6 +321,30 @@ export const slashCommands: SlashCommand[] = [
       note(`可用命令:\n${lines.join('\n')}`)
     },
   },
+  // ── 模式 / 权限（Shift+Tab 循环的斜杠入口）────────────────────────
+  // NOTE: 数组头部已有同名 /plan（走 set-mode）；此条目优先走
+  // toggle-plan-mode，但 typed 输入由 matchSlash 命中首个条目，因此
+  // 该入口实际由 Shift+Tab 与 store.togglePlanMode 使用。保留两版。
+  {
+    name: 'plan',
+    description: '切换到计划模式（toggle-plan-mode）',
+    run: () => void useChatStore.getState().togglePlanMode(),
+  },
+  {
+    name: 'always-approve',
+    description: '切换到始终允许模式',
+    run: () => void useChatStore.getState().setAlwaysApproveMode(),
+  },
+  {
+    name: 'auto',
+    description: '切换到自动模式',
+    run: () => void useChatStore.getState().setAutoMode(),
+  },
+  {
+    name: 'permissions-reset',
+    description: '重置已记忆的权限规则',
+    run: () => void useChatStore.getState().resetPermissions(),
+  },
 ]
 
 /**

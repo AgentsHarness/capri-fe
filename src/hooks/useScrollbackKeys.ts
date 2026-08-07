@@ -69,6 +69,9 @@ export function useScrollbackKeys() {
       // x.ai interactive surface (ask_user_question modal / plan approval):
       // the modals own Esc + navigation while open.
       if (store0.xaiRequests.length > 0) return
+      // Cancel-turn panel owns the keyboard while open (defense in depth —
+      // the panel's own capture listener already stops the keys).
+      if (store0.cancelPanelOpen) return
 
       // Tab always switches focus panes
       if (e.key === 'Tab') {
@@ -86,12 +89,12 @@ export function useScrollbackKeys() {
         return
       }
 
-      // Typing in the prompt: only Esc→cancel while busy
+      // Typing in the prompt: only Esc→cancel-turn panel while busy
       if (inField) {
         const store = useChatStore.getState()
         if (e.key === 'Escape' && store.conn === 'busy') {
           e.preventDefault()
-          void store.cancel()
+          store.openCancelPanel()
         }
         return
       }
@@ -140,11 +143,18 @@ export function useScrollbackKeys() {
           store.toggleSelected()
           return
         case 'Escape':
+          // TUI: Esc while a turn runs opens the cancel-turn panel
+          // (immediate cancel only after the panel resolves); idle Esc
+          // moves focus back to the prompt.
           e.preventDefault()
-          store.setFocus('prompt')
-          requestAnimationFrame(() => {
-            document.getElementById('composer-input')?.focus()
-          })
+          if (store.conn === 'busy') {
+            store.openCancelPanel()
+          } else {
+            store.setFocus('prompt')
+            requestAnimationFrame(() => {
+              document.getElementById('composer-input')?.focus()
+            })
+          }
           return
         default:
           break

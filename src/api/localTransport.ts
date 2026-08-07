@@ -97,11 +97,22 @@ export class LocalTransport {
     await fetch(this.url('/api/cancel'), { method: 'POST' })
   }
 
-  async respondPermission(requestId: string, optionId?: string, cancelled?: boolean) {
+  async respondPermission(
+    requestId: string,
+    optionId?: string,
+    cancelled?: boolean,
+    /** "Always allow" scope text picked with ←/→ on the permission card. */
+    scope?: string,
+  ) {
     const res = await fetch(this.url('/api/permission-response'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ requestId, optionId, cancelled }),
+      body: JSON.stringify({
+        requestId,
+        optionId,
+        cancelled,
+        ...(scope ? { scope } : {}),
+      }),
     })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'permission failed')
@@ -325,6 +336,42 @@ export class LocalTransport {
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'set mode failed')
     return data
+  }
+
+  /**
+   * x.ai/toggle_plan_mode (host /api/toggle-plan-mode) — enter/leave plan
+   * mode. Returns the authoritative `planMode` when the host reports it;
+   * callers fall back to their local toggle when it is absent.
+   */
+  async togglePlanMode(
+    sessionId?: string,
+  ): Promise<{ ok?: boolean; planMode?: boolean }> {
+    const res = await fetch(this.url('/api/toggle-plan-mode'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(sessionId ? { sessionId } : {}),
+    })
+    const data = await res.json()
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || 'toggle plan mode failed')
+    }
+    return data
+  }
+
+  /**
+   * x.ai/permissions/reset (host /api/permissions-reset) — forget every
+   * remembered permission rule (always-allow patterns, etc.).
+   */
+  async permissionsReset(sessionId?: string): Promise<void> {
+    const res = await fetch(this.url('/api/permissions-reset'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(sessionId ? { sessionId } : {}),
+    })
+    const data = await res.json()
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || 'permissions reset failed')
+    }
   }
 
   /** x.ai/subagent/cancel. */
