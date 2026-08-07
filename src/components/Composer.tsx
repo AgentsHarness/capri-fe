@@ -23,6 +23,13 @@ import {
 } from '../theme/layout'
 import { IconGlyph } from './IconGlyph'
 import { fmtTok } from './StatusChips'
+import { SlashMenu } from './SlashMenu'
+import {
+  filterSlashCommands,
+  matchSlash,
+  registerModelMenuOpener,
+  type SlashCommand,
+} from '../commands/registry'
 
 /** ── TUI paste-chip port (PromptWidget::handle_paste) ──────────────────
  * Pastes at/above the chip threshold become an atomic `[Pasted: N lines]`
@@ -298,6 +305,12 @@ export function Composer() {
 
   // ── TUI shell mode (`!` prefix; input runs locally, never the agent) ──
   const [shellMode, setShellMode] = useState(false)
+  // ── TUI slash command menu (`/` prefix; fuzzy menu + local execution) ──
+  const [slashSel, setSlashSel] = useState(0)
+  /** Menu dismissed (Esc / click outside); re-arms when input clears. */
+  const [slashDismissed, setSlashDismissed] = useState(false)
+  /** Composer chrome frame — outside clicks dismiss the slash menu. */
+  const composerChromeRef = useRef<HTMLDivElement>(null)
   /** Counter for clipboard images without a filename (TUI `[Image #N]`). */
   const unnamedImgRef = useRef(0)
 
@@ -468,6 +481,84 @@ export function Composer() {
     }
     await submitCurrent()
   }
+
+  // ── TUI slash commands (`/` prefix) ────────────────────────────────
+  // Menu shows while the command word is being typed (no space yet) and
+  // the input starts with "/" — shell mode is mutually exclusive. Busy
+  // does NOT suppress it (commands are local actions).
+  const slashOpen =
+    !shellMode &&
+    !slashDismissed &&
+    text.startsWith('/') &&
+    !text.slice(1).includes(' ')
+  const slashMatches = useMemo(
+    () => (slashOpen ? filterSlashCommands(text) : []),
+    [slashOpen, text],
+  )
+  const slashList = useMemo(
+    () => slashMatches.map((m) => m.cmd),
+    [slashMatches],
+  )
+  const slashSelClamped = Math.min(slashSel, Math.max(0, slashList.length - 1))
+
+  /** Execute a slash command (menu pick or typed line) — clears the buffer. */
+  const runSlashCommand = async (cmd: SlashCommand, args: string) => {
+    setSlashDismissed(true)
+    setText('')
+    setChips([])
+    try {
+      await cmd.run(args)
+    } catch (e) {
+      useChatStore.getState().appendLocalEntry({
+        kind: 'error',
+        text: `/${cmd.name} 执行失败: ${e instanceof Error ? e.message : String(e)}`,
+      })
+    }
+    taRef.current?.focus()
+  }
+
+  /**
+   * Enter on a `/…` line: matched → execute; unknown → error row, the
+   * input stays for editing and is NEVER sent to the agent (TUI).
+   */
+  const runSlashLine = async (input: string) => {
+    const m = matchSlash(input)
+    if (m) {
+      await runSlashCommand(m.cmd, m.args)
+      return
+    }
+    useChatStore.getState().appendLocalEntry({
+      kind: 'error',
+      text: `未知命令: ${input.split(/\s+/)[0]}。输入 /help 查看可用命令`,
+    })
+  }
+
+  // /model (no args) opens the composer's own model menu.
+  useEffect(() => {
+    registerModelMenuOpener(() => setModelOpen(true))
+    return () => registerModelMenuOpener(null)
+  }, [])
+
+  // Re-arm the menu when the input no longer starts with "/" (fresh
+  // slash reopens; Esc/click dismissals survive continued typing).
+  useEffect(() => {
+    if (!text.startsWith('/')) setSlashDismissed(false)
+  }, [text])
+
+  // Click outside the composer chrome dismisses the slash menu.
+  useEffect(() => {
+    if (!slashOpen) return
+    const onDown = (e: MouseEvent) => {
+      if (
+        composerChromeRef.current &&
+        !composerChromeRef.current.contains(e.target as Node)
+      ) {
+        setSlashDismissed(true)
+      }
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [slashOpen])
 
   /** Expanded image chips → inline thumbnail row above the textarea. */
   const expandedImgs = useMemo(
@@ -978,6 +1069,7 @@ export function Composer() {
           - model · flags caption floats on the bottom border, right-aligned
         */}
         <div
+          ref={composerChromeRef}
           className="relative rounded-[6px] border pt-[4px] pb-[4px] font-ui transition-colors"
           style={{ borderColor }}
           data-prompt-focused={promptFocused ? '1' : '0'}
@@ -1086,6 +1178,17 @@ export function Composer() {
               </div>
             </div>
           )}
+          {/* TUI slash command menu — floats above the composer while the
+              input starts with "/" (fuzzy filter, ↑/↓ + Enter/Tab pick). */}
+          {slashOpen && (
+            <SlashMenu
+              input={text}
+              selected={slashSelClamped}
+              matches={slashMatches}
+              onHover={setSlashSel}
+              onPick={(cmd) => void runSlashCommand(cmd, '')}
+            />
+          )}
           {/* Expanded image chips — inline thumbnails above the textarea
               (TUI Enter expands `[Image #N]` to the rendered image). */}
           {expandedImgs.length > 0 && (
@@ -1169,6 +1272,8 @@ export function Composer() {
                   setText(v)
                   // Typing closes the recall panel (TUI buffer edit).
                   if (histOpen) setHistOpen(false)
+                  // Slash filter changed → selection back to the top row.
+                  setSlashSel(0)
                   // Keep chips in sync with the editable label text.
                   setChips((cs) => pruneChips(v, cs))
                 }}
@@ -1198,6 +1303,14 @@ export function Composer() {
                   if (e.key === 'Backspace' && shellMode && text === '') {
                     e.preventDefault()
                     setShellMode(false)
+                    return
+                  }
+                  // TUI slash menu: Tab executes the highlighted command
+                  // (swallows the global Tab focus-toggle).
+                  if (e.key === 'Tab' && slashOpen && slashList.length > 0) {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    void runSlashCommand(slashList[slashSelClamped], '')
                     return
                   }
                   // TUI prompt history recall: ↑ on an EMPTY input opens
@@ -1230,6 +1343,16 @@ export function Composer() {
                     }
                     // Non-empty input (or ↓): fall through — plain caret
                     // movement + chip edge clamping below.
+                  }
+                  // TUI slash menu: ↑/↓ walk the filtered command list.
+                  if (slashOpen) {
+                    e.preventDefault()
+                    if (e.key === 'ArrowUp') {
+                      setSlashSel((s) => Math.max(0, s - 1))
+                    } else {
+                      setSlashSel((s) => Math.min(s + 1, slashList.length - 1))
+                    }
+                    return
                   }
                   if (histOpen) {
                     if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey) {
@@ -1378,10 +1501,31 @@ export function Composer() {
                       }
                     }
                     e.preventDefault()
+                    // TUI slash commands: `/…` input executes locally and
+                    // is NEVER sent to the agent.
+                    if (!shellMode && text.trimStart().startsWith('/')) {
+                      if (slashOpen && slashList.length > 0) {
+                        // Menu is up: Enter picks the highlighted row.
+                        void runSlashCommand(slashList[slashSelClamped], '')
+                      } else {
+                        // Menu closed (space/dismissed) or no match — the
+                        // typed line goes through matchSlash; unknown →
+                        // error row, input kept for editing.
+                        void runSlashLine(text)
+                      }
+                      return
+                    }
                     void onSubmit()
                     return
                   }
                   if (e.key === 'Escape') {
+                    // Slash menu closes first (swallowed like the panels).
+                    if (slashOpen) {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      setSlashDismissed(true)
+                      return
+                    }
                     // Panels close first; Esc is swallowed so the global
                     // busy-cancel doesn't also fire.
                     if (histOpen) {

@@ -554,7 +554,10 @@ function PromptTime({
   className?: string
   shiftRight?: boolean
 }) {
-  if (ts == null) return null
+  // /timestamps toggle (TUI scrollback_pane show_timestamps) — one gate
+  // here covers every PromptTime call site.
+  const showTimestamps = useChatStore((s) => s.showTimestamps)
+  if (!showTimestamps || ts == null) return null
   return (
     <span
       aria-hidden

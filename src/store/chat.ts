@@ -721,6 +721,9 @@ type ChatState = {
    */
   tasksBarOpen: boolean
   setTasksBarOpen: (open: boolean) => void
+  /** /timestamps — right-aligned prompt timestamps in the scrollback. */
+  showTimestamps: boolean
+  toggleTimestamps: () => void
   /**
    * Scheduled tasks (/loop) of the active session — TUI tasks pane
    * "调度任务" section. Fed by scheduled_task_created / fired / deleted
@@ -903,6 +906,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
   sessionInfoOpen: false,
   tasksBarOpen: false,
   setTasksBarOpen: (open) => set({ tasksBarOpen: open }),
+  showTimestamps: true,
+  toggleTimestamps: () =>
+    set((s) => ({
+      showTimestamps: !s.showTimestamps,
+      statusText: s.showTimestamps ? '时间戳: 关' : '时间戳: 开',
+    })),
   scheduledTasks: [],
   rewindOpen: false,
   openRewind: () => set({ rewindOpen: true }),

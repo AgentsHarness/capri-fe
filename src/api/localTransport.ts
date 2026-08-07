@@ -315,6 +315,18 @@ export class LocalTransport {
     return data
   }
 
+  /** x.ai/set-mode (host /api/set-mode) — switch permission mode (TUI /plan, /normal). */
+  async setMode(modeId: string) {
+    const res = await fetch(this.url('/api/set-mode'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modeId }),
+    })
+    const data = await res.json()
+    if (!res.ok || data.ok === false) throw new Error(data.error || 'set mode failed')
+    return data
+  }
+
   /** x.ai/subagent/cancel. */
   async cancelSubagent(subagentId: string) {
     const res = await fetch(this.url('/api/subagent-cancel'), {
