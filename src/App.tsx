@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useChatStore } from './store/chat'
 import { useThemeStore } from './store/theme'
-import { TopBar } from './components/TopBar'
+import { TopBar, WorkspaceBar } from './components/TopBar'
+import { ErrorBanner } from './components/ErrorBanner'
+import { HistorySidebar } from './components/HistorySidebar'
 import { Scrollback } from './components/Scrollback'
 import { Composer } from './components/Composer'
 import { ApprovalStrip } from './components/ApprovalStrip'
@@ -9,6 +11,7 @@ import { PlanApproval } from './components/PlanApproval'
 import { QuestionModal } from './components/QuestionModal'
 import { McpPanel } from './components/McpPanel'
 import { BlockViewer } from './components/BlockViewer'
+import { SessionInfoModal } from './components/SessionInfoModal'
 import { useScrollbackKeys } from './hooks/useScrollbackKeys'
 
 /**
@@ -31,15 +34,24 @@ export default function App() {
   return (
     <div className="flex h-full min-h-0 flex-col bg-gn-bg-base text-gn-fg font-ui transition-colors duration-150">
       <TopBar onOpenMcp={() => setMcpOpen(true)} />
-      <main className="flex min-h-0 flex-1 flex-col">
-        <Scrollback />
-        <ApprovalStrip />
-        <PlanApproval />
-        <Composer />
-      </main>
+      {/* Host errors / connection warnings — always visible, dismissible. */}
+      <ErrorBanner />
+      <div className="flex min-h-0 flex-1">
+        {/* Persistent desktop history sidebar; mobile history lives in the TopBar dropdown. */}
+        <HistorySidebar />
+        <main className="flex min-h-0 flex-1 flex-col">
+          {/* Workspace + git — scrollback top-left (TUI status-bar left). */}
+          <WorkspaceBar />
+          <Scrollback />
+          <ApprovalStrip />
+          <PlanApproval />
+          <Composer />
+        </main>
+      </div>
       <BlockViewer />
       <QuestionModal />
       <McpPanel open={mcpOpen} onClose={() => setMcpOpen(false)} />
+      <SessionInfoModal />
     </div>
   )
 }

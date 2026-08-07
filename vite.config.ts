@@ -9,9 +9,14 @@ export default defineConfig({
     host: true,
     port: 5173,
     proxy: {
-      // Local mode: forward API/SSE to acp-host
-      '/api': { target: 'http://localhost:8765', changeOrigin: true },
-      '/events': { target: 'http://localhost:8765', changeOrigin: true, ws: false },
+      // Local mode: forward API/SSE to acp-host.
+      // Hub mode: VITE_PROXY_TARGET=http://localhost:8787 npm run dev
+      '/api': { target: process.env.VITE_PROXY_TARGET || 'http://localhost:8765', changeOrigin: true },
+      '/events': {
+        target: process.env.VITE_PROXY_TARGET || 'http://localhost:8765',
+        changeOrigin: true,
+        ws: false,
+      },
     },
   },
 })

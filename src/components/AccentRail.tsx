@@ -67,6 +67,8 @@ export type AccentResolveOpts = {
   // ── specialized entry kinds ──────────────────────────────────────
   subagentStatus?: 'started' | 'completed' | 'failed' | 'cancelled'
   workflowStatus?: 'running' | 'done' | 'failed' | 'cancelled' | 'paused'
+  /** bg_task row status (live rows: running set; history rows: static). */
+  bgTaskStatus?: 'started' | 'completed' | 'failed'
   sessionEvent?: { recap?: boolean; warning?: boolean }
   groupHeader?: {
     variant: 'truncation' | 'verb'
@@ -505,6 +507,11 @@ export function resolveBullet(opts: AccentResolveOpts): BulletPaint {
   if (kind === 'bg_task') {
     if (running) return { color: Accents.running, animated: !pendingFreeze }
     if (failed) return { color: Accents.error }
+    // Historical started row (replay, not captured): keep the live
+    // started look — cyan bullet, static (no spinner — it is settled).
+    if (opts.bgTaskStatus === 'started') {
+      return { color: Accents.running, animated: false }
+    }
     return { color: Accents.success }
   }
 

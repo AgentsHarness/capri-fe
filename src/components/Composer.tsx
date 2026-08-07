@@ -5,14 +5,21 @@ import {
   useState,
   type ClipboardEvent as ReactClipboardEvent,
 } from 'react'
-import { useChatStore } from '../store/chat'
-import { Glyphs } from '../theme/glyphs'
+import { useChatStore, formatTurnDuration, stillRunningCue } from '../store/chat'
+import {
+  Glyphs,
+  MONITOR_PULSE_FRAMES,
+  MONITOR_PULSE_INTERVAL_MS,
+  SPINNER_FRAMES,
+  SPINNER_INTERVAL_MS,
+} from '../theme/glyphs'
 import {
   COMPOSER_BODY_PAD_LEFT_PX,
   CONTENT_COLUMN_CLASS,
   COLUMN_PAD_X_CLASS,
 } from '../theme/layout'
 import { IconGlyph } from './IconGlyph'
+import { fmtTok } from './StatusChips'
 
 /** ── TUI paste-chip port (PromptWidget::handle_paste) ──────────────────
  * Pastes at/above the chip threshold become an atomic `[Pasted: N lines]`
@@ -155,18 +162,139 @@ export function Composer() {
   const cancel = useChatStore((s) => s.cancel)
   const conn = useChatStore((s) => s.conn)
   const usage = useChatStore((s) => s.usage)
-  const hostName = useChatStore((s) => s.hostName)
   const statusText = useChatStore((s) => s.statusText)
+  const awaitingNext = useChatStore((s) => s.awaitingNext)
+  const entries = useChatStore((s) => s.entries)
+  const topTasks = useChatStore((s) => s.topTasks)
+  const tasksBarOpen = useChatStore((s) => s.tasksBarOpen)
+  const setTasksBarOpen = useChatStore((s) => s.setTasksBarOpen)
   const modelName = useChatStore((s) => s.modelName)
   const reasoningEffort = useChatStore((s) => s.reasoningEffort)
-  const sessionTitle = useChatStore((s) => s.sessionTitle)
   const permissionMode = useChatStore((s) => s.permissionMode)
   const yoloMode = useChatStore((s) => s.yoloMode)
   const autoMode = useChatStore((s) => s.autoMode)
   const focusMode = useChatStore((s) => s.focusMode)
+  const turnStartedAt = useChatStore((s) => s.turnStartedAt)
+  const models = useChatStore((s) => s.models)
+  const setModel = useChatStore((s) => s.setModel)
+  const [modelOpen, setModelOpen] = useState(false)
+  const modelRef = useRef<HTMLSpanElement>(null)
+  const modelBtnRef = useRef<HTMLButtonElement>(null)
+  // Fixed-position menu rect so the picker stays inside the viewport on
+  // mobile (absolute + max-h-[320px] was clipped by body { overflow:hidden }
+  // when the composer sat at the bottom edge).
+  const [modelMenuPos, setModelMenuPos] = useState<{
+    bottom: number
+    right: number
+    maxH: number
+    width: number
+  } | null>(null)
   const taRef = useRef<HTMLTextAreaElement>(null)
   const busy = conn === 'busy'
+
+  // Model picker: close on outside click / Escape; pin to viewport.
+  useEffect(() => {
+    if (!modelOpen) {
+      setModelMenuPos(null)
+      return
+    }
+    const place = () => {
+      const btn = modelBtnRef.current
+      if (!btn) return
+      const r = btn.getBoundingClientRect()
+      const pad = 8
+      const gap = 6
+      const vw = window.innerWidth
+      const vh = window.innerHeight
+      // Open upward from the button; clamp height to free space above.
+      const bottom = Math.max(pad, vh - r.top + gap)
+      const maxH = Math.max(120, Math.min(320, r.top - pad))
+      const width = Math.min(288, vw - pad * 2)
+      // Prefer right-align to the button, then shift so left/right stay in view.
+      let left = r.right - width
+      left = Math.max(pad, Math.min(left, vw - pad - width))
+      const right = vw - left - width
+      setModelMenuPos({ bottom, right, maxH, width })
+    }
+    place()
+    const onDown = (e: MouseEvent) => {
+      if (modelRef.current && !modelRef.current.contains(e.target as Node)) {
+        setModelOpen(false)
+      }
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setModelOpen(false)
+    }
+    window.addEventListener('resize', place)
+    // Capture scroll from nested scroll parents (scrollback).
+    window.addEventListener('scroll', place, true)
+    window.addEventListener('mousedown', onDown)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('resize', place)
+      window.removeEventListener('scroll', place, true)
+      window.removeEventListener('mousedown', onDown)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [modelOpen])
+
+  const switchModel = (modelId: string, reasoningEffort?: string) => {
+    setModelOpen(false)
+    void setModel(modelId, reasoningEffort)
+  }
+
+  /** Match current caption effort against a menu row (id or wire value). */
+  const effortActive = (opt: { id: string; value: string }) => {
+    const cur = (reasoningEffort || '').trim().toLowerCase()
+    if (!cur) return false
+    return (
+      cur === opt.value.toLowerCase() ||
+      cur === opt.id.toLowerCase() ||
+      cur === opt.value.replace(/_/g, '').toLowerCase()
+    )
+  }
+
+  const modelActive = (m: { modelId: string; name?: string }) => {
+    const cur = (modelName || '').trim().toLowerCase()
+    if (!cur) return false
+    return (
+      cur === m.modelId.toLowerCase() ||
+      (m.name != null && cur === m.name.trim().toLowerCase())
+    )
+  }
   const promptFocused = focused || focusMode === 'prompt'
+
+  // ── TUI turn status line (turn_status.rs) ──
+  // `⠧ Thinking…  1m20s ⇣12k [stop]` while busy; hidden when idle —
+  // EXCEPT the idle watcher cue ("2 commands still running"): when a turn
+  // is over but background work is live, the line shows the pulsing
+  // monitor cue (persistent status, never a scrollback line — it must not
+  // scroll away). "待处理" lives only on the history sidebar state icons —
+  // not here. Braille spinner at ~7.5fps; the same cadence drives the
+  // turn-timer re-renders and the monitor pulse (half speed).
+  const idleCue = useMemo(() => stillRunningCue(entries, topTasks), [entries, topTasks])
+  const idleCueVisible = !busy && conn === 'ready' && awaitingNext && idleCue != null
+  const statusVisible =
+    busy ||
+    conn === 'connecting' ||
+    conn === 'error' ||
+    conn === 'offline' ||
+    idleCueVisible
+  const [spinnerFrame, setSpinnerFrame] = useState(0)
+  useEffect(() => {
+    if (!statusVisible) return
+    const t = window.setInterval(
+      () => setSpinnerFrame((v) => (v + 1) % SPINNER_FRAMES.length),
+      SPINNER_INTERVAL_MS,
+    )
+    return () => window.clearInterval(t)
+  }, [statusVisible])
+  // TUI MONITOR_PULSE_DIVISOR = 2 × SPINNER_DIVISOR: the idle cue's
+  // `○ ◎ ◉ ◎` breath runs at half the active spinner's cadence.
+  const pulseFrame =
+    Math.floor(
+      spinnerFrame / (MONITOR_PULSE_INTERVAL_MS / SPINNER_INTERVAL_MS),
+    ) % MONITOR_PULSE_FRAMES.length
 
   // Collapse unfocused prompt height (PromptViewConfig.collapse_unfocused)
   const collapsed = !promptFocused && !text
@@ -387,7 +515,7 @@ export function Composer() {
 
   const flags = useMemo(() => {
     const out: { text: string; color?: string }[] = []
-    if (hostName) out.push({ text: hostName })
+    // Host name lives in the top-left switcher (with conn status), not here.
     if (usage?.used != null && usage?.size != null) {
       out.push({ text: `${fmtTok(usage.used)}/${fmtTok(usage.size)}` })
     }
@@ -400,23 +528,92 @@ export function Composer() {
     if (mode && mode !== 'ask' && mode !== 'default') {
       out.push({ text: mode, color: 'var(--color-gn-cyan)' })
     }
-    if (busy) out.push({ text: 'busy', color: 'var(--color-gn-yellow)' })
-    else if (conn === 'error' || conn === 'offline') {
+    // busy / 待处理 live in the history sidebar state icons — not the prompt flags.
+    if (conn === 'error' || conn === 'offline') {
       out.push({ text: statusText || 'offline', color: 'var(--color-gn-red)' })
     }
     return out
-  }, [hostName, usage, busy, conn, statusText, permissionMode, yoloMode, autoMode])
-
-  const title =
-    sessionTitle && sessionTitle.trim() ? sessionTitle.trim() : undefined
+  }, [usage, conn, statusText, permissionMode, yoloMode, autoMode])
 
   return (
     <div className="safe-pb bg-gn-bg-base pt-1">
       <div className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS}`}>
+        {/* ── TUI turn status line (turn_status.rs) ──
+            Busy: `⠧ Thinking…  1m20s ⇣12k [stop]`. Idle with watchers:
+            `○ 2 commands still running` — a persistent status, never a
+            scrollback line. Hidden when truly idle. */}
+        {statusVisible && (
+          <div
+            className="flex min-h-5 items-center gap-1.5 pb-2 pr-0.5 font-ui text-[13.5px] leading-[1.4] select-none"
+            style={{ paddingLeft: COMPOSER_BODY_PAD_LEFT_PX }}
+          >
+            {idleCueVisible ? (
+              // TUI idle watcher cue (turn_status.rs idle arm): pulsing
+              // monitor icon + counts label. Click toggles the sticky
+              // task bar (the TUI opens the tasks pane on click).
+              <>
+                <button
+                  type="button"
+                  onClick={() => setTasksBarOpen(!tasksBarOpen)}
+                  className="group inline-flex min-w-0 items-center gap-1.5 text-left"
+                  title="查看运行中的任务"
+                >
+                  {/* Icon slot on the scrollback icon track — same 15px
+                      inset as the composer ❯, lining up with SVG icons. */}
+                  <span className="inline-flex w-[1.25em] shrink-0 items-center justify-center leading-none text-gn-accent-system">
+                    {MONITOR_PULSE_FRAMES[pulseFrame]}
+                  </span>
+                  <span className="truncate text-gn-gray group-hover:text-gn-fg">
+                    {idleCue}
+                  </span>
+                </button>
+                <span className="flex-1" />
+              </>
+            ) : (
+              <>
+                <span className="inline-flex w-[1.25em] shrink-0 items-center justify-center leading-none text-gn-muted">
+                  {busy || conn === 'connecting' ? (
+                    SPINNER_FRAMES[spinnerFrame]
+                  ) : (
+                    <span className="h-[7px] w-[7px] rounded-full bg-gn-red" />
+                  )}
+                </span>
+                <span
+                  className={`truncate ${
+                    conn === 'error' || conn === 'offline'
+                      ? 'text-gn-red'
+                      : 'text-gn-muted'
+                  }`}
+                >
+                  {statusText}
+                </span>
+                <span className="flex-1" />
+                {busy && turnStartedAt != null && (
+                  <span className="tabular-nums text-gn-gray">
+                    {formatTurnDuration(Date.now() - turnStartedAt)}
+                  </span>
+                )}
+                {busy && usage?.used != null && (
+                  <span className="tabular-nums text-gn-gray">
+                    ⇣{fmtTok(usage.used)}
+                  </span>
+                )}
+                {busy && (
+                  <button
+                    type="button"
+                    onClick={() => void cancel()}
+                    className="rounded px-1.5 py-[2px] text-gn-gray hover:bg-gn-bg-highlight hover:text-gn-red min-h-6 sm:min-h-0"
+                  >
+                    [stop]
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+        )}
         {/*
           PromptWidget chrome — rounded border box:
           - border + radius on the container (focus recolors via borderColor)
-          - session title floats on the top border (断线)
           - model · flags caption floats on the bottom border, right-aligned
         */}
         <div
@@ -429,29 +626,16 @@ export function Composer() {
             taRef.current?.focus()
           }}
         >
-          {/* Session title on the top border (断线). */}
-          {title ? (
-            <div
-              className="pointer-events-none absolute -top-[5px] left-1/2 max-w-[50%] -translate-x-1/2 truncate px-1.5 text-[11px] leading-none"
-              style={{
-                color: captionColor,
-                background: 'var(--color-gn-bg-base)',
-              }}
-              title={title}
-            >
-              {title}
-            </div>
-          ) : null}
-
           {/* ── Body: ❯ textarea ──
-              Content pad-left = ICON_COL_INSET (15px) so ❯ shares the
-              scrollback icon track. */}
+              The prompt frame has a 1px border, so the body inset must be
+              ICON_COL_INSET - 1 for the ❯ box to land exactly on the
+              scrollback icon track (matches the turn-status spinner). */}
           <div
             className={`flex min-w-0 items-start gap-1.5 pr-3 ${
               collapsed ? 'py-0' : 'py-1'
             }`}
             style={{
-              paddingLeft: COMPOSER_BODY_PAD_LEFT_PX,
+              paddingLeft: COMPOSER_BODY_PAD_LEFT_PX - 1,
               // Unfocused dim (blend_area 0.66 toward bg) for content only
               opacity: promptFocused ? 1 : 0.72,
             }}
@@ -476,6 +660,13 @@ export function Composer() {
                 }}
                 onBlur={() => setFocused(false)}
                 onKeyDown={(e) => {
+                  // IME composition (Chinese pinyin etc.): Enter commits the
+                  // candidate and Backspace edits the composition — hand
+                  // composition keys through untouched or Enter would send
+                  // mid-composition. isComposing only (spec flag, all modern
+                  // browsers): keyCode 229 lingers on some Chromium builds
+                  // after composition ends and would swallow plain Enter.
+                  if (e.nativeEvent.isComposing) return
                   const el = taRef.current
                   // Chip atomicity: a directional move that lands inside a
                   // chip label is clamped to the edge it came from (TUI
@@ -656,41 +847,139 @@ export function Composer() {
                 spellCheck={false}
                 className="gn-no-scrollbar min-h-[20px] flex-1 resize-none bg-transparent font-ui text-[13.5px] leading-[1.55] text-gn-fg outline-none placeholder:text-gn-gray"
               />
-              {busy ? (
-                <button
-                  type="button"
-                  onClick={() => void cancel()}
-                  className="ml-1 shrink-0 self-end rounded px-2 py-0.5 text-[11px] text-gn-yellow hover:bg-gn-bg-hover min-h-8 sm:min-h-0"
-                >
-                  esc
-                </button>
-              ) : null}
             </div>
 
-          {/* Model + flags on the bottom border (断线), right-aligned. */}
+          {/* Model + flags on the bottom border (断线), right-aligned.
+              Model menu uses position:fixed (viewport-pinned) so it is not
+              clipped by body overflow on mobile. Flags get their own truncate. */}
           <div
-            className="pointer-events-none absolute -bottom-[5px] right-2 flex max-w-[75%] items-center gap-0 truncate px-1 text-[11px] leading-none"
+            className="pointer-events-none absolute -bottom-[5px] right-2 flex max-w-[75%] items-center gap-0 text-[11px] leading-none"
             style={{
               background: 'var(--color-gn-bg-base)',
             }}
             title={[modelLabel, ...flags.map((f) => f.text)].join(' · ')}
           >
-            <span style={{ color: captionColor }} className="truncate">
-              {modelLabel}
-            </span>
-            {flags.map((f, i) => (
-              <span key={i} className="inline-flex items-center">
-                <span style={{ color: sepColor }} className="px-1">
-                  {Glyphs.middleDot}
-                </span>
-                <span
-                  className="truncate"
-                  style={{ color: f.color || flagColor }}
+            <span ref={modelRef} className="relative z-30 inline-flex shrink-0">
+              <button
+                ref={modelBtnRef}
+                type="button"
+                onClick={() => setModelOpen((v) => !v)}
+                className="pointer-events-auto max-w-[220px] truncate rounded px-0.5 transition-colors hover:bg-gn-bg-highlight"
+                style={{ color: captionColor }}
+                title={`${modelLabel} · 点击切换模型`}
+              >
+                {modelLabel}
+              </button>
+              {modelOpen && models.length > 0 && modelMenuPos && (
+                <div
+                  className="pointer-events-auto fixed z-50 overflow-y-auto rounded border border-gn-prompt-border-active bg-gn-bg-base shadow-2xl"
+                  style={{
+                    bottom: modelMenuPos.bottom,
+                    right: modelMenuPos.right,
+                    maxHeight: modelMenuPos.maxH,
+                    width: modelMenuPos.width,
+                  }}
                 >
-                  {f.text}
+                  <div className="sticky top-0 z-10 border-b border-gn-prompt-border bg-gn-bg-dark px-3 py-1.5 text-[11px] font-bold text-gn-fg2">
+                    切换模型
+                  </div>
+                  {models.map((m) => {
+                    const efforts = m.reasoningEfforts ?? []
+                    const active = modelActive(m)
+                    const defEffort =
+                      efforts.find((e) => e.default) ?? efforts[0]
+                    return (
+                      <div
+                        key={m.modelId}
+                        className={`border-b border-gn-prompt-border/40 px-3 py-1.5 ${
+                          active ? 'bg-gn-bg-highlight/60' : ''
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() =>
+                            switchModel(
+                              m.modelId,
+                              // Keep current effort when re-picking same model
+                              // if still offered; else fall back to default.
+                              active && reasoningEffort
+                                ? efforts.find(
+                                    (e) =>
+                                      e.value === reasoningEffort ||
+                                      e.id === reasoningEffort,
+                                  )?.value ?? defEffort?.value
+                                : defEffort?.value,
+                            )
+                          }
+                          className="block w-full text-left hover:opacity-90"
+                        >
+                          <span
+                            className={`text-[12px] font-medium ${
+                              active ? 'text-gn-magenta' : 'text-gn-fg'
+                            }`}
+                          >
+                            {m.name || m.modelId}
+                          </span>
+                          {m.agentType && (
+                            <span className="ml-1.5 text-[10px] text-gn-muted">
+                              {m.agentType}
+                            </span>
+                          )}
+                          {m.description && (
+                            <div className="mt-0.5 text-[10px] leading-[1.4] text-gn-muted">
+                              {m.description}
+                            </div>
+                          )}
+                        </button>
+                        {efforts.length > 0 && (
+                          <div className="mt-1.5 flex flex-wrap gap-1">
+                            {efforts.map((e) => {
+                              const on = active && effortActive(e)
+                              return (
+                                <button
+                                  key={e.id || e.value}
+                                  type="button"
+                                  onClick={() =>
+                                    switchModel(m.modelId, e.value)
+                                  }
+                                  title={
+                                    e.label !== e.value
+                                      ? `${e.label} (${e.value})`
+                                      : e.value
+                                  }
+                                  className={`rounded border px-1.5 py-[2px] text-[10px] leading-none transition-colors ${
+                                    on
+                                      ? 'border-gn-prompt-border-active bg-gn-bg-hover text-gn-magenta'
+                                      : 'border-gn-prompt-border text-gn-muted hover:border-gn-prompt-border-active hover:bg-gn-bg-highlight hover:text-gn-fg'
+                                  }`}
+                                >
+                                  {e.label || e.value}
+                                </button>
+                              )
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </span>
+            <span className="flex min-w-0 items-center truncate">
+              {flags.map((f, i) => (
+                <span key={i} className="inline-flex items-center">
+                  <span style={{ color: sepColor }} className="px-1">
+                    {Glyphs.middleDot}
+                  </span>
+                  <span
+                    className="truncate"
+                    style={{ color: f.color || flagColor }}
+                  >
+                    {f.text}
+                  </span>
                 </span>
-              </span>
-            ))}
+              ))}
+            </span>
           </div>
 
           {/* Paste preview overlay (TUI render_preview_overlay) — floats
@@ -718,18 +1007,7 @@ export function Composer() {
           )}
         </div>
 
-        {/* Shortcuts hint — separate from prompt chrome (TUI shortcuts_bar lives elsewhere) */}
-        <div className="mt-0.5 hidden px-1 text-[10px] text-gn-gutter sm:flex sm:justify-end">
-          enter send · tab scrollback · ←/→ fold · enter view · esc cancel
-          {chips.length > 0 ? ' · enter on [Pasted] chip expands' : ''}
-        </div>
       </div>
     </div>
   )
-}
-
-function fmtTok(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
-  return String(n)
 }

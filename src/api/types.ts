@@ -9,6 +9,8 @@ export type HostInfo = {
   online: boolean
   ready?: boolean
   local?: boolean
+  /** Hub registry liveness timestamp (hub mode). */
+  lastSeen?: string
 }
 
 export type SessionInfo = {
@@ -17,6 +19,117 @@ export type SessionInfo = {
   title?: string
   updatedAt?: string
   meta?: unknown
+  /**
+   * Host-side live state (multi-session dashboard): derived by acp-host
+   * from in-flight turns (active) + pending client requests (awaiting).
+   */
+  status?: {
+    state: 'active' | 'awaiting' | 'idle'
+    busy?: boolean
+    awaitingInput?: boolean
+    lastActiveAt?: number
+  }
+  /**
+   * [bg] badge census — host scan of the session's persisted updates:
+   * hasTasks (any task/scheduled event), bgCount (task_backgrounded
+   * events), bgRunning (backgrounded without a completion in the file
+   * AND whose output log was written recently — liveness-probed).
+   */
+  hasTasks?: boolean
+  bgCount?: number
+  bgRunning?: number
+}
+
+/**
+ * One still-running task event (POST /api/session-running-tasks) — the
+ * host scan of updates.jsonl, liveness-probed (task_backgrounded orphans
+ * whose output log is held open by a live process). Mirrors the wire
+ * update fields so the FE can reuse its live task handler for replay.
+ */
+export type TaskTimelineEvent = {
+  timestamp?: number
+  kind: 'task_backgrounded'
+  taskId?: string
+  command?: string
+  description?: string
+  monitorDescription?: string
+  outputFile?: string
+  cwd?: string
+  /** Liveness-probed: the process is (very likely) still running. */
+  running?: boolean
+}
+
+/**
+ * One restored running task — the top task strip's state row. Populated
+ * at session resume from the host's liveness probe; NOT a scrollback
+ * entry (no scrollback pollution), lives only in the top strip and
+ * updates via live task events.
+ */
+export type TopTask = {
+  taskId: string
+  title: string
+  command?: string
+  isMonitor?: boolean
+  /** Absolute path to the on-disk log (wire output_file). */
+  outputFile?: string
+  /** Restored from the persisted timeline (host liveness probe). */
+  restored?: boolean
+}
+
+/**
+ * POST /api/session-info response — authoritative live details of the
+ * active session, served by the host on demand (TUI /session-info analog).
+ */
+export type SessionInfoDetail = {
+  sessionId: string
+  title?: string
+  cwd?: string
+  updatedAt?: string
+  /** Dashboard classification: active / awaiting / idle. */
+  state?: 'active' | 'awaiting' | 'idle'
+  busy?: boolean
+  model?: {
+    modelId: string
+    name?: string
+    reasoningEffort?: string
+    /** Model meta.totalContextTokens — context-bar total fallback. */
+    contextWindow?: number
+  }
+  contextUsed?: number
+  contextSize?: number
+  gitBranch?: string
+  gitIsWorktree?: boolean
+  gitMainRepo?: string
+  hostId: string
+  hostName: string
+  homeDir?: string
+}
+
+/** One effort row from model `_meta.reasoningEfforts` (or built-in fallback). */
+export type ReasoningEffortOption = {
+  /** Menu id (may remap, e.g. "deep" → wire "xhigh"). */
+  id: string
+  /** Display label (falls back to id/value). */
+  label: string
+  /** Canonical wire value sent as `_meta.reasoningEffort`. */
+  value: string
+  default?: boolean
+}
+
+/** One entry of agentInfo._meta.modelState.availableModels. */
+export type ModelOption = {
+  modelId: string
+  name?: string
+  description?: string
+  agentType?: string
+  /** Current/default effort on this model (from meta). */
+  reasoningEffort?: string
+  /** Whether the model advertises supportsReasoningEffort. */
+  supportsReasoningEffort?: boolean
+  /** Selectable effort levels (empty when unsupported). */
+  reasoningEfforts?: ReasoningEffortOption[]
+  /** Model context window tokens (meta.totalContextTokens) — TUI context bar total. */
+  contextWindow?: number
 }
 
 export type PendingReq = {
@@ -43,35 +156,100 @@ export type AcpEvent =
       ready?: boolean
       busy?: boolean
       sessionId?: string
+      /** Active session workspace (host snapshot; empty pre-session). */
+      cwd?: string
       text?: string
       error?: string
       hostId?: string
       hostName?: string
+      /** Hub-level hello (acp-hub): carries the registry instead of a host snapshot. */
+      service?: 'hub'
+      hosts?: HostInfo[]
+      defaultHostId?: string
+      /** User home dir — for "~/…" path shortening (TUI status bar). */
+      homeDir?: string
       agentInfo?: unknown
       modes?: unknown
+      /** SessionModelState from the active session (currentModelId + catalog). */
+      models?: unknown
+      configOptions?: unknown
       pendingRequests?: PendingReq[]
       capabilities?: unknown
     }
   | {
       type: 'ready'
       sessionId?: string
+      /** Active session workspace (session/new | session/load). */
+      cwd?: string
       hostId?: string
       hostName?: string
       agentInfo?: unknown
       modes?: unknown
+      /** SessionModelState from session/new or session/load. */
+      models?: unknown
+      configOptions?: unknown
     }
-  | { type: 'chunk'; text: string; messageId?: string }
+  | { type: 'chunk'; text: string; messageId?: string; ts?: number }
   | { type: 'user_chunk'; text: string }
-  /** Aggregated user message replayed from session history. */
-  | { type: 'user_message'; text: string }
-  | { type: 'thought'; text: string }
+  | {
+      type: 'task_lifecycle'
+      /**
+       * Stored task lifecycle event rendered from history replay with the
+       * SAME look as live bg_task rows (Task started / completed / failed)
+       * — but NOT captured into the task system: no bgTaskIndex entry,
+       * never running, no kill button, no ⠋N / running-bar membership.
+       */
+      kind: 'started' | 'completed'
+      taskId?: string
+      title: string
+      command?: string
+      isMonitor?: boolean
+      /** task_completed with non-zero exit / signal → failed look. */
+      failed?: boolean
+      /** Completion snapshot output (block viewer). */
+      output?: string
+    }
+  /**
+   * Aggregated user message (history replay or live user_chunk).
+   * `isCron` matches TUI UserPromptBlock::cron (scheduled /loop fire).
+   */
+  | { type: 'user_message'; text: string; ts?: number; isCron?: boolean }
+  | {
+      type: 'thought'
+      text: string
+      /**
+       * Server-reported original duration (ms) carried by history replay:
+       * `_meta.agentTimestampMs - streamStartMs` of the persisted envelope.
+       * Without it the replayed thought seals against the replay wall-clock
+       * (~0ms) and renders a bogus "Thought for 0.0s" (TUI
+       * ThinkingBlock::streaming_replay parity).
+       */
+      elapsedMs?: number
+    }
   | { type: 'tool_call'; toolCall: ToolCall }
   | { type: 'tool_call_update'; toolCallUpdate: ToolCall }
   | { type: 'plan'; entries: unknown }
-  | { type: 'usage'; used?: number; size?: number; cost?: unknown }
+  | {
+      type: 'usage'
+      used?: number
+      size?: number
+      cost?: unknown
+      /** Standard TurnCompleted/ResponseCompleted usage object (passed
+          through untouched by the host). totalTokens is the turn-accumulated
+          count; the frontend separates it from the context-window `used`. */
+      usage?: {
+        totalTokens?: number
+        total_tokens?: number
+        inputTokens?: number
+        outputTokens?: number
+        [key: string]: unknown
+      }
+    }
   | { type: 'busy' }
   | { type: 'done'; stopReason?: string }
   | { type: 'cancelled' }
+  /** Turn-end marker replayed from stored history (turn_completed). */
+  | { type: 'turn_completed' }
   | { type: 'error'; message: string }
   | { type: 'status'; text: string }
   | { type: 'log'; text: string }
@@ -127,6 +305,8 @@ export type AcpEvent =
   | { type: 'mcp_tools_changed'; params?: Record<string, unknown> }
   | { type: 'mcp_servers_updated'; params?: Record<string, unknown> }
   | { type: 'sessions_changed'; params?: Record<string, unknown> }
+  /** Hub-level: a host paired / came online / dropped off (acp-hub). */
+  | { type: 'hosts_changed'; params?: Record<string, unknown> }
   | { type: 'models_update'; params?: Record<string, unknown> }
   | { type: 'announcements_update'; params?: Record<string, unknown> }
   | { type: 'scheduled_task_fired'; params?: Record<string, unknown> }
@@ -172,8 +352,22 @@ export type ScrollEntry =
       text: string
       /** Expanded past COLLAPSED_MAX_LINES (TUI DisplayMode::Expanded). */
       expanded?: boolean
+      /** Prompt send time (epoch ms) — TUI right-aligned prompt timestamp. */
+      ts?: number
+      /**
+       * Scheduled task (/loop) fire — TUI UserPromptBlock::is_cron.
+       * Renders with ↻ prefix; body is the raw prompt (system-reminder stripped).
+       */
+      isCron?: boolean
     }
-  | { id: string; kind: 'assistant'; text: string; streaming?: boolean }
+  | {
+      id: string
+      kind: 'assistant'
+      text: string
+      streaming?: boolean
+      /** Response start time (epoch ms) — TUI right-aligned message timestamp. */
+      ts?: number
+    }
   | {
       id: string
       kind: 'thought'
@@ -183,6 +377,13 @@ export type ScrollEntry =
       elapsed?: string
       startedAt?: number
       finishedAt?: number
+      /**
+       * Server-reported original duration (ms) from the persisted envelope
+       * `_meta` (agentTimestampMs - streamStartMs) — replay only. Prefer
+       * over the local `startedAt` timer when sealing so reloaded history
+       * keeps the real "Thought for Xs" instead of ~0s.
+       */
+      elapsedMs?: number
     }
   | {
       id: string
@@ -230,6 +431,18 @@ export type ScrollEntry =
       finishedAt?: number
       /** task_id from x.ai/task_backgrounded. */
       taskId?: string
+      /** Shell command (wire `command`). */
+      command?: string
+      /** Absolute path to the on-disk log (wire `output_file`). */
+      outputFile?: string
+      /** True when the task came from a `monitor_description`/`[monitor]` (TUI Watchers group). */
+      isMonitor?: boolean
+      /**
+       * Accumulated stdout for the block viewer (TUI BgTask viewer).
+       * Filled from monitor_event, task_completed snapshot, and
+       * on-demand x.ai/task/list polls.
+       */
+      output?: string
     }
   | {
       id: string
@@ -239,8 +452,7 @@ export type ScrollEntry =
       warning?: boolean
       streaming?: boolean
       open?: boolean
-    }
-  | { id: string; kind: 'credit_limit'; text: string }
+    }  | { id: string; kind: 'credit_limit'; text: string }
   | {
       id: string
       kind: 'group_header'

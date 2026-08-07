@@ -34,7 +34,7 @@ export function useScrollbackKeys() {
 
       // Ctrl+F → OpenBlockViewer (TUI alt_keys for OpenBlockViewer)
       if (e.ctrlKey && (e.key === 'f' || e.key === 'F')) {
-        if (store0.viewerEntryId) return
+        if (store0.viewerEntryId || store0.viewerTask) return
         const target = e.target as HTMLElement | null
         const inField =
           !!target &&
@@ -58,7 +58,7 @@ export function useScrollbackKeys() {
 
       // Viewer open: only Esc is handled here (BlockViewer also listens);
       // don't steal other keys from the dialog.
-      if (store0.viewerEntryId) {
+      if (store0.viewerEntryId || store0.viewerTask) {
         if (e.key === 'Escape') {
           e.preventDefault()
           store0.closeViewer()

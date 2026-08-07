@@ -25,7 +25,34 @@ export const Glyphs = {
   middleDot: '·',
   /** Tooltip for the CSS short-tick rail. */
   collapsedAccent: '❙',
+  /**
+   * Scheduled-task (/loop) prompt prefix — TUI UserPromptBlock::cron uses
+   * U+21BB (↻). Rendered as plain text (no SVG path) via IconGlyph fallback.
+   */
+  cronPrompt: '\u21BB',
 } as const
+
+/**
+ * TUI braille spinner frames (xai-grok-pager-render/glyphs.rs).
+ * Used by the turn-status line (busy) and history sidebar (active).
+ */
+export const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'] as const
+
+/** Spinner cadence — ~7.5 fps, matches TUI turn_status. */
+export const SPINNER_INTERVAL_MS = 133
+
+/**
+ * TUI idle watcher pulse frames (glyphs.rs monitor_icon_frames):
+ * `○ ◎ ◉ ◎` — the concentric-circle "breath" leading the still-running
+ * cue. Exactly 1 column per frame so the label never shifts.
+ */
+export const MONITOR_PULSE_FRAMES = ['○', '◎', '◉', '◎'] as const
+
+/**
+ * Monitor pulse cadence — half the turn spinner's rate (~3.75 fps),
+ * matching TUI turn_status MONITOR_PULSE_DIVISOR (8 ticks vs 4).
+ */
+export const MONITOR_PULSE_INTERVAL_MS = 266
 
 /**
  * Tool header verbs matching VerbGroupKind::verb + individual tool headers.

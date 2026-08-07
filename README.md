@@ -1,12 +1,13 @@
 # acp-fe
 
-Vite + React + Tailwind 前端：通过 **Local** 模式连接本机 `acp-host`，展示 ACP 流式对话与工具卡片。
+Vite + React + Tailwind 前端：连接本机 `acp-host`（Local 模式）或 `acp-hub`（Hub 多 Host 模式），展示 ACP 流式对话与工具卡片。
 
 ## 设计要点
 
 - **不执行** fs/terminal —— 工具由 Host 上的 Agent 自行执行
 - UI 只渲染 `session/update`（消息 / 思考 / tool_call）与可选权限审批
-- Host 选择器已预埋（当前仅 Local 单 Host；多 Host 走 `acp-hub`）
+- **Host 选择器**（TopBar 左上）：Hub 模式下列出所有已配对 Host，点击切换；选择持久化在 `localStorage`，首次自动选 Hub 默认 Host（或本地 Host）
+- Hub 模式下 API 调用带 `?host=<hostId>`（acp-host 忽略该参数，Local 模式不受影响）；`/events` 事件按 `hostId` 过滤，hub 级事件（`hello`、`hosts_changed`）始终透传
 
 ## x.ai 扩展（对齐 Grok Build TUI）
 
@@ -25,7 +26,7 @@ Host 侧对应实现见 `acp-host/internal/acp/bridge.go`（通知转发、请�
 ## 开发
 
 ```bash
-# 终端 1 — Host
+# 终端 1 — Host（本地模式）
 cd ../acp-host && go run ./cmd/acp-host
 
 # 终端 2 — 前端
@@ -36,12 +37,26 @@ npm run dev
 
 打开 http://localhost:5173 。Vite 已将 `/api`、`/events` 代理到 `http://localhost:8765`。
 
+## Hub 多 Host 模式
+
+```bash
+# 终端 1 — Hub
+cd ../acp-hub && go run ./cmd/acp-hub          # :8787，日志打印配对码
+
+# 终端 2..N — 每台机器一个 Host
+cd ../acp-host && HUB_URL=http://<hub>:8787 HUB_PAIR_CODE=<code> go run ./cmd/acp-host
+
+# 终端 M — 前端指向 Hub
+VITE_PROXY_TARGET=http://localhost:8787 npm run dev
+```
+
+打开 http://localhost:5173 后从左上角选择 Host。
+
 ## 环境
 
 | 变量 | 说明 |
 |------|------|
-| （默认） | 经 Vite proxy 连本机 Host |
-| 未来 `VITE_HUB_URL` | Hub 模式（未实现） |
+| `VITE_PROXY_TARGET` | Vite 代理目标；默认 `http://localhost:8765`（本机 Host），Hub 模式设为 `http://localhost:8787` |
 
 ## 栈
 

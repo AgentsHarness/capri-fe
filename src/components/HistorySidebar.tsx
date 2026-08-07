@@ -1,0 +1,182 @@
+import { useEffect, useMemo, useState } from 'react'
+import { useChatStore } from '../store/chat'
+import { fmtTime, groupAccentClass, groupByState, sessionGroupKey } from './historyGroups'
+import { Glyphs } from '../theme/glyphs'
+import { IconGlyph } from './IconGlyph'
+import { SessionStateIcon, stateLabel, useSessionSpinner } from './SessionStateIcon'
+
+/**
+ * Desktop (lg+) history sidebar — persistent, grouped by live status
+ * (处理中 / 待处理 / 空闲). Each status group is collapsible. The mobile
+ * counterpart remains the top-bar dropdown. The list is fetched on mount
+ * and kept fresh by the host's sessions_changed notifications.
+ */
+export function HistorySidebar() {
+  const sessions = useChatStore((s) => s.sessions)
+  const sessionId = useChatStore((s) => s.sessionId)
+  const historyLoading = useChatStore((s) => s.historyLoading)
+  const lastViewedAt = useChatStore((s) => s.lastViewedAt)
+  const openedAt = useChatStore((s) => s.openedAt)
+  const continueSession = useChatStore((s) => s.continueSession)
+  const refreshSessions = useChatStore((s) => s.refreshSessions)
+  const requestRecap = useChatStore((s) => s.requestRecap)
+  const openSessionInfo = useChatStore((s) => s.openSessionInfo)
+  const forkSession = useChatStore((s) => s.forkSession)
+  const renameSession = useChatStore((s) => s.renameSession)
+  const groups = useMemo(
+    () => groupByState(sessions, { currentSessionId: sessionId, lastViewedAt, openedAt }),
+    [sessions, sessionId, lastViewedAt, openedAt],
+  )
+
+  /** Collapsed status groups — click header to toggle. */
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
+  const toggleGroup = (key: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  // Shared braille spinner for any "active" rows (same cadence as busy).
+  const anyActive = useMemo(
+    () =>
+      sessions.some((s) =>
+        sessionGroupKey(s, { currentSessionId: sessionId, lastViewedAt, openedAt }) === 'active',
+      ),
+    [sessions, sessionId, lastViewedAt, openedAt],
+  )
+  const spinnerFrame = useSessionSpinner(anyActive)
+
+  useEffect(() => {
+    void refreshSessions()
+  }, [refreshSessions])
+
+  return (
+    <aside className="hidden w-72 shrink-0 flex-col bg-gn-bg-base lg:flex">
+      {/* Session actions (x.ai ext methods). */}
+      <div className="flex items-center gap-1 border-b border-gn-prompt-border px-2 py-1.5">
+        <button
+          type="button"
+          onClick={() => void requestRecap()}
+          className="rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+          title="x.ai/recap — 生成「我在哪」摘要"
+        >
+          recap
+        </button>
+        <button
+          type="button"
+          onClick={() => void openSessionInfo()}
+          className="rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+          title="x.ai/session-info — 查看当前会话信息"
+        >
+          session-info
+        </button>
+        <button
+          type="button"
+          onClick={() => void forkSession()}
+          className="rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+          title="x.ai/session/fork — 从当前会话派生新会话"
+        >
+          fork
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            const title = window.prompt('新会话标题：')
+            if (title && title.trim()) void renameSession(title.trim())
+          }}
+          className="rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+          title="x.ai/session/rename"
+        >
+          rename
+        </button>
+      </div>
+
+      <div className="gn-no-scrollbar flex-1 overflow-y-auto">
+        <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-gn-gutter">
+          history · 点击继续对话
+        </div>
+        {groups.length === 0 && (
+          <div className="px-3 py-2 text-[11px] text-gn-muted">没有历史会话</div>
+        )}
+        {groups.map((g) => {
+          const isCollapsed = collapsed.has(g.key)
+          return (
+            <div key={g.key}>
+              {/* Status group header — sticky, click to collapse/expand. */}
+              <button
+                type="button"
+                onClick={() => toggleGroup(g.key)}
+                className="sticky top-0 z-10 flex w-full cursor-pointer items-center gap-2 border-b border-gn-prompt-border bg-gn-bg-base px-3 py-1 text-left hover:bg-gn-bg-highlight"
+                title={isCollapsed ? `展开${g.label}会话` : `收起${g.label}会话`}
+              >
+                <span className="shrink-0 text-gn-gutter" aria-hidden>
+                  <IconGlyph glyph={isCollapsed ? Glyphs.chevron : Glyphs.chevronDown} />
+                </span>
+                <span
+                  className={`min-w-0 truncate text-[10.5px] font-medium tracking-wide ${groupAccentClass(g.key)}`}
+                >
+                  {g.label}
+                </span>
+                <span className="shrink-0 text-[10px] tabular-nums text-gn-gutter">
+                  {g.items.length}
+                </span>
+              </button>
+              {!isCollapsed &&
+                g.items.map((s) => {
+                  const active = s.sessionId === sessionId
+                  // Row icon follows its bucket: 处理中 spinner / 后台任务
+                  // ◇ + bg badge / 待处理 blue diamond / 空闲 hollow ◇.
+                  const key = sessionGroupKey(s, { currentSessionId: sessionId, lastViewedAt, openedAt })
+                  const state = key === 'active' ? 'active' : 'idle'
+                  const pending = key === 'awaiting'
+                  return (
+                    <button
+                      key={s.sessionId}
+                      type="button"
+                      disabled={historyLoading}
+                      onClick={() => void continueSession(s.sessionId, s.cwd || '')}
+                      className={`flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-gn-bg-highlight disabled:opacity-50 ${active ? 'bg-gn-bg-highlight' : ''}`}
+                      title={`${s.title || s.sessionId.slice(0, 12)} · ${stateLabel(key)}${s.cwd ? ` · ${s.cwd}` : ''}`}
+                    >
+                      <SessionStateIcon
+                        state={state}
+                        pending={pending}
+                        spinnerFrame={spinnerFrame}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span
+                          className={`block truncate text-[12px] ${active ? 'text-gn-cyan' : 'text-gn-fg'}`}
+                        >
+                          {s.title || s.sessionId.slice(0, 12)}
+                        </span>
+                        <span className="block truncate font-mono text-[10px] text-gn-muted">
+                          {s.updatedAt ? fmtTime(s.updatedAt) : ''}
+                        </span>
+                      </span>
+                      {((s.bgRunning ?? 0) > 0) && (
+                        <span
+                          className="shrink-0 rounded border border-gn-gutter/70 px-1 font-mono text-[9px] leading-[13px] text-gn-muted"
+                          title={`该会话有 ${s.bgRunning} 个仍在运行的后台任务（历史共 ${s.bgCount ?? 0} 个）`}
+                        >
+                          bg
+                        </span>
+                      )}
+                      {active && (
+                        <span className="shrink-0 text-[9px] text-gn-cyan">当前</span>
+                      )}
+                    </button>
+                  )
+                })}
+            </div>
+          )
+        })}
+        {historyLoading && (
+          <div className="px-3 py-2 text-[11px] text-gn-muted">加载中…</div>
+        )}
+      </div>
+    </aside>
+  )
+}

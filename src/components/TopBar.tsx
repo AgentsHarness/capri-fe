@@ -1,8 +1,115 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useChatStore } from '../store/chat'
+import { ThemePicker } from './ThemePicker'
+import { fmtTime, groupAccentClass, groupByState, sessionGroupKey } from './historyGroups'
 import { Glyphs } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
-import { ThemePicker } from './ThemePicker'
+import { SessionStateIcon, stateLabel, useSessionSpinner } from './SessionStateIcon'
+import {
+  ContextChip,
+  GoalChip,
+  RunningChip,
+  RunningTasksBar,
+  filterRunningEntries,
+  TodoChip,
+  shortCwd,
+} from './StatusChips'
+
+/**
+ * Workspace + git + status chips — the whole TUI status-bar row (branch +
+ * `~`-shortened cwd on the left, ⠋N / goal / context / todo on the right).
+ * Click ⠋N toggles the sticky {@link RunningTasksBar} under the bar.
+ */
+export function WorkspaceBar() {
+  const gitInfo = useChatStore((s) => s.gitInfo)
+  const cwd = useChatStore((s) => s.cwd)
+  const homeDir = useChatStore((s) => s.homeDir)
+  const usage = useChatStore((s) => s.usage)
+  const goalState = useChatStore((s) => s.goalState)
+  const todos = useChatStore((s) => s.todos)
+  const entries = useChatStore((s) => s.entries)
+  const topTasks = useChatStore((s) => s.topTasks)
+  const models = useChatStore((s) => s.models)
+  const modelName = useChatStore((s) => s.modelName)
+
+  // ⠋N toggles sticky task list (also opened by the composer's idle
+  // still-running cue — shared store flag). Auto-open when the first task
+  // appears (TUI opened_by_auto); user hide stays until they click again
+  // or all tasks finish and a new one starts. Restored top-strip tasks
+  // count.
+  const tasksOpen = useChatStore((s) => s.tasksBarOpen)
+  const setTasksBarOpen = useChatStore((s) => s.setTasksBarOpen)
+  const prevCount = useRef(0)
+  const runningCount = filterRunningEntries(entries).length + topTasks.length
+  useEffect(() => {
+    if (runningCount > 0 && prevCount.current === 0) {
+      setTasksBarOpen(true)
+    }
+    if (runningCount === 0) {
+      setTasksBarOpen(false)
+    }
+    prevCount.current = runningCount
+  }, [runningCount, setTasksBarOpen])
+
+  // z-30 above scrollback sticky user prompt (z-10) so todo/goal
+  // dropdowns aren't covered when the sticky header is pinned.
+  return (
+    <div className="sticky top-0 z-30 shrink-0 bg-gn-bg-base">
+      <div className="flex min-w-0 items-center gap-2 px-3 py-1 text-[14px] select-none sm:px-4">
+        {/* Git head (x.ai/git_head_changed) — TUI status-bar branch. */}
+        {gitInfo?.branch ? (
+          <span
+            className="flex min-w-0 max-w-[24vw] items-center gap-1 truncate font-mono text-[13px] text-gn-cyan"
+            title={
+              gitInfo.isWorktree
+                ? `${gitInfo.branch} · worktree${gitInfo.mainRepo ? ` of ${gitInfo.mainRepo}` : ''}`
+                : gitInfo.branch
+            }
+          >
+            <span className="shrink-0 text-gn-cyan" aria-hidden>
+              ⎇
+            </span>
+            <span className="truncate">{gitInfo.branch}</span>
+            {gitInfo.isWorktree && <span className="shrink-0 text-gn-gutter">wt</span>}
+          </span>
+        ) : null}
+
+        {/* Active session workspace — TUI status-bar path, `~`-shortened. */}
+        {cwd ? (
+          <span
+            className="flex min-w-0 max-w-[38vw] items-center truncate font-mono text-[13px] text-gn-gray-dim sm:max-w-[52vw]"
+            title={cwd}
+          >
+            {shortCwd(cwd, homeDir)}
+          </span>
+        ) : null}
+
+        <div className="flex-1" />
+
+        {/* ⠋N toggles sticky task list · goal · context · todo */}
+        <RunningChip
+          entries={entries}
+          topTasks={topTasks}
+          open={tasksOpen}
+          onToggle={() => setTasksBarOpen(!tasksOpen)}
+        />
+        <GoalChip goalState={goalState} contextUsed={usage?.used} />
+        <ContextChip
+          used={usage?.used}
+          size={
+            usage?.size ??
+            (models.find((m) => m.name === modelName)?.contextWindow ??
+              models[0]?.contextWindow)
+          }
+          turnTokens={usage?.turnTokens}
+        />
+        <TodoChip todos={todos} goalState={goalState} />
+      </div>
+      {/* Sticky task rows under the bar (not a floating popup). */}
+      <RunningTasksBar entries={entries} topTasks={topTasks} open={tasksOpen} />
+    </div>
+  )
+}
 
 /**
  * Minimal top chrome — closer to TUI status (gray on bg_base) than a fat web header.
@@ -10,13 +117,15 @@ import { ThemePicker } from './ThemePicker'
  * (fork / rename / recap) live off the x.ai extension surface.
  */
 export function TopBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
-  const conn = useChatStore((s) => s.conn)
-  const statusText = useChatStore((s) => s.statusText)
   const hostName = useChatStore((s) => s.hostName)
   const hostId = useChatStore((s) => s.hostId)
   const hosts = useChatStore((s) => s.hosts)
+  const selectedHostId = useChatStore((s) => s.selectedHostId)
+  const switchHost = useChatStore((s) => s.switchHost)
+  const conn = useChatStore((s) => s.conn)
+  const hostError = useChatStore((s) => s.error)
+  const hostNotice = useChatStore((s) => s.statusWarning)
   const sessionId = useChatStore((s) => s.sessionId)
-  const cancel = useChatStore((s) => s.cancel)
   const newSession = useChatStore((s) => s.newSession)
   const sessions = useChatStore((s) => s.sessions)
   const historyOpen = useChatStore((s) => s.historyOpen)
@@ -24,137 +133,161 @@ export function TopBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
   const openHistory = useChatStore((s) => s.openHistory)
   const closeHistory = useChatStore((s) => s.closeHistory)
   const continueSession = useChatStore((s) => s.continueSession)
-  const gitInfo = useChatStore((s) => s.gitInfo)
   const forkSession = useChatStore((s) => s.forkSession)
   const renameSession = useChatStore((s) => s.renameSession)
   const requestRecap = useChatStore((s) => s.requestRecap)
+  const openSessionInfo = useChatStore((s) => s.openSessionInfo)
+  const lastViewedAt = useChatStore((s) => s.lastViewedAt)
+  const openedAt = useChatStore((s) => s.openedAt)
+  const historyGroups = useMemo(
+    () => groupByState(sessions, { currentSessionId: sessionId, lastViewedAt, openedAt }),
+    [sessions, sessionId, lastViewedAt, openedAt],
+  )
+
+  /** Collapsed status groups in the mobile dropdown (处理中/后台任务/待处理/空闲). */
+  const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(new Set())
+  const toggleGroup = (key: string) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
   const [openHosts, setOpenHosts] = useState(false)
 
-  const dot =
-    conn === 'ready'
-      ? 'bg-gn-green shadow-[0_0_6px_rgba(158,206,106,.5)]'
-      : conn === 'busy'
-        ? 'bg-gn-yellow shadow-[0_0_6px_rgba(224,175,104,.5)] animate-pulse'
-        : conn === 'error'
-          ? 'bg-gn-red'
-          : 'bg-gn-muted animate-pulse'
+  // Shared braille spinner for "active" rows in the mobile dropdown.
+  const anyActive = useMemo(
+    () =>
+      sessions.some((s) =>
+        sessionGroupKey(s, { currentSessionId: sessionId, lastViewedAt, openedAt }) === 'active',
+      ),
+    [sessions, sessionId, lastViewedAt, openedAt],
+  )
+  const spinnerFrame = useSessionSpinner(anyActive)
+
+  // Host label reflects connection health: abnormal → "connecting" / "error".
+  // An active host status message (error / connection warning) replaces the
+  // label so it is always visible right where the host is named.
+  const notice = hostError || hostNotice
+  const hostLabel = notice
+    ? `⚠ ${notice}`
+    : conn === 'connecting'
+      ? 'connecting'
+      : conn === 'error' || conn === 'offline'
+        ? 'error'
+        : hostName || 'Local Host'
+  const hostLabelColor = notice
+    ? hostError
+      ? 'text-gn-red'
+      : 'text-gn-warning'
+    : conn === 'connecting'
+      ? 'text-gn-muted'
+      : conn === 'error' || conn === 'offline'
+        ? 'text-gn-red'
+        : ''
 
   return (
-    <header className="flex shrink-0 items-center gap-2 border-b border-gn-prompt-border bg-gn-bg-dark px-3 py-[6px] sm:px-4 text-[12px] text-gn-muted select-none">
-      <span className="font-semibold tracking-wide text-gn-magenta">
-        grok <b className="font-semibold text-gn-fg">build</b>
-      </span>
-      <span className="text-gn-gray-dim">|</span>
-
-      <div className="relative min-w-0">
-        <button
-          type="button"
-          onClick={() => setOpenHosts((v) => !v)}
-          className="flex max-w-[46vw] sm:max-w-xs items-center gap-1 truncate rounded px-1.5 py-0.5 hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
-        >
-          <span className="truncate">{hostName || 'Local Host'}</span>
-          <span className="text-gn-gutter">▾</span>
-        </button>
-        {openHosts && (
-          <>
-            <button
-              type="button"
-              className="fixed inset-0 z-30 cursor-default"
-              aria-label="close"
-              onClick={() => setOpenHosts(false)}
-            />
-            <div className="absolute left-0 top-full z-40 mt-1 w-64 max-w-[90vw] rounded border border-gn-prompt-border bg-gn-bg-base shadow-xl py-1">
-              <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-gn-gutter">
-                hosts
-              </div>
-              {(hosts.length
-                ? hosts
-                : [{ hostId: hostId || 'local', hostName: hostName || 'Local Host', online: true }]
-              ).map((h) => (
-                <div
-                  key={h.hostId}
-                  className="flex items-center gap-2 px-3 py-2 text-[12px] hover:bg-gn-bg-highlight"
-                >
-                  <span
-                    className={`h-1.5 w-1.5 rounded-full ${h.online ? 'bg-gn-green' : 'bg-gn-muted'}`}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-gn-fg">{h.hostName}</div>
-                    <div className="truncate font-mono text-[10px] text-gn-muted">{h.hostId}</div>
-                  </div>
+    <header className="select-none bg-gn-bg-base">
+      {/* Main row: host switcher + actions. */}
+      <div className="flex shrink-0 items-center gap-2 px-3 py-[6px] sm:px-4 text-[12px] text-gn-muted">
+        <div className="relative min-w-0">
+          <button
+            type="button"
+            onClick={() => setOpenHosts((v) => !v)}
+            className={`flex max-w-[46vw] sm:max-w-xs items-center gap-1 truncate rounded px-1.5 py-0.5 hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8 ${hostLabelColor}`}
+            title={
+              notice
+                ? `${notice}${hostName ? ` · ${hostName}` : ''}`
+                : conn === 'connecting' || conn === 'error' || conn === 'offline'
+                  ? `连接状态: ${conn}${hostName ? ` · ${hostName}` : ''}`
+                  : hostName || 'Local Host'
+            }
+          >
+            <span className="truncate">{hostLabel}</span>
+            <span className="text-gn-gutter">▾</span>
+          </button>
+          {openHosts && (
+            <>
+              <button
+                type="button"
+                className="fixed inset-0 z-30 cursor-default"
+                aria-label="close"
+                onClick={() => setOpenHosts(false)}
+              />
+              <div className="absolute left-0 top-full z-40 mt-1 w-64 max-w-[90vw] rounded border border-gn-prompt-border bg-gn-bg-base shadow-xl py-1">
+                <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-gn-gutter">
+                  hosts
                 </div>
-              ))}
-              <div className="border-t border-gn-prompt-border px-3 py-2 text-[11px] text-gn-muted leading-snug">
-                Multi-host via Hub · currently local only
+                {(hosts.length
+                  ? hosts
+                  : [{ hostId: hostId || 'local', hostName: hostName || 'Local Host', online: true }]
+                ).map((h) => {
+                  const current = h.hostId === selectedHostId
+                  return (
+                    <button
+                      key={h.hostId}
+                      type="button"
+                      onClick={() => {
+                        setOpenHosts(false)
+                        void switchHost(h.hostId)
+                      }}
+                      className={`flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] hover:bg-gn-bg-highlight ${current ? 'bg-gn-bg-highlight' : ''}`}
+                      title={h.online ? `切换到 ${h.hostName}` : `${h.hostName}（离线）`}
+                    >
+                      <span
+                        className={`h-1.5 w-1.5 shrink-0 rounded-full ${h.online ? 'bg-gn-green' : 'bg-gn-muted'}`}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-gn-fg">
+                          {h.hostName}
+                          {current && <span className="ml-1.5 text-[10px] text-gn-cyan">当前</span>}
+                        </div>
+                        <div className="truncate font-mono text-[10px] text-gn-muted">{h.hostId}</div>
+                      </div>
+                    </button>
+                  )
+                })}
+                <div className="border-t border-gn-prompt-border px-3 py-2 text-[11px] text-gn-muted leading-snug">
+                  {hosts.length > 1 || (hosts.length === 1 && !hosts[0].local)
+                    ? '经 acp-hub 中转 · 点击切换 Host'
+                    : '本地模式 · 直连 acp-host'}
+                </div>
               </div>
-            </div>
-          </>
+            </>
+          )}
+        </div>
+
+        <div className="flex-1" />
+
+        <ThemePicker />
+        {onOpenMcp && (
+          <button
+            type="button"
+            onClick={onOpenMcp}
+            className="rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+            title="MCP 服务器状态"
+          >
+            mcp
+          </button>
         )}
-      </div>
-
-      {/* Git head (x.ai/git_head_changed) — TUI status-bar branch. */}
-      {gitInfo?.branch ? (
-        <span
-          className="hidden max-w-[24vw] items-center gap-1 truncate rounded px-1.5 py-0.5 font-mono text-[11px] text-gn-cyan sm:flex"
-          title={
-            gitInfo.isWorktree
-              ? `${gitInfo.branch} · worktree${gitInfo.mainRepo ? ` of ${gitInfo.mainRepo}` : ''}`
-              : gitInfo.branch
-          }
-        >
-          <span className="text-gn-cyan" aria-hidden>
-            ⎇
-          </span>
-          <span className="truncate">{gitInfo.branch}</span>
-          {gitInfo.isWorktree && <span className="text-gn-gutter">wt</span>}
-        </span>
-      ) : null}
-
-      <div className="flex-1" />
-
-      <span className={`h-[7px] w-[7px] shrink-0 rounded-full ${dot}`} title={statusText} />
-      <span className="hidden max-w-[14rem] truncate md:inline">{statusText}</span>
-      {sessionId && (
-        <span className="hidden font-mono text-[10px] text-gn-gutter lg:inline">
-          {sessionId.slice(0, 8)}
-        </span>
-      )}
-
-      {conn === 'busy' && (
         <button
           type="button"
-          onClick={() => void cancel()}
-          className="rounded border border-transparent px-2 py-0.5 text-gn-red hover:border-gn-red hover:bg-gn-bg-highlight min-h-8"
-        >
-          <span className="mr-1 inline-flex items-center">
-            <IconGlyph glyph={Glyphs.ballotX} color="currentColor" />
-          </span>
-          cancel
-        </button>
-      )}
-      <ThemePicker />
-      {onOpenMcp && (
-        <button
-          type="button"
-          onClick={onOpenMcp}
+          onClick={() => void newSession()}
           className="rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
-          title="MCP 服务器状态"
         >
-          mcp
+          new
         </button>
-      )}
-      <button
-        type="button"
-        onClick={() => void newSession()}
-        className="rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
-      >
-        new
-      </button>
-      <div className="relative">
+        {/* Mobile-only history trigger — desktop history lives in the persistent left sidebar. */}
+        <div className="relative lg:hidden">
         <button
           type="button"
           onClick={() => (historyOpen ? closeHistory() : void openHistory())}
-          className="rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+          className={`rounded border px-2 py-0.5 min-h-8 ${
+            historyOpen
+              ? 'border-gn-prompt-border bg-gn-bg-highlight text-gn-fg'
+              : 'border-transparent hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg'
+          }`}
           title="加载历史会话"
         >
           history
@@ -167,6 +300,7 @@ export function TopBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
               aria-label="close"
               onClick={closeHistory}
             />
+            {/* Mobile dropdown — desktop history lives in the left sidebar. */}
             <div className="absolute right-0 top-full z-40 mt-1 max-h-[70vh] w-80 max-w-[92vw] overflow-y-auto rounded border border-gn-prompt-border bg-gn-bg-base shadow-xl py-1">
               {/* Session actions (x.ai ext methods). */}
               <div className="flex items-center gap-1 border-b border-gn-prompt-border px-2 py-1.5">
@@ -180,6 +314,17 @@ export function TopBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
                   title="x.ai/recap — 生成「我在哪」摘要"
                 >
                   recap
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    closeHistory()
+                    void openSessionInfo()
+                  }}
+                  className="rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                  title="x.ai/session-info — 查看当前会话信息"
+                >
+                  session-info
                 </button>
                 <button
                   type="button"
@@ -208,40 +353,89 @@ export function TopBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
               <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-gn-gutter">
                 history · 点击继续对话
               </div>
-              {sessions.length === 0 && (
+              {historyGroups.length === 0 && (
                 <div className="px-3 py-2 text-[11px] text-gn-muted">没有历史会话</div>
               )}
-              {sessions.map((s) => (
-                <button
-                  key={s.sessionId}
-                  type="button"
-                  disabled={historyLoading}
-                  onClick={() => void continueSession(s.sessionId, s.cwd || '')}
-                  className="block w-full px-3 py-2 text-left hover:bg-gn-bg-highlight disabled:opacity-50"
-                  title="切换到此会话并继续对话"
-                >
-                  <div className="truncate text-[12px] text-gn-fg">
-                    {s.title || s.sessionId.slice(0, 12)}
+              {historyGroups.map((g) => {
+                const isCollapsed = collapsedGroups.has(g.key)
+                return (
+                  <div key={g.key}>
+                    {/* Status group header — sticky, click to collapse/expand. */}
+                    <button
+                      type="button"
+                      onClick={() => toggleGroup(g.key)}
+                      className="sticky top-0 z-10 flex w-full cursor-pointer items-center gap-2 border-y border-gn-prompt-border bg-gn-bg-base px-3 py-1 text-left hover:bg-gn-bg-highlight"
+                      title={isCollapsed ? `展开${g.label}会话` : `收起${g.label}会话`}
+                    >
+                      <span className="shrink-0 text-gn-gutter" aria-hidden>
+                        <IconGlyph glyph={isCollapsed ? Glyphs.chevron : Glyphs.chevronDown} />
+                      </span>
+                      <span
+                        className={`min-w-0 truncate text-[10.5px] font-medium tracking-wide ${groupAccentClass(g.key)}`}
+                      >
+                        {g.label}
+                      </span>
+                      <span className="shrink-0 text-[10px] tabular-nums text-gn-gutter">
+                        {g.items.length}
+                      </span>
+                    </button>
+                    {!isCollapsed &&
+                      g.items.map((s) => {
+                        const active = s.sessionId === sessionId
+                        // Row icon follows its bucket: 处理中 spinner /
+                        // 后台任务 ◇ + bg badge / 待处理 blue diamond / 空闲 hollow ◇.
+                        const key = sessionGroupKey(s, { currentSessionId: sessionId, lastViewedAt, openedAt })
+                        const state = key === 'active' ? 'active' : 'idle'
+                        const pending = key === 'awaiting'
+                        return (
+                          <button
+                            key={s.sessionId}
+                            type="button"
+                            disabled={historyLoading}
+                            onClick={() => void continueSession(s.sessionId, s.cwd || '')}
+                            className={`flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-gn-bg-highlight disabled:opacity-50 ${active ? 'bg-gn-bg-highlight' : ''}`}
+                            title={`${s.title || s.sessionId.slice(0, 12)} · ${stateLabel(key)}${s.cwd ? ` · ${s.cwd}` : ''}`}
+                          >
+                            <SessionStateIcon
+                              state={state}
+                              pending={pending}
+                              spinnerFrame={spinnerFrame}
+                            />
+                            <span className="min-w-0 flex-1">
+                              <span
+                                className={`block truncate text-[12px] ${active ? 'text-gn-cyan' : 'text-gn-fg'}`}
+                              >
+                                {s.title || s.sessionId.slice(0, 12)}
+                              </span>
+                              <span className="block truncate font-mono text-[10px] text-gn-muted">
+                                {s.updatedAt ? fmtTime(s.updatedAt) : ''}
+                              </span>
+                            </span>
+                            {((s.bgRunning ?? 0) > 0) && (
+                              <span
+                                className="shrink-0 rounded border border-gn-gutter/70 px-1 font-mono text-[9px] leading-[13px] text-gn-muted"
+                                title={`该会话有 ${s.bgRunning} 个仍在运行的后台任务（历史共 ${s.bgCount ?? 0} 个）`}
+                              >
+                                bg
+                              </span>
+                            )}
+                            {active && (
+                              <span className="shrink-0 text-[9px] text-gn-cyan">当前</span>
+                            )}
+                          </button>
+                        )
+                      })}
                   </div>
-                  <div className="truncate font-mono text-[10px] text-gn-muted">
-                    {s.updatedAt ? fmtTime(s.updatedAt) : ''}
-                    {s.cwd ? ` · ${s.cwd}` : ''}
-                  </div>
-                </button>
-              ))}
+                )
+              })}
               {historyLoading && (
                 <div className="px-3 py-2 text-[11px] text-gn-muted">加载中…</div>
               )}
             </div>
           </>
         )}
+        </div>
       </div>
     </header>
   )
-}
-
-function fmtTime(iso: string): string {
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return iso
-  return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
 }

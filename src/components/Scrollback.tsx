@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
-import { useChatStore } from '../store/chat'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import { planTodos, useChatStore } from '../store/chat'
 import type { ScrollEntry } from '../api/types'
 import { Glyphs, toolHeader } from '../theme/glyphs'
+import { todoMark } from './StatusChips'
 import {
   ICON_COL_CLASS,
   DENSE_ROW_CLASS,
@@ -145,6 +146,11 @@ function entryFailed(e: ScrollEntry): boolean {
 const USER_COLLAPSED_MAX_LINES = 3
 /** Conservative content width for foldability estimate (TUI MIN_CONTENT_WIDTH). */
 const USER_MIN_CONTENT_WIDTH = 60
+/** Pause between scroll-up page loads (also shields the anchor-restore
+ *  scroll event from chaining the next page immediately). */
+const TOP_PAGE_COOLDOWN_MS = 400
+/** Touch swipe distance (px) that counts as a scroll-up gesture. */
+const TOUCH_UP_SWIPE_PX = 8
 
 /**
  * Estimate visual line count for a user prompt (wrap-aware, matches TUI
@@ -358,6 +364,9 @@ function accentOpts(
   if (e.kind === 'workflow') {
     return { ...base, workflowStatus: e.status }
   }
+  if (e.kind === 'bg_task') {
+    return { ...base, bgTaskStatus: e.status }
+  }
   if (e.kind === 'session_event') {
     return {
       ...base,
@@ -499,24 +508,66 @@ function Bullet({
   color,
   animated,
   glyph = Glyphs.diamondFilled,
+  className = '',
 }: {
   color: string
   animated?: boolean
   glyph?: string
+  className?: string
 }) {
-  return <IconGlyph glyph={glyph} color={color} animated={animated} />
+  return (
+    <IconGlyph glyph={glyph} color={color} animated={animated} className={className} />
+  )
 }
 
-function EntryView({
-  e,
-  selected,
-  pendingFreeze,
-  now,
-  dense = false,
-  denseNext = false,
-  densePrev = false,
-  inGroup = false,
+/** TUI prompt timestamp (scrollback_pane show_timestamps): "20:31". */
+function formatPromptTime(ts: number): string {
+  return new Date(ts).toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+}
+
+/** TUI hover expansion: "08/06 20:31:45". */
+function formatPromptTimeFull(ts: number): string {
+  const d = new Date(ts)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+/**
+ * TUI right-aligned message timestamp overlay (scrollback_pane
+ * show_timestamps): short form always, expands to "HH:MM:SS | Mon D" on
+ * hover. Absolutely positioned (pointer-events-none) so the wider hover
+ * form never reflows the message content — it covers it, as in the TUI.
+ * Parent needs `group relative`; `className` supplies the top offset and
+ * `shiftRight` clears a right-edge chevron (12px), keeping the same 8px
+ * base margin from the edge in both cases.
+ */
+function PromptTime({
+  ts,
+  className = '',
+  shiftRight = false,
 }: {
+  ts?: number
+  className?: string
+  shiftRight?: boolean
+}) {
+  if (ts == null) return null
+  return (
+    <span
+      aria-hidden
+      className={`pointer-events-none absolute text-[11px] leading-none text-gn-gray ${className}`}
+      style={{ right: shiftRight ? 20 : 8 }}
+    >
+      <span className="group-hover:hidden">{formatPromptTime(ts)}</span>
+      <span className="hidden group-hover:inline">{formatPromptTimeFull(ts)}</span>
+    </span>
+  )
+}
+
+type EntryViewProps = {
   e: ScrollEntry
   selected: boolean
   pendingFreeze: boolean
@@ -525,7 +576,44 @@ function EntryView({
   denseNext?: boolean
   densePrev?: boolean
   inGroup?: boolean
-}) {
+}
+
+/** Whether an entry is inside its finish-flash window (needs clock ticks). */
+function entryFlashActive(e: ScrollEntry, now: number): boolean {
+  if (e.kind !== 'tool' && e.kind !== 'thought') return false
+  const fa = e.finishedAt
+  return fa != null && now - fa < FINISH_FLASH_MS
+}
+
+/**
+ * Memo comparator: entries only re-render when their own data changes;
+ * `now` clock ticks are ignored unless the entry is mid finish-flash
+ * (the tick that expires the flash still re-renders via the prev check).
+ */
+function entryViewEqual(prev: EntryViewProps, next: EntryViewProps): boolean {
+  return (
+    prev.e === next.e &&
+    prev.selected === next.selected &&
+    prev.pendingFreeze === next.pendingFreeze &&
+    prev.dense === next.dense &&
+    prev.denseNext === next.denseNext &&
+    prev.densePrev === next.densePrev &&
+    prev.inGroup === next.inGroup &&
+    (prev.now === next.now ||
+      (!entryFlashActive(prev.e, prev.now) && !entryFlashActive(next.e, next.now)))
+  )
+}
+
+const EntryView = memo(function EntryView({
+  e,
+  selected,
+  pendingFreeze,
+  now,
+  dense = false,
+  denseNext = false,
+  densePrev = false,
+  inGroup = false,
+}: EntryViewProps) {
   const toggleTool = useChatStore((s) => s.toggleTool)
   const toggleThought = useChatStore((s) => s.toggleThought)
   const toggleUser = useChatStore((s) => s.toggleUser)
@@ -589,8 +677,9 @@ function EntryView({
   const rowBtn = dense ? DENSE_ROW_CLASS : HEADER_ROW_CLASS
 
   if (e.kind === 'user') {
-    // UserPromptBlock: full-width bg_light band, accent_user ❯ prefix,
-    // continuation indent, optional collapse to 3 visual lines + " …".
+    // UserPromptBlock: full-width bg_light band, accent_user ❯ prefix
+    // (↻ for is_cron scheduled /loop fires), continuation indent, optional
+    // collapse to 3 visual lines + " …".
     const foldable = userIsFoldable(e.text)
     const expanded = entryExpanded(e)
     const { text: body, truncated } = expanded
@@ -601,6 +690,11 @@ function EntryView({
       ? 'color-mix(in srgb, var(--color-gn-bg-highlight) 70%, var(--color-gn-bg-hover))'
       : 'var(--color-gn-bg-highlight)'
     const lines = body.split('\n')
+    // Collapse chevron sits at the right edge; the time overlay shifts left
+    // of it so the two never cover each other.
+    const chevronShown = foldable && (selected || hovered) && !expanded
+    // TUI: is_bash → "$ ", is_cron → "↻  ", else prompt_arrow.
+    const prefixGlyph = e.isCron ? Glyphs.cronPrompt : Glyphs.promptArrow
     return (
       <EntryShell {...shell} bandBg={band}>
         <button
@@ -617,13 +711,20 @@ function EntryView({
             ev.preventDefault()
             onHeaderDblClick()
           }}
-          className="flex w-full min-w-0 items-start gap-1.5 py-[5px] text-left font-ui text-[13.5px] leading-[1.55]"
-          title="click fold · dblclick / enter view"
+          className="group relative flex w-full min-w-0 items-start gap-1.5 py-[11px] text-left font-ui text-[13.5px] leading-[1.35]"
+          title={
+            e.isCron
+              ? 'scheduled task · click fold · dblclick / enter view'
+              : 'click fold · dblclick / enter view'
+          }
         >
-          {/* Same icon column as tool/thought bullets so ❯ / ◆ / › line up. */}
+          {/* Same icon column as tool/thought bullets so ❯ / ↻ / ◆ / › line up.
+              Icon box is 1.2em@13px = 15.6px; first text line is 13.5px×1.35 ≈ 18.2px.
+              mt-[1.5px] centers prefix on the first line (items-start keeps multiline top-aligned). */}
           <Bullet
             color="var(--color-gn-accent-user)"
-            glyph={Glyphs.promptArrow}
+            glyph={prefixGlyph}
+            className="mt-[1.5px]"
           />
           <div className="min-w-0 flex-1 text-gn-fg">
             {lines.map((line, i) => (
@@ -638,7 +739,10 @@ function EntryView({
               <span className="sr-only"> (collapsed, expand with →)</span>
             )}
           </div>
-          {foldable && (selected || hovered) && !expanded && (
+          {/* TUI right-aligned prompt time (scrollback_pane show_timestamps);
+              absolute overlay: hover expansion never reflows the message. */}
+          <PromptTime ts={e.ts} className="top-[14.5px]" shiftRight={chevronShown} />
+          {chevronShown && (
             <span
               className="ml-1 shrink-0 self-start text-[12px] text-gn-gray-dim"
               aria-hidden
@@ -654,7 +758,15 @@ function EntryView({
   if (e.kind === 'assistant') {
     return (
       <EntryShell {...shell}>
-        <Markdown source={e.text} streaming={e.streaming} />
+        {/* Reserve the short-form time's width (TUI ts_reserved=10 cols; sm:
+            only — the time itself is hidden on mobile) so text never runs
+            under it; the hover expansion still overlays content by design. */}
+        <div className="group relative min-w-0 sm:pr-9">
+          <Markdown source={e.text} />
+          {/* TUI right-aligned message time; tool/thought blocks get none.
+              Hidden on mobile (sm: = desktop), unlike user prompt times. */}
+          <PromptTime ts={e.ts} className="top-[3.5px] hidden sm:inline" />
+        </div>
       </EntryShell>
     )
   }
@@ -832,14 +944,39 @@ function EntryView({
   }
 
   if (e.kind === 'plan') {
+    // TUI todo pane: plan updates render as a structured todo list
+    // (status mark + content), not the raw wire JSON.
+    const items = planTodos(e.entries).items
     return (
       <EntryShell {...shell}>
-        <div className="text-[12px] font-bold mb-1" style={{ color: Accents.plan }}>
+        <div className="mb-1 text-[12px] font-bold" style={{ color: Accents.plan }}>
           Plan
         </div>
-        <pre className="text-[11px] text-gn-muted font-mono whitespace-pre-wrap">
-          {JSON.stringify(e.entries, null, 2)}
-        </pre>
+        {items.length === 0 ? (
+          <div className="text-[11px] text-gn-muted">（空计划）</div>
+        ) : (
+          <div className="space-y-[2px]">
+            {items.map((t, i) => (
+              <div key={t.id ?? i} className="flex items-start gap-2 text-[12.5px] leading-snug">
+                <span className="mt-[1px] shrink-0 font-mono text-[11px]" aria-hidden>
+                  {todoMark(t.status)}
+                </span>
+                <span
+                  className={`min-w-0 flex-1 break-words ${
+                    t.status === 'completed' || t.status === 'cancelled'
+                      ? 'text-gn-muted'
+                      : 'text-gn-fg'
+                  }`}
+                >
+                  {t.content}
+                </span>
+                {t.priority && (
+                  <span className="shrink-0 text-[10px] text-gn-gutter">{t.priority}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </EntryShell>
     )
   }
@@ -858,7 +995,7 @@ function EntryView({
     const cancelSubagent = useChatStore((s) => s.cancelSubagent)
     return (
       <EntryShell {...shell}>
-        <div className="flex items-center gap-1.5 py-[2px] text-[13px] leading-[1.35]">
+        <div className={`flex items-center gap-1.5 ${dense ? 'py-0' : 'py-[2px]'} text-[13px] leading-[1.35]`}>
           <Bullet color={bullet.color} animated={bullet.animated} />
           <span className="font-bold" style={{ color: bullet.color }}>
             {label}
@@ -900,7 +1037,7 @@ function EntryView({
               : 'Workflow cancelled'
     return (
       <EntryShell {...shell}>
-        <div className="flex items-center gap-1.5 py-[2px] text-[13px] leading-[1.35]">
+        <div className={`flex items-center gap-1.5 ${dense ? 'py-0' : 'py-[2px]'} text-[13px] leading-[1.35]`}>
           <Bullet color={bullet.color} animated={bullet.animated} />
           <span className="font-bold" style={{ color: bullet.color }}>
             {label}
@@ -914,25 +1051,41 @@ function EntryView({
   }
 
   if (e.kind === 'bg_task') {
-    const label =
+    // TUI: "Task started: {description|command}" — bold "Task", name is primary.
+    // Double-click / Enter → block viewer with live stdout (TUI OpenBlockViewer).
+    // Dense-aware inner padding: dense rows pack at 0 gap like tool rows
+    // (EntryShell dense spacing), so consecutive task rows don't leave an
+    // uneven 4px seam (visible in history pairs: started + completed).
+    const verb =
       e.status === 'started'
-        ? 'Background'
+        ? 'started'
         : e.status === 'completed'
-          ? 'Background done'
-          : 'Background failed'
+          ? 'completed'
+          : 'failed'
     const killTask = useChatStore((s) => s.killTask)
     return (
       <EntryShell {...shell}>
-        <div className="flex items-center gap-1.5 py-[2px] text-[13px] leading-[1.35]">
+        <div
+          className={`flex cursor-pointer items-center gap-1.5 ${dense ? 'py-0' : 'py-[2px]'} text-[13px] leading-[1.35]`}
+          title="dblclick / enter · view stdout"
+          onDoubleClick={(ev) => {
+            ev.stopPropagation()
+            ev.preventDefault()
+            onHeaderDblClick()
+          }}
+        >
           <Bullet color={bullet.color} animated={bullet.animated} />
           <span className="font-bold" style={{ color: bullet.color }}>
-            {label}
+            Task
           </span>
-          <span className="min-w-0 truncate font-mono text-[12.5px] text-gn-muted">
+          <span className="text-gn-muted">{verb}:</span>
+          <span className="min-w-0 truncate font-mono text-[12.5px] text-gn-fg">
             {e.title}
           </span>
           {e.detail && (
-            <span className="text-[11px] text-gn-gutter truncate">{e.detail}</span>
+            <span className="text-[11px] text-gn-gutter truncate" title={e.detail}>
+              {e.detail}
+            </span>
           )}
           {e.running && e.taskId && (
             <button
@@ -1010,7 +1163,7 @@ function EntryView({
   }
 
   return null
-}
+}, entryViewEqual)
 
 /** True when any entry is mid finish-flash and needs a clock tick. */
 function needsFlashClock(entries: ScrollEntry[], now: number): boolean {
@@ -1064,7 +1217,88 @@ export function Scrollback() {
   const bottomRef = useRef<HTMLDivElement>(null)
   const boxRef = useRef<HTMLDivElement>(null)
   const followRef = useRef(true)
+  // ── Scroll-up paging gates (see maybeLoadOlderHistory) ──────────
+  const topPageArmedRef = useRef(true)
+  const topPageCooldownRef = useRef(0)
+  // Touch gesture tracking (swipe down = scroll up toward older history).
+  const touchStartYRef = useRef<number | null>(null)
+  const touchYRef = useRef<number | null>(null)
   const [now, setNow] = useState(() => Date.now())
+
+  // ── TUI sticky prompt header (scrollback/sticky.rs) ──────────────
+  // The last user prompt whose top has scrolled past the viewport top is
+  // pinned as a sticky header; it switches as you scroll. Tracked via
+  // scroll position against the user entries' container-space tops.
+  const userById = useMemo(() => {
+    const m = new Map<string, ScrollEntry>()
+    for (const e of entries) if (e.kind === 'user') m.set(e.id, e)
+    return m
+  }, [entries])
+  const userEls = useRef<Map<string, HTMLElement>>(new Map())
+  const [pinnedId, setPinnedId] = useState<string | null>(null)
+
+  const updatePinned = useCallback(() => {
+    const box = boxRef.current
+    const els = userEls.current
+    if (!box || els.size === 0) {
+      setPinnedId(null)
+      return
+    }
+    let pinned: string | null = null
+    // sticky.rs: pin the last prompt with y_virtual < scroll_offset; at the
+    // very top (scrollTop 0) nothing is pinned.
+    if (box.scrollTop > 0) {
+      const boxTop = box.getBoundingClientRect().top
+      for (const [id, el] of els) {
+        // Entry top in the container's coordinate space (scroll-independent).
+        const top = el.getBoundingClientRect().top - boxTop + box.scrollTop
+        if (top < box.scrollTop) pinned = id
+        else break // entries are in document order
+      }
+    }
+    setPinnedId(pinned)
+  }, [])
+
+  // Cache user entry elements (rebuilt on entry changes; positions shift on
+  // history prepend / expand-collapse / resize, so recompute the pin then).
+  useEffect(() => {
+    const box = boxRef.current
+    const map = new Map<string, HTMLElement>()
+    if (box) {
+      for (const id of userById.keys()) {
+        const el = box.querySelector(`[data-entry-id="${id}"]`)
+        if (el instanceof HTMLElement) map.set(id, el)
+      }
+    }
+    userEls.current = map
+    updatePinned()
+  }, [userById, updatePinned, historyPrependedAt])
+
+  useEffect(() => {
+    const onResize = () => updatePinned()
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [updatePinned])
+
+  // rAF-throttled pinned-header recompute: onScroll fires per frame during
+  // streaming, and getBoundingClientRect per user entry forces layout.
+  const pinnedRaf = useRef<number | null>(null)
+  const scheduleUpdatePinned = useCallback(() => {
+    if (pinnedRaf.current != null) return
+    pinnedRaf.current = requestAnimationFrame(() => {
+      pinnedRaf.current = null
+      updatePinned()
+    })
+  }, [updatePinned])
+
+  useEffect(
+    () => () => {
+      if (pinnedRaf.current != null) cancelAnimationFrame(pinnedRaf.current)
+    },
+    [],
+  )
+
+  const pinnedUser = pinnedId ? (userById.get(pinnedId) ?? null) : null
 
   const { rows: displayRows, spans } = useMemo(() => {
     const spans = scanGroups(entries, expandedGroups)
@@ -1092,10 +1326,13 @@ export function Scrollback() {
     }
   }, [entries])
 
-  // Auto-follow only when near bottom
+  // Auto-follow only when near bottom. Direct scrollTop (not smooth
+  // scrollIntoView): during streaming this fires per chunk and each smooth
+  // animation restarts — instant follow is what TUI gll does.
   useEffect(() => {
     if (!followRef.current) return
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const box = boxRef.current
+    if (box) box.scrollTop = box.scrollHeight
   }, [entries, displayRows.length])
 
   // History load: always re-follow the bottom (scrollback was reset)
@@ -1105,13 +1342,49 @@ export function Scrollback() {
     bottomRef.current?.scrollIntoView({ behavior: 'auto' })
   }, [historyLoadedAt])
 
-  // Older page prepended: restore the scroll anchor (previously first row)
+  // Older page prepended: restore the scroll anchor (previously first row).
+  // Cooldown: the anchor restore itself fires a scroll event at the top,
+  // which must not instantly chain the next page — the user gets one page
+  // per gesture, with the next scroll-up re-triggering after the cooldown.
   useEffect(() => {
     if (!historyPrependedAt || !historyAnchorId) return
+    topPageCooldownRef.current = Date.now() + TOP_PAGE_COOLDOWN_MS
     boxRef.current
       ?.querySelector(`[data-entry-id="${historyAnchorId}"]`)
       ?.scrollIntoView({ block: 'start', behavior: 'auto' })
   }, [historyPrependedAt, historyAnchorId])
+
+  // Re-arm after ANY paging attempt finishes (success or failure): a
+  // failed fetch can be retried with the next gesture; a successful one
+  // is gated by the prepend cooldown above.
+  const prevLoadingMoreRef = useRef(historyLoadingMore)
+  useEffect(() => {
+    if (prevLoadingMoreRef.current && !historyLoadingMore) {
+      topPageArmedRef.current = true
+    }
+    prevLoadingMoreRef.current = historyLoadingMore
+  }, [historyLoadingMore])
+
+  /**
+   * Scroll-up paging gate: one page per visit to the top region.
+   * Disarmed on trigger; re-armed when the user scrolls away from the top
+   * (onScroll) or when a paging attempt finishes (effect above), so a
+   * single gesture can never chain pages.
+   */
+  const maybeLoadOlderHistory = useCallback(() => {
+    const box = boxRef.current
+    if (!box) return
+    if (!historyHasMore || historyLoadingMore) return
+    if (!topPageArmedRef.current) return
+    if (Date.now() < topPageCooldownRef.current) return
+    topPageArmedRef.current = false
+    // Browsing older history: never yank the view back to the bottom on
+    // prepend, even if the follow flag was left armed (e.g. wheel-up at
+    // the very top with no prior scroll event).
+    followRef.current = false
+    const firstEl = box.querySelector('[data-entry-id]')
+    void loadMoreHistory(firstEl?.getAttribute('data-entry-id') ?? undefined)
+  }, [historyHasMore, historyLoadingMore, loadMoreHistory])
 
   // Scroll selected into view
   useEffect(() => {
@@ -1132,17 +1405,73 @@ export function Scrollback() {
         const t = e.currentTarget
         const dist = t.scrollHeight - t.scrollTop - t.clientHeight
         followRef.current = dist < 80
+        scheduleUpdatePinned()
         // Near the top of a loaded history: fetch the next older page.
-        if (t.scrollTop < 80 && (historyHasMore || historyLoadingMore)) {
-          const firstEl = t.querySelector('[data-entry-id]')
-          void loadMoreHistory(firstEl?.getAttribute('data-entry-id') ?? undefined)
+        // Re-arm when the user scrolls away from the top region so one
+        // visit to the top loads exactly one page (no cascade).
+        if (t.scrollTop < 80) {
+          maybeLoadOlderHistory()
+        } else {
+          topPageArmedRef.current = true
+        }
+      }}
+      onWheel={(e) => {
+        // Wheel-up fallback for content that does not overflow: at
+        // scrollTop 0 no scroll events fire, so catch the gesture here
+        // (trackpad two-finger up / mouse wheel up = older history).
+        if (e.deltaY < 0 && boxRef.current && boxRef.current.scrollTop <= 0) {
+          maybeLoadOlderHistory()
+        }
+      }}
+      onTouchStart={(e) => {
+        const y = e.touches[0]?.clientY ?? null
+        touchStartYRef.current = y
+        touchYRef.current = y
+      }}
+      onTouchMove={(e) => {
+        const y = e.touches[0]?.clientY
+        if (y != null) touchYRef.current = y
+      }}
+      onTouchEnd={() => {
+        const start = touchStartYRef.current
+        const end = touchYRef.current
+        touchStartYRef.current = null
+        touchYRef.current = null
+        // Finger dragged down = scroll up (older history); with no
+        // scrollbar this gesture is the only way to page.
+        if (
+          start != null &&
+          end != null &&
+          end > start + TOUCH_UP_SWIPE_PX &&
+          boxRef.current &&
+          boxRef.current.scrollTop <= 0
+        ) {
+          maybeLoadOlderHistory()
         }
       }}
     >
       {(historyHasMore || historyLoadingMore) && entries.length > 0 && (
-        <div className="py-1 text-center text-[11px] text-gn-gutter select-none">
-          {historyLoadingMore ? '加载更早历史…' : '↑ 向上滚动加载更早历史'}
-        </div>
+        // Clickable fallback: when content doesn't overflow there is no
+        // scrollbar, so scroll-to-top never fires. Tapping the hint loads
+        // the next older page the same way the near-top scroll path does.
+        <button
+          type="button"
+          disabled={historyLoadingMore}
+          onClick={(ev) => {
+            ev.stopPropagation()
+            maybeLoadOlderHistory()
+          }}
+          className="mx-auto block w-full py-1.5 text-center text-[11px] text-gn-gutter select-none transition-colors hover:text-gn-muted disabled:cursor-default disabled:hover:text-gn-gutter"
+          title={
+            historyLoadingMore
+              ? undefined
+              : '点击或向上滚动加载更早历史'
+          }
+        >
+          {historyLoadingMore
+            ? '加载更早历史…'
+            : '↑ 点击或向上滚动加载更早历史'}
+        </button>
       )}
       {entries.length === 0 && (
         <div className="mx-auto mt-[12vh] max-w-md px-6 text-center text-gn-muted text-[13px] leading-[1.9]">
@@ -1173,6 +1502,33 @@ export function Scrollback() {
         </div>
       )}
       <div className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} py-3`}>
+        {/* TUI sticky prompt header (sticky.rs): the last user prompt
+            scrolled past the top, collapsed to 3 lines; switches as you
+            scroll. Solid band covers entries passing underneath. */}
+        {pinnedUser?.kind === 'user' && (
+          <div
+            className="group relative sticky top-0 z-10 mb-2 font-ui text-[13.5px] leading-[1.35] text-gn-fg select-none"
+            style={{ backgroundColor: 'var(--color-gn-bg-highlight)' }}
+          >
+            <div className="flex items-start gap-1.5 px-2.5 py-[11px]">
+              <span
+                className="mt-[1.5px] shrink-0"
+                style={{ color: 'var(--color-gn-accent-user)' }}
+              >
+                <IconGlyph
+                  glyph={
+                    pinnedUser.isCron ? Glyphs.cronPrompt : Glyphs.promptArrow
+                  }
+                  color="var(--color-gn-accent-user)"
+                />
+              </span>
+              <div className="min-w-0 flex-1 whitespace-pre-wrap break-words">
+                {collapseUserText(pinnedUser.text, USER_COLLAPSED_MAX_LINES).text}
+              </div>
+              <PromptTime ts={pinnedUser.ts} className="top-[14.5px]" />
+            </div>
+          </div>
+        )}
         {displayRows.map((row, i) => {
           const dense = isDensePackableRow(row)
           const densePrev = i > 0 && isDensePackableRow(displayRows[i - 1])
@@ -1213,16 +1569,7 @@ export function Scrollback() {
   )
 }
 
-function GroupHeaderView({
-  row,
-  selected,
-  pendingFreeze,
-  now,
-  onToggle,
-  dense = true,
-  denseNext = false,
-  densePrev = false,
-}: {
+type GroupHeaderViewProps = {
   row: Extract<DisplayRow, { type: 'group_header' }>
   selected: boolean
   pendingFreeze: boolean
@@ -1231,7 +1578,34 @@ function GroupHeaderView({
   dense?: boolean
   denseNext?: boolean
   densePrev?: boolean
-}) {
+}
+
+/** Group headers have no finish-flash — `now` clock ticks never re-render. */
+function groupHeaderEqual(
+  prev: GroupHeaderViewProps,
+  next: GroupHeaderViewProps,
+): boolean {
+  return (
+    prev.row === next.row &&
+    prev.selected === next.selected &&
+    prev.pendingFreeze === next.pendingFreeze &&
+    prev.onToggle === next.onToggle &&
+    prev.dense === next.dense &&
+    prev.denseNext === next.denseNext &&
+    prev.densePrev === next.densePrev
+  )
+}
+
+const GroupHeaderView = memo(function GroupHeaderView({
+  row,
+  selected,
+  pendingFreeze,
+  now,
+  onToggle,
+  dense = true,
+  denseNext = false,
+  densePrev = false,
+}: GroupHeaderViewProps) {
   const selectEntry = useChatStore((s) => s.selectEntry)
   const e = displayRowToEntry(row)
   const [hovered, setHovered] = useState(false)
@@ -1290,4 +1664,4 @@ function GroupHeaderView({
       </button>
     </EntryShell>
   )
-}
+}, groupHeaderEqual)

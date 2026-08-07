@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { Components } from 'react-markdown'
@@ -77,18 +78,19 @@ const components: Components = {
 type Props = {
   source: string
   className?: string
-  streaming?: boolean
 }
 
-export function Markdown({ source, className = '', streaming }: Props) {
+/**
+ * Memoized: during streaming only the active entry's `source` changes, so
+ * unchanged assistant messages skip the (expensive) markdown re-parse on
+ * every chunk.
+ */
+export const Markdown = memo(function Markdown({ source, className = '' }: Props) {
   return (
     <div className={`gn-md ${className}`}>
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {source}
       </ReactMarkdown>
-      {streaming && (
-        <span className="ml-0.5 inline-block h-[1em] w-[0.45em] translate-y-[2px] bg-gn-magenta/70 animate-pulse align-text-bottom" />
-      )}
     </div>
   )
-}
+})
