@@ -632,6 +632,34 @@ export type ViewerTask = {
   cwd?: string
 }
 
+/**
+ * One workflow run row (TUI /workflows pane). Fed by `workflow_updated`
+ * session notifications — the wire guarantees runId/name/status and
+ * commonly `current_phase`; progress / script / agent roster / start time
+ * are parsed defensively and the UI degrades when absent.
+ */
+export type WorkflowRun = {
+  runId: string
+  name: string
+  status: string
+  phase?: string
+  /** Progress 0..1 when the event carries it (panel omits the bar otherwise). */
+  progress?: number
+  /** Script payload from workflow_updated — the "save script" source. */
+  script?: string
+  /** Agent roster (TUI shows it per row when the event carries it). */
+  agents?: string[]
+  /** Started-at epoch ms from the wire. */
+  startedAt?: number
+  /** Local first-seen epoch ms — start-time fallback when the wire has none. */
+  firstSeenAt: number
+  /**
+   * Optimistic prompt-path control in flight (pause/resume/stop). The
+   * next workflow_updated for this run is authoritative and clears it.
+   */
+  pendingControl?: 'pause' | 'resume' | 'stop'
+}
+
 type ChatState = {
   entries: ScrollEntry[]
   conn: ConnState
@@ -739,7 +767,13 @@ type ChatState = {
   /** Diff review payloads from diff_review (TUI diff-review modal). */
   diffReview?: unknown[]
   /** Workflow runs keyed by run_id (TUI workflows pane). */
-  workflowRuns: Record<string, { runId: string; name: string; status: string; phase?: string }>
+  workflowRuns: Record<string, WorkflowRun>
+  /** /goal detail panel visibility (GoalChip dropdown; /goal opens it). */
+  goalPanelOpen: boolean
+  setGoalPanelOpen: (open: boolean) => void
+  /** /workflows run-dashboard modal visibility. */
+  workflowPanelOpen: boolean
+  setWorkflowPanelOpen: (open: boolean) => void
   /** Bumped on hooks_changed / plugins_changed so modals can refresh. */
   hooksVersion: number
   // streaming pointers
@@ -823,6 +857,23 @@ type ChatState = {
   setAutoMode: () => Promise<void>
   /** POST /api/permissions-reset — forget remembered permission rules. */
   resetPermissions: () => Promise<void>
+
+  // ── goal mode (TUI /goal) — PROMPT-PATH control ─────────────────────
+  // The wire defines `goal_updated` notifications but NO goal control
+  // methods, so every goal action instructs the agent (which owns the
+  // update_goal tool) through send()/promptQueue — the best feasible
+  // port of the TUI's /goal set/status/pause/resume/clear.
+  goalSet: (objective: string) => void
+  goalStatus: () => void
+  goalPause: () => void
+  goalResume: () => void
+  goalClear: () => void
+  // ── workflow control (TUI /workflows p/r/x) — same protocol gap: no
+  // wire method for workflow control, so pause/resume/stop go through
+  // the prompt path with a local optimistic row update first.
+  workflowControl: (runId: string, action: 'pause' | 'resume' | 'stop') => void
+  /** "Save script" — local-only clipboard copy of the run's script payload. */
+  saveWorkflowScript: (runId: string) => Promise<void>
 
   init: () => () => void
   send: (text: string, blocks?: ContentBlock[]) => Promise<void>
@@ -964,6 +1015,32 @@ function imageSrc(data: string, mimeType?: string): string | undefined {
   return `data:${mime};base64,${d}`
 }
 
+/**
+ * Send a goal/workflow control prompt through the PROMPT path: queue
+ * mid-turn like any Enter prompt (promptQueue auto-sends at turn end),
+ * send immediately otherwise. `feedback` lands on the status line AFTER
+ * send()'s synchronous 'Thinking' stamp so the confirmation stays
+ * visible; the next connection event replaces it.
+ */
+function sendControlPrompt(
+  get: () => ChatState,
+  set: SetState,
+  text: string,
+  feedback: string,
+): void {
+  const st = get()
+  if (st.conn === 'busy') {
+    usePromptQueue.getState().enqueue({
+      text,
+      blocks: [{ type: 'text', text }],
+    })
+    set({ statusText: `${feedback}（已排队，回合结束后发送）` })
+    return
+  }
+  void st.send(text)
+  set({ statusText: feedback })
+}
+
 export const useChatStore = create<ChatState>((set, get) => ({
   entries: [],
   conn: 'connecting',
@@ -1013,6 +1090,110 @@ export const useChatStore = create<ChatState>((set, get) => ({
   openCancelPanel: () => set({ cancelPanelOpen: true }),
   closeCancelPanel: () => set({ cancelPanelOpen: false }),
   planMode: false,
+
+  // ── goal mode — PROMPT-PATH control (see ChatState docs) ────────────
+  goalSet: (objective) => {
+    const o = objective.trim()
+    if (!o) {
+      set({ statusText: '目标设定失败: 缺少目标描述' })
+      return
+    }
+    sendControlPrompt(
+      get,
+      set,
+      `请设定自主目标（用 update_goal 工具）：${o}`,
+      '目标设定指令已发送',
+    )
+  },
+  goalStatus: () =>
+    sendControlPrompt(
+      get,
+      set,
+      '请报告当前自主目标状态（goal status）',
+      '目标状态查询已发送',
+    ),
+  goalPause: () =>
+    sendControlPrompt(
+      get,
+      set,
+      '请暂停当前自主目标（用 update_goal 工具暂停目标执行）',
+      '目标暂停指令已发送',
+    ),
+  goalResume: () =>
+    sendControlPrompt(
+      get,
+      set,
+      '请恢复当前自主目标（用 update_goal 工具恢复目标执行）',
+      '目标恢复指令已发送',
+    ),
+  goalClear: () =>
+    sendControlPrompt(
+      get,
+      set,
+      '请清除当前自主目标（用 update_goal 工具清除目标）',
+      '目标清除指令已发送',
+    ),
+
+  /**
+   * Workflow pause/resume/stop — same protocol gap as goals: no wire
+   * method exists for workflow control, so the instruction goes through
+   * the prompt path. Before sending, the row is optimistically updated
+   * to the target status with a pendingControl marker; the next
+   * workflow_updated for this run corrects both (the event is
+   * authoritative).
+   */
+  workflowControl: (runId, action) => {
+    const st = get()
+    const run = st.workflowRuns[runId]
+    if (!run) return
+    const verb = action === 'pause' ? '暂停' : action === 'resume' ? '恢复' : '停止'
+    const targetStatus =
+      action === 'pause' ? 'paused' : action === 'resume' ? 'running' : 'cancelled'
+    set({
+      workflowRuns: {
+        ...st.workflowRuns,
+        [runId]: { ...run, status: targetStatus, pendingControl: action },
+      },
+    })
+    sendControlPrompt(
+      get,
+      set,
+      `请${verb}工作流 ${run.name}（用 workflow 工具的 ${action}）`,
+      `工作流「${run.name}」${verb}指令已发送（等待 workflow_updated 校正）`,
+    )
+  },
+
+  /**
+   * "Save script" — local-only: copies the run's script payload (when
+   * the workflow_updated event carried one) to the clipboard and reports
+   * a summary on the status line. No wire round-trip; runs without a
+   * script payload just report it as unavailable.
+   */
+  saveWorkflowScript: async (runId) => {
+    const run = get().workflowRuns[runId]
+    if (!run) return
+    const script = run.script ?? ''
+    if (!script.trim()) {
+      set({
+        statusText: `工作流「${run.name}」脚本不可用（workflow_updated 未携带 script 字段）`,
+      })
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(script)
+      set({
+        statusText: `已复制「${run.name}」脚本到剪贴板（${script.length} 字符）`,
+      })
+    } catch (e) {
+      set({
+        statusText: `复制失败: ${e instanceof Error ? e.message : String(e)}`,
+      })
+    }
+  },
+  goalPanelOpen: false,
+  setGoalPanelOpen: (open) => set({ goalPanelOpen: open }),
+  workflowPanelOpen: false,
+  setWorkflowPanelOpen: (open) => set({ workflowPanelOpen: open }),
 
   init: () => {
     const unsub = transport.onEvent((ev) => {
@@ -2452,12 +2633,55 @@ export const useChatStore = create<ChatState>((set, get) => ({
             const status = typeof f.status === 'string' ? f.status : ''
             const phase =
               typeof f.current_phase === 'string' ? f.current_phase : undefined
+            // Optional payload — parse defensively (the wire only
+            // guarantees runId/name/status; the panel degrades when the
+            // extras are absent): progress (0..1 or 0..100), script
+            // (save-script source), agent roster, start time.
+            const rawP = f.progress ?? f.progress_pct ?? f.progressPct
+            const pNum = typeof rawP === 'number' ? rawP : Number(rawP)
+            const progress =
+              rawP != null && rawP !== '' && Number.isFinite(pNum)
+                ? pNum > 1
+                  ? pNum / 100
+                  : pNum
+                : undefined
+            const rawAgents = Array.isArray(f.agents)
+              ? f.agents
+              : Array.isArray(f.agent_roster)
+                ? f.agent_roster
+                : undefined
+            const agents = rawAgents
+              ?.map((a) => String(a))
+              .filter((a) => a.length > 0)
+            const script = typeof f.script === 'string' ? f.script : undefined
+            const rawStart = f.started_at ?? f.startedAt ?? f.start_time
+            const sNum = typeof rawStart === 'number' ? rawStart : Number(rawStart)
+            const startedAt =
+              rawStart != null && rawStart !== '' && Number.isFinite(sNum) && sNum > 0
+                ? sNum < 1e12
+                  ? sNum * 1000
+                  : sNum
+                : undefined
             const prev = get().workflowRuns[runId]
             const prevStatus = prev?.status
             set({
               workflowRuns: {
                 ...get().workflowRuns,
-                [runId]: { runId, name, status, phase },
+                [runId]: {
+                  runId,
+                  name,
+                  status,
+                  phase,
+                  progress,
+                  agents,
+                  script,
+                  startedAt,
+                  // Start-time fallback: first event that introduced the run.
+                  firstSeenAt: prev?.firstSeenAt ?? Date.now(),
+                  // The event is authoritative — clear any optimistic
+                  // marker set by workflowControl before it arrived.
+                  pendingControl: undefined,
+                },
               },
             })
             // Surface transitions once (started / done / failed / paused).

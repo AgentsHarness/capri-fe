@@ -14,6 +14,7 @@ import { McpPanel } from './components/McpPanel'
 import { BlockViewer } from './components/BlockViewer'
 import { SessionInfoModal } from './components/SessionInfoModal'
 import { RewindPicker } from './components/RewindPicker'
+import { WorkflowPanel } from './components/WorkflowPanel'
 import { useScrollbackKeys } from './hooks/useScrollbackKeys'
 
 /**
@@ -56,6 +57,7 @@ export default function App() {
       <McpPanel open={mcpOpen} onClose={() => setMcpOpen(false)} />
       <SessionInfoModal />
       <RewindPicker />
+      <WorkflowPanel />
     </div>
   )
 }
