@@ -760,7 +760,7 @@ type ChatState = {
   // ── model catalog (agentInfo._meta.modelState.availableModels) ─────
   models: ModelOption[]
   /** Memory files from memory_files (TUI memory modal). */
-  memoryFiles?: { name: string; path?: string; size?: number; updatedAt?: unknown }[]
+  memoryFiles?: { name: string; path?: string; size?: number; updatedAt?: unknown; source?: string }[]
   /** Memory modal visibility (TUI /memory). */
   memoryOpen: boolean
   openMemory: () => void
@@ -2557,14 +2557,42 @@ export const useChatStore = create<ChatState>((set, get) => ({
           }
           case 'memory_files': {
             const files = Array.isArray(fields.files) ? fields.files : []
-            set({ memoryFiles: files as { name: string; path?: string; size?: number; updatedAt?: unknown }[] })
-            const names = files
-              .map((f) => (f as { name?: unknown }).name)
-              .filter((n): n is string => typeof n === 'string')
-              .join(', ')
+            // Wire shape is TUI MemoryFileInfo {path, source, size_bytes,
+            // modified_epoch_secs} — normalize to the modal's display
+            // fields (name = path basename) and keep `source` so the
+            // memory modal can group Global / Workspace / Sessions.
+            const normalized = files
+              .filter((f): f is Record<string, unknown> => !!f && typeof f === 'object')
+              .map((f) => {
+                const path = typeof f.path === 'string' ? f.path : ''
+                const name =
+                  typeof f.name === 'string' && f.name
+                    ? f.name
+                    : path.split(/[\\/]/).filter(Boolean).pop() ?? path
+                const size =
+                  typeof f.size === 'number'
+                    ? f.size
+                    : typeof f.size_bytes === 'number'
+                      ? f.size_bytes
+                      : undefined
+                return {
+                  name,
+                  ...(path ? { path } : {}),
+                  ...(size !== undefined ? { size } : {}),
+                  ...(f.updatedAt !== undefined
+                    ? { updatedAt: f.updatedAt }
+                    : f.modified_epoch_secs !== undefined
+                      ? { updatedAt: f.modified_epoch_secs }
+                      : {}),
+                  ...(typeof f.source === 'string' && f.source ? { source: f.source } : {}),
+                }
+              })
+              .filter((f) => f.name)
+            set({ memoryFiles: normalized })
+            const names = normalized.map((f) => f.name).join(', ')
             appendEntry(set, {
               kind: 'session_event',
-              text: `记忆文件 ${files.length} 个${names ? `（${names.slice(0, 80)}）` : ''}`,
+              text: `记忆文件 ${normalized.length} 个${names ? `（${names.slice(0, 80)}）` : ''}`,
             })
             break
           }

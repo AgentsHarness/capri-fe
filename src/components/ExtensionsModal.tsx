@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useChatStore } from '../store/chat'
 import { transport, type ExtensionsPayload } from '../api/localTransport'
+import type { ExtensionHook, ExtensionPlugin, ExtensionSkill } from '../api/types'
+import { Glyphs } from '../theme/glyphs'
+import { IconGlyph } from './IconGlyph'
 
 const TABS = [
   { id: 'hooks', label: 'hooks' },
@@ -8,6 +11,142 @@ const TABS = [
   { id: 'skills', label: 'skills' },
   { id: 'marketplace', label: 'marketplace' },
 ] as const
+
+// ── grouping / filtering helpers (TUI extensions_modal.rs) ─────────────
+
+/** TUI cmp_str_ci — case-insensitive order; original order as tiebreak. */
+function cmpStrCi(a: string, b: string): number {
+  return a.toLowerCase().localeCompare(b.toLowerCase()) || a.localeCompare(b)
+}
+
+/** Status filter — TUI StatusFilter: All → Enabled → Disabled. */
+type StatusFilter = 'all' | 'enabled' | 'disabled'
+const STATUS_FILTERS: ReadonlyArray<{ id: StatusFilter; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'enabled', label: 'Enabled' },
+  { id: 'disabled', label: 'Disabled' },
+]
+
+/**
+ * Only entries that CARRY the `enabled` field are filtered; entries with
+ * unknown state stay visible under any filter (TUI StatusFilter::matches
+ * gated on known state).
+ */
+function filterByStatus<T extends { enabled?: boolean }>(items: T[], filter: StatusFilter): T[] {
+  if (filter === 'all') return items
+  return items.filter((x) => x.enabled === undefined || (filter === 'enabled') === x.enabled)
+}
+
+type ExtGroup<T> = { key: string; label: string; items: T[] }
+
+/**
+ * Group items by a string key (source / scope). Returns null when NO item
+ * carries the key — callers fall back to a flat A-Z list (e.g. hooks, whose
+ * web payload has no source field yet). Groups sort A-Z; unkeyed stragglers
+ * collect under "Other" last. Items within a group sort A-Z by name.
+ */
+function groupBySourceKey<T extends { name: string }>(
+  items: T[],
+  keyOf: (t: T) => string | undefined,
+): ExtGroup<T>[] | null {
+  const buckets = new Map<string, T[]>()
+  for (const it of items) {
+    const k = keyOf(it)
+    const key = k && k !== '' ? k : 'Other'
+    const arr = buckets.get(key)
+    if (arr) arr.push(it)
+    else buckets.set(key, [it])
+  }
+  if (buckets.size === 1 && buckets.has('Other')) return null
+  return [...buckets.entries()]
+    .map(([key, groupItems]) => ({
+      key,
+      label: key,
+      items: [...groupItems].sort((a, b) => cmpStrCi(a.name, b.name)),
+    }))
+    .sort((a, b) => {
+      if (a.key === 'Other') return 1
+      if (b.key === 'Other') return -1
+      return cmpStrCi(a.label, b.label)
+    })
+}
+
+/**
+ * Skills scope order — TUI skill_group: Project → User → Plugin →
+ * Bundled → Server → Config (missing levels are skipped).
+ */
+const SKILL_SCOPE_ORDER: ReadonlyArray<{ scope: string; label: string }> = [
+  { scope: 'project', label: 'Project' },
+  { scope: 'user', label: 'User' },
+  { scope: 'plugin', label: 'Plugin' },
+  { scope: 'bundled', label: 'Bundled' },
+  { scope: 'server', label: 'Server' },
+  { scope: 'config', label: 'Config' },
+]
+
+function skillScopeGroup(s: ExtensionSkill): { key: string; label: string } {
+  const scope = (s.scope ?? '').toLowerCase()
+  // TUI SkillScope::Local | Repo → Project.
+  const normalized = scope === 'local' || scope === 'repo' ? 'project' : scope
+  const found = SKILL_SCOPE_ORDER.find((g) => g.scope === normalized)
+  if (found) return { key: found.scope, label: found.label }
+  return { key: scope || 'unknown', label: s.scope || 'unknown' }
+}
+
+function groupSkills(skills: ExtensionSkill[]): ExtGroup<ExtensionSkill>[] {
+  const buckets = new Map<string, { label: string; rank: number; items: ExtensionSkill[] }>()
+  for (const s of skills) {
+    const { key, label } = skillScopeGroup(s)
+    let b = buckets.get(key)
+    if (!b) {
+      const rank = SKILL_SCOPE_ORDER.findIndex((g) => g.scope === key)
+      b = { label, rank, items: [] }
+      buckets.set(key, b)
+    }
+    b.items.push(s)
+  }
+  return [...buckets.values()]
+    .sort((a, b) => {
+      const ra = a.rank === -1 ? SKILL_SCOPE_ORDER.length : a.rank
+      const rb = b.rank === -1 ? SKILL_SCOPE_ORDER.length : b.rank
+      return ra - rb || cmpStrCi(a.label, b.label)
+    })
+    .map((b) => ({
+      key: b.label,
+      label: b.label,
+      items: [...b.items].sort((a, b) => cmpStrCi(a.name, b.name)),
+    }))
+}
+
+/** Collapsible group header (click to fold the group's rows). */
+function GroupHeader({
+  label,
+  count,
+  collapsed,
+  onToggle,
+}: {
+  label: string
+  count: number
+  collapsed: boolean
+  onToggle: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className="sticky top-0 z-10 flex w-full cursor-pointer items-center gap-1.5 border-b border-gn-prompt-border/60 bg-gn-bg-base px-3 py-1 text-left hover:bg-gn-bg-highlight"
+      title={collapsed ? `展开${label}` : `收起${label}`}
+    >
+      <span className="shrink-0 text-gn-gutter" aria-hidden>
+        <IconGlyph glyph={collapsed ? Glyphs.chevron : Glyphs.chevronDown} />
+      </span>
+      <span className="min-w-0 flex-1 truncate text-[10.5px] font-medium uppercase tracking-wide text-gn-fg2">
+        {label}
+      </span>
+      <span className="shrink-0 text-[10px] tabular-nums text-gn-gutter">{count}</span>
+    </button>
+  )
+}
 
 /**
  * Extensions modal — web counterpart of the TUI extensions modal
@@ -28,6 +167,7 @@ export function ExtensionsModal() {
   const [error, setError] = useState<string>()
   const [data, setData] = useState<ExtensionsPayload>()
   const [hookHint, setHookHint] = useState<string>()
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const panelRef = useRef<HTMLDivElement>(null)
   const reqSeq = useRef(0)
 
@@ -121,6 +261,27 @@ export function ExtensionsModal() {
           ))}
         </div>
 
+        {/* Status filter — TUI StatusFilter (All / Enabled / Disabled). */}
+        {tab !== 'marketplace' && (
+          <div className="flex items-center gap-1 border-b border-gn-prompt-border/50 px-3 py-1.5">
+            {STATUS_FILTERS.map((f) => (
+              <button
+                key={f.id}
+                type="button"
+                onClick={() => setStatusFilter(f.id)}
+                className={`rounded px-2 py-0.5 text-[10.5px] ${
+                  statusFilter === f.id
+                    ? 'bg-gn-bg-highlight text-gn-fg'
+                    : 'text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
+                }`}
+                aria-pressed={statusFilter === f.id}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+        )}
+
         <div className="max-h-[52vh] overflow-y-auto py-1">
           {loading ? (
             <div className="px-4 py-6 text-center text-[12px] text-gn-muted">
@@ -138,11 +299,11 @@ export function ExtensionsModal() {
               </button>
             </div>
           ) : tab === 'hooks' ? (
-            <HooksTab data={data} hint={hookHint} onToggleClick={() => setHookHint('启停 hooks 需在 TUI/配置中修改，当前为只读')} />
+            <HooksTab data={data} filter={statusFilter} hint={hookHint} onToggleClick={() => setHookHint('启停 hooks 需在 TUI/配置中修改，当前为只读')} />
           ) : tab === 'plugins' ? (
-            <PluginsTab data={data} />
+            <PluginsTab data={data} filter={statusFilter} />
           ) : tab === 'skills' ? (
-            <SkillsTab data={data} />
+            <SkillsTab data={data} filter={statusFilter} />
           ) : (
             <MarketplaceTab />
           )}
@@ -158,16 +319,73 @@ export function ExtensionsModal() {
 
 // ── tabs ───────────────────────────────────────────────────────────────
 
+/** A hook row, possibly with a source / source_dir (web payload lacks it today). */
+type HookRow = ExtensionHook & { source?: string; source_dir?: string }
+
+function HookItem({ h, onToggleClick }: { h: HookRow; onToggleClick: () => void }) {
+  return (
+    <div className="flex items-start gap-2.5 border-b border-gn-prompt-border/50 px-4 py-2">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline gap-2">
+          <span className="truncate font-mono text-[12.5px] text-gn-fg">{h.name}</span>
+          {h.enabled !== undefined && (
+            <span
+              className={`shrink-0 rounded border px-1 text-[9px] leading-[14px] ${
+                h.enabled
+                  ? 'border-gn-green/60 text-gn-green'
+                  : 'border-gn-prompt-border text-gn-muted'
+              }`}
+            >
+              {h.enabled ? 'enabled' : 'disabled'}
+            </span>
+          )}
+        </div>
+        {h.command ? (
+          <div className="mt-0.5 truncate font-mono text-[11px] text-gn-muted" title={h.command}>
+            {h.command}
+          </div>
+        ) : null}
+        {h.event ? (
+          <div className="mt-0.5 truncate text-[11px] text-gn-gutter">event: {h.event}</div>
+        ) : null}
+      </div>
+      <button
+        type="button"
+        onClick={onToggleClick}
+        className="shrink-0 rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+        title="web 端无写端点 — 只读"
+      >
+        启停
+      </button>
+    </div>
+  )
+}
+
 function HooksTab({
   data,
+  filter,
   hint,
   onToggleClick,
 }: {
   data?: ExtensionsPayload
+  filter: StatusFilter
   hint?: string
   onToggleClick: () => void
 }) {
-  const hooks = data?.hooks ?? []
+  const all = (data?.hooks ?? []) as HookRow[]
+  // Group by source / source_dir when the payload carries it; the current
+  // web payload does not, so this stays a flat A-Z list (防御性).
+  const filtered = filterByStatus(all, filter)
+  const groups = groupBySourceKey(filtered, (h) => h.source ?? h.source_dir)
+  const flat = [...filtered].sort((a, b) => cmpStrCi(a.name, b.name))
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
+  const toggle = (key: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
   return (
     <>
       {hint ? (
@@ -175,125 +393,156 @@ function HooksTab({
           {hint}
         </div>
       ) : null}
-      {hooks.length === 0 ? (
+      {filtered.length === 0 ? (
         <div className="px-4 py-6 text-center text-[12px] text-gn-muted">
-          未加载 hooks
+          {all.length === 0 ? '未加载 hooks' : '没有匹配当前过滤的 hooks'}
         </div>
+      ) : groups ? (
+        groups.map((g) => (
+          <div key={g.key}>
+            <GroupHeader
+              label={g.label}
+              count={g.items.length}
+              collapsed={collapsed.has(g.key)}
+              onToggle={() => toggle(g.key)}
+            />
+            {!collapsed.has(g.key) &&
+              g.items.map((h) => <HookItem key={h.name} h={h} onToggleClick={onToggleClick} />)}
+          </div>
+        ))
       ) : (
-        hooks.map((h) => (
-          <div key={h.name} className="flex items-start gap-2.5 border-b border-gn-prompt-border/50 px-4 py-2">
-            <div className="min-w-0 flex-1">
-              <div className="flex items-baseline gap-2">
-                <span className="truncate font-mono text-[12.5px] text-gn-fg">{h.name}</span>
-                {h.enabled !== undefined && (
-                  <span
-                    className={`shrink-0 rounded border px-1 text-[9px] leading-[14px] ${
-                      h.enabled
-                        ? 'border-gn-green/60 text-gn-green'
-                        : 'border-gn-prompt-border text-gn-muted'
-                    }`}
-                  >
-                    {h.enabled ? 'enabled' : 'disabled'}
-                  </span>
-                )}
-              </div>
-              {h.command ? (
-                <div className="mt-0.5 truncate font-mono text-[11px] text-gn-muted" title={h.command}>
-                  {h.command}
-                </div>
-              ) : null}
-              {h.event ? (
-                <div className="mt-0.5 truncate text-[11px] text-gn-gutter">event: {h.event}</div>
-              ) : null}
-            </div>
-            <button
-              type="button"
-              onClick={onToggleClick}
-              className="shrink-0 rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-              title="web 端无写端点 — 只读"
+        flat.map((h) => <HookItem key={h.name} h={h} onToggleClick={onToggleClick} />)
+      )}
+    </>
+  )
+}
+
+function PluginItem({ p }: { p: ExtensionPlugin }) {
+  return (
+    <div className="flex items-center gap-2.5 border-b border-gn-prompt-border/50 px-4 py-2">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline gap-2">
+          <span className="truncate font-mono text-[12.5px] text-gn-fg">{p.name}</span>
+          {p.enabled !== undefined && (
+            <span
+              className={`shrink-0 rounded border px-1 text-[9px] leading-[14px] ${
+                p.enabled
+                  ? 'border-gn-green/60 text-gn-green'
+                  : 'border-gn-prompt-border text-gn-muted'
+              }`}
             >
-              启停
-            </button>
+              {p.enabled ? 'enabled' : 'disabled'}
+            </span>
+          )}
+        </div>
+        {p.source ? (
+          <div className="mt-0.5 truncate font-mono text-[11px] text-gn-gutter" title={p.source}>
+            {p.source}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+function PluginsTab({ data, filter }: { data?: ExtensionsPayload; filter: StatusFilter }) {
+  const all = data?.plugins ?? []
+  // Group by source (TUI plugin origin groups); within group A-Z.
+  const filtered = filterByStatus(all, filter)
+  const groups = groupBySourceKey(filtered, (p) => p.source)
+  const flat = [...filtered].sort((a, b) => cmpStrCi(a.name, b.name))
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
+  const toggle = (key: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  return (
+    <>
+      {filtered.length === 0 ? (
+        <div className="px-4 py-6 text-center text-[12px] text-gn-muted">
+          {all.length === 0 ? '未安装插件' : '没有匹配当前过滤的插件'}
+        </div>
+      ) : groups ? (
+        groups.map((g) => (
+          <div key={g.key}>
+            <GroupHeader
+              label={g.label}
+              count={g.items.length}
+              collapsed={collapsed.has(g.key)}
+              onToggle={() => toggle(g.key)}
+            />
+            {!collapsed.has(g.key) && g.items.map((p) => <PluginItem key={p.name} p={p} />)}
           </div>
         ))
+      ) : (
+        flat.map((p) => <PluginItem key={p.name} p={p} />)
       )}
     </>
   )
 }
 
-function PluginsTab({ data }: { data?: ExtensionsPayload }) {
-  const plugins = data?.plugins ?? []
+function SkillItem({ s }: { s: ExtensionSkill }) {
   return (
-    <>
-      {plugins.length === 0 ? (
-        <div className="px-4 py-6 text-center text-[12px] text-gn-muted">
-          未安装插件
+    <div
+      className="border-b border-gn-prompt-border/50 px-4 py-2"
+      title={s.path ? `SKILL.md: ${s.path}` : undefined}
+    >
+      <div className="flex items-baseline gap-2">
+        <span className="truncate font-mono text-[12.5px] text-gn-fg">{s.name}</span>
+        <span
+          className={`shrink-0 rounded border px-1 text-[9px] leading-[14px] ${
+            s.scope === 'user'
+              ? 'border-gn-cyan/60 text-gn-cyan'
+              : s.scope === 'bundled'
+                ? 'border-gn-prompt-border text-gn-muted'
+                : 'border-gn-prompt-border text-gn-gutter'
+          }`}
+        >
+          {s.scope ?? 'unknown'}
+        </span>
+      </div>
+      {s.path ? (
+        <div className="mt-0.5 truncate font-mono text-[11px] text-gn-gutter" title={`SKILL.md: ${s.path}`}>
+          {s.path}
         </div>
-      ) : (
-        plugins.map((p) => (
-          <div key={p.name} className="flex items-center gap-2.5 border-b border-gn-prompt-border/50 px-4 py-2">
-            <div className="min-w-0 flex-1">
-              <div className="flex items-baseline gap-2">
-                <span className="truncate font-mono text-[12.5px] text-gn-fg">{p.name}</span>
-                {p.enabled !== undefined && (
-                  <span
-                    className={`shrink-0 rounded border px-1 text-[9px] leading-[14px] ${
-                      p.enabled
-                        ? 'border-gn-green/60 text-gn-green'
-                        : 'border-gn-prompt-border text-gn-muted'
-                    }`}
-                  >
-                    {p.enabled ? 'enabled' : 'disabled'}
-                  </span>
-                )}
-              </div>
-              {p.source ? (
-                <div className="mt-0.5 truncate font-mono text-[11px] text-gn-gutter" title={p.source}>
-                  {p.source}
-                </div>
-              ) : null}
-            </div>
-          </div>
-        ))
-      )}
-    </>
+      ) : null}
+    </div>
   )
 }
 
-function SkillsTab({ data }: { data?: ExtensionsPayload }) {
-  const skills = data?.skills ?? []
+function SkillsTab({ data, filter }: { data?: ExtensionsPayload; filter: StatusFilter }) {
+  const all = data?.skills ?? []
+  // Scope order Project → User → Plugin → Bundled → Server → Config
+  // (TUI skill_group); missing levels are skipped.
+  const filtered = filterByStatus(all, filter)
+  const groups = groupSkills(filtered)
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
+  const toggle = (key: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
   return (
     <>
-      {skills.length === 0 ? (
+      {filtered.length === 0 ? (
         <div className="px-4 py-6 text-center text-[12px] text-gn-muted">
-          未安装 skills
+          {all.length === 0 ? '未安装 skills' : '没有匹配当前过滤的 skills'}
         </div>
       ) : (
-        skills.map((s) => (
-          <div
-            key={s.name}
-            className="border-b border-gn-prompt-border/50 px-4 py-2"
-            title={s.path ? `SKILL.md: ${s.path}` : undefined}
-          >
-            <div className="flex items-baseline gap-2">
-              <span className="truncate font-mono text-[12.5px] text-gn-fg">{s.name}</span>
-              <span
-                className={`shrink-0 rounded border px-1 text-[9px] leading-[14px] ${
-                  s.scope === 'user'
-                    ? 'border-gn-cyan/60 text-gn-cyan'
-                    : s.scope === 'bundled'
-                      ? 'border-gn-prompt-border text-gn-muted'
-                      : 'border-gn-prompt-border text-gn-gutter'
-                }`}
-              >
-                {s.scope ?? 'unknown'}
-              </span>
-            </div>
-            {s.path ? (
-              <div className="mt-0.5 truncate font-mono text-[11px] text-gn-gutter" title={`SKILL.md: ${s.path}`}>
-                {s.path}
-              </div>
-            ) : null}
+        groups.map((g) => (
+          <div key={g.key}>
+            <GroupHeader
+              label={g.label}
+              count={g.items.length}
+              collapsed={collapsed.has(g.key)}
+              onToggle={() => toggle(g.key)}
+            />
+            {!collapsed.has(g.key) && g.items.map((s) => <SkillItem key={s.name} s={s} />)}
           </div>
         ))
       )}

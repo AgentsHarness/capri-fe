@@ -1,9 +1,21 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useChatStore } from '../store/chat'
-import { fmtTime, groupAccentClass, groupByState, sessionGroupKey } from './historyGroups'
+import type { SessionInfo } from '../api/types'
+import {
+  absTime,
+  fmtTime,
+  groupAccentClass,
+  groupByState,
+  sanitizeTitle,
+  sessionContextPct,
+  sessionGroupKey,
+} from './historyGroups'
 import { Glyphs } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
 import { SessionStateIcon, stateLabel, useSessionSpinner } from './SessionStateIcon'
+
+/** Two-stage delete window — TUI CONFIRM_WINDOW (2s). */
+const CONFIRM_WINDOW_MS = 2000
 
 /**
  * Desktop (lg+) history sidebar — persistent, grouped by live status
@@ -41,6 +53,50 @@ export function HistorySidebar() {
       return next
     })
   }
+
+  // ── inline rename (TUI Ctrl+R RenameDraft) ─────────────────────────
+  // The wire rename API (POST /api/session-rename) only targets the
+  // CURRENT session, so the row editor is offered on the active row.
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [renameText, setRenameText] = useState('')
+  const renameInputRef = useRef<HTMLInputElement>(null)
+  const startRename = (s: SessionInfo) => {
+    setRenamingId(s.sessionId)
+    setRenameText(s.title ?? '')
+    requestAnimationFrame(() => renameInputRef.current?.select())
+  }
+  const commitRename = async (s: SessionInfo) => {
+    const title = sanitizeTitle(renameText).trim()
+    setRenamingId(null)
+    if (title && title !== (s.title ?? '')) {
+      await renameSession(title)
+      // Keep the list in sync even if the host sends no sessions_changed.
+      void refreshSessions()
+    }
+  }
+  const cancelRename = () => setRenamingId(null)
+
+  // ── two-stage delete (TUI [✗] + CONFIRM_WINDOW) ────────────────────
+  const [armedDelete, setArmedDelete] = useState<{ id: string; at: number } | null>(null)
+  useEffect(() => {
+    if (!armedDelete) return
+    const t = window.setTimeout(
+      () => setArmedDelete((cur) => (cur && cur.at === armedDelete.at ? null : cur)),
+      CONFIRM_WINDOW_MS,
+    )
+    return () => window.clearTimeout(t)
+  }, [armedDelete])
+  const onDeleteClick = (e: React.MouseEvent, s: SessionInfo) => {
+    e.stopPropagation()
+    if (armedDelete?.id === s.sessionId && Date.now() - armedDelete.at < CONFIRM_WINDOW_MS) {
+      setArmedDelete(null)
+      void deleteSession(s.sessionId, s.cwd || '')
+    } else {
+      setArmedDelete({ id: s.sessionId, at: Date.now() })
+    }
+  }
+  const deleteArmed = (id: string) =>
+    armedDelete?.id === id && Date.now() - armedDelete.at < CONFIRM_WINDOW_MS
 
   // Shared braille spinner for any "active" rows (same cadence as busy).
   const anyActive = useMemo(
@@ -87,11 +143,11 @@ export function HistorySidebar() {
         <button
           type="button"
           onClick={() => {
-            const title = window.prompt('新会话标题：')
-            if (title && title.trim()) void renameSession(title.trim())
+            const cur = sessions.find((s) => s.sessionId === sessionId)
+            if (cur) startRename(cur)
           }}
           className="rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-          title="x.ai/session/rename"
+          title="x.ai/session/rename — 行内重命名当前会话（双击标题也可）"
         >
           rename
         </button>
@@ -154,6 +210,12 @@ export function HistorySidebar() {
                   const key = sessionGroupKey(s, { currentSessionId: sessionId, lastViewedAt, openedAt })
                   const state = key === 'active' ? 'active' : 'idle'
                   const pending = key === 'awaiting'
+                  const renaming = renamingId === s.sessionId
+                  // TUI RowState::allows_delete — only settled rows may be
+                  // deleted; Working / NeedsInput (处理中 bucket) and
+                  // still-running bg tasks are locked.
+                  const canDelete = key !== 'active' && (s.bgRunning ?? 0) <= 0
+                  const contextPct = sessionContextPct(s)
                   return (
                     <div
                       key={s.sessionId}
@@ -178,12 +240,61 @@ export function HistorySidebar() {
                         spinnerFrame={spinnerFrame}
                       />
                       <span className="min-w-0 flex-1">
+                        {renaming ? (
+                          <input
+                            ref={renameInputRef}
+                            value={renameText}
+                            onChange={(e) => setRenameText(sanitizeTitle(e.target.value))}
+                            onClick={(e) => e.stopPropagation()}
+                            onDoubleClick={(e) => e.stopPropagation()}
+                            onKeyDown={(e) => {
+                              e.stopPropagation()
+                              if (e.key === 'Enter') {
+                                e.preventDefault()
+                                void commitRename(s)
+                              } else if (e.key === 'Escape') {
+                                e.preventDefault()
+                                cancelRename()
+                              }
+                            }}
+                            onBlur={() => cancelRename()}
+                            maxLength={100}
+                            className="w-full rounded border border-gn-cyan/60 bg-gn-bg-dark px-1 py-0 text-[12px] text-gn-fg outline-none"
+                            aria-label="重命名会话"
+                          />
+                        ) : (
+                          <span className="flex min-w-0 items-center gap-1">
+                            <span
+                              className={`block min-w-0 flex-1 truncate text-[12px] ${active ? 'text-gn-cyan' : 'text-gn-fg'}`}
+                              onDoubleClick={(e) => {
+                                e.stopPropagation()
+                                // Wire rename targets only the current session.
+                                if (active && !historyLoading) startRename(s)
+                              }}
+                              title={active ? '双击重命名（Enter 保存，Esc 取消）' : undefined}
+                            >
+                              {s.title || s.sessionId.slice(0, 12)}
+                            </span>
+                            {active && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  startRename(s)
+                                }}
+                                className="shrink-0 rounded px-0.5 text-[10px] leading-none text-gn-gutter opacity-0 hover:text-gn-cyan group-hover:opacity-100"
+                                title="重命名当前会话（Enter 保存，Esc 取消）"
+                                aria-label="重命名当前会话"
+                              >
+                                ✎
+                              </button>
+                            )}
+                          </span>
+                        )}
                         <span
-                          className={`block truncate text-[12px] ${active ? 'text-gn-cyan' : 'text-gn-fg'}`}
+                          className="block truncate font-mono text-[10px] text-gn-muted"
+                          title={s.updatedAt ? absTime(s.updatedAt) : undefined}
                         >
-                          {s.title || s.sessionId.slice(0, 12)}
-                        </span>
-                        <span className="block truncate font-mono text-[10px] text-gn-muted">
                           {s.updatedAt ? fmtTime(s.updatedAt) : ''}
                         </span>
                       </span>
@@ -198,22 +309,48 @@ export function HistorySidebar() {
                       {active && (
                         <span className="shrink-0 text-[9px] text-gn-cyan">当前</span>
                       )}
-                      {/* Row-hover delete (x.ai/session/delete — TUI /delete). */}
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          const ok = window.confirm(
-                            `删除会话「${s.title || s.sessionId.slice(0, 12)}」？此操作不可恢复。`,
-                          )
-                          if (ok) void deleteSession(s.sessionId, s.cwd || '')
-                        }}
-                        className="shrink-0 rounded px-1 text-[11px] leading-none text-gn-red opacity-40 hover:bg-gn-diff-del-bg hover:opacity-100"
-                        title="删除会话（/delete）"
-                        aria-label="删除会话"
-                      >
-                        ✕
-                      </button>
+                      {/* Context-window mini gauge (TUI context_pct), when the
+                          session list carries contextUsed/contextSize. */}
+                      {contextPct != null && (
+                        <span
+                          className="block h-[3px] w-10 shrink-0 overflow-hidden rounded-sm bg-gn-bg-highlight"
+                          title={`上下文占用 ${contextPct}%`}
+                          aria-label={`上下文占用 ${contextPct}%`}
+                        >
+                          <span
+                            className={`block h-full ${contextPct > 90 ? 'bg-gn-red' : contextPct >= 70 ? 'bg-gn-yellow' : 'bg-gn-cyan'}`}
+                            style={{ width: `${contextPct}%` }}
+                          />
+                        </span>
+                      )}
+                      {/* Row-hover delete (x.ai/session/delete — TUI /delete):
+                          two-stage confirm inside CONFIRM_WINDOW (2s). */}
+                      {canDelete ? (
+                        <button
+                          type="button"
+                          onClick={(e) => onDeleteClick(e, s)}
+                          className={`shrink-0 rounded px-1 text-[11px] leading-none ${
+                            deleteArmed(s.sessionId)
+                              ? 'bg-gn-diff-del-bg text-gn-red opacity-100'
+                              : 'text-gn-red opacity-40 hover:bg-gn-diff-del-bg hover:opacity-100'
+                          }`}
+                          title={
+                            deleteArmed(s.sessionId)
+                              ? '再点一次确认删除（2 秒内）'
+                              : '删除会话（/delete）'
+                          }
+                          aria-label={deleteArmed(s.sessionId) ? '确认删除会话' : '删除会话'}
+                        >
+                          {deleteArmed(s.sessionId) ? '确认？' : '✕'}
+                        </button>
+                      ) : (
+                        <span
+                          className="shrink-0 rounded px-1 text-[11px] leading-none text-gn-gutter opacity-30"
+                          title="运行中会话不可删除"
+                        >
+                          ✕
+                        </span>
+                      )}
                     </div>
                   )
                 })}
