@@ -820,6 +820,20 @@ type ChatState = {
   closeSessionInfo: () => void
 }
 
+/**
+ * Normalize an `image` event payload into a renderable <img> src.
+ * Data URIs pass through untouched; bare base64 is wrapped with the
+ * event's mimeType (image/png fallback when absent/invalid).
+ */
+function imageSrc(data: string, mimeType?: string): string | undefined {
+  const d = typeof data === 'string' ? data.trim() : ''
+  if (!d) return undefined
+  if (d.startsWith('data:')) return d
+  const mime =
+    mimeType && /^[\w.+-]+\/[\w.+-]+$/.test(mimeType) ? mimeType : 'image/png'
+  return `data:${mime};base64,${d}`
+}
+
 export const useChatStore = create<ChatState>((set, get) => ({
   entries: [],
   conn: 'connecting',
@@ -1518,6 +1532,64 @@ export const useChatStore = create<ChatState>((set, get) => ({
               isCron: classified.isCron || undefined,
               ts,
               expanded: false,
+            },
+          ],
+        })
+        break
+      }
+      case 'image': {
+        // Image content block (agent_message_chunk / user_message_chunk).
+        // 1. Open assistant row → append (sealing any open thought, same
+        //    as text chunks);
+        // 2. else pending optimistic user row → merge there (user-sent
+        //    image echoed back — no duplicate row);
+        // 3. else standalone image entry.
+        const src = imageSrc(ev.data, ev.mimeType)
+        if (!src) break
+        const sealed = sealThought(get())
+        const { openAssistantId, entries } = sealed
+        const img = { data: src, mimeType: ev.mimeType }
+        if (openAssistantId) {
+          set({
+            ...sealed,
+            conn: 'busy',
+            statusText: 'Waiting for Responding',
+            awaitingNext: false,
+            entries: entries.map((e) =>
+              e.id === openAssistantId && e.kind === 'assistant'
+                ? { ...e, images: [...(e.images ?? []), img] }
+                : e,
+            ),
+          })
+          break
+        }
+        const pendingId = get().pendingOptimisticUserId
+        if (pendingId) {
+          const idx = entries.findIndex((e) => e.id === pendingId && e.kind === 'user')
+          if (idx >= 0) {
+            set({
+              ...sealed,
+              openAssistantId: undefined,
+              entries: entries.map((e) =>
+                e.id === pendingId && e.kind === 'user'
+                  ? { ...e, images: [...(e.images ?? []), img] }
+                  : e,
+              ),
+            })
+            break
+          }
+        }
+        set({
+          ...sealed,
+          openAssistantId: undefined,
+          entries: [
+            ...entries,
+            {
+              id: nid(),
+              kind: 'image',
+              data: src,
+              mimeType: ev.mimeType,
+              ts: ev.ts ?? Date.now(),
             },
           ],
         })
@@ -3321,6 +3393,7 @@ function hasDisplayableScrollback(entries: ScrollEntry[]): boolean {
     switch (e.kind) {
       case 'user':
       case 'assistant':
+      case 'image':
       case 'thought':
       case 'tool':
       case 'plan':

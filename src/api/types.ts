@@ -191,6 +191,12 @@ export type AcpEvent =
     }
   | { type: 'chunk'; text: string; messageId?: string; ts?: number }
   | { type: 'user_chunk'; text: string }
+  /**
+   * Image content block from agent_message_chunk / user_message_chunk
+   * ({type:'image', data, mimeType} content blocks). `data` is a data URI
+   * or bare base64; bare base64 is wrapped with `mimeType` at the store.
+   */
+  | { type: 'image'; sessionId?: string; data: string; mimeType?: string; ts?: number }
   | {
       type: 'task_lifecycle'
       /**
@@ -359,6 +365,12 @@ export type ScrollEntry =
        * Renders with ↻ prefix; body is the raw prompt (system-reminder stripped).
        */
       isCron?: boolean
+      /**
+       * Images attached to this prompt (user-sent, echoed back via
+       * user_message_chunk image blocks — merged into this row instead of
+       * duplicating). `data` is a data URI.
+       */
+      images?: Array<{ data: string; mimeType?: string }>
     }
   | {
       id: string
@@ -366,6 +378,17 @@ export type ScrollEntry =
       text: string
       streaming?: boolean
       /** Response start time (epoch ms) — TUI right-aligned message timestamp. */
+      ts?: number
+      /** Images embedded in the response (agent_message_chunk image blocks). */
+      images?: Array<{ data: string; mimeType?: string }>
+    }
+  | {
+      id: string
+      kind: 'image'
+      /** Data URI (bare base64 is wrapped with mimeType by the store). */
+      data: string
+      mimeType?: string
+      /** Event time (epoch ms). */
       ts?: number
     }
   | {
