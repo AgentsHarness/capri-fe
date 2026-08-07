@@ -737,8 +737,13 @@ const EntryView = memo(function EntryView({
     // Collapse chevron sits at the right edge; the time overlay shifts left
     // of it so the two never cover each other.
     const chevronShown = foldable && (selected || hovered) && !expanded
-    // TUI: is_bash → "$ ", is_cron → "↻  ", else prompt_arrow.
-    const prefixGlyph = e.isCron ? Glyphs.cronPrompt : Glyphs.promptArrow
+    // TUI: is_bash → "$ " (command color), is_cron → "↻  ", else prompt_arrow.
+    // Shell-mode submissions carry the isShell marker from the store's send().
+    const isShell = (e as { isShell?: boolean }).isShell === true
+    const prefixGlyph = isShell ? '$' : e.isCron ? Glyphs.cronPrompt : Glyphs.promptArrow
+    const prefixColor = isShell
+      ? 'var(--color-gn-cyan)'
+      : 'var(--color-gn-accent-user)'
     return (
       <EntryShell {...shell} bandBg={band}>
         <button
@@ -757,18 +762,20 @@ const EntryView = memo(function EntryView({
           }}
           className="group relative flex w-full min-w-0 items-start gap-1.5 py-[11px] text-left font-ui text-[13.5px] leading-[1.35]"
           title={
-            e.isCron
-              ? 'scheduled task · click fold · dblclick / enter view'
-              : 'click fold · dblclick / enter view'
+            isShell
+              ? 'shell command · click fold · dblclick / enter view'
+              : e.isCron
+                ? 'scheduled task · click fold · dblclick / enter view'
+                : 'click fold · dblclick / enter view'
           }
         >
           {/* Same icon column as tool/thought bullets so ❯ / ↻ / ◆ / › line up.
               Icon box is 1.2em@13px = 15.6px; first text line is 13.5px×1.35 ≈ 18.2px.
               mt-[1.5px] centers prefix on the first line (items-start keeps multiline top-aligned). */}
           <Bullet
-            color="var(--color-gn-accent-user)"
+            color={prefixColor}
             glyph={prefixGlyph}
-            className="mt-[1.5px]"
+            className={`mt-[1.5px] ${isShell ? 'font-mono' : ''}`}
           />
           <div className="min-w-0 flex-1 text-gn-fg">
             {lines.map((line, i) => (
@@ -1025,6 +1032,20 @@ const EntryView = memo(function EntryView({
   }
 
   if (e.kind === 'status') {
+    // /session-info (and other multiline status payloads): render as a
+    // read-only monospace text block — the TUI pushes a plain text block
+    // into the scrollback. Single-line status rows keep the centered dim
+    // one-liner.
+    if (e.text.includes('\n')) {
+      return (
+        <div
+          data-entry-id={e.id}
+          className="px-4 py-1.5 font-mono text-[12px] leading-[1.55] whitespace-pre-wrap break-words text-gn-muted"
+        >
+          {e.text}
+        </div>
+      )
+    }
     return (
       <div className="px-4 py-1 text-center text-[11px] text-gn-muted" data-entry-id={e.id}>
         {e.text}
@@ -1195,20 +1216,55 @@ const EntryView = memo(function EntryView({
   }
 
   if (e.kind === 'session_event') {
+    // Recap events are two-part (TUI session_event recap_output): bold
+    // "Recap" header + muted summary body, foldable via `open` (←/→ /
+    // click). Collapsed shows the header with a one-line preview; expanded
+    // shows the full body. Warning events keep the warning text color AND
+    // get the warning accent rail (resolveAccent sessionEvent.warning).
     return (
       <EntryShell {...shell}>
-        <div className="flex items-center gap-1.5 py-[2px] text-[13px] leading-[1.35]">
+        <div className="flex items-start gap-1.5 py-[2px] text-[13px] leading-[1.35]">
           {(e.recap || e.streaming) && (
             <Bullet color={bullet.color} animated={bullet.animated} />
           )}
-          <span
-            className="text-[12.5px] whitespace-pre-wrap break-words"
-            style={{
-              color: e.warning ? Accents.warning : Accents.gray,
-            }}
-          >
-            {e.text}
-          </span>
+          {e.recap ? (
+            <div className="min-w-0">
+              {entryExpanded(e) && e.text ? (
+                <>
+                  <div
+                    className="text-[12.5px] font-bold leading-[1.35]"
+                    style={{ color: Accents.gray }}
+                  >
+                    Recap
+                  </div>
+                  <div className="mt-0.5 text-[12.5px] leading-[1.45] whitespace-pre-wrap break-words text-gn-muted">
+                    {e.text}
+                  </div>
+                </>
+              ) : (
+                <div className="flex min-w-0 items-baseline gap-0 text-[12.5px] leading-[1.35]">
+                  <span className="shrink-0 font-bold" style={{ color: Accents.gray }}>
+                    Recap
+                  </span>
+                  {e.text.trim() ? (
+                    <span className="min-w-0 truncate text-gn-muted">
+                      {' '}
+                      {e.text.split('\n')[0].trim()}
+                    </span>
+                  ) : null}
+                </div>
+              )}
+            </div>
+          ) : (
+            <span
+              className="text-[12.5px] whitespace-pre-wrap break-words"
+              style={{
+                color: e.warning ? Accents.warning : Accents.gray,
+              }}
+            >
+              {e.text}
+            </span>
+          )}
         </div>
       </EntryShell>
     )
@@ -1602,13 +1658,25 @@ export function Scrollback() {
             <div className="flex items-start gap-1.5 px-2.5 py-[11px]">
               <span
                 className="mt-[1.5px] shrink-0"
-                style={{ color: 'var(--color-gn-accent-user)' }}
+                style={{
+                  color: (pinnedUser as { isShell?: boolean }).isShell
+                    ? 'var(--color-gn-cyan)'
+                    : 'var(--color-gn-accent-user)',
+                }}
               >
                 <IconGlyph
                   glyph={
-                    pinnedUser.isCron ? Glyphs.cronPrompt : Glyphs.promptArrow
+                    (pinnedUser as { isShell?: boolean }).isShell
+                      ? '$'
+                      : pinnedUser.isCron
+                        ? Glyphs.cronPrompt
+                        : Glyphs.promptArrow
                   }
-                  color="var(--color-gn-accent-user)"
+                  color={
+                    (pinnedUser as { isShell?: boolean }).isShell
+                      ? 'var(--color-gn-cyan)'
+                      : 'var(--color-gn-accent-user)'
+                  }
                 />
               </span>
               <div className="min-w-0 flex-1 whitespace-pre-wrap break-words">

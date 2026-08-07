@@ -10,6 +10,7 @@ import type {
   ScheduledTask,
   ScrollEntry,
   SessionInfo,
+  SessionInfoDetail,
   TaskTimelineEvent,
   ToolCall,
   TopTask,
@@ -154,6 +155,54 @@ export function formatTurnDuration(ms: number): string {
   const secs = totalSecs % 60
   if (mins < 60) return `${mins}m${secs}s`
   return `${Math.floor(mins / 60)}h${mins % 60}m`
+}
+
+/** TUI context_bar fmt_tokens: "500", "5.2k", "48.8k", "1.2M". */
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) {
+    return n >= 10_000_000 ? `${Math.round(n / 1_000_000)}M` : `${(n / 1_000_000).toFixed(1)}M`
+  }
+  if (n >= 1_000) {
+    return n >= 10_000 ? `${Math.round(n / 1_000)}k` : `${(n / 1_000).toFixed(1)}k`
+  }
+  return String(n)
+}
+
+/**
+ * TUI /session-info (format_session_info): the host's SessionInfoDetail
+ * rendered as a plain text block (fields on separate lines) that gets
+ * pushed into the scrollback — fields render exactly as the host
+ * reports them.
+ */
+function formatSessionInfo(info: SessionInfoDetail): string {
+  const lines: string[] = ['Session info']
+  if (info.title) lines.push(`  Title: ${info.title}`)
+  if (info.sessionId) lines.push(`  Session ID: ${info.sessionId}`)
+  if (info.cwd) lines.push(`  Workspace: ${info.cwd}`)
+  if (info.model) {
+    const m = info.model
+    const label = [m.name || m.modelId, m.reasoningEffort].filter(Boolean).join(' · ')
+    lines.push(`  Model: ${label}`)
+  }
+  const ctxSize = info.contextSize || info.model?.contextWindow || 0
+  if (ctxSize > 0) {
+    const used = info.contextUsed ?? 0
+    const pct = Math.round((used / ctxSize) * 100)
+    lines.push(`  Context: ${fmtTokens(used)} / ${fmtTokens(ctxSize)} tokens (${pct}%)`)
+  }
+  if (info.gitBranch) {
+    const wt =
+      info.gitIsWorktree && info.gitMainRepo
+        ? ` (worktree of ${info.gitMainRepo})`
+        : info.gitIsWorktree
+          ? ' (worktree)'
+          : ''
+    lines.push(`  Git: ${info.gitBranch}${wt}`)
+  }
+  if (info.hostName || info.hostId) {
+    lines.push(`  Host: ${[info.hostName, info.hostId].filter(Boolean).join(' · ')}`)
+  }
+  return lines.join('\n')
 }
 
 /**
@@ -1108,6 +1157,12 @@ type ChatState = {
   /** Open / close the /session-info modal. */
   openSessionInfo: () => void
   closeSessionInfo: () => void
+  /**
+   * TUI /session-info: fetch session details (POST /api/session-info) and
+   * append them to the scrollback as a read-only text block (kind 'status')
+   * — the TUI pushes a plain text block into the scrollback, no modal.
+   */
+  showSessionInfo: () => Promise<void>
   // ── MCP management (TUI /mcps modal; host endpoints may be unsupported —
   //    every method rethrows so the panel renders the failure inline) ──
   /** GET /api/mcp/list — configured servers (host reads config.toml). */
@@ -1534,6 +1589,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   openSessionInfo: () => set({ sessionInfoOpen: true }),
   closeSessionInfo: () => set({ sessionInfoOpen: false }),
+
+  showSessionInfo: async () => {
+    try {
+      const info = await transport.sessionInfo()
+      appendEntry(set, { kind: 'status', text: formatSessionInfo(info) })
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      appendEntry(set, { kind: 'error', text: `/session-info 失败: ${msg}` })
+    }
+  },
 
   /** Dismiss the top error/status banner (user acknowledged the message). */
   dismissNotice: () => set({ error: undefined, statusWarning: undefined }),
@@ -2612,7 +2677,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
             break
           }
           case 'auto_compact_completed': {
-            appendEntry(set, { kind: 'session_event', text: '自动压缩完成' })
+            // TUI CompactionCompleted: tokens_before/tokens_after/
+            // elapsed_ms are optional on the wire — keep the plain line
+            // when the data is absent.
+            const before = fields.tokens_before ?? fields.tokensBefore
+            const after = fields.tokens_after ?? fields.tokensAfter
+            const elapsedMs = fields.elapsed_ms ?? fields.elapsedMs
+            let text = '自动压缩完成'
+            if (typeof after === 'number' && after > 0) {
+              const beforePart =
+                typeof before === 'number' && before > 0
+                  ? `${fmtTokens(before)} → `
+                  : ''
+              text = `自动压缩完成: ${beforePart}${fmtTokens(after)} tokens`
+              if (typeof elapsedMs === 'number' && elapsedMs >= 0) {
+                text += ` (${(elapsedMs / 1000).toFixed(1)}s)`
+              }
+            }
+            appendEntry(set, { kind: 'session_event', text })
             break
           }
           case 'auto_compact_failed': {
@@ -2643,9 +2725,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
           case 'session_recap': {
             const summary = typeof fields.summary === 'string' ? fields.summary : ''
             if (!summary.trim()) break
+            // Two-part recap block: bold "Recap" header + muted body
+            // (TUI session_event Recap). The body IS the summary text;
+            // the scrollback renders the header separately.
             appendEntry(set, {
               kind: 'session_event',
-              text: `摘要: ${summary}`,
+              text: summary,
               recap: true,
               open: false,
             })
@@ -3347,7 +3432,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  send: async (text: string, blocks?: ContentBlock[]) => {
+  send: async (text: string, blocks?: ContentBlock[], opts?: { fromShell?: boolean }) => {
     const t = text.trim()
     if (!t) return
     // Seal any leftover thought from prior turn, then append user + Thinking… shell.
@@ -3355,11 +3440,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const sealed = sealThought(get())
     const userId = nid()
     const thoughtId = nid()
+    // Shell-mode submissions (Composer `!` mode → prompt path) mark the
+    // user row so the scrollback renders it with the TUI `$ ` prefix.
+    const userEntry = {
+      id: userId,
+      kind: 'user' as const,
+      text: t,
+      ts: Date.now(),
+      ...(opts?.fromShell ? { isShell: true } : {}),
+    }
     set({
       ...sealed,
       entries: [
         ...sealed.entries,
-        { id: userId, kind: 'user', text: t, ts: Date.now() },
+        userEntry,
         {
           id: thoughtId,
           kind: 'thought',

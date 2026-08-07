@@ -62,7 +62,9 @@ export function WorkspaceBar() {
   return (
     <div className="sticky top-0 z-30 shrink-0 bg-gn-bg-base">
       <div className="flex min-w-0 items-center gap-2 px-3 py-1 text-[14px] select-none sm:px-4">
-        {/* Git head (x.ai/git_head_changed) — TUI status-bar branch. */}
+        {/* Git head (x.ai/git_head_changed) — TUI status-bar branch.
+            Detached HEAD renders as "⎇ detached" (TUI render.rs: empty
+            branch → "{icon} detached"); worktrees get the `wt` badge. */}
         {gitInfo?.branch ? (
           <span
             className="flex min-w-0 max-w-[24vw] items-center gap-1 truncate font-mono text-[13px] text-gn-cyan"
@@ -75,18 +77,32 @@ export function WorkspaceBar() {
             <span className="shrink-0 text-gn-cyan" aria-hidden>
               ⎇
             </span>
-            <span className="truncate">{gitInfo.branch}</span>
+            <span className="truncate">
+              {gitInfo.branch === '(detached)' ? 'detached' : gitInfo.branch}
+            </span>
             {gitInfo.isWorktree && <span className="shrink-0 text-gn-gutter">wt</span>}
           </span>
         ) : null}
 
-        {/* Active session workspace — TUI status-bar path, `~`-shortened. */}
+        {/* Active session workspace — TUI status-bar path, `~`-shortened.
+            Linked worktrees append "(worktree of <main>)" after the path
+            (TUI render.rs cwd_line suffix), using the host-reported main
+            repo when present. */}
         {cwd ? (
           <span
             className="flex min-w-0 max-w-[38vw] items-center truncate font-mono text-[13px] text-gn-gray-dim sm:max-w-[52vw]"
             title={cwd}
           >
             {shortCwd(cwd, homeDir)}
+            {gitInfo?.isWorktree && gitInfo.mainRepo ? (
+              <span
+                className="min-w-0 max-w-[16vw] truncate"
+                title={gitInfo.mainRepo}
+              >
+                {' '}
+                (worktree of {shortCwd(gitInfo.mainRepo, homeDir)})
+              </span>
+            ) : null}
           </span>
         ) : null}
 
@@ -145,7 +161,7 @@ export function TopBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
   const deleteSession = useChatStore((s) => s.deleteSession)
   const compactSession = useChatStore((s) => s.compactSession)
   const openRewind = useChatStore((s) => s.openRewind)
-  const openSessionInfo = useChatStore((s) => s.openSessionInfo)
+  const showSessionInfo = useChatStore((s) => s.showSessionInfo)
   const openExtensions = useChatStore((s) => s.openExtensions)
   const openSettings = useChatStore((s) => s.openSettings)
   const lastViewedAt = useChatStore((s) => s.lastViewedAt)
@@ -346,10 +362,10 @@ export function TopBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
                   type="button"
                   onClick={() => {
                     closeHistory()
-                    void openSessionInfo()
+                    void showSessionInfo()
                   }}
                   className="rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-                  title="x.ai/session-info — 查看当前会话信息"
+                  title="x.ai/session-info — 当前会话详情入滚动区"
                 >
                   session-info
                 </button>
