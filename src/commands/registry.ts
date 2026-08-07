@@ -35,6 +35,22 @@ function status(text: string) {
 }
 
 /**
+ * Send a prompt to the agent now, or queue it while a turn is running
+ * (TUI mid-turn queue semantics — same as /loop).
+ */
+function sendPrompt(text: string) {
+  const st = useChatStore.getState()
+  if (st.conn === 'busy') {
+    usePromptQueue.getState().enqueue({
+      text,
+      blocks: [{ type: 'text', text }],
+    })
+    return
+  }
+  void st.send(text)
+}
+
+/**
  * Composer registers its model-menu opener here so `/model` with no args
  * can open the exact same menu the model caption button uses.
  */
@@ -397,6 +413,53 @@ export const slashCommands: SlashCommand[] = [
     name: 'workflows',
     description: '打开工作流运行面板',
     run: () => useChatStore.getState().setWorkflowPanelOpen(true),
+  },
+  // ── memory system (TUI /memory /flush /dream /remember) ────────────
+  {
+    name: 'memory',
+    aliases: ['mem'],
+    description: '浏览/管理记忆（on|off 开关记忆）',
+    argHint: '[on|off]',
+    run: (args) => {
+      const a = args.trim().toLowerCase()
+      if (a === 'on' || a === 'off') {
+        // No wire toggle for memory in the web FE — route through the
+        // agent prompt path (architecture limitation: the FE cannot call
+        // agent tools directly).
+        sendPrompt(a === 'on' ? '请开启记忆' : '请关闭记忆')
+        return
+      }
+      // No args → browse modal (cached memory_files list, read-only).
+      useChatStore.getState().openMemory()
+    },
+  },
+  {
+    name: 'flush',
+    description: '立即保存当前会话知识到记忆',
+    run: () => void useChatStore.getState().memoryFlush(),
+  },
+  {
+    name: 'dream',
+    description: '执行记忆整合（consolidation）',
+    run: () => {
+      // No wire method for consolidation — prompt-path only (see /memory).
+      // The host's /api/memory-rewrite endpoint exists for a future direct
+      // call; the FE currently cannot invoke it meaningfully.
+      sendPrompt('请执行记忆整合（memory consolidation）')
+    },
+  },
+  {
+    name: 'remember',
+    description: '记一条笔记到记忆',
+    argHint: '[note]',
+    run: (args) => {
+      const note = args.trim()
+      if (!note) {
+        err('用法: /remember <笔记内容>，例如 /remember 暂存部署使用 eu-west 集群')
+        return
+      }
+      sendPrompt(`请记住：${note}（写入记忆）`)
+    },
   },
 ]
 

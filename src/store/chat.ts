@@ -758,6 +758,10 @@ type ChatState = {
   models: ModelOption[]
   /** Memory files from memory_files (TUI memory modal). */
   memoryFiles?: { name: string; path?: string; size?: number; updatedAt?: unknown }[]
+  /** Memory modal visibility (TUI /memory). */
+  memoryOpen: boolean
+  openMemory: () => void
+  closeMemory: () => void
   /** Goal state from goal_updated (TUI goal panel). */
   goalState?: Record<string, unknown>
   /** Todo counts from plan updates (TUI status-bar todo badge). */
@@ -766,6 +770,11 @@ type ChatState = {
   todos?: TodoItem[]
   /** Diff review payloads from diff_review (TUI diff-review modal). */
   diffReview?: unknown[]
+  /** Diff review modal visibility — notification path only (the request
+   *  path is driven by the x.ai/diff_review entry in xaiRequests). */
+  diffReviewOpen: boolean
+  openDiffReview: () => void
+  closeDiffReview: () => void
   /** Workflow runs keyed by run_id (TUI workflows pane). */
   workflowRuns: Record<string, WorkflowRun>
   /** /goal detail panel visibility (GoalChip dropdown; /goal opens it). */
@@ -874,6 +883,8 @@ type ChatState = {
   workflowControl: (runId: string, action: 'pause' | 'resume' | 'stop') => void
   /** "Save script" — local-only clipboard copy of the run's script payload. */
   saveWorkflowScript: (runId: string) => Promise<void>
+  /** Memory system — /flush: ask the host to persist session knowledge. */
+  memoryFlush: () => Promise<void>
 
   init: () => () => void
   send: (text: string, blocks?: ContentBlock[]) => Promise<void>
@@ -1194,6 +1205,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setGoalPanelOpen: (open) => set({ goalPanelOpen: open }),
   workflowPanelOpen: false,
   setWorkflowPanelOpen: (open) => set({ workflowPanelOpen: open }),
+  diffReviewOpen: false,
+  openDiffReview: () => set({ diffReviewOpen: true }),
+  closeDiffReview: () => set({ diffReviewOpen: false }),
+  memoryOpen: false,
+  openMemory: () => set({ memoryOpen: true }),
+  closeMemory: () => set({ memoryOpen: false }),
 
   init: () => {
     const unsub = transport.onEvent((ev) => {
@@ -1275,6 +1292,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       sessions: [],
       pending: [],
       xaiRequests: [],
+      diffReview: undefined,
+      diffReviewOpen: false,
+      memoryFiles: undefined,
+      memoryOpen: false,
       pendingOptimisticUserId: undefined,
       modes: undefined,
       error: undefined,
@@ -1378,6 +1399,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       toolIndex: {},
       pending: [],
       xaiRequests: [],
+      diffReview: undefined,
+      diffReviewOpen: false,
+      memoryFiles: undefined,
+      memoryOpen: false,
       subagentIndex: {},
       bgTaskIndex: {},
       // NOTE: topTasks is NOT reset here — continueSession probes the
@@ -2322,7 +2347,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (method.startsWith('x.ai/')) {
           // Only interactive extension requests get UI; everything else is
           // answered immediately so the agent never hangs on a timeout.
-          const SUPPORTED = new Set(['x.ai/ask_user_question', 'x.ai/exit_plan_mode'])
+          const SUPPORTED = new Set([
+            'x.ai/ask_user_question',
+            'x.ai/exit_plan_mode',
+            'x.ai/diff_review',
+          ])
           if (!SUPPORTED.has(method)) {
             void get().respondXai(
               ev.requestId,
@@ -2773,7 +2802,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
           // ── misc ─────────────────────────────────────────────────────
           case 'diff_review': {
             const content = Array.isArray(fields.content) ? fields.content : []
-            set({ diffReview: content })
+            // Notification path (no requestId → no receipt): cache the
+            // payload and open the modal read-only.
+            set({ diffReview: content, diffReviewOpen: content.length > 0 })
             appendEntry(set, {
               kind: 'session_event',
               text: `收到 Diff 审查请求（${content.length} 个文件）`,
@@ -3286,6 +3317,30 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
+  /**
+   * Memory system — /flush (TUI /flush): persist the session's knowledge
+   * to memory right now. The host contract is POST /api/memory-flush
+   * `{ sessionId }` → `{ ok: true }` (parallel host work — a 404 here is
+   * surfaced as an error row, not a hang). Progress events
+   * (memory_flush_started / memory_flush_completed) arrive as
+   * session_notification tags and render their own scrollback lines.
+   */
+  memoryFlush: async () => {
+    const st = get()
+    if (!st.sessionId) {
+      appendEntry(set, { kind: 'error', text: '记忆刷新失败: 无活动会话' })
+      return
+    }
+    try {
+      await transport.memoryFlush(st.sessionId)
+      set({ statusText: '正在刷新记忆…' })
+      appendEntry(set, { kind: 'session_event', text: '等待记忆刷新完成…' })
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      appendEntry(set, { kind: 'error', text: `记忆刷新失败: ${msg}` })
+    }
+  },
+
   forkSession: async (opts) => {
     try {
       const r = await transport.forkSession(opts ?? {})
@@ -3647,6 +3702,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       toolIndex: {},
       pending: [],
       xaiRequests: [],
+      diffReview: undefined,
+      diffReviewOpen: false,
+      memoryFiles: undefined,
+      memoryOpen: false,
       subagentIndex: {},
       bgTaskIndex: {},
       topTasks: [],

@@ -10,6 +10,8 @@ import { ApprovalStrip } from './components/ApprovalStrip'
 import { PlanApproval } from './components/PlanApproval'
 import { CancelPanel } from './components/CancelPanel'
 import { QuestionModal } from './components/QuestionModal'
+import { DiffReviewModal } from './components/DiffReviewModal'
+import { MemoryModal } from './components/MemoryModal'
 import { McpPanel } from './components/McpPanel'
 import { BlockViewer } from './components/BlockViewer'
 import { SessionInfoModal } from './components/SessionInfoModal'
@@ -54,6 +56,8 @@ export default function App() {
       </div>
       <BlockViewer />
       <QuestionModal />
+      <DiffReviewModal />
+      <MemoryModal />
       <McpPanel open={mcpOpen} onClose={() => setMcpOpen(false)} />
       <SessionInfoModal />
       <RewindPicker />
