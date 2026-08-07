@@ -416,9 +416,6 @@ export function TopBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
                   rewind
                 </button>
               </div>
-              <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-gn-gutter">
-                history · 点击继续对话
-              </div>
               {historyGroups.length === 0 && (
                 <div className="px-3 py-2 text-[11px] text-gn-muted">没有历史会话</div>
               )}
