@@ -27,7 +27,7 @@ Vite + React + Tailwind 前端：连接本机 `acp-host`（Local 模式）或 `a
   支持 `/new /clear /resume /model /effort /theme /compact /rewind /delete /rename /fork /recap /session-info /loop /plan /normal /copy /timestamps /help`。
 - **prompt 历史**：空输入按 `↑` 回忆最近 50 条（localStorage 持久化）。
 - **中途发送**：回合进行中 Enter 排队（胶囊提示，可展开管理），double-Enter 发队首，`Ctrl+Enter` 取消当前回合立即发送。
-- **shell 模式**：空输入输入 `!` 进入，Enter 经 `POST /api/shell` 在本机执行命令，输出以本地条目入滚动区（不发给 agent）。
+- **shell 模式**：空输入输入 `!` 进入（前缀显示为 `! `），Enter 把命令作为 prompt 发给 agent（用户行以 `$` 前缀展示）；空输入 Backspace/Esc 退出。
 - **图片**：粘贴/拖拽图片 → `[Image: …]` chip（缩略图预览），提交为 ACP image 内容块；agent 回复中的图片经 SSE `image` 事件内联渲染（滚动区 / BlockViewer / read 工具预览）。
 - **会话管理**：侧栏行 hover ✕ 删除（二次确认）、compact / rewind（RewindPicker 模态，`x.ai/rewind/points` + `execute`）。
 - **任务面板**：⠋N 胶囊展开双分区面板（运行中 + 调度任务），调度任务来自 `scheduled_task_created/deleted` 通知，删除走 `_x.ai/scheduler/delete`。
@@ -40,7 +40,7 @@ Vite + React + Tailwind 前端：连接本机 `acp-host`（Local 模式）或 `a
 - **扩展与设置**：`/hooks` `/plugins` `/skills` `/marketplace` 打开扩展模态（`GET /api/extensions` 读 `~/.grok`，hooks 启停为只读提示）；F2 / `/settings` 打开设置模态（`GET /api/settings` config.toml 只读展示）。
 - **计费**：`/billing` 查看额度/账单（`_x.ai/billing`）。
 
-Host 侧对应实现见 `acp-host/internal/acp/bridge.go`（通知转发、请求转发、`initialize` 能力声明 `x.ai/gitHeadChanged` 等）与 `internal/server/http.go`（`/api/client-response`、`/api/session-fork`、`/api/session-rename`、`/api/recap`、`/api/subagent-cancel`、`/api/task-kill`，以及 TUI 移植新增的 `/api/session-delete`、`/api/compact`、`/api/rewind-points`、`/api/rewind-execute`、`/api/scheduler-delete`、`/api/shell`、`/api/billing`、`/api/memory-flush`、`/api/memory-rewrite`、`/api/toggle-plan-mode`、`/api/permissions-reset`、`/api/mcp/list`、`/api/mcp-toggle`、`/api/mcp-add`、`/api/mcp-remove`、`/api/mcp-auth-trigger`、`/api/extensions`、`/api/settings`）。
+Host 侧对应实现见 `acp-host/internal/acp/bridge.go`（通知转发、请求转发、`initialize` 能力声明 `x.ai/gitHeadChanged` 等）与 `internal/server/http.go`（`/api/client-response`、`/api/session-fork`、`/api/session-rename`、`/api/recap`、`/api/subagent-cancel`、`/api/task-kill`，以及 TUI 移植新增的 `/api/session-delete`、`/api/compact`、`/api/rewind-points`、`/api/rewind-execute`、`/api/scheduler-delete`、`/api/billing`、`/api/memory-flush`、`/api/memory-rewrite`、`/api/toggle-plan-mode`、`/api/permissions-reset`、`/api/mcp/list`、`/api/mcp-toggle`、`/api/mcp-add`、`/api/mcp-remove`、`/api/mcp-auth-trigger`、`/api/extensions`、`/api/settings`）。
 
 ## 开发
 
