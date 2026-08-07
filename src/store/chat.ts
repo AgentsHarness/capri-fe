@@ -13,7 +13,7 @@ import type {
   ToolCall,
   TopTask,
 } from '../api/types'
-import { transport } from '../api/localTransport'
+import { transport, type McpListServer } from '../api/localTransport'
 import { toolHeader } from '../theme/glyphs'
 import {
   projectDisplayRows,
@@ -534,6 +534,9 @@ export type McpServerInfo = {
   detail?: string
 }
 
+/** Extensions modal tabs (TUI /hooks /plugins /skills /marketplace). */
+export type ExtensionsTab = 'hooks' | 'plugins' | 'skills' | 'marketplace'
+
 /**
  * TUI TodoCounts — derived from session/update `plan` entries (plan →
  * todo items). `total` excludes cancelled, matching the status-bar badge.
@@ -683,6 +686,15 @@ type ChatState = {
   workflowRuns: Record<string, { runId: string; name: string; status: string; phase?: string }>
   /** Bumped on hooks_changed / plugins_changed so modals can refresh. */
   hooksVersion: number
+  // ── extensions modal (TUI /hooks /plugins /skills /marketplace) ──────
+  extensionsOpen: boolean
+  extensionsTab: ExtensionsTab
+  openExtensions: (tab: ExtensionsTab) => void
+  closeExtensions: () => void
+  /** Settings modal (TUI F2 / /settings) — read-only config.toml view. */
+  settingsOpen: boolean
+  openSettings: () => void
+  closeSettings: () => void
   // streaming pointers
   openAssistantId?: string
   openThoughtId?: string
@@ -855,6 +867,23 @@ type ChatState = {
   /** Open / close the /session-info modal. */
   openSessionInfo: () => void
   closeSessionInfo: () => void
+  // ── MCP management (TUI /mcps modal; host endpoints may be unsupported —
+  //    every method rethrows so the panel renders the failure inline) ──
+  /** GET /api/mcp/list — configured servers (host reads config.toml). */
+  mcpList: () => Promise<McpListServer[]>
+  /** POST /api/mcp-toggle — enable/disable a server. */
+  mcpToggle: (name: string, enabled: boolean) => Promise<void>
+  /** POST /api/mcp-add — add a stdio server. */
+  mcpAdd: (server: {
+    name: string
+    command: string
+    args?: string[]
+    env?: Record<string, string>
+  }) => Promise<void>
+  /** POST /api/mcp-remove — remove a server. */
+  mcpRemove: (name: string) => Promise<void>
+  /** POST /api/mcp-auth-trigger — OAuth trigger; returns url/code when offered. */
+  mcpAuthTrigger: (name: string) => Promise<{ url?: string; code?: string; message?: string }>
 }
 
 /**
@@ -916,6 +945,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
   rewindOpen: false,
   openRewind: () => set({ rewindOpen: true }),
   closeRewind: () => set({ rewindOpen: false }),
+  extensionsOpen: false,
+  extensionsTab: 'hooks',
+  openExtensions: (tab) => set({ extensionsOpen: true, extensionsTab: tab }),
+  closeExtensions: () => set({ extensionsOpen: false }),
+  settingsOpen: false,
+  openSettings: () => set({ settingsOpen: true }),
+  closeSettings: () => set({ settingsOpen: false }),
 
   init: () => {
     const unsub = transport.onEvent((ev) => {
@@ -2963,6 +2999,34 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({
         entries: [...get().entries, { id: nid(), kind: 'error', text: `删除调度任务失败: ${msg}` }],
       })
+    }
+  },
+
+  // ── MCP management (TUI /mcps — host endpoints may be unsupported;
+  //    every method rethrows so the McpPanel renders the failure inline) ──
+  mcpList: async () => {
+    const r = await transport.mcpList()
+    return r.servers
+  },
+
+  mcpToggle: async (name, enabled) => {
+    await transport.mcpToggle(name, enabled)
+  },
+
+  mcpAdd: async (server) => {
+    await transport.mcpAdd(server)
+  },
+
+  mcpRemove: async (name) => {
+    await transport.mcpRemove(name)
+  },
+
+  mcpAuthTrigger: async (name) => {
+    const r = await transport.mcpAuthTrigger(name)
+    return {
+      ...(typeof r.url === 'string' && r.url ? { url: r.url } : {}),
+      ...(typeof r.code === 'string' && r.code ? { code: r.code } : {}),
+      ...(typeof r.message === 'string' && r.message ? { message: r.message } : {}),
     }
   },
 

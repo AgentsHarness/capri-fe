@@ -550,6 +550,213 @@ export class LocalTransport {
     }
     return data
   }
+
+  // ── MCP management (TUI /mcps modal) ────────────────────────────────
+  // Host contract (parallel implementation — may 404 / be unsupported for
+  // now): every call degrades to a thrown Error the panel renders inline.
+
+  /**
+   * GET /api/mcp/list — configured MCP servers (host reads config.toml).
+   * The array may be envelope-wrapped ({ result: { servers } } —
+   * agent-rendered), so it is dug out defensively; malformed entries are
+   * dropped rather than failing the whole list.
+   */
+  async mcpList(): Promise<{ servers: McpListServer[] }> {
+    const res = await fetch(this.url('/api/mcp/list'))
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `mcp list failed (${res.status})`)
+    }
+    const servers = (findArrayField(data, 'servers') as Record<string, unknown>[])
+      .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
+      .map((s) => ({
+        name: typeof s.name === 'string' ? s.name : '',
+        ...(typeof s.command === 'string' && s.command ? { command: s.command } : {}),
+        ...(Array.isArray(s.args) ? { args: s.args.map(String) } : {}),
+        ...(s.env && typeof s.env === 'object' && !Array.isArray(s.env)
+          ? { env: s.env as Record<string, string> }
+          : {}),
+        ...(typeof s.enabled === 'boolean' ? { enabled: s.enabled } : {}),
+        ...(typeof s.source === 'string' && s.source ? { source: s.source } : {}),
+        ...(typeof s.url === 'string' && s.url ? { url: s.url } : {}),
+        ...(typeof s.status === 'string' && s.status ? { status: s.status } : {}),
+      }))
+      .filter((s) => s.name)
+    return { servers }
+  }
+
+  /** POST /api/mcp-toggle — enable/disable a server (TUI /mcps Space). */
+  async mcpToggle(
+    name: string,
+    enabled: boolean,
+  ): Promise<Record<string, unknown>> {
+    const res = await fetch(this.url('/api/mcp-toggle'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, enabled }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `mcp toggle failed (${res.status})`)
+    }
+    return data
+  }
+
+  /** POST /api/mcp-add — add a stdio MCP server (TUI /mcps a). */
+  async mcpAdd(server: {
+    name: string
+    command: string
+    args?: string[]
+    env?: Record<string, string>
+  }): Promise<Record<string, unknown>> {
+    const res = await fetch(this.url('/api/mcp-add'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ server }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `mcp add failed (${res.status})`)
+    }
+    return data
+  }
+
+  /** POST /api/mcp-remove — remove a server (TUI /mcps x). */
+  async mcpRemove(name: string): Promise<Record<string, unknown>> {
+    const res = await fetch(this.url('/api/mcp-remove'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `mcp remove failed (${res.status})`)
+    }
+    return data
+  }
+
+  /**
+   * POST /api/mcp-auth-trigger — OAuth trigger for a server (TUI /mcps i).
+   * May return `{ url, code }` / `{ url }` for the UI to surface.
+   */
+  async mcpAuthTrigger(name: string): Promise<Record<string, unknown>> {
+    const res = await fetch(this.url('/api/mcp-auth-trigger'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `mcp auth failed (${res.status})`)
+    }
+    return data
+  }
+
+  /**
+   * GET /api/extensions — hooks / plugins / skills (host reads ~/.grok;
+   * local-only). Arrays may be missing or envelope-wrapped; each entry is
+   * parsed defensively (unknown fields dropped).
+   */
+  async extensions(): Promise<ExtensionsPayload> {
+    const res = await fetch(this.url('/api/extensions'))
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `extensions failed (${res.status})`)
+    }
+    const hooks = (findArrayField(data, 'hooks') as Record<string, unknown>[])
+      .filter((h): h is Record<string, unknown> => !!h && typeof h === 'object')
+      .map((h) => ({
+        name: typeof h.name === 'string' ? h.name : '',
+        ...(typeof h.command === 'string' && h.command ? { command: h.command } : {}),
+        ...(typeof h.event === 'string' && h.event ? { event: h.event } : {}),
+        ...(typeof h.enabled === 'boolean' ? { enabled: h.enabled } : {}),
+      }))
+      .filter((h) => h.name)
+    const plugins = (findArrayField(data, 'plugins') as Record<string, unknown>[])
+      .filter((p): p is Record<string, unknown> => !!p && typeof p === 'object')
+      .map((p) => ({
+        name: typeof p.name === 'string' ? p.name : '',
+        ...(typeof p.source === 'string' && p.source ? { source: p.source } : {}),
+        ...(typeof p.enabled === 'boolean' ? { enabled: p.enabled } : {}),
+      }))
+      .filter((p) => p.name)
+    const skills = (findArrayField(data, 'skills') as Record<string, unknown>[])
+      .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
+      .map((s) => ({
+        name: typeof s.name === 'string' ? s.name : '',
+        ...(typeof s.scope === 'string' && s.scope ? { scope: s.scope } : {}),
+        ...(typeof s.path === 'string' && s.path ? { path: s.path } : {}),
+      }))
+      .filter((s) => s.name)
+    return { hooks, plugins, skills }
+  }
+
+  /**
+   * GET /api/settings — safe config.toml subset (read-only; TUI F2).
+   * Groups may be absent; objects are dug out of envelopes defensively.
+   */
+  async settings(): Promise<SettingsPayload> {
+    const res = await fetch(this.url('/api/settings'))
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `settings failed (${res.status})`)
+    }
+    return {
+      ui: findObjectField(data, 'ui'),
+      session: findObjectField(data, 'session'),
+      models: findObjectField(data, 'models'),
+      cli: findObjectField(data, 'cli'),
+    }
+  }
+}
+
+/** One configured MCP server from GET /api/mcp/list (host reads config). */
+export type McpListServer = {
+  name: string
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
+  enabled?: boolean
+  source?: string
+  url?: string
+  status?: string
+}
+
+/** GET /api/extensions — one hook row. */
+export type ExtensionHook = {
+  name: string
+  command?: string
+  event?: string
+  enabled?: boolean
+}
+
+/** GET /api/extensions — one plugin row. */
+export type ExtensionPlugin = {
+  name: string
+  source?: string
+  enabled?: boolean
+}
+
+/** GET /api/extensions — one skill row (path = SKILL.md location). */
+export type ExtensionSkill = {
+  name: string
+  scope?: string
+  path?: string
+}
+
+/** GET /api/extensions — full payload (arrays always present, maybe empty). */
+export type ExtensionsPayload = {
+  hooks: ExtensionHook[]
+  plugins: ExtensionPlugin[]
+  skills: ExtensionSkill[]
+}
+
+/** GET /api/settings — safe config.toml subset (read-only). */
+export type SettingsPayload = {
+  ui?: Record<string, unknown>
+  session?: Record<string, unknown>
+  models?: Record<string, unknown>
+  cli?: Record<string, unknown>
 }
 
 /**
@@ -573,6 +780,33 @@ function findArrayField(root: unknown, key: string): unknown[] {
     return null
   }
   return walk(root, 0) ?? []
+}
+
+/**
+ * Depth-first search for a `<key>: object` field in nested JSON (walks
+ * `result` / `data` / `payload` envelopes — GET responses may be wrapped).
+ */
+function findObjectField(
+  root: unknown,
+  key: string,
+): Record<string, unknown> | undefined {
+  const seen = new Set<unknown>()
+  const walk = (v: unknown, depth: number): Record<string, unknown> | undefined => {
+    if (v == null || depth > 6) return undefined
+    if (typeof v !== 'object' || Array.isArray(v)) return undefined
+    if (seen.has(v)) return undefined
+    seen.add(v)
+    const o = v as Record<string, unknown>
+    if (o[key] && typeof o[key] === 'object' && !Array.isArray(o[key])) {
+      return o[key] as Record<string, unknown>
+    }
+    for (const k of ['result', 'data', 'payload']) {
+      const found = walk(o[k], depth + 1)
+      if (found) return found
+    }
+    return undefined
+  }
+  return walk(root, 0)
 }
 
 export const transport = new LocalTransport()

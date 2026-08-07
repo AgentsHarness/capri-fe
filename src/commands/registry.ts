@@ -6,7 +6,7 @@
  * capabilities — an unknown command appends an error row and is NEVER
  * sent to the agent (TUI semantics).
  */
-import { useChatStore } from '../store/chat'
+import { useChatStore, type ExtensionsTab } from '../store/chat'
 import { usePromptQueue } from '../store/promptQueue'
 import { THEMES, useThemeStore } from '../store/theme'
 import type { ThemeId } from '../theme/tokens'
@@ -34,6 +34,11 @@ function status(text: string) {
   useChatStore.setState({ statusText: text })
 }
 
+/** /hooks /plugins /skills /marketplace — extensions modal on its tab. */
+function openExtensionsCmd(tab: ExtensionsTab) {
+  useChatStore.getState().openExtensions(tab)
+}
+
 /**
  * Composer registers its model-menu opener here so `/model` with no args
  * can open the exact same menu the model caption button uses.
@@ -41,6 +46,15 @@ function status(text: string) {
 let modelMenuOpener: (() => void) | null = null
 export function registerModelMenuOpener(fn: (() => void) | null): void {
   modelMenuOpener = fn
+}
+
+/**
+ * App registers the McpPanel opener here so `/mcps` can open the panel
+ * (its open state lives in App, not the store).
+ */
+let mcpPanelOpener: (() => void) | null = null
+export function registerMcpPanelOpener(fn: (() => void) | null): void {
+  mcpPanelOpener = fn
 }
 
 /** Switch model with the composer menu's effort semantics (default effort). */
@@ -320,6 +334,40 @@ export const slashCommands: SlashCommand[] = [
       })
       note(`可用命令:\n${lines.join('\n')}`)
     },
+  },
+  // ── MCP 管理（TUI /mcps）────────────────────────────────────────────
+  {
+    name: 'mcps',
+    description: 'MCP 服务器管理（列表/增删/启停/认证）',
+    run: () => mcpPanelOpener?.(),
+  },
+  // ── 扩展模态（TUI /hooks /plugins /skills /marketplace）─────────────
+  {
+    name: 'hooks',
+    description: '打开扩展面板 — Hooks',
+    run: () => openExtensionsCmd('hooks'),
+  },
+  {
+    name: 'plugins',
+    description: '打开扩展面板 — Plugins',
+    run: () => openExtensionsCmd('plugins'),
+  },
+  {
+    name: 'skills',
+    description: '打开扩展面板 — Skills',
+    run: () => openExtensionsCmd('skills'),
+  },
+  {
+    name: 'marketplace',
+    description: '打开扩展面板 — Marketplace',
+    run: () => openExtensionsCmd('marketplace'),
+  },
+  // ── 设置（TUI F2 / /settings）───────────────────────────────────────
+  {
+    name: 'settings',
+    aliases: ['config', 'preferences', 'prefs'],
+    description: '打开设置（config.toml 只读展示）',
+    run: () => useChatStore.getState().openSettings(),
   },
 ]
 

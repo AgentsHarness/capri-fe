@@ -146,6 +146,8 @@ export function TopBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
   const compactSession = useChatStore((s) => s.compactSession)
   const openRewind = useChatStore((s) => s.openRewind)
   const openSessionInfo = useChatStore((s) => s.openSessionInfo)
+  const openExtensions = useChatStore((s) => s.openExtensions)
+  const openSettings = useChatStore((s) => s.openSettings)
   const lastViewedAt = useChatStore((s) => s.lastViewedAt)
   const openedAt = useChatStore((s) => s.openedAt)
   const historyGroups = useMemo(
@@ -280,6 +282,22 @@ export function TopBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
             mcp
           </button>
         )}
+        <button
+          type="button"
+          onClick={() => openExtensions('hooks')}
+          className="rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+          title="扩展（/hooks /plugins /skills /marketplace）"
+        >
+          ext
+        </button>
+        <button
+          type="button"
+          onClick={openSettings}
+          className="rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+          title="设置（F2 · config.toml 只读展示）"
+        >
+          settings
+        </button>
         <button
           type="button"
           onClick={() => void newSession()}
