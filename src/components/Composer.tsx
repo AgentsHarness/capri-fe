@@ -978,6 +978,9 @@ export function Composer() {
   return (
     <div className="safe-pb bg-gn-bg-base pt-1">
       <div className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS}`}>
+        {/* x.ai/ask_user_question card mounts here: QuestionModal portals
+            its inline card into this anchor so it sits above the input. */}
+        <div id="acp-xai-question-anchor" />
         {/* ── TUI turn status line (turn_status.rs) ──
             Busy: `⠧ Thinking…  1m20s ⇣12k [stop]`. Idle with watchers:
             `○ 2 commands still running` — a persistent status, never a
