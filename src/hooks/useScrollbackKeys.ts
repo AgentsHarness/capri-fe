@@ -22,7 +22,10 @@ const NAV_KEYS = new Set([
  * - ← / → / h / l: collapse / expand selected foldable block (inline)
  * - Enter: open block viewer (TUI OpenBlockViewer)
  * - Space: toggle inline expand
- * - Esc: close viewer if open, else scrollback → prompt (or cancel when busy)
+ * - Esc: close viewer if open, else scrollback → prompt (or the cancel
+ *   flow when busy: saved preference acts directly, running subagents
+ *   open the cancel panel, otherwise the turn is cancelled)
+ * - Ctrl+C: cancel the running turn directly (subagents keep running)
  */
 export function useScrollbackKeys() {
   useEffect(() => {
@@ -45,6 +48,39 @@ export function useScrollbackKeys() {
         e.preventDefault()
         if (store0.focusMode !== 'scrollback') store0.setFocus('scrollback')
         useChatStore.getState().openViewer()
+        return
+      }
+      // Ctrl+C: TUI — cancel the running turn directly (subagents keep
+      // running; no panel, no preference check). Skipped while the viewer /
+      // x.ai surfaces / cancel panel own the keys, and while a text
+      // selection exists (browser copy must win).
+      if (e.ctrlKey && (e.key === 'c' || e.key === 'C')) {
+        const st = useChatStore.getState()
+        if (
+          st.conn === 'busy' &&
+          !(st.viewerEntryId || st.viewerTask) &&
+          st.xaiRequests.length === 0 &&
+          !st.cancelPanelOpen
+        ) {
+          const t = e.target as HTMLElement | null
+          const inField =
+            !!t &&
+            (t.tagName === 'TEXTAREA' ||
+              t.tagName === 'INPUT' ||
+              t.isContentEditable)
+          if (inField) {
+            const el = t as HTMLTextAreaElement | HTMLInputElement
+            if (
+              el.selectionStart != null &&
+              el.selectionEnd != null &&
+              el.selectionStart !== el.selectionEnd
+            ) {
+              return // copy the selection, not a cancel
+            }
+          }
+          e.preventDefault()
+          void st.cancelTurn({})
+        }
         return
       }
       if (e.ctrlKey) return
@@ -72,6 +108,9 @@ export function useScrollbackKeys() {
       // Cancel-turn panel owns the keyboard while open (defense in depth —
       // the panel's own capture listener already stops the keys).
       if (store0.cancelPanelOpen) return
+      // Queue dropdown owns the row keys while open (its own capture
+      // listener handles x/e/j/k/swap; Esc closes the panel in Composer).
+      if (store0.queuePanelOpen) return
 
       // Tab always switches focus panes
       if (e.key === 'Tab') {
@@ -89,12 +128,12 @@ export function useScrollbackKeys() {
         return
       }
 
-      // Typing in the prompt: only Esc→cancel-turn panel while busy
+      // Typing in the prompt: only Esc→cancel flow while busy
       if (inField) {
         const store = useChatStore.getState()
         if (e.key === 'Escape' && store.conn === 'busy') {
           e.preventDefault()
-          store.openCancelPanel()
+          void store.requestCancelTurn()
         }
         return
       }
@@ -143,12 +182,13 @@ export function useScrollbackKeys() {
           store.toggleSelected()
           return
         case 'Escape':
-          // TUI: Esc while a turn runs opens the cancel-turn panel
-          // (immediate cancel only after the panel resolves); idle Esc
-          // moves focus back to the prompt.
+          // TUI: Esc while a turn runs goes through the cancel flow —
+          // saved preference acts directly, running subagents open the
+          // cancel panel, otherwise the turn is cancelled outright.
+          // Idle Esc moves focus back to the prompt.
           e.preventDefault()
           if (store.conn === 'busy') {
-            store.openCancelPanel()
+            void store.requestCancelTurn()
           } else {
             store.setFocus('prompt')
             requestAnimationFrame(() => {

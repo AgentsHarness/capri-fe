@@ -52,6 +52,21 @@ function persistLastViewedAt(map: Record<string, number>): void {
   }
 }
 
+// ── cancel-turn preference (TUI cancel_subagents_on_turn_cancel) ────
+// Saved by the cancel panel's "Always stop" / "Always continue" options.
+// Once saved, Esc / [stop] act directly and the panel never opens.
+const CANCEL_SUBAGENTS_PREF_KEY = 'acpfe.cancelSubagentsOnTurnCancel'
+
+function loadCancelSubagentsPref(): boolean | null {
+  try {
+    const raw = window.localStorage.getItem(CANCEL_SUBAGENTS_PREF_KEY)
+    if (raw == null) return null
+    return raw === 'true'
+  } catch {
+    return null
+  }
+}
+
 /**
  * Top-strip liveness poll: TUI-owned background tasks emit no events to
  * this host (their task_completed goes to the TUI's own pager), so the
@@ -852,23 +867,57 @@ type ChatState = {
   closeRewind: () => void
   /**
    * Cancel-turn panel (TUI CancelTurnPanel): Esc / [stop] while busy opens
-   * it instead of cancelling immediately. While open it owns the keyboard
-   * (1-4 / ↑↓ / Enter confirm, Esc = keep running).
+   * it instead of cancelling immediately — only when the current turn has
+   * running subagents AND no saved preference (see cancelSubagentsPref).
+   * While open it owns the keyboard (1-4 / ↑↓ / Enter confirm, Esc =
+   * keep running, Ctrl+C = direct cancel).
    */
   cancelPanelOpen: boolean
   openCancelPanel: () => void
   closeCancelPanel: () => void
+  /**
+   * Saved cancel-turn preference (TUI `cancel_subagents_on_turn_cancel`):
+   * true = cancel running subagents with the turn, false = keep them
+   * running, null = ask via the panel (only when subagents are running).
+   * With a saved preference the panel never opens — Esc / [stop] act
+   * directly per it. Persisted to localStorage acpfe.cancelSubagentsOnTurnCancel.
+   */
+  cancelSubagentsPref: boolean | null
+  setCancelSubagentsPref: (stop: boolean) => void
+  /** True when at least one subagent of the current turn is still running
+   *  (scrollback `subagent` entries via subagentIndex; TUI subagent_sessions). */
+  hasRunningSubagent: () => boolean
+  /**
+   * Esc / [stop] flow (TUI dispatch_cancel_turn): saved preference → cancel
+   * per it; no preference + running subagents → open the cancel panel;
+   * otherwise cancel the turn directly (nothing to prompt about).
+   */
+  requestCancelTurn: () => Promise<void>
+  /** Transient "Switched to mode: X" banner (TUI notices.rs mode_switch_banner). */
+  modeBanner: string | null
+  showModeBanner: (text: string) => void
+  clearModeBanner: () => void
+  /** Composer queue dropdown visibility (TUI queue pane). */
+  queuePanelOpen: boolean
+  setQueuePanelOpen: (open: boolean) => void
   /**
    * Local plan-mode flag (Shift+Tab cycle / /plan). Driven by the host's
    * toggle-plan-mode result when available; otherwise kept local and
    * nudged by yolo_mode_changed / modes_update payloads.
    */
   planMode: boolean
-  /** Cancel the running turn — cancel panel options 1-3. */
-  cancelTurn: (opts?: { stopTasks?: boolean; clearQueue?: boolean }) => Promise<void>
+  /** Cancel the running turn — cancel panel options 1 / 3 / 4 (+ Ctrl+C). */
+  cancelTurn: (opts?: {
+    /** Also cancel every running subagent (panel "Stop running" / "Always stop"). */
+    cancelSubagents?: boolean
+    /** Legacy: additionally kill every running bg_task (incl. top strip). */
+    stopTasks?: boolean
+    /** Empty the composer send queue. */
+    clearQueue?: boolean
+  }) => Promise<void>
   /** Enter/leave plan mode (toggle-plan-mode preferred, set-mode fallback). */
   togglePlanMode: () => Promise<void>
-  /** Shift+Tab mode cycle: Normal → Plan → Always-approve → Normal. */
+  /** Shift+Tab mode cycle: Normal → Plan → Auto → Always-approve → Normal. */
   cycleMode: () => Promise<void>
   /** POST /api/set-mode {modeId:'normal'}. */
   setNormalMode: () => Promise<void>
@@ -1129,6 +1178,41 @@ export const useChatStore = create<ChatState>((set, get) => ({
   cancelPanelOpen: false,
   openCancelPanel: () => set({ cancelPanelOpen: true }),
   closeCancelPanel: () => set({ cancelPanelOpen: false }),
+  cancelSubagentsPref: loadCancelSubagentsPref(),
+  setCancelSubagentsPref: (stop) => {
+    try {
+      window.localStorage.setItem(CANCEL_SUBAGENTS_PREF_KEY, stop ? 'true' : 'false')
+    } catch {
+      /* storage unavailable — the preference stays in-memory */
+    }
+    set({ cancelSubagentsPref: stop })
+  },
+  hasRunningSubagent: () =>
+    get().entries.some(
+      (e) => e.kind === 'subagent' && e.running === true && !!e.subagentId,
+    ),
+  requestCancelTurn: async () => {
+    const s = get()
+    if (s.conn !== 'busy') return
+    const pref = s.cancelSubagentsPref
+    if (pref != null) {
+      // Saved preference: act directly, never show the panel.
+      await s.cancelTurn({ cancelSubagents: pref })
+      return
+    }
+    if (s.hasRunningSubagent()) {
+      // Running subagents + no preference → the panel decides.
+      set({ cancelPanelOpen: true })
+      return
+    }
+    // Nothing to prompt about — cancel the turn directly.
+    await s.cancelTurn({})
+  },
+  modeBanner: null,
+  showModeBanner: (text) => set({ modeBanner: text }),
+  clearModeBanner: () => set({ modeBanner: null }),
+  queuePanelOpen: false,
+  setQueuePanelOpen: (open) => set({ queuePanelOpen: open }),
   planMode: false,
 
   // ── goal mode — PROMPT-PATH control (see ChatState docs) ────────────
@@ -1348,6 +1432,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       topTasks: [],
       scheduledTasks: [],
       cancelPanelOpen: false,
+      queuePanelOpen: false,
       planMode: false,
     })
     // Apply the host's status snapshot through the normal hello path so
@@ -3189,9 +3274,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   /**
-   * Cancel-turn panel execution (options 1-3). Always cancels the running
-   * turn; `stopTasks` additionally kills every running bg_task (incl.
-   * restored top-strip tasks) and cancels running subagents; `clearQueue`
+   * Cancel the running turn (panel options 1 / 3 / 4, Ctrl+C, and the
+   * saved-preference fast path). Always cancels the turn; `cancelSubagents`
+   * additionally cancels every running subagent ("Stop running" / "Always
+   * stop"); `stopTasks` (legacy) kills running bg_tasks too; `clearQueue`
    * empties the composer's send queue. The panel closes either way.
    */
   cancelTurn: async (opts) => {
@@ -3216,6 +3302,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Restored top-strip tasks are running by definition (host probe).
       for (const t of s.topTasks) {
         if (t.taskId) void get().killTask(t.taskId)
+      }
+    } else if (opts?.cancelSubagents) {
+      const s = get()
+      for (const e of s.entries) {
+        if (e.kind === 'subagent' && e.running && e.subagentId) {
+          void get().cancelSubagent(e.subagentId)
+        }
       }
     }
     if (opts?.clearQueue) usePromptQueue.getState().clear()
@@ -3249,21 +3342,37 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  /** Shift+Tab mode cycle (TUI: Normal → Plan → Always-approve). */
+  /**
+   * Shift+Tab mode cycle (TUI modes.rs): Normal → Plan → Auto →
+   * Always-approve → Normal. Each arm shows the "Switched to mode: X"
+   * banner (TUI notices.rs) optimistically, like the TUI's
+   * show_mode_switch_banner.
+   */
   cycleMode: async () => {
     const s = get()
     const inPlan = s.planMode === true || s.permissionMode === 'plan'
     const perm = (s.permissionMode || '').toLowerCase()
+    // Yolo wins over auto on the wire (TUI effective_auto), so the Auto
+    // arm only applies while always-approve is not active.
     const inAlways =
       s.yoloMode === true ||
-      s.autoMode === true ||
       perm === 'always-approve' ||
       perm === 'always_approve' ||
-      perm === 'yolo' ||
-      perm === 'auto'
-    if (inPlan) await get().setAlwaysApproveMode()
-    else if (inAlways) await get().setNormalMode()
-    else await get().togglePlanMode()
+      perm === 'yolo'
+    const inAuto = !inAlways && (s.autoMode === true || perm === 'auto')
+    if (inPlan) {
+      get().showModeBanner('Switched to mode: Auto')
+      await get().setAutoMode()
+    } else if (inAuto) {
+      get().showModeBanner('Switched to mode: Always-Approve')
+      await get().setAlwaysApproveMode()
+    } else if (inAlways) {
+      get().showModeBanner('Switched to mode: Normal')
+      await get().setNormalMode()
+    } else {
+      get().showModeBanner('Switched to mode: Plan')
+      await get().togglePlanMode()
+    }
   },
 
   setNormalMode: async () => {

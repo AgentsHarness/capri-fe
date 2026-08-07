@@ -34,6 +34,28 @@ function status(text: string) {
   useChatStore.setState({ statusText: text })
 }
 
+// ── /multiline input mode (TUI /multiline) ─────────────────────────
+// Persisted in localStorage; the composer reads it on every Enter to
+// decide Enter/Shift+Enter semantics (off = Enter sends, on = Enter
+// inserts a newline). Default off.
+const MULTILINE_KEY = 'acpfe.multiline'
+
+export function isMultilineEnabled(): boolean {
+  try {
+    return window.localStorage.getItem(MULTILINE_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+function setMultilineEnabled(on: boolean): void {
+  try {
+    window.localStorage.setItem(MULTILINE_KEY, on ? 'true' : 'false')
+  } catch {
+    /* storage unavailable — session-only */
+  }
+}
+
 /** /hooks /plugins /skills /marketplace — extensions modal on its tab. */
 function openExtensionsCmd(tab: ExtensionsTab) {
   useChatStore.getState().openExtensions(tab)
@@ -337,6 +359,20 @@ export const slashCommands: SlashCommand[] = [
     name: 'timestamps',
     description: '切换滚动区时间戳显示',
     run: () => useChatStore.getState().toggleTimestamps(),
+  },
+  {
+    name: 'multiline',
+    description: '切换多行输入（on: Enter 换行、Shift+Enter 发送）',
+    run: (args) => {
+      const a = args.trim().toLowerCase()
+      const next = a === 'on' ? true : a === 'off' ? false : !isMultilineEnabled()
+      setMultilineEnabled(next)
+      status(
+        next
+          ? 'multiline: 开（Enter 换行，Shift+Enter 发送）'
+          : 'multiline: 关（Enter 发送，Shift+Enter 换行）',
+      )
+    },
   },
   {
     name: 'help',

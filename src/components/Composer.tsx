@@ -7,7 +7,6 @@ import {
 } from 'react'
 import { useChatStore, formatTurnDuration, stillRunningCue } from '../store/chat'
 import { usePromptQueue } from '../store/promptQueue'
-import { runShellCommand } from '../api/shell'
 import type { ContentBlock } from '../api/types'
 import {
   Glyphs,
@@ -26,6 +25,7 @@ import { fmtTok } from './StatusChips'
 import { SlashMenu } from './SlashMenu'
 import {
   filterSlashCommands,
+  isMultilineEnabled,
   matchSlash,
   registerModelMenuOpener,
   type SlashCommand,
@@ -38,8 +38,6 @@ import {
  */
 const CHIP_MIN_LINES = 4 // TUI: 4, or 2 in compact mode (web has none)
 const CHIP_DISPLAY_BYTES = 10_000
-/** Shell output truncation (TUI shell view line cap analog). */
-const SHELL_OUTPUT_MAX = 4000
 
 /**
  * Paste chip = text paste chip; image chip = pasted/dropped image behind
@@ -259,6 +257,8 @@ export function Composer() {
   const conn = useChatStore((s) => s.conn)
   const usage = useChatStore((s) => s.usage)
   const statusText = useChatStore((s) => s.statusText)
+  const modeBanner = useChatStore((s) => s.modeBanner)
+  const clearModeBanner = useChatStore((s) => s.clearModeBanner)
   const awaitingNext = useChatStore((s) => s.awaitingNext)
   const entries = useChatStore((s) => s.entries)
   const topTasks = useChatStore((s) => s.topTasks)
@@ -299,11 +299,18 @@ export function Composer() {
   // ── TUI mid-turn send queue (Enter during a turn → queued) ──
   const queue = usePromptQueue((s) => s.queue)
   const queueSending = usePromptQueue((s) => s.sending)
-  const [queuePanelOpen, setQueuePanelOpen] = useState(false)
+  // Queue dropdown visibility lives in the chat store so the global
+  // scrollback keys can defer to it (TUI queue pane owns the keyboard).
+  const queuePanelOpen = useChatStore((s) => s.queuePanelOpen)
+  const setQueuePanelOpen = useChatStore((s) => s.setQueuePanelOpen)
+  const queueEditIndex = usePromptQueue((s) => s.editIndex)
+  const queueEditDraft = usePromptQueue((s) => s.editDraft)
+  // Selected queue row (TUI queue pane selection; ↑↓/j/k move it).
+  const [queueSel, setQueueSel] = useState(0)
   const queuePanelRef = useRef<HTMLDivElement>(null)
   const queuePillRef = useRef<HTMLButtonElement>(null)
 
-  // ── TUI shell mode (`!` prefix; input runs locally, never the agent) ──
+  // ── TUI shell mode (`! ` prefix; command goes to the agent as a prompt) ──
   const [shellMode, setShellMode] = useState(false)
   // ── TUI slash command menu (`/` prefix; fuzzy menu + local execution) ──
   const [slashSel, setSlashSel] = useState(0)
@@ -416,8 +423,8 @@ export function Composer() {
   const sendNow = async () => {
     const trimmed = text.trim()
     if (shellMode) {
-      // Shell mode: Ctrl+Enter runs the local command now (never the agent).
-      if (trimmed) void runShell(trimmed)
+      // Shell mode: Ctrl+Enter submits the command to the agent now.
+      if (trimmed) void submitShell(trimmed)
       return
     }
     const st = useChatStore.getState()
@@ -432,27 +439,30 @@ export function Composer() {
     await submitCurrent()
   }
 
-  /** TUI shell mode: run the buffer as a local command (never the agent). */
-  const runShell = async (cmd: string) => {
-    const st = useChatStore.getState()
-    const appendLocalEntry = st.appendLocalEntry
-    appendLocalEntry({ kind: 'user', text: `$ ${cmd}` })
+  /**
+   * TUI shell mode submit: the command goes to the agent as a normal
+   * prompt (contract: store.send(text, undefined, { fromShell: true }) —
+   * the merged store tags the user row so the scrollback renders it with
+   * the TUI `$ ` prefix). The local store signature doesn't carry `opts`
+   * yet (align/render does); the cast keeps this call contract-shaped.
+   * Submit exits shell mode back to plain input.
+   */
+  const submitShell = async (cmd: string) => {
     setText('')
+    setShellMode(false)
+    setChips([])
+    const st = useChatStore.getState()
+    await (
+      st.send as (
+        t: string,
+        b?: ContentBlock[],
+        o?: { fromShell?: boolean },
+      ) => Promise<void>
+    )(cmd, undefined, { fromShell: true })
+    // Record history only when the host accepted the prompt (send
+    // swallows transport errors into conn: 'error') — same as submitCurrent.
+    if (useChatStore.getState().conn !== 'error') pushHistory(cmd)
     taRef.current?.focus()
-    const res = await runShellCommand(cmd, st.cwd)
-    if (!res.ok) {
-      appendLocalEntry({ kind: 'error', text: `shell: ${res.error}` })
-      return
-    }
-    const out = res.output ?? ''
-    if (out.length > SHELL_OUTPUT_MAX) {
-      appendLocalEntry({
-        kind: 'session_event',
-        text: `${out.slice(0, SHELL_OUTPUT_MAX)}\n… (输出已截断，共 ${out.length} 字符)`,
-      })
-    } else if (out) {
-      appendLocalEntry({ kind: 'session_event', text: out })
-    }
   }
 
   /** TUI queue semantics: Enter during a turn queues; empty Enter sends head. */
@@ -466,7 +476,7 @@ export function Composer() {
       return
     }
     if (shellMode) {
-      void runShell(trimmed)
+      void submitShell(trimmed)
       return
     }
     const st = useChatStore.getState()
@@ -585,12 +595,17 @@ export function Composer() {
         !queuePillRef.current?.contains(t)
       ) {
         setQueuePanelOpen(false)
+        // Closing the panel discards any in-progress row edit.
+        usePromptQueue.getState().cancelEdit()
       }
     }
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
       if (histOpen) setHistOpen(false)
-      if (queuePanelOpen) setQueuePanelOpen(false)
+      // While editing a row, Esc cancels the edit instead of closing the
+      // panel (the edit textarea stops propagation itself; this is the
+      // defense-in-depth for keys that bypass it).
+      if (queuePanelOpen && queueEditIndex == null) setQueuePanelOpen(false)
     }
     document.addEventListener('mousedown', onDown)
     document.addEventListener('keydown', onKey)
@@ -598,7 +613,71 @@ export function Composer() {
       document.removeEventListener('mousedown', onDown)
       document.removeEventListener('keydown', onKey)
     }
-  }, [histOpen, queuePanelOpen])
+  }, [histOpen, queuePanelOpen, queueEditIndex])
+
+  // Keep the queue selection inside the current list (rows drain / get
+  // deleted while the panel is open).
+  useEffect(() => {
+    setQueueSel((s) => Math.min(s, Math.max(0, queue.length - 1)))
+  }, [queue.length])
+
+  // ── Queue panel keyboard ops (TUI queue.rs): x delete, e/Enter edit,
+  // ↑↓/j/k move the selection, Shift+K/↑ or Ctrl+↑ swap up, Shift+J/↓ or
+  // Ctrl+↓ swap down. Active only while the panel is open and NOT while
+  // editing or typing in the composer textarea — plain typing always
+  // wins. Capture phase so the scrollback nav keys never see these.
+  useEffect(() => {
+    if (!queuePanelOpen || queueEditIndex != null || queue.length === 0) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.isComposing) return
+      const t = e.target as HTMLElement | null
+      if (
+        !!t &&
+        (t.tagName === 'TEXTAREA' ||
+          t.tagName === 'INPUT' ||
+          t.isContentEditable)
+      ) {
+        return // typing / editing — don't steal keys
+      }
+      if (e.metaKey || e.altKey) return
+      const q = usePromptQueue.getState()
+      const n = q.queue.length
+      if (n === 0) return
+      const sel = Math.min(queueSel, n - 1)
+      let handled = true
+      if (e.key === 'ArrowDown' || e.key === 'j') {
+        setQueueSel(Math.min(n - 1, sel + 1))
+      } else if (e.key === 'ArrowUp' || e.key === 'k') {
+        setQueueSel(Math.max(0, sel - 1))
+      } else if (e.key === 'x' || e.key === 'Delete' || e.key === 'Backspace') {
+        q.removeAt(q.queue[sel].id)
+      } else if (e.key === 'e' || e.key === 'Enter') {
+        q.startEdit(sel)
+      } else if (
+        (e.shiftKey && (e.key === 'J' || e.key === 'ArrowDown')) ||
+        (e.ctrlKey && e.key === 'ArrowDown')
+      ) {
+        // TUI SwapDown binding: Shift+J (queue.rs); Ctrl+↓ also works.
+        q.moveDown(sel)
+        setQueueSel(Math.min(n - 1, sel + 1))
+      } else if (
+        (e.shiftKey && (e.key === 'K' || e.key === 'ArrowUp')) ||
+        (e.ctrlKey && e.key === 'ArrowUp')
+      ) {
+        // TUI SwapUp binding: Shift+K (queue.rs); Ctrl+↑ also works.
+        q.moveUp(sel)
+        setQueueSel(Math.max(0, sel - 1))
+      } else {
+        handled = false
+      }
+      if (handled) {
+        e.preventDefault()
+        e.stopPropagation()
+      }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [queuePanelOpen, queueEditIndex, queueSel, queue.length])
 
   // TUI queue: auto-send the head when the turn ends (conn busy → ready
   // && awaitingNext). The `sending` mutex guards against Enter races.
@@ -714,6 +793,23 @@ export function Composer() {
     Math.floor(
       spinnerFrame / (MONITOR_PULSE_INTERVAL_MS / SPINNER_INTERVAL_MS),
     ) % MONITOR_PULSE_FRAMES.length
+
+  // ── TUI mode-switch banner (notices.rs) — "Switched to mode: X" above
+  // the prompt: full visibility for 2 s, then a 0.3 s fade-out. ──
+  const [modeBannerVisible, setModeBannerVisible] = useState(false)
+  useEffect(() => {
+    if (!modeBanner) {
+      setModeBannerVisible(false)
+      return
+    }
+    setModeBannerVisible(true)
+    const t1 = window.setTimeout(() => setModeBannerVisible(false), 2000)
+    const t2 = window.setTimeout(() => clearModeBanner(), 2300)
+    return () => {
+      window.clearTimeout(t1)
+      window.clearTimeout(t2)
+    }
+  }, [modeBanner, clearModeBanner])
 
   // Collapse unfocused prompt height (PromptViewConfig.collapse_unfocused)
   const collapsed = !promptFocused && !text
@@ -968,6 +1064,12 @@ export function Composer() {
     if (mode && mode !== 'plan' && mode !== 'ask' && mode !== 'default') {
       out.push({ text: mode, color: 'var(--color-gn-cyan)' })
     }
+    // /multiline input mode (TUI /multiline) — persistent prompt hint.
+    // statusText is a dep so the /multiline command's status update
+    // refreshes this flag.
+    if (isMultilineEnabled()) {
+      out.push({ text: 'multiline', color: 'var(--color-gn-cyan)' })
+    }
     // busy / 待处理 live in the history sidebar state icons — not the prompt flags.
     if (conn === 'error' || conn === 'offline') {
       out.push({ text: statusText || 'offline', color: 'var(--color-gn-red)' })
@@ -978,6 +1080,21 @@ export function Composer() {
   return (
     <div className="safe-pb bg-gn-bg-base pt-1">
       <div className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS}`}>
+        {/* ── TUI mode-switch banner (notices.rs) — above the prompt,
+            full brightness 2 s, fade-out 0.3 s. ── */}
+        {modeBanner && (
+          <div
+            className={`flex min-h-5 items-center gap-1.5 pb-2 pr-0.5 font-ui text-[13px] leading-[1.4] select-none transition-opacity duration-300 ${
+              modeBannerVisible ? 'opacity-100' : 'opacity-0'
+            }`}
+            style={{ paddingLeft: COMPOSER_BODY_PAD_LEFT_PX }}
+          >
+            <span className="text-gn-cyan" aria-hidden>
+              <IconGlyph glyph={Glyphs.diamondFilled} color="currentColor" />
+            </span>
+            <span className="truncate text-gn-fg2">{modeBanner}</span>
+          </div>
+        )}
         {/* ── TUI turn status line (turn_status.rs) ──
             Busy: `⠧ Thinking…  1m20s ⇣12k [stop]`. Idle with watchers:
             `○ 2 commands still running` — a persistent status, never a
@@ -1041,7 +1158,7 @@ export function Composer() {
                 {busy && (
                   <button
                     type="button"
-                    onClick={() => useChatStore.getState().openCancelPanel()}
+                    onClick={() => void useChatStore.getState().requestCancelTurn()}
                     className="rounded px-1.5 py-[2px] text-gn-gray hover:bg-gn-bg-highlight hover:text-gn-red min-h-6 sm:min-h-0"
                   >
                     [stop]
@@ -1100,30 +1217,103 @@ export function Composer() {
                 </span>
               </div>
               <div className="gn-no-scrollbar max-h-40 overflow-y-auto">
-                {queue.map((q, i) => (
-                  <div
-                    key={q.id}
-                    className="group flex items-center gap-2 border-b border-gn-prompt-border/40 px-3 py-1.5"
-                  >
-                    <span className="shrink-0 text-[10px] tabular-nums text-gn-gray">
-                      {i + 1}
-                    </span>
-                    <span
-                      className="min-w-0 flex-1 truncate text-[11.5px] text-gn-fg"
-                      title={q.text}
+                {queue.map((q, i) => {
+                  const editing = queueEditIndex === i
+                  const selected = queueSel === i
+                  return (
+                    <div
+                      key={q.id}
+                      onMouseEnter={() => setQueueSel(i)}
+                      onMouseDown={() => setQueueSel(i)}
+                      className={`group flex items-center gap-2 border-b border-gn-prompt-border/40 px-3 py-1.5 ${
+                        selected && !editing ? 'bg-gn-bg-highlight/50' : ''
+                      }`}
                     >
-                      {q.text}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => usePromptQueue.getState().removeAt(q.id)}
-                      className="shrink-0 rounded px-1 text-gn-gray opacity-0 transition-opacity group-hover:opacity-100 hover:bg-gn-bg-highlight hover:text-gn-red"
-                      title="从队列删除"
-                    >
-                      {Glyphs.ballotX}
-                    </button>
-                  </div>
-                ))}
+                      <span className="shrink-0 text-[10px] tabular-nums text-gn-gray">
+                        {i + 1}
+                      </span>
+                      {editing ? (
+                        // TUI queue_edit.rs: the row becomes a textarea —
+                        // Enter saves, Esc cancels, Shift+Enter newlines.
+                        <textarea
+                          autoFocus
+                          rows={1}
+                          value={queueEditDraft}
+                          onChange={(e) =>
+                            usePromptQueue.getState().setEditDraft(e.target.value)
+                          }
+                          onKeyDown={(e) => {
+                            if (e.nativeEvent.isComposing) return
+                            if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey) {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              usePromptQueue.getState().saveEdit()
+                            } else if (e.key === 'Escape') {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              usePromptQueue.getState().cancelEdit()
+                            }
+                            // Shift+Enter → native newline
+                          }}
+                          className="gn-no-scrollbar min-h-[20px] flex-1 resize-none bg-transparent font-ui text-[11.5px] leading-[1.5] text-gn-fg outline-none"
+                          spellCheck={false}
+                        />
+                      ) : (
+                        <span
+                          className="min-w-0 flex-1 truncate text-[11.5px] text-gn-fg"
+                          title={q.text}
+                          onDoubleClick={() =>
+                            usePromptQueue.getState().startEdit(i)
+                          }
+                        >
+                          {q.text}
+                        </span>
+                      )}
+                      {!editing && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              usePromptQueue.getState().moveUp(i)
+                              setQueueSel(Math.max(0, i - 1))
+                            }}
+                            className="shrink-0 rounded px-1 text-gn-gray opacity-0 transition-opacity group-hover:opacity-100 hover:bg-gn-bg-highlight hover:text-gn-fg"
+                            title="上移 (Shift+K / Ctrl+↑)"
+                          >
+                            ↑
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              usePromptQueue.getState().moveDown(i)
+                              setQueueSel(Math.min(queue.length - 1, i + 1))
+                            }}
+                            className="shrink-0 rounded px-1 text-gn-gray opacity-0 transition-opacity group-hover:opacity-100 hover:bg-gn-bg-highlight hover:text-gn-fg"
+                            title="下移 (Shift+J / Ctrl+↓)"
+                          >
+                            ↓
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => usePromptQueue.getState().startEdit(i)}
+                            className="shrink-0 rounded px-1 text-gn-gray opacity-0 transition-opacity group-hover:opacity-100 hover:bg-gn-bg-highlight hover:text-gn-fg"
+                            title="编辑 (e)"
+                          >
+                            e
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => usePromptQueue.getState().removeAt(q.id)}
+                            className="shrink-0 rounded px-1 text-gn-gray opacity-0 transition-opacity group-hover:opacity-100 hover:bg-gn-bg-highlight hover:text-gn-red"
+                            title="从队列删除 (x)"
+                          >
+                            {Glyphs.ballotX}
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
               <div className="flex items-center gap-2 border-t border-gn-prompt-border px-3 py-1.5">
                 <button
@@ -1142,7 +1332,11 @@ export function Composer() {
                   清空
                 </button>
                 <span className="flex-1" />
-                <span className="text-[10px] text-gn-gray">Esc 关闭</span>
+                <span className="text-[10px] text-gn-gray">
+                  {queueEditIndex != null
+                    ? 'Enter 保存 · Shift+Enter 换行 · Esc 取消'
+                    : 'x 删除 · e 编辑 · ↑↓ 选择 · Shift+K/↑ 上移 · Shift+J/↓ 下移 · Esc 关闭'}
+                </span>
               </div>
             </div>
           )}
@@ -1252,9 +1446,10 @@ export function Composer() {
                 }}
               >
                 {shellMode ? (
-                  // TUI shell prompt: `!` prefix (cyan), input runs locally.
+                  // TUI shell prompt: `! ` prefix (cyan) — Enter sends the
+                  // command to the agent as a prompt (`$ ` user row).
                   <span className="inline-flex w-[1.25em] items-center justify-center font-bold leading-none">
-                    !
+                    {'! '}
                   </span>
                 ) : (
                   <IconGlyph glyph={Glyphs.promptArrow} color={prefixColor} />
@@ -1483,52 +1678,97 @@ export function Composer() {
                     e.preventDefault()
                     return
                   }
-                  if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey) {
-                    // TUI: Enter ON a chip expands it (paste_preview_hint);
-                    // anywhere else it keeps its normal submit behavior.
-                    // Shell mode: Enter always submits the local command.
-                    if (!shellMode && el && el.selectionStart === el.selectionEnd) {
-                      const at = chipOccurrenceAt(
-                        text,
-                        chips,
-                        el.selectionStart,
-                        'inside',
-                      )
-                      if (at) {
-                        e.preventDefault()
-                        expandChipAt(at)
+                  if (e.key === 'Enter' && !e.ctrlKey) {
+                    // TUI /multiline: on → Enter inserts a newline and
+                    // Shift+Enter sends; off (default) → Enter sends and
+                    // Shift+Enter is the newline. Shell mode overrides
+                    // either way: Enter always sends, Shift+Enter newline.
+                    const multiline = isMultilineEnabled()
+                    const sendKey = shellMode
+                      ? !e.shiftKey
+                      : multiline
+                        ? e.shiftKey
+                        : !e.shiftKey
+                    if (sendKey) {
+                      // TUI: Enter ON a chip expands it (paste_preview_hint);
+                      // anywhere else it keeps its normal submit behavior.
+                      // Shell mode: Enter always submits the command.
+                      if (!shellMode && el && el.selectionStart === el.selectionEnd) {
+                        const at = chipOccurrenceAt(
+                          text,
+                          chips,
+                          el.selectionStart,
+                          'inside',
+                        )
+                        if (at) {
+                          e.preventDefault()
+                          expandChipAt(at)
+                          return
+                        }
+                      } else if (!shellMode && el) {
+                        // Selection spanning exactly one chip label → expand.
+                        const sel = text.slice(el.selectionStart, el.selectionEnd)
+                        const chip = chips.find((c) => c.label === sel)
+                        if (chip) {
+                          e.preventDefault()
+                          expandChipAt({
+                            chip,
+                            start: el.selectionStart,
+                            end: el.selectionEnd,
+                          })
+                          return
+                        }
+                      }
+                      e.preventDefault()
+                      // TUI slash commands: `/…` input executes locally and
+                      // is NEVER sent to the agent.
+                      if (!shellMode && text.trimStart().startsWith('/')) {
+                        if (slashOpen && slashList.length > 0) {
+                          // Menu is up: Enter picks the highlighted row.
+                          void runSlashCommand(slashList[slashSelClamped], '')
+                        } else {
+                          // Menu closed (space/dismissed) or no match — the
+                          // typed line goes through matchSlash; unknown →
+                          // error row, input kept for editing.
+                          void runSlashLine(text)
+                        }
                         return
                       }
-                    } else if (!shellMode && el) {
-                      // Selection spanning exactly one chip label → expand.
-                      const sel = text.slice(el.selectionStart, el.selectionEnd)
-                      const chip = chips.find((c) => c.label === sel)
-                      if (chip) {
-                        e.preventDefault()
-                        expandChipAt({
-                          chip,
-                          start: el.selectionStart,
-                          end: el.selectionEnd,
-                        })
-                        return
-                      }
-                    }
-                    e.preventDefault()
-                    // TUI slash commands: `/…` input executes locally and
-                    // is NEVER sent to the agent.
-                    if (!shellMode && text.trimStart().startsWith('/')) {
-                      if (slashOpen && slashList.length > 0) {
-                        // Menu is up: Enter picks the highlighted row.
-                        void runSlashCommand(slashList[slashSelClamped], '')
-                      } else {
-                        // Menu closed (space/dismissed) or no match — the
-                        // typed line goes through matchSlash; unknown →
-                        // error row, input kept for editing.
-                        void runSlashLine(text)
-                      }
+                      void onSubmit()
                       return
                     }
-                    void onSubmit()
+                    // Newline key (default Shift+Enter / multiline Enter):
+                    // a bare Enter on a chip still expands it (TUI element
+                    // interaction); otherwise the textarea inserts the
+                    // newline natively.
+                    if (!e.shiftKey && !shellMode && el) {
+                      if (el.selectionStart === el.selectionEnd) {
+                        const at = chipOccurrenceAt(
+                          text,
+                          chips,
+                          el.selectionStart,
+                          'inside',
+                        )
+                        if (at) {
+                          e.preventDefault()
+                          expandChipAt(at)
+                          return
+                        }
+                      } else {
+                        const sel = text.slice(el.selectionStart, el.selectionEnd)
+                        const chip = chips.find((c) => c.label === sel)
+                        if (chip) {
+                          e.preventDefault()
+                          expandChipAt({
+                            chip,
+                            start: el.selectionStart,
+                            end: el.selectionEnd,
+                          })
+                          return
+                        }
+                      }
+                    }
+                    // fall through — native newline
                     return
                   }
                   if (e.key === 'Escape') {
@@ -1551,6 +1791,8 @@ export function Composer() {
                       e.preventDefault()
                       e.stopPropagation()
                       setQueuePanelOpen(false)
+                      // Closing the panel discards any in-progress edit.
+                      usePromptQueue.getState().cancelEdit()
                       return
                     }
                     // TUI: Esc in shell mode with an empty input exits.
@@ -1559,12 +1801,13 @@ export function Composer() {
                       setShellMode(false)
                       return
                     }
-                    // TUI: Esc while busy opens the cancel-turn panel
-                    // (immediate cancel only after the panel resolves).
+                    // TUI: Esc while busy goes through the cancel flow —
+                    // saved preference acts directly, running subagents
+                    // open the cancel panel, otherwise cancel directly.
                     if (busy) {
                       e.preventDefault()
                       e.stopPropagation()
-                      useChatStore.getState().openCancelPanel()
+                      void useChatStore.getState().requestCancelTurn()
                     }
                   }
                 }}
@@ -1628,7 +1871,7 @@ export function Composer() {
                 }
                 placeholder={
                   shellMode
-                    ? '运行本地命令'
+                    ? '发送命令给 agent（! 前缀）'
                     : promptFocused
                       ? ''
                       : 'Build anything'
