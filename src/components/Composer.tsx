@@ -1095,6 +1095,9 @@ export function Composer() {
             <span className="truncate text-gn-fg2">{modeBanner}</span>
           </div>
         )}
+        {/* x.ai/ask_user_question card mounts here: QuestionModal portals
+            its inline card into this anchor so it sits above the input. */}
+        <div id="acp-xai-question-anchor" />
         {/* ── TUI turn status line (turn_status.rs) ──
             Busy: `⠧ Thinking…  1m20s ⇣12k [stop]`. Idle with watchers:
             `○ 2 commands still running` — a persistent status, never a
