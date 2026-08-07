@@ -13,10 +13,13 @@ import { QuestionModal } from './components/QuestionModal'
 import { DiffReviewModal } from './components/DiffReviewModal'
 import { MemoryModal } from './components/MemoryModal'
 import { McpPanel } from './components/McpPanel'
+import { ExtensionsModal } from './components/ExtensionsModal'
+import { SettingsModal } from './components/SettingsModal'
 import { BlockViewer } from './components/BlockViewer'
 import { SessionInfoModal } from './components/SessionInfoModal'
 import { RewindPicker } from './components/RewindPicker'
 import { WorkflowPanel } from './components/WorkflowPanel'
+import { registerMcpPanelOpener } from './commands/registry'
 import { useScrollbackKeys } from './hooks/useScrollbackKeys'
 
 /**
@@ -35,6 +38,11 @@ export default function App() {
 
   useEffect(() => init(), [init])
   useEffect(() => initTheme(), [initTheme])
+  // /mcps opens the MCP panel — the opener lives in App (local state).
+  useEffect(() => {
+    registerMcpPanelOpener(() => setMcpOpen(true))
+    return () => registerMcpPanelOpener(null)
+  }, [])
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-gn-bg-base text-gn-fg font-ui transition-colors duration-150">
@@ -59,6 +67,8 @@ export default function App() {
       <DiffReviewModal />
       <MemoryModal />
       <McpPanel open={mcpOpen} onClose={() => setMcpOpen(false)} />
+      <ExtensionsModal />
+      <SettingsModal />
       <SessionInfoModal />
       <RewindPicker />
       <WorkflowPanel />
