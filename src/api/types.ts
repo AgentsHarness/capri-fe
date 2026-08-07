@@ -77,6 +77,27 @@ export type TopTask = {
 }
 
 /**
+ * One scheduled task (/loop) — TUI tasks pane "调度任务" section. Fed by
+ * scheduled_task_created / fired / deleted (both the session_notification
+ * tag carrier and the standalone SSE event path).
+ */
+export type ScheduledTask = {
+  taskId: string
+  prompt: string
+  /** Loop cadence as displayed (e.g. "1h", "30m", "5s"). */
+  interval: string
+  /** Next fire time (ISO string or epoch seconds/ms — normalized at render). */
+  nextFireAt?: string
+}
+
+/** One /rewind candidate (POST /api/rewind-points → points[]). */
+export type RewindPoint = {
+  index: number
+  timestamp?: number | string
+  summary?: string
+}
+
+/**
  * POST /api/session-info response — authoritative live details of the
  * active session, served by the host on demand (TUI /session-info analog).
  */
@@ -315,7 +336,27 @@ export type AcpEvent =
   | { type: 'hosts_changed'; params?: Record<string, unknown> }
   | { type: 'models_update'; params?: Record<string, unknown> }
   | { type: 'announcements_update'; params?: Record<string, unknown> }
-  | { type: 'scheduled_task_fired'; params?: Record<string, unknown> }
+  | {
+      type: 'scheduled_task_created'
+      sessionId?: string
+      /** Host contract shape: { taskId, prompt, interval, nextFireAt }. */
+      task?: Record<string, unknown>
+      params?: Record<string, unknown>
+    }
+  | {
+      type: 'scheduled_task_deleted'
+      sessionId?: string
+      taskId?: string
+      params?: Record<string, unknown>
+    }
+  | {
+      type: 'scheduled_task_fired'
+      sessionId?: string
+      taskId?: string
+      /** Next fire time after this fire (ISO string / epoch). */
+      nextFireAt?: unknown
+      params?: Record<string, unknown>
+    }
   | { type: 'scheduled_task_inject_prompt'; params?: Record<string, unknown> }
   | { type: 'prompt_complete'; params?: Record<string, unknown> }
   /** Fallback: any other x.ai/* notification, forwarded verbatim. */

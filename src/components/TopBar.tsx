@@ -29,27 +29,33 @@ export function WorkspaceBar() {
   const todos = useChatStore((s) => s.todos)
   const entries = useChatStore((s) => s.entries)
   const topTasks = useChatStore((s) => s.topTasks)
+  const scheduledTasks = useChatStore((s) => s.scheduledTasks)
   const models = useChatStore((s) => s.models)
   const modelName = useChatStore((s) => s.modelName)
 
   // ⠋N toggles sticky task list (also opened by the composer's idle
   // still-running cue — shared store flag). Auto-open when the first task
-  // appears (TUI opened_by_auto); user hide stays until they click again
-  // or all tasks finish and a new one starts. Restored top-strip tasks
-  // count.
+  // appears (TUI opened_by_auto) or the first scheduled task lands; user
+  // hide stays until they click again or everything finishes and a new
+  // one starts. Restored top-strip tasks count.
   const tasksOpen = useChatStore((s) => s.tasksBarOpen)
   const setTasksBarOpen = useChatStore((s) => s.setTasksBarOpen)
   const prevCount = useRef(0)
+  const prevScheduled = useRef(0)
   const runningCount = filterRunningEntries(entries).length + topTasks.length
   useEffect(() => {
     if (runningCount > 0 && prevCount.current === 0) {
       setTasksBarOpen(true)
     }
-    if (runningCount === 0) {
+    if (scheduledTasks.length > 0 && prevScheduled.current === 0) {
+      setTasksBarOpen(true)
+    }
+    if (runningCount === 0 && scheduledTasks.length === 0) {
       setTasksBarOpen(false)
     }
     prevCount.current = runningCount
-  }, [runningCount, setTasksBarOpen])
+    prevScheduled.current = scheduledTasks.length
+  }, [runningCount, scheduledTasks.length, setTasksBarOpen])
 
   // z-30 above scrollback sticky user prompt (z-10) so todo/goal
   // dropdowns aren't covered when the sticky header is pinned.
@@ -136,6 +142,9 @@ export function TopBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
   const forkSession = useChatStore((s) => s.forkSession)
   const renameSession = useChatStore((s) => s.renameSession)
   const requestRecap = useChatStore((s) => s.requestRecap)
+  const deleteSession = useChatStore((s) => s.deleteSession)
+  const compactSession = useChatStore((s) => s.compactSession)
+  const openRewind = useChatStore((s) => s.openRewind)
   const openSessionInfo = useChatStore((s) => s.openSessionInfo)
   const lastViewedAt = useChatStore((s) => s.lastViewedAt)
   const openedAt = useChatStore((s) => s.openedAt)
@@ -349,6 +358,29 @@ export function TopBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
                 >
                   rename
                 </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    closeHistory()
+                    const note = window.prompt('压缩说明（可留空）：')
+                    if (note !== null) void compactSession(note.trim() || undefined)
+                  }}
+                  className="rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                  title="x.ai/session/compact — 压缩当前会话上下文"
+                >
+                  compact
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    closeHistory()
+                    openRewind()
+                  }}
+                  className="rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                  title="x.ai/session/rewind — 回退到历史检查点"
+                >
+                  rewind
+                </button>
               </div>
               <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-gn-gutter">
                 history · 点击继续对话
@@ -388,12 +420,21 @@ export function TopBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
                         const state = key === 'active' ? 'active' : 'idle'
                         const pending = key === 'awaiting'
                         return (
-                          <button
+                          <div
                             key={s.sessionId}
-                            type="button"
-                            disabled={historyLoading}
-                            onClick={() => void continueSession(s.sessionId, s.cwd || '')}
-                            className={`flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-gn-bg-highlight disabled:opacity-50 ${active ? 'bg-gn-bg-highlight' : ''}`}
+                            role="button"
+                            tabIndex={0}
+                            aria-disabled={historyLoading}
+                            onClick={() => {
+                              if (!historyLoading) void continueSession(s.sessionId, s.cwd || '')
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault()
+                                if (!historyLoading) void continueSession(s.sessionId, s.cwd || '')
+                              }
+                            }}
+                            className={`group flex w-full cursor-pointer select-none items-center gap-2 px-3 py-2 text-left hover:bg-gn-bg-highlight ${historyLoading ? 'opacity-50' : ''} ${active ? 'bg-gn-bg-highlight' : ''}`}
                             title={`${s.title || s.sessionId.slice(0, 12)} · ${stateLabel(key)}${s.cwd ? ` · ${s.cwd}` : ''}`}
                           >
                             <SessionStateIcon
@@ -422,7 +463,23 @@ export function TopBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
                             {active && (
                               <span className="shrink-0 text-[9px] text-gn-cyan">当前</span>
                             )}
-                          </button>
+                            {/* Row-hover delete (x.ai/session/delete — TUI /delete). */}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                const ok = window.confirm(
+                                  `删除会话「${s.title || s.sessionId.slice(0, 12)}」？此操作不可恢复。`,
+                                )
+                                if (ok) void deleteSession(s.sessionId, s.cwd || '')
+                              }}
+                              className="shrink-0 rounded px-1 text-[11px] leading-none text-gn-red opacity-40 hover:bg-gn-diff-del-bg hover:opacity-100"
+                              title="删除会话（/delete）"
+                              aria-label="删除会话"
+                            >
+                              ✕
+                            </button>
+                          </div>
                         )
                       })}
                   </div>

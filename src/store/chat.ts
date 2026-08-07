@@ -5,6 +5,8 @@ import type {
   HostInfo,
   ModelOption,
   PendingReq,
+  RewindPoint,
+  ScheduledTask,
   ScrollEntry,
   SessionInfo,
   TaskTimelineEvent,
@@ -719,6 +721,18 @@ type ChatState = {
    */
   tasksBarOpen: boolean
   setTasksBarOpen: (open: boolean) => void
+  /**
+   * Scheduled tasks (/loop) of the active session — TUI tasks pane
+   * "调度任务" section. Fed by scheduled_task_created / fired / deleted
+   * (both the session_notification tag carrier and standalone SSE events;
+   * upserted by taskId so the dual paths dedupe). Cleared on session
+   * switch / new session.
+   */
+  scheduledTasks: ScheduledTask[]
+  /** /rewind picker modal visibility (TUI /rewind). */
+  rewindOpen: boolean
+  openRewind: () => void
+  closeRewind: () => void
 
   init: () => () => void
   send: (text: string, blocks?: ContentBlock[]) => Promise<void>
@@ -749,6 +763,16 @@ type ChatState = {
   cancelSubagent: (subagentId: string) => Promise<void>
   /** x.ai/task/kill — kill a background task. */
   killTask: (taskId: string) => Promise<void>
+  /** x.ai/session/delete — delete a session (TUI /delete). */
+  deleteSession: (sessionId: string, cwd: string) => Promise<void>
+  /** x.ai/session/compact — compress the active session's context (TUI /compact). */
+  compactSession: (note?: string) => Promise<void>
+  /** x.ai/session/rewind_points — candidate rewind targets for the /rewind picker. */
+  rewindPoints: () => Promise<RewindPoint[]>
+  /** x.ai/session/rewind — rewind the active session to a stored index (TUI /rewind). */
+  rewindExecute: (targetIndex: number) => Promise<void>
+  /** x.ai/scheduler/delete — remove a scheduled task (TUI /loop delete). */
+  deleteScheduledTask: (taskId: string) => Promise<void>
   /**
    * Pull stdout for a bg_task (x.ai/task/list, or the host's session-
    * scoped TaskLog reconstruction when sessionId/cwd are given). No-op
@@ -879,6 +903,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   sessionInfoOpen: false,
   tasksBarOpen: false,
   setTasksBarOpen: (open) => set({ tasksBarOpen: open }),
+  scheduledTasks: [],
+  rewindOpen: false,
+  openRewind: () => set({ rewindOpen: true }),
+  closeRewind: () => set({ rewindOpen: false }),
 
   init: () => {
     const unsub = transport.onEvent((ev) => {
@@ -974,6 +1002,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       subagentIndex: {},
       bgTaskIndex: {},
       topTasks: [],
+      scheduledTasks: [],
     })
     // Apply the host's status snapshot through the normal hello path so
     // model state, pending requests and busy flags hydrate consistently.
@@ -1084,6 +1113,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       todoCounts: undefined,
       todos: undefined,
       turnStartedAt: undefined,
+      scheduledTasks: [],
     })
     try {
       let loaded = 0
@@ -2383,10 +2413,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
           // TUI updates agent.session.scheduled_tasks; the fire itself is
           // rendered later as UserPromptBlock::cron from the inject's
           // UserMessageChunk. No session_event rows for create/fire/delete.
+          // The same updates can ALSO arrive as standalone SSE events
+          // (scheduled_task_created/deleted/fired) — both paths land in
+          // the shared upsert/remove helpers keyed by taskId, so a task
+          // delivered twice is never duplicated.
           case 'scheduled_task_created':
-          case 'scheduled_task_deleted':
-          case 'scheduled_task_fired':
+            upsertScheduledTask(set, parseScheduledTask(fields))
             break
+          case 'scheduled_task_deleted': {
+            const inner = fields.task as Record<string, unknown> | undefined
+            const id = wireTaskId(fields.task_id, fields.taskId, inner?.taskId)
+            if (id) removeScheduledTask(set, id)
+            break
+          }
+          case 'scheduled_task_fired': {
+            const id = wireTaskId(fields.task_id, fields.taskId)
+            if (id) updateScheduledTaskFire(set, id, fields.next_fire_at ?? fields.nextFireAt)
+            break
+          }
           // ── misc ─────────────────────────────────────────────────────
           case 'diff_review': {
             const content = Array.isArray(fields.content) ? fields.content : []
@@ -2549,10 +2593,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (name) set({ modelName: name })
         break
       }
-      case 'scheduled_task_fired':
-        // TUI only updates the tasks pane (next_fire_at) — no scrollback row.
-        // The turn itself surfaces as a cron UserPromptBlock via user_chunk.
+      case 'scheduled_task_created':
+        // Standalone SSE carrier (host may ALSO wrap the same update in a
+        // session_notification tag — both paths upsert by taskId).
+        upsertScheduledTask(set, parseScheduledTask(ev))
         break
+      case 'scheduled_task_deleted': {
+        const p = (ev.params ?? {}) as Record<string, unknown>
+        const id = wireTaskId(ev.taskId, p.taskId, p.task_id)
+        if (id) removeScheduledTask(set, id)
+        break
+      }
+      case 'scheduled_task_fired': {
+        const p = (ev.params ?? {}) as Record<string, unknown>
+        const id = wireTaskId(ev.taskId, p.taskId, p.task_id)
+        // TUI only updates the tasks pane (next_fire_at) — no scrollback
+        // row. The turn itself surfaces as a cron UserPromptBlock via
+        // user_chunk.
+        if (id) updateScheduledTaskFire(set, id, ev.nextFireAt ?? p.nextFireAt ?? p.next_fire_at)
+        break
+      }
       case 'scheduled_task_inject_prompt':
         // TUI enqueues the cron prompt (driver-only); scrollback comes from
         // the resulting UserMessageChunk, classified as is_cron. FE is not
@@ -2798,6 +2858,105 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
+  deleteSession: async (sessionId, cwd) => {
+    try {
+      await transport.sessionDelete(sessionId, cwd)
+      const isCurrent = sessionId === get().sessionId
+      set({ statusText: `已删除会话 ${sessionId.slice(0, 8)}` })
+      void get().refreshSessions()
+      // Deleting the ACTIVE session ends it — fall back to a fresh
+      // session (TUI /delete behavior). Historical deletes just refresh
+      // the list.
+      if (isCurrent) await get().newSession()
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      set({
+        entries: [...get().entries, { id: nid(), kind: 'error', text: `删除会话失败: ${msg}` }],
+      })
+    }
+  },
+
+  compactSession: async (note) => {
+    const s = get()
+    if (!s.sessionId || !s.cwd) {
+      set({ statusText: '压缩失败: 无活动会话' })
+      return
+    }
+    try {
+      await transport.compact(s.sessionId, note)
+      set({ statusText: note ? `已提交压缩「${note}」` : '已提交压缩' })
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      set({
+        entries: [...get().entries, { id: nid(), kind: 'error', text: `压缩失败: ${msg}` }],
+      })
+    }
+  },
+
+  rewindPoints: async () => {
+    const s = get()
+    if (!s.sessionId || !s.cwd) throw new Error('无活动会话')
+    try {
+      const r = await transport.rewindPoints(s.sessionId, s.cwd)
+      return r.points
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      // Audit row (same style as fork 失败); the picker rethrows so it
+      // can render the inline error too.
+      set({
+        entries: [...get().entries, { id: nid(), kind: 'error', text: `获取回退点失败: ${msg}` }],
+      })
+      throw e
+    }
+  },
+
+  rewindExecute: async (targetIndex) => {
+    const s = get()
+    if (!s.sessionId || !s.cwd) {
+      set({ statusText: '回退失败: 无活动会话' })
+      return
+    }
+    try {
+      await transport.rewindExecute(s.sessionId, targetIndex)
+      set({ statusText: `已回退到索引 ${targetIndex}，重新加载历史…` })
+      // The rewind truncates the conversation tail — reload the current
+      // session's history so the scrollback reflects the rewound state.
+      // Scheduled tasks belong to the same session, so stash them across
+      // the loadHistory reset (which clears per-session state).
+      const keep = get().scheduledTasks
+      await get().loadHistory(s.sessionId, s.cwd)
+      if (keep.length > 0) set({ scheduledTasks: keep })
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      set({
+        entries: [...get().entries, { id: nid(), kind: 'error', text: `回退失败: ${msg}` }],
+      })
+      throw e
+    }
+  },
+
+  deleteScheduledTask: async (taskId) => {
+    const s = get()
+    if (!s.sessionId) {
+      set({ statusText: '删除调度任务失败: 无活动会话' })
+      return
+    }
+    try {
+      await transport.schedulerDelete(s.sessionId, taskId)
+      // Optimistic local removal — the host's scheduled_task_deleted SSE
+      // (either carrier) arrives later and is idempotent on a missing id.
+      set({
+        statusText: '已删除调度任务',
+        scheduledTasks: get().scheduledTasks.filter((t) => t.taskId !== taskId),
+      })
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      set({
+        entries: [...get().entries, { id: nid(), kind: 'error', text: `删除调度任务失败: ${msg}` }],
+      })
+    }
+  },
+
   refreshTaskOutput: async (taskId, sessionId, cwd) => {
     if (!taskId) return
     const s = get()
@@ -3029,6 +3188,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       todoCounts: undefined,
       todos: undefined,
       turnStartedAt: undefined,
+      scheduledTasks: [],
     })
     await transport.newSession()
     // A brand-new session has nothing to review — mark it viewed so the
@@ -4386,6 +4546,75 @@ function wireTaskId(...candidates: unknown[]): string {
     }
   }
   return ''
+}
+
+// ── scheduled tasks (/loop) ───────────────────────────────────────
+// Both SSE carriers (session_notification tag + standalone event) route
+// through these helpers keyed by taskId, so dual delivery never dupes.
+
+/**
+ * Normalize a scheduled-task payload into store shape. Accepts the host
+ * contract envelope (`task: { taskId, prompt, interval, nextFireAt }`),
+ * a flat fields object (snake_case / camelCase), or a standalone event
+ * object carrying `task`.
+ */
+function parseScheduledTask(src: Record<string, unknown> | undefined): ScheduledTask | null {
+  if (!src || typeof src !== 'object') return null
+  const o = src as Record<string, unknown>
+  const inner =
+    o.task && typeof o.task === 'object' && !Array.isArray(o.task)
+      ? (o.task as Record<string, unknown>)
+      : o
+  const taskId = wireTaskId(inner.task_id, inner.taskId)
+  if (!taskId) return null
+  const prompt =
+    (typeof inner.prompt === 'string' && inner.prompt) ||
+    (typeof inner.description === 'string' && inner.description) ||
+    ''
+  let interval = typeof inner.interval === 'string' ? inner.interval : ''
+  if (!interval && typeof inner.interval_secs === 'number' && inner.interval_secs > 0) {
+    interval = `${inner.interval_secs}s`
+  }
+  const nextRaw = inner.next_fire_at ?? inner.nextFireAt
+  return {
+    taskId,
+    prompt,
+    interval,
+    ...(nextRaw != null && nextRaw !== '' ? { nextFireAt: String(nextRaw) } : {}),
+  }
+}
+
+/** Upsert a scheduled task by taskId (create or replace). */
+function upsertScheduledTask(set: SetState, task: ScheduledTask | null): void {
+  if (!task || !task.taskId) return
+  set((s) => {
+    if (s.scheduledTasks.some((t) => t.taskId === task.taskId)) {
+      return {
+        scheduledTasks: s.scheduledTasks.map((t) =>
+          t.taskId === task.taskId ? { ...t, ...task } : t,
+        ),
+      }
+    }
+    return { scheduledTasks: [...s.scheduledTasks, task] }
+  })
+}
+
+/** Remove a scheduled task by taskId (idempotent). */
+function removeScheduledTask(set: SetState, taskId: string): void {
+  if (!taskId) return
+  set((s) => ({
+    scheduledTasks: s.scheduledTasks.filter((t) => t.taskId !== taskId),
+  }))
+}
+
+/** scheduled_task_fired — update ONLY nextFireAt (when the event carries it). */
+function updateScheduledTaskFire(set: SetState, taskId: string, nextFireAt: unknown): void {
+  if (!taskId || nextFireAt == null || nextFireAt === '') return
+  set((s) => ({
+    scheduledTasks: s.scheduledTasks.map((t) =>
+      t.taskId === taskId ? { ...t, nextFireAt: String(nextFireAt) } : t,
+    ),
+  }))
 }
 
 function handleTaskBackgrounded(

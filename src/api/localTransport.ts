@@ -1,4 +1,4 @@
-import type { AcpEvent, ContentBlock, HostInfo, SessionInfo, SessionInfoDetail } from './types'
+import type { AcpEvent, ContentBlock, HostInfo, RewindPoint, SessionInfo, SessionInfoDetail } from './types'
 
 export type TransportHandler = (ev: AcpEvent) => void
 
@@ -409,7 +409,7 @@ export class LocalTransport {
     //   { ok, result: { result: { tasks }, error } }  // ExtMethodResult via JSON-RPC
     //   { ok, result: { tasks } }
     //   { tasks }
-    const list = findTasksArray(data)
+    const list = findArrayField(data, 'tasks')
     return list
       .filter((x): x is Record<string, unknown> => !!x && typeof x === 'object')
       .map((t) => this.parseTaskSnap(t))
@@ -452,10 +452,99 @@ export class LocalTransport {
     if (!res.ok || data.ok === false) throw new Error(data.error || 'task output failed')
     return this.parseTaskSnap((data.task ?? {}) as Record<string, unknown>, taskId)
   }
+
+  /**
+   * x.ai/session/delete — delete a session (TUI /delete). Deleting the
+   * ACTIVE session ends it; the UI falls back to a fresh session.
+   */
+  async sessionDelete(sessionId: string, cwd: string) {
+    const res = await fetch(this.url('/api/session-delete'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, cwd }),
+    })
+    const data = await res.json()
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `session delete failed (${res.status})`)
+    }
+    return data
+  }
+
+  /** x.ai/session/compact — compress the active session's context (TUI /compact). */
+  async compact(sessionId: string, note?: string) {
+    const res = await fetch(this.url('/api/compact'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, ...(note ? { note } : {}) }),
+    })
+    const data = await res.json()
+    if (!res.ok || data.ok === false) throw new Error(data.error || 'compact failed')
+    return data
+  }
+
+  /**
+   * x.ai/session/rewind_points — candidate rewind targets for the /rewind
+   * picker. The points array is unwrapped here (host contract
+   * `{ points: [{ index, timestamp, summary? }] }`).
+   */
+  async rewindPoints(
+    sessionId: string,
+    cwd: string,
+  ): Promise<{ points: RewindPoint[] }> {
+    const res = await fetch(this.url('/api/rewind-points'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, cwd }),
+    })
+    const data = await res.json()
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `rewind points failed (${res.status})`)
+    }
+    const points = (findArrayField(data, 'points') as Record<string, unknown>[])
+      .filter(
+        (p): p is Record<string, unknown> & { index: number } =>
+          !!p && typeof p === 'object' && typeof p.index === 'number',
+      )
+      .map((p) => ({
+        index: p.index,
+        ...(p.timestamp != null ? { timestamp: p.timestamp as number | string } : {}),
+        ...(typeof p.summary === 'string' && p.summary ? { summary: p.summary } : {}),
+      }))
+    return { points }
+  }
+
+  /** x.ai/session/rewind — rewind the session to a stored index (TUI /rewind). */
+  async rewindExecute(sessionId: string, targetIndex: number) {
+    const res = await fetch(this.url('/api/rewind-execute'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, targetIndex }),
+    })
+    const data = await res.json()
+    if (!res.ok || data.ok === false) throw new Error(data.error || 'rewind failed')
+    return data
+  }
+
+  /** x.ai/scheduler/delete — remove a scheduled task (TUI /loop delete). */
+  async schedulerDelete(sessionId: string, taskId: string) {
+    const res = await fetch(this.url('/api/scheduler-delete'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, taskId }),
+    })
+    const data = await res.json()
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || 'scheduler delete failed')
+    }
+    return data
+  }
 }
 
-/** Depth-first search for a `tasks: unknown[]` field in nested JSON. */
-function findTasksArray(root: unknown): unknown[] {
+/**
+ * Depth-first search for a `<key>: unknown[]` field in nested JSON
+ * (walks `result` / `data` / `payload` envelopes).
+ */
+function findArrayField(root: unknown, key: string): unknown[] {
   const seen = new Set<unknown>()
   const walk = (v: unknown, depth: number): unknown[] | null => {
     if (v == null || depth > 6) return null
@@ -464,9 +553,9 @@ function findTasksArray(root: unknown): unknown[] {
     seen.add(v)
     if (Array.isArray(v)) return null
     const o = v as Record<string, unknown>
-    if (Array.isArray(o.tasks)) return o.tasks
-    for (const key of ['result', 'data', 'payload']) {
-      const found = walk(o[key], depth + 1)
+    if (Array.isArray(o[key])) return o[key]
+    for (const k of ['result', 'data', 'payload']) {
+      const found = walk(o[k], depth + 1)
       if (found) return found
     }
     return null

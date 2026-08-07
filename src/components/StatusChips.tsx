@@ -534,10 +534,17 @@ export function RunningChip({
 }
 
 /**
- * Sticky running-tasks strip (TUI `tasks` pane under the status bar).
+ * Sticky task panel (TUI `tasks` pane under the status bar).
  *
+ * Two sections:
+ *  - 「运行中」— live bg_tasks / subagents / workflows (double-click opens
+ *    the block viewer, kill/cancel buttons) — the original strip, kept
+ *    verbatim;
+ *  - 「调度任务」— /loop scheduled tasks (prompt summary, interval,
+ *    nextFireAt, delete button).
  * Shown when {@link RunningChip} is open — not a floating popup, sticks
- * under the status bar. Double-click a row opens the block viewer.
+ * under the status bar. A「刷新」button re-syncs both lists
+ * (syncLiveTasks + refreshTopTasks).
  */
 export function RunningTasksBar({
   entries,
@@ -550,127 +557,224 @@ export function RunningTasksBar({
 }) {
   const running = filterRunningEntries(entries)
   const count = running.length + topTasks.length
+  const scheduledTasks = useChatStore((s) => s.scheduledTasks)
+  const deleteScheduledTask = useChatStore((s) => s.deleteScheduledTask)
+  const syncLiveTasks = useChatStore((s) => s.syncLiveTasks)
+  const refreshTopTasks = useChatStore((s) => s.refreshTopTasks)
+  const sessionId = useChatStore((s) => s.sessionId)
+  const cwd = useChatStore((s) => s.cwd)
   const spinnerFrame = useSessionSpinner(count > 0 && open)
   const cancelSubagent = useChatStore((s) => s.cancelSubagent)
   const killTask = useChatStore((s) => s.killTask)
   const openViewer = useChatStore((s) => s.openViewer)
   const openTaskViewer = useChatStore((s) => s.openTaskViewer)
-  if (!open || count === 0) return null
+  if (!open || (count === 0 && scheduledTasks.length === 0)) return null
+
+  const refresh = () => {
+    void syncLiveTasks()
+    if (sessionId && cwd) void refreshTopTasks(sessionId, cwd)
+  }
 
   return (
     <div
       id="running-tasks-bar"
       className="shrink-0 border-b border-gn-prompt-border/50 bg-gn-bg-base select-none"
       role="region"
-      aria-label={`Running tasks · ${count}`}
+      aria-label={`Running tasks · ${count} · scheduled ${scheduledTasks.length}`}
     >
       <div className="flex max-h-[min(28vh,12rem)] flex-col overflow-y-auto px-3 py-0.5 sm:px-4">
-        {topTasks.map((t) => (
-          <div
-            key={`restored-${t.taskId}`}
-            className="group flex min-h-6 cursor-pointer items-center gap-1.5 py-[2px] text-[12px] leading-snug hover:bg-gn-bg-highlight"
-            title={
-              t.restored
-                ? '恢复的运行中任务（宿主探活确认仍在运行；由 TUI 进程持有，无法在此 kill）· dblclick 查看日志'
-                : 'dblclick 查看日志'
-            }
-            onDoubleClick={(ev) => {
-              ev.preventDefault()
-              openTaskViewer(t.taskId, {
-                title: t.title,
-                command: t.command,
-                outputFile: t.outputFile,
-              })
-            }}
+        {/* Panel header — refresh re-syncs both sections. */}
+        <div className="flex items-center justify-end gap-1 py-0.5">
+          <button
+            type="button"
+            onClick={refresh}
+            className="rounded border border-transparent px-1.5 py-0.5 text-[10.5px] text-gn-muted hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg"
+            title="重新同步运行中任务与调度任务列表"
           >
-            <span
-              className="shrink-0 font-mono text-[11px] text-gn-accent-running"
-              aria-hidden
-            >
-              {SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length]}
-            </span>
-            <span className="shrink-0 font-medium text-gn-accent-running">
-              Task
-            </span>
-            <span className="text-gn-gutter">·</span>
-            <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-gn-fg">
-              {t.title}
-            </span>
-            {t.restored && (
-              <span className="shrink-0 rounded border border-gn-gutter/60 px-0.5 font-mono text-[9px] leading-[13px] text-gn-gutter">
-                恢复
-              </span>
-            )}
-            {t.command && t.command !== t.title && (
-              <span
-                className="hidden max-w-[28vw] truncate font-mono text-[10px] text-gn-muted sm:inline"
-                title={t.command}
-              >
-                {t.command}
-              </span>
-            )}
-          </div>
-        ))}
-        {running.map((e) => (
-          <div
-            key={e.id}
-            className="group flex min-h-6 cursor-pointer items-center gap-1.5 py-[2px] text-[12px] leading-snug hover:bg-gn-bg-highlight"
-            title="dblclick · view stdout"
-            onDoubleClick={(ev) => {
-              ev.preventDefault()
-              openViewer(e.id)
-            }}
-          >
-            <span
-              className="shrink-0 font-mono text-[11px] text-gn-accent-running"
-              aria-hidden
-            >
-              {SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length]}
-            </span>
-            <span className="shrink-0 font-medium text-gn-accent-running">
-              {kindLabel(e)}
-            </span>
-            <span className="text-gn-gutter">·</span>
-            <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-gn-fg">
-              {e.title}
-            </span>
-            {e.detail && (
-              <span
-                className="hidden max-w-[28vw] truncate font-mono text-[10px] text-gn-muted sm:inline"
-                title={e.detail}
-              >
-                {e.detail}
-              </span>
-            )}
-            {e.kind === 'subagent' && e.subagentId && (
-              <button
-                type="button"
-                onClick={(ev) => {
-                  ev.stopPropagation()
-                  void cancelSubagent(e.subagentId!)
+            刷新
+          </button>
+        </div>
+        {count > 0 && (
+          <>
+            <div className="px-1 pb-0.5 pt-1 text-[10px] uppercase tracking-wider text-gn-gutter">
+              运行中 · {count}
+            </div>
+            {topTasks.map((t) => (
+              <div
+                key={`restored-${t.taskId}`}
+                className="group flex min-h-6 cursor-pointer items-center gap-1.5 py-[2px] text-[12px] leading-snug hover:bg-gn-bg-highlight"
+                title={
+                  t.restored
+                    ? '恢复的运行中任务（宿主探活确认仍在运行；由 TUI 进程持有，无法在此 kill）· dblclick 查看日志'
+                    : 'dblclick 查看日志'
+                }
+                onDoubleClick={(ev) => {
+                  ev.preventDefault()
+                  openTaskViewer(t.taskId, {
+                    title: t.title,
+                    command: t.command,
+                    outputFile: t.outputFile,
+                  })
                 }}
-                className="shrink-0 rounded border border-gn-red/40 px-1.5 py-0.5 text-[10.5px] text-gn-red opacity-80 hover:bg-gn-diff-del-bg hover:opacity-100"
-                title="x.ai/subagent/cancel"
               >
-                cancel
-              </button>
-            )}
-            {e.kind === 'bg_task' && e.taskId && (
-              <button
-                type="button"
-                onClick={(ev) => {
-                  ev.stopPropagation()
-                  void killTask(e.taskId!)
+                <span
+                  className="shrink-0 font-mono text-[11px] text-gn-accent-running"
+                  aria-hidden
+                >
+                  {SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length]}
+                </span>
+                <span className="shrink-0 font-medium text-gn-accent-running">
+                  Task
+                </span>
+                <span className="text-gn-gutter">·</span>
+                <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-gn-fg">
+                  {t.title}
+                </span>
+                {t.restored && (
+                  <span className="shrink-0 rounded border border-gn-gutter/60 px-0.5 font-mono text-[9px] leading-[13px] text-gn-gutter">
+                    恢复
+                  </span>
+                )}
+                {t.command && t.command !== t.title && (
+                  <span
+                    className="hidden max-w-[28vw] truncate font-mono text-[10px] text-gn-muted sm:inline"
+                    title={t.command}
+                  >
+                    {t.command}
+                  </span>
+                )}
+              </div>
+            ))}
+            {running.map((e) => (
+              <div
+                key={e.id}
+                className="group flex min-h-6 cursor-pointer items-center gap-1.5 py-[2px] text-[12px] leading-snug hover:bg-gn-bg-highlight"
+                title="dblclick · view stdout"
+                onDoubleClick={(ev) => {
+                  ev.preventDefault()
+                  openViewer(e.id)
                 }}
-                className="shrink-0 rounded border border-gn-red/40 px-1.5 py-0.5 text-[10.5px] text-gn-red opacity-80 hover:bg-gn-diff-del-bg hover:opacity-100"
-                title="x.ai/task/kill"
               >
-                kill
-              </button>
-            )}
-          </div>
-        ))}
+                <span
+                  className="shrink-0 font-mono text-[11px] text-gn-accent-running"
+                  aria-hidden
+                >
+                  {SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length]}
+                </span>
+                <span className="shrink-0 font-medium text-gn-accent-running">
+                  {kindLabel(e)}
+                </span>
+                <span className="text-gn-gutter">·</span>
+                <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-gn-fg">
+                  {e.title}
+                </span>
+                {e.detail && (
+                  <span
+                    className="hidden max-w-[28vw] truncate font-mono text-[10px] text-gn-muted sm:inline"
+                    title={e.detail}
+                  >
+                    {e.detail}
+                  </span>
+                )}
+                {e.kind === 'subagent' && e.subagentId && (
+                  <button
+                    type="button"
+                    onClick={(ev) => {
+                      ev.stopPropagation()
+                      void cancelSubagent(e.subagentId!)
+                    }}
+                    className="shrink-0 rounded border border-gn-red/40 px-1.5 py-0.5 text-[10.5px] text-gn-red opacity-80 hover:bg-gn-diff-del-bg hover:opacity-100"
+                    title="x.ai/subagent/cancel"
+                  >
+                    cancel
+                  </button>
+                )}
+                {e.kind === 'bg_task' && e.taskId && (
+                  <button
+                    type="button"
+                    onClick={(ev) => {
+                      ev.stopPropagation()
+                      void killTask(e.taskId!)
+                    }}
+                    className="shrink-0 rounded border border-gn-red/40 px-1.5 py-0.5 text-[10.5px] text-gn-red opacity-80 hover:bg-gn-diff-del-bg hover:opacity-100"
+                    title="x.ai/task/kill"
+                  >
+                    kill
+                  </button>
+                )}
+              </div>
+            ))}
+          </>
+        )}
+        {scheduledTasks.length > 0 && (
+          <>
+            <div className="px-1 pb-0.5 pt-1 text-[10px] uppercase tracking-wider text-gn-gutter">
+              调度任务 · {scheduledTasks.length}
+            </div>
+            {scheduledTasks.map((t) => (
+              <div
+                key={`sched-${t.taskId}`}
+                className="group flex min-h-6 items-center gap-1.5 py-[2px] text-[12px] leading-snug hover:bg-gn-bg-highlight"
+                title={t.prompt || t.taskId}
+              >
+                <span className="shrink-0 font-mono text-[11px] text-gn-plan" aria-hidden>
+                  ↻
+                </span>
+                <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-gn-fg">
+                  {t.prompt || `Task ${t.taskId.slice(0, 8)}`}
+                </span>
+                {t.interval && (
+                  <span
+                    className="shrink-0 font-mono text-[10px] text-gn-muted"
+                    title={`间隔 ${t.interval}`}
+                  >
+                    {t.interval}
+                  </span>
+                )}
+                {t.nextFireAt && (
+                  <span
+                    className="shrink-0 font-mono text-[10px] text-gn-muted"
+                    title={`下次触发 ${t.nextFireAt}`}
+                  >
+                    {formatScheduledFire(t.nextFireAt)}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={(ev) => {
+                    ev.stopPropagation()
+                    void deleteScheduledTask(t.taskId)
+                  }}
+                  className="shrink-0 rounded border border-gn-red/40 px-1.5 py-0.5 text-[10.5px] text-gn-red opacity-80 hover:bg-gn-diff-del-bg hover:opacity-100"
+                  title="x.ai/scheduler/delete"
+                >
+                  delete
+                </button>
+              </div>
+            ))}
+          </>
+        )}
       </div>
     </div>
   )
+}
+
+/**
+ * Scheduled-task next-fire display: epoch seconds / epoch ms / ISO string
+ * all normalize to HH:MM (TUI tasks pane shows the fire time compactly).
+ */
+function formatScheduledFire(v: string): string {
+  if (!v) return ''
+  const n = Number(v)
+  if (Number.isFinite(n) && n > 0) {
+    const d = new Date(n < 1e12 ? n * 1000 : n)
+    if (!Number.isNaN(d.getTime())) {
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    }
+  }
+  const d = new Date(v)
+  if (!Number.isNaN(d.getTime())) {
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  }
+  return v
 }
