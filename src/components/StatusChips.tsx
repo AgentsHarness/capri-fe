@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { SPINNER_FRAMES } from '../theme/glyphs'
 import { useChatStore } from '../store/chat'
 import { useSessionSpinner } from './SessionStateIcon'
@@ -150,8 +151,9 @@ export function todoMark(status: TodoItem['status']) {
 /**
  * Todo badge — TUI render_todo_badge_spans default format "2/5 ✓".
  * Primary source: plan-update items (chat store TodoItem[], cancelled
- * excluded). Fallback: goal_updated deliverables. Click expands a panel
- * listing every item with its status mark. Hidden when empty.
+ * excluded). Fallback: goal_updated deliverables. Click expands an inline
+ * block under the status bar (TUI todo pane) listing every item with its
+ * status mark; click again to collapse. Hidden when empty.
  */
 export function TodoChip({
   todos,
@@ -161,6 +163,13 @@ export function TodoChip({
   goalState?: Record<string, unknown>
 }) {
   const [open, setOpen] = useState(false)
+  // The expanded list is portaled into the sticky status-bar wrapper
+  // (RunningTasksBar lives there too) so it renders as an in-flow block
+  // BELOW the bar — pushing the scrollback down like RunningTasksBar,
+  // never a floating overlay — while the chip itself stays aligned in
+  // the bar row.
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const hostRef = useRef<HTMLElement | null>(null)
   let total = 0
   let completed = 0
   let objective = ''
@@ -172,14 +181,24 @@ export function TodoChip({
     completed = Number(goalState?.completed_deliverables ?? 0)
     objective = typeof goalState?.objective === 'string' ? goalState.objective : ''
   }
-  if (!(total > 0)) return null
   const expandable = !!todos && todos.length > 0
+  // Locate the sticky bar wrapper once the panel is about to open.
+  useEffect(() => {
+    if (!open || !expandable) return
+    hostRef.current = btnRef.current?.closest<HTMLElement>('.sticky') ?? null
+  }, [open, expandable])
+  if (!(total > 0)) return null
   return (
-    <div className="relative">
+    <>
       <button
+        ref={btnRef}
         type="button"
         onClick={() => expandable && setOpen((v) => !v)}
-        className={`flex items-center gap-0.5 rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-fg2 hover:bg-gn-bg-highlight ${expandable ? 'cursor-pointer' : 'cursor-default'}`}
+        aria-expanded={expandable ? open : undefined}
+        aria-controls={expandable ? 'todo-inline-panel' : undefined}
+        className={`flex items-center gap-0.5 rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-fg2 hover:bg-gn-bg-highlight ${expandable ? 'cursor-pointer' : 'cursor-default'} ${
+          open && expandable ? 'bg-gn-bg-highlight' : ''
+        }`}
         title={objective ? `目标: ${objective}` : '待办进度'}
       >
         <span>
@@ -189,37 +208,39 @@ export function TodoChip({
           <CheckMarkIcon />
         </span>
       </button>
-      {open && expandable && (
-        <>
-          <button
-            type="button"
-            className="fixed inset-0 z-30 cursor-default"
-            aria-label="close"
-            onClick={() => setOpen(false)}
-          />
-          <div className="absolute right-0 top-full z-40 mt-1 max-h-[50vh] w-72 max-w-[92vw] overflow-y-auto rounded border border-gn-prompt-border bg-gn-bg-base shadow-xl py-1">
-            <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-gn-gutter">
-              todo · {completed}/{total} 完成
-            </div>
-            {todos!.map((t, i) => (
-              <div
-                key={t.id ?? i}
-                className="flex items-start gap-2 px-3 py-1.5 text-[12px] leading-snug hover:bg-gn-bg-highlight"
-              >
-                <span className="mt-[1px] shrink-0 font-mono text-[11px]" aria-hidden>
-                  {todoMark(t.status)}
-                </span>
-                <span
-                  className={`min-w-0 flex-1 break-words ${t.status === 'completed' || t.status === 'cancelled' ? 'text-gn-muted' : 'text-gn-fg'}`}
-                >
-                  {t.content}
-                </span>
+      {open && expandable && hostRef.current
+        ? createPortal(
+            <div
+              id="todo-inline-panel"
+              role="region"
+              aria-label={`todo · ${completed}/${total} 完成`}
+              className="shrink-0 border-b border-gn-prompt-border/50 bg-gn-bg-base select-none"
+            >
+              <div className="max-h-[min(32vh,16rem)] overflow-y-auto px-3 py-1 sm:px-4">
+                <div className="px-1 pb-0.5 pt-1 text-[10px] uppercase tracking-wider text-gn-gutter">
+                  todo · {completed}/{total} 完成
+                </div>
+                {todos!.map((t, i) => (
+                  <div
+                    key={t.id ?? i}
+                    className="flex items-start gap-2 px-1 py-1 text-[12px] leading-snug hover:bg-gn-bg-highlight"
+                  >
+                    <span className="mt-[1px] shrink-0 font-mono text-[11px]" aria-hidden>
+                      {todoMark(t.status)}
+                    </span>
+                    <span
+                      className={`min-w-0 flex-1 break-words ${t.status === 'completed' || t.status === 'cancelled' ? 'text-gn-muted' : 'text-gn-fg'}`}
+                    >
+                      {t.content}
+                    </span>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
+            </div>,
+            hostRef.current,
+          )
+        : null}
+    </>
   )
 }
 
@@ -324,6 +345,69 @@ function useLiveGoalElapsed(elapsedMs: number, active: boolean): number {
   return elapsedMs + Math.floor((Date.now() - receivedAt.current) / 1000) * 1000
 }
 
+/**
+ * Goal elapsed (defensive chain — TUI live_elapsed_ms feeds the same
+ * line): wire elapsed_ms → started_at → goal_updated receive time.
+ */
+function goalElapsedMs(g: Record<string, unknown>, receivedAt?: number): number {
+  const ems = g.elapsed_ms ?? g.elapsedMs
+  if (typeof ems === 'number' && Number.isFinite(ems) && ems >= 0) return ems
+  const st = g.started_at ?? g.startedAt ?? g.start_time
+  if (st != null && st !== '') {
+    const sn = Number(st)
+    if (Number.isFinite(sn) && sn > 0) {
+      return Math.max(0, Date.now() - (sn < 1e12 ? sn * 1000 : sn))
+    }
+  }
+  if (receivedAt != null) return Math.max(0, Date.now() - receivedAt)
+  return 0
+}
+
+/**
+ * Goal-event todo items (defensive): the wire may carry a task list under
+ * `deliverables` (GoalDeliverableInfo: {id, title, status}) or legacy
+ * spellings; anything missing simply renders no list.
+ */
+function goalTodoItems(
+  g: Record<string, unknown>,
+): { content: string; status: TodoItem['status'] }[] {
+  const raw = Array.isArray(g.deliverables)
+    ? g.deliverables
+    : Array.isArray(g.todos)
+      ? g.todos
+      : Array.isArray(g.todo_list)
+        ? g.todo_list
+        : undefined
+  if (!raw) return []
+  const out: { content: string; status: TodoItem['status'] }[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+    const o = item as Record<string, unknown>
+    const content =
+      (typeof o.title === 'string' && o.title.trim()) ||
+      (typeof o.content === 'string' && o.content.trim())
+    if (!content) continue
+    const s = typeof o.status === 'string' ? o.status.toLowerCase() : ''
+    let status: TodoItem['status'] = 'pending'
+    if (s === 'completed' || s === 'done' || s === 'complete') status = 'completed'
+    else if (
+      s === 'in_progress' ||
+      s === 'inprogress' ||
+      s === 'active' ||
+      s === 'running'
+    ) {
+      status = 'in_progress'
+    } else if (s === 'cancelled' || s === 'failed') {
+      status = 'cancelled'
+    }
+    out.push({ content, status })
+  }
+  return out
+}
+
+/** TUI goal_detail budget_color semantics: >80% error, ≥50% warning, else success. */
+const GOAL_BUDGET_BAR_W = 14
+
 /** Helper shared by GoalChip / RunningChip dropdown panels. */
 function ChipDropdown({
   open,
@@ -380,6 +464,7 @@ export function GoalChip({
   const goalPause = useChatStore((s) => s.goalPause)
   const goalResume = useChatStore((s) => s.goalResume)
   const goalClear = useChatStore((s) => s.goalClear)
+  const goalReceivedAt = useChatStore((s) => s.goalReceivedAt)
   const setWorkflowPanelOpen = useChatStore((s) => s.setWorkflowPanelOpen)
   // Action feedback: the status line carries the last instruction's
   // confirmation; the error line surfaces host-level failures.
@@ -390,7 +475,7 @@ export function GoalChip({
   const status = typeof goalState?.status === 'string' ? goalState.status : ''
   const active = status === 'active'
   const spinnerFrame = useSessionSpinner(active)
-  const elapsed = useLiveGoalElapsed(Number(goalState?.elapsed_ms ?? 0), active)
+  const elapsed = useLiveGoalElapsed(goalElapsedMs(goalState ?? {}, goalReceivedAt), active)
   if (!goalState) return null
   // A cleared goal leaves the status bar (the "目标已清除" event already landed).
   if (status === 'cleared') return null
@@ -404,6 +489,14 @@ export function GoalChip({
   const budget = Number(goalState.token_budget ?? 0)
 
   const tokensDisplay = budget > 0 ? `${fmtTok(tokens)}/${fmtTok(budget)} tokens` : `${fmtTok(tokens)} tokens`
+
+  // TUI goal_detail: budget progress bar with budget_color semantics
+  // (>80% red · ≥50% yellow · else green); todo list from the goal event.
+  const goalTodos = goalTodoItems(goalState)
+  const budgetPct = budget > 0 ? Math.min(1, tokens / budget) : 0
+  const budgetColorClass =
+    budgetPct > 0.8 ? 'text-gn-red' : budgetPct >= 0.5 ? 'text-gn-yellow' : 'text-gn-green'
+  const budgetFilled = Math.round(budgetPct * GOAL_BUDGET_BAR_W)
 
   const chipClass = paused
     ? 'bg-gn-warning text-gn-bg-base'
@@ -462,11 +555,61 @@ export function GoalChip({
             )}
           </div>
         )}
+        {/* Goal-event todo list (defensive — only when the wire carried
+            deliverables/todos). TUI goal_detail MAX_TODO_DISPLAY=15. */}
+        {goalTodos.length > 0 && (
+          <div className="border-t border-gn-prompt-border px-3 py-1.5">
+            <div className="text-[10px] uppercase tracking-wider text-gn-gutter">
+              todos · {goalTodos.length}
+            </div>
+            <div className="mt-0.5 max-h-[26vh] overflow-y-auto">
+              {goalTodos.slice(0, 15).map((t, i) => (
+                <div
+                  key={i}
+                  className="flex items-start gap-2 py-0.5 text-[12px] leading-snug"
+                >
+                  <span className="mt-[1px] shrink-0 font-mono text-[11px]" aria-hidden>
+                    {todoMark(t.status)}
+                  </span>
+                  <span
+                    className={`min-w-0 flex-1 break-words ${t.status === 'completed' || t.status === 'cancelled' ? 'text-gn-muted' : 'text-gn-fg'}`}
+                  >
+                    {t.content}
+                  </span>
+                </div>
+              ))}
+              {goalTodos.length > 15 && (
+                <div className="py-0.5 font-mono text-[10.5px] text-gn-gutter">
+                  +{goalTodos.length - 15} more
+                </div>
+              )}
+            </div>
+          </div>
+        )}
         <div className="border-t border-gn-prompt-border px-3 py-1.5 font-mono text-[11px] text-gn-muted">
           <div className="flex items-center justify-between gap-2">
             <span>{tokensDisplay}</span>
             <span className="tabular-nums">elapsed {fmtElapsedCompact(elapsed)}</span>
           </div>
+          {/* TUI goal_detail budget bar ([bar] NN%) — budget_color semantics. */}
+          {budget > 0 && (
+            <div className="mt-1.5 flex items-center gap-2">
+              <span className="shrink-0 text-gn-gutter">budget</span>
+              <span className="inline-flex items-center gap-1.5 tabular-nums">
+                <span aria-hidden className="whitespace-nowrap">
+                  <span className={budgetColorClass}>
+                    {'█'.repeat(budgetFilled)}
+                  </span>
+                  <span className="text-gn-gray-dim">
+                    {'░'.repeat(GOAL_BUDGET_BAR_W - budgetFilled)}
+                  </span>
+                </span>
+                <span className={budgetColorClass}>
+                  {(budgetPct * 100).toFixed(0)}%
+                </span>
+              </span>
+            </div>
+          )}
           {(status || phase) && (
             <div className="mt-1 text-gn-gutter">
               status · {status}

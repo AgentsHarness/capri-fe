@@ -665,8 +665,20 @@ export type WorkflowRun = {
   progress?: number
   /** Script payload from workflow_updated — the "save script" source. */
   script?: string
-  /** Agent roster (TUI shows it per row when the event carries it). */
+  /** Workflow objective (wire `objective`). */
+  objective?: string
+  /** Agent roster labels (TUI shows it per row when the event carries it). */
   agents?: string[]
+  /**
+   * Structured agent roster (WorkflowAgentInfo wire shape: label / state /
+   * tokens_used). Same source as `agents` — plain labels when the wire
+   * only ships strings, full objects when it ships the roster.
+   */
+  agentRoster?: { name: string; status?: string; tokens?: number }[]
+  /** Phase rail (WorkflowPhaseInfo wire shape: title / state). */
+  phases?: { title: string; state: string }[]
+  /** Wire elapsed_ms — elapsed fallback when the wire has no started_at. */
+  elapsedMs?: number
   /** Started-at epoch ms from the wire. */
   startedAt?: number
   /** Local first-seen epoch ms — start-time fallback when the wire has none. */
@@ -795,9 +807,20 @@ type ChatState = {
   closeDiffReview: () => void
   /** Workflow runs keyed by run_id (TUI workflows pane). */
   workflowRuns: Record<string, WorkflowRun>
+  /**
+   * Run shown in the /workflows detail view (TUI detail_run_id). Undefined
+   * keeps the panel on the run list; Esc in the detail returns to it.
+   */
+  selectedWorkflowRunId?: string
+  setSelectedWorkflowRunId: (id: string | undefined) => void
   /** /goal detail panel visibility (GoalChip dropdown; /goal opens it). */
   goalPanelOpen: boolean
   setGoalPanelOpen: (open: boolean) => void
+  /**
+   * goal_updated receive time — elapsed fallback when the wire carries
+   * neither elapsed_ms nor started_at (defensive chain).
+   */
+  goalReceivedAt?: number
   /** /workflows run-dashboard modal visibility. */
   workflowPanelOpen: boolean
   setWorkflowPanelOpen: (open: boolean) => void
@@ -865,6 +888,14 @@ type ChatState = {
   rewindOpen: boolean
   openRewind: () => void
   closeRewind: () => void
+  /**
+   * Composer draft parked while the /rewind picker is open (TUI
+   * StashedPrompt). The Composer moves its local buffer here on open and
+   * restores it on close — a rewind reloads the session history and must
+   * not eat the user's in-progress text.
+   */
+  stashedDraft: string | null
+  setStashedDraft: (text: string | null) => void
   /**
    * Cancel-turn panel (TUI CancelTurnPanel): Esc / [stop] while busy opens
    * it instead of cancelling immediately — only when the current turn has
@@ -1155,6 +1186,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   mcpVersion: 0,
   models: [],
   workflowRuns: {},
+  selectedWorkflowRunId: undefined,
+  setSelectedWorkflowRunId: (id) => set({ selectedWorkflowRunId: id }),
+  goalReceivedAt: undefined,
   hooksVersion: 0,
   toolIndex: {},
   focusMode: 'prompt',
@@ -1175,6 +1209,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   rewindOpen: false,
   openRewind: () => set({ rewindOpen: true }),
   closeRewind: () => set({ rewindOpen: false }),
+  stashedDraft: null,
+  setStashedDraft: (text) => set({ stashedDraft: text }),
   cancelPanelOpen: false,
   openCancelPanel: () => set({ cancelPanelOpen: true }),
   closeCancelPanel: () => set({ cancelPanelOpen: false }),
@@ -2800,10 +2836,65 @@ export const useChatStore = create<ChatState>((set, get) => ({
               : Array.isArray(f.agent_roster)
                 ? f.agent_roster
                 : undefined
-            const agents = rawAgents
-              ?.map((a) => String(a))
-              .filter((a) => a.length > 0)
+            // Agents may be plain labels (older producers) or full
+            // WorkflowAgentInfo objects {label, state, tokens_used, …}.
+            // Both collapse into the same roster; the list-row labels come
+            // from the same source (TUI shows them per row).
+            const agentRoster = rawAgents
+              ?.map((a) => {
+                if (a && typeof a === 'object' && !Array.isArray(a)) {
+                  const o = a as Record<string, unknown>
+                  const name =
+                    (typeof o.label === 'string' && o.label.trim()) ||
+                    (typeof o.name === 'string' && o.name.trim()) ||
+                    (typeof o.agent_id === 'string' ? o.agent_id : '')
+                  if (!name) return null
+                  const tokensRaw = o.tokens_used ?? o.tokensUsed ?? o.tokens
+                  return {
+                    name,
+                    status: typeof o.state === 'string' ? o.state : undefined,
+                    tokens:
+                      tokensRaw != null &&
+                      tokensRaw !== '' &&
+                      Number.isFinite(Number(tokensRaw))
+                        ? Number(tokensRaw)
+                        : undefined,
+                  }
+                }
+                const s = String(a).trim()
+                return s ? { name: s } : null
+              })
+              .filter(
+                (a): a is { name: string; status?: string; tokens?: number } =>
+                  !!a,
+              )
+            const agents = agentRoster?.map((a) => a.name)
             const script = typeof f.script === 'string' ? f.script : undefined
+            const objective =
+              typeof f.objective === 'string' && f.objective.trim()
+                ? f.objective
+                : undefined
+            const rawPhases = Array.isArray(f.phases) ? f.phases : undefined
+            const phases = rawPhases
+              ?.map((p) => {
+                if (!p || typeof p !== 'object' || Array.isArray(p)) return null
+                const o = p as Record<string, unknown>
+                const title = typeof o.title === 'string' ? o.title.trim() : ''
+                if (!title) return null
+                return {
+                  title,
+                  state: typeof o.state === 'string' ? o.state : 'pending',
+                }
+              })
+              .filter((p): p is { title: string; state: string } => !!p)
+            const rawElapsed = f.elapsed_ms ?? f.elapsedMs
+            const elapsedMs =
+              rawElapsed != null &&
+              rawElapsed !== '' &&
+              Number.isFinite(Number(rawElapsed)) &&
+              Number(rawElapsed) >= 0
+                ? Number(rawElapsed)
+                : undefined
             const rawStart = f.started_at ?? f.startedAt ?? f.start_time
             const sNum = typeof rawStart === 'number' ? rawStart : Number(rawStart)
             const startedAt =
@@ -2824,7 +2915,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   phase,
                   progress,
                   agents,
+                  agentRoster,
+                  phases,
+                  objective,
                   script,
+                  elapsedMs,
                   startedAt,
                   // Start-time fallback: first event that introduced the run.
                   firstSeenAt: prev?.firstSeenAt ?? Date.now(),
@@ -2857,7 +2952,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
             const f = fields as Record<string, unknown>
             const status = typeof f.status === 'string' ? f.status : ''
             const objective = typeof f.objective === 'string' ? f.objective : ''
-            set({ goalState: f })
+            // goalReceivedAt anchors the elapsed fallback chain (wire
+            // elapsed_ms / started_at absent → receive time).
+            set({ goalState: f, goalReceivedAt: Date.now() })
             if (status === 'complete') {
               appendEntry(set, {
                 kind: 'session_event',
