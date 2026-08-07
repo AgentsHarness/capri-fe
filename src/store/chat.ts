@@ -5,6 +5,7 @@ import type {
   HostInfo,
   ModelOption,
   PendingReq,
+  PermissionScope,
   RewindPoint,
   ScheduledTask,
   ScrollEntry,
@@ -914,8 +915,13 @@ type ChatState = {
     requestId: string,
     optionId?: string,
     cancelled?: boolean,
-    /** "Always allow" scope text picked with ←/→ on the permission card. */
-    scope?: string,
+    /**
+     * Structured "always allow" scope picked with ←/→ on the permission
+     * card (TUI BashCommandSelectedTerms) — sent only for always options.
+     */
+    scope?: PermissionScope,
+    /** Optional followup message on a reject (TUI RejectOnce followup). */
+    followupMessage?: string,
   ) => Promise<void>
   /** Respond to a forwarded x.ai/* request with a raw result (or error). */
   respondXai: (requestId: string, result?: Record<string, unknown>, error?: string) => Promise<void>
@@ -2254,6 +2260,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
           openAssistantId: undefined,
           openThoughtId: undefined,
           turnStartedAt: undefined,
+          // Turn end: the host resolved every outstanding permission request
+          // (approval timeout / completion), so a non-empty pending queue
+          // here is stale — drop it (TUI drain_permission_queue).
+          pending: [],
           entries: [
             ...settleTurnEntries(s.entries),
             ...(marker ? [marker] : []),
@@ -2317,6 +2327,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           openThoughtId: undefined,
           turnStartedAt: undefined,
           xaiRequests: [], // host answered every pending x.ai request already
+          pending: [], // …and every pending permission request (turn cancelled)
           entries: [
             ...s.entries.map((e) => {
               if (e.kind === 'thought' && e.streaming) {
@@ -3051,6 +3062,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
           openAssistantId: undefined,
           openThoughtId: undefined,
           turnStartedAt: undefined,
+          // Turn end (scheduled-injection path): outstanding permission
+          // requests were resolved host-side — drop any stale queue entry.
+          pending: [],
           entries: [...settleTurnEntries(sealed.entries), marker],
         })
         break
@@ -3323,8 +3337,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  respondPermission: async (requestId, optionId, cancelled, scope) => {
-    await transport.respondPermission(requestId, optionId, cancelled, scope)
+  respondPermission: async (requestId, optionId, cancelled, scope, followupMessage) => {
+    await transport.respondPermission(requestId, optionId, cancelled, scope, followupMessage)
     set({ pending: get().pending.filter((p) => p.requestId !== requestId) })
   },
 

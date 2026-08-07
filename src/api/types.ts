@@ -159,6 +159,19 @@ export type PendingReq = {
   params?: Record<string, unknown>
 }
 
+/**
+ * Structured "always allow" scope sent on a permission response — mirrors
+ * TUI `BashCommandSelectedTerms` (xai-grok-workspace permission/prompter.rs):
+ * a literal command-prefix word list (`isGlob: false`, the ←/→ word-scope)
+ * or a single free-form pattern (`isGlob: true`, the pattern editor).
+ * Host contract (parallel): POST /api/permission-response `scope` field,
+ * parsed verbatim — field names must match exactly.
+ */
+export type PermissionScope = {
+  commandParts: string[]
+  isGlob: boolean
+}
+
 export type ToolCall = {
   toolCallId?: string
   title?: string
