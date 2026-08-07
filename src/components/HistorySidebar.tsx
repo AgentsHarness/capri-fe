@@ -31,13 +31,8 @@ export function HistorySidebar() {
   const openedAt = useChatStore((s) => s.openedAt)
   const continueSession = useChatStore((s) => s.continueSession)
   const refreshSessions = useChatStore((s) => s.refreshSessions)
-  const requestRecap = useChatStore((s) => s.requestRecap)
-  const openSessionInfo = useChatStore((s) => s.openSessionInfo)
-  const forkSession = useChatStore((s) => s.forkSession)
   const renameSession = useChatStore((s) => s.renameSession)
   const deleteSession = useChatStore((s) => s.deleteSession)
-  const compactSession = useChatStore((s) => s.compactSession)
-  const openRewind = useChatStore((s) => s.openRewind)
   const groups = useMemo(
     () => groupByState(sessions, { currentSessionId: sessionId, lastViewedAt, openedAt }),
     [sessions, sessionId, lastViewedAt, openedAt],
@@ -114,64 +109,6 @@ export function HistorySidebar() {
 
   return (
     <aside className="hidden w-72 shrink-0 flex-col bg-gn-bg-base lg:flex">
-      {/* Session actions (x.ai ext methods). */}
-      <div className="flex items-center gap-1 border-b border-gn-prompt-border px-2 py-1.5">
-        <button
-          type="button"
-          onClick={() => void requestRecap()}
-          className="rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-          title="x.ai/recap — 生成「我在哪」摘要"
-        >
-          recap
-        </button>
-        <button
-          type="button"
-          onClick={() => void openSessionInfo()}
-          className="rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-          title="x.ai/session-info — 查看当前会话信息"
-        >
-          session-info
-        </button>
-        <button
-          type="button"
-          onClick={() => void forkSession()}
-          className="rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-          title="x.ai/session/fork — 从当前会话派生新会话"
-        >
-          fork
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            const cur = sessions.find((s) => s.sessionId === sessionId)
-            if (cur) startRename(cur)
-          }}
-          className="rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-          title="x.ai/session/rename — 行内重命名当前会话（双击标题也可）"
-        >
-          rename
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            const note = window.prompt('压缩说明（可留空）：')
-            if (note !== null) void compactSession(note.trim() || undefined)
-          }}
-          className="rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-          title="x.ai/session/compact — 压缩当前会话上下文"
-        >
-          compact
-        </button>
-        <button
-          type="button"
-          onClick={() => void openRewind()}
-          className="rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-          title="x.ai/session/rewind — 回退到历史检查点"
-        >
-          rewind
-        </button>
-      </div>
-
       <div className="gn-no-scrollbar flex-1 overflow-y-auto">
         <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-gn-gutter">
           history · 点击继续对话
