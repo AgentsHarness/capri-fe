@@ -291,7 +291,10 @@ export class LocalTransport {
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || `session info failed (${res.status})`)
     }
-    return data
+    // Host wraps the payload in { ok, session: {...} } — same convention as
+    // /api/sessions (data.sessions). Unwrap so the fields land on the
+    // SessionInfoDetail shape.
+    return (data.session ?? data) as SessionInfoDetail
   }
 
   /** x.ai/session/fork — fork the current session (TUI /fork). */

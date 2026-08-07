@@ -1593,6 +1593,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
   showSessionInfo: async () => {
     try {
       const info = await transport.sessionInfo()
+      // Host's in-process record can lag on the title (agent-side
+      // session_info_update not delivered for resumed sessions) — merge
+      // it from the roster list we already fetched.
+      if (!info.title) {
+        const s = get().sessions.find((x) => x.sessionId === info.sessionId)
+        if (s?.title) info.title = s.title
+      }
       appendEntry(set, { kind: 'status', text: formatSessionInfo(info) })
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
