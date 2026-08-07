@@ -3,6 +3,7 @@ import { useChatStore } from '../store/chat'
 import { Glyphs } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
 import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS } from '../theme/layout'
+import type { PendingReq, PermissionScope, ScrollEntry } from '../api/types'
 
 type Option = { optionId: string; name?: string; kind?: string; label?: string }
 
@@ -17,12 +18,14 @@ type Option = { optionId: string; name?: string; kind?: string; label?: string }
  *   Enter           confirm the focused option
  *   ←/→             cycle the "always allow" scope preset (only when an
  *                   always/始终 option exists — 精确 → 目录 → 通配)
+ *   Ctrl+F          expand/collapse the bash command body (TUI Ctrl-F)
  *   Esc             "park": hand the keyboard back to the scrollback (the
  *                   card stays on screen; Tab/Space returns; parked Esc is
  *                   a swallowed no-op — it never answers or dismisses)
  *   Ctrl+C          cancel the request (respond cancelled)
- * Mouse: click an option, the ✗ reject button, or the reset button — all
- * kept from the previous mouse-only version.
+ * Mouse: click an option, the ✗ reject button (opens the inline followup
+ * input — Enter confirms, Esc closes), or the reset button — all kept
+ * from the previous mouse-only version.
  */
 export function ApprovalStrip() {
   const pending = useChatStore((s) => s.pending)
@@ -31,20 +34,113 @@ export function ApprovalStrip() {
   const [sel, setSel] = useState(0)
   const [parked, setParked] = useState(false)
   const [scopeIdx, setScopeIdx] = useState(0)
+  /** Bash command body Ctrl+F expand/collapse (TUI args_expanded). */
+  const [expanded, setExpanded] = useState(false)
+  /** Reject-with-followup inline input (TUI RejectOnce followup row). */
+  const [followupOpen, setFollowupOpen] = useState(false)
+  const [followupText, setFollowupText] = useState('')
 
   const req = pending[0]
   const options = (req?.params?.options as Option[] | undefined) || []
-  const toolCall = req?.params?.toolCall as { title?: string; kind?: string } | undefined
+  const toolCall = req?.params?.toolCall as
+    | { title?: string; kind?: string; rawInput?: unknown; raw_input?: unknown }
+    | undefined
+  /** Bash command text — toolCall.title is already the command (TUI
+   *  build_permission_display's raw-command source). */
+  const command = typeof toolCall?.title === 'string' ? toolCall.title : ''
+  // Collapsed budget for the command body (TUI PERMISSION_COLLAPSED_ROWS).
+  // Independent of `expanded` so Ctrl+F can collapse an expanded view again.
+  const commandLines = command ? command.split('\n') : []
+  const collapsible = commandLines.length > PERMISSION_COLLAPSED_ROWS
   const hasAlways = options.some(isAlwaysOption)
   // TUI ←/→ presets for the scope an "always" answer would remember. The
-  // final text rides along in the permission response as `scope`.
+  // structured scope rides along in the permission response as `scope`.
   const scopeText = SCOPE_PRESETS[scopeIdx % SCOPE_PRESETS.length]
+
+  /** Structured scope for the current ←/→ preset, or undefined when there
+   *  is no command to scope. Mirrors TUI BashCommandSelectedTerms
+   *  construction (dispatch/permissions.rs L86-107): arrow word-scope is a
+   *  literal command-prefix word list (is_glob false), the free-form
+   *  pattern is a single text (is_glob true). */
+  function scopeForPreset(): PermissionScope | undefined {
+    const words = command.trim().split(/\s+/).filter(Boolean)
+    if (words.length === 0) return undefined
+    const rawInput =
+      (toolCall?.rawInput as Record<string, unknown> | undefined) ??
+      (toolCall?.raw_input as Record<string, unknown> | undefined)
+    // '目录' carries the command's first word + its working directory
+    // (raw_input cwd/workdir, falling back to the session cwd).
+    const cmdCwd =
+      (typeof rawInput?.cwd === 'string' && rawInput.cwd) ||
+      (typeof rawInput?.workdir === 'string' && rawInput.workdir) ||
+      useChatStore.getState().cwd
+    switch (SCOPE_PRESETS[scopeIdx % SCOPE_PRESETS.length]) {
+      case '目录':
+        return {
+          commandParts: [words[0], cmdCwd].filter(
+            (p): p is string => !!p && p.length > 0,
+          ),
+          isGlob: false,
+        }
+      case '通配':
+        // The whole command as a single glob pattern (TUI pattern editor).
+        return { commandParts: [command], isGlob: true }
+      default: // '精确' — every word, literal prefix.
+        return { commandParts: words, isGlob: false }
+    }
+  }
+
+  /** Subagent provenance line above the title (TUI resolve_subagent_label,
+   *  acp_handler/permissions.rs L207-237): direct source/subagent fields in
+   *  the request params when the host ships them, else the request's
+   *  session_id looked up in the tracked subagent registry (tier 1), else
+   *  a plain "Child session (untracked)" marker for non-root sessions
+   *  (tier 2). Root session → no provenance. */
+  function subagentProvenance(req: PendingReq | undefined): string | undefined {
+    if (!req) return undefined
+    const params = req.params ?? {}
+    const src = params.source ?? params.subagent
+    if (typeof src === 'string' && src) return `Subagent "${src}":`
+    if (src && typeof src === 'object') {
+      const o = src as Record<string, unknown>
+      const name =
+        (typeof o.description === 'string' && o.description) ||
+        (typeof o.name === 'string' && o.name) ||
+        (typeof o.subagent_type === 'string' && o.subagent_type) ||
+        ''
+      const type =
+        typeof o.subagent_type === 'string' && o.subagent_type !== name
+          ? o.subagent_type
+          : undefined
+      if (name) return type ? `Subagent "${name}" (${type}):` : `Subagent "${name}":`
+    }
+    const st = useChatStore.getState()
+    const sid =
+      (typeof params.session_id === 'string' && params.session_id) ||
+      (typeof params.sessionId === 'string' && params.sessionId) ||
+      ''
+    if (!sid || sid === st.sessionId) return undefined
+    // Tier 1: tracked subagent (subagentIndex keyed by subagent/child id).
+    const entryId = st.subagentIndex[sid]
+    const entry = entryId
+      ? st.entries.find(
+          (e): e is Extract<ScrollEntry, { kind: 'subagent' }> =>
+            e.id === entryId && e.kind === 'subagent',
+        )
+      : undefined
+    if (entry) return `Subagent "${entry.title}":`
+    // Tier 2: non-root session with no tracked info.
+    return 'Child session (untracked):'
+  }
 
   // Reset per-request local state.
   useEffect(() => {
     setSel(0)
     setParked(false)
     setScopeIdx(0)
+    setExpanded(false)
+    setFollowupOpen(false)
+    setFollowupText('')
   }, [req?.requestId])
 
   // Keyboard ownership while a permission request is open. Capture phase +
@@ -86,10 +182,40 @@ export function ApprovalStrip() {
           e.preventDefault()
           e.stopImmediatePropagation()
           void respond(req.requestId, undefined, true)
+        } else if ((e.key === 'f' || e.key === 'F') && collapsible) {
+          // TUI Ctrl-F: expand/collapse the bash command body. When the
+          // body fits the collapsed budget, the chord falls through to the
+          // browser (find) / scrollback (block viewer).
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          setExpanded((x) => !x)
         } else {
           // Other Ctrl chords: keep them from reaching the scrollback keys,
           // but don't preventDefault (browser copy/paste still works).
           e.stopImmediatePropagation()
+        }
+        return
+      }
+
+      if (followupOpen) {
+        // Reject-followup inline input owns the row (TUI FollowupInput):
+        // Enter confirms, Esc closes; every other key edits the input and
+        // must NOT reach the option keys below.
+        if (e.key === 'Enter') {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          const text = followupText.trim()
+          setFollowupOpen(false)
+          setFollowupText('')
+          // Empty text = plain reject; non-empty rides along as
+          // followupMessage (host contract, TUI dispatch_permission_followup).
+          void respond(req.requestId, undefined, true, undefined, text || undefined)
+        } else if (e.key === 'Escape') {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          setFollowupOpen(false)
+          setFollowupText('')
+          setParked(false)
         }
         return
       }
@@ -126,8 +252,6 @@ export function ApprovalStrip() {
 
       // ── card keyboard (active) ──
       const n = opts.length
-      // The displayed scope text rides along in the response as `scope`.
-      const scopeText = SCOPE_PRESETS[scopeIdx % SCOPE_PRESETS.length]
       if (n === 0) {
         // No options: only Esc (park) and Ctrl+C (above) make sense; every
         // other key is swallowed so it can't act on the scrollback/prompt.
@@ -175,7 +299,7 @@ export function ApprovalStrip() {
             req.requestId,
             opts[sel]?.optionId,
             false,
-            isAlwaysOption(opts[sel]) ? scopeText : undefined,
+            isAlwaysOption(opts[sel]) ? scopeForPreset() : undefined,
           )
           break
         case 'Escape':
@@ -189,7 +313,7 @@ export function ApprovalStrip() {
                 req.requestId,
                 opts[idx].optionId,
                 false,
-                isAlwaysOption(opts[idx]) ? scopeText : undefined,
+                isAlwaysOption(opts[idx]) ? scopeForPreset() : undefined,
               )
               break
             }
@@ -203,13 +327,18 @@ export function ApprovalStrip() {
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [req, respond, sel, parked, scopeIdx])
+  }, [req, respond, sel, parked, scopeIdx, followupOpen, followupText, expanded, collapsible])
 
   if (pending.length === 0) return null
+
+  const provenance = subagentProvenance(req)
 
   return (
     <div className="border-t border-gn-yellow/30 bg-gn-bg-dark py-2.5">
       <div className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS}`}>
+        {provenance && (
+          <div className="mb-1 text-[11px] text-gn-muted">{provenance}</div>
+        )}
         <div className="mb-1.5 flex items-center gap-2 text-[12px]">
           <span className="text-gn-yellow animate-pulse" aria-hidden>
             <IconGlyph glyph={Glyphs.diamondFilled} color="currentColor" />
@@ -227,9 +356,18 @@ export function ApprovalStrip() {
             </button>
             <button
               type="button"
-              onClick={() => void respond(req.requestId, undefined, true)}
-              className="rounded border border-gn-red/40 px-2 py-[3px] text-[11px] text-gn-red transition-colors hover:bg-gn-diff-del-bg"
-              title="拒绝并取消该请求"
+              onClick={() => {
+                // First click opens the inline followup input (TUI RejectOnce
+                // followup row); a second click closes it. Esc closes too.
+                setFollowupOpen((o) => !o)
+                setFollowupText('')
+              }}
+              className={`rounded border px-2 py-[3px] text-[11px] transition-colors ${
+                followupOpen
+                  ? 'border-gn-red/70 bg-gn-diff-del-bg text-gn-red'
+                  : 'border-gn-red/40 text-gn-red hover:bg-gn-diff-del-bg'
+              }`}
+              title="拒绝并取消该请求（可附带给 agent 的反馈）"
             >
               <span className="mr-1 inline-flex items-center">
                 <IconGlyph glyph={Glyphs.ballotX} color="currentColor" />
@@ -238,9 +376,42 @@ export function ApprovalStrip() {
             </button>
           </span>
         </div>
-        {toolCall?.title && (
-          <div className="mb-2 truncate pl-5 font-mono text-[12px] text-gn-fg2">
-            {toolCall.title}
+        {followupOpen && (
+          <div className="mb-2 flex items-center gap-2 pl-5">
+            <input
+              autoFocus
+              value={followupText}
+              onChange={(e) => setFollowupText(e.target.value)}
+              placeholder="给 agent 的反馈（可选）…"
+              className="min-w-0 flex-1 rounded border border-gn-prompt-border bg-gn-bg-base px-2 py-1 font-mono text-[12px] text-gn-fg outline-none transition-colors placeholder:text-gn-muted focus:border-gn-cyan/60"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                const text = followupText.trim()
+                setFollowupOpen(false)
+                setFollowupText('')
+                void respond(req.requestId, undefined, true, undefined, text || undefined)
+              }}
+              className="shrink-0 rounded border border-gn-red/40 px-2 py-1 text-[11px] text-gn-red transition-colors hover:bg-gn-diff-del-bg"
+              title="Enter 确认 · Esc 关闭"
+            >
+              确认拒绝
+            </button>
+          </div>
+        )}
+        {command && (
+          <div className="mb-2 pl-5">
+            <div className="whitespace-pre-wrap break-words font-mono text-[12px] leading-snug text-gn-fg2">
+              {commandLines
+                .slice(0, expanded || !collapsible ? commandLines.length : PERMISSION_COLLAPSED_ROWS - 1)
+                .join('\n')}
+            </div>
+            {collapsible && !expanded && (
+              <div className="mt-0.5 text-[11px] text-gn-muted">
+                … Ctrl-F to expand
+              </div>
+            )}
           </div>
         )}
         {hasAlways && (
@@ -262,7 +433,7 @@ export function ApprovalStrip() {
                   req.requestId,
                   opt.optionId,
                   false,
-                  isAlwaysOption(opt) ? scopeText : undefined,
+                  isAlwaysOption(opt) ? scopeForPreset() : undefined,
                 )
               }
               className={`min-h-10 rounded border px-3 py-1.5 text-left text-[12.5px] transition-colors ${
@@ -271,7 +442,17 @@ export function ApprovalStrip() {
                   : 'border-gn-prompt-border bg-gn-bg-base text-gn-fg hover:border-gn-magenta/50 hover:bg-gn-bg-highlight'
               }`}
             >
-              <span className="mr-2 font-mono text-gn-muted">{i + 1}</span>
+              <span className="mr-1.5 font-mono text-gn-muted">{i + 1}</span>
+              {/* Radio marker: solid for always-allow rows, hollow otherwise
+                  (TUI `1 (●) Always allow: …` option rows). */}
+              <span
+                className={`mr-1.5 ${
+                  isAlwaysOption(opt) ? 'text-gn-cyan' : 'text-gn-muted'
+                }`}
+                aria-hidden
+              >
+                {isAlwaysOption(opt) ? '●' : '○'}
+              </span>
               {opt.name || opt.label || opt.optionId}
               {isAlwaysOption(opt) && (
                 <span className="ml-1.5 text-[10.5px] text-gn-cyan">always</span>
@@ -291,6 +472,7 @@ export function ApprovalStrip() {
               <span className="text-gn-fg2">Enter</span> 确认 ·{' '}
               <span className="text-gn-fg2">Esc</span> 暂停键盘
               {hasAlways ? ' · ←/→ 调整始终允许范围' : ''}
+              {collapsible && !expanded ? ' · Ctrl+F 展开命令' : ''}
             </span>
           )}
         </div>
@@ -299,9 +481,15 @@ export function ApprovalStrip() {
   )
 }
 
-/** TUI ←/→ scope presets for an "always allow" answer. The displayed text
- *  is attached verbatim to the permission response as `{ optionId, scope }`. */
+/** TUI ←/→ scope presets for an "always allow" answer. Each maps to a
+ *  structured BashCommandSelectedTerms (see scopeForPreset): 精确 = every
+ *  command word, 目录 = first word + working directory, 通配 = the whole
+ *  command as a glob. */
 const SCOPE_PRESETS = ['精确', '目录', '通配']
+
+/** TUI PERMISSION_COLLAPSED_ROWS (permission_view.rs) — bash body rows
+ *  shown before folding with "… Ctrl-F to expand". */
+const PERMISSION_COLLAPSED_ROWS = 5
 
 const ALWAYS_RE = /always|always_allow|alwaysAllow|始终|总是/i
 
