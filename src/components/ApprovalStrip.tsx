@@ -39,6 +39,10 @@ export function ApprovalStrip() {
   /** Reject-with-followup inline input (TUI RejectOnce followup row). */
   const [followupOpen, setFollowupOpen] = useState(false)
   const [followupText, setFollowupText] = useState('')
+  /** optionId of the reject option awaiting followup confirmation (TUI
+   *  RejectOnce: picking the reject row opens the followup input first —
+   *  the reply is only sent once the feedback is confirmed). */
+  const [rejectOption, setRejectOption] = useState<string | undefined>(undefined)
 
   const req = pending[0]
   const options = (req?.params?.options as Option[] | undefined) || []
@@ -141,6 +145,7 @@ export function ApprovalStrip() {
     setExpanded(false)
     setFollowupOpen(false)
     setFollowupText('')
+    setRejectOption(undefined)
   }, [req?.requestId])
 
   // Keyboard ownership while a permission request is open. Capture phase +
@@ -205,16 +210,19 @@ export function ApprovalStrip() {
           e.preventDefault()
           e.stopImmediatePropagation()
           const text = followupText.trim()
+          const ro = rejectOption
           setFollowupOpen(false)
           setFollowupText('')
+          setRejectOption(undefined)
           // Empty text = plain reject; non-empty rides along as
           // followupMessage (host contract, TUI dispatch_permission_followup).
-          void respond(req.requestId, undefined, true, undefined, text || undefined)
+          void respond(req.requestId, ro, true, undefined, text || undefined)
         } else if (e.key === 'Escape') {
           e.preventDefault()
           e.stopImmediatePropagation()
           setFollowupOpen(false)
           setFollowupText('')
+          setRejectOption(undefined)
           setParked(false)
         }
         return
@@ -294,14 +302,24 @@ export function ApprovalStrip() {
             )
           }
           break
-        case 'Enter':
+        case 'Enter': {
+          const opt = opts[sel]
+          // TUI RejectOnce: a reject row never answers directly — it opens
+          // the followup input first; the reply fires on confirmation.
+          if (isRejectOption(opt)) {
+            setRejectOption(opt.optionId)
+            setFollowupOpen(true)
+            setFollowupText('')
+            break
+          }
           void respond(
             req.requestId,
-            opts[sel]?.optionId,
+            opt?.optionId,
             false,
-            isAlwaysOption(opts[sel]) ? scopeForPreset() : undefined,
+            isAlwaysOption(opt) ? scopeForPreset() : undefined,
           )
           break
+        }
         case 'Escape':
           setParked(true)
           break
@@ -309,11 +327,18 @@ export function ApprovalStrip() {
           if (/^[1-9]$/.test(e.key)) {
             const idx = Number(e.key) - 1
             if (idx < n) {
+              const opt = opts[idx]
+              if (isRejectOption(opt)) {
+                setRejectOption(opt.optionId)
+                setFollowupOpen(true)
+                setFollowupText('')
+                break
+              }
               void respond(
                 req.requestId,
-                opts[idx].optionId,
+                opt.optionId,
                 false,
-                isAlwaysOption(opts[idx]) ? scopeForPreset() : undefined,
+                isAlwaysOption(opt) ? scopeForPreset() : undefined,
               )
               break
             }
@@ -327,15 +352,20 @@ export function ApprovalStrip() {
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [req, respond, sel, parked, scopeIdx, followupOpen, followupText, expanded, collapsible])
+  }, [req, respond, sel, parked, scopeIdx, followupOpen, followupText, rejectOption, expanded, collapsible])
 
   if (pending.length === 0) return null
 
   const provenance = subagentProvenance(req)
 
   return (
-    <div className="border-t border-gn-yellow/30 bg-gn-bg-dark py-2.5">
-      <div className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS}`}>
+    // Background band is confined to the content column (max-w-[960px],
+    // same as scrollback/composer) — the strip must not read wider than
+    // the conversation it approves.
+    <div
+      className={`${CONTENT_COLUMN_CLASS} border-t border-gn-yellow/30 bg-gn-bg-dark py-2.5`}
+    >
+      <div className={COLUMN_PAD_X_CLASS}>
         {provenance && (
           <div className="mb-1 text-[11px] text-gn-muted">{provenance}</div>
         )}
@@ -357,10 +387,24 @@ export function ApprovalStrip() {
             <button
               type="button"
               onClick={() => {
-                // First click opens the inline followup input (TUI RejectOnce
-                // followup row); a second click closes it. Esc closes too.
-                setFollowupOpen((o) => !o)
-                setFollowupText('')
+                // Opens the followup input INSIDE the reject option row
+                // (TUI RejectOnce followup — no separate input line); a
+                // second click closes it. Without a reject option the
+                // button rejects directly (nothing to attach feedback to).
+                if (followupOpen) {
+                  setFollowupOpen(false)
+                  setFollowupText('')
+                  setRejectOption(undefined)
+                  return
+                }
+                const firstReject = options.find(isRejectOption)
+                if (firstReject) {
+                  setRejectOption(firstReject.optionId)
+                  setFollowupOpen(true)
+                  setFollowupText('')
+                } else {
+                  void respond(req.requestId, undefined, true)
+                }
               }}
               className={`rounded border px-2 py-[3px] text-[11px] transition-colors ${
                 followupOpen
@@ -376,30 +420,6 @@ export function ApprovalStrip() {
             </button>
           </span>
         </div>
-        {followupOpen && (
-          <div className="mb-2 flex items-center gap-2 pl-5">
-            <input
-              autoFocus
-              value={followupText}
-              onChange={(e) => setFollowupText(e.target.value)}
-              placeholder="给 agent 的反馈（可选）…"
-              className="min-w-0 flex-1 rounded border border-gn-prompt-border bg-gn-bg-base px-2 py-1 font-mono text-[12px] text-gn-fg outline-none transition-colors placeholder:text-gn-muted focus:border-gn-cyan/60"
-            />
-            <button
-              type="button"
-              onClick={() => {
-                const text = followupText.trim()
-                setFollowupOpen(false)
-                setFollowupText('')
-                void respond(req.requestId, undefined, true, undefined, text || undefined)
-              }}
-              className="shrink-0 rounded border border-gn-red/40 px-2 py-1 text-[11px] text-gn-red transition-colors hover:bg-gn-diff-del-bg"
-              title="Enter 确认 · Esc 关闭"
-            >
-              确认拒绝
-            </button>
-          </div>
-        )}
         {command && (
           <div className="mb-2 pl-5">
             <div className="whitespace-pre-wrap break-words font-mono text-[12px] leading-snug text-gn-fg2">
@@ -422,43 +442,93 @@ export function ApprovalStrip() {
             </span>
           </div>
         )}
-        <div className="flex flex-col gap-1.5 sm:flex-row sm:flex-wrap pl-0 sm:pl-5">
-          {options.map((opt, i) => (
-            <button
-              key={opt.optionId}
-              type="button"
-              onMouseEnter={() => setSel(i)}
-              onClick={() =>
-                void respond(
-                  req.requestId,
-                  opt.optionId,
-                  false,
-                  isAlwaysOption(opt) ? scopeForPreset() : undefined,
-                )
-              }
-              className={`min-h-10 rounded border px-3 py-1.5 text-left text-[12.5px] transition-colors ${
-                i === sel
-                  ? 'border-gn-yellow/60 bg-gn-bg-highlight text-gn-fg'
-                  : 'border-gn-prompt-border bg-gn-bg-base text-gn-fg hover:border-gn-magenta/50 hover:bg-gn-bg-highlight'
-              }`}
-            >
-              <span className="mr-1.5 font-mono text-gn-muted">{i + 1}</span>
-              {/* Radio marker: solid for always-allow rows, hollow otherwise
-                  (TUI `1 (●) Always allow: …` option rows). */}
-              <span
-                className={`mr-1.5 ${
-                  isAlwaysOption(opt) ? 'text-gn-cyan' : 'text-gn-muted'
-                }`}
-                aria-hidden
+        {/* TUI PermissionView: options are full-width rows, one per line —
+            j/k ↑/↓ walk them, Enter or 1-N pick. Always vertical; never
+            wraps into a horizontal row on wide screens. The reject row
+            embeds its followup input (TUI RejectOnce followup) instead of
+            opening a separate input line. */}
+        <div className="flex flex-col gap-1.5 pl-0 sm:pl-5">
+          {options.map((opt, i) =>
+            isRejectOption(opt) && followupOpen && rejectOption === opt.optionId ? (
+              <div
+                key={opt.optionId}
+                className="flex min-h-10 w-full items-center gap-1.5 rounded border border-gn-red/50 bg-gn-bg-base px-3 py-1.5"
               >
-                {isAlwaysOption(opt) ? '●' : '○'}
-              </span>
-              {opt.name || opt.label || opt.optionId}
-              {isAlwaysOption(opt) && (
-                <span className="ml-1.5 text-[10.5px] text-gn-cyan">always</span>
-              )}
-            </button>
-          ))}
+                <span className="mr-1.5 font-mono text-gn-muted">{i + 1}</span>
+                <input
+                  autoFocus
+                  value={followupText}
+                  onChange={(e) => setFollowupText(e.target.value)}
+                  placeholder="给 agent 的反馈（可选，Enter 拒绝）…"
+                  className="min-w-0 flex-1 bg-transparent text-[12.5px] text-gn-fg outline-none placeholder:text-gn-muted"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const text = followupText.trim()
+                    const ro = rejectOption
+                    setFollowupOpen(false)
+                    setFollowupText('')
+                    setRejectOption(undefined)
+                    void respond(req.requestId, ro, true, undefined, text || undefined)
+                  }}
+                  className="shrink-0 rounded border border-gn-red/40 px-2 py-1 text-[11px] text-gn-red transition-colors hover:bg-gn-diff-del-bg"
+                  title="Enter 确认 · Esc 关闭"
+                >
+                  确认拒绝
+                </button>
+              </div>
+            ) : (
+              <button
+                key={opt.optionId}
+                type="button"
+                onMouseEnter={() => setSel(i)}
+                onClick={() => {
+                  // TUI RejectOnce: clicking a reject row opens the followup
+                  // input inside the row instead of answering directly.
+                  if (isRejectOption(opt)) {
+                    setRejectOption(opt.optionId)
+                    setFollowupOpen(true)
+                    setFollowupText('')
+                    return
+                  }
+                  void respond(
+                    req.requestId,
+                    opt.optionId,
+                    false,
+                    isAlwaysOption(opt) ? scopeForPreset() : undefined,
+                  )
+                }}
+                className={`min-h-10 w-full rounded border px-3 py-1.5 text-left text-[12.5px] transition-colors ${
+                  i === sel
+                    ? // Selected row: yellow border + solid dot, background
+                      // stays base — no dark-gray fill.
+                      'border-gn-yellow/60 bg-gn-bg-base text-gn-fg'
+                    : 'border-gn-prompt-border bg-gn-bg-base text-gn-fg hover:border-gn-magenta/50 hover:bg-gn-bg-highlight'
+                }`}
+              >
+                <span className="mr-1.5 font-mono text-gn-muted">{i + 1}</span>
+                {/* Radio marker: solid for always-allow rows AND the
+                    selected row (TUI `1 (●) …` rows), hollow otherwise. */}
+                <span
+                  className={`mr-1.5 ${
+                    isAlwaysOption(opt)
+                      ? 'text-gn-cyan'
+                      : i === sel
+                        ? 'text-gn-yellow'
+                        : 'text-gn-muted'
+                  }`}
+                  aria-hidden
+                >
+                  {isAlwaysOption(opt) || i === sel ? '●' : '○'}
+                </span>
+                {opt.name || opt.label || opt.optionId}
+                {isAlwaysOption(opt) && (
+                  <span className="ml-1.5 text-[10.5px] text-gn-cyan">always</span>
+                )}
+              </button>
+            ),
+          )}
         </div>
         <div className="mt-1.5 pl-5 text-[11px] text-gn-muted">
           {parked ? (
@@ -500,5 +570,18 @@ function isAlwaysOption(opt: Option | undefined): boolean {
     ALWAYS_RE.test(opt.optionId || '') ||
     ALWAYS_RE.test(opt.label || '') ||
     ALWAYS_RE.test(opt.name || '')
+  )
+}
+
+const REJECT_RE = /reject|拒绝/i
+
+/** An option carrying reject semantics — selecting it opens the followup
+ *  input first (TUI RejectOnce) instead of answering immediately. */
+function isRejectOption(opt: Option | undefined): boolean {
+  if (!opt) return false
+  return (
+    REJECT_RE.test(opt.optionId || '') ||
+    REJECT_RE.test(opt.label || '') ||
+    REJECT_RE.test(opt.name || '')
   )
 }

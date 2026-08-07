@@ -95,6 +95,8 @@ export type RewindPoint = {
   index: number
   timestamp?: number | string
   summary?: string
+  /** False when this checkpoint has no file snapshots (conversation-only rewind). */
+  hasFileChanges?: boolean
 }
 
 /**
@@ -224,7 +226,15 @@ export type AcpEvent =
       configOptions?: unknown
     }
   | { type: 'chunk'; text: string; messageId?: string; ts?: number }
-  | { type: 'user_chunk'; text: string }
+  | {
+      type: 'user_chunk'
+      text: string
+      /** Forwarded chunk meta (update._meta): system-injected prompts are hidden. */
+      hideFromScrollback?: boolean
+      /** Forwarded content-block meta (content._meta): display override + cron framing. */
+      displayText?: string
+      displayAsCron?: boolean
+    }
   /**
    * Image content block from agent_message_chunk / user_message_chunk
    * ({type:'image', data, mimeType} content blocks). `data` is a data URI

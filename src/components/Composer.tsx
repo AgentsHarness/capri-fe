@@ -1076,19 +1076,34 @@ export function Composer() {
     if (usage?.used != null && usage?.size != null) {
       out.push({ text: `${fmtTok(usage.used)}/${fmtTok(usage.size)}` })
     }
-    // Plan mode (Shift+Tab cycle / toggle-plan-mode) — TUI prompt mode flag.
+    // Plan mode (Shift+Tab cycle / /plan) — TUI prompt mode flag. The
+    // plan·auto / plan·always overlays (/auto & /always while in plan)
+    // render as compound chips, like the TUI's stacked mode flags.
     const inPlan = planMode === true || permissionMode === 'plan'
-    if (inPlan) {
-      out.push({ text: 'plan', color: 'var(--color-gn-cyan)' })
-    }
     // Permission mode from x.ai/yolo_mode_changed (TUI prompt mode flag:
     // ask / auto / always-approve). Only non-default modes are surfaced.
-    const mode =
-      permissionMode ||
-      (yoloMode ? 'always-approve' : undefined) ||
-      (autoMode ? 'auto' : undefined)
-    if (mode && mode !== 'plan' && mode !== 'ask' && mode !== 'default') {
-      out.push({ text: mode, color: 'var(--color-gn-cyan)' })
+    // A stale default permissionMode ('ask'/'default') must NOT shadow the
+    // optimistic local yoloMode/autoMode flags set by /auto & friends.
+    const permMode =
+      permissionMode && !['ask', 'default', 'plan'].includes(permissionMode)
+        ? permissionMode
+        : yoloMode
+          ? 'always-approve'
+          : autoMode
+            ? 'auto'
+            : undefined
+    // Wire spelling variants (always_approve / yolo) render as the single
+    // canonical display name 'always-approve'.
+    const permChip =
+      permMode === 'always-approve' || permMode === 'always_approve' || permMode === 'yolo'
+        ? 'always-approve'
+        : permMode
+    if (inPlan && permChip) {
+      out.push({ text: `plan·${permChip}`, color: 'var(--color-gn-cyan)' })
+    } else if (inPlan) {
+      out.push({ text: 'plan', color: 'var(--color-gn-cyan)' })
+    } else if (permChip) {
+      out.push({ text: permChip, color: 'var(--color-gn-cyan)' })
     }
     // /multiline input mode (TUI /multiline) — persistent prompt hint.
     // statusText is a dep so the /multiline command's status update
@@ -1520,7 +1535,7 @@ export function Composer() {
                   // after composition ends and would swallow plain Enter.
                   if (e.nativeEvent.isComposing) return
                   // TUI Shift+Tab (prompt focused): cycle mode
-                  // Normal → Plan → Always-approve (store.cycleMode).
+                  // Normal → Plan → Auto → Always → Normal (store.cycleMode).
                   if (e.key === 'Tab' && e.shiftKey) {
                     e.preventDefault()
                     e.stopPropagation()

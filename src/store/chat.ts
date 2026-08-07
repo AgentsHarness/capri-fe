@@ -996,16 +996,14 @@ type ChatState = {
     /** Empty the composer send queue. */
     clearQueue?: boolean
   }) => Promise<void>
-  /** Enter/leave plan mode (toggle-plan-mode preferred, set-mode fallback). */
+  /** /plan — enter plan mode only (no-op while already in plan). */
   togglePlanMode: () => Promise<void>
   /** Shift+Tab mode cycle: Normal → Plan → Auto → Always-approve → Normal. */
   cycleMode: () => Promise<void>
-  /** POST /api/set-mode {modeId:'normal'}. */
-  setNormalMode: () => Promise<void>
-  /** always-approve candidates: always_approve → yolo → always-approve. */
-  setAlwaysApproveMode: () => Promise<void>
-  /** POST /api/set-mode {modeId:'auto'}. */
+  /** /auto — toggle auto permission mode (normal ↔ auto, plan ↔ plan·auto). */
   setAutoMode: () => Promise<void>
+  /** /always — toggle always-approve (normal ↔ always, plan ↔ plan·always). */
+  setAlwaysApproveMode: () => Promise<void>
   /** POST /api/permissions-reset — forget remembered permission rules. */
   resetPermissions: () => Promise<void>
 
@@ -2069,7 +2067,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // system-reminder / auto-wake echoes → hidden, else normal prompt.
         const raw = ev.text || ''
         if (!raw) break
-        const classified = classifyUserPrompt(raw, ev.type === 'user_message' ? ev.isCron : undefined)
+        // The host forwards chunk/content-block meta on live user_chunk
+        // events (same shape the replay path reads): hideFromScrollback
+        // drops the row, displayText overrides the raw text, displayAsCron
+        // marks cron framing. Without this, live and replay classified the
+        // same system-injected prompt differently.
+        if (ev.type === 'user_chunk') {
+          if (ev.hideFromScrollback === true) break
+        }
+        const metaText =
+          ev.type === 'user_chunk' && typeof ev.displayText === 'string'
+            ? ev.displayText
+            : undefined
+        const metaCron = ev.type === 'user_chunk' && ev.displayAsCron === true
+        const classified = classifyUserPrompt(
+          metaText ?? raw,
+          ev.type === 'user_message' ? ev.isCron : metaCron,
+        )
         if (!classified) break
         const sealed = sealThought(get())
         const entries = sealed.entries.map((e) =>
@@ -2822,13 +2836,35 @@ export const useChatStore = create<ChatState>((set, get) => ({
           }
           // ── retry / recovery ─────────────────────────────────────────
           case 'retry_state': {
+            // Three wire variants (tagged by `type`): retrying has `attempt`,
+            // exhausted has `attempts`/`reason`/`isRateLimited`, failed has
+            // `errorType`/`message`. Rendering everything as "重试中…" hid
+            // terminal failures entirely.
             const f = fields as Record<string, unknown>
-            const attempt = f.attempt
-            appendEntry(set, {
-              kind: 'session_event',
-              text: attempt != null ? `重试中… (attempt ${String(attempt)})` : '重试中…',
-              warning: true,
-            })
+            const kind = typeof f.type === 'string' ? f.type : undefined
+            const attempt = f.attempt ?? f.attempts
+            if (kind === 'failed') {
+              const errType = typeof f.errorType === 'string' ? f.errorType : ''
+              const msg = typeof f.message === 'string' ? f.message : ''
+              appendEntry(set, {
+                kind: 'session_event',
+                text: `推理失败${errType ? `（${errType}）` : ''}${msg ? `: ${msg}` : ''}`,
+                warning: true,
+              })
+            } else if (kind === 'exhausted') {
+              const reason = typeof f.reason === 'string' ? f.reason : ''
+              appendEntry(set, {
+                kind: 'session_event',
+                text: `重试已耗尽${attempt != null ? `（attempt ${String(attempt)}）` : ''}${reason ? `: ${reason}` : ''}${f.isRateLimited ? '（可能被限流）' : ''}`,
+                warning: true,
+              })
+            } else {
+              appendEntry(set, {
+                kind: 'session_event',
+                text: attempt != null ? `重试中… (attempt ${String(attempt)})` : '重试中…',
+                warning: true,
+              })
+            }
             break
           }
           case 'auto_recovery_started': {
@@ -3234,13 +3270,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
         break
       }
       case 'yolo_mode_changed': {
+        // The agent sends snake_case ({yolo_mode, auto_mode, permission_mode});
+        // accept both spellings (camelCase first for host-normalized paths).
         const p = ev.params ?? {}
-        const yolo = typeof p.yoloMode === 'boolean' ? p.yoloMode : undefined
-        const auto = typeof p.autoMode === 'boolean' ? p.autoMode : undefined
+        const yolo =
+          typeof p.yoloMode === 'boolean'
+            ? p.yoloMode
+            : typeof p.yolo_mode === 'boolean'
+              ? p.yolo_mode
+              : undefined
+        const auto =
+          typeof p.autoMode === 'boolean'
+            ? p.autoMode
+            : typeof p.auto_mode === 'boolean'
+              ? p.auto_mode
+              : undefined
         const perm =
           typeof p.permissionMode === 'string' && p.permissionMode
             ? p.permissionMode
-            : undefined
+            : typeof p.permission_mode === 'string' && p.permission_mode
+              ? p.permission_mode
+              : undefined
         // Plan mode rides on the same wire: permissionMode 'plan' means the
         // agent is in plan mode (Shift+Tab cycle gear + prompt flag).
         const planMode =
@@ -3434,6 +3484,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
         break
       }
+      case 'announcements_update': {
+        // x.ai/announcements/update: { gen, announcements: [{id?, title?,
+        // message?, severity?, cta?, …}] } — surface each as a status line so
+        // the event is consumed instead of silently dropped.
+        const p = (ev.params ?? {}) as Record<string, unknown>
+        const items = Array.isArray(p.announcements) ? p.announcements : []
+        for (const a of items) {
+          if (!a || typeof a !== 'object') continue
+          const o = a as Record<string, unknown>
+          const title = typeof o.title === 'string' && o.title ? o.title : ''
+          const message = typeof o.message === 'string' && o.message ? o.message : ''
+          const sev = typeof o.severity === 'string' && o.severity ? o.severity : ''
+          const text = [title, message].filter(Boolean).join(' — ')
+          if (!text) continue
+          appendEntry(set, {
+            kind: 'session_event',
+            text: `公告${sev ? `（${sev}）` : ''}: ${text}`,
+            warning: sev === 'error' || sev === 'critical',
+          })
+        }
+        break
+      }
       default:
         break
     }
@@ -3555,106 +3627,200 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   /**
-   * Enter/leave plan mode. Prefers the host's toggle-plan-mode endpoint
-   * (its `planMode` reply is authoritative when present); falls back to
-   * /api/set-mode {modeId:'plan'|'normal'}. Total failure → error row.
-   */
-  togglePlanMode: async () => {
-    const s = get()
-    const wantPlan = !s.planMode
-    try {
-      const r = await transport.togglePlanMode(s.sessionId)
-      const planMode = typeof r.planMode === 'boolean' ? r.planMode : wantPlan
-      set({ planMode, statusText: planMode ? '已切换到 plan 模式' : '已切换到 normal 模式' })
-    } catch {
-      try {
-        await transport.setMode(wantPlan ? 'plan' : 'normal')
-        set({
-          planMode: wantPlan,
-          statusText: wantPlan ? '已切换到 plan 模式' : '已切换到 normal 模式',
-        })
-      } catch (e2) {
-        appendEntry(set, {
-          kind: 'error',
-          text: `切换计划模式失败: ${e2 instanceof Error ? e2.message : String(e2)}`,
-        })
-      }
-    }
-  },
-
-  /**
    * Shift+Tab mode cycle (TUI modes.rs): Normal → Plan → Auto →
-   * Always-approve → Normal. Each arm shows the "Switched to mode: X"
-   * banner (TUI notices.rs) optimistically, like the TUI's
-   * show_mode_switch_banner.
+   * Always-approve → Normal. Two dimensions — plan ∈ {off,on} × perm ∈
+   * {ask,auto,always}: plan lives ONLY in the second slot; the plan·auto /
+   * plan·always overlays exist only via /auto & /always while in plan mode
+   * (Shift+Tab from an overlay leaves plan and advances the permission).
+   * Each arm shows the "Switched to mode: X" banner (TUI notices.rs)
+   * optimistically, like the TUI's show_mode_switch_banner.
    */
   cycleMode: async () => {
     const s = get()
     const inPlan = s.planMode === true || s.permissionMode === 'plan'
     const perm = (s.permissionMode || '').toLowerCase()
-    // Yolo wins over auto on the wire (TUI effective_auto), so the Auto
-    // arm only applies while always-approve is not active.
     const inAlways =
       s.yoloMode === true ||
       perm === 'always-approve' ||
       perm === 'always_approve' ||
       perm === 'yolo'
-    const inAuto = !inAlways && (s.autoMode === true || perm === 'auto')
-    if (inPlan) {
-      get().showModeBanner('Switched to mode: Auto')
-      await get().setAutoMode()
-    } else if (inAuto) {
-      get().showModeBanner('Switched to mode: Always-Approve')
-      await get().setAlwaysApproveMode()
-    } else if (inAlways) {
-      get().showModeBanner('Switched to mode: Normal')
-      await get().setNormalMode()
-    } else {
-      get().showModeBanner('Switched to mode: Plan')
-      await get().togglePlanMode()
-    }
-  },
-
-  setNormalMode: async () => {
+    const inAuto = s.autoMode === true || perm === 'auto'
     try {
-      await transport.setMode('normal')
-      set({ planMode: false, statusText: '已切换到 normal 模式' })
+      if (!inPlan && !inAuto && !inAlways) {
+        // normal → plan
+        get().showModeBanner('Switched to mode: Plan')
+        await transport.setMode('plan')
+        set({ planMode: true, permissionMode: undefined, statusText: '已切换到 plan 模式' })
+      } else if (inPlan && !inAuto && !inAlways) {
+        // plan → auto (leave plan)
+        get().showModeBanner('Switched to mode: Auto')
+        await transport.setMode('default')
+        await transport.setMode('auto')
+        set({
+          planMode: false,
+          autoMode: true,
+          yoloMode: false,
+          permissionMode: undefined,
+          statusText: '已切换到 auto 模式',
+        })
+      } else if (inPlan && inAuto) {
+        // plan·auto → always (leave plan)
+        get().showModeBanner('Switched to mode: Always-Approve')
+        await transport.setMode('default')
+        await transport.setMode('always-approve')
+        set({
+          planMode: false,
+          yoloMode: true,
+          autoMode: false,
+          permissionMode: undefined,
+          statusText: '已切换到 always-approve 模式',
+        })
+      } else if (inPlan) {
+        // plan·always → normal (leave plan)
+        get().showModeBanner('Switched to mode: Normal')
+        await transport.setMode('default')
+        await transport.setMode('normal')
+        set({
+          planMode: false,
+          autoMode: false,
+          yoloMode: false,
+          permissionMode: undefined,
+          statusText: '已切换到 normal 模式',
+        })
+      } else if (inAuto) {
+        // auto → always
+        get().showModeBanner('Switched to mode: Always-Approve')
+        await transport.setMode('always-approve')
+        set({
+          yoloMode: true,
+          autoMode: false,
+          permissionMode: undefined,
+          statusText: '已切换到 always-approve 模式',
+        })
+      } else {
+        // always → normal
+        get().showModeBanner('Switched to mode: Normal')
+        await transport.setMode('normal')
+        set({
+          autoMode: false,
+          yoloMode: false,
+          permissionMode: undefined,
+          statusText: '已切换到 normal 模式',
+        })
+      }
     } catch (e) {
       appendEntry(set, {
         kind: 'error',
-        text: `切换普通模式失败: ${e instanceof Error ? e.message : String(e)}`,
+        text: `切换模式失败: ${e instanceof Error ? e.message : String(e)}`,
       })
     }
   },
 
   /**
-   * Always-approve mode. The host may accept different ids across builds —
-   * try in order and use the first that succeeds.
+   * /plan — enter plan mode only. Running /plan again while already in
+   * plan (including the plan·auto / plan·always overlays) is a no-op: plan
+   * can only be left via the Shift+Tab cycle back to Normal.
    */
-  setAlwaysApproveMode: async () => {
-    for (const modeId of ['always_approve', 'yolo', 'always-approve']) {
-      try {
-        await transport.setMode(modeId)
-        set({ planMode: false, statusText: '已切换到 always-approve 模式' })
-        return
-      } catch {
-        // try the next candidate id
-      }
+  togglePlanMode: async () => {
+    const s = get()
+    if (s.planMode === true || s.permissionMode === 'plan') {
+      set({ statusText: '已在 plan 模式（Shift+Tab 退出）' })
+      return
     }
-    appendEntry(set, {
-      kind: 'error',
-      text: 'host 暂不支持运行时切换 always-approve',
-    })
+    try {
+      await transport.setMode('plan')
+      set({ planMode: true, permissionMode: undefined, statusText: '已切换到 plan 模式' })
+    } catch (e) {
+      appendEntry(set, {
+        kind: 'error',
+        text: `切换 plan 模式失败: ${e instanceof Error ? e.message : String(e)}`,
+      })
+    }
   },
 
+  /**
+   * /auto — toggle auto permission mode. Off plan: normal ↔ auto; in plan:
+   * plan ↔ plan·auto (plan mode is preserved — the permission notification
+   * does not touch it, and planMode is kept so the composer shows plan·auto).
+   */
   setAutoMode: async () => {
+    const s = get()
+    const inPlan = s.planMode === true || s.permissionMode === 'plan'
+    const perm = (s.permissionMode || '').toLowerCase()
+    const inAuto = s.autoMode === true || perm === 'auto'
     try {
-      await transport.setMode('auto')
-      set({ statusText: '已切换到 auto 模式' })
+      if (inAuto) {
+        await transport.setMode('normal')
+        set({
+          autoMode: false,
+          yoloMode: false,
+          permissionMode: undefined,
+          statusText: inPlan ? '已退出 auto（plan 保持）' : '已切换到 normal 模式',
+        })
+      } else {
+        await transport.setMode('auto')
+        set({
+          autoMode: true,
+          yoloMode: false,
+          permissionMode: undefined,
+          statusText: inPlan ? '已切换到 plan·auto 模式' : '已切换到 auto 模式',
+        })
+      }
     } catch (e) {
       appendEntry(set, {
         kind: 'error',
         text: `切换 auto 模式失败: ${e instanceof Error ? e.message : String(e)}`,
+      })
+    }
+  },
+
+  /**
+   * /always — toggle always-approve. Same shape as /auto: normal ↔
+   * always-approve off plan, plan ↔ plan·always in plan. Mode ids tried in
+   * order across host builds: always_approve → yolo → always-approve.
+   */
+  setAlwaysApproveMode: async () => {
+    const s = get()
+    const inPlan = s.planMode === true || s.permissionMode === 'plan'
+    const perm = (s.permissionMode || '').toLowerCase()
+    const inAlways =
+      s.yoloMode === true ||
+      perm === 'always-approve' ||
+      perm === 'always_approve' ||
+      perm === 'yolo'
+    try {
+      if (inAlways) {
+        await transport.setMode('normal')
+        set({
+          yoloMode: false,
+          autoMode: false,
+          permissionMode: undefined,
+          statusText: inPlan ? '已退出 always-approve（plan 保持）' : '已切换到 normal 模式',
+        })
+        return
+      }
+      for (const modeId of ['always_approve', 'yolo', 'always-approve']) {
+        try {
+          await transport.setMode(modeId)
+          set({
+            yoloMode: true,
+            autoMode: false,
+            permissionMode: undefined,
+            statusText: inPlan ? '已切换到 plan·always-approve 模式' : '已切换到 always-approve 模式',
+          })
+          return
+        } catch {
+          // try the next candidate id
+        }
+      }
+      appendEntry(set, {
+        kind: 'error',
+        text: 'host 暂不支持运行时切换 always-approve',
+      })
+    } catch (e) {
+      appendEntry(set, {
+        kind: 'error',
+        text: `切换 always-approve 模式失败: ${e instanceof Error ? e.message : String(e)}`,
       })
     }
   },
@@ -3678,10 +3844,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   respondXai: async (requestId, result, error) => {
+    const req = get().xaiRequests.find((r) => r.requestId === requestId)
     try {
       await transport.respondClientRequest(requestId, result, error)
     } finally {
       set({ xaiRequests: get().xaiRequests.filter((r) => r.requestId !== requestId) })
+      // x.ai/exit_plan_mode with an approving/abandoning outcome leaves
+      // plan mode. Clear the local plan flag immediately — the agent does
+      // not reliably broadcast yolo_mode_changed afterwards, so the
+      // composer's `plan` flag (planMode || permissionMode==='plan') would
+      // otherwise stay stuck. outcome 'cancelled' (request changes / 稍后
+      // 再说) keeps plan mode.
+      if (
+        !error &&
+        req?.method === 'x.ai/exit_plan_mode' &&
+        (result as { outcome?: string } | undefined)?.outcome !== 'cancelled'
+      ) {
+        const s = get()
+        set({
+          planMode: false,
+          ...(s.permissionMode === 'plan' ? { permissionMode: undefined } : {}),
+        })
+      }
     }
   },
 
@@ -3901,10 +4085,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   mcpAuthTrigger: async (name) => {
     const r = await transport.mcpAuthTrigger(name)
+    // Agent contract: { status, setup?, error? } — surface a readable
+    // message; keep url/code passthrough for hosts that offer an OAuth
+    // link directly.
+    const status = typeof r.status === 'string' ? r.status : undefined
+    const error = typeof r.error === 'string' && r.error ? r.error : undefined
+    const message =
+      status === 'failed'
+        ? `认证失败${error ? `: ${error}` : ''}`
+        : status === 'setup_required'
+          ? '该服务器需要先完成配置（setup）'
+          : status === 'authenticated'
+            ? '认证成功'
+            : error
+              ? `认证异常: ${error}`
+              : undefined
     return {
       ...(typeof r.url === 'string' && r.url ? { url: r.url } : {}),
       ...(typeof r.code === 'string' && r.code ? { code: r.code } : {}),
-      ...(typeof r.message === 'string' && r.message ? { message: r.message } : {}),
+      ...(message ? { message } : {}),
     }
   },
 
@@ -5530,6 +5729,14 @@ function parseScheduledTask(src: Record<string, unknown> | undefined): Scheduled
   let interval = typeof inner.interval === 'string' ? inner.interval : ''
   if (!interval && typeof inner.interval_secs === 'number' && inner.interval_secs > 0) {
     interval = `${inner.interval_secs}s`
+  }
+  if (!interval) {
+    // The agent's wire payload calls the schedule human_schedule — the
+    // host normalizes it to `interval`, but tolerate the raw shape too.
+    interval =
+      (typeof inner.human_schedule === 'string' && inner.human_schedule) ||
+      (typeof inner.humanSchedule === 'string' && inner.humanSchedule) ||
+      ''
   }
   const nextRaw = inner.next_fire_at ?? inner.nextFireAt
   return {

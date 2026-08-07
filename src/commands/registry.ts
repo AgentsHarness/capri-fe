@@ -115,16 +115,6 @@ const THEME_ORDER: ThemeId[] = [
   'auto',
 ]
 
-/** /plan & /normal share the host /api/set-mode call. */
-async function setModeCmd(modeId: string) {
-  try {
-    await transport.setMode(modeId)
-    status(`已切换到 ${modeId} 模式`)
-  } catch (e) {
-    err(`切换模式失败: ${e instanceof Error ? e.message : String(e)}`)
-  }
-}
-
 export const slashCommands: SlashCommand[] = [
   {
     name: 'new',
@@ -327,13 +317,8 @@ export const slashCommands: SlashCommand[] = [
   },
   {
     name: 'plan',
-    description: '切换到计划模式（toggle-plan-mode 优先，set-mode 回退）',
+    description: '进入计划模式（plan 中再次执行无效，Shift+Tab 退出）',
     run: () => void useChatStore.getState().togglePlanMode(),
-  },
-  {
-    name: 'normal',
-    description: '切换到普通模式',
-    run: () => void setModeCmd('normal'),
   },
   {
     name: 'copy',
@@ -389,13 +374,14 @@ export const slashCommands: SlashCommand[] = [
   },
   // ── 模式 / 权限（Shift+Tab 循环的斜杠入口）────────────────────────
   {
-    name: 'always-approve',
-    description: '切换到始终允许模式',
+    name: 'always',
+    aliases: ['always-approve'],
+    description: '切换始终允许模式（再执行关闭；plan 下叠加为 plan·always）',
     run: () => void useChatStore.getState().setAlwaysApproveMode(),
   },
   {
     name: 'auto',
-    description: '切换到自动模式',
+    description: '切换自动模式（再执行关闭；plan 下叠加为 plan·auto）',
     run: () => void useChatStore.getState().setAutoMode(),
   },
   {

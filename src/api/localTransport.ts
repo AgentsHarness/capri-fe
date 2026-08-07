@@ -587,6 +587,9 @@ export class LocalTransport {
         index: p.index,
         ...(p.timestamp != null ? { timestamp: p.timestamp as number | string } : {}),
         ...(typeof p.summary === 'string' && p.summary ? { summary: p.summary } : {}),
+        ...(typeof p.hasFileChanges === 'boolean'
+          ? { hasFileChanges: p.hasFileChanges }
+          : {}),
       }))
     return { points }
   }
@@ -654,18 +657,47 @@ export class LocalTransport {
     }
     const servers = (findArrayField(data, 'servers') as Record<string, unknown>[])
       .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
-      .map((s) => ({
-        name: typeof s.name === 'string' ? s.name : '',
-        ...(typeof s.command === 'string' && s.command ? { command: s.command } : {}),
-        ...(Array.isArray(s.args) ? { args: s.args.map(String) } : {}),
-        ...(s.env && typeof s.env === 'object' && !Array.isArray(s.env)
-          ? { env: s.env as Record<string, string> }
-          : {}),
-        ...(typeof s.enabled === 'boolean' ? { enabled: s.enabled } : {}),
-        ...(typeof s.source === 'string' && s.source ? { source: s.source } : {}),
-        ...(typeof s.url === 'string' && s.url ? { url: s.url } : {}),
-        ...(typeof s.status === 'string' && s.status ? { status: s.status } : {}),
-      }))
+      .map((s) => {
+        // The agent nests per-session state (enabled/status/tools) under a
+        // snake_case `session` object; the bare catalog config lives at the
+        // top level. Prefer top-level fields, fall back to session.*.
+        const sess =
+          s.session && typeof s.session === 'object' && !Array.isArray(s.session)
+            ? (s.session as Record<string, unknown>)
+            : {}
+        const env =
+          s.env && typeof s.env === 'object'
+            ? Array.isArray(s.env)
+              ? Object.fromEntries(
+                  s.env
+                    .filter(
+                      (e): e is Record<string, unknown> =>
+                        !!e && typeof e === 'object',
+                    )
+                    .map((e) => [String(e.name ?? ''), String(e.value ?? '')])
+                    .filter(([k]) => k !== ''),
+                )
+              : (s.env as Record<string, string>)
+            : undefined
+        return {
+          name: typeof s.name === 'string' ? s.name : '',
+          ...(typeof s.command === 'string' && s.command ? { command: s.command } : {}),
+          ...(Array.isArray(s.args) ? { args: s.args.map(String) } : {}),
+          ...(env && Object.keys(env).length > 0 ? { env } : {}),
+          ...(typeof s.enabled === 'boolean'
+            ? { enabled: s.enabled }
+            : typeof sess.enabled === 'boolean'
+              ? { enabled: sess.enabled }
+              : {}),
+          ...(typeof s.source === 'string' && s.source ? { source: s.source } : {}),
+          ...(typeof s.url === 'string' && s.url ? { url: s.url } : {}),
+          ...(typeof s.status === 'string' && s.status
+            ? { status: s.status }
+            : typeof sess.status === 'string' && sess.status
+              ? { status: sess.status }
+              : {}),
+        }
+      })
       .filter((s) => s.name)
     return { servers }
   }
@@ -724,13 +756,18 @@ export class LocalTransport {
    * Memory system — /dream (TUI /dream): memory consolidation. The FE
    * currently routes /dream through the prompt path (no wire method the
    * agent understands); this endpoint is reserved for when the host
-   * implements memory consolidation directly.
+   * implements memory consolidation directly. rawText is required by the
+   * agent's rewrite contract (rawText + contextSummary).
    */
-  async memoryRewrite(sessionId: string) {
+  async memoryRewrite(sessionId: string, rawText: string, contextSummary?: string) {
     const res = await fetch(this.url('/api/memory-rewrite'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId }),
+      body: JSON.stringify({
+        sessionId,
+        rawText,
+        ...(contextSummary ? { contextSummary } : {}),
+      }),
     })
     const data = await res.json()
     if (!res.ok || data.ok === false) {
@@ -753,7 +790,27 @@ export class LocalTransport {
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || `mcp auth failed (${res.status})`)
     }
-    return data
+    // The agent answers { status: authenticated|setup_required|failed,
+    // setup?, error? }; unwrap the host's {ok, result} envelope and pass
+    // the fields through (url/code kept for host implementations that
+    // offer an OAuth link directly).
+    const result =
+      data.result && typeof data.result === 'object'
+        ? (data.result as Record<string, unknown>)
+        : {}
+    return {
+      ...(typeof result.status === 'string' && result.status
+        ? { status: result.status }
+        : {}),
+      ...(result.setup && typeof result.setup === 'object'
+        ? { setup: result.setup }
+        : {}),
+      ...(typeof result.error === 'string' && result.error
+        ? { error: result.error }
+        : {}),
+      ...(typeof result.url === 'string' && result.url ? { url: result.url } : {}),
+      ...(typeof result.code === 'string' && result.code ? { code: result.code } : {}),
+    }
   }
 
   /**

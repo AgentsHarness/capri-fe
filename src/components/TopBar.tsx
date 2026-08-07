@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useChatStore } from '../store/chat'
 import { ThemePicker } from './ThemePicker'
 import { fmtTime, groupAccentClass, groupByState, sessionGroupKey } from './historyGroups'
+import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS } from '../theme/layout'
 import { Glyphs } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
 import { SessionStateIcon, stateLabel, useSessionSpinner } from './SessionStateIcon'
@@ -61,7 +62,10 @@ export function WorkspaceBar() {
   // dropdowns aren't covered when the sticky header is pinned.
   return (
     <div className="sticky top-0 z-30 shrink-0 bg-gn-bg-base">
-      <div className="flex min-w-0 items-center gap-2 px-3 py-1 text-[14px] select-none sm:px-4">
+      {/* Content column matches scrollback/composer (mx-auto max-w-[960px]) */}
+      <div
+        className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} flex min-w-0 items-center gap-2 py-1 text-[14px] select-none`}
+      >
         {/* Git head (x.ai/git_head_changed) — TUI status-bar branch.
             Detached HEAD renders as "⎇ detached" (TUI render.rs: empty
             branch → "{icon} detached"); worktrees get the `wt` badge. */}

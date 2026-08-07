@@ -439,6 +439,7 @@ export function RewindPicker() {
                   ) : null}
                   <span className="block pt-0.5 font-mono text-[10px] text-gn-muted">
                     {formatPointTime(p.timestamp)}
+                    {p.hasFileChanges === false ? ' · 仅对话' : ''}
                     {pending?.point.index === p.index && executing ? ' · 回退中…' : ''}
                   </span>
                 </span>

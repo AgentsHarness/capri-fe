@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { SPINNER_FRAMES } from '../theme/glyphs'
+import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS } from '../theme/layout'
 import { useChatStore } from '../store/chat'
 import { useSessionSpinner } from './SessionStateIcon'
 import type { ScrollEntry, TopTask } from '../api/types'
@@ -216,7 +217,10 @@ export function TodoChip({
               aria-label={`todo · ${completed}/${total} 完成`}
               className="shrink-0 border-b border-gn-prompt-border/50 bg-gn-bg-base select-none"
             >
-              <div className="max-h-[min(32vh,16rem)] overflow-y-auto px-3 py-1 sm:px-4">
+              {/* Content column matches scrollback/composer (mx-auto max-w-[960px]) */}
+              <div
+                className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} max-h-[min(32vh,16rem)] overflow-y-auto py-1`}
+              >
                 <div className="px-1 pb-0.5 pt-1 text-[10px] uppercase tracking-wider text-gn-gutter">
                   todo · {completed}/{total} 完成
                 </div>
@@ -806,7 +810,10 @@ export function RunningTasksBar({
       role="region"
       aria-label={`Running tasks · ${count} · scheduled ${scheduledTasks.length}`}
     >
-      <div className="flex max-h-[min(28vh,12rem)] flex-col overflow-y-auto px-3 py-0.5 sm:px-4">
+      {/* Content column matches scrollback/composer (mx-auto max-w-[960px]) */}
+      <div
+        className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} flex max-h-[min(28vh,12rem)] flex-col overflow-y-auto py-0.5`}
+      >
         {/* Panel header — refresh re-syncs both sections. */}
         <div className="flex items-center justify-end gap-1 py-0.5">
           <button
