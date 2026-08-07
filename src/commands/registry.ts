@@ -321,6 +321,59 @@ export const slashCommands: SlashCommand[] = [
       note(`可用命令:\n${lines.join('\n')}`)
     },
   },
+  {
+    name: 'goal',
+    description: '设置 / 查看 / 管理自主目标',
+    argHint: '[objective | status|pause|resume|clear]',
+    run: (args) => {
+      const st = useChatStore.getState()
+      const a = args.trim()
+      if (!a) {
+        // 无参 → 打开目标详情面板（与 GoalChip 点击共用同一面板）。
+        if (!st.goalState) {
+          err('/goal: 暂无目标状态（goal_updated 事件尚未到达）')
+          return
+        }
+        st.setGoalPanelOpen(true)
+        return
+      }
+      const lower = a.toLowerCase()
+      if (lower === 'status') {
+        st.goalStatus()
+        return
+      }
+      if (lower === 'pause') {
+        st.goalPause()
+        return
+      }
+      if (lower === 'resume') {
+        st.goalResume()
+        return
+      }
+      if (lower === 'clear') {
+        st.goalClear()
+        return
+      }
+      // 其余按目标描述处理: `<objective> [--budget <tokens>]` — budget
+      // 从描述中剥离后随提示词路径一并传达（协议无 goal 控制 wire 方法，
+      // 全部经由 update_goal 工具的提示词路径，见 chat.ts goalSet）。
+      const budgetMatch = a.match(/--budget\s+([\d.]+[kKmM]?)/i)
+      const objective = budgetMatch ? a.slice(0, budgetMatch.index).trim() : a
+      if (!objective) {
+        err(
+          '用法: /goal <目标描述> [--budget <tokens>] 或 /goal status|pause|resume|clear',
+        )
+        return
+      }
+      const budgetNote = budgetMatch ? `，token 预算 ${budgetMatch[1]}` : ''
+      st.goalSet(`${objective}${budgetNote}`)
+    },
+  },
+  {
+    name: 'workflows',
+    description: '打开工作流运行面板',
+    run: () => useChatStore.getState().setWorkflowPanelOpen(true),
+  },
 ]
 
 /**

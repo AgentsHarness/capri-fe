@@ -372,7 +372,19 @@ export function GoalChip({
   goalState?: Record<string, unknown>
   contextUsed?: number
 }) {
-  const [open, setOpen] = useState(false)
+  // Panel visibility lives in the store so `/goal` (no args) can open
+  // the exact same detail panel the chip toggles.
+  const open = useChatStore((s) => s.goalPanelOpen)
+  const setOpen = useChatStore((s) => s.setGoalPanelOpen)
+  const goalStatus = useChatStore((s) => s.goalStatus)
+  const goalPause = useChatStore((s) => s.goalPause)
+  const goalResume = useChatStore((s) => s.goalResume)
+  const goalClear = useChatStore((s) => s.goalClear)
+  const setWorkflowPanelOpen = useChatStore((s) => s.setWorkflowPanelOpen)
+  // Action feedback: the status line carries the last instruction's
+  // confirmation; the error line surfaces host-level failures.
+  const statusText = useChatStore((s) => s.statusText)
+  const error = useChatStore((s) => s.error)
   // Hooks must run unconditionally — derive the Active flag before the
   // early returns so the elapsed tick + spinner keep their stable order.
   const status = typeof goalState?.status === 'string' ? goalState.status : ''
@@ -384,6 +396,7 @@ export function GoalChip({
   if (status === 'cleared') return null
 
   const label = goalPhaseLabel(goalState)
+  const phase = typeof goalState.phase === 'string' ? goalState.phase : ''
   const paused = ['user_paused', 'paused', 'back_off_paused', 'no_progress_paused', 'infra_paused', 'blocked'].includes(status)
   const failed = status === 'failed' || status === 'interrupted'
 
@@ -410,7 +423,7 @@ export function GoalChip({
     <div className="relative">
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => setOpen(!open)}
         className={`rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums ${chipClass}`}
         title={objective ? `目标: ${objective}` : '目标状态'}
       >
@@ -454,10 +467,78 @@ export function GoalChip({
             <span>{tokensDisplay}</span>
             <span className="tabular-nums">elapsed {fmtElapsedCompact(elapsed)}</span>
           </div>
+          {(status || phase) && (
+            <div className="mt-1 text-gn-gutter">
+              status · {status}
+              {phase ? ` · phase ${phase}` : ''}
+            </div>
+          )}
           {(lastEvent || lastEventDetail) && (
             <div className="mt-1 truncate text-gn-gray-dim" title={`${lastEvent} ${lastEventDetail}`}>
               {lastEvent}
               {lastEventDetail ? ` · ${lastEventDetail}` : ''}
+            </div>
+          )}
+        </div>
+        {/* ── goal controls — PROMPT PATH (no wire methods; see chat.ts
+            goalSet docs: the agent owns update_goal, the FE instructs). */}
+        <div className="flex flex-wrap items-center gap-1 border-t border-gn-prompt-border px-3 py-2">
+          <button
+            type="button"
+            onClick={() => goalStatus()}
+            className="rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg"
+            title="发送提示词: 请报告当前自主目标状态（goal status）"
+          >
+            状态
+          </button>
+          <button
+            type="button"
+            disabled={!active}
+            onClick={() => goalPause()}
+            className="rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40"
+            title="发送提示词: 请暂停当前自主目标（用 update_goal 工具）"
+          >
+            暂停
+          </button>
+          <button
+            type="button"
+            disabled={!paused}
+            onClick={() => goalResume()}
+            className="rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40"
+            title="发送提示词: 请恢复当前自主目标（用 update_goal 工具）"
+          >
+            恢复
+          </button>
+          <button
+            type="button"
+            onClick={() => goalClear()}
+            className="rounded border border-gn-red/40 px-2 py-0.5 text-[11px] text-gn-red opacity-80 hover:bg-gn-diff-del-bg hover:opacity-100"
+            title="发送提示词: 请清除当前自主目标（用 update_goal 工具）"
+          >
+            清除
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false)
+              setWorkflowPanelOpen(true)
+            }}
+            className="ml-auto rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-plan hover:bg-gn-bg-highlight"
+            title="打开 /workflows 工作流运行面板"
+          >
+            工作流 ↗
+          </button>
+        </div>
+        {/* ── action feedback: live status line + error line ─────────── */}
+        <div className="border-t border-gn-prompt-border px-3 py-1.5 font-mono text-[10.5px]">
+          {statusText && (
+            <div className="truncate text-gn-muted" title={statusText}>
+              status · {statusText}
+            </div>
+          )}
+          {error && (
+            <div className="truncate text-gn-red" title={error}>
+              error · {error}
             </div>
           )}
         </div>
