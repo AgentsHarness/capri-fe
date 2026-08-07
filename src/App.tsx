@@ -12,6 +12,7 @@ import { QuestionModal } from './components/QuestionModal'
 import { McpPanel } from './components/McpPanel'
 import { BlockViewer } from './components/BlockViewer'
 import { SessionInfoModal } from './components/SessionInfoModal'
+import { RewindPicker } from './components/RewindPicker'
 import { useScrollbackKeys } from './hooks/useScrollbackKeys'
 
 /**
@@ -52,6 +53,7 @@ export default function App() {
       <QuestionModal />
       <McpPanel open={mcpOpen} onClose={() => setMcpOpen(false)} />
       <SessionInfoModal />
+      <RewindPicker />
     </div>
   )
 }
