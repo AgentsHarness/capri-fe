@@ -289,6 +289,12 @@ export function Composer() {
   const taRef = useRef<HTMLTextAreaElement>(null)
   const busy = conn === 'busy'
 
+  // ── TUI rewind prompt stash (views/rewind.rs StashedPrompt) ──
+  // While the /rewind picker is open the draft is parked in the store
+  // (stashedDraft) and restored when it closes — a rewind reloads the
+  // session history and must not eat the user's in-progress text.
+  const rewindOpen = useChatStore((s) => s.rewindOpen)
+
   // ── TUI prompt history recall (↑ on empty input) ──
   const [history, setHistory] = useState<HistoryItem[]>(loadPromptHistory)
   const [histOpen, setHistOpen] = useState(false)
@@ -610,6 +616,26 @@ export function Composer() {
       void sendQueuedHead()
     }
   }, [conn, awaitingNext, queue.length, queueSending])
+
+  // TUI rewind draft custody: the /rewind picker stashes the prompt while
+  // open and restores it on close. The store value doubles as the guard —
+  // a remount mid-stash can't clobber the parked draft, and an empty
+  // buffer stashes as '' (restored as a no-op).
+  useEffect(() => {
+    const st = useChatStore.getState()
+    if (rewindOpen) {
+      if (st.stashedDraft != null) return
+      st.setStashedDraft(text)
+      setText('')
+    } else {
+      const t = st.stashedDraft
+      if (t == null) return
+      st.setStashedDraft(null)
+      setText(t)
+    }
+    // text intentionally excluded: the buffer is only moved at open/close.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rewindOpen])
 
   // Model picker: close on outside click / Escape; pin to viewport.
   useEffect(() => {
