@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type {
   AcpEvent,
+  ContentBlock,
   HostInfo,
   ModelOption,
   PendingReq,
@@ -720,8 +721,17 @@ type ChatState = {
   setTasksBarOpen: (open: boolean) => void
 
   init: () => () => void
-  send: (text: string) => Promise<void>
+  send: (text: string, blocks?: ContentBlock[]) => Promise<void>
   cancel: () => Promise<void>
+  /**
+   * Append a LOCAL-ONLY scrollback entry (shell mode output, etc.) —
+   * rendered like a normal row but never sent to the agent. Kind is
+   * limited to the entry kinds the scrollback renders as plain text.
+   */
+  appendLocalEntry: (entry: {
+    kind: 'user' | 'session_event' | 'error'
+    text: string
+  }) => void
   respondPermission: (requestId: string, optionId?: string, cancelled?: boolean) => Promise<void>
   /** Respond to a forwarded x.ai/* request with a raw result (or error). */
   respondXai: (requestId: string, result?: Record<string, unknown>, error?: string) => Promise<void>
@@ -2566,7 +2576,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  send: async (text: string) => {
+  send: async (text: string, blocks?: ContentBlock[]) => {
     const t = text.trim()
     if (!t) return
     // Seal any leftover thought from prior turn, then append user + Thinking… shell.
@@ -2597,7 +2607,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       turnStartedAt: Date.now(),
     })
     try {
-      await transport.prompt([{ type: 'text', text: t }])
+      // Optional image blocks (Composer image chips): the caller passes
+      // the full block list; default is the plain text prompt.
+      await transport.prompt(
+        blocks && blocks.length > 0 ? blocks : [{ type: 'text', text: t }],
+      )
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       // drop empty thinking shell on failure
@@ -2612,6 +2626,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
         entries: [...after.entries, { id: nid(), kind: 'error', text: msg }],
       })
     }
+  },
+
+  /**
+   * Append a LOCAL-ONLY scrollback entry (shell mode output, etc.) —
+   * rendered like a normal row but never sent to the agent. Kind is
+   * limited to the entry kinds the scrollback renders as plain text.
+   */
+  appendLocalEntry: (entry) => {
+    appendEntry(set, entry as EntryWithoutId)
   },
 
   cancel: async () => {

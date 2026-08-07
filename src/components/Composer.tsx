@@ -6,6 +6,9 @@ import {
   type ClipboardEvent as ReactClipboardEvent,
 } from 'react'
 import { useChatStore, formatTurnDuration, stillRunningCue } from '../store/chat'
+import { usePromptQueue } from '../store/promptQueue'
+import { runShellCommand } from '../api/shell'
+import type { ContentBlock } from '../api/types'
 import {
   Glyphs,
   MONITOR_PULSE_FRAMES,
@@ -28,8 +31,92 @@ import { fmtTok } from './StatusChips'
  */
 const CHIP_MIN_LINES = 4 // TUI: 4, or 2 in compact mode (web has none)
 const CHIP_DISPLAY_BYTES = 10_000
+/** Shell output truncation (TUI shell view line cap analog). */
+const SHELL_OUTPUT_MAX = 4000
 
-type PasteChip = { id: string; label: string; content: string }
+/**
+ * Paste chip = text paste chip; image chip = pasted/dropped image behind
+ * an `[Image: <name>]` label. Both share the same atomic-label mechanics
+ * (prune / caret clamp / whole-chip delete / Enter expand); image chips
+ * expand to an inline thumbnail instead of text, and their data leaves
+ * as an image ContentBlock on submit.
+ */
+type PasteChip = {
+  id: string
+  label: string
+  content: string
+  /** Image chip: label stays in the text; data goes out as an image block. */
+  image?: { data: string; mimeType: string; name: string; size: number }
+  /** Image chip inline thumbnail expanded (Enter / double-click). */
+  expanded?: boolean
+}
+
+/** ── Prompt history (TUI: ↑ on empty input recalls) ────────────────── */
+const HISTORY_KEY = 'acpfe.promptHistory'
+const HISTORY_MAX = 50
+
+type HistoryItem = { text: string; ts: number }
+
+function loadPromptHistory(): HistoryItem[] {
+  try {
+    const raw = window.localStorage.getItem(HISTORY_KEY)
+    if (!raw) return []
+    const arr = JSON.parse(raw)
+    if (!Array.isArray(arr)) return []
+    const out: HistoryItem[] = []
+    for (const x of arr) {
+      if (x && typeof x.text === 'string' && x.text.trim()) {
+        out.push({
+          text: x.text,
+          ts: typeof x.ts === 'number' ? x.ts : Date.now(),
+        })
+        if (out.length >= HISTORY_MAX) break
+      }
+    }
+    return out
+  } catch {
+    return []
+  }
+}
+
+function savePromptHistory(items: HistoryItem[]): void {
+  try {
+    window.localStorage.setItem(
+      HISTORY_KEY,
+      JSON.stringify(items.slice(0, HISTORY_MAX)),
+    )
+  } catch {
+    /* storage full / unavailable — history is best-effort */
+  }
+}
+
+/** ── Image chips (paste / drop) ────────────────────────────────────── */
+function fileToDataUrl(
+  file: File,
+): Promise<{ data: string; mimeType: string }> {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader()
+    fr.onload = () => {
+      const url = typeof fr.result === 'string' ? fr.result : ''
+      const comma = url.indexOf(',')
+      if (comma === -1) {
+        reject(new Error('unreadable image'))
+        return
+      }
+      // "data:<mime>;base64,<payload>" → mime (payload keeps NO data: prefix,
+      // matching the ContentBlock image contract).
+      const mimeType = url.slice(5, comma).split(';')[0] || file.type || 'image/png'
+      resolve({ data: url.slice(comma + 1), mimeType })
+    }
+    fr.onerror = () => reject(fr.error ?? new Error('image read failed'))
+    fr.readAsDataURL(file)
+  })
+}
+
+function fmtBytes(n: number): string {
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`
+  return `${Math.max(1, Math.round(n / 1024))} KB`
+}
 
 /** Bare \r → \n, leaving \r\n pairs intact (PromptWidget::normalize_cr). */
 function normalizeCr(text: string): string {
@@ -106,10 +193,13 @@ function chipOccurrenceAtCaret(
   return null
 }
 
-/** Expand every chip into its stashed content (submit path). */
+/** Expand every chip into its stashed content (submit path).
+ *  Image chips keep their `[Image: …]` label in the text — the image
+ *  itself travels as a ContentBlock, so the label must survive. */
 function expandChips(text: string, chips: PasteChip[]): string {
   let out = text
   for (const chip of chips) {
+    if (chip.image) continue
     const idx = out.indexOf(chip.label)
     if (idx !== -1) {
       out = out.slice(0, idx) + chip.content + out.slice(idx + chip.label.length)
@@ -191,6 +281,244 @@ export function Composer() {
   } | null>(null)
   const taRef = useRef<HTMLTextAreaElement>(null)
   const busy = conn === 'busy'
+
+  // ── TUI prompt history recall (↑ on empty input) ──
+  const [history, setHistory] = useState<HistoryItem[]>(loadPromptHistory)
+  const [histOpen, setHistOpen] = useState(false)
+  // Panel list is newest-first; sel 0 = newest. ↑ walks older (TUI).
+  const [histSel, setHistSel] = useState(0)
+  const histPanelRef = useRef<HTMLDivElement>(null)
+
+  // ── TUI mid-turn send queue (Enter during a turn → queued) ──
+  const queue = usePromptQueue((s) => s.queue)
+  const queueSending = usePromptQueue((s) => s.sending)
+  const [queuePanelOpen, setQueuePanelOpen] = useState(false)
+  const queuePanelRef = useRef<HTMLDivElement>(null)
+  const queuePillRef = useRef<HTMLButtonElement>(null)
+
+  // ── TUI shell mode (`!` prefix; input runs locally, never the agent) ──
+  const [shellMode, setShellMode] = useState(false)
+  /** Counter for clipboard images without a filename (TUI `[Image #N]`). */
+  const unnamedImgRef = useRef(0)
+
+  const pushHistory = (sentText: string) => {
+    const t = sentText.trim()
+    if (!t) return
+    setHistory((prev) => {
+      if (prev[0]?.text === t) return prev // same as latest → skip
+      const next = [{ text: t, ts: Date.now() }, ...prev].slice(0, HISTORY_MAX)
+      savePromptHistory(next)
+      return next
+    })
+  }
+
+  /**
+   * Build the wire blocks for the current buffer: the text block (paste
+   * chips expanded, `[Image: …]` labels retained — TUI keeps the image
+   * marker in the prompt) followed by image blocks in chip order.
+   */
+  const buildBlocks = (
+    textValue: string,
+    chipList: PasteChip[],
+  ): { expandedText: string; blocks: ContentBlock[] } => {
+    const expandedText = expandChips(textValue, chipList)
+    const blocks: ContentBlock[] = [{ type: 'text', text: expandedText }]
+    // pruneChips pairs labels to chips in document order — image blocks
+    // follow the text in the same order the labels appear.
+    for (const c of pruneChips(
+      expandedText,
+      chipList.filter((ch) => ch.image),
+    )) {
+      if (c.image) {
+        blocks.push({ type: 'image', data: c.image.data, mimeType: c.image.mimeType })
+      }
+    }
+    return { expandedText, blocks }
+  }
+
+  /** Insert `[Image: …]` chips for pasted/dropped files at `pos`. */
+  const insertImageChips = async (files: File[], pos: number) => {
+    const labels: string[] = []
+    const newChips: PasteChip[] = []
+    for (const f of files) {
+      try {
+        const { data, mimeType } = await fileToDataUrl(f)
+        const name = f.name.trim() || String(++unnamedImgRef.current)
+        const label = `[Image: ${name}]`
+        labels.push(label)
+        newChips.push({
+          id: chipId(),
+          label,
+          content: '',
+          image: { data, mimeType, name, size: f.size },
+        })
+      } catch {
+        // Unreadable file — skip (rare).
+      }
+    }
+    if (labels.length === 0) return
+    const joined = labels.join('')
+    setText((t) => t.slice(0, pos) + joined + t.slice(pos))
+    setChips((cs) => [...cs, ...newChips])
+    caretRef.current = { pos: pos + joined.length }
+  }
+
+  /** Send the current buffer as an agent prompt (submit / Ctrl+Enter). */
+  const submitCurrent = async () => {
+    const trimmed = text.trim()
+    if (!trimmed) return
+    const { expandedText, blocks } = buildBlocks(text, chips)
+    setText('')
+    setChips([])
+    await send(expandedText, blocks)
+    // Record history only when the host accepted the prompt (send
+    // swallows transport errors into conn: 'error').
+    if (useChatStore.getState().conn !== 'error') pushHistory(expandedText)
+    taRef.current?.focus()
+  }
+
+  /**
+   * TUI double-Enter / [发送现在]: drain the queue head immediately.
+   * `sending` is the mutex shared with the auto-send effect — a user
+   * gesture can never race the turn-end auto-send into a double prompt.
+   */
+  const sendQueuedHead = async () => {
+    const q = usePromptQueue.getState()
+    if (q.sending) return
+    const head = q.dequeue()
+    if (!head) return
+    q.setSending(true)
+    try {
+      await useChatStore.getState().send(head.text, head.blocks)
+      if (useChatStore.getState().conn !== 'error') pushHistory(head.text)
+    } finally {
+      q.setSending(false)
+    }
+  }
+
+  /**
+   * TUI Ctrl+Enter: send NOW — cancel the running turn (background tasks
+   * keep running), then send the current input immediately.
+   */
+  const sendNow = async () => {
+    const trimmed = text.trim()
+    if (shellMode) {
+      // Shell mode: Ctrl+Enter runs the local command now (never the agent).
+      if (trimmed) void runShell(trimmed)
+      return
+    }
+    const st = useChatStore.getState()
+    if (st.conn === 'busy') {
+      await st.cancel()
+      // Let the cancelled SSE land first so it can't clobber the new
+      // turn's busy state (bounded wait; no-op when already idle).
+      for (let i = 0; i < 50 && useChatStore.getState().conn === 'busy'; i++) {
+        await new Promise((r) => setTimeout(r, 10))
+      }
+    }
+    await submitCurrent()
+  }
+
+  /** TUI shell mode: run the buffer as a local command (never the agent). */
+  const runShell = async (cmd: string) => {
+    const st = useChatStore.getState()
+    const appendLocalEntry = st.appendLocalEntry
+    appendLocalEntry({ kind: 'user', text: `$ ${cmd}` })
+    setText('')
+    taRef.current?.focus()
+    const res = await runShellCommand(cmd, st.cwd)
+    if (!res.ok) {
+      appendLocalEntry({ kind: 'error', text: `shell: ${res.error}` })
+      return
+    }
+    const out = res.output ?? ''
+    if (out.length > SHELL_OUTPUT_MAX) {
+      appendLocalEntry({
+        kind: 'session_event',
+        text: `${out.slice(0, SHELL_OUTPUT_MAX)}\n… (输出已截断，共 ${out.length} 字符)`,
+      })
+    } else if (out) {
+      appendLocalEntry({ kind: 'session_event', text: out })
+    }
+  }
+
+  /** TUI queue semantics: Enter during a turn queues; empty Enter sends head. */
+  const onSubmit = async () => {
+    const q = usePromptQueue.getState()
+    if (q.sending) return
+    const trimmed = text.trim()
+    if (!trimmed) {
+      // Double-Enter: empty input + Enter → send the queue head now.
+      if (q.queue.length > 0) void sendQueuedHead()
+      return
+    }
+    if (shellMode) {
+      void runShell(trimmed)
+      return
+    }
+    const st = useChatStore.getState()
+    if (st.conn === 'busy') {
+      // TUI: Enter during a running turn queues instead of sending.
+      const { expandedText, blocks } = buildBlocks(text, chips)
+      setText('')
+      setChips([])
+      q.enqueue({ text: expandedText, blocks })
+      taRef.current?.focus()
+      return
+    }
+    await submitCurrent()
+  }
+
+  /** Expanded image chips → inline thumbnail row above the textarea. */
+  const expandedImgs = useMemo(
+    () => chips.filter((c) => c.image && c.expanded),
+    [chips],
+  )
+
+  // Close the recall / queue panels on outside click or Escape.
+  useEffect(() => {
+    if (!histOpen && !queuePanelOpen) return
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node
+      if (
+        histOpen &&
+        histPanelRef.current &&
+        !histPanelRef.current.contains(t)
+      ) {
+        setHistOpen(false)
+      }
+      if (
+        queuePanelOpen &&
+        queuePanelRef.current &&
+        !queuePanelRef.current.contains(t) &&
+        !queuePillRef.current?.contains(t)
+      ) {
+        setQueuePanelOpen(false)
+      }
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (histOpen) setHistOpen(false)
+      if (queuePanelOpen) setQueuePanelOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [histOpen, queuePanelOpen])
+
+  // TUI queue: auto-send the head when the turn ends (conn busy → ready
+  // && awaitingNext). The `sending` mutex guards against Enter races.
+  useEffect(() => {
+    if (queueSending) return
+    if (queue.length === 0) return
+    const st = useChatStore.getState()
+    if (st.conn === 'ready' && st.awaitingNext) {
+      void sendQueuedHead()
+    }
+  }, [conn, awaitingNext, queue.length, queueSending])
 
   // Model picker: close on outside click / Escape; pin to viewport.
   useEffect(() => {
@@ -346,18 +674,18 @@ export function Composer() {
     }
   }, [focusMode])
 
-  const onSubmit = async () => {
-    if (!text.trim() || busy) return
-    // TUI: chip content is part of the buffer — expand before sending.
-    const t = expandChips(text, chips)
-    setText('')
-    setChips([])
-    await send(t)
-    taRef.current?.focus()
-  }
-
-  /** Inline a chip's stashed content at its label range (TUI expand_element). */
+  /** Inline a chip's stashed content at its label range (TUI expand_element).
+   *  Image chips toggle their inline thumbnail instead — the label stays
+   *  in the text and the image travels as a ContentBlock on submit. */
   const expandChipAt = (at: { chip: PasteChip; start: number; end: number }) => {
+    if (at.chip.image) {
+      setChips((cs) =>
+        cs.map((c) =>
+          c.id === at.chip.id ? { ...c, expanded: !c.expanded } : c,
+        ),
+      )
+      return
+    }
     setText((t) => t.slice(0, at.start) + at.chip.content + t.slice(at.end))
     setChips((cs) => cs.filter((c) => c.id !== at.chip.id))
     caretRef.current = { pos: at.start + at.chip.content.length }
@@ -389,6 +717,22 @@ export function Composer() {
    * expands it instead of duplicating (repaste-to-expand).
    */
   const onPaste = (e: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    // TUI image paste: clipboard items with image/* types (screenshots,
+    // copied images) become `[Image: …]` chips. When images are present
+    // they win over any coexisting text (browser copies often carry both).
+    const imageFiles: File[] = []
+    for (const item of Array.from(e.clipboardData.items)) {
+      if (item.kind === 'file' && item.type.startsWith('image/')) {
+        const f = item.getAsFile()
+        if (f) imageFiles.push(f)
+      }
+    }
+    if (imageFiles.length > 0) {
+      e.preventDefault()
+      const el = taRef.current
+      void insertImageChips(imageFiles, el ? el.selectionStart : text.length)
+      return
+    }
     const raw = e.clipboardData.getData('text')
     if (!raw) return // empty / image paste → native no-op
     const cleaned = normalizeCr(raw)
@@ -611,6 +955,23 @@ export function Composer() {
             )}
           </div>
         )}
+        {/* TUI queue pill — visible while prompts are queued mid-turn.
+            Click toggles the queue panel (delete items / send now). */}
+        {queue.length > 0 && (
+          <div className="mb-1.5" style={{ paddingLeft: COMPOSER_BODY_PAD_LEFT_PX }}>
+            <button
+              ref={queuePillRef}
+              type="button"
+              onClick={() => setQueuePanelOpen((v) => !v)}
+              className="inline-flex min-h-6 items-center gap-1.5 rounded-full border border-gn-prompt-border bg-gn-bg-dark px-2.5 text-[11px] leading-none transition-colors hover:border-gn-prompt-border-active sm:min-h-0"
+              title="点击查看发送队列"
+            >
+              <span className="text-gn-cyan">已排队 {queue.length} 条</span>
+              <span className="text-gn-gray">·</span>
+              <span className="text-gn-gray">Ctrl+Enter 立即发送</span>
+            </button>
+          </div>
+        )}
         {/*
           PromptWidget chrome — rounded border box:
           - border + radius on the container (focus recolors via borderColor)
@@ -626,6 +987,140 @@ export function Composer() {
             taRef.current?.focus()
           }}
         >
+          {/* Queue panel — floats above the composer; per-item delete,
+              [发送现在] drains the head immediately. */}
+          {queuePanelOpen && queue.length > 0 && (
+            <div
+              ref={queuePanelRef}
+              className="absolute bottom-full left-0 right-0 z-40 mb-1 overflow-hidden rounded border border-gn-prompt-border-active bg-gn-bg-dark shadow-2xl"
+            >
+              <div className="flex items-center justify-between border-b border-gn-prompt-border px-3 py-1.5">
+                <span className="text-[11px] font-bold text-gn-fg2">
+                  发送队列 ({queue.length})
+                </span>
+                <span className="text-[10px] text-gn-gray">
+                  回合结束后自动发送队首
+                </span>
+              </div>
+              <div className="gn-no-scrollbar max-h-40 overflow-y-auto">
+                {queue.map((q, i) => (
+                  <div
+                    key={q.id}
+                    className="group flex items-center gap-2 border-b border-gn-prompt-border/40 px-3 py-1.5"
+                  >
+                    <span className="shrink-0 text-[10px] tabular-nums text-gn-gray">
+                      {i + 1}
+                    </span>
+                    <span
+                      className="min-w-0 flex-1 truncate text-[11.5px] text-gn-fg"
+                      title={q.text}
+                    >
+                      {q.text}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => usePromptQueue.getState().removeAt(q.id)}
+                      className="shrink-0 rounded px-1 text-gn-gray opacity-0 transition-opacity group-hover:opacity-100 hover:bg-gn-bg-highlight hover:text-gn-red"
+                      title="从队列删除"
+                    >
+                      {Glyphs.ballotX}
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <div className="flex items-center gap-2 border-t border-gn-prompt-border px-3 py-1.5">
+                <button
+                  type="button"
+                  onClick={() => void sendQueuedHead()}
+                  className="rounded bg-gn-bg-highlight px-2 py-[2px] text-[11px] text-gn-cyan transition-colors hover:bg-gn-bg-hover"
+                  title="立即发送队首"
+                >
+                  发送现在
+                </button>
+                <button
+                  type="button"
+                  onClick={() => usePromptQueue.getState().clear()}
+                  className="rounded px-2 py-[2px] text-[11px] text-gn-gray transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+                >
+                  清空
+                </button>
+                <span className="flex-1" />
+                <span className="text-[10px] text-gn-gray">Esc 关闭</span>
+              </div>
+            </div>
+          )}
+          {/* Prompt history recall panel (TUI ↑ on empty input). */}
+          {histOpen && history.length > 0 && (
+            <div
+              ref={histPanelRef}
+              className="absolute bottom-full left-0 right-0 z-30 mb-1 overflow-hidden rounded border border-gn-prompt-border-active bg-gn-bg-dark shadow-2xl"
+            >
+              <div className="border-b border-gn-prompt-border px-3 py-1.5 text-[11px] font-bold text-gn-fg2">
+                提示历史
+              </div>
+              <div className="gn-no-scrollbar max-h-48 overflow-y-auto">
+                {history.map((h, i) => (
+                  <button
+                    key={`${h.ts}-${i}`}
+                    type="button"
+                    onClick={() => {
+                      setText(h.text)
+                      setHistOpen(false)
+                      caretRef.current = { pos: h.text.length }
+                      taRef.current?.focus()
+                    }}
+                    onMouseEnter={() => setHistSel(i)}
+                    className={`block w-full truncate px-3 py-1 text-left text-[11.5px] transition-colors ${
+                      i === histSel
+                        ? 'bg-gn-bg-highlight text-gn-fg'
+                        : 'text-gn-fg2'
+                    }`}
+                    title={`${h.text}\n${new Date(h.ts).toLocaleString()}`}
+                  >
+                    {h.text}
+                  </button>
+                ))}
+              </div>
+              <div className="border-t border-gn-prompt-border px-3 py-[3px] text-[10px] text-gn-muted">
+                ↑/↓ 选择 · Enter 填入 · Esc 关闭
+              </div>
+            </div>
+          )}
+          {/* Expanded image chips — inline thumbnails above the textarea
+              (TUI Enter expands `[Image #N]` to the rendered image). */}
+          {expandedImgs.length > 0 && (
+            <div className="flex flex-wrap items-end gap-2 px-3 pb-1">
+              {expandedImgs.map((c) => (
+                <div key={c.id} className="group relative">
+                  <img
+                    src={`data:${c.image!.mimeType};base64,${c.image!.data}`}
+                    alt={c.image!.name}
+                    className="max-h-24 w-auto max-w-[160px] rounded border border-gn-prompt-border object-contain"
+                  />
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setChips((cs) =>
+                        cs.map((x) =>
+                          x.id === c.id ? { ...x, expanded: false } : x,
+                        ),
+                      )
+                    }
+                    className="absolute -right-1.5 -top-1.5 rounded-full bg-gn-bg-dark px-1 text-[9px] leading-[1.3] text-gn-gray opacity-0 transition-opacity group-hover:opacity-100 hover:text-gn-red"
+                    title="折叠"
+                  >
+                    {Glyphs.ballotX}
+                  </button>
+                  <div
+                    className="max-w-24 truncate text-[9.5px] leading-tight text-gn-muted"
+                    title={c.image!.name}
+                  >
+                    {c.image!.name}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
           {/* ── Body: ❯ textarea ──
               The prompt frame has a 1px border, so the body inset must be
               ICON_COL_INSET - 1 for the ❯ box to land exactly on the
@@ -640,8 +1135,22 @@ export function Composer() {
               opacity: promptFocused ? 1 : 0.72,
             }}
           >
-              <span className="mt-[2px] shrink-0" style={{ color: prefixColor }}>
-                <IconGlyph glyph={Glyphs.promptArrow} color={prefixColor} />
+              <span
+                className="mt-[2px] shrink-0"
+                style={{
+                  color: shellMode
+                    ? 'var(--color-gn-cyan)'
+                    : prefixColor,
+                }}
+              >
+                {shellMode ? (
+                  // TUI shell prompt: `!` prefix (cyan), input runs locally.
+                  <span className="inline-flex w-[1.25em] items-center justify-center font-bold leading-none">
+                    !
+                  </span>
+                ) : (
+                  <IconGlyph glyph={Glyphs.promptArrow} color={prefixColor} />
+                )}
               </span>
               <textarea
                 id="composer-input"
@@ -650,7 +1159,16 @@ export function Composer() {
                 value={text}
                 onChange={(e) => {
                   const v = e.target.value
+                  // TUI shell mode: typing `!` into an empty buffer enters
+                  // shell mode — the `!` lives in the prefix, not the buffer.
+                  if (!shellMode && v === '!' && text === '') {
+                    setShellMode(true)
+                    setHistOpen(false)
+                    return
+                  }
                   setText(v)
+                  // Typing closes the recall panel (TUI buffer edit).
+                  if (histOpen) setHistOpen(false)
                   // Keep chips in sync with the editable label text.
                   setChips((cs) => pruneChips(v, cs))
                 }}
@@ -668,6 +1186,69 @@ export function Composer() {
                   // after composition ends and would swallow plain Enter.
                   if (e.nativeEvent.isComposing) return
                   const el = taRef.current
+                  // TUI Ctrl+Enter: send NOW (cancel the running turn,
+                  // background tasks keep running).
+                  if (e.key === 'Enter' && e.ctrlKey) {
+                    e.preventDefault()
+                    void sendNow()
+                    return
+                  }
+                  // TUI shell mode: backspace on the empty buffer clears
+                  // the leading `!` → exits shell mode.
+                  if (e.key === 'Backspace' && shellMode && text === '') {
+                    e.preventDefault()
+                    setShellMode(false)
+                    return
+                  }
+                  // TUI prompt history recall: ↑ on an EMPTY input opens
+                  // the panel; non-empty ↑ stays a plain caret move.
+                  if (
+                    (e.key === 'ArrowUp' || e.key === 'ArrowDown') &&
+                    !e.ctrlKey &&
+                    !e.metaKey &&
+                    !e.altKey
+                  ) {
+                    if (histOpen) {
+                      e.preventDefault()
+                      if (e.key === 'ArrowUp') {
+                        setHistSel((s) => Math.min(s + 1, history.length - 1))
+                      } else if (histSel === 0) {
+                        // ↓ past the newest item closes the panel (TUI).
+                        setHistOpen(false)
+                      } else {
+                        setHistSel((s) => Math.max(0, s - 1))
+                      }
+                      return
+                    }
+                    if (e.key === 'ArrowUp' && text === '' && !shellMode) {
+                      if (history.length > 0) {
+                        e.preventDefault()
+                        setHistSel(0)
+                        setHistOpen(true)
+                      }
+                      return
+                    }
+                    // Non-empty input (or ↓): fall through — plain caret
+                    // movement + chip edge clamping below.
+                  }
+                  if (histOpen) {
+                    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey) {
+                      e.preventDefault()
+                      const item = history[histSel]
+                      if (item) {
+                        setText(item.text)
+                        setHistOpen(false)
+                        caretRef.current = { pos: item.text.length }
+                      }
+                      return
+                    }
+                    if (e.key === 'Escape') {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      setHistOpen(false)
+                      return
+                    }
+                  }
                   // Chip atomicity: a directional move that lands inside a
                   // chip label is clamped to the edge it came from (TUI
                   // renders the caret on the block edge, never inside).
@@ -766,10 +1347,11 @@ export function Composer() {
                     e.preventDefault()
                     return
                   }
-                  if (e.key === 'Enter' && !e.shiftKey) {
+                  if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey) {
                     // TUI: Enter ON a chip expands it (paste_preview_hint);
                     // anywhere else it keeps its normal submit behavior.
-                    if (el && el.selectionStart === el.selectionEnd) {
+                    // Shell mode: Enter always submits the local command.
+                    if (!shellMode && el && el.selectionStart === el.selectionEnd) {
                       const at = chipOccurrenceAt(
                         text,
                         chips,
@@ -781,7 +1363,7 @@ export function Composer() {
                         expandChipAt(at)
                         return
                       }
-                    } else if (el) {
+                    } else if (!shellMode && el) {
                       // Selection spanning exactly one chip label → expand.
                       const sel = text.slice(el.selectionStart, el.selectionEnd)
                       const chip = chips.find((c) => c.label === sel)
@@ -799,9 +1381,32 @@ export function Composer() {
                     void onSubmit()
                     return
                   }
-                  if (e.key === 'Escape' && busy) {
-                    e.preventDefault()
-                    void cancel()
+                  if (e.key === 'Escape') {
+                    // Panels close first; Esc is swallowed so the global
+                    // busy-cancel doesn't also fire.
+                    if (histOpen) {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      setHistOpen(false)
+                      return
+                    }
+                    if (queuePanelOpen) {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      setQueuePanelOpen(false)
+                      return
+                    }
+                    // TUI: Esc in shell mode with an empty input exits.
+                    if (shellMode && text === '') {
+                      e.preventDefault()
+                      setShellMode(false)
+                      return
+                    }
+                    if (busy) {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      void cancel()
+                    }
                   }
                 }}
                 onBeforeInput={(e) => {
@@ -813,6 +1418,25 @@ export function Composer() {
                   }
                 }}
                 onPaste={onPaste}
+                onDragOver={(e) => {
+                  // Allow the drop so the browser doesn't navigate to the
+                  // file (image drop → chip below).
+                  e.preventDefault()
+                }}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  const files = Array.from(e.dataTransfer.files).filter((f) =>
+                    f.type.startsWith('image/'),
+                  )
+                  if (files.length === 0) {
+                    // Non-image files: browsers cannot expose local paths
+                    // (web limitation) — ignore rather than insert a
+                    // broken reference. TUI takes a path here.
+                    return
+                  }
+                  const t = taRef.current
+                  void insertImageChips(files, t ? t.selectionStart : text.length)
+                }}
                 onSelect={() => {
                   // Mirror the live caret (selectionchange) for the preview.
                   const t = taRef.current
@@ -840,10 +1464,16 @@ export function Composer() {
                 }}
                 title={
                   chips.length > 0
-                    ? 'enter / double-click / paste-again on [Pasted] chip to expand'
+                    ? 'enter / double-click / paste-again on a chip to expand'
                     : undefined
                 }
-                placeholder={promptFocused ? '' : 'Build anything'}
+                placeholder={
+                  shellMode
+                    ? '运行本地命令'
+                    : promptFocused
+                      ? ''
+                      : 'Build anything'
+                }
                 spellCheck={false}
                 className="gn-no-scrollbar min-h-[20px] flex-1 resize-none bg-transparent font-ui text-[13.5px] leading-[1.55] text-gn-fg outline-none placeholder:text-gn-gray"
               />
@@ -984,27 +1614,49 @@ export function Composer() {
 
           {/* Paste preview overlay (TUI render_preview_overlay) — floats
               above the prompt frame while the caret is on/after a chip:
-              first/last 3 lines with a ⋮ separator, hint in the footer. */}
-          {preview && previewLines && (
-            <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-1 w-[75%] -translate-x-1/2 overflow-hidden rounded border border-gn-prompt-border-active bg-gn-bg-dark shadow-2xl">
-              <div className="gn-no-scrollbar max-h-44 overflow-y-auto py-0.5">
-                {previewLines.map((line, i) => (
-                  <div
-                    key={i}
-                    className={`truncate px-2 font-mono text-[11.5px] leading-[1.5] ${
-                      line.startsWith('⋮ (') ? 'text-gn-gray-dim' : 'text-gn-fg'
-                    }`}
-                  >
-                    {line || ' '}
+              text chips show first/last 3 lines with a ⋮ separator; image
+              chips show the thumbnail + name + size, hint in the footer. */}
+          {preview &&
+            (preview.chip.image ? (
+              <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-1 w-[75%] -translate-x-1/2 overflow-hidden rounded border border-gn-prompt-border-active bg-gn-bg-dark shadow-2xl">
+                <div className="flex flex-col items-center gap-1 px-2 py-2">
+                  <img
+                    src={`data:${preview.chip.image.mimeType};base64,${preview.chip.image.data}`}
+                    alt={preview.chip.image.name}
+                    className="max-h-32 w-auto max-w-full rounded border border-gn-prompt-border object-contain"
+                  />
+                  <div className="max-w-full truncate text-[10.5px] text-gn-fg2">
+                    {preview.chip.image.name} · {fmtBytes(preview.chip.image.size)}
                   </div>
-                ))}
+                </div>
+                <div className="border-t border-gn-prompt-border/60 px-2 py-[3px] text-[10px] text-gn-muted">
+                  {preview.onChip ? 'enter' : 'double-click'} to expand
+                </div>
               </div>
-              <div className="border-t border-gn-prompt-border/60 px-2 py-[3px] text-[10px] text-gn-muted">
-                {preview.onChip ? 'enter' : 'paste again'} or double-click to
-                expand
-              </div>
-            </div>
-          )}
+            ) : (
+              previewLines && (
+                <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-1 w-[75%] -translate-x-1/2 overflow-hidden rounded border border-gn-prompt-border-active bg-gn-bg-dark shadow-2xl">
+                  <div className="gn-no-scrollbar max-h-44 overflow-y-auto py-0.5">
+                    {previewLines.map((line, i) => (
+                      <div
+                        key={i}
+                        className={`truncate px-2 font-mono text-[11.5px] leading-[1.5] ${
+                          line.startsWith('⋮ (')
+                            ? 'text-gn-gray-dim'
+                            : 'text-gn-fg'
+                        }`}
+                      >
+                        {line || ' '}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="border-t border-gn-prompt-border/60 px-2 py-[3px] text-[10px] text-gn-muted">
+                    {preview.onChip ? 'enter' : 'paste again'} or double-click to
+                    expand
+                  </div>
+                </div>
+              )
+            ))}
         </div>
 
       </div>
