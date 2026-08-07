@@ -1582,7 +1582,16 @@ export function Composer() {
                     // movement + chip edge clamping below.
                   }
                   // TUI slash menu: ↑/↓ walk the filtered command list.
-                  if (slashOpen) {
+                  // ONLY those two keys are consumed here — letters,
+                  // Backspace, Enter, Esc, Tab etc. must fall through to
+                  // their own handlers below (typing filters the menu,
+                  // Enter executes the highlighted row, Esc dismisses).
+                  // Swallowing every key made the input uneditable while
+                  // the menu was open (typing stopped at "/").
+                  if (
+                    slashOpen &&
+                    (e.key === 'ArrowUp' || e.key === 'ArrowDown')
+                  ) {
                     e.preventDefault()
                     if (e.key === 'ArrowUp') {
                       setSlashSel((s) => Math.max(0, s - 1))
