@@ -21,7 +21,18 @@ Vite + React + Tailwind 前端：连接本机 `acp-host`（Local 模式）或 `a
 | 会话管理 | `x.ai/sessions/changed`、`x.ai/models/update`、`session/fork`、`session/rename`、`x.ai/recap` | 历史列表自动刷新、history 菜单 recap/fork/rename |
 | 调度任务 | `x.ai/scheduled_task_fired` / `inject_prompt` | 滚动区 status 行 |
 
-Host 侧对应实现见 `acp-host/internal/acp/bridge.go`（通知转发、请求转发、`initialize` 能力声明 `x.ai/gitHeadChanged` 等）与 `internal/server/http.go`（`/api/client-response`、`/api/session-fork`、`/api/session-rename`、`/api/recap`、`/api/subagent-cancel`、`/api/task-kill`）。
+## TUI 移植能力（斜杠命令与 Composer）
+
+- **斜杠命令**：输入 `/` 弹出模糊菜单（↑/↓ + Enter/Tab 执行），或直接输入 `/cmd args` 回车。
+  支持 `/new /clear /resume /model /effort /theme /compact /rewind /delete /rename /fork /recap /session-info /loop /plan /normal /copy /timestamps /help`。
+- **prompt 历史**：空输入按 `↑` 回忆最近 50 条（localStorage 持久化）。
+- **中途发送**：回合进行中 Enter 排队（胶囊提示，可展开管理），double-Enter 发队首，`Ctrl+Enter` 取消当前回合立即发送。
+- **shell 模式**：空输入输入 `!` 进入，Enter 经 `POST /api/shell` 在本机执行命令，输出以本地条目入滚动区（不发给 agent）。
+- **图片**：粘贴/拖拽图片 → `[Image: …]` chip（缩略图预览），提交为 ACP image 内容块；agent 回复中的图片经 SSE `image` 事件内联渲染（滚动区 / BlockViewer / read 工具预览）。
+- **会话管理**：侧栏行 hover ✕ 删除（二次确认）、compact / rewind（RewindPicker 模态，`x.ai/rewind/points` + `execute`）。
+- **任务面板**：⠋N 胶囊展开双分区面板（运行中 + 调度任务），调度任务来自 `scheduled_task_created/deleted` 通知，删除走 `_x.ai/scheduler/delete`。
+
+Host 侧对应实现见 `acp-host/internal/acp/bridge.go`（通知转发、请求转发、`initialize` 能力声明 `x.ai/gitHeadChanged` 等）与 `internal/server/http.go`（`/api/client-response`、`/api/session-fork`、`/api/session-rename`、`/api/recap`、`/api/subagent-cancel`、`/api/task-kill`，以及 TUI 移植新增的 `/api/session-delete`、`/api/compact`、`/api/rewind-points`、`/api/rewind-execute`、`/api/scheduler-delete`、`/api/shell`）。
 
 ## 开发
 
