@@ -2089,6 +2089,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (last && now - last < NOTICE_DEDUP_WINDOW_MS) return
     const live = s.sessions.find((x) => x.sessionId === sessionId)
     const title = live?.title || sessionId.slice(0, 12)
+    const text = `「${title}」已完成`
+    const toastId = `done_${sessionId}_${now}`
     // 系统通知（页面切走/最小化也能看到）；成功则不重复弹页面 toast。
     if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
       try {
@@ -2098,19 +2100,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
         /* some browsers throw on construction — fall through to toast */
       }
     } else if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
-      // 首次遇到完成事件时请求一次授权（拒绝后自动走 toast）。
+      // 首次遇到完成事件时请求一次授权。授予后系统通知已发出 — 撤掉
+      // 刚入队的页面 toast，避免双重提醒；期间用户已打开该会话时通知
+      // 作废，toast 一并撤掉。
       void Notification.requestPermission().then((p) => {
-        if (p === 'granted' && get().completedNotices[sessionId]) {
-          try {
-            new Notification(`会话完成：${title}`, { body: '点击左侧会话列表查看' })
-          } catch {
-            /* ignore */
-          }
+        if (!get().completedNotices[sessionId]) {
+          set({ toasts: get().toasts.filter((t) => t.id !== toastId) })
+          return
+        }
+        if (p !== 'granted') return
+        try {
+          new Notification(`会话完成：${title}`, { body: '点击左侧会话列表查看' })
+          set({ toasts: get().toasts.filter((t) => t.id !== toastId) })
+        } catch {
+          /* 构造失败 — 保留页面 toast 作为兜底 */
         }
       })
     }
-    const text = `「${title}」已完成`
-    set({ toasts: [...s.toasts, { id: `done_${sessionId}_${now}`, text }].slice(-4) })
+    set({ toasts: [...s.toasts, { id: toastId, text }].slice(-4) })
   },
 
   continueSession: async (sessionId: string, cwd: string) => {
@@ -2316,6 +2323,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   handleEvent: (ev) => {
+    // Host typed-event carrier (protocol alignment — "single typed event
+    // per kind"): modeled x.ai kinds arrive as {type: <kind>, update,
+    // sessionId} with the verbatim SessionUpdate envelope in `update`
+    // (subagent_spawned/progress/finished, session_recap, workflow_updated,
+    // goal_updated, memory_flush_*, auto_compact_*, hook_*, task_*, …).
+    // The FE's unified consumer for these kinds is the session_notification
+    // channel keyed by the update's sessionUpdate tag — rewrite them here
+    // so every kind reaches its shared handler. Typed turn_completed keeps
+    // its own top-level path (cross-session notices ride ev.sessionId);
+    // standalone-channel events ({type, params}) and normalized kinds
+    // (tool_call, plan, usage, modes_update, …) carry no `update` and pass
+    // through untouched.
+    const raw = ev as { update?: unknown }
+    if (raw.update && typeof raw.update === 'object') {
+      const u = raw.update as { sessionUpdate?: unknown }
+      if (typeof u.sessionUpdate === 'string' && ev.type !== 'turn_completed') {
+        ev = {
+          type: 'session_notification',
+          method: 'session/update',
+          params: u,
+        } as AcpEvent
+      }
+    }
     switch (ev.type) {
       case 'hello': {
         // Hub-level hello (acp-hub): registry info, no session state —
@@ -6392,10 +6422,17 @@ function applyModeFlags(set: SetState, p: Record<string, unknown>): void {
   })
 }
 
-/** Normalize a subagent_finished wire status to the entry status set. */
+/**
+ * Normalize a subagent_finished wire status to the entry status set.
+ * Absent status = success (the host may omit it); a PRESENT but unknown
+ * status (error/timeout/killed/…) must not render as a green "Agent
+ * done" — treat it as failed, like handleTaskCompleted's kill/nonzero
+ * exit handling.
+ */
 function subagentFinishStatus(fields: Record<string, unknown>): SubagentStatus {
-  const raw = typeof fields.status === 'string' ? fields.status : 'completed'
-  return raw === 'completed' || raw === 'failed' || raw === 'cancelled' ? raw : 'completed'
+  const raw = typeof fields.status === 'string' ? fields.status : ''
+  if (raw === 'completed' || raw === 'failed' || raw === 'cancelled') return raw
+  return raw === '' ? 'completed' : 'failed'
 }
 
 /** Apply a subagent finish to its scrollback entry (shared live/replay). */

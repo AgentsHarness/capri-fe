@@ -1126,9 +1126,7 @@ const EntryView = memo(function EntryView({
   if (e.kind === 'subagent') {
     const label =
       e.status === 'started'
-        ? e.running
-          ? 'Agent'
-          : 'Agent'
+        ? 'Agent'
         : e.status === 'completed'
           ? 'Agent done'
           : e.status === 'cancelled'

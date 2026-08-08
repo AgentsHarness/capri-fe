@@ -5,7 +5,6 @@ import { TopBar, WorkspaceBar } from './components/TopBar'
 import { ErrorBanner } from './components/ErrorBanner'
 import { HistorySidebar } from './components/HistorySidebar'
 import { Scrollback } from './components/Scrollback'
-import { TurnStatusBar } from './components/TurnStatusBar'
 import { Composer } from './components/Composer'
 import { ApprovalStrip } from './components/ApprovalStrip'
 import { PlanApproval } from './components/PlanApproval'
@@ -63,7 +62,6 @@ export default function App() {
           {/* Workspace + git — scrollback top-left (TUI status-bar left). */}
           <WorkspaceBar onOpenMcp={() => setMcpOpen(true)} />
           <Scrollback />
-          <TurnStatusBar />
           <ApprovalStrip />
           <PlanApproval />
           <CancelPanel />

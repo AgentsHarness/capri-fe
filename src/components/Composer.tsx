@@ -7,13 +7,14 @@ import {
 } from 'react'
 import { useChatStore, formatTurnDuration, stillRunningCue } from '../store/chat'
 import { usePromptQueue } from '../store/promptQueue'
-import type { ContentBlock } from '../api/types'
+import type { ContentBlock, ScrollEntry } from '../api/types'
 import {
   Glyphs,
   MONITOR_PULSE_FRAMES,
   MONITOR_PULSE_INTERVAL_MS,
   SPINNER_FRAMES,
   SPINNER_INTERVAL_MS,
+  toolHeader,
 } from '../theme/glyphs'
 import {
   COMPOSER_BODY_PAD_LEFT_PX,
@@ -22,6 +23,7 @@ import {
 } from '../theme/layout'
 import { IconGlyph } from './IconGlyph'
 import { fmtTok } from './StatusChips'
+import { Accents } from './AccentRail'
 import { SlashMenu } from './SlashMenu'
 import {
   filterSlashCommands,
@@ -38,6 +40,29 @@ import {
  */
 const CHIP_MIN_LINES = 4 // TUI: 4, or 2 in compact mode (web has none)
 const CHIP_DISPLAY_BYTES = 10_000
+
+/**
+ * Current activity of a busy turn: the newest running entry — thinking or
+ * tool — with its label, accent color and start time (TUI turn_status.rs
+ * activity label). Falls back to null (the generic status text) when
+ * nothing is running.
+ */
+function currentActivity(
+  entries: ScrollEntry[],
+): { label: string; color: string; startedAt?: number } | null {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i]
+    if (e.kind === 'thought' && e.streaming) {
+      return { label: 'Thinking', color: Accents.thinkingDefault, startedAt: e.startedAt }
+    }
+    if (e.kind === 'tool' && (e.status === 'pending' || e.status === 'in_progress')) {
+      const verb = toolHeader(e.kindName, false).verb
+      const target = (e.title || e.kindName || '').trim()
+      return { label: `${verb} ${target}`.trim(), color: Accents.success }
+    }
+  }
+  return null
+}
 
 /**
  * Paste chip = text paste chip; image chip = pasted/dropped image behind
@@ -814,6 +839,10 @@ export function Composer() {
   // turn-timer re-renders and the monitor pulse (half speed).
   const idleCue = useMemo(() => stillRunningCue(entries, topTasks), [entries, topTasks])
   const idleCueVisible = !busy && conn === 'ready' && awaitingNext && idleCue != null
+  // Busy arm: dynamic activity label (newest running tool / thinking) with
+  // its phase timer — TUI turn_status.rs activity arm. Falls back to the
+  // static statusText when nothing is running.
+  const activity = useMemo(() => currentActivity(entries), [entries])
   const statusVisible =
     busy ||
     conn === 'connecting' ||
@@ -1156,9 +1185,11 @@ export function Composer() {
             its inline card into this anchor so it sits above the input. */}
         <div id="acp-xai-question-anchor" />
         {/* ── TUI turn status line (turn_status.rs) ──
-            Busy: `⠧ Thinking…  1m20s ⇣12k [stop]`. Idle with watchers:
-            `○ 2 commands still running` — a persistent status, never a
-            scrollback line. Hidden when truly idle. */}
+            Busy: `⠧ Run command 0.2s  1m20s ⇣12k [stop]` — the label is
+            the dynamic activity (newest running tool / thinking) with its
+            phase timer, falling back to the status text. Idle with
+            watchers: `○ 2 commands still running` — a persistent status,
+            never a scrollback line. Hidden when truly idle. */}
         {statusVisible && (
           <div
             className="flex min-h-5 items-center gap-1.5 pb-2 pr-0.5 font-ui text-[13.5px] leading-[1.4] select-none"
@@ -1195,15 +1226,33 @@ export function Composer() {
                     <span className="h-[7px] w-[7px] rounded-full bg-gn-red" />
                   )}
                 </span>
-                <span
-                  className={`truncate ${
-                    conn === 'error' || conn === 'offline'
-                      ? 'text-gn-red'
-                      : 'text-gn-muted'
-                  }`}
-                >
-                  {statusText}
-                </span>
+                {busy ? (
+                  // Busy arm: activity label (colored per activity type) +
+                  // phase timer — dynamic, replaces the static statusText.
+                  <>
+                    <span
+                      className="truncate"
+                      style={{ color: activity?.color ?? 'var(--color-gn-gray-dim)' }}
+                    >
+                      {activity?.label ?? statusText}
+                    </span>
+                    {activity?.startedAt != null && (
+                      <span className="shrink-0 tabular-nums text-gn-gray">
+                        {formatTurnDuration(Date.now() - activity.startedAt)}
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <span
+                    className={`truncate ${
+                      conn === 'error' || conn === 'offline'
+                        ? 'text-gn-red'
+                        : 'text-gn-muted'
+                    }`}
+                  >
+                    {statusText}
+                  </span>
+                )}
                 <span className="flex-1" />
                 {busy && turnStartedAt != null && (
                   <span className="tabular-nums text-gn-gray">

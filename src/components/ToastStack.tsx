@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useChatStore } from '../store/chat'
 
 /** In-page toast auto-dismiss window. */
@@ -14,15 +14,38 @@ export function ToastStack() {
   const toasts = useChatStore((s) => s.toasts)
   const dismissToast = useChatStore((s) => s.dismissToast)
 
-  // Auto-dismiss: re-arm a timer per toast id (a re-shown notice of the
-  // same session gets a fresh id, so timers never collide).
+  // One auto-dismiss timer per toast id, armed on first appearance only.
+  // Re-arming from the whole `toasts` array on every change would let a
+  // manual ✕ on one toast extend the lifetime of all the others.
+  const timers = useRef(new Map<string, number>())
   useEffect(() => {
-    if (toasts.length === 0) return
-    const timers = toasts.map((t) =>
-      window.setTimeout(() => dismissToast(t.id), TOAST_TTL_MS),
-    )
-    return () => timers.forEach((id) => window.clearTimeout(id))
+    const alive = new Set<string>()
+    for (const t of toasts) {
+      alive.add(t.id)
+      if (timers.current.has(t.id)) continue
+      const timer = window.setTimeout(() => {
+        timers.current.delete(t.id)
+        dismissToast(t.id)
+      }, TOAST_TTL_MS)
+      timers.current.set(t.id, timer)
+    }
+    // Drop timers for toasts already dismissed manually (✕).
+    for (const [id, timer] of timers.current) {
+      if (!alive.has(id)) {
+        window.clearTimeout(timer)
+        timers.current.delete(id)
+      }
+    }
   }, [toasts, dismissToast])
+
+  // Unmount safety: don't leave timers firing against a stale store.
+  useEffect(() => {
+    const current = timers.current
+    return () => {
+      current.forEach((t) => window.clearTimeout(t))
+      current.clear()
+    }
+  }, [])
 
   if (toasts.length === 0) return null
 
