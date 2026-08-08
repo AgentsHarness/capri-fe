@@ -2198,7 +2198,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           set({
             historyLoading: false,
             conn: 'busy',
-            statusText: 'Waiting…',
+            statusText: 'Waiting for host…',
             awaitingNext: false,
             sessionId,
             turnStartedAt: Date.now(),
@@ -2386,7 +2386,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           const busyTurn = get().turnStartedAt ?? Date.now()
           set({
             conn: 'busy',
-            statusText: 'Waiting…',
+            statusText: 'Waiting for host…',
             awaitingNext: false,
             turnStartedAt: busyTurn,
             error: undefined,
@@ -3145,7 +3145,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             break
           }
           case 'reasoning_completed':
-            set({ statusText: 'Waiting…' })
+            set({ statusText: 'Waiting for response…' })
             break
           case 'auto_compact_started': {
             const pct = fields.percentage as number | undefined
