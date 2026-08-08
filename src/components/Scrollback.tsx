@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { planTodos, useChatStore } from '../store/chat'
 import type { ScrollEntry } from '../api/types'
+import { subagentMeta } from '../format'
 import { Glyphs, toolHeader } from '../theme/glyphs'
 import { thoughtDisplayMode } from '../scrollback/thoughtMode'
 import { TodoMark } from './todoMark'
@@ -1144,6 +1145,11 @@ const EntryView = memo(function EntryView({
           <span className="min-w-0 truncate font-mono text-[12.5px] text-gn-muted">
             {e.title}
           </span>
+          {(e.persona || e.role || e.model) && (
+            <span className="shrink-0 text-[11px] text-gn-gutter">
+              {subagentMeta(e.persona, e.role, e.model)}
+            </span>
+          )}
           {e.detail && (
             <span className="text-[11px] text-gn-gutter truncate">{e.detail}</span>
           )}

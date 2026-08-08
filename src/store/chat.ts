@@ -1019,11 +1019,22 @@ type ChatState = {
    * Orphaned subagent_finished payloads that replayed BEFORE their
    * subagent_spawned (history loads newest page first; spawn and finish
    * can straddle a page boundary). Applied when the spawn arrives, so a
-   * replayed subagent keeps its real status/duration instead of being
-   * force-sealed by settleTurnEntries. Live finishes never orphan
-   * (spawn always precedes finish in real time).
+   * replayed subagent keeps its real status/duration/output instead of
+   * staying "running" forever. Live finishes never orphan (spawn always
+   * precedes finish in real time).
    */
-  pendingSubagentFinishes: Record<string, { status: SubagentStatus; durationMs?: number }>
+  pendingSubagentFinishes: Record<
+    string,
+    {
+      status: SubagentStatus
+      durationMs?: number
+      output?: string
+      error?: string
+      toolCalls?: number
+      turns?: number
+      tokensUsed?: number
+    }
+  >
   /** task_id → entry id (task_backgrounded / task_completed). */
   bgTaskIndex: Record<string, string>
   /**
@@ -1840,7 +1851,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // model state, pending requests and busy flags hydrate consistently.
     try {
       const st = await transport.status()
-      transport.emitLocal({ type: 'hello', ...st })
+      // GET /api/status serializes the host Status struct verbatim, so a
+      // boot failure arrives as `bootError` — while the SSE hello event
+      // (http.go handleSSE) maps the same field to `error`. Normalize so
+      // a failed boot surfaces the error instead of hanging on "启动中…"
+      // (the hello handler reads ev.error). Never clobber an `error` that
+      // the snapshot itself already carried.
+      const snapError: string | undefined =
+        typeof st.bootError === 'string' && st.bootError
+          ? st.bootError
+          : typeof st.error === 'string'
+            ? st.error
+            : undefined
+      transport.emitLocal({
+        type: 'hello',
+        ...st,
+        ...(snapError ? { error: snapError } : {}),
+      })
     } catch {
       set({ conn: 'error', statusText: 'Host 不可达' })
       return
@@ -1980,7 +2007,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       let pages = 0
       // Turn metadata of the newest replayed page (real start time + open
       // flag), used below to restore the in-flight turn timer.
-      let replayMeta: { turnStartedAt?: number; turnEndMs?: number; turnOpen: boolean } = {
+      let replayMeta: { turnStartedAt?: number; turnOpen: boolean } = {
         turnOpen: false,
       }
       // Cap auto-pages so a fully-suppressed archive cannot spin forever.
@@ -2050,22 +2077,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         set({
           statusText: `历史偏空，继续加载更早记录… (${loaded}/${total || '?'})`,
         })
-      }
-
-      // Closed turn with both stamps: replay the "Worked for Xs" marker —
-      // the `done` event is not persisted, so the duration derives from
-      // the authoritative _meta.turnStartMs and the turn_completed
-      // envelope timestamp (TUI TurnCompleted marker parity).
-      if (
-        !replayMeta.turnOpen &&
-        replayMeta.turnStartedAt != null &&
-        replayMeta.turnEndMs != null &&
-        replayMeta.turnEndMs >= replayMeta.turnStartedAt
-      ) {
-        appendEntry(
-          set,
-          turnMarker(replayMeta.turnEndMs - replayMeta.turnStartedAt),
-        )
       }
       set({
         historyLoading: false,
@@ -2990,8 +3001,62 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // this session's turn (seal / awaitingNext belong to the active
         // conversation). Replayed history events have no sessionId and
         // fall through to the seal path below.
-        if (ev.sessionId && ev.sessionId !== get().sessionId) {
-          get().noteSessionCompleted(ev.sessionId)
+        //
+        // stop_reason: hosts relay it nested in the x.ai `update`; replay
+        // normalizes it flat (turnCompletedEvent).
+        const upd = ev.update
+        const stopReason =
+          ev.stopReason ??
+          (typeof upd?.stop_reason === 'string' ? upd.stop_reason : undefined)
+        const agentResult =
+          ev.agentResult ??
+          (typeof upd?.agent_result === 'string' ? upd.agent_result : undefined)
+        if (ev.sessionId) {
+          if (ev.sessionId !== get().sessionId) {
+            get().noteSessionCompleted(ev.sessionId)
+            break
+          }
+          // A LIVE turn_completed is the host's relay of the x.ai durable
+          // terminal. The stream's `done` event owns the finalize and the
+          // "Worked for X" marker (TUI parity: PromptResponse /
+          // prompt_complete is the marker source; the notification rail
+          // only fills in when the driver RPC never arrives). Pushing
+          // the plain "Turn completed." form here would stack with
+          // `done`'s marker when the rail beats the stream terminal:
+          // this arm leaves the turn live (turnStartedAt / conn are
+          // untouched), so `done` still sees turnIsLive and appends
+          // "Worked for X".
+          //
+          // EXCEPTION: failed turns. `done` deliberately skips its marker
+          // for error / rate_limit — the TurnFailed line is this rail's
+          // job (TUI prompt_origin.rs stop_reason mapping). Render it
+          // with the anchored elapsed, deduped via tailAlreadyTurnEnded.
+          // Sealed first so the marker never short-circuits the settle.
+          const sealed = sealThought(get())
+          const settled = settleTurnEntries(sealed.entries)
+          if (!tailAlreadyTurnEnded(settled)) {
+            set({
+              ...sealed,
+              openAssistantId: undefined,
+              openThoughtId: undefined,
+              entries: settled,
+            })
+          }
+          if (stopReason === 'error' || stopReason === 'rate_limit') {
+            if (!tailAlreadyTurnEnded(get().entries)) {
+              const ts = get().turnStartedAt
+              const { text, warning } = turnEndMarkerText(
+                stopReason,
+                agentResult,
+                ts != null ? Date.now() - ts : undefined,
+              )
+              appendEntry(set, {
+                kind: 'session_event',
+                text,
+                ...(warning ? { warning } : {}),
+              })
+            }
+          }
           break
         }
         // Replayed history: seal the finished turn's streaming blocks
@@ -3000,11 +3065,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // response_completed and turn_completed for one turn; the
         // tailAlreadyTurnEnded guard skips the duplicate).
         //
-        // The turn-end marker is the plain "Turn completed." form —
-        // replay must not fabricate "Worked for Xs" live timing. The
-        // idle watcher cue ("N commands still running") is NOT a
-        // scrollback line — it lives in the composer turn-status line
-        // (TUI turn_status.rs idle arm), gated on awaitingNext.
+        // One marker per closed turn, typed by the stored stop_reason:
+        // failed → "Turn failed …", cancelled → "Turn cancelled …",
+        // success → "Worked for X" when the envelope meta carries the
+        // turn's real start (replayUpdates injects it), plain
+        // "Turn completed." otherwise — replay must not fabricate live
+        // timing. The idle watcher cue ("N commands still running") is
+        // NOT a scrollback line — it lives in the composer turn-status
+        // line (TUI turn_status.rs idle arm), gated on awaitingNext.
         const sealed = sealThought(get())
         const settled = settleTurnEntries(sealed.entries)
         if (tailAlreadyTurnEnded(settled)) {
@@ -3016,6 +3084,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
           })
           break
         }
+        const elapsedMs =
+          ev.turnStartedAt != null &&
+          ev.endMs != null &&
+          ev.endMs >= ev.turnStartedAt
+            ? ev.endMs - ev.turnStartedAt
+            : undefined
+        const { text, warning } = turnEndMarkerText(
+          stopReason,
+          agentResult,
+          elapsedMs,
+        )
         set({
           ...sealed,
           openAssistantId: undefined,
@@ -3023,7 +3102,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
           // Idle until the next user message — lets the turn-status line
           // show the still-running cue after a replayed history load.
           awaitingNext: true,
-          entries: [...settled, turnMarker(undefined)],
+          entries: [
+            ...settled,
+            {
+              id: nid(),
+              kind: 'session_event',
+              text,
+              ...(warning ? { warning } : {}),
+            },
+          ],
         })
         break
       }
@@ -3768,7 +3855,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
             // agent_result is the best error text and "rate limited"
             // stands in for a rate_limit without a payload. The `done`
             // event skips its "Worked for" marker for these reasons.
+            // Fallback rail: typed turn_completed events (acp-host)
+            // already render the failed marker — dedupe via the tail.
             if (reason === 'error' || reason === 'rate_limit') {
+              if (tailAlreadyTurnEnded(get().entries)) break
               const err =
                 reason === 'error'
                   ? String(f.agent_result ?? 'unknown error')
@@ -4002,6 +4092,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
           pending: [],
           entries: [...settleTurnEntries(sealed.entries), marker],
         })
+        break
+      }
+      case 'follow_ups': {
+        // Typed carrier for x.ai/follow_ups (host bridge.go broadcasts it
+        // as {type:'follow_ups', params}) — turn-end suggestion chips (TUI
+        // follow_ups.rs): parsed into store state for the Composer's chip
+        // row; NO scrollback line (the TUI renders them as a transient row
+        // above the prompt). Newest-wins by response_id. Older hosts fall
+        // back to the ext_notification arm below (same consumer).
+        applyFollowUps(get, set, ev.params)
         break
       }
       case 'ext_notification': {
@@ -5054,6 +5154,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       historyAnchorId: undefined,
       todoCounts: undefined,
       todos: undefined,
+      // A fresh session starts with an empty context window — drop the
+      // previous session's usage or the top-right context chip keeps
+      // showing the old conversation's tokens until the first
+      // usage_update/turn_completed arrives (loadHistory already resets
+      // this; newSession was the only path that missed it).
+      usage: undefined,
       turnStartedAt: undefined,
       scheduledTasks: [],
     })
@@ -5362,12 +5468,51 @@ function turnMarker(elapsedMs: number | undefined): ScrollEntry {
   }
 }
 
+/**
+ * Turn-end marker text for a finished turn — TUI session_event message()
+ * parity (session_event.rs): TurnFailed / TurnCancelled / TurnCompleted
+ * forms, each with or without an elapsed duration. Failed turns carry the
+ * warning accent (amber), same as the x.ai notification rail.
+ */
+function turnEndMarkerText(
+  stopReason: string | undefined,
+  agentResult: string | undefined,
+  elapsedMs: number | undefined,
+): { text: string; warning?: boolean } {
+  if (stopReason === 'error' || stopReason === 'rate_limit') {
+    const err =
+      stopReason === 'error' ? agentResult || 'unknown error' : 'rate limited'
+    return {
+      text:
+        elapsedMs != null
+          ? `Turn failed in ${formatTurnDuration(elapsedMs)}: ${err}`
+          : `Turn failed: ${err}`,
+      warning: true,
+    }
+  }
+  if (stopReason === 'cancelled') {
+    return {
+      text:
+        elapsedMs != null
+          ? `Turn cancelled by user in ${formatTurnDuration(elapsedMs)}.`
+          : 'Turn cancelled.',
+    }
+  }
+  return {
+    text:
+      elapsedMs != null
+        ? `Worked for ${formatTurnDuration(elapsedMs)}`
+        : 'Turn completed.',
+  }
+}
+
 /** Whether a scrollback entry is a turn-end marker or still-running cue. */
 function isTurnEndLine(e: ScrollEntry): boolean {
   return (
     e.kind === 'session_event' &&
     (e.text === 'Turn completed.' ||
       e.text.startsWith('Turn cancelled') ||
+      e.text.startsWith('Turn failed') ||
       e.text.startsWith('Worked for ') ||
       e.text.endsWith(' still running'))
   )
@@ -5508,22 +5653,14 @@ function settleTurnEntries(entries: ScrollEntry[]): ScrollEntry[] {
         finishedAt: Date.now(),
       }
     }
-    // History page boundaries can cut off the closing update of a
-    // subagent / workflow block (subagent_finished etc. landed in
-    // a newer page that replayed first and was dropped for an unknown
-    // id) — settle them like any other finished transcript block.
-    //
-    // bg_task is deliberately NOT settled: a backgrounded task's
-    // lifecycle is independent of the turn (the process may still be
-    // running, e.g. `npm run dev`). Only a task_completed event ends it
-    // — the TUI behaves the same way (replay skips turn completion
-    // logic; a task without task_completed stays Running).
-    if (e.kind === 'subagent' && e.running) {
-      return { ...e, status: 'completed', running: false, finishedAt: Date.now() }
-    }
-    if (e.kind === 'workflow' && e.running) {
-      return { ...e, status: 'done', running: false, finishedAt: Date.now() }
-    }
+    // Subagents are deliberately NOT settled here, same as bg_task: a
+    // subagent without a `subagent_finished` in the loaded history was
+    // still running when the snapshot was taken (or its finish is parked
+    // in pendingSubagentFinishes until the spawn page replays) — only the
+    // finish event ends it. Sealing at turn end would rewrite a genuinely
+    // in-flight subagent into a green "Agent done" and drop it from the
+    // top running-chip / tasks bar, exactly what the TUI avoids by
+    // tracking subagent_sessions independently of the parent turn.
     return e
   })
 }
@@ -5538,24 +5675,25 @@ const HISTORY_PAGE_SIZE = 100
 
 /**
  * Replay raw history envelopes through the live event pipeline.
- * Returns the replayed turn's metadata: its real start time (authoritative
- * `_meta.turnStartMs` / agentTimestampMs from the shell, falling back to
- * the first user_message envelope timestamp), the end time (the
- * turn_completed envelope timestamp) and whether the turn is still OPEN
- * (no turn_completed / response_completed marker). loadHistory uses this
- * to restore the in-flight turn timer ("回合进行中（已进行 Xs）") and to
- * replay the "Worked for Xs" marker of closed turns (the `done` event is
- * not persisted, so replay derives the duration from the envelope stamps).
+ * Returns the replayed turn's metadata: the current turn's real start
+ * time (authoritative `_meta.turnStartMs` / agentTimestampMs from the
+ * shell, falling back to the first user_message envelope timestamp) and
+ * whether that turn is still OPEN (no turn_completed / response_completed
+ * after its start). loadHistory uses this to restore the in-flight turn
+ * timer ("回合进行中（已进行 Xs）"). Turn-end markers are rendered
+ * per-turn by the `turn_completed` handler: this function injects each
+ * closing turn's tracked start into the event so the marker carries the
+ * true duration (the `done` event is not persisted, so replay derives
+ * the duration from the envelope stamps).
  */
 function replayUpdates(
   getStore: () => ChatState,
   updates: unknown[],
-): { turnStartedAt?: number; turnEndMs?: number; turnOpen: boolean } {
+): { turnStartedAt?: number; turnOpen: boolean } {
   let userBuf = ''
   let userIsCron = false
   let userTs: number | undefined
   let turnStartTs: number | undefined
-  let turnEndMs: number | undefined
   let anyEvent = false
   let sawTurnEnd = false
   const flushUser = () => {
@@ -5589,15 +5727,23 @@ function replayUpdates(
     anyEvent = true
     if (ev.type === 'turn_completed') {
       sawTurnEnd = true
-      // Replay turn end: the envelope timestamp (epoch ms via
-      // envelopeTimestamp) is when the shell wrote the completion.
-      turnEndMs = envelopeTimestamp(env as RawEnvelope)
+      // Attach this closing turn's real start (tracked from the envelope
+      // meta below) so the marker renders "Worked for X" / "Turn failed
+      // in X" with the true duration. `endMs` comes from the completion
+      // envelope's own timestamp (when the shell wrote it — the same
+      // stamp the TUI's anchored elapsed reads). Reset the tracker so the
+      // NEXT turn's start is captured from its own first envelope — the
+      // old first-start→last-end pairing spanned multiple turns whenever
+      // a page covered more than one closed turn.
+      ev.turnStartedAt = turnStartTs
+      turnStartTs = undefined
     }
     // Authoritative turn start: the shell stamps `_meta.turnStartMs`
     // (epoch ms; TUI tracker reads it the same way, falling back to
     // agentTimestampMs) on every streamed update of the turn. Take the
     // first one of the page — it belongs to the newest replayed turn.
-    if (turnStartTs == null) {
+    // The completion envelope itself never re-opens a turn.
+    if (turnStartTs == null && ev.type !== 'turn_completed') {
       const meta = (env as RawEnvelope).params?._meta as
         | Record<string, unknown>
         | undefined
@@ -5612,9 +5758,7 @@ function replayUpdates(
     // Fallback start: the first user message of the page (epoch seconds
     // from the shell; first-event timestamp for injected turns without a
     // user prompt).
-    if (turnStartTs == null && ev.type === 'user_message') {
-      turnStartTs = envelopeTimestamp(env as RawEnvelope)
-    } else if (turnStartTs == null) {
+    if (turnStartTs == null && ev.type !== 'turn_completed') {
       turnStartTs = envelopeTimestamp(env as RawEnvelope)
     }
     // A STILL-RUNNING task's "started" row belongs ONLY in the top task
@@ -5639,10 +5783,13 @@ function replayUpdates(
     getStore().handleEvent(ev)
   }
   flushUser()
+  // The LAST turn is open when it never completed (no turn_completed in
+  // the page) or when a new turn started after the page's last completion
+  // (the tracker re-captured a start). turnStartedAt is then that current
+  // turn's real start — loadHistory restores the in-flight timer from it.
   return {
     turnStartedAt: turnStartTs,
-    turnEndMs,
-    turnOpen: anyEvent && !sawTurnEnd,
+    turnOpen: anyEvent && (sawTurnEnd ? turnStartTs != null : true),
   }
 }
 
@@ -5882,7 +6029,7 @@ function envelopeToEvent(env: unknown): AcpEvent | null {
   // Turn-end markers are the exception: they finalize streaming blocks.
   if (e.method === '_x.ai/session/update') {
     if (up.sessionUpdate === 'turn_completed' || up.sessionUpdate === 'response_completed') {
-      return { type: 'turn_completed' }
+      return turnCompletedEvent(up, envelopeTimestamp(e))
     }
     // Display-only task rows under the x.ai carrier too (same look as live).
     const taskEv = historicalTaskEvent(up)
@@ -5991,7 +6138,7 @@ function envelopeToEvent(env: unknown): AcpEvent | null {
     // streaming forever — "stuck mid-thinking" after resuming history.
     case 'turn_completed':
     case 'response_completed':
-      return { type: 'turn_completed' }
+      return turnCompletedEvent(up, envelopeTimestamp(e))
     default:
       // Standard carrier lifecycle kinds: route through the same
       // session_notification channel as the live bridge's default arm
@@ -6001,6 +6148,26 @@ function envelopeToEvent(env: unknown): AcpEvent | null {
         method: e.method,
         params: e.params,
       }
+  }
+}
+
+/**
+ * Build the typed `turn_completed` event from a stored envelope's update.
+ * Carries the turn's stop_reason / agent_result (so replay can render the
+ * correct marker — TurnFailed / TurnCancelled / Worked for — instead of a
+ * blanket "Turn completed.") plus the envelope write time as the turn's end
+ * stamp (replayUpdates injects the real start from the envelope meta).
+ */
+function turnCompletedEvent(
+  up: Record<string, unknown>,
+  endMs: number | undefined,
+): AcpEvent {
+  return {
+    type: 'turn_completed',
+    stopReason: typeof up.stop_reason === 'string' ? up.stop_reason : undefined,
+    agentResult:
+      typeof up.agent_result === 'string' ? up.agent_result : undefined,
+    endMs,
   }
 }
 
@@ -6450,7 +6617,6 @@ function applyMcpInitProgress(set: SetState, params: unknown): void {
  * (forward visibility).
  */
 const SILENT_EXT_NOTIFICATIONS = new Set([
-  'x.ai/queue/changed',
   'x.ai/settings/update',
   // File-watcher state (TUI file-watch panel) — fires on every change.
   'x.ai/fs_notify',
@@ -6608,6 +6774,11 @@ function applySubagentFinish(
   entryId: string,
   status: SubagentStatus,
   durationMs?: number,
+  output?: string,
+  error?: string,
+  toolCalls?: number,
+  turns?: number,
+  tokensUsed?: number,
 ): void {
   set({
     entries: get().entries.map((e) =>
@@ -6618,6 +6789,11 @@ function applySubagentFinish(
             running: false,
             finishedAt: Date.now(),
             detail: durationMs != null ? `${(durationMs / 1000).toFixed(0)}s` : e.detail,
+            ...(output != null ? { output } : {}),
+            ...(error != null ? { error } : {}),
+            ...(toolCalls != null ? { toolCalls } : {}),
+            ...(turns != null ? { turns } : {}),
+            ...(tokensUsed != null ? { tokensUsed } : {}),
           }
         : e,
     ),
@@ -6642,6 +6818,9 @@ function handleSubagentEvent(
       (typeof fields.subagent_type === 'string' && fields.subagent_type) ||
       id
     const eid = nid()
+    // Spawn metadata (SubagentSpawned wire fields): the model the child
+    // runs, its persona / role and agent type. Stored so the scrollback
+    // row and the block viewer can show them (TUI SubagentBlock meta).
     set((s) => ({
       subagentIndex: { ...s.subagentIndex, [id]: eid },
       entries: [
@@ -6653,6 +6832,10 @@ function handleSubagentEvent(
           status: 'started',
           running: true,
           subagentId: id,
+          model: nonBlankStr(fields.model),
+          persona: nonBlankStr(fields.persona),
+          role: nonBlankStr(fields.role),
+          subagentType: nonBlankStr(fields.subagent_type),
         },
       ],
     }))
@@ -6660,10 +6843,21 @@ function handleSubagentEvent(
     // newest page first, so a subagent_finished in a newer page is
     // orphaned until the older page's subagent_spawned arrives. Apply
     // the buffered finish now — the row carries the REAL status/duration
-    // instead of being force-sealed by settleTurnEntries.
+    // instead of staying "running" on a page boundary.
     const pending = get().pendingSubagentFinishes[id]
     if (pending) {
-      applySubagentFinish(get, set, eid, pending.status, pending.durationMs)
+      applySubagentFinish(
+        get,
+        set,
+        eid,
+        pending.status,
+        pending.durationMs,
+        pending.output,
+        pending.error,
+        pending.toolCalls,
+        pending.turns,
+        pending.tokensUsed,
+      )
       set((s) => {
         const next = { ...s.pendingSubagentFinishes }
         delete next[id]
@@ -6675,6 +6869,15 @@ function handleSubagentEvent(
 
   // finished
   const status = subagentFinishStatus(fields)
+  // Finish payload fields (SubagentFinished wire): output text, failure
+  // error, and the subagent's stats — buffered with the finish so an
+  // orphaned finish replay still lands them on the row.
+  const output = typeof fields.output === 'string' ? fields.output : undefined
+  const error = typeof fields.error === 'string' ? fields.error : undefined
+  const toolCalls = typeof fields.tool_calls === 'number' ? fields.tool_calls : undefined
+  const turns = typeof fields.turns === 'number' ? fields.turns : undefined
+  const tokensUsed =
+    typeof fields.tokens_used === 'number' ? fields.tokens_used : undefined
   if (!entryId) {
     // History replay can deliver the finish before its spawn (page
     // boundary, newest page first) — buffer it until the spawn replays.
@@ -6685,13 +6888,32 @@ function handleSubagentEvent(
     set((s) => ({
       pendingSubagentFinishes: {
         ...s.pendingSubagentFinishes,
-        [id]: { status, ...(durationMs != null ? { durationMs } : {}) },
+        [id]: {
+          status,
+          ...(durationMs != null ? { durationMs } : {}),
+          ...(output != null ? { output } : {}),
+          ...(error != null ? { error } : {}),
+          ...(toolCalls != null ? { toolCalls } : {}),
+          ...(turns != null ? { turns } : {}),
+          ...(tokensUsed != null ? { tokensUsed } : {}),
+        },
       },
     }))
     return
   }
   const durMs = typeof fields.duration_ms === 'number' ? fields.duration_ms : undefined
-  applySubagentFinish(get, set, entryId, status, durMs)
+  applySubagentFinish(
+    get,
+    set,
+    entryId,
+    status,
+    durMs,
+    output,
+    error,
+    toolCalls,
+    turns,
+    tokensUsed,
+  )
 }
 
 /** Non-empty trimmed string, or undefined. */

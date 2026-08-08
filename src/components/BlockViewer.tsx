@@ -11,6 +11,7 @@
 import { useEffect, useRef } from 'react'
 import { planTodos, useChatStore, type ViewerTask } from '../store/chat'
 import type { ScrollEntry } from '../api/types'
+import { subagentMeta } from '../format'
 import { ToolDetail } from './ToolDetail'
 import { Markdown } from './Markdown'
 import { Glyphs, toolHeader } from '../theme/glyphs'
@@ -341,11 +342,40 @@ function ViewerBody({ entry }: { entry: ScrollEntry }) {
     )
   }
   if (entry.kind === 'subagent') {
+    const meta = subagentMeta(entry.persona, entry.role, entry.model)
+    const stats = [
+      entry.subagentType ? `type · ${entry.subagentType}` : undefined,
+      entry.turns != null ? `turns · ${entry.turns}` : undefined,
+      entry.toolCalls != null ? `tools · ${entry.toolCalls}` : undefined,
+      entry.tokensUsed != null ? `tokens · ${entry.tokensUsed}` : undefined,
+    ].filter((s): s is string => !!s)
     return (
       <div className="space-y-2">
         <div className="font-mono text-[12px] text-gn-fg">{entry.title}</div>
-        {entry.detail && (
-          <div className="text-[12px] text-gn-muted">{entry.detail}</div>
+        {(meta || entry.detail) && (
+          <div className="text-[12px] text-gn-muted">
+            {meta && <span className="font-mono">{meta}</span>}
+            {meta && entry.detail ? ' · ' : null}
+            {entry.detail}
+          </div>
+        )}
+        {entry.error && (
+          <div className="rounded border border-gn-red/40 bg-gn-diff-del-bg px-2.5 py-1.5 font-mono text-[12px] text-gn-red">
+            {entry.error}
+          </div>
+        )}
+        {entry.output ? (
+          <div>
+            <div className="mb-1 text-[11px] font-bold uppercase tracking-wide text-gn-gutter">
+              Output
+            </div>
+            <pre className="max-h-[40vh] overflow-auto whitespace-pre-wrap break-all rounded border border-gn-prompt-border/50 bg-gn-bg-base px-2.5 py-2 font-mono text-[12px] text-gn-fg">
+              {entry.output}
+            </pre>
+          </div>
+        ) : null}
+        {stats.length > 0 && (
+          <div className="font-mono text-[11px] text-gn-gutter">{stats.join(' · ')}</div>
         )}
         {entry.subagentId && (
           <div className="font-mono text-[11px] text-gn-gutter">

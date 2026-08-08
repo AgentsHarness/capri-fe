@@ -389,6 +389,14 @@ export type AcpEvent =
       configOptions?: unknown
       pendingRequests?: PendingReq[]
       capabilities?: unknown
+      /** Agent's initialize-declared capabilities (host Status passthrough). */
+      agentCapabilities?: unknown
+      /**
+       * Host live per-session states (SessionState[] — sessionId/cwd/
+       * title/busy/awaitingInput/…; dashboard classification derives from
+       * busy + awaitingInput).
+       */
+      roster?: unknown
       /**
        * Unix ms stamp of the current agent process spawn. The agent's
        * permission mode is in-memory only and resets on restart, so the
@@ -409,6 +417,10 @@ export type AcpEvent =
       /** SessionModelState from session/new or session/load. */
       models?: unknown
       configOptions?: unknown
+      /** session/new|load `_meta` passthrough (host only sends when non-nil). */
+      sessionMeta?: unknown
+      /** authenticate `_meta` passthrough (host only sends when non-nil). */
+      authMeta?: unknown
     }
   | { type: 'chunk'; text: string; messageId?: string; ts?: number }
   | {
@@ -486,7 +498,21 @@ export type AcpEvent =
   /** Turn-end marker replayed from stored history (turn_completed). Live
       events carry the owning sessionId — other sessions' completions are
       completion notices, not this session's turn seal. */
-  | { type: 'turn_completed'; sessionId?: string }
+  | {
+      type: 'turn_completed'
+      sessionId?: string
+      /** Relayed x.ai update (host shape — stop_reason / agent_result / usage). */
+      update?: Record<string, unknown>
+      /** Normalized stop_reason (replay derives it from the stored envelope). */
+      stopReason?: string
+      /** Normalized agent_result (TurnFailed error text on replay). */
+      agentResult?: string
+      /** Replay: the closed turn's real start (epoch ms), injected by
+          replayUpdates from the envelope meta. */
+      turnStartedAt?: number
+      /** Replay: the turn_completed envelope write time (epoch ms). */
+      endMs?: number
+    }
   | { type: 'error'; message: string }
   | { type: 'status'; text: string }
   | { type: 'log'; text: string }
@@ -579,6 +605,70 @@ export type AcpEvent =
     }
   | { type: 'scheduled_task_inject_prompt'; params?: Record<string, unknown> }
   | { type: 'prompt_complete'; params?: Record<string, unknown> }
+  /** Turn-end suggestion chips (host broadcasts x.ai/follow_ups as this
+      typed event — bridge.go). Params shape matches what applyFollowUps
+      (store/chat.ts) consumes: snake_case response_id (camelCase
+      accepted) plus the suggestions list ({label, …} items or strings). */
+  | {
+      type: 'follow_ups'
+      sessionId?: string
+      params?: {
+        response_id?: string
+        responseId?: string
+        suggestions?: Array<string | { label?: string; [k: string]: unknown }>
+        follow_ups?: Array<string | { label?: string; [k: string]: unknown }>
+        [k: string]: unknown
+      }
+    }
+  /** PTY lifecycle push (host broadcasts x.ai/terminal/pty/notification as
+      this typed event — bridge.go). TerminalPanel consumes it; fields stay
+      optional/loose to match the local PtyEvent shape there. */
+  | {
+      type: 'pty_notification'
+      sessionId?: string
+      params?: {
+        terminalId?: string
+        /** output | exit | process_started | process_ended. */
+        type?: string
+        /** Base64 raw PTY bytes (output kind). */
+        data?: string
+        outputOffset?: number
+        isReplay?: boolean
+        exitCode?: number
+        signal?: string
+        [k: string]: unknown
+      }
+    }
+  // ── Remaining typed x.ai/* carriers (host bridge.go handleXaiNotification
+  //    broadcasts each as {type, params} — pass-through; the store's
+  //    default branch discards them silently by design: they are
+  //    panel-local status feeds, never scrollback rows). ─────────────
+  /** Streamed session-update chunks (session_updates.rs). */
+  | { type: 'session_updates_chunk'; sessionId?: string; params?: Record<string, unknown> }
+  /** Prompt-queue change (session/prompt_queue.rs). */
+  | { type: 'queue_changed'; sessionId?: string; params?: Record<string, unknown> }
+  /** Config reload notice (MCP init cancel / leader broadcast). */
+  | { type: 'config_changed'; sessionId?: string; params?: Record<string, unknown> }
+  /** Settings hot-reload push (mvp_agent). */
+  | { type: 'settings_update'; sessionId?: string; params?: Record<string, unknown> }
+  /** File-system change (fs_watch.rs). */
+  | { type: 'fs_notify'; sessionId?: string; params?: Record<string, unknown> }
+  /** Full file index (fs_watch.rs). */
+  | { type: 'fs_index'; sessionId?: string; params?: Record<string, unknown> }
+  /** Incremental file index (fs_watch.rs). */
+  | { type: 'fs_index_delta'; sessionId?: string; params?: Record<string, unknown> }
+  /** Fuzzy-search progress (search.rs). */
+  | { type: 'search_fuzzy_status'; sessionId?: string; params?: Record<string, unknown> }
+  /** Content-search progress (search.rs). */
+  | { type: 'search_content_status'; sessionId?: string; params?: Record<string, unknown> }
+  /** Worktree creation progress (worktree.rs). */
+  | { type: 'git_worktree_status'; sessionId?: string; params?: Record<string, unknown> }
+  /** Mid-turn interjection (interjection.rs). */
+  | { type: 'session_interjection'; sessionId?: string; params?: Record<string, unknown> }
+  /** Leader/client version-mismatch banner (version_mismatch.rs). */
+  | { type: 'leader_version_mismatch'; sessionId?: string; params?: Record<string, unknown> }
+  /** Leader reconnect signal (params may be empty). */
+  | { type: 'leader_reconnected'; sessionId?: string; params?: Record<string, unknown> }
   /** Fallback: any other x.ai/* notification, forwarded verbatim. */
   | { type: 'ext_notification'; method?: string; params?: Record<string, unknown> }
 
@@ -726,6 +816,24 @@ export type ScrollEntry =
       finishedAt?: number
       /** subagent_id from x.ai/session_notification subagent_spawned. */
       subagentId?: string
+      /** Effective model ID used by the subagent (wire `model`). */
+      model?: string
+      /** Named persona applied to this subagent (wire `persona`). */
+      persona?: string
+      /** Role that supplied defaults (wire `role`). */
+      role?: string
+      /** Agent type used for the subagent (wire `subagent_type`). */
+      subagentType?: string
+      /** Final output text from the subagent (wire `output`, completed). */
+      output?: string
+      /** Error message if the subagent failed (wire `error`). */
+      error?: string
+      /** Number of tool calls made by the subagent (wire `tool_calls`). */
+      toolCalls?: number
+      /** Number of conversation turns taken (wire `turns`). */
+      turns?: number
+      /** Total tokens consumed by the subagent (wire `tokens_used`). */
+      tokensUsed?: number
     }
   | {
       id: string

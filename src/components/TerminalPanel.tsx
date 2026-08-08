@@ -121,17 +121,21 @@ export function TerminalPanel({
   useEffect(() => {
     if (!open) return
     return transport.onEvent((ev) => {
-      const anyEv = ev as unknown as {
-        type?: string
-        method?: string
-        params?: PtyEvent
+      // Typed carrier (host bridge.go broadcasts the pty notification as
+      // {type:'pty_notification', params}) with the legacy
+      // ext_notification fallback for older hosts. PtyEvent fields are
+      // `unknown` and every consumer below validates with typeof, so both
+      // carriers narrow through the same checks.
+      let p: PtyEvent | undefined
+      if (ev.type === 'pty_notification') {
+        p = ev.params
+      } else if (
+        ev.type === 'ext_notification' &&
+        ev.method === 'x.ai/terminal/pty/notification'
+      ) {
+        p = ev.params as PtyEvent | undefined
       }
-      const isPty =
-        anyEv.type === 'pty_notification' ||
-        (anyEv.type === 'ext_notification' &&
-          anyEv.method === 'x.ai/terminal/pty/notification')
-      if (!isPty || !anyEv.params || typeof anyEv.params !== 'object') return
-      const p = anyEv.params
+      if (!p || typeof p !== 'object') return
       const tid = typeof p.terminalId === 'string' ? p.terminalId : ''
       const kind = typeof p.type === 'string' ? p.type : ''
       if (!tid || !kind) return

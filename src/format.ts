@@ -38,6 +38,26 @@ export function fmtElapsedCompact(ms: number): string {
   return `${secs}s`
 }
 
+/**
+ * Subagent metadata parenthetical — TUI format_subagent_meta parity
+ * (xai-grok-pager app/subagent.rs): `(persona · role · model)` with the
+ * persona/role deduped when they name the same title, or `''` when
+ * nothing is present.
+ */
+export function subagentMeta(
+  persona?: string,
+  role?: string,
+  model?: string,
+): string {
+  const clean = (v: string | undefined): string | undefined =>
+    v && v.trim() ? v.trim() : undefined
+  let p = clean(persona)
+  let r = clean(role)
+  if (p && r && p.toLowerCase() === r.toLowerCase()) r = undefined
+  const parts = [p, r, clean(model)].filter((v): v is string => !!v)
+  return parts.length ? ` (${parts.join(' · ')})` : ''
+}
+
 /** Compact byte size: "512 B", "4.2 KB", "1.5 MB". */
 export function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`
