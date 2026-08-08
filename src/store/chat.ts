@@ -2198,7 +2198,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           set({
             historyLoading: false,
             conn: 'busy',
-            statusText: 'Waiting for Host',
+            statusText: 'Waiting…',
             awaitingNext: false,
             sessionId,
             turnStartedAt: Date.now(),
@@ -2386,7 +2386,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           const busyTurn = get().turnStartedAt ?? Date.now()
           set({
             conn: 'busy',
-            statusText: 'Waiting for Host',
+            statusText: 'Waiting…',
             awaitingNext: false,
             turnStartedAt: busyTurn,
             error: undefined,
@@ -2447,7 +2447,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           const id = nid()
           set({
             conn: 'busy',
-            statusText: 'Thinking',
+            statusText: 'Thinking…',
             awaitingNext: false,
             openThoughtId: id,
             openAssistantId: undefined,
@@ -2471,7 +2471,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         } else {
           set({
             conn: 'busy',
-            statusText: 'Thinking',
+            statusText: 'Thinking…',
             awaitingNext: false,
             turnStartedAt,
             error: undefined,
@@ -2579,7 +2579,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           set({
             ...sealed,
             conn: 'busy',
-            statusText: 'Waiting for Responding',
+            statusText: 'Responding…',
             awaitingNext: false,
             entries: entries.map((e) =>
               e.id === openAssistantId && e.kind === 'assistant'
@@ -2631,7 +2631,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           set({
             ...sealed,
             conn: 'busy',
-            statusText: 'Waiting for Responding',
+            statusText: 'Responding…',
             awaitingNext: false,
             entries: entries.map((e) =>
               e.id === openAssistantId && e.kind === 'assistant'
@@ -2644,7 +2644,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           set({
             ...sealed,
             conn: 'busy',
-            statusText: 'Waiting for Responding',
+            statusText: 'Responding…',
             awaitingNext: false,
             openAssistantId: id,
             openThoughtId: undefined,
@@ -2683,7 +2683,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
         set({
           conn: 'busy',
-          statusText: 'Thinking',
+          statusText: 'Thinking…',
           awaitingNext: false,
           openThoughtId,
           openAssistantId: undefined,
@@ -3141,11 +3141,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
           case 'response_started': {
             // A new LLM response started — finish any in-flight thought.
             const sealed = sealThought(get())
-            set({ ...sealed, statusText: 'Thinking' })
+            set({ ...sealed, statusText: 'Thinking…' })
             break
           }
           case 'reasoning_completed':
-            set({ statusText: 'Waiting for Responding' })
+            set({ statusText: 'Waiting…' })
             break
           case 'auto_compact_started': {
             const pct = fields.percentage as number | undefined
@@ -4078,7 +4078,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       openThoughtId: thoughtId,
       pendingOptimisticUserId: userId,
       conn: 'busy',
-      statusText: 'Thinking',
+      statusText: 'Thinking…',
       awaitingNext: false,
       turnStartedAt: Date.now(),
       // A manual send starts a new turn: the previous turn's suggestion
@@ -4130,6 +4130,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
    */
   cancelTurn: async (opts) => {
     set({ cancelPanelOpen: false })
+    // TUI turn_status.rs: (TurnCancelling | CommandCancelling, _) →
+    // "Cancelling…" in accent_error — shown until the host's `done`
+    // / `cancelled` event seals the turn.
+    set({ statusText: 'Cancelling…' })
     try {
       await transport.cancel()
     } catch (e) {

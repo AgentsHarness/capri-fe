@@ -1243,10 +1243,18 @@ export function Composer() {
                 {busy ? (
                   // Busy arm: activity label (colored per activity type) +
                   // phase timer — dynamic, replaces the static statusText.
+                  // The no-activity fallback renders the status text; the
+                  // cancelling window is red (TUI Cancelling… accent_error).
                   <>
                     <span
                       className="truncate"
-                      style={{ color: activity?.color ?? 'var(--color-gn-gray-dim)' }}
+                      style={{
+                        color:
+                          activity?.color ??
+                          (statusText === 'Cancelling…'
+                            ? 'var(--color-gn-red)'
+                            : 'var(--color-gn-gray-dim)'),
+                      }}
                     >
                       {activity?.label ?? statusText}
                     </span>
