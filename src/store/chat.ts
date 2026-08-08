@@ -2451,46 +2451,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
         break
       }
       case 'busy': {
-        // TUI pre-creates Thinking… before first thought delta arrives
-        // (tracker.rs ensure_thinking / pre-create thinking block).
+        // TUI: the Thinking… block is pre-created at stream_start (first
+        // chunk), NOT on the busy flag — so a fresh busy is the
+        // wait-for-first-token window ("Waiting for response…"). A busy
+        // while THIS frontend is already streaming (reconnect mid-turn)
+        // keeps the live status text.
         const s = get()
         // Anchor the "Worked for Xs" timer; don't reset on mid-turn re-busy.
         const turnStartedAt = s.turnStartedAt ?? Date.now()
-        if (!s.openThoughtId) {
-          const id = nid()
-          set({
-            conn: 'busy',
-            statusText: 'Thinking…',
-            awaitingNext: false,
-            openThoughtId: id,
-            openAssistantId: undefined,
-            turnStartedAt,
-            // A turn starting means the system recovered — clear stale
-            // error/status banners.
-            error: undefined,
-            statusWarning: undefined,
-            entries: [
-              ...s.entries,
-              {
-                id,
-                kind: 'thought',
-                text: '',
-                displayMode: 'expanded', // live: show flowing body
-                streaming: true,
-                startedAt: Date.now(),
-              },
-            ],
-          })
-        } else {
-          set({
-            conn: 'busy',
-            statusText: 'Thinking…',
-            awaitingNext: false,
-            turnStartedAt,
-            error: undefined,
-            statusWarning: undefined,
-          })
-        }
+        const hasLocalStreaming =
+          s.openThoughtId != null || s.openAssistantId != null
+        set({
+          conn: 'busy',
+          statusText: hasLocalStreaming ? s.statusText : 'Waiting for response…',
+          awaitingNext: false,
+          turnStartedAt,
+          // A turn starting means the system recovered — clear stale
+          // error/status banners.
+          error: undefined,
+          statusWarning: undefined,
+        })
         break
       }
       case 'user_message':
@@ -2821,7 +2801,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
           get().handleEvent({ type: 'tool_call', toolCall: tc })
           break
         }
+        // A running tool settling is a wait-for-next-token window (TUI
+        // Waiting(Model) between tool completion and the next inference
+        // stream) — the status line reads "Waiting for response…" until
+        // the next streamed event.
+        const existing = get().entries.find((e) => e.id === entryId)
+        const wasRunningBefore =
+          existing?.kind === 'tool' &&
+          (existing.status === 'pending' || existing.status === 'in_progress')
+        const settledNow =
+          wasRunningBefore &&
+          (tc.status === 'completed' || tc.status === 'failed')
         set({
+          ...(settledNow ? { statusText: 'Waiting for response…' } : {}),
           entries: get().entries.map((e) => {
             if (e.id !== entryId || e.kind !== 'tool') return e
             const merged: ToolCall = { ...(e.raw || {}), ...tc }
@@ -3153,8 +3145,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
           }
           case 'response_started': {
             // A new LLM response started — finish any in-flight thought.
+            // First token hasn't arrived yet: wait window (TUI
+            // Waiting(Model) until stream_start).
             const sealed = sealThought(get())
-            set({ ...sealed, statusText: 'Thinking…' })
+            set({ ...sealed, statusText: 'Waiting for response…' })
             break
           }
           case 'reasoning_completed':
@@ -4059,11 +4053,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
   send: async (text: string, blocks?: ContentBlock[], opts?: { fromShell?: boolean }) => {
     const t = text.trim()
     if (!t) return
-    // Seal any leftover thought from prior turn, then append user + Thinking… shell.
-    // Tag the user row so the live user_chunk echo merges into it (not a 2nd row).
+    // Seal any leftover thought from prior turn, then append the user row.
+    // Tag the user row so the live user_chunk echo merges into it (not a
+    // 2nd row). NO pre-created Thinking… shell: TUI pre-creates the
+    // thinking block at stream_start (first chunk), so between send and
+    // the first token the status line reads "Waiting for response…".
     const sealed = sealThought(get())
     const userId = nid()
-    const thoughtId = nid()
     // Shell-mode submissions (Composer `!` mode → prompt path) mark the
     // user row so the scrollback renders it with the TUI `$ ` prefix.
     const userEntry = {
@@ -4075,23 +4071,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
     set({
       ...sealed,
-      entries: [
-        ...sealed.entries,
-        userEntry,
-        {
-          id: thoughtId,
-          kind: 'thought',
-          text: '',
-          displayMode: 'expanded',
-          streaming: true,
-          startedAt: Date.now(),
-        },
-      ],
+      entries: [...sealed.entries, userEntry],
       openAssistantId: undefined,
-      openThoughtId: thoughtId,
+      openThoughtId: undefined,
       pendingOptimisticUserId: userId,
       conn: 'busy',
-      statusText: 'Thinking…',
+      statusText: 'Waiting for response…',
       awaitingNext: false,
       turnStartedAt: Date.now(),
       // A manual send starts a new turn: the previous turn's suggestion
