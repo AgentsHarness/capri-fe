@@ -845,13 +845,14 @@ export function Composer() {
   // turn-timer re-renders and the monitor pulse (half speed).
   const idleCue = useMemo(() => stillRunningCue(entries, topTasks), [entries, topTasks])
   const idleCueVisible = !busy && conn === 'ready' && awaitingNext && idleCue != null
-  // Busy arm: dynamic activity label (newest running tool / thinking) with
-  // its phase timer — TUI turn_status.rs activity arm. Falls back to the
-  // static statusText when nothing is running. The phase timer shows ONLY
-  // for activities with a real start stamp (live tools / thinking) — the
-  // right-hand turn timer already covers the rest; never fall back to the
-  // turn start (it would duplicate the total timer).
+  // Busy arm: dynamic activity label (newest running tool / thinking /
+  // streaming reply) with its phase timer — TUI turn_status.rs activity
+  // arm. Falls back to the static statusText when nothing is running.
+  // Phase timer: the activity's own start stamp; only the no-activity
+  // window (e.g. "Waiting for Host" right after the turn starts) falls
+  // back to the turn start — there the wait IS the whole turn so far.
   const activity = useMemo(() => currentActivity(entries), [entries])
+  const phaseStart = activity?.startedAt ?? (busy ? turnStartedAt : undefined)
   const statusVisible =
     busy ||
     conn === 'connecting' ||
@@ -1245,9 +1246,9 @@ export function Composer() {
                     >
                       {activity?.label ?? statusText}
                     </span>
-                    {activity?.startedAt != null && (
+                    {phaseStart != null && (
                       <span className="shrink-0 tabular-nums text-gn-gray">
-                        {formatTurnDuration(Date.now() - activity.startedAt)}
+                        {formatTurnDuration(Date.now() - phaseStart)}
                       </span>
                     )}
                   </>
