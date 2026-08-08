@@ -7,6 +7,7 @@ import {
 } from 'react'
 import { useChatStore, formatTurnDuration, stillRunningCue } from '../store/chat'
 import { usePromptQueue } from '../store/promptQueue'
+import { transport } from '../api/localTransport'
 import type { ContentBlock, ScrollEntry } from '../api/types'
 import {
   Glyphs,
@@ -930,6 +931,25 @@ export function Composer() {
   // back to the turn start — there the wait IS the whole turn so far.
   const activity = useMemo(() => currentActivity(entries), [entries])
   const phaseStart = activity?.startedAt ?? (busy ? turnStartedAt : undefined)
+  // [↓] send-to-background (TUI DemoteToBackground): shown while a
+  // running execute tool exists — demotes that command to a background
+  // task via x.ai/terminal/background (the agent then reports it through
+  // task_backgrounded and the bg_task machinery takes over).
+  const runningExecute = useMemo(() => {
+    if (!busy) return null
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const e = entries[i]
+      if (
+        e.kind === 'tool' &&
+        (e.status === 'pending' || e.status === 'in_progress') &&
+        e.kindName === 'execute' &&
+        e.toolCallId
+      ) {
+        return e
+      }
+    }
+    return null
+  }, [busy, entries])
   const statusVisible =
     busy ||
     conn === 'connecting' ||
@@ -1360,6 +1380,31 @@ export function Composer() {
                   <span className="tabular-nums text-gn-gray">
                     ⇣{fmtTok(usage.used)}
                   </span>
+                )}
+                {/* [↓] send-to-background (TUI DemoteToBackground) — hover
+                    label "send to bg", accent_running on hover. */}
+                {runningExecute && (
+                  <button
+                    type="button"
+                    title="将当前命令转入后台继续运行（TUI [send to bg]）"
+                    onClick={() => {
+                      const toolCallId = runningExecute.toolCallId!
+                      void transport
+                        .terminalBackground(toolCallId)
+                        .then(() => {
+                          useChatStore.setState({ statusText: '已转入后台…' })
+                        })
+                        .catch((e) => {
+                          useChatStore.getState().appendLocalEntry({
+                            kind: 'error',
+                            text: `转后台失败: ${e instanceof Error ? e.message : String(e)}`,
+                          })
+                        })
+                    }}
+                    className="rounded px-1.5 py-[2px] text-gn-gray hover:bg-gn-bg-highlight hover:text-gn-cyan min-h-6 sm:min-h-0"
+                  >
+                    [↓]
+                  </button>
                 )}
                 {busy && (
                   <button
