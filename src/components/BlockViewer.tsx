@@ -11,11 +11,12 @@
 import { useEffect, useRef } from 'react'
 import { planTodos, useChatStore, type ViewerTask } from '../store/chat'
 import type { ScrollEntry } from '../api/types'
-import { ToolDetail, fmtBytes } from './ToolDetail'
+import { ToolDetail } from './ToolDetail'
 import { Markdown } from './Markdown'
 import { Glyphs, toolHeader } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
-import { todoMark } from './StatusChips'
+import { TodoMark } from './todoMark'
+import { fmtBytes } from '../format'
 import { extractToolDetail } from '../scrollback/toolDetail'
 
 /** Poll interval for live bg_task stdout while the viewer is open. */
@@ -275,7 +276,7 @@ function ViewerBody({ entry }: { entry: ScrollEntry }) {
           items.map((t, i) => (
             <div key={t.id ?? i} className="flex items-start gap-2 text-[13px] leading-snug">
               <span className="mt-[1px] shrink-0 font-mono text-[11px]" aria-hidden>
-                {todoMark(t.status)}
+                <TodoMark status={t.status} />
               </span>
               <span
                 className={`min-w-0 flex-1 break-words ${

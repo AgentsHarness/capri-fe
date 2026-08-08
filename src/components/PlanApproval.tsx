@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useChatStore } from '../store/chat'
 import { Glyphs } from '../theme/glyphs'
 import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS } from '../theme/layout'
@@ -64,19 +64,26 @@ export function PlanApproval() {
   /** Drag anchor: the line the drag started on (null = not dragging). */
   const [dragAnchor, setDragAnchor] = useState<number | null>(null)
 
-  // Pure derivations — declared before the effects below so the keydown
-  // effect's deps can reference them (no TDZ at the useEffect call site).
+  // Pure derivations — memoized so the keydown effect's deps stay stable
+  // across renders (planLines/selection recompute only when their inputs
+  // change; a fresh array/object per render would re-attach the listener).
   const planContent =
     typeof req?.params?.planContent === 'string' ? req.params.planContent : undefined
   // TUI plan.rs: whitespace-only bodies count as "no plan".
   const hasPlan = planContent != null && planContent.trim() !== ''
-  const planLines = hasPlan && planContent != null ? planContent.split('\n') : []
+  const planLines = useMemo(
+    () => (hasPlan && planContent != null ? planContent.split('\n') : []),
+    [hasPlan, planContent],
+  )
 
   /** 选中范围（1-based 升序）；null = 无选中。 */
-  const selection =
-    selStart != null && selEnd != null
-      ? { start: Math.min(selStart, selEnd), end: Math.max(selStart, selEnd) }
-      : null
+  const selection = useMemo(
+    () =>
+      selStart != null && selEnd != null
+        ? { start: Math.min(selStart, selEnd), end: Math.max(selStart, selEnd) }
+        : null,
+    [selStart, selEnd],
+  )
 
   // Fresh state for each new request.
   useEffect(() => {

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useChatStore } from '../store/chat'
 import type { WorkflowRun } from '../store/chat'
-import { fmtElapsedCompact, fmtTok } from './StatusChips'
+import { fmtElapsedCompact, fmtTok } from '../format'
 
 /**
  * /workflows run dashboard (TUI /workflows pane + workflows_overlay.rs) —

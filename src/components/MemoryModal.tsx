@@ -16,6 +16,9 @@ import { Glyphs } from '../theme/glyphs'
 
 type MemoryFile = { name: string; path?: string; size?: number; updatedAt?: unknown; source?: string }
 
+/** Stable empty fallback — a fresh `[]` per render would defeat useMemo. */
+const NO_MEMORY_FILES: MemoryFile[] = []
+
 function fmtSize(n: unknown): string {
   if (typeof n !== 'number' || !Number.isFinite(n) || n < 0) return '—'
   if (n < 1024) return `${n} B`
@@ -106,7 +109,7 @@ function groupMemoryFiles(files: MemoryFile[]): MemoryGroup[] | null {
 export function MemoryModal() {
   const open = useChatStore((s) => s.memoryOpen)
   const closeMemory = useChatStore((s) => s.closeMemory)
-  const files = useChatStore((s) => s.memoryFiles) ?? []
+  const files = useChatStore((s) => s.memoryFiles) ?? NO_MEMORY_FILES
   // Inline detail: which file the user asked to view / delete.
   const [detail, setDetail] = useState<{ path: string; action: 'view' | 'delete' } | null>(null)
 

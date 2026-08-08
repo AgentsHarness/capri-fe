@@ -10,6 +10,7 @@ import { useChatStore, type ExtensionsTab } from '../store/chat'
 import { usePromptQueue } from '../store/promptQueue'
 import { THEMES, useThemeStore } from '../store/theme'
 import type { ThemeId } from '../theme/tokens'
+import type { AgentCommand } from '../api/types'
 
 export type SlashCommand = {
   name: string
@@ -542,8 +543,10 @@ export const slashCommands: SlashCommand[] = [
  *     `enqueue_prompt_with_skill_tokens`); while a turn is running it
  *     goes through the existing queue (same as any prompt).
  */
-export function mergedSlashCommands(): SlashCommand[] {
-  const agentCommands = useChatStore.getState().agentCommands
+export function mergedSlashCommands(
+  agentCommandsOverride?: AgentCommand[],
+): SlashCommand[] {
+  const agentCommands = agentCommandsOverride ?? useChatStore.getState().agentCommands
   if (agentCommands.length === 0) return slashCommands
   const claimed = new Set<string>()
   for (const c of slashCommands) {
@@ -599,11 +602,15 @@ export function matchSlash(
  * Fuzzy filter for the slash menu: substring over name+aliases+description,
  * ranked (name prefix < name contains < alias prefix < alias contains <
  * description). Stable by command name within a rank. Considers the merged
- * local + agent command list.
+ * local + agent command list. The agent list is passed in explicitly when
+ * the caller subscribes to it (so the memo recomputes when it changes).
  */
-export function filterSlashCommands(input: string): SlashMatch[] {
+export function filterSlashCommands(
+  input: string,
+  agentCommands?: AgentCommand[],
+): SlashMatch[] {
   const q = input.slice(1).split(/\s/)[0].trim().toLowerCase()
-  const commands = mergedSlashCommands()
+  const commands = mergedSlashCommands(agentCommands)
   if (!q) return commands.map((cmd) => ({ cmd, score: 0 }))
   const out: SlashMatch[] = []
   for (const cmd of commands) {

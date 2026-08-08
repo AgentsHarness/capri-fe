@@ -5,7 +5,8 @@ import { fmtTime, groupAccentClass, groupByState, sessionGroupKey, sessionSubtit
 import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS } from '../theme/layout'
 import { Glyphs } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
-import { SessionStateIcon, stateLabel, useSessionSpinner } from './SessionStateIcon'
+import { SessionStateIcon } from './SessionStateIcon'
+import { stateLabel, useSessionSpinner } from './sessionState'
 import {
   ContextChip,
   CreditsChip,
@@ -14,10 +15,9 @@ import {
   QueueBadge,
   RunningChip,
   RunningTasksBar,
-  filterRunningEntries,
   TodoChip,
-  shortCwd,
 } from './StatusChips'
+import { filterRunningEntries, shortCwd } from '../format'
 
 /**
  * Workspace + git + status chips — the whole TUI status-bar row (branch +

@@ -3,7 +3,7 @@ import { planTodos, useChatStore } from '../store/chat'
 import type { ScrollEntry } from '../api/types'
 import { Glyphs, toolHeader } from '../theme/glyphs'
 import { thoughtDisplayMode } from '../scrollback/thoughtMode'
-import { todoMark } from './StatusChips'
+import { TodoMark } from './todoMark'
 import {
   ICON_COL_CLASS,
   DENSE_ROW_CLASS,
@@ -1103,7 +1103,7 @@ const EntryView = memo(function EntryView({
             {items.map((t, i) => (
               <div key={t.id ?? i} className="flex items-start gap-2 text-[12.5px] leading-snug">
                 <span className="mt-[1px] shrink-0 font-mono text-[11px]" aria-hidden>
-                  {todoMark(t.status)}
+                  <TodoMark status={t.status} />
                 </span>
                 <span
                   className={`min-w-0 flex-1 break-words ${

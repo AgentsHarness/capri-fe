@@ -4,14 +4,7 @@
  * AccentRail.tsx so that file exports components only (Fast Refresh).
  */
 import { toolFamily, type ToolFamily } from './toolFamily'
-import {
-  DIM_ACCENT,
-  FINISH_FLASH_MS,
-  WAVE_ROWS,
-  WAVE_SPEED,
-  blendColor,
-  waveBrightness,
-} from './wave'
+import { FINISH_FLASH_MS } from './wave'
 
 export const Accents = {
   running: 'var(--color-gn-accent-running)',

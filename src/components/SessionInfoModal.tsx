@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useChatStore } from '../store/chat'
 import { transport } from '../api/localTransport'
 import type { SessionInfoDetail } from '../api/types'
-import { fmtTok, shortCwd } from './StatusChips'
+import { fmtTok, shortCwd } from '../format'
 
 /**
  * Session info modal — web counterpart of the TUI `/session-info` command.

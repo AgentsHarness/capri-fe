@@ -7,24 +7,11 @@ import { useChatStore } from '../store/chat'
 import { usePromptQueue } from '../store/promptQueue'
 import { transport } from '../api/localTransport'
 import type { BillingConfig } from '../api/types'
-import { useSessionSpinner } from './SessionStateIcon'
+import { useSessionSpinner } from './sessionState'
+import { TodoMark, CheckMarkIcon } from './todoMark'
+import { fmtTok, fmtElapsedCompact, filterRunningEntries, type RunningEntry } from '../format'
 import type { ScrollEntry, TopTask } from '../api/types'
 import type { TodoItem } from '../store/chat'
-
-/**
- * TUI context_bar fmt_tokens: "500", "5.2K", "50K", "1.2M" — one decimal
- * below 10, integer above (the top bar and the composer prompt flags share
- * this so the two surfaces never disagree).
- */
-export function fmtTok(n: number): string {
-  if (n >= 1_000_000) {
-    return n >= 10_000_000 ? `${Math.round(n / 1_000_000)}M` : `${(n / 1_000_000).toFixed(1)}M`
-  }
-  if (n >= 1_000) {
-    return n >= 10_000 ? `${Math.round(n / 1_000)}k` : `${(n / 1_000).toFixed(1)}k`
-  }
-  return String(n)
-}
 
 /**
  * Context length chip — TUI context_bar "used / total" line, top-right.
@@ -89,67 +76,6 @@ export function ContextChip({
       )}
     </span>
   )
-}
-
-/**
- * Inline SVG check mark (glyphPaths checkMark path). The U+2713 character
- * has no glyph in ui-monospace and falls back to another font whose taller
- * em-box inflates the 10px chip line box — pushing the text down. An
- * `inline-block` 1em SVG keeps the line height exact and centers visually.
- */
-function CheckMarkIcon() {
-  return (
-    <svg viewBox="0 0 1 1" className="block h-[1em] w-[1em]" aria-hidden>
-      <path
-        d="M0.17 0.51 L0.4 0.72 L0.83 0.3"
-        stroke="currentColor"
-        strokeWidth={0.09}
-        fill="none"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  )
-}
-
-/** Inline SVG ballot X (glyphPaths ballotX path) — same fallback fix as ✓. */
-function BallotXIcon() {
-  return (
-    <svg viewBox="0 0 1 1" className="block h-[1em] w-[1em]" aria-hidden>
-      <path
-        d="M0.26 0.26 L0.74 0.74 M0.74 0.26 L0.26 0.74"
-        stroke="currentColor"
-        strokeWidth={0.09}
-        fill="none"
-        strokeLinecap="round"
-      />
-    </svg>
-  )
-}
-
-/**
- * Status mark for one todo item (TUI todo pane glyphs). Exported so the
- * scrollback plan block renders the same marks as the badge panel.
- */
-export function todoMark(status: TodoItem['status']) {
-  switch (status) {
-    case 'completed':
-      return (
-        <span className="text-gn-green">
-          <CheckMarkIcon />
-        </span>
-      )
-    case 'in_progress':
-      return <span className="text-gn-yellow">▶</span>
-    case 'cancelled':
-      return (
-        <span className="text-gn-muted">
-          <BallotXIcon />
-        </span>
-      )
-    default:
-      return <span className="text-gn-muted">□</span>
-  }
 }
 
 /**
@@ -233,7 +159,7 @@ export function TodoChip({
                     className="flex items-start gap-2 px-1 py-1 text-[12px] leading-snug hover:bg-gn-bg-highlight"
                   >
                     <span className="mt-[1px] shrink-0 font-mono text-[11px]" aria-hidden>
-                      {todoMark(t.status)}
+                      <TodoMark status={t.status} />
                     </span>
                     <span
                       className={`min-w-0 flex-1 break-words ${t.status === 'completed' || t.status === 'cancelled' ? 'text-gn-muted' : 'text-gn-fg'}`}
@@ -252,34 +178,11 @@ export function TodoChip({
 }
 
 /**
- * Shorten a workspace path the way the TUI status bar does: a path under
- * the user's home dir renders as "~/…" so it fits without truncation.
- */
-export function shortCwd(cwd: string, homeDir?: string): string {
-  if (homeDir && homeDir !== '/' && cwd.startsWith(homeDir)) {
-    const rest = cwd.slice(homeDir.length)
-    return rest === '' ? '~' : `~${rest}`
-  }
-  return cwd
-}
-
-/**
- * Format elapsed milliseconds compactly like the TUI status bar:
- * `5s`, `3m`, `2h` (xai-grok-pager agent_status::format_elapsed_compact).
- */
-export function fmtElapsedCompact(ms: number): string {
-  const secs = Math.max(0, Math.floor(ms / 1000))
-  if (secs >= 3600) return `${Math.floor(secs / 3600)}h`
-  if (secs >= 60) return `${Math.floor(secs / 60)}m`
-  return `${secs}s`
-}
-
-/**
  * Goal status-chip label — TUI goal_phase_label + active_phase_label
  * (xai-grok-pager agent_status.rs). Wire statuses come straight from the
  * `goal_updated` session notification.
  */
-export function goalPhaseLabel(g: Record<string, unknown>): string {
+function goalPhaseLabel(g: Record<string, unknown>): string {
   const status = typeof g.status === 'string' ? g.status : ''
   // Transient overlays win: verifying → planning → steady-state phase.
   if (g.verifying_completion) {
@@ -576,7 +479,7 @@ export function GoalChip({
                   className="flex items-start gap-2 py-0.5 text-[12px] leading-snug"
                 >
                   <span className="mt-[1px] shrink-0 font-mono text-[11px]" aria-hidden>
-                    {todoMark(t.status)}
+                    <TodoMark status={t.status} />
                   </span>
                   <span
                     className={`min-w-0 flex-1 break-words ${t.status === 'completed' || t.status === 'cancelled' ? 'text-gn-muted' : 'text-gn-fg'}`}
@@ -697,28 +600,10 @@ export function GoalChip({
   )
 }
 
-type RunningEntry = Extract<
-  ScrollEntry,
-  { kind: 'subagent' | 'bg_task' | 'workflow' }
->
-
 function kindLabel(e: RunningEntry): string {
   if (e.kind === 'subagent') return 'Agent'
   if (e.kind === 'bg_task') return 'Task'
   return 'Workflow'
-}
-
-/**
- * Count of live bg_tasks / subagents / workflows — shared by chip + strip.
- * Restored top-strip tasks are counted separately (topTasks) — the host
- * only surfaces liveness-probed tasks, so they are genuinely running.
- */
-export function filterRunningEntries(entries: ScrollEntry[]): RunningEntry[] {
-  return entries.filter(
-    (e): e is RunningEntry =>
-      (e.kind === 'subagent' || e.kind === 'bg_task' || e.kind === 'workflow') &&
-      !!e.running,
-  )
 }
 
 /**

@@ -16,6 +16,7 @@ import {
   type ToolDetail as Detail,
 } from '../scrollback/toolDetail'
 import { IconGlyph } from './IconGlyph'
+import { fmtBytes } from '../format'
 
 type Props = {
   raw: ToolCall
@@ -474,12 +475,6 @@ function FetchBody({
       )}
     </div>
   )
-}
-
-export function fmtBytes(n: number): string {
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`
 }
 
 // ── web search ───────────────────────────────────────────────────────

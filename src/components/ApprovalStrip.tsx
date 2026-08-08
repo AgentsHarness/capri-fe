@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useChatStore } from '../store/chat'
 import { Glyphs } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
@@ -112,8 +112,10 @@ export function ApprovalStrip() {
    *  construction (dispatch/permissions.rs build_selection_meta):
    *  arrow word-scope is a literal command-prefix word list (is_glob
    *  false), the pattern editor's confirmed pattern is a single text
-   *  (is_glob true). MCP mirrors TUI McpScopeSelection (kind-tagged). */
-  function scopeForPreset(): PermissionScope | undefined {
+   *  (is_glob true). MCP mirrors TUI McpScopeSelection (kind-tagged).
+   *  useCallback: the keydown effect depends on it — a fresh function
+   *  every render would re-attach the listener. */
+  const scopeForPreset = useCallback((): PermissionScope | undefined => {
     if (mcp.isMcp) {
       if (!mcp.toolName) return undefined
       if (mcpScope === 'server' && mcp.serverPrefix) {
@@ -147,7 +149,7 @@ export function ApprovalStrip() {
       default: // '精确' — every word, literal prefix.
         return { commandParts: words, isGlob: false }
     }
-  }
+  }, [mcp, mcpScope, command, toolCall, scopeIdx, patternEdit])
 
   /** Subagent provenance line above the title (TUI resolve_subagent_label,
    *  acp_handler/permissions.rs L207-237): direct source/subagent fields in
@@ -479,7 +481,7 @@ export function ApprovalStrip() {
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [req, respond, sel, parked, scopeIdx, followupOpen, followupText, rejectOption, patternEdit, expanded, collapsible])
+  }, [req, respond, sel, parked, scopeIdx, followupOpen, followupText, rejectOption, patternEdit, expanded, collapsible, scopeForPreset])
 
   if (pending.length === 0) return null
 

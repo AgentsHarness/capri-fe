@@ -22,7 +22,7 @@ import {
   COLUMN_PAD_X_CLASS,
 } from '../theme/layout'
 import { IconGlyph } from './IconGlyph'
-import { fmtTok } from './StatusChips'
+import { fmtTok } from '../format'
 import { Accents } from '../theme/accents'
 import { SlashMenu } from './SlashMenu'
 import {
@@ -280,8 +280,9 @@ export function Composer() {
   // TUI paste chips: stashed multi-line content behind `[Pasted: N lines]`
   // labels in the textarea (PromptWidget::handle_paste).
   const [chips, setChips] = useState<PasteChip[]>([])
-  // Pending caret position to restore after a programmatic text edit.
-  const caretRef = useRef<{ pos: number } | null>(null)
+  // Pending caret position to restore after a programmatic text edit —
+  // state (not a ref) so the restore effect runs on the post-edit render.
+  const [pendingCaret, setPendingCaret] = useState<number | null>(null)
   // Live caret position — textarea selection changes don't re-render, so
   // onSelect/keyup/mouseup mirror it here for the paste preview overlay.
   const [caretPos, setCaretPos] = useState(0)
@@ -420,7 +421,7 @@ export function Composer() {
     const joined = labels.join('')
     setText((t) => t.slice(0, pos) + joined + t.slice(pos))
     setChips((cs) => [...cs, ...newChips])
-    caretRef.current = { pos: pos + joined.length }
+    setPendingCaret(pos + joined.length)
   }
 
   /** Send the current buffer as an agent prompt (submit / Ctrl+Enter). */
@@ -556,7 +557,7 @@ export function Composer() {
   // menu — subscribed here so the list refreshes when they arrive.
   const agentCommands = useChatStore((s) => s.agentCommands)
   const slashMatches = useMemo(
-    () => (slashOpen ? filterSlashCommands(text) : []),
+    () => (slashOpen ? filterSlashCommands(text, agentCommands) : []),
     [slashOpen, text, agentCommands],
   )
   const slashList = useMemo(
@@ -667,7 +668,7 @@ export function Composer() {
       document.removeEventListener('mousedown', onDown)
       document.removeEventListener('keydown', onKey)
     }
-  }, [histOpen, queuePanelOpen, queueEditIndex])
+  }, [histOpen, queuePanelOpen, queueEditIndex, setQueuePanelOpen])
 
   // Keep the queue selection inside the current list (rows drain / get
   // deleted while the panel is open).
@@ -926,13 +927,15 @@ export function Composer() {
   }, [collapsed])
 
   // Restore the caret after a programmatic text edit (chip insert/expand).
+  // Runs once per pending request (deps on pendingCaret) — the request is
+  // set in the same batch as the text edit, so the textarea is up to date.
   useEffect(() => {
     const el = taRef.current
-    if (!el || caretRef.current == null) return
-    el.selectionStart = el.selectionEnd = caretRef.current.pos
-    setCaretPos(caretRef.current.pos)
-    caretRef.current = null
-  })
+    if (!el || pendingCaret == null) return
+    el.selectionStart = el.selectionEnd = pendingCaret
+    setCaretPos(pendingCaret)
+    setPendingCaret(null)
+  }, [pendingCaret])
 
   // Keep focus in sync with store focusMode (Tab toggles)
   useEffect(() => {
@@ -957,7 +960,7 @@ export function Composer() {
     }
     setText((t) => t.slice(0, at.start) + at.chip.content + t.slice(at.end))
     setChips((cs) => cs.filter((c) => c.id !== at.chip.id))
-    caretRef.current = { pos: at.start + at.chip.content.length }
+    setPendingCaret(at.start + at.chip.content.length)
   }
 
   /**
@@ -1027,7 +1030,7 @@ export function Composer() {
     const label = pasteChipLabel(cleaned)
     setText((t) => t.slice(0, start) + label + t.slice(end))
     setChips((cs) => [...cs, { id: chipId(), label, content: cleaned }])
-    caretRef.current = { pos: start + label.length }
+    setPendingCaret(start + label.length)
   }
 
   /**
@@ -1503,7 +1506,7 @@ export function Composer() {
                     onClick={() => {
                       setText(h.text)
                       setHistOpen(false)
-                      caretRef.current = { pos: h.text.length }
+                      setPendingCaret(h.text.length)
                       taRef.current?.focus()
                     }}
                     onMouseEnter={() => setHistSel(i)}
@@ -1724,7 +1727,7 @@ export function Composer() {
                       if (item) {
                         setText(item.text)
                         setHistOpen(false)
-                        caretRef.current = { pos: item.text.length }
+                        setPendingCaret(item.text.length)
                       }
                       return
                     }
@@ -1776,7 +1779,7 @@ export function Composer() {
                       setChips((cs) =>
                         cs.filter((c) => c.id !== at.chip.id),
                       )
-                      caretRef.current = { pos: at.start }
+                      setPendingCaret(at.start)
                       return
                     }
                   }

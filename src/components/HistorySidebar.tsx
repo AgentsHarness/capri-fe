@@ -13,7 +13,8 @@ import {
 } from './historyGroups'
 import { Glyphs } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
-import { SessionStateIcon, stateLabel, useSessionSpinner } from './SessionStateIcon'
+import { SessionStateIcon } from './SessionStateIcon'
+import { stateLabel, useSessionSpinner } from './sessionState'
 
 /** Two-stage delete window — TUI CONFIRM_WINDOW (2s). */
 const CONFIRM_WINDOW_MS = 2000
