@@ -567,3 +567,30 @@ export function spanContaining(
 ): GroupSpan | undefined {
   return spans.find((s) => idx >= s.range.start && idx < s.range.end)
 }
+
+// ── 显示行辅助（主 scrollback 与迷你 scrollback 共用）──────────────────
+
+/**
+ * TUI gap rule (recompute_gap_after): gap=0 between consecutive collapsed
+ * groupable rows; gap=1 otherwise. Dense packable = tool/thought/subagent/
+ * group_header one-liners that participate in dense runs.
+ */
+export function isDensePackable(e: ScrollEntry): boolean {
+  if (e.kind === 'group_header') return true
+  if (e.kind === 'tool') return !e.expanded
+  if (e.kind === 'thought')
+    return thoughtDisplayMode(e) === 'collapsed' && !e.streaming
+  if (e.kind === 'subagent' || e.kind === 'bg_task' || e.kind === 'workflow')
+    return true
+  return false
+}
+
+export function isDensePackableRow(row: DisplayRow): boolean {
+  if (row.type === 'group_header') return true
+  return isDensePackable(row.entry)
+}
+
+/** 显示行的稳定 key（主 scrollback 与迷你 scrollback 共用）。 */
+export function displayRowKey(row: DisplayRow): string {
+  return row.type === 'entry' ? row.entry.id : row.id
+}

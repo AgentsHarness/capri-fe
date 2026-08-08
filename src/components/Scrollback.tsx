@@ -17,6 +17,8 @@ import {
 import { FINISH_FLASH_MS } from '../theme/wave'
 import { IconGlyph } from './IconGlyph'
 import {
+  displayRowKey,
+  isDensePackableRow,
   projectDisplayRows,
   scanGroups,
   spanContaining,
@@ -426,22 +428,16 @@ function accentOpts(
  * groupable rows; gap=1 otherwise. Dense packable = tool/thought/subagent/
  * group_header one-liners that participate in dense runs.
  */
-function isDensePackable(e: ScrollEntry): boolean {
-  if (e.kind === 'group_header') return true
-  if (e.kind === 'tool') return !e.expanded
-  if (e.kind === 'thought')
-    return thoughtDisplayMode(e) === 'collapsed' && !e.streaming
-  if (e.kind === 'subagent' || e.kind === 'bg_task' || e.kind === 'workflow')
-    return true
-  return false
-}
+/**
+ * TUI gap rule (recompute_gap_after): gap=0 between consecutive collapsed
+ * groupable rows; gap=1 otherwise. Dense packable = tool/thought/subagent/
+ * group_header one-liners that participate in dense runs.
+ * （实现移入 src/scrollback/verbGroup.ts——与迷你 scrollback 共用。）
+ */
 
-function isDensePackableRow(row: DisplayRow): boolean {
-  if (row.type === 'group_header') return true
-  return isDensePackable(row.entry)
-}
-
-function EntryShell({
+/** 条目外壳：accent 竖条 + 选区/悬浮框 + 内容列（主 scrollback 与迷你
+ *  scrollback 共用；hover/选中由调用方传入，mini 用组件内局部状态）。 */
+export function EntryShell({
   e,
   selected,
   hovered,
@@ -538,7 +534,7 @@ function EntryShell({
 /** @deprecated Prefer importing ICON_COL_CLASS from theme/layout */
 export { ICON_COL_CLASS }
 
-function Bullet({
+export function Bullet({
   color,
   animated,
   glyph = Glyphs.diamondFilled,
@@ -604,6 +600,22 @@ function PromptTime({
   )
 }
 
+/** 迷你 scrollback（子代理弹窗）注入的局部动作。缺省取主 store 动作——
+ *  主 scrollback 行为不变；mini 条目不在主 entries 里，折叠/选中/查看器
+ *  用组件内局部状态（任务 1：弹窗复用主渲染体系、不接主 store 选择器）。 */
+export type EntryViewActions = {
+  /** 工具行折叠切换（默认主 store toggleTool）。 */
+  toggleTool?: (id: string) => void
+  /** 思考行折叠切换（默认主 store toggleThought）。 */
+  toggleThought?: (id: string) => void
+  /** 用户行折叠切换（默认主 store toggleUser）。 */
+  toggleUser?: (id: string) => void
+  /** 全文弹窗查看器（mini 双击不弹主 viewer——条目不在主 entries）。 */
+  openViewer?: (id: string) => void
+  /** 行选中（mini 局部选中；默认主 store selectEntry）。 */
+  selectEntry?: (id: string) => void
+}
+
 type EntryViewProps = {
   e: ScrollEntry
   selected: boolean
@@ -613,6 +625,14 @@ type EntryViewProps = {
   denseNext?: boolean
   densePrev?: boolean
   inGroup?: boolean
+  /** 迷你 scrollback 局部动作（见 EntryViewActions）。 */
+  actions?: EntryViewActions
+  /**
+   * 迷你 scrollback 折叠覆盖（工具/用户 expanded、思考 displayMode 由
+   * 弹窗局部状态决定，不写回 store）。渲染前合并进条目；主 scrollback
+   * 不传 → 恒为 undefined，行为与 memo 比较完全不变。
+   */
+  patch?: Partial<ScrollEntry>
 }
 
 /**
@@ -677,13 +697,17 @@ function entryViewEqual(prev: EntryViewProps, next: EntryViewProps): boolean {
     prev.denseNext === next.denseNext &&
     prev.densePrev === next.densePrev &&
     prev.inGroup === next.inGroup &&
+    // actions 由调用方保证稳定（主 scrollback 不传 → undefined 恒等；
+    // mini 用 useMemo/useState setter 构造 → 引用稳定）。patch 同理。
+    prev.actions === next.actions &&
+    prev.patch === next.patch &&
     (prev.now === next.now ||
       (!entryFlashActive(prev.e, prev.now) && !entryFlashActive(next.e, next.now)))
   )
 }
 
-const EntryView = memo(function EntryView({
-  e,
+export const EntryView = memo(function EntryView({
+  e: eProp,
   selected,
   pendingFreeze,
   now,
@@ -691,14 +715,24 @@ const EntryView = memo(function EntryView({
   denseNext = false,
   densePrev = false,
   inGroup = false,
+  actions,
+  patch,
 }: EntryViewProps) {
-  const toggleTool = useChatStore((s) => s.toggleTool)
-  const toggleThought = useChatStore((s) => s.toggleThought)
-  const toggleUser = useChatStore((s) => s.toggleUser)
-  const openViewer = useChatStore((s) => s.openViewer)
-  const selectEntry = useChatStore((s) => s.selectEntry)
+  // 迷你 scrollback 折叠覆盖：patch 合并进渲染条目（不写回 store）。
+  const e = patch ? ({ ...eProp, ...patch } as ScrollEntry) : eProp
+  // 迷你 scrollback 局部动作覆盖（缺省主 store 动作——行为不变）。
+  const storeToggleTool = useChatStore((s) => s.toggleTool)
+  const storeToggleThought = useChatStore((s) => s.toggleThought)
+  const storeToggleUser = useChatStore((s) => s.toggleUser)
+  const storeOpenViewer = useChatStore((s) => s.openViewer)
+  const storeSelectEntry = useChatStore((s) => s.selectEntry)
   const cancelSubagent = useChatStore((s) => s.cancelSubagent)
   const killTask = useChatStore((s) => s.killTask)
+  const toggleTool = actions?.toggleTool ?? storeToggleTool
+  const toggleThought = actions?.toggleThought ?? storeToggleThought
+  const toggleUser = actions?.toggleUser ?? storeToggleUser
+  const openViewer = actions?.openViewer ?? storeOpenViewer
+  const selectEntry = actions?.selectEntry ?? storeSelectEntry
   const onSelect = () => selectEntry(e.id)
   // Distinguish single-click (fold) vs double-click (viewer): defer single
   // until after the double-click window so dblclick doesn't also toggle.
@@ -1365,9 +1399,7 @@ function needsFlashClock(entries: ScrollEntry[], now: number): boolean {
   })
 }
 
-function displayRowKey(row: DisplayRow): string {
-  return row.type === 'entry' ? row.entry.id : row.id
-}
+/** 显示行 key（实现移入 verbGroup.ts，主/迷你 scrollback 共用）。 */
 
 function displayRowToEntry(row: DisplayRow): ScrollEntry {
   if (row.type === 'entry') return row.entry
@@ -1798,6 +1830,8 @@ type GroupHeaderViewProps = {
   dense?: boolean
   denseNext?: boolean
   densePrev?: boolean
+  /** 迷你 scrollback 局部选中（缺省主 store selectEntry）。 */
+  selectRow?: (id: string) => void
 }
 
 /** Group headers have no finish-flash — `now` clock ticks never re-render. */
@@ -1812,11 +1846,12 @@ function groupHeaderEqual(
     prev.onToggle === next.onToggle &&
     prev.dense === next.dense &&
     prev.denseNext === next.denseNext &&
-    prev.densePrev === next.densePrev
+    prev.densePrev === next.densePrev &&
+    prev.selectRow === next.selectRow
   )
 }
 
-const GroupHeaderView = memo(function GroupHeaderView({
+export const GroupHeaderView = memo(function GroupHeaderView({
   row,
   selected,
   pendingFreeze,
@@ -1825,8 +1860,10 @@ const GroupHeaderView = memo(function GroupHeaderView({
   dense = true,
   denseNext = false,
   densePrev = false,
+  selectRow,
 }: GroupHeaderViewProps) {
-  const selectEntry = useChatStore((s) => s.selectEntry)
+  const storeSelectEntry = useChatStore((s) => s.selectEntry)
+  const selectEntry = selectRow ?? storeSelectEntry
   const e = displayRowToEntry(row)
   const [hovered, setHovered] = useState(false)
   const shell = {

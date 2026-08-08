@@ -16,7 +16,6 @@ import type {
   SessionInfo,
   SessionInfoDetail,
   SubagentStatus,
-  SubagentViewItem,
   SubagentViewState,
   TaskTimelineEvent,
   Toast,
@@ -7140,18 +7139,20 @@ function nonBlankStr(v: unknown): string | undefined {
 // ── 子代理迷你 scrollback（subagentViews）──────────────────────────
 // 宿主按 withSid 广播所有会话的 session/update 事件；子代理会话
 // （child_session_id）的事件流在这里被还原成子代理自己的活动时间线
-// （TUI subagent_views 同款）。与主 scrollback 的条目模型不同：仅承载
-// 渲染所需的最小字段，且只追加、不折叠。live 事件与按需历史回放
-// （fetchSubagentView）共用同一个处理器。
+// （TUI subagent_views 同款）。条目直接构造为主 scrollback 的
+// ScrollEntry 模型（tool 条目与 handleEvent 的 tool_call 分支同构）——
+// BlockViewer 的迷你时间线复用主渲染体系（scanGroups/projectDisplayRows
+// → EntryShell/AccentRail/Bullet），不再自造一套条目与样式。live 事件
+// 与按需历史回放（fetchSubagentView）共用同一个处理器。
 
 /** 每个子代理视图最多保留的条目数（防内存膨胀，超出丢弃最旧）。 */
 const SUBAGENT_VIEW_MAX_ITEMS = 500
 
 /** 子代理视图的时间线末尾追加一条（含上限裁剪）。 */
 function subagentViewPush(
-  items: SubagentViewItem[],
-  item: SubagentViewItem,
-): SubagentViewItem[] {
+  items: ScrollEntry[],
+  item: ScrollEntry,
+): ScrollEntry[] {
   const next = [...items, item]
   return next.length > SUBAGENT_VIEW_MAX_ITEMS
     ? next.slice(-SUBAGENT_VIEW_MAX_ITEMS)
@@ -7175,19 +7176,26 @@ function applySubagentViewEvent(
 }
 
 /**
- * 子代理事件流 → 时间线条目（不可变 reducer）。仅处理 scrollback 相关
- * 类型：user/assistant/thought/tool/plan/image + 回合收口；其余忽略
- * （usage/status/hello/… 与宿主 scrollback 无关）。
+ * 子代理事件流 → 主模型 ScrollEntry 条目（不可变 reducer）。仅处理
+ * scrollback 相关类型：user/assistant/thought/tool/plan/image + 回合
+ * 收口；其余忽略（usage/status/hello/… 与宿主 scrollback 无关）。
+ * 回合收口标记用 session_event 条目（主 scrollback 同款形态）。
  */
 function subagentViewAppend(
-  items: SubagentViewItem[],
+  items: ScrollEntry[],
   ev: AcpEvent,
-): SubagentViewItem[] {
+): ScrollEntry[] {
   switch (ev.type) {
     case 'user_message': {
       const text = ev.text ?? ''
       if (!text.trim()) return items
-      return subagentViewPush(items, { kind: 'user', text, ts: ev.ts })
+      return subagentViewPush(items, {
+        id: nid(),
+        kind: 'user',
+        text,
+        ts: ev.ts,
+        expanded: false,
+      })
     }
     case 'user_chunk': {
       if (ev.hideFromScrollback === true) return items
@@ -7200,7 +7208,12 @@ function subagentViewAppend(
         next[next.length - 1] = { ...last, text: last.text + text }
         return next
       }
-      return subagentViewPush(items, { kind: 'user', text })
+      return subagentViewPush(items, {
+        id: nid(),
+        kind: 'user',
+        text,
+        expanded: false,
+      })
     }
     case 'chunk': {
       const text = ev.text ?? ''
@@ -7211,7 +7224,13 @@ function subagentViewAppend(
         next[next.length - 1] = { ...last, text: last.text + text, streaming: true }
         return next
       }
-      return subagentViewPush(items, { kind: 'assistant', text, streaming: true, ts: ev.ts })
+      return subagentViewPush(items, {
+        id: nid(),
+        kind: 'assistant',
+        text,
+        streaming: true,
+        ts: ev.ts,
+      })
     }
     case 'thought': {
       const text = ev.text ?? ''
@@ -7222,7 +7241,14 @@ function subagentViewAppend(
         next[next.length - 1] = { ...last, text: last.text + text, streaming: true }
         return next
       }
-      return subagentViewPush(items, { kind: 'thought', text, streaming: true })
+      return subagentViewPush(items, {
+        id: nid(),
+        kind: 'thought',
+        text,
+        streaming: true,
+        displayMode: 'expanded',
+        startedAt: Date.now(),
+      })
     }
     case 'tool_call': {
       const tc = ev.toolCall || {}
@@ -7262,11 +7288,12 @@ function subagentViewAppend(
       return subagentViewAppend(items, { type: 'tool_call', toolCall: tc })
     }
     case 'plan':
-      return subagentViewPush(items, { kind: 'plan', entries: ev.entries })
+      return subagentViewPush(items, { id: nid(), kind: 'plan', entries: ev.entries })
     case 'image': {
       const src = imageSrc(ev.data, ev.mimeType)
       if (!src) return items
       return subagentViewPush(items, {
+        id: nid(),
         kind: 'image',
         data: src,
         mimeType: ev.mimeType,
@@ -7276,14 +7303,28 @@ function subagentViewAppend(
     case 'done':
     case 'turn_completed':
     case 'cancelled': {
-      // 回合收口：assistant/thought 停止 streaming，追加回合结束标记。
-      const sealed = items.map((it) =>
-        (it.kind === 'assistant' || it.kind === 'thought') && it.streaming
-          ? { ...it, streaming: false }
-          : it,
-      )
-      const marker: SubagentViewItem = {
-        kind: 'turn',
+      // 回合收口：assistant/thought 停止 streaming（thought 与主 scrollback
+      // settleTurnEntries 一致：折叠 + 本地 elapsed），追加回合结束标记——
+      // 主 scrollback 同款：turn 标记用 session_event 条目。
+      const sealed = items.map((it) => {
+        if (it.kind === 'assistant' && it.streaming) {
+          return { ...it, streaming: false }
+        }
+        if (it.kind === 'thought' && it.streaming) {
+          return {
+            ...it,
+            streaming: false,
+            displayMode: 'collapsed' as const,
+            finishedAt: Date.now(),
+            elapsed:
+              it.startedAt != null ? formatElapsed(Date.now() - it.startedAt) : it.elapsed,
+          }
+        }
+        return it
+      })
+      const marker: ScrollEntry = {
+        id: nid(),
+        kind: 'session_event',
         text:
           ev.type === 'done'
             ? '— turn completed —'
@@ -7298,22 +7339,27 @@ function subagentViewAppend(
   }
 }
 
-/** 从 ToolCall 提取迷你时间线的 tool 条目（title/verb/status/raw）。 */
+/** 从 ToolCall 构造主 scrollback 同款的 tool 条目（title/verb/status/raw，
+ *  与 handleEvent 的 tool_call / tool_call_update 分支同构）。 */
 function subagentToolItem(
   tc: ToolCall,
-  prev?: Extract<SubagentViewItem, { kind: 'tool' }>,
-): Extract<SubagentViewItem, { kind: 'tool' }> {
+  prev?: Extract<ScrollEntry, { kind: 'tool' }>,
+): Extract<ScrollEntry, { kind: 'tool' }> {
   const status = (tc.status as string) || prev?.status || 'pending'
   const kindName = (tc.kind as string) || prev?.kindName || 'other'
   const running = status === 'pending' || status === 'in_progress'
   return {
+    id: prev?.id ?? nid(),
     kind: 'tool',
     toolCallId: toolCallIdOf(tc) ?? prev?.toolCallId,
     title: extractTarget(tc) || (tc.title as string) || kindName,
     verb: toolVerb(kindName, running),
     status,
     kindName,
+    expanded: false,
     raw: tc,
+    // 活动起点（epoch ms）——主 scrollback 相位计时器同款；运行中才打。
+    ...(running && !prev ? { startedAt: Date.now() } : {}),
   }
 }
 

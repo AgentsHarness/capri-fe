@@ -1020,38 +1020,19 @@ export type ScrollEntry =
     }
 
 /**
- * One row of a subagent's mini scrollback (block viewer "活动时间线").
- * Kept intentionally minimal — only what the timeline renders. Tool rows
- * keep the raw ToolCall so ToolDetail(full=false) can lay out the same
- * field extraction as the main scrollback.
- */
-export type SubagentViewItem =
-  | { kind: 'user'; text: string; ts?: number }
-  | { kind: 'assistant'; text: string; streaming?: boolean; ts?: number }
-  | { kind: 'thought'; text: string; streaming?: boolean }
-  | {
-      kind: 'tool'
-      toolCallId?: string
-      title: string
-      verb?: string
-      status?: string
-      kindName?: string
-      raw: ToolCall
-    }
-  | { kind: 'plan'; entries: unknown }
-  | { kind: 'image'; data: string; mimeType?: string; ts?: number }
-  /** Turn boundary marker (done / turn_completed / cancelled). */
-  | { kind: 'turn'; text: string }
-
-/**
  * Mini scrollback of one subagent session (keyed by child_session_id).
  * Fed by the host's broadcast of the child session's own event stream
  * (live) and by on-demand history fetch of the child session's updates
  * (replay — TUI replay_inherited_updates 同款). Bounded to the most
  * recent SUBAGENT_VIEW_MAX_ITEMS items.
+ *
+ * items 直接复用主 scrollback 的 ScrollEntry 模型——BlockViewer 的迷你
+ * 时间线与主 scrollback 走同一条渲染管线（scanGroups/projectDisplayRows
+ * → EntryShell/GroupHeaderView + AccentRail/Bullet），不再另设一套条目
+ * 类型和样式。
  */
 export type SubagentViewState = {
-  items: SubagentViewItem[]
+  items: ScrollEntry[]
   /**
    * On-demand fetch of the child session's stored updates:
    * idle → loading → loaded (loaded also on failure — no retry storm).

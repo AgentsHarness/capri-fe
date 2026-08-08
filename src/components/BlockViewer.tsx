@@ -8,19 +8,30 @@
  * x.ai/task/list while the task is still running.
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { formatTurnDuration, planTodos, useChatStore, type ViewerTask } from '../store/chat'
-import type { ScrollEntry, SubagentViewItem } from '../api/types'
+import type { ScrollEntry } from '../api/types'
 import { subagentMeta } from '../format'
 import { ToolDetail } from './ToolDetail'
 import { Markdown } from './Markdown'
-import { Accents } from '../theme/accents'
 import { Glyphs, toolHeader } from '../theme/glyphs'
-import { toolFamily } from '../theme/toolFamily'
 import { IconGlyph } from './IconGlyph'
 import { TodoMark } from './todoMark'
 import { fmtBytes, fmtTok } from '../format'
 import { extractToolDetail } from '../scrollback/toolDetail'
+import {
+  EntryView,
+  GroupHeaderView,
+  type EntryViewActions,
+} from './Scrollback'
+import {
+  displayRowKey,
+  isDensePackableRow,
+  projectDisplayRows,
+  scanGroups,
+  spanContaining,
+} from '../scrollback/verbGroup'
+import { COLUMN_PAD_X_CLASS, CONTENT_COLUMN_CLASS } from '../theme/layout'
 
 /** Poll interval for live bg_task stdout while the viewer is open. */
 const BG_TASK_POLL_MS = 1500
@@ -496,6 +507,7 @@ function SubagentView({
           childSid={childSid}
           items={view?.items ?? []}
           running={!!entry.running}
+          now={now}
           prompt={entry.title && entry.title !== entry.subagentId ? entry.title : ''}
         />
       )}
@@ -509,58 +521,45 @@ function SubagentView({
   )
 }
 
-/** ThinkingBlock truncated preview head/tail（主 scrollback THOUGHT_TRUNCATED_* 同款）。 */
-const THOUGHT_TRUNCATED_HEAD_LINES = 5
-const THOUGHT_TRUNCATED_TAIL_LINES = 3
-
-/** 截断为 head … tail（主 scrollback truncatedThoughtLines 同款）。 */
-function truncatedThoughtLines(text: string): string[] {
-  const all = text.split('\n')
-  const cap = THOUGHT_TRUNCATED_HEAD_LINES + THOUGHT_TRUNCATED_TAIL_LINES
-  if (all.length <= cap) return all
-  return [
-    ...all.slice(0, THOUGHT_TRUNCATED_HEAD_LINES),
-    Glyphs.ellipsis,
-    ...all.slice(-THOUGHT_TRUNCATED_TAIL_LINES),
-  ]
-}
-
-/** 迷你 scrollback 用户行：promptArrow 前缀 + Markdown（主 scrollback 用户行同款）。 */
-function TimelineUserLine({ text }: { text: string }) {
-  return (
-    <div className="flex items-start gap-1.5">
-      <IconGlyph
-        glyph={Glyphs.promptArrow}
-        color="var(--color-gn-accent-user)"
-        className="mt-[1.5px]"
-      />
-      <div className="min-w-0 flex-1">
-        <Markdown source={text} />
-      </div>
-    </div>
-  )
-}
-
 /**
  * 子代理的活动时间线（迷你 scrollback，TUI subagent_views 同款）。
  * 数据来自宿主转发的子代理会话事件流（live 捕获，store 侧
  * applySubagentViewEvent）或按需历史回放（fetchSubagentView）。
  * 打开时若视图为空（例如历史回放场景没有 live 捕获）会触发一次
  * 子代理会话 updates 拉取——动作内部有 loading/loaded 去重。
+ *
+ * 渲染直接复用主 scrollback 的体系（任务 1）：条目已是主模型 ScrollEntry，
+ * 这里走同一条管线——scanGroups + projectDisplayRows → EntryView /
+ * GroupHeaderView（内部即 EntryShell + AccentRail(resolveAccent) +
+ * Bullet(resolveBullet)，accent 竖条/动词分组头/折叠展开/字体配色全部
+ * 与主 scrollback 一致）。选中/折叠用组件内局部状态（expandedGroups
+ * 局部化），不接主 store 的 selectEntry/openViewer——mini 条目不在主
+ * entries 里，openViewer 会找不到目标。
  */
 function SubagentTimeline({
   childSid,
   items,
   running,
+  now,
   prompt,
 }: {
   childSid: string
-  items: SubagentViewItem[]
+  items: ScrollEntry[]
   running: boolean
+  now: number
   prompt: string
 }) {
   const fetchSubagentView = useChatStore((s) => s.fetchSubagentView)
   const scrollRef = useRef<HTMLDivElement>(null)
+  // 迷你视图的折叠/选中全部局部化：主 scrollback 的 expandedGroups /
+  // selectedId 不接（mini 条目不在主 entries 里）。
+  const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  )
+  const [folds, setFolds] = useState<ReadonlyMap<string, boolean>>(
+    () => new Map(),
+  )
+  const [selectedId, setSelectedId] = useState<string | null>(null)
 
   // 打开时若时间线为空，按 child_session_id 拉取该子代理会话的更新
   // 回放（TUI replay_inherited_updates 同款）。
@@ -574,6 +573,67 @@ function SubagentTimeline({
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
   }, [running, items])
+
+  // 主 scrollback 同款分组管线：scanGroups → projectDisplayRows。
+  const { rows, spans } = useMemo(() => {
+    const spans = scanGroups(items, expandedGroups)
+    return { rows: projectDisplayRows(items, spans), spans }
+  }, [items, expandedGroups])
+
+  // 折叠覆盖（按条目 id）：工具/用户折叠与思考 displayMode 本地化——
+  // 不写回 store，渲染时以 patch 合并进条目（EntryView 的 patch 语义）。
+  // patch 对象按 (id, kind, value) 缓存，保证引用稳定——EntryView 的
+  // memo 比较（entryViewEqual 的 patch === patch）才不会失效。
+  const foldPatchCache = useRef(new Map<string, Partial<ScrollEntry>>())
+  const foldPatch = (e: ScrollEntry): Partial<ScrollEntry> | undefined => {
+    const v = folds.get(e.id)
+    if (v == null) return undefined
+    const cache = foldPatchCache.current
+    const key = `${e.id}:${e.kind}:${String(v)}`
+    let p = cache.get(key)
+    if (!p) {
+      p =
+        e.kind === 'thought'
+          ? ({ displayMode: v ? 'expanded' : 'collapsed' } as Partial<ScrollEntry>)
+          : ({ expanded: v } as Partial<ScrollEntry>)
+      cache.set(key, p)
+    }
+    return p
+  }
+
+  // 局部动作：折叠写本地 folds；双击不弹主 viewer；选中局部化。缺省值
+  // 仍是主 store 动作（EntryView 内部取 actions ?? store），此处全部覆盖。
+  const actions: EntryViewActions = useMemo(
+    () => ({
+      toggleTool: (id) => setFolds((m) => new Map(m).set(id, !(m.get(id) ?? false))),
+      toggleThought: (id) =>
+        setFolds((m) => new Map(m).set(id, !(m.get(id) ?? false))),
+      toggleUser: (id) =>
+        setFolds((m) => new Map(m).set(id, !(m.get(id) ?? false))),
+      openViewer: () => {},
+      selectEntry: (id) => setSelectedId(id),
+    }),
+    [],
+  )
+
+  const toggleGroupExpansion = (anchorId: string) =>
+    setExpandedGroups((prev) => {
+      const next = new Set(prev)
+      if (next.has(anchorId)) next.delete(anchorId)
+      else next.add(anchorId)
+      return next
+    })
+
+  // 空态首条回退：spawn 携带的任务 prompt 作为第一条 user 条目（TUI
+  // 同款：子代理 scrollback 首条是注入的任务 prompt）。id 用稳定的合成
+  // id（只在本迷你视图内做 key/选中）。
+  const promptEntry = useMemo(
+    () =>
+      prompt
+        ? ({ id: '__mini_prompt__', kind: 'user', text: prompt, expanded: false } as const)
+        : null,
+    [prompt],
+  )
 
   return (
     <div className="space-y-1">
@@ -590,10 +650,15 @@ function SubagentTimeline({
       >
         {items.length === 0 ? (
           <div className="space-y-1.5">
-            {/* 仅当时间线没有任何条目时，把 spawn 携带的任务 prompt
-                （title/description）作为第一条 user 条目显示——TUI 同款：
-                子代理 scrollback 首条是注入的任务 prompt。 */}
-            {prompt && <TimelineUserLine text={prompt} />}
+            {promptEntry && (
+              <EntryView
+                e={promptEntry}
+                selected={promptEntry.id === selectedId}
+                pendingFreeze={false}
+                now={now}
+                actions={actions}
+              />
+            )}
             <div className="text-[11px] text-gn-muted">
               {running
                 ? '等待子代理活动上报…（数据来自宿主转发的子代理会话事件流）'
@@ -601,133 +666,50 @@ function SubagentTimeline({
             </div>
           </div>
         ) : (
-          <div className="space-y-1">
-            {items.map((it, i) => (
-              <TimelineItem key={i} item={it} />
-            ))}
+          <div className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} py-1`}>
+            {rows.map((row, i) => {
+              const dense = isDensePackableRow(row)
+              const densePrev = i > 0 && isDensePackableRow(rows[i - 1])
+              const denseNext =
+                i < rows.length - 1 && isDensePackableRow(rows[i + 1])
+              if (row.type === 'group_header') {
+                return (
+                  <GroupHeaderView
+                    key={displayRowKey(row)}
+                    row={row}
+                    selected={row.id === selectedId}
+                    pendingFreeze={false}
+                    now={now}
+                    onToggle={() => toggleGroupExpansion(row.span.anchorId)}
+                    dense={dense}
+                    densePrev={densePrev}
+                    denseNext={denseNext}
+                    selectRow={setSelectedId}
+                  />
+                )
+              }
+              const e = row.entry
+              return (
+                <EntryView
+                  key={displayRowKey(row)}
+                  e={e}
+                  selected={e.id === selectedId}
+                  pendingFreeze={false}
+                  now={now}
+                  inGroup={spanContaining(spans, row.index) != null}
+                  dense={dense}
+                  densePrev={densePrev}
+                  denseNext={denseNext}
+                  actions={actions}
+                  patch={foldPatch(e)}
+                />
+              )
+            })}
           </div>
         )}
       </div>
     </div>
   )
-}
-
-/** 一条子代理时间线条目：对齐主 scrollback 条目视觉的 mini 渲染。 */
-function TimelineItem({ item }: { item: SubagentViewItem }) {
-  switch (item.kind) {
-    case 'user':
-      return <TimelineUserLine text={item.text} />
-    case 'assistant':
-      return (
-        <div className="flex items-start gap-1.5">
-          <div className="min-w-0 flex-1">
-            <Markdown source={item.text} />
-          </div>
-          {/* streaming 指示：主 scrollback running 工具行行尾省略号同款 */}
-          {item.streaming && (
-            <span className="mt-0.5 shrink-0 text-[10px] text-gn-cyan tabular-nums">
-              {Glyphs.ellipsis}
-            </span>
-          )}
-        </div>
-      )
-    case 'thought': {
-      // 主 scrollback thought 同款：finished 截断为 head … tail 预览，streaming 全文。
-      const body = item.streaming
-        ? item.text
-        : truncatedThoughtLines(item.text).join('\n')
-      return (
-        <div
-          className="border-l pl-3 text-[12.5px] leading-relaxed"
-          style={{
-            borderColor:
-              'color-mix(in srgb, var(--color-gn-gray-dim) 40%, transparent)',
-          }}
-        >
-          <div className="whitespace-pre-wrap break-words italic text-gn-muted">
-            {body}
-            {item.streaming && (
-              <span
-                className="ml-0.5 inline-block h-[0.9em] w-[0.4em] translate-y-[1px] animate-pulse align-text-bottom"
-                style={{ backgroundColor: Accents.thinkingDefault, opacity: 0.6 }}
-              />
-            )}
-          </div>
-        </div>
-      )
-    }
-    case 'tool': {
-      const running =
-        item.status === 'pending' || item.status === 'in_progress'
-      const failed = item.status === 'failed' || item.status === 'error'
-      const verb = item.verb ?? toolHeader(item.kindName, running).verb
-      // 主 scrollback 工具行配色（toolFamily / Accents 体系）：失败红、运行青、
-      // execute 完成绿，其余灰。
-      const verbColor = failed
-        ? Accents.error
-        : running
-          ? Accents.running
-          : toolFamily(item.kindName) === 'execute'
-            ? Accents.success
-            : Accents.gray
-      return (
-        <div>
-          <div className="flex min-w-0 items-baseline gap-1.5 text-[12.5px] leading-[1.35]">
-            <span className="shrink-0 font-bold" style={{ color: verbColor }}>
-              {verb}
-            </span>
-            <span className="min-w-0 truncate font-mono text-[12.5px] leading-[1.35] text-gn-muted">
-              {item.title}
-            </span>
-          </div>
-          <ToolDetail raw={item.raw} kindName={item.kindName} full={false} className="mt-0.5" />
-        </div>
-      )
-    }
-    case 'plan': {
-      const plan = planTodos(item.entries).items
-      if (plan.length === 0) {
-        return <div className="text-[11px] text-gn-muted">（空计划）</div>
-      }
-      return (
-        <div className="space-y-[3px]">
-          {plan.map((t, i) => (
-            <div key={t.id ?? i} className="flex items-start gap-2 text-[12px] leading-snug">
-              <span className="mt-[1px] shrink-0 font-mono text-[11px]" aria-hidden>
-                <TodoMark status={t.status} />
-              </span>
-              <span
-                className={`min-w-0 flex-1 break-words ${
-                  t.status === 'completed' || t.status === 'cancelled'
-                    ? 'text-gn-muted'
-                    : 'text-gn-fg'
-                }`}
-              >
-                {t.content}
-              </span>
-            </div>
-          ))}
-        </div>
-      )
-    }
-    case 'image':
-      return (
-        <div>
-          <img
-            src={item.data}
-            alt={item.mimeType ? `image (${item.mimeType})` : 'image'}
-            className="max-h-[30vh] w-auto max-w-full rounded border border-gn-prompt-border object-contain"
-          />
-        </div>
-      )
-    case 'turn':
-      // 主 scrollback 回合结束行同款：居中 dim 一行（"Turn completed." 类文案）。
-      return (
-        <div className="py-0.5 text-center text-[11px] text-gn-muted">
-          {item.text}
-        </div>
-      )
-  }
 }
 
 /** Estimated decoded byte size of a data URI / base64 payload. */
