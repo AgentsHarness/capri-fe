@@ -159,6 +159,16 @@ const TOP_PAGE_COOLDOWN_MS = 400
 const TOUCH_UP_SWIPE_PX = 8
 
 /**
+ * Live scrollback render window: entries beyond this many are not rendered
+ * (DOM bound — a long live session would otherwise grow the list
+ * unboundedly and drag streaming perf down). Older entries stay in the
+ * store (replay/reconnect semantics untouched); history browsing
+ * (loadHistory pages) renders everything loaded, since paging is
+ * user-driven.
+ */
+const MAX_RENDER_ENTRIES = 500
+
+/**
  * Estimate visual line count for a user prompt (wrap-aware, matches TUI
  * UserPromptBlock::is_foldable).
  */
@@ -1410,11 +1420,20 @@ export function Scrollback() {
   // The last user prompt whose top has scrolled past the viewport top is
   // pinned as a sticky header; it switches as you scroll. Tracked via
   // scroll position against the user entries' container-space tops.
+  // Uses the render window (entries outside it have no DOM elements).
+  const renderEntries = useMemo(
+    () =>
+      historyLoadedAt != null || entries.length <= MAX_RENDER_ENTRIES
+        ? entries
+        : entries.slice(-MAX_RENDER_ENTRIES),
+    [historyLoadedAt, entries],
+  )
+  const truncatedCount = entries.length - renderEntries.length
   const userById = useMemo(() => {
     const m = new Map<string, ScrollEntry>()
-    for (const e of entries) if (e.kind === 'user') m.set(e.id, e)
+    for (const e of renderEntries) if (e.kind === 'user') m.set(e.id, e)
     return m
-  }, [entries])
+  }, [renderEntries])
   const userEls = useRef<Map<string, HTMLElement>>(new Map())
   const [pinnedId, setPinnedId] = useState<string | null>(null)
 
@@ -1482,9 +1501,9 @@ export function Scrollback() {
   const pinnedUser = pinnedId ? (userById.get(pinnedId) ?? null) : null
 
   const { rows: displayRows, spans } = useMemo(() => {
-    const spans = scanGroups(entries, expandedGroups)
-    return { rows: projectDisplayRows(entries, spans), spans }
-  }, [entries, expandedGroups])
+    const spans = scanGroups(renderEntries, expandedGroups)
+    return { rows: projectDisplayRows(renderEntries, spans), spans }
+  }, [renderEntries, expandedGroups])
 
   // Pending permission freezes running waves (is_pending_user_input)
   const pendingFreeze = pending.length > 0
@@ -1720,6 +1739,14 @@ export function Scrollback() {
               </div>
               <PromptTime ts={pinnedUser.ts} className="top-[14.5px]" />
             </div>
+          </div>
+        )}
+        {truncatedCount > 0 && (
+          <div
+            className="py-1.5 text-center text-[11px] text-gn-gutter select-none"
+            title="更早内容仍保留在会话中，可打开历史查看"
+          >
+            已截断 {truncatedCount} 条更早内容 · 仅显示最近 {MAX_RENDER_ENTRIES} 条
           </div>
         )}
         {displayRows.map((row, i) => {
