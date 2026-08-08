@@ -5569,6 +5569,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return
       }
       for (const env of r.updates ?? []) {
+        // 防御（任务 3）：存储包络带 params.sessionId——只有属于该子代理
+        // 会话（或未带 sid 的旧格式）的包络才回放。若 x.ai/session/updates
+        // 对子代理 sid 解析异常、回退到了别的会话（历史 bug：不同子代理
+        // 弹窗拉到同一份内容），错配包络直接丢弃——弹窗显示空态
+        // 「未捕获到活动」，绝不渲染出别的会话的对话。
+        const envParams = (env as { params?: { sessionId?: unknown } } | null)
+          ?.params
+        const envSid = envParams?.sessionId
+        if (typeof envSid === 'string' && envSid !== childSessionId) continue
         const ev = envelopeToEvent(env)
         if (ev) applySubagentViewEvent(set, childSessionId, ev)
       }
