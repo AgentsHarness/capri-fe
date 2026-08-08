@@ -843,6 +843,10 @@ export function Composer() {
   // its phase timer — TUI turn_status.rs activity arm. Falls back to the
   // static statusText when nothing is running.
   const activity = useMemo(() => currentActivity(entries), [entries])
+  // Phase timer source: the activity's own start; tools replayed from
+  // history carry none, so the turn start is the closest proxy (TUI
+  // tracker falls back the same way).
+  const phaseStart = activity?.startedAt ?? turnStartedAt
   const statusVisible =
     busy ||
     conn === 'connecting' ||
@@ -1236,9 +1240,9 @@ export function Composer() {
                     >
                       {activity?.label ?? statusText}
                     </span>
-                    {activity?.startedAt != null && (
+                    {phaseStart != null && (
                       <span className="shrink-0 tabular-nums text-gn-gray">
-                        {formatTurnDuration(Date.now() - activity.startedAt)}
+                        {formatTurnDuration(Date.now() - phaseStart)}
                       </span>
                     )}
                   </>

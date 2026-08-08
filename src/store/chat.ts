@@ -2742,6 +2742,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
           detail: tc.title as string | undefined,
           expanded: false,
           raw: tc,
+          // Activity start for the turn status line's phase timer (TUI
+          // tracker started_at); replay/completed snapshots omit it.
+          ...(running ? { startedAt: Date.now() } : {}),
         }
         const toolIndex = { ...get().toolIndex }
         if (toolCallId) toolIndex[toolCallId] = id

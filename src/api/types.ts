@@ -707,6 +707,10 @@ export type ScrollEntry =
       detail?: string
       expanded?: boolean
       raw?: ToolCall
+      /** Activity start (epoch ms) — stamped on live running tools for
+       *  the turn status line's phase timer (TUI tracker started_at);
+       *  replay/completed snapshots omit it. */
+      startedAt?: number
       finishedAt?: number
     }
   | { id: string; kind: 'error'; text: string }
