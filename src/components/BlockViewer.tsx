@@ -14,7 +14,9 @@ import type { ScrollEntry, SubagentViewItem } from '../api/types'
 import { subagentMeta } from '../format'
 import { ToolDetail } from './ToolDetail'
 import { Markdown } from './Markdown'
+import { Accents } from '../theme/accents'
 import { Glyphs, toolHeader } from '../theme/glyphs'
+import { toolFamily } from '../theme/toolFamily'
 import { IconGlyph } from './IconGlyph'
 import { TodoMark } from './todoMark'
 import { fmtBytes, fmtTok } from '../format'
@@ -428,7 +430,67 @@ function SubagentView({
       <div className="font-mono text-[12px] text-gn-fg">{entry.title}</div>
       {meta && <div className="font-mono text-[12px] text-gn-muted">{meta}</div>}
 
-      {/* 活动时间线：子代理自己的迷你 scrollback（标题/meta 之后、统计之前） */}
+      {/* 状态区置顶：running 的 gauge/统计/tools_used + error + 结束态统计 */}
+      <div className="space-y-1.5">
+        {entry.running && (
+          <>
+            {/* Live context gauge — hidden until the host reports a window. */}
+            {entry.contextWindowTokens != null && entry.contextWindowTokens > 0 && (
+              <div className="flex items-center gap-2">
+                <span
+                  className={`inline-flex items-center gap-1 font-mono text-[12px] leading-none ${gaugeColor}`}
+                  title={`上下文 ${Math.round(pct ?? 0)}%`}
+                >
+                  <span aria-hidden className="whitespace-nowrap">
+                    <span>{'█'.repeat(filled)}</span>
+                    <span className="text-gn-gray-dim">{'░'.repeat(gaugeW - filled)}</span>
+                  </span>
+                  <span className="tabular-nums">
+                    {(pct ?? 0).toFixed(1)}%
+                  </span>
+                </span>
+                <span className="font-mono text-[11px] tabular-nums text-gn-gutter">
+                  {entry.tokensUsed != null
+                    ? `${fmtTok(entry.tokensUsed)} / ${fmtTok(entry.contextWindowTokens)} tok`
+                    : `${fmtTok(entry.contextWindowTokens)} tok window`}
+                </span>
+              </div>
+            )}
+            {live && stats.length > 0 && (
+              <div className="flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[11px] tabular-nums text-gn-gutter">
+                {stats.map((s) => (
+                  <span key={s}>{s}</span>
+                ))}
+              </div>
+            )}
+            {entry.toolsUsed && entry.toolsUsed.length > 0 && (
+              <div className="flex flex-wrap items-center gap-x-1.5 font-mono text-[11px] text-gn-gutter">
+                <span className="uppercase tracking-wide text-[10px]">tools</span>
+                {entry.toolsUsed.map((t) => (
+                  <span
+                    key={t}
+                    className="rounded border border-gn-prompt-border/60 px-1.5 py-0.5 text-gn-muted"
+                  >
+                    {t}
+                  </span>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+        {entry.error && (
+          <div className="rounded border border-gn-red/40 bg-gn-diff-del-bg px-2.5 py-1.5 font-mono text-[12px] text-gn-red">
+            {entry.error}
+          </div>
+        )}
+        {!entry.running && stats.length > 0 && (
+          <div className="font-mono text-[11px] tabular-nums text-gn-gutter">
+            {stats.join(' · ')}
+          </div>
+        )}
+      </div>
+
+      {/* 活动时间线（scrollback）置底：状态区之后、id 脚注之前 */}
       {childSid && (
         <SubagentTimeline
           childSid={childSid}
@@ -438,78 +500,43 @@ function SubagentView({
         />
       )}
 
-      {entry.running && (
-        <div className="space-y-1.5">
-          {/* Live context gauge — hidden until the host reports a window. */}
-          {entry.contextWindowTokens != null && entry.contextWindowTokens > 0 && (
-            <div className="flex items-center gap-2">
-              <span
-                className={`inline-flex items-center gap-1 font-mono text-[12px] leading-none ${gaugeColor}`}
-                title={`上下文 ${Math.round(pct ?? 0)}%`}
-              >
-                <span aria-hidden className="whitespace-nowrap">
-                  <span>{'█'.repeat(filled)}</span>
-                  <span className="text-gn-gray-dim">{'░'.repeat(gaugeW - filled)}</span>
-                </span>
-                <span className="tabular-nums">
-                  {(pct ?? 0).toFixed(1)}%
-                </span>
-              </span>
-              <span className="font-mono text-[11px] tabular-nums text-gn-gutter">
-                {entry.tokensUsed != null
-                  ? `${fmtTok(entry.tokensUsed)} / ${fmtTok(entry.contextWindowTokens)} tok`
-                  : `${fmtTok(entry.contextWindowTokens)} tok window`}
-              </span>
-            </div>
-          )}
-          {live && stats.length > 0 && (
-            <div className="flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[11px] tabular-nums text-gn-gutter">
-              {stats.map((s) => (
-                <span key={s}>{s}</span>
-              ))}
-            </div>
-          )}
-          {entry.toolsUsed && entry.toolsUsed.length > 0 && (
-            <div className="flex flex-wrap items-center gap-x-1.5 font-mono text-[11px] text-gn-gutter">
-              <span className="uppercase tracking-wide text-[10px]">tools</span>
-              {entry.toolsUsed.map((t) => (
-                <span
-                  key={t}
-                  className="rounded border border-gn-prompt-border/60 px-1.5 py-0.5 text-gn-muted"
-                >
-                  {t}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {entry.error && (
-        <div className="rounded border border-gn-red/40 bg-gn-diff-del-bg px-2.5 py-1.5 font-mono text-[12px] text-gn-red">
-          {entry.error}
-        </div>
-      )}
-      {entry.output ? (
-        <div>
-          <div className="mb-1 text-[11px] font-bold uppercase tracking-wide text-gn-gutter">
-            Output
-          </div>
-          <pre className="max-h-[40vh] overflow-auto whitespace-pre-wrap break-all rounded border border-gn-prompt-border/50 bg-gn-bg-base px-2.5 py-2 font-mono text-[12px] text-gn-fg">
-            {entry.output}
-          </pre>
-        </div>
-      ) : null}
-      {!entry.running && stats.length > 0 && (
-        <div className="font-mono text-[11px] tabular-nums text-gn-gutter">
-          {stats.join(' · ')}
-        </div>
-      )}
       {entry.subagentId && (
         <div className="font-mono text-[11px] text-gn-gutter">
           id · {entry.subagentId}
         </div>
       )}
+    </div>
+  )
+}
+
+/** ThinkingBlock truncated preview head/tail（主 scrollback THOUGHT_TRUNCATED_* 同款）。 */
+const THOUGHT_TRUNCATED_HEAD_LINES = 5
+const THOUGHT_TRUNCATED_TAIL_LINES = 3
+
+/** 截断为 head … tail（主 scrollback truncatedThoughtLines 同款）。 */
+function truncatedThoughtLines(text: string): string[] {
+  const all = text.split('\n')
+  const cap = THOUGHT_TRUNCATED_HEAD_LINES + THOUGHT_TRUNCATED_TAIL_LINES
+  if (all.length <= cap) return all
+  return [
+    ...all.slice(0, THOUGHT_TRUNCATED_HEAD_LINES),
+    Glyphs.ellipsis,
+    ...all.slice(-THOUGHT_TRUNCATED_TAIL_LINES),
+  ]
+}
+
+/** 迷你 scrollback 用户行：promptArrow 前缀 + Markdown（主 scrollback 用户行同款）。 */
+function TimelineUserLine({ text }: { text: string }) {
+  return (
+    <div className="flex items-start gap-1.5">
+      <IconGlyph
+        glyph={Glyphs.promptArrow}
+        color="var(--color-gn-accent-user)"
+        className="mt-[1.5px]"
+      />
+      <div className="min-w-0 flex-1">
+        <Markdown source={text} />
+      </div>
     </div>
   )
 }
@@ -556,21 +583,17 @@ function SubagentTimeline({
           <span className="normal-case tracking-normal text-gn-accent-running">live</span>
         )}
       </div>
+      {/* 平铺无边框盒（主 scrollback 同款）：滚动容器只保留 max-h / overflow 与滚动条样式 */}
       <div
         ref={scrollRef}
-        className="gn-scroll max-h-[35vh] overflow-y-auto rounded border border-gn-prompt-border/50 bg-gn-bg-dark px-2.5 py-2 font-mono text-[12px] leading-[1.5]"
+        className="gn-scroll max-h-[35vh] overflow-y-auto"
       >
         {items.length === 0 ? (
           <div className="space-y-1.5">
             {/* 仅当时间线没有任何条目时，把 spawn 携带的任务 prompt
                 （title/description）作为第一条 user 条目显示——TUI 同款：
                 子代理 scrollback 首条是注入的任务 prompt。 */}
-            {prompt && (
-              <div>
-                <div className="text-[10px] uppercase tracking-wide text-gn-gutter">user</div>
-                <Markdown source={prompt} />
-              </div>
-            )}
+            {prompt && <TimelineUserLine text={prompt} />}
             <div className="text-[11px] text-gn-muted">
               {running
                 ? '等待子代理活动上报…（数据来自宿主转发的子代理会话事件流）'
@@ -589,49 +612,78 @@ function SubagentTimeline({
   )
 }
 
-/** 一条子代理时间线条目：scrollback 风格的 mini 渲染。 */
+/** 一条子代理时间线条目：对齐主 scrollback 条目视觉的 mini 渲染。 */
 function TimelineItem({ item }: { item: SubagentViewItem }) {
   switch (item.kind) {
     case 'user':
-      return (
-        <div>
-          <div className="text-[10px] uppercase tracking-wide text-gn-gutter">user</div>
-          <Markdown source={item.text} />
-        </div>
-      )
+      return <TimelineUserLine text={item.text} />
     case 'assistant':
       return (
-        <div>
-          <div className="text-[10px] uppercase tracking-wide text-gn-gutter">
-            assistant{item.streaming ? '…' : ''}
+        <div className="flex items-start gap-1.5">
+          <div className="min-w-0 flex-1">
+            <Markdown source={item.text} />
           </div>
-          <Markdown source={item.text} />
+          {/* streaming 指示：主 scrollback running 工具行行尾省略号同款 */}
+          {item.streaming && (
+            <span className="mt-0.5 shrink-0 text-[10px] text-gn-cyan tabular-nums">
+              {Glyphs.ellipsis}
+            </span>
+          )}
         </div>
       )
-    case 'thought':
+    case 'thought': {
+      // 主 scrollback thought 同款：finished 截断为 head … tail 预览，streaming 全文。
+      const body = item.streaming
+        ? item.text
+        : truncatedThoughtLines(item.text).join('\n')
       return (
-        <div>
-          <div className="text-[10px] uppercase tracking-wide text-gn-gutter">thought</div>
+        <div
+          className="border-l pl-3 text-[12.5px] leading-relaxed"
+          style={{
+            borderColor:
+              'color-mix(in srgb, var(--color-gn-gray-dim) 40%, transparent)',
+          }}
+        >
           <div className="whitespace-pre-wrap break-words italic text-gn-muted">
-            {item.text}
+            {body}
+            {item.streaming && (
+              <span
+                className="ml-0.5 inline-block h-[0.9em] w-[0.4em] translate-y-[1px] animate-pulse align-text-bottom"
+                style={{ backgroundColor: Accents.thinkingDefault, opacity: 0.6 }}
+              />
+            )}
           </div>
         </div>
       )
-    case 'tool':
+    }
+    case 'tool': {
+      const running =
+        item.status === 'pending' || item.status === 'in_progress'
+      const failed = item.status === 'failed' || item.status === 'error'
+      const verb = item.verb ?? toolHeader(item.kindName, running).verb
+      // 主 scrollback 工具行配色（toolFamily / Accents 体系）：失败红、运行青、
+      // execute 完成绿，其余灰。
+      const verbColor = failed
+        ? Accents.error
+        : running
+          ? Accents.running
+          : toolFamily(item.kindName) === 'execute'
+            ? Accents.success
+            : Accents.gray
       return (
         <div>
-          <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-gn-gutter">
-            <span>tool</span>
-            <span className="min-w-0 truncate normal-case tracking-normal text-gn-muted">
+          <div className="flex min-w-0 items-baseline gap-1.5 text-[12.5px] leading-[1.35]">
+            <span className="shrink-0 font-bold" style={{ color: verbColor }}>
+              {verb}
+            </span>
+            <span className="min-w-0 truncate font-mono text-[12.5px] leading-[1.35] text-gn-muted">
               {item.title}
             </span>
-            {item.verb && (
-              <span className="normal-case tracking-normal">{item.verb}</span>
-            )}
           </div>
           <ToolDetail raw={item.raw} kindName={item.kindName} full={false} className="mt-0.5" />
         </div>
       )
+    }
     case 'plan': {
       const plan = planTodos(item.entries).items
       if (plan.length === 0) {
@@ -669,8 +721,9 @@ function TimelineItem({ item }: { item: SubagentViewItem }) {
         </div>
       )
     case 'turn':
+      // 主 scrollback 回合结束行同款：居中 dim 一行（"Turn completed." 类文案）。
       return (
-        <div className="py-0.5 text-center text-[10px] uppercase tracking-wider text-gn-gutter">
+        <div className="py-0.5 text-center text-[11px] text-gn-muted">
           {item.text}
         </div>
       )
