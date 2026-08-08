@@ -397,6 +397,22 @@ export function TerminalPanel({
       .finally(() => setBusyId(null))
   }
 
+  /** x.ai/terminal/wait_for_exit — 阻塞等待 piped 进程退出。 */
+  const waitForExit = (t: TerminalInfo) => {
+    setBusyId(t.terminalId)
+    setError(undefined)
+    transport
+      .terminalWaitForExit(t.terminalId)
+      .then((r) => {
+        useChatStore.setState({
+          statusText: `终端 ${t.terminalId} 已退出${r.exitCode != null ? ` · exit ${r.exitCode}` : ''}`,
+        })
+        void refreshList()
+      })
+      .catch((e) => setError(friendlyError(e)))
+      .finally(() => setBusyId(null))
+  }
+
   const resizePty = (t: TerminalInfo) => {
     setBusyId(t.terminalId)
     setError(undefined)
@@ -605,6 +621,17 @@ export function TerminalPanel({
                       title="x.ai/terminal/background — 转后台, 进程继续运行"
                     >
                       background
+                    </button>
+                  )}
+                  {!selected.interactive && (
+                    <button
+                      type="button"
+                      onClick={() => waitForExit(selected)}
+                      disabled={busyId === selected.terminalId}
+                      className="rounded border border-transparent px-1.5 py-0.5 font-mono text-[10.5px] text-gn-muted hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-40"
+                      title="x.ai/terminal/wait_for_exit — 阻塞等待进程退出（前台运行中）"
+                    >
+                      wait-exit
                     </button>
                   )}
                   {selected.interactive && selected.status !== 'exited' && (

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useChatStore } from '../store/chat'
 import { transport } from '../api/localTransport'
-import type { GitFileChange, GitStatusData } from '../api/types'
+import type { GitBranch, GitFileChange, GitStatusData } from '../api/types'
 
 /**
  * Git panel — modal counterpart of the TUI git surface (web-only; the
@@ -168,9 +168,16 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
   const [loading, setLoading] = useState(false)
   /** Bumped after every successful status fetch — diff effect re-runs. */
   const [statusSeq, setStatusSeq] = useState(0)
+  /** Branch list (x.ai/git/branches) — separate seq so status refreshes
+   *  never cancel an in-flight branch fetch (shared reqSeq would). */
+  const [branches, setBranches] = useState<GitBranch[]>([])
+  const [branchesError, setBranchesError] = useState<string>()
+  const [branchesLoading, setBranchesLoading] = useState(false)
+  /** Two-stage checkout confirm (same CONFIRM_WINDOW as discard). */
+  const [armedCheckout, setArmedCheckout] = useState<{ branch: string; at: number } | null>(null)
   const [selectedPath, setSelectedPath] = useState<string>()
   const [diff, setDiff] = useState<DiffState>()
-  /** In-flight op label ("stage"/"unstage"/"discard"/"commit") or undefined. */
+  /** In-flight op label ("stage"/"unstage"/"discard"/"commit"/"stash"/…) or undefined. */
   const [busyOp, setBusyOp] = useState<string>()
   const [opError, setOpError] = useState<string>()
   const [commitMsg, setCommitMsg] = useState('')
@@ -178,6 +185,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
   const [armedDiscard, setArmedDiscard] = useState<{ path: string; at: number } | null>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const reqSeq = useRef(0)
+  const branchReqSeq = useRef(0)
 
   const rows = useMemo(() => (status ? toRows(status) : []), [status])
 
@@ -202,11 +210,30 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
     [cwd],
   )
 
+  /** x.ai/git/branches — refresh on open and after checkout. */
+  const refreshBranches = useCallback(async () => {
+    const seq = ++branchReqSeq.current
+    setBranchesLoading(true)
+    setBranchesError(undefined)
+    try {
+      const data = await transport.gitBranches({ cwd })
+      if (seq !== branchReqSeq.current) return
+      setBranches(data.branches ?? [])
+    } catch (e) {
+      if (seq !== branchReqSeq.current) return
+      setBranches([])
+      setBranchesError(e instanceof Error ? e.message : String(e))
+    } finally {
+      if (seq === branchReqSeq.current) setBranchesLoading(false)
+    }
+  }, [cwd])
+
   // Fetch on open + keep in sync with session/cwd changes.
   useEffect(() => {
     if (!open) return
     void refresh()
-  }, [open, refresh])
+    void refreshBranches()
+  }, [open, refresh, refreshBranches])
 
   // Live refresh: host sessions_changed / git_head_changed while open.
   useEffect(() => {
@@ -243,6 +270,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
     setCommitMsg('')
     setAmend(false)
     setArmedDiscard(null)
+    setArmedCheckout(null)
   }, [open])
 
   // Diff preview for the selected row.
@@ -360,6 +388,38 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
     return () => window.clearTimeout(t)
   }, [armedDiscard])
 
+  /** Branch row click — two-stage confirm, then x.ai/git/checkout. */
+  const onCheckoutClick = (branch: GitBranch) => {
+    if (branch.current) return
+    if (
+      armedCheckout?.branch === branch.name &&
+      Date.now() - armedCheckout.at < CONFIRM_WINDOW_MS
+    ) {
+      setArmedCheckout(null)
+      void runOp(`checkout ${branch.name}`, async () => {
+        await transport.gitCheckout({ cwd, branch: branch.name })
+        // Branch list + status refresh (runOp already refreshes status).
+        await refreshBranches()
+      })
+    } else {
+      setArmedCheckout({ branch: branch.name, at: Date.now() })
+    }
+  }
+  useEffect(() => {
+    if (!armedCheckout) return
+    const t = window.setTimeout(
+      () => setArmedCheckout((cur) => (cur && cur.at === armedCheckout.at ? null : cur)),
+      CONFIRM_WINDOW_MS,
+    )
+    return () => window.clearTimeout(t)
+  }, [armedCheckout])
+
+  /** git stash — 成功后 status 由 runOp 刷新（分支不变，无需刷新列表）。 */
+  const onStashClick = () => {
+    if (busy) return
+    void runOp('stash', () => transport.gitStash({ cwd }))
+  }
+
   if (!open) return null
 
   const branch = status?.branch ?? gitInfo?.branch
@@ -444,6 +504,53 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
           <div className="flex min-h-0 flex-1">
             {/* File list — 工作区状态。 */}
             <div className="gn-no-scrollbar w-64 shrink-0 overflow-y-auto border-r border-gn-prompt-border">
+              {/* 分支列表 — x.ai/git/branches；点击切换（两段确认）。 */}
+              <div className="border-b border-gn-prompt-border/50 px-3 pb-1.5 pt-2">
+                <div className="text-[10px] uppercase tracking-wider text-gn-gutter">
+                  分支{branches.length > 0 ? ` · ${branches.length}` : ''}
+                </div>
+                {branchesError && (
+                  <div className="mt-1 text-[10.5px] leading-snug text-gn-red">
+                    {branchesError}
+                  </div>
+                )}
+                <div className="gn-no-scrollbar mt-1 max-h-28 overflow-y-auto">
+                  {branchesLoading && branches.length === 0 && (
+                    <div className="text-[11px] text-gn-muted">加载中…</div>
+                  )}
+                  {!branchesLoading && branches.length === 0 && !branchesError && (
+                    <div className="text-[11px] text-gn-muted">无分支信息</div>
+                  )}
+                  {branches.map((b) => {
+                    const armed = armedCheckout?.branch === b.name
+                    return (
+                      <button
+                        key={b.name}
+                        type="button"
+                        disabled={busy || b.current === true}
+                        onClick={() => onCheckoutClick(b)}
+                        className={`flex w-full items-center gap-1.5 rounded px-1.5 py-[3px] text-left font-mono text-[11px] disabled:cursor-default ${
+                          b.current
+                            ? 'text-gn-green'
+                            : 'text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-60'
+                        }`}
+                        title={
+                          b.current
+                            ? '当前分支'
+                            : armed
+                              ? '再点一次确认切换（2 秒内）'
+                              : `切换到 ${b.name}（x.ai/git/checkout）${b.upstream ? ` · upstream ${b.upstream}` : ''}`
+                        }
+                      >
+                        <span className="w-4 shrink-0 text-[10px]">
+                          {b.current ? '✓' : armed ? '?' : '⎇'}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate">{b.name}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
               <div className="px-3 pb-1 pt-2 text-[10px] uppercase tracking-wider text-gn-gutter">
                 工作区状态 · {rows.length}
               </div>
@@ -631,6 +738,15 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
               title="提交暂存区的更改（x.ai/git/commit）"
             >
               commit
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onStashClick}
+              className="shrink-0 rounded border border-gn-yellow/40 bg-gn-bg-base px-3 py-1 text-[12px] text-gn-fg hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40"
+              title="git stash — 暂存全部未提交更改（x.ai/git/stash）"
+            >
+              stash
             </button>
           </div>
           {(opError || statusError || busy) && (

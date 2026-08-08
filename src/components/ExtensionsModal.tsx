@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useChatStore } from '../store/chat'
 import {
   transport,
@@ -7,6 +7,7 @@ import {
   type ExtensionPlugin,
   type ExtensionSkill,
 } from '../api/localTransport'
+import type { AgentSkill } from '../api/types'
 import { Glyphs } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
 
@@ -101,8 +102,8 @@ function skillScopeGroup(s: ExtensionSkill): { key: string; label: string } {
   return { key: scope || 'unknown', label: s.scope || 'unknown' }
 }
 
-function groupSkills(skills: ExtensionSkill[]): ExtGroup<ExtensionSkill>[] {
-  const buckets = new Map<string, { label: string; rank: number; items: ExtensionSkill[] }>()
+function groupSkills<T extends ExtensionSkill>(skills: T[]): ExtGroup<T>[] {
+  const buckets = new Map<string, { label: string; rank: number; items: T[] }>()
   for (const s of skills) {
     const { key, label } = skillScopeGroup(s)
     let b = buckets.get(key)
@@ -176,8 +177,14 @@ export function ExtensionsModal() {
   const [data, setData] = useState<ExtensionsPayload>()
   const [hookHint, setHookHint] = useState<string>()
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  // ── agent 侧 skills（x.ai/skills/list — 带实时 enabled 状态）──────
+  const [agentSkills, setAgentSkills] = useState<AgentSkill[]>([])
+  const [agentSkillsError, setAgentSkillsError] = useState<string>()
+  const [skillBusyName, setSkillBusyName] = useState<string>()
+  const [agentSkillError, setAgentSkillError] = useState<string>()
   const panelRef = useRef<HTMLDivElement>(null)
   const reqSeq = useRef(0)
+  const skillReqSeq = useRef(0)
 
   const fetchData = useCallback(async () => {
     const seq = ++reqSeq.current
@@ -197,12 +204,49 @@ export function ExtensionsModal() {
     }
   }, [])
 
+  /** x.ai/skills/list — agent 侧 skill 注册表（独立 seq，与本地扫描并行）。 */
+  const fetchAgentSkills = useCallback(async () => {
+    const seq = ++skillReqSeq.current
+    setAgentSkillsError(undefined)
+    try {
+      const skills = await transport.skillsList({ cwd: useChatStore.getState().cwd })
+      if (seq === skillReqSeq.current) setAgentSkills(skills)
+    } catch (e) {
+      if (seq === skillReqSeq.current) {
+        setAgentSkillsError(e instanceof Error ? e.message : String(e))
+      }
+    }
+  }, [])
+
+  /** x.ai/skills/toggle — 只对 agent 侧条目可用；成功后本地翻转。 */
+  const toggleAgentSkill = async (s: AgentSkill) => {
+    setSkillBusyName(s.name)
+    setAgentSkillError(undefined)
+    try {
+      const enabled = s.enabled === false
+      await transport.skillsToggle({
+        name: s.name,
+        enabled,
+        cwd: useChatStore.getState().cwd,
+      })
+      setAgentSkills((prev) =>
+        prev.map((x) => (x.name === s.name ? { ...x, enabled } : x)),
+      )
+      useChatStore.setState({ statusText: `已${enabled ? '启用' : '禁用'} skill ${s.name}` })
+    } catch (e) {
+      setAgentSkillError(`${s.name}: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setSkillBusyName(undefined)
+    }
+  }
+
   // Fetch on open AND on every hooks_changed / plugins_changed bump while
   // open (hooksVersion) — a single effect covers both triggers.
   useEffect(() => {
     if (!open) return
     void fetchData()
-  }, [open, hooksVersion, fetchData])
+    void fetchAgentSkills()
+  }, [open, hooksVersion, fetchData, fetchAgentSkills])
 
   useEffect(() => {
     if (!open) return
@@ -311,14 +355,22 @@ export function ExtensionsModal() {
           ) : tab === 'plugins' ? (
             <PluginsTab data={data} filter={statusFilter} />
           ) : tab === 'skills' ? (
-            <SkillsTab data={data} filter={statusFilter} />
+            <SkillsTab
+              data={data}
+              filter={statusFilter}
+              agentSkills={agentSkills}
+              agentSkillsError={agentSkillsError}
+              agentSkillError={agentSkillError}
+              skillBusyName={skillBusyName}
+              onToggleSkill={(s) => void toggleAgentSkill(s)}
+            />
           ) : (
             <MarketplaceTab />
           )}
         </div>
 
         <footer className="rounded-b border-t border-gn-prompt-border px-4 py-2 text-[11px] text-gn-gutter">
-          数据来自本机 ~/.grok（GET /api/extensions） · hooks/plugins 变更会自动刷新
+          本地扫描来自 ~/.grok（GET /api/extensions）· skills 另有 agent 注册表（x.ai/skills/list，可实时启停）
         </footer>
       </div>
     </div>
@@ -492,40 +544,120 @@ function PluginsTab({ data, filter }: { data?: ExtensionsPayload; filter: Status
   )
 }
 
-function SkillItem({ s }: { s: ExtensionSkill }) {
+/** 合并后的 skill 行：本地扫描（GET /api/extensions）+ agent 注册表
+ *  （x.ai/skills/list）。同名条目 agent 侧覆盖（带实时 enabled 状态）。 */
+type SkillRow = ExtensionSkill & {
+  /** True when this row's enabled state comes from the agent registry. */
+  fromAgent: boolean
+}
+
+function SkillItem({
+  s,
+  busy,
+  onToggle,
+}: {
+  s: SkillRow
+  busy?: string
+  onToggle?: (s: SkillRow) => void
+}) {
   return (
     <div
-      className="border-b border-gn-prompt-border/50 px-4 py-2"
+      className="flex items-start gap-2.5 border-b border-gn-prompt-border/50 px-4 py-2"
       title={s.path ? `SKILL.md: ${s.path}` : undefined}
     >
-      <div className="flex items-baseline gap-2">
-        <span className="truncate font-mono text-[12.5px] text-gn-fg">{s.name}</span>
-        <span
-          className={`shrink-0 rounded border px-1 text-[9px] leading-[14px] ${
-            s.scope === 'user'
-              ? 'border-gn-cyan/60 text-gn-cyan'
-              : s.scope === 'bundled'
-                ? 'border-gn-prompt-border text-gn-muted'
-                : 'border-gn-prompt-border text-gn-gutter'
-          }`}
-        >
-          {s.scope ?? 'unknown'}
-        </span>
-      </div>
-      {s.path ? (
-        <div className="mt-0.5 truncate font-mono text-[11px] text-gn-gutter" title={`SKILL.md: ${s.path}`}>
-          {s.path}
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+          <span className="truncate font-mono text-[12.5px] text-gn-fg">{s.name}</span>
+          <span
+            className={`shrink-0 rounded border px-1 text-[9px] leading-[14px] ${
+              s.scope === 'user'
+                ? 'border-gn-cyan/60 text-gn-cyan'
+                : s.scope === 'bundled'
+                  ? 'border-gn-prompt-border text-gn-muted'
+                  : 'border-gn-prompt-border text-gn-gutter'
+            }`}
+          >
+            {s.scope ?? 'unknown'}
+          </span>
+          {s.fromAgent && (
+            <span
+              className="shrink-0 rounded border border-gn-cyan/60 px-1 text-[9px] leading-[14px] text-gn-cyan"
+              title="来自 agent 注册表（x.ai/skills/list）— 可实时启停"
+            >
+              agent
+            </span>
+          )}
+          {s.enabled !== undefined && (
+            <span
+              className={`shrink-0 rounded border px-1 text-[9px] leading-[14px] ${
+                s.enabled
+                  ? 'border-gn-green/60 text-gn-green'
+                  : 'border-gn-prompt-border text-gn-muted'
+              }`}
+            >
+              {s.enabled ? 'enabled' : 'disabled'}
+            </span>
+          )}
         </div>
-      ) : null}
+        {s.path ? (
+          <div className="mt-0.5 truncate font-mono text-[11px] text-gn-gutter" title={`SKILL.md: ${s.path}`}>
+            {s.path}
+          </div>
+        ) : null}
+      </div>
+      {s.fromAgent && onToggle && (
+        <button
+          type="button"
+          disabled={busy != null}
+          onClick={() => onToggle(s)}
+          className={`shrink-0 rounded border px-2 py-0.5 text-[11px] disabled:opacity-50 ${
+            s.enabled === false
+              ? 'border-gn-prompt-border-active bg-gn-bg-highlight text-gn-fg'
+              : 'border-gn-prompt-border text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
+          }`}
+          title="x.ai/skills/toggle — 启用/禁用该 skill（agent 注册表）"
+        >
+          {busy === s.name ? '…' : s.enabled === false ? '启用' : '禁用'}
+        </button>
+      )}
     </div>
   )
 }
 
-function SkillsTab({ data, filter }: { data?: ExtensionsPayload; filter: StatusFilter }) {
-  const all = data?.skills ?? []
+function SkillsTab({
+  data,
+  filter,
+  agentSkills,
+  agentSkillsError,
+  agentSkillError,
+  skillBusyName,
+  onToggleSkill,
+}: {
+  data?: ExtensionsPayload
+  filter: StatusFilter
+  agentSkills: AgentSkill[]
+  agentSkillsError?: string
+  agentSkillError?: string
+  skillBusyName?: string
+  onToggleSkill: (s: SkillRow) => void
+}) {
+  // 合并：本地扫描为底，agent 注册表按 name 覆盖（实时 enabled 状态）。
+  const merged = useMemo<SkillRow[]>(() => {
+    const map = new Map<string, SkillRow>()
+    for (const s of data?.skills ?? []) map.set(s.name, { ...s, fromAgent: false })
+    for (const s of agentSkills) {
+      map.set(s.name, {
+        name: s.name,
+        scope: s.scope,
+        enabled: s.enabled,
+        fromAgent: true,
+      })
+    }
+    return [...map.values()]
+  }, [data, agentSkills])
   // Scope order Project → User → Plugin → Bundled → Server → Config
   // (TUI skill_group); missing levels are skipped.
-  const filtered = filterByStatus(all, filter)
+  const filtered = filterByStatus(merged, filter)
   const groups = groupSkills(filtered)
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   const toggle = (key: string) =>
@@ -537,9 +669,19 @@ function SkillsTab({ data, filter }: { data?: ExtensionsPayload; filter: StatusF
     })
   return (
     <>
+      {agentSkillsError && (
+        <div className="mx-4 mt-2 rounded border border-gn-diff-del-bg px-2 py-1.5 text-[11px] text-gn-red">
+          agent skills 加载失败: {agentSkillsError}（仍显示本地扫描结果）
+        </div>
+      )}
+      {agentSkillError && (
+        <div className="mx-4 mt-2 rounded border border-gn-diff-del-bg px-2 py-1.5 text-[11px] text-gn-red">
+          {agentSkillError}
+        </div>
+      )}
       {filtered.length === 0 ? (
         <div className="px-4 py-6 text-center text-[12px] text-gn-muted">
-          {all.length === 0 ? '未安装 skills' : '没有匹配当前过滤的 skills'}
+          {merged.length === 0 ? '未安装 skills' : '没有匹配当前过滤的 skills'}
         </div>
       ) : (
         groups.map((g) => (
@@ -550,7 +692,15 @@ function SkillsTab({ data, filter }: { data?: ExtensionsPayload; filter: StatusF
               collapsed={collapsed.has(g.key)}
               onToggle={() => toggle(g.key)}
             />
-            {!collapsed.has(g.key) && g.items.map((s) => <SkillItem key={s.name} s={s} />)}
+            {!collapsed.has(g.key) &&
+              g.items.map((s) => (
+                <SkillItem
+                  key={s.name}
+                  s={s}
+                  busy={skillBusyName}
+                  onToggle={s.fromAgent ? onToggleSkill : undefined}
+                />
+              ))}
           </div>
         ))
       )}

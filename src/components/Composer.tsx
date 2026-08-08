@@ -593,7 +593,16 @@ export function Composer() {
     taRef.current?.focus()
   }
 
-  /** TUI queue semantics: Enter during a turn queues; empty Enter sends head. */
+  /**
+   * TUI queue semantics: Enter during a turn queues; empty Enter sends head.
+   *
+   * ── 补全入口（预留）──────────────────────────────────────────────
+   * transport.suggest() / transport.suggestPrompt()（x.ai/suggest /
+   * x.ai/suggestPrompt）已就绪。将来在此处挂补全候选 UI：输入暂停后调
+   * suggest({text, cwd, cursor, limit, generation, includeAi, aiModel,
+   * tokenOnly}) 取候选行渲染在输入框下方（generation 由 suggestPrompt
+   * 递增轮换），当前不做完整补全 UI — Composer 保持纯手输。
+   */
   const onSubmit = async () => {
     const q = usePromptQueue.getState()
     if (q.sending) return

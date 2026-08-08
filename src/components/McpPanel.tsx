@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useChatStore, type McpServerInfo } from '../store/chat'
-import type { McpListServer, McpToolInfo } from '../api/localTransport'
+import { transport, type McpListServer, type McpToolInfo } from '../api/localTransport'
 
 /**
  * MCP server panel (x.ai/mcp/server_status + host /api/mcp/*) — web
@@ -53,6 +53,17 @@ export function McpPanel({
   const [form, setForm] = useState({ name: '', command: '', args: '', env: '' })
   const [formError, setFormError] = useState<string>()
   const [adding, setAdding] = useState(false)
+  // ── 调用工具 / 读取资源（x.ai/mcp/call · x.ai/mcp/read_resource）──
+  const [callOpen, setCallOpen] = useState(false)
+  const [callForm, setCallForm] = useState({ server: '', tool: '', args: '' })
+  const [callResult, setCallResult] = useState<string>()
+  const [callError, setCallError] = useState<string>()
+  const [calling, setCalling] = useState(false)
+  const [readOpen, setReadOpen] = useState(false)
+  const [readForm, setReadForm] = useState({ server: '', uri: '' })
+  const [readResult, setReadResult] = useState<string>()
+  const [readError, setReadError] = useState<string>()
+  const [reading, setReading] = useState(false)
   const reqSeq = useRef(0)
 
   /** GET /api/mcp/list — keep the previous list on failure, show error line. */
@@ -239,6 +250,60 @@ export function McpPanel({
       setFormError(`添加失败: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       setAdding(false)
+    }
+  }
+
+  /** x.ai/mcp/call — 调用一个已配置服务器的工具（arguments 为可选 JSON）。 */
+  const submitCall = async () => {
+    const server = callForm.server.trim()
+    const tool = callForm.tool.trim()
+    if (!server || !tool) {
+      setCallError('server 和 tool 为必填项')
+      return
+    }
+    let args: unknown
+    const raw = callForm.args.trim()
+    if (raw) {
+      try {
+        args = JSON.parse(raw) as unknown
+      } catch {
+        setCallError('arguments 不是合法 JSON')
+        return
+      }
+    }
+    setCallError(undefined)
+    setCallResult(undefined)
+    setCalling(true)
+    try {
+      const result = await transport.mcpCall({ server, tool, ...(args !== undefined ? { args } : {}) })
+      setCallResult(formatResult(result))
+      useChatStore.setState({ statusText: `已调用 MCP 工具 ${server}__${tool}` })
+    } catch (e) {
+      setCallError(`调用失败: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setCalling(false)
+    }
+  }
+
+  /** x.ai/mcp/read_resource — 读取服务器暴露的资源（server + uri）。 */
+  const submitRead = async () => {
+    const server = readForm.server.trim()
+    const uri = readForm.uri.trim()
+    if (!server || !uri) {
+      setReadError('server 和 uri 为必填项')
+      return
+    }
+    setReadError(undefined)
+    setReadResult(undefined)
+    setReading(true)
+    try {
+      const result = await transport.mcpReadResource({ server, uri })
+      setReadResult(formatResult(result))
+      useChatStore.setState({ statusText: `已读取 MCP 资源 ${uri}` })
+    } catch (e) {
+      setReadError(`读取失败: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setReading(false)
     }
   }
 
@@ -621,6 +686,177 @@ export function McpPanel({
               </div>
             )}
           </div>
+
+          {/* ── 调用工具 / 读取资源（x.ai/mcp/call · x.ai/mcp/read_resource）── */}
+          <div className="border-t border-gn-prompt-border/50 px-4 py-2">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setCallOpen((v) => !v)
+                  setCallError(undefined)
+                  setCallResult(undefined)
+                }}
+                className="rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+              >
+                {callOpen ? '− 收起调用工具' : '＋ 调用工具'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setReadOpen((v) => !v)
+                  setReadError(undefined)
+                  setReadResult(undefined)
+                }}
+                className="rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+              >
+                {readOpen ? '− 收起读取资源' : '＋ 读取资源'}
+              </button>
+            </div>
+
+            {callOpen && (
+              <div className="mt-2 space-y-2">
+                <label className="block">
+                  <span className="text-[10px] uppercase tracking-wider text-gn-gutter">server *</span>
+                  <select
+                    value={callForm.server}
+                    onChange={(e) => {
+                      const server = e.target.value
+                      setCallForm((f) => ({ ...f, server, tool: '' }))
+                    }}
+                    className="mt-0.5 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 font-mono text-[12px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
+                  >
+                    <option value="">— 选择服务器 —</option>
+                    {rows.map((r) => (
+                      <option key={r.name} value={r.name}>
+                        {r.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="text-[10px] uppercase tracking-wider text-gn-gutter">tool *</span>
+                  <input
+                    type="text"
+                    list="mcp-call-tools"
+                    value={callForm.tool}
+                    onChange={(e) => setCallForm({ ...callForm, tool: e.target.value })}
+                    placeholder="工具名（可从已连接服务器的工具列表选择）"
+                    className="mt-0.5 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 font-mono text-[12px] text-gn-fg outline-none placeholder:text-gn-gray focus:border-gn-prompt-border-active"
+                  />
+                  <datalist id="mcp-call-tools">
+                    {list
+                      .find((s) => s.name === callForm.server)
+                      ?.tools?.map((t) => <option key={t.name} value={t.name} />)}
+                  </datalist>
+                </label>
+                <label className="block">
+                  <span className="text-[10px] uppercase tracking-wider text-gn-gutter">arguments（可选 JSON）</span>
+                  <textarea
+                    value={callForm.args}
+                    onChange={(e) => setCallForm({ ...callForm, args: e.target.value })}
+                    placeholder='{"path": "/tmp/x"}'
+                    rows={2}
+                    className="mt-0.5 w-full resize-y rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 font-mono text-[12px] text-gn-fg outline-none placeholder:text-gn-gray focus:border-gn-prompt-border-active"
+                  />
+                </label>
+                {callError ? (
+                  <div className="rounded border border-gn-diff-del-bg px-2 py-1.5 text-[11px] text-gn-red">
+                    {callError}
+                  </div>
+                ) : null}
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={calling}
+                    onClick={() => void submitCall()}
+                    className="rounded border border-gn-prompt-border-active bg-gn-bg-highlight px-3 py-1 text-[11px] text-gn-fg hover:bg-gn-bg-highlight disabled:opacity-50"
+                  >
+                    {calling ? '调用中…' : '调用'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={calling}
+                    onClick={() => {
+                      setCallOpen(false)
+                      setCallError(undefined)
+                      setCallResult(undefined)
+                    }}
+                    className="rounded border border-gn-prompt-border px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
+                  >
+                    取消
+                  </button>
+                </div>
+                {callResult ? (
+                  <pre className="gn-no-scrollbar max-h-44 overflow-auto whitespace-pre-wrap break-all rounded border border-gn-prompt-border bg-gn-bg-dark p-2 font-mono text-[10.5px] leading-snug text-gn-fg2">
+                    {callResult}
+                  </pre>
+                ) : null}
+              </div>
+            )}
+
+            {readOpen && (
+              <div className="mt-2 space-y-2">
+                <label className="block">
+                  <span className="text-[10px] uppercase tracking-wider text-gn-gutter">server *</span>
+                  <select
+                    value={readForm.server}
+                    onChange={(e) => setReadForm((f) => ({ ...f, server: e.target.value }))}
+                    className="mt-0.5 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 font-mono text-[12px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
+                  >
+                    <option value="">— 选择服务器 —</option>
+                    {rows.map((r) => (
+                      <option key={r.name} value={r.name}>
+                        {r.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="text-[10px] uppercase tracking-wider text-gn-gutter">uri *</span>
+                  <input
+                    type="text"
+                    value={readForm.uri}
+                    onChange={(e) => setReadForm({ ...readForm, uri: e.target.value })}
+                    placeholder="file:///… 或 mcp://… 等资源 URI"
+                    className="mt-0.5 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 font-mono text-[12px] text-gn-fg outline-none placeholder:text-gn-gray focus:border-gn-prompt-border-active"
+                  />
+                </label>
+                {readError ? (
+                  <div className="rounded border border-gn-diff-del-bg px-2 py-1.5 text-[11px] text-gn-red">
+                    {readError}
+                  </div>
+                ) : null}
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={reading}
+                    onClick={() => void submitRead()}
+                    className="rounded border border-gn-prompt-border-active bg-gn-bg-highlight px-3 py-1 text-[11px] text-gn-fg hover:bg-gn-bg-highlight disabled:opacity-50"
+                  >
+                    {reading ? '读取中…' : '读取'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={reading}
+                    onClick={() => {
+                      setReadOpen(false)
+                      setReadError(undefined)
+                      setReadResult(undefined)
+                    }}
+                    className="rounded border border-gn-prompt-border px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
+                  >
+                    取消
+                  </button>
+                </div>
+                {readResult ? (
+                  <pre className="gn-no-scrollbar max-h-44 overflow-auto whitespace-pre-wrap break-all rounded border border-gn-prompt-border bg-gn-bg-dark p-2 font-mono text-[10.5px] leading-snug text-gn-fg2">
+                    {readResult}
+                  </pre>
+                ) : null}
+              </div>
+            )}
+          </div>
         </div>
 
         <footer className="rounded-b border-t border-gn-prompt-border px-4 py-2 text-[11px] text-gn-gutter">
@@ -708,4 +944,23 @@ function parseEnvInput(raw: string): Record<string, string> | string {
     env[l.slice(0, eq).trim()] = l.slice(eq + 1).trim()
   }
   return env
+}
+
+/** MCP call/read result → display text（JSON 缩进；超长截断）。 */
+const MCP_RESULT_MAX_CHARS = 6000
+function formatResult(result: unknown): string {
+  if (result === undefined) return '（空结果）'
+  let text: string
+  try {
+    text =
+      typeof result === 'string'
+        ? result
+        : JSON.stringify(result, null, 2) ?? String(result)
+  } catch {
+    text = String(result)
+  }
+  if (text.length > MCP_RESULT_MAX_CHARS) {
+    text = `${text.slice(0, MCP_RESULT_MAX_CHARS)}\n…（截断，共 ${text.length} 字符）`
+  }
+  return text
 }

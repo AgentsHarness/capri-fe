@@ -22,7 +22,7 @@ import type {
   WorkspaceSummary,
 } from '../api/types'
 import { transport, type McpListServer } from '../api/localTransport'
-import { usePromptQueue } from './promptQueue'
+import { applyQueueChanged, usePromptQueue } from './promptQueue'
 import { toolHeader } from '../theme/glyphs'
 import { repoNameFromCwd } from '../components/historyGroups'
 import {
@@ -4119,14 +4119,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
         //   terminal pane).
         // - x.ai/config_changed — config reload notice (TUI settings
         //   modal; FE has no config editor).
-        // - x.ai/queue/changed, x.ai/settings/update — pre-existing
-        //   silences, same rationale.
+        // - x.ai/settings/update — pre-existing silence, same rationale.
         // x.ai/mcp/init_progress is NOT silent: the current host forwards
         // it as the typed `mcp_init_progress` event (consumed above); an
         // older host that falls back to ext_notification is consumed here
         // the same way — never rendered as a status line.
         if (ev.method === 'x.ai/mcp/init_progress') {
           applyMcpInitProgress(set, ev.params)
+          break
+        }
+        // x.ai/queue/changed — agent's authoritative queue snapshot.
+        // Older hosts forward it as ext_notification instead of the
+        // typed `queue_changed` event; both rails feed the promptQueue
+        // sync layer (guard on session id like the typed carrier — the
+        // ext_notification AcpEvent type omits sessionId, but the host
+        // attaches it via withSid).
+        if (ev.method === 'x.ai/queue/changed') {
+          const sid = (ev as { sessionId?: string }).sessionId
+          if (!sid || sid === get().sessionId) {
+            applyQueueChanged(ev.params)
+          }
           break
         }
         if (SILENT_EXT_NOTIFICATIONS.has(ev.method ?? '')) break
@@ -4250,6 +4262,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
             text,
             warning: sev === 'error' || sev === 'critical',
           })
+        }
+        break
+      }
+      case 'queue_changed': {
+        // x.ai/queue/changed (host bridge.go broadcasts the TYPED carrier)
+        // — the agent's authoritative prompt-queue snapshot. The FE's
+        // local queue mirrors the host (see store/promptQueue.ts sync
+        // layer: mutations are mirrored fire-and-forget, the snapshot is
+        // applied here). Guard on session id: withSid attaches the
+        // emitting session — a stale broadcast from another session must
+        // not clobber our queue.
+        if (!ev.sessionId || ev.sessionId === get().sessionId) {
+          applyQueueChanged(ev.params)
         }
         break
       }
@@ -6633,6 +6658,9 @@ const SILENT_EXT_NOTIFICATIONS = new Set([
   // consumed into mcpInit state (McpPanel init progress), both as the
   // typed `mcp_init_progress` event and via the ext_notification
   // fallback in handleEvent.
+  // NOTE: x.ai/queue/changed is intentionally NOT here — it feeds the
+  // promptQueue sync layer (applyQueueChanged), both as the typed
+  // `queue_changed` event and via the ext_notification fallback.
 ])
 
 /** TUI MAX_FOLLOW_UPS — max chips kept from one (server-controlled) delivery. */

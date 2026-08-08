@@ -886,3 +886,64 @@ export type ScrollEntry =
       /** Verb-run aggregated header — drives running/error accents. */
       verbRun?: { running?: boolean; failed?: boolean; verb?: string }
     }
+
+/**
+ * Host-side live state of one session — POST /api/session-state
+ * (host's acp.SessionState, camelCase serialization). The host tracks
+ * Busy (in-flight turn) + AwaitingInput (permission / x.ai question
+ * pending) and derives the dashboard classification; `state` is not
+ * serialized by the host — the transport derives it from busy +
+ * awaitingInput (kept optional for hosts that do ship it).
+ */
+export type SessionState = {
+  sessionId: string
+  cwd?: string
+  title?: string
+  updatedAt?: string
+  busy: boolean
+  awaitingInput: boolean
+  lastActiveAt?: number
+  createdAt?: number
+  /** Dashboard classification: active / awaiting / idle. */
+  state?: 'active' | 'awaiting' | 'idle'
+}
+
+/** One branch row of x.ai/git/branches (rpc/git.rs GitBranch, camelCase). */
+export type GitBranch = {
+  name: string
+  /** Whether this branch is the current HEAD (wire `current`). */
+  current?: boolean
+  upstream?: string
+  commit?: string
+}
+
+/** x.ai/git/branches response (rpc/git.rs GitBranchesData, camelCase). */
+export type GitBranchesData = {
+  branches: GitBranch[]
+}
+
+/**
+ * One agent skill row from x.ai/skills/list (camelCase; the agent
+ * registry carries a live `enabled` state — the host-side
+ * GET /api/extensions scan does not). Parsed defensively.
+ */
+export type AgentSkill = {
+  name: string
+  enabled?: boolean
+  scope?: string
+  description?: string
+}
+
+/**
+ * x.ai/session/usage result — the agent's session token usage
+ * (camelCase wire; snake_case accepted). All fields optional — the
+ * exact payload varies by agent version; the UI degrades when absent.
+ */
+export type SessionUsageData = {
+  totalTokens?: number
+  inputTokens?: number
+  outputTokens?: number
+  /** Context window size when the agent reports it. */
+  contextSize?: number
+  [k: string]: unknown
+}

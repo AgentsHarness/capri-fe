@@ -1,14 +1,19 @@
 import type {
   AcpEvent,
+  AgentSkill,
   ContentBlock,
   ExtensionHook,
   ExtensionPlugin,
   ExtensionSkill,
+  GitBranch,
+  GitBranchesData,
   HostInfo,
   PermissionScope,
   RewindPoint,
   SessionInfo,
   SessionInfoDetail,
+  SessionState,
+  SessionUsageData,
   WorkspaceGroup,
   WorkspaceSummary,
 } from './types'
@@ -1313,6 +1318,678 @@ export class LocalTransport {
           : `pty input failed (${res.status})`,
       )
     }
+  }
+
+  // ── Git 扩展（x.ai/git/* — host /api/git/* 直通）────────────────────
+  // 与上方 gitStatus/gitDiffs/gitStage/… 同契约：{ok:true, result:<agent
+  // 原始 result>}，agent 结果经 unwrapExtResult 解包（ExtMethodResult
+  // envelope 或平铺 payload 均通过）。cwd 由 host 映射为 wire 的 gitRoot。
+
+  /** POST /api/git/branches {cwd?} → x.ai/git/branches. */
+  async gitBranches(opts: { cwd?: string } = {}): Promise<GitBranchesData> {
+    const raw = unwrapExtResult<unknown>(await this.xaiCall('/api/git/branches', opts))
+    const branches: GitBranch[] = (findArrayField(raw, 'branches') as Record<string, unknown>[])
+      .filter((b): b is Record<string, unknown> => !!b && typeof b === 'object')
+      .map((b) => ({
+        name: typeof b.name === 'string' ? b.name : '',
+        ...(typeof b.current === 'boolean' ? { current: b.current } : {}),
+        ...(typeof b.upstream === 'string' && b.upstream ? { upstream: b.upstream } : {}),
+        ...(typeof b.commit === 'string' && b.commit ? { commit: b.commit } : {}),
+      }))
+      .filter((b) => b.name)
+    return { branches }
+  }
+
+  /** POST /api/git/checkout {cwd?, branch, create?} → x.ai/git/checkout. */
+  async gitCheckout(opts: { cwd?: string; branch: string; create?: boolean }): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/git/checkout', opts))
+  }
+
+  /** POST /api/git/checkout-commit {cwd?, commit, stashIfDirty?} → x.ai/git/checkout_commit. */
+  async gitCheckoutCommit(opts: {
+    cwd?: string
+    commit: string
+    stashIfDirty?: boolean
+  }): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/git/checkout-commit', opts))
+  }
+
+  /** POST /api/git/checkout-session-head {cwd?, stashIfDirty?} →
+   *  x.ai/git/checkout_session_head（sessionId 由 host 填活动会话）。 */
+  async gitCheckoutSessionHead(opts: {
+    cwd?: string
+    stashIfDirty?: boolean
+  }): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/git/checkout-session-head', opts))
+  }
+
+  /** POST /api/git/stash {cwd?, includeUntracked?} → x.ai/git/stash. */
+  async gitStash(opts: { cwd?: string; includeUntracked?: boolean } = {}): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/git/stash', opts))
+  }
+
+  /** POST /api/git/current-commit {cwd?} → x.ai/git/current_commit. */
+  async gitCurrentCommit(opts: { cwd?: string } = {}): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/git/current-commit', opts))
+  }
+
+  /** POST /api/git/repo-root {cwd?} → x.ai/git/git_repo_root. */
+  async gitRepoRoot(opts: { cwd?: string } = {}): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/git/repo-root', opts))
+  }
+
+  /** POST /api/git/stage-content {cwd?, path, content} → x.ai/git/stage/content. */
+  async gitStageContent(opts: { cwd?: string; path: string; content: string }): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/git/stage-content', opts))
+  }
+
+  // ── Worktree（x.ai/git/worktree/*，wire 均 camelCase）────────────────
+
+  /** POST /api/git/worktree/create — 从主仓库路径创建 worktree。 */
+  async gitWorktreeCreate(opts: {
+    sourcePath: string
+    worktreePath?: string
+    copyMode?: string
+    gitRef?: string
+    copyIgnoredInBackground?: boolean
+    ignoredSkipPatterns?: string[]
+    worktreeType?: string
+    label?: string
+  }): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/git/worktree/create', opts))
+  }
+
+  /** POST /api/git/worktree/remove — worktreePath/idOrPath 至少其一。 */
+  async gitWorktreeRemove(opts: {
+    worktreePath?: string
+    idOrPath?: string
+    force?: boolean
+    dryRun?: boolean
+  }): Promise<unknown> {
+    const body: Record<string, unknown> = {
+      ...(opts.worktreePath ? { worktreePath: opts.worktreePath } : {}),
+      ...(opts.idOrPath ? { idOrPath: opts.idOrPath } : {}),
+      ...(opts.force !== undefined ? { force: opts.force } : {}),
+      ...(opts.dryRun !== undefined ? { dryRun: opts.dryRun } : {}),
+    }
+    return unwrapExtResult(await this.xaiCall('/api/git/worktree/remove', body))
+  }
+
+  /** POST /api/git/worktree/apply {worktreePath, mode?} — mode 缺省 "overwrite"。 */
+  async gitWorktreeApply(opts: { worktreePath: string; mode?: string }): Promise<unknown> {
+    const body: Record<string, unknown> = { worktreePath: opts.worktreePath }
+    if (opts.mode) body.mode = opts.mode
+    return unwrapExtResult(await this.xaiCall('/api/git/worktree/apply', body))
+  }
+
+  /** POST /api/git/worktree/create-from-worktree（无 sessionId 字段）。 */
+  async gitWorktreeCreateFromWorktree(opts: {
+    sourceWorktreePath: string
+    newSessionId: string
+    copyMode?: string
+    gitRef?: string
+    worktreeType?: string
+    label?: string
+  }): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/git/worktree/create-from-worktree', opts))
+  }
+
+  /** POST /api/git/worktree/create-from-worktree-sync（同步变体）。 */
+  async gitWorktreeCreateFromWorktreeSync(opts: {
+    sourceWorktreePath: string
+    newSessionId: string
+    copyMode?: string
+    gitRef?: string
+    worktreeType?: string
+    label?: string
+  }): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/git/worktree/create-from-worktree-sync', opts))
+  }
+
+  /** POST /api/git/worktree/resume-session — sessionId 由 host 填活动会话。 */
+  async gitWorktreeResumeSession(opts: {
+    sourceCwd: string
+    copyMode?: string
+    worktreeType?: string
+    restoreCode?: boolean
+    gitRef?: string
+  }): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/git/worktree/resume-session', opts))
+  }
+
+  /** POST /api/git/worktree/list {repo?, type?, includeAll?} — wire 键 type 为数组。 */
+  async gitWorktreeList(opts: {
+    repo?: string
+    type?: string[]
+    includeAll?: boolean
+  } = {}): Promise<unknown> {
+    const body: Record<string, unknown> = {}
+    if (opts.repo) body.repo = opts.repo
+    if (opts.type && opts.type.length > 0) body.type = opts.type
+    if (opts.includeAll === true) body.includeAll = true
+    return unwrapExtResult(await this.xaiCall('/api/git/worktree/list', body))
+  }
+
+  /** POST /api/git/worktree/show {idOrPath}. */
+  async gitWorktreeShow(opts: { idOrPath: string }): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/git/worktree/show', opts))
+  }
+
+  /** POST /api/git/worktree/gc — maxAge 为 "7d"/"24h"/"30m"/"60s" 时长串。 */
+  async gitWorktreeGc(opts: { dryRun?: boolean; maxAge?: string; force?: boolean } = {}): Promise<unknown> {
+    const body: Record<string, unknown> = {}
+    if (opts.dryRun !== undefined) body.dryRun = opts.dryRun
+    if (opts.maxAge) body.maxAge = opts.maxAge
+    if (opts.force !== undefined) body.force = opts.force
+    return unwrapExtResult(await this.xaiCall('/api/git/worktree/gc', body))
+  }
+
+  /** POST /api/git/worktree/db/stats（无参）。 */
+  async gitWorktreeDbStats(): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/git/worktree/db/stats', {}))
+  }
+
+  /** POST /api/git/worktree/db/rebuild（无参）。 */
+  async gitWorktreeDbRebuild(): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/git/worktree/db/rebuild', {}))
+  }
+
+  /** POST /api/git/worktree/db/path（无参）。 */
+  async gitWorktreeDbPath(): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/git/worktree/db/path', {}))
+  }
+
+  // ── Skills / Plugins / Hooks / Marketplace / Workflows（x.ai 直通）──
+
+  /** POST /api/skills/list {cwd?} → x.ai/skills/list — agent 侧 skill 注册表
+   *  （带实时 enabled 状态，与宿主侧 GET /api/extensions 的本地扫描互补）。 */
+  async skillsList(opts: { cwd?: string } = {}): Promise<AgentSkill[]> {
+    const raw = unwrapExtResult<unknown>(await this.xaiCall('/api/skills/list', opts))
+    const list = Array.isArray(raw) ? raw : findArrayField(raw, 'skills')
+    return (list as Record<string, unknown>[])
+      .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
+      .map((s) => ({
+        name: typeof s.name === 'string' ? s.name : '',
+        ...(typeof s.enabled === 'boolean' ? { enabled: s.enabled } : {}),
+        ...(typeof s.scope === 'string' && s.scope ? { scope: s.scope } : {}),
+        ...(typeof s.description === 'string' && s.description
+          ? { description: s.description }
+          : {}),
+      }))
+      .filter((s) => s.name)
+  }
+
+  /** POST /api/skills/toggle {name, enabled, cwd?} → x.ai/skills/toggle. */
+  async skillsToggle(opts: { name: string; enabled: boolean; cwd?: string }): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/skills/toggle', opts))
+  }
+
+  /** POST /api/skills/add — params 原样透传（grok 侧 SkillsAddRequest，任意 map）。 */
+  async skillsAdd(params: Record<string, unknown> = {}): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/skills/add', params))
+  }
+
+  /** POST /api/skills/remove {name, cwd?} — host 把 name 映射为 wire path。 */
+  async skillsRemove(opts: { name: string; cwd?: string }): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/skills/remove', opts))
+  }
+
+  /** POST /api/skills/refresh-baseline（无参）。 */
+  async skillsRefreshBaseline(): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/skills/refresh-baseline', {}))
+  }
+
+  /** POST /api/skills/reset {cwd?}（cwd 缺省 "."）。 */
+  async skillsReset(opts: { cwd?: string } = {}): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/skills/reset', opts))
+  }
+
+  /** POST /api/skills/config {cwd?}（cwd 缺省 "."）。 */
+  async skillsConfig(opts: { cwd?: string } = {}): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/skills/config', opts))
+  }
+
+  /** POST /api/plugins/list {sessionId?} → x.ai/plugins/list. */
+  async pluginsList(opts: { sessionId?: string } = {}): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/plugins/list', opts))
+  }
+
+  /** POST /api/plugins/action {sessionId?, action} — action 为 tagged 对象
+   *  （如 {type:"reload"|"install"}），原样透传。 */
+  async pluginsAction(opts: { sessionId?: string; action: unknown }): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/plugins/action', opts))
+  }
+
+  /** POST /api/plugins/reload（无参）。 */
+  async pluginsReload(): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/plugins/reload', {}))
+  }
+
+  /** POST /api/plugins/notify-updates {sessionId?, updates} — updates 为
+   *  (name, old_ver, new_ver) 三元组数组，原样透传。 */
+  async pluginsNotifyUpdates(opts: { sessionId?: string; updates: unknown[] }): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/plugins/notify-updates', opts))
+  }
+
+  /** POST /api/hooks/list {sessionId?} → x.ai/hooks/list. */
+  async hooksList(opts: { sessionId?: string } = {}): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/hooks/list', opts))
+  }
+
+  /** POST /api/hooks/action {sessionId?, action} — action 原样透传。 */
+  async hooksAction(opts: { sessionId?: string; action: unknown }): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/hooks/action', opts))
+  }
+
+  /** POST /api/marketplace/list（无参）。 */
+  async marketplaceList(): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/marketplace/list', {}))
+  }
+
+  /** POST /api/marketplace/action {action} — action 为 tagged 对象
+   *  （如 {type:"refresh"}），原样透传。 */
+  async marketplaceAction(opts: { action: unknown }): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/marketplace/action', opts))
+  }
+
+  /** POST /api/workflows/list {sessionId?} → x.ai/workflows/list. */
+  async workflowsList(opts: { sessionId?: string } = {}): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/workflows/list', opts))
+  }
+
+  // ── MCP 扩展（混合 wire 约定：call/read-resource/setup camelCase，
+  //    auth-status snake session_id — host 已处理映射，FE 全用 camelCase）──
+
+  /**
+   * POST /api/mcp/call {sessionId?, server, serverUrl?, tool, arguments?} →
+   * x.ai/mcp/call（camelCase wire）。`args` 映射为 wire 的 `arguments`
+   * （arguments 是严格模式保留绑定，不能作参数名）。
+   */
+  async mcpCall(opts: {
+    sessionId?: string
+    server: string
+    serverUrl?: string
+    tool: string
+    args?: unknown
+  }): Promise<unknown> {
+    const body: Record<string, unknown> = { server: opts.server, tool: opts.tool }
+    if (opts.sessionId) body.sessionId = opts.sessionId
+    if (opts.serverUrl) body.serverUrl = opts.serverUrl
+    if (opts.args !== undefined) body.arguments = opts.args
+    return unwrapExtResult(await this.xaiCall('/api/mcp/call', body))
+  }
+
+  /** POST /api/mcp/read-resource {server, uri} → x.ai/mcp/read_resource. */
+  async mcpReadResource(opts: { server: string; uri: string }): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/mcp/read-resource', opts))
+  }
+
+  /** POST /api/mcp/setup {serverName, values} → x.ai/mcp/setup
+   *  （camelCase wire：sessionId / serverName / values）。 */
+  async mcpSetup(opts: { serverName: string; values: Record<string, string> }): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/mcp/setup', opts))
+  }
+
+  /** POST /api/mcp/auth-status {sessionId?} → x.ai/mcp/auth_status
+   *  （wire snake session_id，host 处理映射）。 */
+  async mcpAuthStatus(opts: { sessionId?: string } = {}): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/mcp/auth-status', opts))
+  }
+
+  // ── 会话 / 历史 / 子代理 ────────────────────────────────────────────
+
+  /**
+   * POST /api/session-state {sessionId} — 宿主侧端点（非 x.ai 直通）：
+   * 应答 {ok:true, session: SessionState}。host 不序列化 `state` 字段 —
+   * 由 busy/awaitingInput 推导（active = 回合进行中，awaiting = + 待用户
+   * 输入，否则 idle）。
+   */
+  async sessionState(sessionId: string): Promise<SessionState> {
+    const res = await fetch(this.url('/api/session-state'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `session state failed (${res.status})`)
+    }
+    const s = (data.session ?? {}) as Record<string, unknown>
+    const busy = s.busy === true
+    const awaitingInput = s.awaitingInput === true
+    return {
+      sessionId: typeof s.sessionId === 'string' && s.sessionId ? s.sessionId : sessionId,
+      busy,
+      awaitingInput,
+      ...(typeof s.cwd === 'string' && s.cwd ? { cwd: s.cwd } : {}),
+      ...(typeof s.title === 'string' && s.title ? { title: s.title } : {}),
+      ...(typeof s.updatedAt === 'string' && s.updatedAt ? { updatedAt: s.updatedAt } : {}),
+      ...(typeof s.lastActiveAt === 'number' && Number.isFinite(s.lastActiveAt)
+        ? { lastActiveAt: s.lastActiveAt }
+        : {}),
+      ...(typeof s.createdAt === 'number' && Number.isFinite(s.createdAt)
+        ? { createdAt: s.createdAt }
+        : {}),
+      ...(typeof s.state === 'string' && s.state
+        ? { state: s.state as SessionState['state'] }
+        : busy
+          ? awaitingInput
+            ? { state: 'awaiting' as const }
+            : { state: 'active' as const }
+          : { state: 'idle' as const }),
+    }
+  }
+
+  /** POST /api/session-resume {sessionId, cwd, meta?} → session/resume
+   *  （官方 ACP 方法；meta 作为请求 `_meta` 透传）。 */
+  async sessionResume(opts: {
+    sessionId: string
+    cwd: string
+    meta?: Record<string, unknown>
+  }): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/session-resume', opts))
+  }
+
+  /** POST /api/session-close {sessionId?} → session/close（缺省活动会话）。 */
+  async sessionClose(opts: { sessionId?: string } = {}): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/session-close', opts))
+  }
+
+  /** POST /api/session-import {cwd, state?, updates?} → x.ai/session/import. */
+  async sessionImport(opts: {
+    cwd: string
+    state?: Record<string, unknown>
+    updates?: unknown[]
+  }): Promise<unknown> {
+    const body: Record<string, unknown> = { cwd: opts.cwd }
+    if (opts.state) body.state = opts.state
+    if (opts.updates && opts.updates.length > 0) body.updates = opts.updates
+    return unwrapExtResult(await this.xaiCall('/api/session-import', body))
+  }
+
+  /** POST /api/session-repair {dryRun?} → x.ai/session/repair（dryRun 缺省 false）。 */
+  async sessionRepair(opts: { dryRun?: boolean } = {}): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/session-repair', opts))
+  }
+
+  /** POST /api/session-rehydrate {sourceCwd, repoRoot, worktreePath?} →
+   *  x.ai/session/rehydrate. */
+  async sessionRehydrate(opts: {
+    sourceCwd: string
+    repoRoot: string
+    worktreePath?: string
+  }): Promise<unknown> {
+    const body: Record<string, unknown> = { sourceCwd: opts.sourceCwd, repoRoot: opts.repoRoot }
+    if (opts.worktreePath) body.worktreePath = opts.worktreePath
+    return unwrapExtResult(await this.xaiCall('/api/session-rehydrate', body))
+  }
+
+  /** POST /api/session-load-history {beforeId?} → x.ai/session/load_history
+   *  （gateway 型会话，不传 sessionId；beforeId 为客户端持有的游标）。 */
+  async sessionLoadHistory(opts: { beforeId?: string } = {}): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/session-load-history', opts))
+  }
+
+  /** POST /api/session-update-mcp-servers {mcpServers} →
+   *  x.ai/session/update_mcp_servers（mcpServers 为 ACP McpServer 对象数组）。 */
+  async sessionUpdateMcpServers(opts: { mcpServers: unknown[] }): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/session-update-mcp-servers', opts))
+  }
+
+  /** POST /api/session-add-local-workspace {meta?} →
+   *  x.ai/session/add_local_workspace. */
+  async sessionAddLocalWorkspace(opts: { meta?: Record<string, unknown> } = {}): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/session-add-local-workspace', opts))
+  }
+
+  /** POST /api/session-resolve-worktree-resume {cwd} →
+   *  x.ai/session/resolve_local_for_worktree_resume. */
+  async sessionResolveWorktreeResume(opts: { cwd: string }): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/session-resolve-worktree-resume', opts))
+  }
+
+  /** POST /api/session/info {sessionId?} → x.ai/session/info — agent 直通版
+   *  （与宿主侧 sessionInfo() /api/session-info 区分）。 */
+  async sessionInfoExt(opts: { sessionId?: string } = {}): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/session/info', opts))
+  }
+
+  /** POST /api/session/usage {sessionId?} → x.ai/session/usage. */
+  async sessionUsage(opts: { sessionId?: string } = {}): Promise<SessionUsageData> {
+    const raw = unwrapExtResult<unknown>(await this.xaiCall('/api/session/usage', opts))
+    return raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? (raw as SessionUsageData)
+      : {}
+  }
+
+  /** POST /api/session/search {query, cwd?, limit?, offset?, includeContent?}
+   *  → x.ai/session/search（camelCase）。 */
+  async sessionSearch(opts: {
+    query: string
+    cwd?: string
+    limit?: number
+    offset?: number
+    includeContent?: boolean
+  }): Promise<unknown> {
+    const body: Record<string, unknown> = { query: opts.query }
+    if (opts.cwd) body.cwd = opts.cwd
+    if (opts.limit !== undefined) body.limit = opts.limit
+    if (opts.offset !== undefined) body.offset = opts.offset
+    if (opts.includeContent !== undefined) body.includeContent = opts.includeContent
+    return unwrapExtResult(await this.xaiCall('/api/session/search', body))
+  }
+
+  /** POST /api/session/share {sessionId?} → x.ai/share_session
+   *  （wire snake session_id，host 处理映射）。 */
+  async sessionShare(opts: { sessionId?: string } = {}): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/session/share', opts))
+  }
+
+  /** POST /api/sessions/list → x.ai/sessions/list（agent 直通版，无参）。 */
+  async sessionsListExt(): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/sessions/list', {}))
+  }
+
+  /** POST /api/session-summaries/session-list {workspaceDirectory} →
+   *  x.ai/session_summaries/session_list（wire snake workspace_directory，
+   *  host 处理映射）。 */
+  async sessionSummariesSessionList(opts: { workspaceDirectory: string }): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/session-summaries/session-list', opts))
+  }
+
+  /** POST /api/session-summaries/workspace-list-recent {limit} →
+   *  x.ai/session_summaries/workspace_list_recent（limit 必填）。 */
+  async sessionSummariesWorkspaceListRecent(opts: { limit: number }): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/session-summaries/workspace-list-recent', opts))
+  }
+
+  /** POST /api/subagent/list-running {sessionId?} → x.ai/subagent/list_running. */
+  async subagentListRunning(opts: { sessionId?: string } = {}): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/subagent/list-running', opts))
+  }
+
+  /** POST /api/subagent/get {subagentId, block?, timeoutMs?} →
+   *  x.ai/subagent/get（无 sessionId 字段；block 阻塞等待完成）。 */
+  async subagentGet(opts: {
+    subagentId: string
+    block?: boolean
+    timeoutMs?: number
+  }): Promise<unknown> {
+    const body: Record<string, unknown> = { subagentId: opts.subagentId }
+    if (opts.block !== undefined) body.block = opts.block
+    if (opts.timeoutMs !== undefined) body.timeoutMs = opts.timeoutMs
+    return unwrapExtResult(await this.xaiCall('/api/subagent/get', body))
+  }
+
+  // ── 提示词队列（fire-and-forget 通知型：host 即写即回 {ok:true}，
+  //    成功无 result；权威状态经 x.ai/queue/changed 广播回传）──────────
+
+  /** POST /api/queue/remove {id, expectedVersion?} → x.ai/queue/remove. */
+  async queueRemove(opts: { id: string; expectedVersion?: number }): Promise<void> {
+    const body: Record<string, unknown> = { id: opts.id }
+    if (opts.expectedVersion !== undefined && opts.expectedVersion !== 0) {
+      body.expectedVersion = opts.expectedVersion
+    }
+    await this.xaiCall('/api/queue/remove', body)
+  }
+
+  /** POST /api/queue/clear → x.ai/queue/clear（无参）。 */
+  async queueClear(): Promise<void> {
+    await this.xaiCall('/api/queue/clear', {})
+  }
+
+  /** POST /api/queue/reorder {ids} → x.ai/queue/reorder（wire 键 orderedIds）。 */
+  async queueReorder(opts: { ids: string[] }): Promise<void> {
+    const body: Record<string, unknown> = {}
+    if (opts.ids.length > 0) body.orderedIds = opts.ids
+    await this.xaiCall('/api/queue/reorder', body)
+  }
+
+  /** POST /api/queue/edit {id, newText} → x.ai/queue/edit. */
+  async queueEdit(opts: { id: string; newText: string }): Promise<void> {
+    await this.xaiCall('/api/queue/edit', opts)
+  }
+
+  /** POST /api/queue/interject {id, newText?, expectedVersion?} →
+   *  x.ai/queue/interject — 插入新提示 / 就地插话。 */
+  async queueInterject(opts: {
+    id: string
+    newText?: string
+    expectedVersion?: number
+  }): Promise<void> {
+    const body: Record<string, unknown> = { id: opts.id }
+    if (opts.newText) body.newText = opts.newText
+    if (opts.expectedVersion !== undefined && opts.expectedVersion !== 0) {
+      body.expectedVersion = opts.expectedVersion
+    }
+    await this.xaiCall('/api/queue/interject', body)
+  }
+
+  /** POST /api/queue/hold-edit {id} → x.ai/queue/hold_edit（编辑锁）。 */
+  async queueHoldEdit(opts: { id: string }): Promise<void> {
+    await this.xaiCall('/api/queue/hold-edit', opts)
+  }
+
+  /** POST /api/queue/release-edit {id} → x.ai/queue/release_edit（释放编辑锁）。 */
+  async queueReleaseEdit(opts: { id: string }): Promise<void> {
+    await this.xaiCall('/api/queue/release-edit', opts)
+  }
+
+  // ── 终端扩展 ────────────────────────────────────────────────────────
+
+  /** POST /api/terminal/wait-for-exit {terminalId} → x.ai/terminal/wait_for_exit
+   *  — 阻塞等待进程退出，返回退出码/信号（如有）。 */
+  async terminalWaitForExit(
+    terminalId: string,
+  ): Promise<{ exitCode?: number | null; signal?: string }> {
+    const raw = unwrapExtResult<unknown>(
+      await this.xaiCall('/api/terminal/wait-for-exit', { terminalId }),
+    )
+    const o =
+      raw && typeof raw === 'object' && !Array.isArray(raw)
+        ? (raw as Record<string, unknown>)
+        : {}
+    const code = o.exitCode ?? o.exit_code
+    return {
+      ...(code != null ? { exitCode: code as number | null } : {}),
+      ...(typeof o.signal === 'string' && o.signal ? { signal: o.signal } : {}),
+    }
+  }
+
+  /** POST /api/terminal/pty/load {terminalId, meta?} → x.ai/terminal/pty/load
+   *  （meta → wire `_meta` 透传）。 */
+  async terminalPtyLoad(opts: {
+    terminalId: string
+    meta?: Record<string, unknown>
+  }): Promise<unknown> {
+    const body: Record<string, unknown> = { terminalId: opts.terminalId }
+    if (opts.meta && Object.keys(opts.meta).length > 0) body._meta = opts.meta
+    return unwrapExtResult(await this.xaiCall('/api/terminal/pty/load', body))
+  }
+
+  // ── 指令 / 其它 ─────────────────────────────────────────────────────
+
+  /** POST /api/commands-list {sessionId?} → x.ai/commands/list. */
+  async commandsList(opts: { sessionId?: string } = {}): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/commands-list', opts))
+  }
+
+  /** POST /api/workspaces/list {pageSize?, pageToken?, query?, kind?} →
+   *  x.ai/workspaces/list — 可选字段仅显式给出时发送（缺省 = 与既有
+   *  workspaceList() 的 /api/session-summaries/workspace-list 无关的无参请求）。 */
+  async workspacesList(opts: {
+    pageSize?: number
+    pageToken?: string
+    query?: string
+    kind?: string
+  } = {}): Promise<unknown> {
+    const body: Record<string, unknown> = {}
+    if (opts.pageSize !== undefined) body.pageSize = opts.pageSize
+    if (opts.pageToken !== undefined && opts.pageToken !== '') body.pageToken = opts.pageToken
+    if (opts.query !== undefined && opts.query !== '') body.query = opts.query
+    if (opts.kind !== undefined && opts.kind !== '') body.kind = opts.kind
+    return unwrapExtResult(await this.xaiCall('/api/workspaces/list', body))
+  }
+
+  /** POST /api/prompt-history {cwd?, sessionId?} → x.ai/prompt_history
+   *  （wire snake session_id，host 处理映射）。 */
+  async promptHistory(opts: { cwd?: string; sessionId?: string } = {}): Promise<unknown> {
+    const body: Record<string, unknown> = {}
+    if (opts.cwd) body.cwd = opts.cwd
+    if (opts.sessionId) body.sessionId = opts.sessionId
+    return unwrapExtResult(await this.xaiCall('/api/prompt-history', body))
+  }
+
+  /** POST /api/btw {question} → x.ai/btw — "by the way" 插话问题。 */
+  async btw(opts: { question: string }): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/btw', opts))
+  }
+
+  /** POST /api/interject {text} → x.ai/interject — 回合中插话。 */
+  async interject(opts: { text: string }): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/interject', opts))
+  }
+
+  /** POST /api/suggest {text, cwd?, cursor?, limit?, generation?, includeAi?,
+   *  aiModel?, tokenOnly?} → x.ai/suggest — 补全候选（camelCase；可选字段
+   *  仅显式给出时发送）。 */
+  async suggest(opts: {
+    text: string
+    cwd?: string
+    cursor?: number
+    limit?: number
+    generation?: number
+    includeAi?: boolean
+    aiModel?: string
+    tokenOnly?: boolean
+  }): Promise<unknown> {
+    const body: Record<string, unknown> = { text: opts.text }
+    if (opts.cwd) body.cwd = opts.cwd
+    if (opts.cursor !== undefined) body.cursor = opts.cursor
+    if (opts.limit !== undefined) body.limit = opts.limit
+    if (opts.generation !== undefined) body.generation = opts.generation
+    if (opts.includeAi !== undefined) body.includeAi = opts.includeAi
+    if (opts.aiModel) body.aiModel = opts.aiModel
+    if (opts.tokenOnly !== undefined) body.tokenOnly = opts.tokenOnly
+    return unwrapExtResult(await this.xaiCall('/api/suggest', body))
+  }
+
+  /** POST /api/suggest-prompt {generation?} → x.ai/suggestPrompt. */
+  async suggestPrompt(opts: { generation?: number } = {}): Promise<unknown> {
+    const body: Record<string, unknown> = {}
+    if (opts.generation !== undefined) body.generation = opts.generation
+    return unwrapExtResult(await this.xaiCall('/api/suggest-prompt', body))
+  }
+
+  /** POST /api/xai-call {method, params?} — 通用直通（method 形如
+   *  "x.ai/foo"；params 缺省空 map）。 */
+  async xaiCallGeneric(opts: {
+    method: string
+    params?: Record<string, unknown>
+  }): Promise<unknown> {
+    const body: Record<string, unknown> = { method: opts.method }
+    if (opts.params) body.params = opts.params
+    return unwrapExtResult(await this.xaiCall('/api/xai-call', body))
   }
 }
 
