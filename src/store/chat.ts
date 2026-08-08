@@ -2913,10 +2913,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // TUI TurnCompleted marker ("Worked for 2.0s") — the last scrollback
         // line above the composer, mirroring turn_completion.rs. Idempotent:
         // prompt_complete may race ahead and finalize the turn first.
+        // NOT for failed/cancelled turns: error/rate_limit get the
+        // TurnFailed marker from the x.ai turn_completed rail, cancelled
+        // gets its own TurnCancelled marker from the host's cancelled
+        // event (TUI prompt_origin.rs stop_reason mapping) — neither
+        // renders a "Worked for" line.
         const turnStart = get().turnStartedAt
-        const marker = turnIsLive(get())
-          ? turnMarker(turnStart != null ? Date.now() - turnStart : undefined)
-          : null
+        const failedTurn =
+          ev.stopReason === 'error' ||
+          ev.stopReason === 'rate_limit' ||
+          ev.stopReason === 'cancelled'
+        const marker =
+          turnIsLive(get()) && !failedTurn
+            ? turnMarker(turnStart != null ? Date.now() - turnStart : undefined)
+            : null
         set((s) => ({
           conn: 'ready',
           // Blue "待处理" until the next user message.
@@ -3715,12 +3725,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
           case 'turn_completed': {
             const f = fields as Record<string, unknown>
             const reason = typeof f.stop_reason === 'string' ? f.stop_reason : ''
-            // done is the happy path; surface failures the frontend would
-            // otherwise miss (TUI TurnFailed marker).
+            // TUI prompt_origin.rs stop_reason mapping → TurnFailed
+            // marker: "Turn failed in 4.4s: <error>" (warning color).
+            // The shell formats the request failure; here the
+            // agent_result is the best error text and "rate limited"
+            // stands in for a rate_limit without a payload. The `done`
+            // event skips its "Worked for" marker for these reasons.
             if (reason === 'error' || reason === 'rate_limit') {
+              const err =
+                reason === 'error'
+                  ? String(f.agent_result ?? 'unknown error')
+                  : 'rate limited'
+              const ts = get().turnStartedAt
+              const dur =
+                ts != null ? formatTurnDuration(Date.now() - ts) : null
               appendEntry(set, {
                 kind: 'session_event',
-                text: `回合失败: ${String(f.agent_result ?? reason)}`,
+                text:
+                  dur != null
+                    ? `Turn failed in ${dur}: ${err}`
+                    : `Turn failed: ${err}`,
                 warning: true,
               })
             }
