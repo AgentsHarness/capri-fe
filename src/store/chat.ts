@@ -2195,10 +2195,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
           // Anchor the turn timer so the composer shows "Worked for Xs"
           // instead of a dead spinner. Busy SSE was likely dropped while
           // historyLoading; turnStartedAt keeps the elapsed clock live.
+          // Same local-streaming guard as hello: if THIS frontend is
+          // already streaming a turn (reconnect mid-turn), keep its live
+          // status text instead of the generic host wait.
+          const hasLocalStreaming =
+            get().openThoughtId != null || get().openAssistantId != null
           set({
             historyLoading: false,
             conn: 'busy',
-            statusText: 'Waiting for host…',
+            statusText: hasLocalStreaming ? get().statusText : 'Waiting for host…',
             awaitingNext: false,
             sessionId,
             turnStartedAt: Date.now(),
@@ -2384,9 +2389,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
           // Preserve an existing turn timer across mid-turn re-busy/reconnect;
           // otherwise anchor it now (same rule as the `busy` event handler).
           const busyTurn = get().turnStartedAt ?? Date.now()
+          // The busy flag alone is not "waiting for host": a reconnect
+          // mid-turn keeps this frontend's own streaming state, and its
+          // live status text (Thinking… / Responding…) must stand. Only a
+          // busy flag WITHOUT a local streaming turn (fresh page, or a
+          // turn started by another client) is a genuine wait for the
+          // host to sync the in-flight turn.
+          const hasLocalStreaming =
+            get().openThoughtId != null || get().openAssistantId != null
           set({
             conn: 'busy',
-            statusText: 'Waiting for host…',
+            statusText: hasLocalStreaming ? get().statusText : 'Waiting for host…',
             awaitingNext: false,
             turnStartedAt: busyTurn,
             error: undefined,
