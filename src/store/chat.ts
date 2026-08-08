@@ -3156,6 +3156,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
             break
           case 'auto_compact_started': {
             const pct = fields.percentage as number | undefined
+            // TUI turn_status.rs: AutoCompacting → "Compacting…".
+            set({ statusText: 'Compacting…' })
             appendEntry(set, {
               kind: 'session_event',
               text: `自动压缩上下文… (${pct ?? '?'}%)`,
@@ -3182,6 +3184,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
               }
             }
             appendEntry(set, { kind: 'session_event', text })
+            // Compact finished → back to the wait-for-token window (the
+            // turn resumes streaming after compaction).
+            set({ statusText: 'Waiting for response…' })
             break
           }
           case 'auto_compact_failed': {
@@ -3190,10 +3195,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
               text: `自动压缩失败: ${String(fields.error ?? '未知错误')}`,
               warning: true,
             })
+            set({ statusText: 'Waiting for response…' })
             break
           }
           case 'auto_compact_cancelled':
             appendEntry(set, { kind: 'session_event', text: '自动压缩已取消' })
+            set({ statusText: 'Waiting for response…' })
             break
           case 'auto_continue_completed': {
             const tokens = fields.total_tokens as number | undefined
@@ -3325,10 +3332,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 warning: true,
               })
             } else {
+              // TUI turn_status.rs: Retrying → "Retrying (attempt N)…"
+              // (warning). The compressed turn resumes after compact —
+              // back to the wait-for-token window.
               appendEntry(set, {
                 kind: 'session_event',
                 text: attempt != null ? `重试中… (attempt ${String(attempt)})` : '重试中…',
                 warning: true,
+              })
+              set({
+                statusText:
+                  attempt != null
+                    ? `Retrying (attempt ${String(attempt)})…`
+                    : 'Retrying…',
               })
             }
             break
@@ -3588,6 +3604,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
             // goalReceivedAt anchors the elapsed fallback chain (wire
             // elapsed_ms / started_at absent → receive time).
             set({ goalState: f, goalReceivedAt: Date.now() })
+            // TUI turn_status.rs: goal completion verification window →
+            // "Verifying…" (text_secondary); the status line returns to
+            // the wait-for-token text once verification clears.
+            const verifying = f.verifying_completion === true
+            if (verifying) {
+              set({ statusText: 'Verifying…' })
+            } else if (get().statusText === 'Verifying…') {
+              set({ statusText: 'Waiting for response…' })
+            }
             if (status === 'complete') {
               appendEntry(set, {
                 kind: 'session_event',

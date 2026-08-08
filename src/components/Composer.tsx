@@ -115,7 +115,26 @@ function currentActivity(
     if (e.kind === 'tool' && (e.status === 'pending' || e.status === 'in_progress')) {
       const verb = toolHeader(e.kindName, false).verb
       const target = (e.title || e.kindName || '').trim()
-      return { label: `${verb} ${target}`.trim(), color: Accents.success }
+      // TUI turn_status.rs tool style: ask tools ("Ask: …") and tools
+      // with a human description render muted (text_secondary); plain
+      // invocations keep the green accent.
+      const title = (e.title || '').trim()
+      const isAsk = title.startsWith('Ask: ') || title.startsWith('Ask ')
+      const raw = e.raw
+      const rawInput =
+        raw && typeof raw === 'object'
+          ? ((raw as { rawInput?: unknown }).rawInput ??
+            (raw as { raw_input?: unknown }).raw_input)
+          : undefined
+      const desc =
+        rawInput && typeof rawInput === 'object'
+          ? (rawInput as Record<string, unknown>).description
+          : undefined
+      const hasDesc = typeof desc === 'string' && desc.trim() !== ''
+      return {
+        label: `${verb} ${target}`.trim(),
+        color: isAsk || hasDesc ? Accents.gray : Accents.success,
+      }
     }
     // Streaming reply: the assistant row's `ts` is its response start
     // (first chunk), so the phase timer is the reply's own duration —
