@@ -2950,7 +2950,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   ...e,
                   streaming: false,
                   finishedAt: Date.now(),
-                  displayMode: 'truncated' as const,
+                  displayMode: 'collapsed' as const,
                 }
               }
               if (
@@ -5353,7 +5353,7 @@ function settleTurnEntries(entries: ScrollEntry[]): ScrollEntry[] {
         ...e,
         streaming: false,
         elapsed,
-        displayMode: 'truncated',
+        displayMode: 'collapsed',
         finishedAt: Date.now(),
       }
     }
@@ -6175,7 +6175,7 @@ function sealThought(
         ...e,
         streaming: false,
         elapsed,
-        displayMode: 'truncated',
+        displayMode: 'collapsed',
         finishedAt: Date.now(),
       }
     }),
