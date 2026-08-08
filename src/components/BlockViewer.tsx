@@ -10,7 +10,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { formatTurnDuration, planTodos, useChatStore, type ViewerTask } from '../store/chat'
-import type { ScrollEntry } from '../api/types'
+import type { ScrollEntry, SubagentViewItem } from '../api/types'
 import { subagentMeta } from '../format'
 import { ToolDetail } from './ToolDetail'
 import { Markdown } from './Markdown'
@@ -380,6 +380,10 @@ function SubagentView({
 }) {
   const now = useLiveTick(!!entry.running)
   const meta = subagentMeta(entry.persona, entry.role, entry.model)
+  const subagentViews = useChatStore((s) => s.subagentViews)
+  // 迷你 scrollback 按 child_session_id 取数（宿主转发的子代理会话事件流）。
+  const childSid = entry.childSessionId
+  const view = childSid ? subagentViews[childSid] : undefined
 
   const elapsedMs = entry.running
     ? entry.startedAt != null
@@ -423,6 +427,16 @@ function SubagentView({
     <div className="space-y-2">
       <div className="font-mono text-[12px] text-gn-fg">{entry.title}</div>
       {meta && <div className="font-mono text-[12px] text-gn-muted">{meta}</div>}
+
+      {/* 活动时间线：子代理自己的迷你 scrollback（标题/meta 之后、统计之前） */}
+      {childSid && (
+        <SubagentTimeline
+          childSid={childSid}
+          items={view?.items ?? []}
+          running={!!entry.running}
+          prompt={entry.title && entry.title !== entry.subagentId ? entry.title : ''}
+        />
+      )}
 
       {entry.running && (
         <div className="space-y-1.5">
@@ -498,6 +512,169 @@ function SubagentView({
       )}
     </div>
   )
+}
+
+/**
+ * 子代理的活动时间线（迷你 scrollback，TUI subagent_views 同款）。
+ * 数据来自宿主转发的子代理会话事件流（live 捕获，store 侧
+ * applySubagentViewEvent）或按需历史回放（fetchSubagentView）。
+ * 打开时若视图为空（例如历史回放场景没有 live 捕获）会触发一次
+ * 子代理会话 updates 拉取——动作内部有 loading/loaded 去重。
+ */
+function SubagentTimeline({
+  childSid,
+  items,
+  running,
+  prompt,
+}: {
+  childSid: string
+  items: SubagentViewItem[]
+  running: boolean
+  prompt: string
+}) {
+  const fetchSubagentView = useChatStore((s) => s.fetchSubagentView)
+  const scrollRef = useRef<HTMLDivElement>(null)
+
+  // 打开时若时间线为空，按 child_session_id 拉取该子代理会话的更新
+  // 回放（TUI replay_inherited_updates 同款）。
+  useEffect(() => {
+    if (items.length === 0) void fetchSubagentView(childSid)
+  }, [childSid, items, fetchSubagentView])
+
+  // running 时自动滚到底（与 bg_task 的 stick-to-bottom 同款）。
+  useEffect(() => {
+    if (!running) return
+    const el = scrollRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [running, items])
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-gn-gutter">
+        <span>activity</span>
+        {running && (
+          <span className="normal-case tracking-normal text-gn-accent-running">live</span>
+        )}
+      </div>
+      <div
+        ref={scrollRef}
+        className="gn-scroll max-h-[35vh] overflow-y-auto rounded border border-gn-prompt-border/50 bg-gn-bg-dark px-2.5 py-2 font-mono text-[12px] leading-[1.5]"
+      >
+        {items.length === 0 ? (
+          <div className="space-y-1.5">
+            {/* 仅当时间线没有任何条目时，把 spawn 携带的任务 prompt
+                （title/description）作为第一条 user 条目显示——TUI 同款：
+                子代理 scrollback 首条是注入的任务 prompt。 */}
+            {prompt && (
+              <div>
+                <div className="text-[10px] uppercase tracking-wide text-gn-gutter">user</div>
+                <Markdown source={prompt} />
+              </div>
+            )}
+            <div className="text-[11px] text-gn-muted">
+              {running
+                ? '等待子代理活动上报…（数据来自宿主转发的子代理会话事件流）'
+                : '（未捕获到子代理会话活动 — 无活动时间线）'}
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-1">
+            {items.map((it, i) => (
+              <TimelineItem key={i} item={it} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** 一条子代理时间线条目：scrollback 风格的 mini 渲染。 */
+function TimelineItem({ item }: { item: SubagentViewItem }) {
+  switch (item.kind) {
+    case 'user':
+      return (
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-gn-gutter">user</div>
+          <Markdown source={item.text} />
+        </div>
+      )
+    case 'assistant':
+      return (
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-gn-gutter">
+            assistant{item.streaming ? '…' : ''}
+          </div>
+          <Markdown source={item.text} />
+        </div>
+      )
+    case 'thought':
+      return (
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-gn-gutter">thought</div>
+          <div className="whitespace-pre-wrap break-words italic text-gn-muted">
+            {item.text}
+          </div>
+        </div>
+      )
+    case 'tool':
+      return (
+        <div>
+          <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-gn-gutter">
+            <span>tool</span>
+            <span className="min-w-0 truncate normal-case tracking-normal text-gn-muted">
+              {item.title}
+            </span>
+            {item.verb && (
+              <span className="normal-case tracking-normal">{item.verb}</span>
+            )}
+          </div>
+          <ToolDetail raw={item.raw} kindName={item.kindName} full={false} className="mt-0.5" />
+        </div>
+      )
+    case 'plan': {
+      const plan = planTodos(item.entries).items
+      if (plan.length === 0) {
+        return <div className="text-[11px] text-gn-muted">（空计划）</div>
+      }
+      return (
+        <div className="space-y-[3px]">
+          {plan.map((t, i) => (
+            <div key={t.id ?? i} className="flex items-start gap-2 text-[12px] leading-snug">
+              <span className="mt-[1px] shrink-0 font-mono text-[11px]" aria-hidden>
+                <TodoMark status={t.status} />
+              </span>
+              <span
+                className={`min-w-0 flex-1 break-words ${
+                  t.status === 'completed' || t.status === 'cancelled'
+                    ? 'text-gn-muted'
+                    : 'text-gn-fg'
+                }`}
+              >
+                {t.content}
+              </span>
+            </div>
+          ))}
+        </div>
+      )
+    }
+    case 'image':
+      return (
+        <div>
+          <img
+            src={item.data}
+            alt={item.mimeType ? `image (${item.mimeType})` : 'image'}
+            className="max-h-[30vh] w-auto max-w-full rounded border border-gn-prompt-border object-contain"
+          />
+        </div>
+      )
+    case 'turn':
+      return (
+        <div className="py-0.5 text-center text-[10px] uppercase tracking-wider text-gn-gutter">
+          {item.text}
+        </div>
+      )
+  }
 }
 
 /** Estimated decoded byte size of a data URI / base64 payload. */

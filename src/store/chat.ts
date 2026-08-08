@@ -15,6 +15,8 @@ import type {
   SessionInfo,
   SessionInfoDetail,
   SubagentStatus,
+  SubagentViewItem,
+  SubagentViewState,
   TaskTimelineEvent,
   Toast,
   ToolCall,
@@ -1036,6 +1038,21 @@ type ChatState = {
       tokensUsed?: number
     }
   >
+  /**
+   * child_session_id → entry id (subagent_spawned wire `child_session_id`).
+   * The host broadcasts every session's event stream with a top-level
+   * sessionId; the init onEvent guard uses this index to route a KNOWN
+   * subagent session's events into its mini scrollback instead of
+   * dropping them (TUI subagent_views 路由同款).
+   */
+  subagentChildIndex: Record<string, string>
+  /**
+   * Mini scrollbacks of subagent sessions, keyed by child_session_id
+   * (block viewer 活动时间线). Fed by the child session's own event
+   * stream (live) and by on-demand history fetch (replay). Same
+   * lifecycle as subagentIndex / pendingSubagentFinishes.
+   */
+  subagentViews: Record<string, SubagentViewState>
   /** task_id → entry id (task_backgrounded / task_completed). */
   bgTaskIndex: Record<string, string>
   /**
@@ -1412,6 +1429,15 @@ type ChatState = {
    */
   openTaskViewer: (taskId: string, opts?: Partial<ViewerTask>) => void
   closeViewer: () => void
+  /**
+   * On-demand fetch of a subagent session's stored updates (block viewer
+   * timeline, TUI replay_inherited_updates 同款): reads the child
+   * session's updates.jsonl via the host's session-updates endpoint
+   * (same cwd as the parent) and replays the envelopes through the same
+   * view processor as live events. No-op unless the view exists and is
+   * idle with an empty timeline.
+   */
+  fetchSubagentView: (childSessionId: string) => Promise<void>
   toggleGroupExpansion: (anchorId: string) => void
   /** Open / close the /session-info modal. */
   openSessionInfo: () => void
@@ -1502,6 +1528,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   xaiRequests: [],
   subagentIndex: {},
   pendingSubagentFinishes: {},
+  subagentChildIndex: {},
+  subagentViews: {},
   bgTaskIndex: {},
   topTasks: [],
   completedNotices: {},
@@ -1719,6 +1747,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ev.type !== 'hello' &&
         ev.type !== 'ready'
       ) {
+        // 子代理会话事件流：宿主按 withSid 广播所有会话的 session/update
+        // 事件，子代理（child_session_id）的 chunk/thought/tool_call/… 也
+        // 在内。命中 subagentChildIndex 的会话喂给该子代理的迷你 scrollback
+        // 视图处理器（不进主 handleEvent，避免污染宿主 scrollback）——TUI
+        // 按 sessionId 路由进 subagent_views 的等价实现。
+        if (s.subagentChildIndex[evSid] != null) {
+          applySubagentViewEvent(set, evSid, ev)
+        }
         return
       }
       s.handleEvent(ev)
@@ -1839,6 +1875,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       toolIndex: {},
       subagentIndex: {},
       pendingSubagentFinishes: {},
+      subagentChildIndex: {},
+      subagentViews: {},
       bgTaskIndex: {},
       topTasks: [],
       scheduledTasks: [],
@@ -1973,6 +2011,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       memoryOpen: false,
       subagentIndex: {},
       pendingSubagentFinishes: {},
+      subagentChildIndex: {},
+      subagentViews: {},
       bgTaskIndex: {},
       // NOTE: topTasks is NOT reset here — continueSession probes the
       // still-running set BEFORE loadHistory, and replayUpdates needs it
@@ -5214,6 +5254,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       memoryOpen: false,
       subagentIndex: {},
       pendingSubagentFinishes: {},
+      subagentChildIndex: {},
+      subagentViews: {},
       bgTaskIndex: {},
       topTasks: [],
       gitInfo: undefined,
@@ -5524,6 +5566,56 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   closeViewer: () => {
     set({ viewerEntryId: null, viewerTask: undefined })
+  },
+
+  fetchSubagentView: async (childSessionId) => {
+    const s = get()
+    const view = s.subagentViews[childSessionId]
+    if (!view || view.items.length > 0 || view.fetchState === 'loading' || view.fetchState === 'loaded') {
+      return
+    }
+    // 子代理与父会话同 cwd（宿主 session-updates 按 sessionId+cwd 分页）。
+    const cwd = s.cwd
+    if (!cwd) return
+    set({
+      subagentViews: {
+        ...s.subagentViews,
+        [childSessionId]: { ...view, fetchState: 'loading' },
+      },
+    })
+    try {
+      // 取最新一页（与 loadHistory 相同的负 offset 分页约定），按存储顺序
+      // （时间正序）回放——同一 applySubagentViewEvent 处理器，live 与
+      // 回放事件不会出现两套渲染逻辑。
+      const r = await transport.loadSessionHistory(childSessionId, cwd, {
+        offset: -SUBAGENT_VIEW_MAX_ITEMS,
+        limit: SUBAGENT_VIEW_MAX_ITEMS,
+      })
+      // 拉取期间 live 事件已到达（视图非空）→ 跳过回放：没有事件 id 可
+      // 去重，混入会造成重复/乱序；live 流已接管后续内容（TUI 靠事件 id
+      // 去重，这里取更保守的策略）。
+      if ((get().subagentViews[childSessionId]?.items.length ?? 0) > 0) {
+        return
+      }
+      for (const env of r.updates ?? []) {
+        const ev = envelopeToEvent(env)
+        if (ev) applySubagentViewEvent(set, childSessionId, ev)
+      }
+    } catch {
+      // 拉取失败（离线 / 宿主无该子代理会话）——保持空视图，结束状态置
+      // loaded 防止弹窗打开期间的重试风暴。
+    } finally {
+      set((st) => {
+        const v = st.subagentViews[childSessionId]
+        if (!v) return {}
+        return {
+          subagentViews: {
+            ...st.subagentViews,
+            [childSessionId]: { ...v, fetchState: 'loaded' },
+          },
+        }
+      })
+    }
   },
 }))
 
@@ -6913,11 +7005,25 @@ function handleSubagentEvent(
       (typeof fields.subagent_type === 'string' && fields.subagent_type) ||
       id
     const eid = nid()
+    // Child session id (wire `child_session_id`, always present alongside
+    // subagent_id per the host tests): the subagent session's own event
+    // stream is broadcast with this id — the block viewer's mini
+    // scrollback is keyed by it (TUI subagent_views 同款).
+    const childSid = nonBlankStr(fields.child_session_id)
     // Spawn metadata (SubagentSpawned wire fields): the model the child
     // runs, its persona / role and agent type. Stored so the scrollback
     // row and the block viewer can show them (TUI SubagentBlock meta).
     set((s) => ({
       subagentIndex: { ...s.subagentIndex, [id]: eid },
+      ...(childSid
+        ? {
+            subagentChildIndex: { ...s.subagentChildIndex, [childSid]: eid },
+            subagentViews: {
+              ...s.subagentViews,
+              [childSid]: { items: [], fetchState: 'idle' },
+            },
+          }
+        : {}),
       entries: [
         ...s.entries,
         {
@@ -6931,6 +7037,7 @@ function handleSubagentEvent(
           // on progress ticks, which trail by up to 2s).
           startedAt: Date.now(),
           subagentId: id,
+          ...(childSid ? { childSessionId: childSid } : {}),
           model: nonBlankStr(fields.model),
           persona: nonBlankStr(fields.persona),
           role: nonBlankStr(fields.role),
@@ -7018,6 +7125,186 @@ function handleSubagentEvent(
 /** Non-empty trimmed string, or undefined. */
 function nonBlankStr(v: unknown): string | undefined {
   return typeof v === 'string' && v.trim() ? v.trim() : undefined
+}
+
+// ── 子代理迷你 scrollback（subagentViews）──────────────────────────
+// 宿主按 withSid 广播所有会话的 session/update 事件；子代理会话
+// （child_session_id）的事件流在这里被还原成子代理自己的活动时间线
+// （TUI subagent_views 同款）。与主 scrollback 的条目模型不同：仅承载
+// 渲染所需的最小字段，且只追加、不折叠。live 事件与按需历史回放
+// （fetchSubagentView）共用同一个处理器。
+
+/** 每个子代理视图最多保留的条目数（防内存膨胀，超出丢弃最旧）。 */
+const SUBAGENT_VIEW_MAX_ITEMS = 500
+
+/** 子代理视图的时间线末尾追加一条（含上限裁剪）。 */
+function subagentViewPush(
+  items: SubagentViewItem[],
+  item: SubagentViewItem,
+): SubagentViewItem[] {
+  const next = [...items, item]
+  return next.length > SUBAGENT_VIEW_MAX_ITEMS
+    ? next.slice(-SUBAGENT_VIEW_MAX_ITEMS)
+    : next
+}
+
+/** 把子代理会话的一个 AcpEvent 追加进对应视图（纯逻辑，live/回放共用）。 */
+function applySubagentViewEvent(
+  set: SetState,
+  childSid: string,
+  ev: AcpEvent,
+): void {
+  set((s) => {
+    const prev = s.subagentViews[childSid]
+    // 防御：spawn 尚未处理（索引已建但视图缺失）时惰性初始化。
+    const items = subagentViewAppend(prev?.items ?? [], ev)
+    const view: SubagentViewState = { ...(prev ?? { items: [], fetchState: 'idle' }), items }
+    if (prev && prev.items === items) return {}
+    return { subagentViews: { ...s.subagentViews, [childSid]: view } }
+  })
+}
+
+/**
+ * 子代理事件流 → 时间线条目（不可变 reducer）。仅处理 scrollback 相关
+ * 类型：user/assistant/thought/tool/plan/image + 回合收口；其余忽略
+ * （usage/status/hello/… 与宿主 scrollback 无关）。
+ */
+function subagentViewAppend(
+  items: SubagentViewItem[],
+  ev: AcpEvent,
+): SubagentViewItem[] {
+  switch (ev.type) {
+    case 'user_message': {
+      const text = ev.text ?? ''
+      if (!text.trim()) return items
+      return subagentViewPush(items, { kind: 'user', text, ts: ev.ts })
+    }
+    case 'user_chunk': {
+      if (ev.hideFromScrollback === true) return items
+      const text = (ev.displayText ?? ev.text) || ''
+      if (!text.trim()) return items
+      // 同一用户回合的连续 chunk 聚合进最后一条 user（主 scrollback 同款）。
+      const last = items[items.length - 1]
+      if (last && last.kind === 'user') {
+        const next = [...items]
+        next[next.length - 1] = { ...last, text: last.text + text }
+        return next
+      }
+      return subagentViewPush(items, { kind: 'user', text })
+    }
+    case 'chunk': {
+      const text = ev.text ?? ''
+      if (!text) return items
+      const last = items[items.length - 1]
+      if (last && last.kind === 'assistant') {
+        const next = [...items]
+        next[next.length - 1] = { ...last, text: last.text + text, streaming: true }
+        return next
+      }
+      return subagentViewPush(items, { kind: 'assistant', text, streaming: true, ts: ev.ts })
+    }
+    case 'thought': {
+      const text = ev.text ?? ''
+      if (!text) return items
+      const last = items[items.length - 1]
+      if (last && last.kind === 'thought') {
+        const next = [...items]
+        next[next.length - 1] = { ...last, text: last.text + text, streaming: true }
+        return next
+      }
+      return subagentViewPush(items, { kind: 'thought', text, streaming: true })
+    }
+    case 'tool_call': {
+      const tc = ev.toolCall || {}
+      const item = subagentToolItem(tc)
+      // 同 toolCallId 重复到达时原地替换，避免双行。
+      const idx = item.toolCallId
+        ? items.findIndex(
+            (it) => it.kind === 'tool' && it.toolCallId === item.toolCallId,
+          )
+        : -1
+      if (idx >= 0) {
+        const next = [...items]
+        next[idx] = item
+        return next
+      }
+      return subagentViewPush(items, item)
+    }
+    case 'tool_call_update': {
+      const tc = ev.toolCallUpdate || {}
+      const toolCallId = toolCallIdOf(tc)
+      if (toolCallId) {
+        const idx = items.findIndex(
+          (it) => it.kind === 'tool' && it.toolCallId === toolCallId,
+        )
+        if (idx >= 0) {
+          const existing = items[idx]
+          if (existing.kind === 'tool') {
+            // 与主 scrollback 相同：update 的字段合并进 raw，标题/动词重算。
+            const merged: ToolCall = { ...(existing.raw || {}), ...tc }
+            const next = [...items]
+            next[idx] = subagentToolItem(merged, existing)
+            return next
+          }
+        }
+      }
+      // 未找到对应条目（回放分页边界）：按首次 tool_call 追加。
+      return subagentViewAppend(items, { type: 'tool_call', toolCall: tc })
+    }
+    case 'plan':
+      return subagentViewPush(items, { kind: 'plan', entries: ev.entries })
+    case 'image': {
+      const src = imageSrc(ev.data, ev.mimeType)
+      if (!src) return items
+      return subagentViewPush(items, {
+        kind: 'image',
+        data: src,
+        mimeType: ev.mimeType,
+        ts: ev.ts,
+      })
+    }
+    case 'done':
+    case 'turn_completed':
+    case 'cancelled': {
+      // 回合收口：assistant/thought 停止 streaming，追加回合结束标记。
+      const sealed = items.map((it) =>
+        (it.kind === 'assistant' || it.kind === 'thought') && it.streaming
+          ? { ...it, streaming: false }
+          : it,
+      )
+      const marker: SubagentViewItem = {
+        kind: 'turn',
+        text:
+          ev.type === 'done'
+            ? '— turn completed —'
+            : ev.type === 'cancelled'
+              ? '— turn cancelled —'
+              : '— turn ended —',
+      }
+      return subagentViewPush(sealed, marker)
+    }
+    default:
+      return items
+  }
+}
+
+/** 从 ToolCall 提取迷你时间线的 tool 条目（title/verb/status/raw）。 */
+function subagentToolItem(
+  tc: ToolCall,
+  prev?: Extract<SubagentViewItem, { kind: 'tool' }>,
+): Extract<SubagentViewItem, { kind: 'tool' }> {
+  const status = (tc.status as string) || prev?.status || 'pending'
+  const kindName = (tc.kind as string) || prev?.kindName || 'other'
+  const running = status === 'pending' || status === 'in_progress'
+  return {
+    kind: 'tool',
+    toolCallId: toolCallIdOf(tc) ?? prev?.toolCallId,
+    title: extractTarget(tc) || (tc.title as string) || kindName,
+    verb: toolVerb(kindName, running),
+    status,
+    kindName,
+    raw: tc,
+  }
 }
 
 /**

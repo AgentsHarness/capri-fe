@@ -904,6 +904,15 @@ export type ScrollEntry =
       durationMs?: number
       /** subagent_id from x.ai/session_notification subagent_spawned. */
       subagentId?: string
+      /**
+       * The subagent's own session id (wire `child_session_id` from
+       * subagent_spawned). The host broadcasts EVERY session's event
+       * stream with a top-level sessionId — the child session's
+       * chunk/thought/tool_call/… events carry this id, which the store
+       * routes into the subagent's mini scrollback (block viewer
+       * timeline, TUI subagent_views 同款)。
+       */
+      childSessionId?: string
       /** Effective model ID used by the subagent (wire `model`). */
       model?: string
       /** Named persona applied to this subagent (wire `persona`). */
@@ -982,6 +991,46 @@ export type ScrollEntry =
       /** Verb-run aggregated header — drives running/error accents. */
       verbRun?: { running?: boolean; failed?: boolean; verb?: string }
     }
+
+/**
+ * One row of a subagent's mini scrollback (block viewer "活动时间线").
+ * Kept intentionally minimal — only what the timeline renders. Tool rows
+ * keep the raw ToolCall so ToolDetail(full=false) can lay out the same
+ * field extraction as the main scrollback.
+ */
+export type SubagentViewItem =
+  | { kind: 'user'; text: string; ts?: number }
+  | { kind: 'assistant'; text: string; streaming?: boolean; ts?: number }
+  | { kind: 'thought'; text: string; streaming?: boolean }
+  | {
+      kind: 'tool'
+      toolCallId?: string
+      title: string
+      verb?: string
+      status?: string
+      kindName?: string
+      raw: ToolCall
+    }
+  | { kind: 'plan'; entries: unknown }
+  | { kind: 'image'; data: string; mimeType?: string; ts?: number }
+  /** Turn boundary marker (done / turn_completed / cancelled). */
+  | { kind: 'turn'; text: string }
+
+/**
+ * Mini scrollback of one subagent session (keyed by child_session_id).
+ * Fed by the host's broadcast of the child session's own event stream
+ * (live) and by on-demand history fetch of the child session's updates
+ * (replay — TUI replay_inherited_updates 同款). Bounded to the most
+ * recent SUBAGENT_VIEW_MAX_ITEMS items.
+ */
+export type SubagentViewState = {
+  items: SubagentViewItem[]
+  /**
+   * On-demand fetch of the child session's stored updates:
+   * idle → loading → loaded (loaded also on failure — no retry storm).
+   */
+  fetchState?: 'idle' | 'loading' | 'loaded'
+}
 
 /**
  * Host-side live state of one session — POST /api/session-state
