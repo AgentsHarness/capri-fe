@@ -1,7 +1,9 @@
 import { create } from 'zustand'
 import type {
   AcpEvent,
+  AgentCommand,
   ContentBlock,
+  FollowUp,
   HostInfo,
   ModelOption,
   PendingReq,
@@ -11,13 +13,18 @@ import type {
   ScrollEntry,
   SessionInfo,
   SessionInfoDetail,
+  SubagentStatus,
   TaskTimelineEvent,
+  Toast,
   ToolCall,
   TopTask,
+  WorkspaceGroup,
+  WorkspaceSummary,
 } from '../api/types'
 import { transport, type McpListServer } from '../api/localTransport'
 import { usePromptQueue } from './promptQueue'
 import { toolHeader } from '../theme/glyphs'
+import { repoNameFromCwd } from '../components/historyGroups'
 import {
   projectDisplayRows,
   scanGroups,
@@ -26,33 +33,16 @@ import {
 let entrySeq = 0
 const nid = () => `e_${++entrySeq}_${Date.now()}`
 
-// ── per-session last-viewed persistence ─────────────────────────────
-// The 待处理 bucket means "bg tasks finished, user hasn't looked yet".
-// The viewed timestamp survives reloads so seen sessions never re-flag.
-const LAST_VIEWED_KEY = 'acpfe.lastViewedAt'
+/** 会话完成提醒去重窗口：同一会话在此窗口内只通知一次。 */
+const NOTICE_DEDUP_WINDOW_MS = 30_000
 
-function loadLastViewedAt(): Record<string, number> {
-  try {
-    const raw = window.localStorage.getItem(LAST_VIEWED_KEY)
-    if (!raw) return {}
-    const parsed = JSON.parse(raw) as Record<string, unknown>
-    const out: Record<string, number> = {}
-    for (const [k, v] of Object.entries(parsed)) {
-      if (typeof v === 'number' && Number.isFinite(v)) out[k] = v
-    }
-    return out
-  } catch {
-    return {}
-  }
-}
-
-function persistLastViewedAt(map: Record<string, number>): void {
-  try {
-    window.localStorage.setItem(LAST_VIEWED_KEY, JSON.stringify(map))
-  } catch {
-    // Private mode / quota — the in-memory copy still works this session.
-  }
-}
+/**
+ * Busy 快照（模块级，非响应式）：refreshSessions 成功后对比上一份，
+ * 检测"某会话 busy true→false"（= 跑完了）——覆盖所有完成路径，不依赖
+ * 完成事件是否带对 sessionId（host 的 sessionIdFrom 会回退到 active
+ * 会话，多会话切换时可能错标）。
+ */
+let lastBusySnapshot: Record<string, boolean> = {}
 
 // ── cancel-turn preference (TUI cancel_subagents_on_turn_cancel) ────
 // Saved by the cancel panel's "Always stop" / "Always continue" options.
@@ -67,6 +57,175 @@ function loadCancelSubagentsPref(): boolean | null {
   } catch {
     return null
   }
+}
+
+// ── per-session mode-flag persistence ───────────────────────────────
+// The agent persists ONLY the session-mode dimension into the timeline:
+// current_mode_update {currentModeId: plan|default|…} lands in
+// updates.jsonl and history replay restores it. Permission mode
+// (x.ai/yolo_mode_changed: ask / auto / always-approve) is a fire-and-
+// forget notification the agent NEVER stores, so replay cannot restore
+// it from the timeline. The FE keeps its own per-session copy
+// (localStorage) — the web analog of the TUI's persisted permission
+// mode — refreshed on every flag change and re-applied on resume/reload.
+type ModeFlags = Partial<Pick<ChatState, 'planMode' | 'permissionMode' | 'yoloMode' | 'autoMode'>>
+
+const MODE_FLAGS_KEY = 'acpfe.modeFlags'
+/** Keep the map bounded (newest sessions win; UUID-ish keys keep insertion order). */
+const MODE_FLAGS_MAX = 50
+
+function loadModeFlagsMap(): Record<string, ModeFlags> {
+  try {
+    const raw = window.localStorage.getItem(MODE_FLAGS_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as Record<string, ModeFlags>
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function saveModeFlags(sessionId: string, flags: ModeFlags): void {
+  try {
+    const map = loadModeFlagsMap()
+    map[sessionId] = flags
+    const ids = Object.keys(map)
+    if (ids.length > MODE_FLAGS_MAX) {
+      for (const id of ids.slice(0, ids.length - MODE_FLAGS_MAX)) delete map[id]
+    }
+    window.localStorage.setItem(MODE_FLAGS_KEY, JSON.stringify(map))
+  } catch {
+    /* persistence is best-effort */
+  }
+}
+
+/** The flags this client last knew for a session ({} when unknown). */
+function restoreModeFlags(sessionId?: string): ModeFlags {
+  if (!sessionId) return {}
+  return loadModeFlagsMap()[sessionId] ?? {}
+}
+
+// ── client-global default permission mode (config.toml ui.permission_mode) ──
+// A session with no per-browser record (miss) falls back to the
+// client-global default — the TUI's `[ui] permission_mode`, served
+// read-only by the host's GET /api/settings. Precedence mirrors the TUI's
+// load_permission_mode: permission_mode > legacy approval_mode > yolo=true.
+
+/** Map a settings `ui` section to permission flags ({} = no default). */
+function permissionFlagsFromUi(ui?: Record<string, unknown>): ModeFlags {
+  if (!ui) return {}
+  const perm = typeof ui.permission_mode === 'string' ? ui.permission_mode : undefined
+  if (perm === 'always-approve') return { yoloMode: true, autoMode: false }
+  if (perm === 'auto') return { yoloMode: false, autoMode: true }
+  // 'default' / 'ask' / unknown → no client default (agent's own default).
+  if (perm === undefined) {
+    const legacy = typeof ui.approval_mode === 'string' ? ui.approval_mode : undefined
+    if (legacy === 'always-approve') return { yoloMode: true, autoMode: false }
+    if (legacy === 'auto') return { yoloMode: false, autoMode: true }
+    if (ui.yolo === true) return { yoloMode: true, autoMode: false }
+  }
+  return {}
+}
+
+let cachedDefaultModeFlags: ModeFlags | undefined
+let cachedDefaultFlagsPromise: Promise<ModeFlags> | null = null
+
+/** Fetch the client-global default permission flags once (host /api/settings). */
+function ensureDefaultModeFlags(): Promise<ModeFlags> {
+  cachedDefaultFlagsPromise ??= transport
+    .settings()
+    .then((s) => {
+      cachedDefaultModeFlags = permissionFlagsFromUi(s.ui)
+      return cachedDefaultModeFlags
+    })
+    .catch(() => {
+      cachedDefaultModeFlags = {}
+      return cachedDefaultModeFlags
+    })
+  return cachedDefaultFlagsPromise
+}
+
+/**
+ * The client-global default for a session that has no saved record
+ * (synchronous; {} until ensureDefaultModeFlags resolves). A session
+ * WITH saved yolo/auto flags never falls back.
+ */
+function defaultModeFlagsIfMissed(sessionId?: string): ModeFlags {
+  if (!sessionId) return {}
+  const saved = restoreModeFlags(sessionId)
+  if (saved.yoloMode !== undefined || saved.autoMode !== undefined) return {}
+  return cachedDefaultModeFlags ?? {}
+}
+
+/** Session's effective flags: its own record wins, miss → global default. */
+function sessionModeFlags(saved: ModeFlags, defaults: ModeFlags): ModeFlags {
+  return saved.yoloMode !== undefined || saved.autoMode !== undefined ? saved : defaults
+}
+
+/**
+ * Permission seeds for session/new|load `_meta` (TUI absent-key ≠ off:
+ * only send when a flag is actually known). yolo wins over auto — the
+ * two are mutually exclusive on the wire.
+ */
+function permissionSeedMeta(
+  flags: ModeFlags,
+): { yoloMode: boolean; autoMode: boolean } | undefined {
+  if (flags.yoloMode === undefined && flags.autoMode === undefined) return undefined
+  return {
+    yoloMode: flags.yoloMode === true,
+    autoMode: flags.autoMode === true && flags.yoloMode !== true,
+  }
+}
+
+// ── agent-restart re-seed ───────────────────────────────────────────
+// The agent's permission mode lives in ITS process memory only — host
+// restart (or agent crash) resets every session to the default ask while
+// this browser's localStorage still remembers the real flags. The host
+// stamps each hello with the agent spawn time; when it changes (including
+// first contact) the browser re-sends its known flags as a
+// yolo_mode_changed notification (the same channel the TUI uses at
+// launch) so the agent's behavior matches what the UI displays again.
+const LAST_AGENT_STARTED_KEY = 'acpfe.lastAgentStartedAt'
+/** Latest hello `agentStartedAt` seen (for the post-defaults re-seed check). */
+let lastHelloAgentStartedAt: number | undefined
+
+/**
+ * Detect an agent restart via the hello `agentStartedAt` stamp and
+ * re-seed its in-memory permission mode from the flags this browser
+ * knows for the session. Idempotent: fires once per agent instance
+ * (recorded in localStorage), so a plain page reload never re-broadcasts
+ * and cannot clobber another client's newer choice. No-op for older
+ * hosts without the stamp.
+ */
+function maybeReseedPermissionMode(
+  _get: () => ChatState,
+  _set: SetState,
+  agentStartedAt: number | undefined,
+  sessionId?: string,
+): void {
+  if (typeof agentStartedAt !== 'number' || agentStartedAt <= 0 || !sessionId) return
+  let prev: string | null = null
+  try {
+    prev = window.localStorage.getItem(LAST_AGENT_STARTED_KEY)
+  } catch {
+    /* ignore */
+  }
+  if (prev === String(agentStartedAt)) return
+  try {
+    window.localStorage.setItem(LAST_AGENT_STARTED_KEY, String(agentStartedAt))
+  } catch {
+    /* ignore */
+  }
+  const flags = {
+    ...restoreModeFlags(sessionId),
+    ...defaultModeFlagsIfMissed(sessionId),
+  }
+  const seed = permissionSeedMeta(flags)
+  if (!seed) return
+  // Same wire the TUI uses at launch (yolo_mode_changed); the agent
+  // applies it globally to its resident sessions. ask/default need no
+  // seed — that IS the agent's default.
+  void transport.setMode(seed.yoloMode ? 'always-approve' : 'auto')
 }
 
 /**
@@ -305,6 +464,31 @@ function extractModeFlags(
   if (typeof mode === 'string' && mode) {
     if (mode === 'plan') out.planMode = true
     else if (NON_PLAN_MODES.has(mode)) out.planMode = false
+  }
+  // The agent's session-mode catalog uses `currentModeId` (session/new|load
+  // `modes` AND the stored current_mode_update update — both carry
+  // {currentModeId} directly). 'plan'/'default'/'ask' drive the plan
+  // dimension; the agent also mirrors permission modes as session-mode ids
+  // ('auto' / 'always-approve' / 'yolo'), so those restore the permission
+  // flags when no explicit permissionMode key is present. Unknown ids are
+  // left alone so the local flags survive.
+  const currentMode = read('currentModeId', 'current_mode_id')
+  if (typeof currentMode === 'string' && currentMode) {
+    if (currentMode === 'plan') out.planMode = true
+    else if (NON_PLAN_MODES.has(currentMode)) out.planMode = false
+    if (perm == null) {
+      if (currentMode === 'auto') {
+        out.autoMode = true
+        out.permissionMode = 'auto'
+      } else if (
+        currentMode === 'always-approve' ||
+        currentMode === 'always_approve' ||
+        currentMode === 'yolo'
+      ) {
+        out.yoloMode = true
+        out.permissionMode = 'always-approve'
+      }
+    }
   }
   const yolo = read('yoloMode', 'yolo_mode')
   if (typeof yolo === 'boolean') out.yoloMode = yolo
@@ -711,6 +895,8 @@ export type WorkflowRun = {
   name: string
   status: string
   phase?: string
+  /** Wire snake_case spelling (workflow_updated) — same value as `phase`. */
+  current_phase?: string
   /** Progress 0..1 when the event carries it (panel omits the bar otherwise). */
   progress?: number
   /** Script payload from workflow_updated — the "save script" source. */
@@ -756,6 +942,9 @@ type ChatState = {
   selectedHostId?: string
   /** Historical sessions for the history picker (from session/list). */
   sessions: SessionInfo[]
+  /** Session summaries bucketed by workspace (workspace-list). */
+  workspaces: WorkspaceGroup[]
+  workspaceLoading: boolean
   historyOpen: boolean
   historyLoading: boolean
   /** Bumped when a history load finishes; Scrollback re-follows the bottom. */
@@ -773,6 +962,13 @@ type ChatState = {
   usage?: { used?: number; size?: number; turnTokens?: number }
   pending: PendingReq[]
   modes?: unknown
+  /**
+   * Slash commands advertised by the agent (ACP `available_commands_update`
+   * → host `commands_update`). The slash menu merges them after the local
+   * registry (local names win on collision); invoking one sends the raw
+   * `/name args` line as a user message (TUI PassThrough semantics).
+   */
+  agentCommands: AgentCommand[]
   error?: string
   /**
    * Latest connection warning from the host (`status` events — e.g.
@@ -799,6 +995,15 @@ type ChatState = {
   xaiRequests: PendingReq[]
   /** subagent_id → entry id (session_notification subagent_spawned/finished). */
   subagentIndex: Record<string, string>
+  /**
+   * Orphaned subagent_finished payloads that replayed BEFORE their
+   * subagent_spawned (history loads newest page first; spawn and finish
+   * can straddle a page boundary). Applied when the spawn arrives, so a
+   * replayed subagent keeps its real status/duration instead of being
+   * force-sealed by settleTurnEntries. Live finishes never orphan
+   * (spawn always precedes finish in real time).
+   */
+  pendingSubagentFinishes: Record<string, { status: SubagentStatus; durationMs?: number }>
   /** task_id → entry id (task_backgrounded / task_completed). */
   bgTaskIndex: Record<string, string>
   /**
@@ -810,20 +1015,20 @@ type ChatState = {
    */
   topTasks: TopTask[]
   /**
-   * Per-session "last viewed" time (epoch ms). The history sidebar uses
-   * it for the 待处理 bucket (unread: activity after the user last
-   * looked). Defaults to `openedAt` — the moment this page loaded — so
-   * opening the browser marks EVERYTHING as read; only activity that
-   * lands after that flags a session. Clicking a conversation updates
-   * its entry (markViewed). Persisted to localStorage so a reload does
-   * not re-flag seen sessions.
+   * Sessions that finished a turn while the user was elsewhere
+   * (sessionId → completion epoch ms). Drives the sidebar ✓ badge and
+   * the completion notification; cleared when the session is opened.
    */
-  lastViewedAt: Record<string, number>
-  /** Page-load moment (epoch ms) — the default "viewed" time for every
-   *  session until it is explicitly marked (or opened). */
-  openedAt: number
-  /** Mark a session as viewed (opened) right now. */
-  markViewed: (sessionId: string) => void
+  completedNotices: Record<string, number>
+  /** In-page completion toasts (fallback when system notifications are
+   *  not granted). */
+  toasts: Toast[]
+  /** Mark a session's completion notice as seen (opened/being viewed). */
+  clearCompletedNotice: (sessionId: string) => void
+  /** Dismiss one in-page toast by id. */
+  dismissToast: (id: string) => void
+  /** Record a different session's turn completion: ✓ badge + notify. */
+  noteSessionCompleted: (sessionId: string) => void
   /** Git head from x.ai/git_head_changed (TUI status-bar branch). */
   gitInfo?: { branch?: string | null; isWorktree?: boolean; mainRepo?: string | null }
   /** Permission mode from x.ai/yolo_mode_changed (TUI permission banner). */
@@ -834,6 +1039,20 @@ type ChatState = {
   mcpServers: McpServerInfo[]
   /** Bumped on mcp tools_changed / servers_updated so panels can refresh. */
   mcpVersion: number
+  /**
+   * Turn-end suggestion chips (`x.ai/follow_ups`) — TUI FollowUps state.
+   * Rendered by the Composer above the input, never as scrollback rows
+   * (the TUI shows them as a transient row between the scrollback and
+   * the prompt). Cleared on user send and on session resets; hidden
+   * while a turn is in flight.
+   */
+  followUps?: FollowUp[]
+  /**
+   * Newest-wins key of the shown chips (TUI FollowUps.response_id): a
+   * delivery with the same id as the current one is an idempotent
+   * re-delivery, a newer id replaces.
+   */
+  followUpsResponseId?: string
   // ── model catalog (agentInfo._meta.modelState.availableModels) ─────
   models: ModelOption[]
   /** Memory files from memory_files (TUI memory modal). */
@@ -980,7 +1199,8 @@ type ChatState = {
   clearModeBanner: () => void
   /** Composer queue dropdown visibility (TUI queue pane). */
   queuePanelOpen: boolean
-  setQueuePanelOpen: (open: boolean) => void
+  /** Accepts a plain value or a functional updater (queue pill toggle). */
+  setQueuePanelOpen: (open: boolean | ((v: boolean) => boolean)) => void
   /**
    * Local plan-mode flag (Shift+Tab cycle / /plan). Driven by the host's
    * toggle-plan-mode result when available; otherwise kept local and
@@ -1091,6 +1311,8 @@ type ChatState = {
   syncLiveTasks: () => Promise<void>
   /** x.ai/sessions/changed — refresh the history list. */
   refreshSessions: () => Promise<void>
+  /** 按工作区拉取会话摘要（workspace-list）；失败降级为 sessions 按 cwd 分组。 */
+  refreshWorkspaces: () => Promise<void>
   /** Fetch git branch/worktree state for the active session (x.ai/git/info). */
   refreshGitInfo: () => Promise<void>
   newSession: () => Promise<void>
@@ -1227,22 +1449,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
   awaitingNext: false,
   hosts: [],
   sessions: [],
+  workspaces: [],
+  workspaceLoading: false,
   historyOpen: false,
   historyLoading: false,
   historyLoadedCount: 0,
   historyHasMore: false,
   historyLoadingMore: false,
-  lastViewedAt: loadLastViewedAt(),
-  // The page load moment is the default "viewed" time for every session:
-  // opening the browser marks everything as read until new activity lands.
-  openedAt: Date.now(),
   pending: [],
+  agentCommands: [],
   xaiRequests: [],
   subagentIndex: {},
+  pendingSubagentFinishes: {},
   bgTaskIndex: {},
   topTasks: [],
+  completedNotices: {},
+  toasts: [],
   mcpServers: [],
   mcpVersion: 0,
+  followUps: undefined,
+  followUpsResponseId: undefined,
   models: [],
   workflowRuns: {},
   selectedWorkflowRunId: undefined,
@@ -1307,7 +1533,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   showModeBanner: (text) => set({ modeBanner: text }),
   clearModeBanner: () => set({ modeBanner: null }),
   queuePanelOpen: false,
-  setQueuePanelOpen: (open) => set({ queuePanelOpen: open }),
+  setQueuePanelOpen: (open) =>
+    set({
+      queuePanelOpen:
+        typeof open === 'function' ? open(get().queuePanelOpen) : open,
+    }),
   planMode: false,
 
   // ── goal mode — PROMPT-PATH control (see ChatState docs) ────────────
@@ -1451,10 +1681,50 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
       s.handleEvent(ev)
     })
+    // Persist plan/permission flags per session. The agent never stores
+    // permission mode (yolo_mode_changed is fire-and-forget), so this
+    // copy is what restores ask/auto/always-approve after a resume or
+    // reload. Skipped while history is (re)building: loadHistory resets
+    // the flags to defaults and replay re-derives them — persisting
+    // mid-replay would clobber the live-known flags with reset values.
+    const unsubMode = useChatStore.subscribe((s, prev) => {
+      if (s.historyLoading || s.historyLoadingMore) return
+      if (
+        s.sessionId &&
+        (s.planMode !== prev.planMode ||
+          s.permissionMode !== prev.permissionMode ||
+          s.yoloMode !== prev.yoloMode ||
+          s.autoMode !== prev.autoMode)
+      ) {
+        saveModeFlags(s.sessionId, {
+          planMode: s.planMode,
+          permissionMode: s.permissionMode,
+          yoloMode: s.yoloMode,
+          autoMode: s.autoMode,
+        })
+      }
+    })
     transport.connect()
     void get().refreshHosts()
+    // Prefetch the client-global default permission mode (config.toml
+    // ui.permission_mode) so hello/ready misses can show it immediately.
+    // Once loaded, apply it to the announced session when nothing
+    // session-specific is known yet, and re-check the agent-restart
+    // re-seed — a hello that arrived before the defaults had nothing to
+    // seed from, but now the miss fallback is available.
+    void ensureDefaultModeFlags().then(() => {
+      const s = get()
+      if (s.sessionId && s.yoloMode === undefined && s.autoMode === undefined) {
+        const flags = defaultModeFlagsIfMissed(s.sessionId)
+        if (flags.yoloMode !== undefined || flags.autoMode !== undefined) set(flags)
+      }
+      if (lastHelloAgentStartedAt != null) {
+        maybeReseedPermissionMode(get, set, lastHelloAgentStartedAt, s.sessionId)
+      }
+    })
     return () => {
       unsub()
+      unsubMode()
       transport.disconnect()
     }
   },
@@ -1505,6 +1775,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       homeDir: undefined,
       entries: [],
       sessions: [],
+      workspaces: [],
+      workspaceLoading: false,
       pending: [],
       xaiRequests: [],
       diffReview: undefined,
@@ -1513,6 +1785,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       memoryOpen: false,
       pendingOptimisticUserId: undefined,
       modes: undefined,
+      agentCommands: [],
       error: undefined,
       statusWarning: undefined,
       conn: 'connecting',
@@ -1523,9 +1796,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       historyHasMore: false,
       toolIndex: {},
       subagentIndex: {},
+      pendingSubagentFinishes: {},
       bgTaskIndex: {},
       topTasks: [],
       scheduledTasks: [],
+      followUps: undefined,
+      followUpsResponseId: undefined,
       cancelPanelOpen: false,
       queuePanelOpen: false,
       planMode: false,
@@ -1540,6 +1816,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return
     }
     void get().refreshSessions()
+    void get().refreshWorkspaces()
   },
 
   setModel: async (modelId, reasoningEffort) => {
@@ -1637,6 +1914,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       memoryFiles: undefined,
       memoryOpen: false,
       subagentIndex: {},
+      pendingSubagentFinishes: {},
       bgTaskIndex: {},
       // NOTE: topTasks is NOT reset here — continueSession probes the
       // still-running set BEFORE loadHistory, and replayUpdates needs it
@@ -1655,6 +1933,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       expandedGroups: new Set(),
       viewerEntryId: null,
       viewerTask: undefined,
+      followUps: undefined,
+      followUpsResponseId: undefined,
       error: undefined,
       statusWarning: undefined,
       usage: undefined,
@@ -1755,22 +2035,84 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
+  // ── 会话完成提醒（非当前会话 turn 跑完）───────────────────────────
+  // Live turn_completed 事件带 sessionId：别的会话跑完时置对勾 +
+  // 系统通知（未授权则页面 toast）。同一会话 30s 窗口内不重复通知。
+  clearCompletedNotice: (sessionId) => {
+    if (!sessionId) return
+    const cur = get().completedNotices
+    if (!(sessionId in cur)) return
+    const next = { ...cur }
+    delete next[sessionId]
+    set({ completedNotices: next })
+  },
+
+  dismissToast: (id) => set({ toasts: get().toasts.filter((t) => t.id !== id) }),
+
+  noteSessionCompleted: (sessionId) => {
+    const s = get()
+    if (!sessionId || sessionId === s.sessionId) return
+    const now = Date.now()
+    const last = s.completedNotices[sessionId]
+    set({ completedNotices: { ...s.completedNotices, [sessionId]: now } })
+    if (last && now - last < NOTICE_DEDUP_WINDOW_MS) return
+    const live = s.sessions.find((x) => x.sessionId === sessionId)
+    const title = live?.title || sessionId.slice(0, 12)
+    // 系统通知（页面切走/最小化也能看到）；成功则不重复弹页面 toast。
+    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      try {
+        new Notification(`会话完成：${title}`, { body: '点击左侧会话列表查看' })
+        return
+      } catch {
+        /* some browsers throw on construction — fall through to toast */
+      }
+    } else if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+      // 首次遇到完成事件时请求一次授权（拒绝后自动走 toast）。
+      void Notification.requestPermission().then((p) => {
+        if (p === 'granted' && get().completedNotices[sessionId]) {
+          try {
+            new Notification(`会话完成：${title}`, { body: '点击左侧会话列表查看' })
+          } catch {
+            /* ignore */
+          }
+        }
+      })
+    }
+    const text = `「${title}」已完成`
+    set({ toasts: [...s.toasts, { id: `done_${sessionId}_${now}`, text }].slice(-4) })
+  },
+
   continueSession: async (sessionId: string, cwd: string) => {
     if (get().historyLoading || get().historyLoadingMore) return
-    // Opening a conversation counts as viewing it — finished bg tasks
-    // stop being 待处理 from this moment on.
-    get().markViewed(sessionId)
+    // Opening the session clears its completion notice.
+    get().clearCompletedNotice(sessionId)
     set({ historyOpen: false, historyLoading: true })
     try {
       // 1) Make this session the active one (session/load or focus-if-busy);
       // 2) load its tail. Models come from the HTTP response — more reliable
       // than waiting for the SSE ready event, which can race historyLoading.
-      const loaded = await transport.loadSession(sessionId, cwd)
+      // Permission mode rides session/load `_meta` (the agent never persists
+      // ask/auto/always-approve — yolo_mode_changed is fire-and-forget), so
+      // seed it from the flags this client saved for the session, TUI-style:
+      // yoloMode/autoMode are mutually exclusive, yolo wins. Only send when
+      // this browser actually knows the session's permission flags.
+      const savedFlags = restoreModeFlags(sessionId)
+      // Miss (no per-browser record for this session) → client-global
+      // default from config.toml ui.permission_mode (TUI parity).
+      const defaultFlags = await ensureDefaultModeFlags()
+      const modeFlags = sessionModeFlags(savedFlags, defaultFlags)
+      const modeMeta = permissionSeedMeta(modeFlags)
+      const loaded = await transport.loadSession(sessionId, cwd, modeMeta)
       if (loaded.models != null || loaded.modes != null) {
         const modelSnap = applySessionModelState(loaded.models, undefined)
         set({
           ...modelSnap,
           ...(loaded.modes != null ? { modes: loaded.modes } : {}),
+          // Same extraction as hello/ready: the load response's `modes`
+          // (SessionModeState, currentModeId + availableModes) restores
+          // the plan/permission flags — without it a plan-mode session
+          // resumes showing Normal until the next mode change.
+          ...(loaded.modes != null ? extractModeFlags(loaded.modes) : {}),
         })
       }
       // Anchor sessionId before history so live events for this session are
@@ -1787,6 +2129,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // otherwise render a dangling started row with no completion.
       await get().replayRunningTasks(sessionId, cwd)
       await get().loadHistory(sessionId, cwd)
+      // The agent never persists permission mode (yolo_mode_changed is a
+      // fire-and-forget notification), so the replayed timeline cannot
+      // restore ask/auto/always-approve — re-apply the flags this client
+      // knows for the session (saved record, or the config.toml default on
+      // a miss). Plan mode is re-derived by the replayed current_mode_update
+      // timeline; the saved copy matches it in the common case and fills
+      // the permission gaps.
+      set({ ...modeFlags })
       get().startTopTaskPolling(sessionId, cwd)
       // Grace window: session/load recap events stream over SSE and may still
       // be in flight (SSE and fetch are separate channels) — keep dropping
@@ -1934,13 +2284,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  markViewed: (sessionId) => {
-    if (!sessionId) return
-    const next = { ...get().lastViewedAt, [sessionId]: Date.now() }
-    set({ lastViewedAt: next })
-    persistLastViewedAt(next)
-  },
-
   handleEvent: (ev) => {
     switch (ev.type) {
       case 'hello': {
@@ -1968,6 +2311,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
           error: ev.error,
           statusWarning: undefined,
           ...modelSnap,
+          // Permission mode is not in the agent's modes payload — re-apply
+          // the flags this client saved for the session (extractModeFlags
+          // below still wins for whatever the payload DOES carry). A miss
+          // falls back to the config.toml default when already loaded.
+          ...restoreModeFlags(ev.sessionId),
+          ...defaultModeFlagsIfMissed(ev.sessionId),
           ...extractModeFlags(ev.modes),
         })
         if (ev.busy) {
@@ -1987,11 +2336,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // (git_head_changed is fire-and-forget; a fresh page would miss it).
         if (ev.cwd) {
           set({ sessionId: ev.sessionId, cwd: ev.cwd })
+          // The user is looking at this session now — clear its notice.
+          if (ev.sessionId) get().clearCompletedNotice(ev.sessionId)
           void get().refreshGitInfo()
         }
-        // The user is looking at the announced session — mark it viewed
-        // so finished bg tasks don't re-flag it as 待处理.
-        if (ev.sessionId) get().markViewed(ev.sessionId)
+        // Agent restart (host respawned the agent → in-memory permission
+        // mode reset): re-seed the browser-known flags once per instance.
+        if (typeof ev.agentStartedAt === 'number' && ev.agentStartedAt > 0) {
+          lastHelloAgentStartedAt = ev.agentStartedAt
+          maybeReseedPermissionMode(get, set, ev.agentStartedAt, ev.sessionId)
+        }
         break
       }
       case 'ready': {
@@ -2011,6 +2365,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
           error: undefined,
           statusWarning: undefined,
           ...modelSnap,
+          // Same restore as hello: the load response's modes rarely carries
+          // permission info, so saved per-session flags fill the gap; a
+          // miss falls back to the config.toml default when already loaded.
+          ...restoreModeFlags(ev.sessionId),
+          ...defaultModeFlagsIfMissed(ev.sessionId),
           ...extractModeFlags(ev.modes),
         })
         void get().refreshHosts()
@@ -2452,6 +2811,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
         })
         break
       case 'done': {
+        // Live done events carry the owning sessionId. A turn finished in
+        // a DIFFERENT session → completion notice + sidebar ✓ only; the
+        // seal below belongs to THIS session's turn (without this guard
+        // another session's done would wrongly finalize the active one).
+        if (ev.sessionId && ev.sessionId !== get().sessionId) {
+          get().noteSessionCompleted(ev.sessionId)
+          break
+        }
         // TUI TurnCompleted marker ("Worked for 2.0s") — the last scrollback
         // line above the composer, mirroring turn_completion.rs. Idempotent:
         // prompt_complete may race ahead and finalize the turn first.
@@ -2479,6 +2846,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
         break
       }
       case 'turn_completed': {
+        // Live events carry the owning sessionId. A completion from a
+        // DIFFERENT session (that session's turn finished while the user
+        // is here) → completion notice + sidebar ✓ only — never touch
+        // this session's turn (seal / awaitingNext belong to the active
+        // conversation). Replayed history events have no sessionId and
+        // fall through to the seal path below.
+        if (ev.sessionId && ev.sessionId !== get().sessionId) {
+          get().noteSessionCompleted(ev.sessionId)
+          break
+        }
         // Replayed history: seal the finished turn's streaming blocks
         // (live turns finalize via `done`). Idempotent — no-op when the
         // turn was already settled (stored history may carry both
@@ -2639,6 +3016,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
           case 'subagent_finished':
             handleSubagentEvent(get, set, tag, fields)
             break
+          // Permission/plan mode arrives via the standalone yolo_mode_changed
+          // SSE event OR the session_notification tag (the x.ai carrier
+          // replay routes every kind here) — identical flags either way.
+          // current_mode_update (session-mode id, e.g. 'plan') restores the
+          // plan/perm flags from the replayed timeline.
+          case 'yolo_mode_changed':
+            applyModeFlags(set, fields)
+            break
+          case 'current_mode_update': {
+            const flags = extractModeFlags(fields)
+            if (flags) set(flags)
+            break
+          }
           case 'task_backgrounded':
             handleTaskBackgrounded(get, set, fields)
             break
@@ -3269,10 +3659,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         })
         break
       }
-      case 'yolo_mode_changed': {
+      case 'yolo_mode_changed':
         // The agent sends snake_case ({yolo_mode, auto_mode, permission_mode});
         // accept both spellings (camelCase first for host-normalized paths).
-        const p = ev.params ?? {}
+        const p = (ev.params ?? {}) as Record<string, unknown>
         const yolo =
           typeof p.yoloMode === 'boolean'
             ? p.yoloMode
@@ -3302,7 +3692,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ...(planMode !== undefined ? { planMode } : {}),
         })
         break
-      }
       case 'mcp_server_status': {
         const p = ev.params ?? {}
         const name = p.name ? String(p.name) : ''
@@ -3329,6 +3718,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         break
       case 'sessions_changed':
         void get().refreshSessions()
+        void get().refreshWorkspaces()
         break
       case 'hosts_changed':
         // Hub-level: a host paired / came online / dropped off.
@@ -3422,11 +3812,33 @@ export const useChatStore = create<ChatState>((set, get) => ({
         break
       }
       case 'ext_notification': {
-        // Known-noisy notifications with no UI value — drop silently. The
-        // host forwards everything (pass-through), so suppress at the
-        // render boundary; anything else stays visible as a dim status line.
-        if (ev.method === 'x.ai/queue/changed') break
-        if (ev.method === 'x.ai/settings/update') break
+        // Status-type notifications with no scrollback UI value — drop
+        // silently. Aligned with the TUI: these are panel-local status
+        // feeds the TUI shows ONLY inside their dedicated surfaces
+        // (file-watch panel, /search panel, terminal pane, settings
+        // modal, MCP panel), never as scrollback rows — so a generic dim
+        // status line here would be pure noise:
+        // - x.ai/fs_notify / fs/index / fs/index/delta — file-watcher
+        //   state (TUI file-watch panel); fires on every file change.
+        // - x.ai/search/fuzzy/status / search/content/status — search
+        //   engine status (TUI /search panel).
+        // - x.ai/terminal/pty/notification — pty lifecycle (TUI
+        //   terminal pane).
+        // - x.ai/config_changed — config reload notice (TUI settings
+        //   modal; FE has no config editor).
+        // - x.ai/mcp/init_progress — MCP server init progress (TUI MCP
+        //   panel; low-frequency, and the FE has no MCP init UI).
+        // - x.ai/queue/changed, x.ai/settings/update — pre-existing
+        //   silences, same rationale.
+        if (SILENT_EXT_NOTIFICATIONS.has(ev.method ?? '')) break
+        // x.ai/follow_ups — turn-end suggestion chips (TUI follow_ups.rs):
+        // parsed into store state for the Composer's chip row; NO
+        // scrollback line (the TUI renders them as a transient row above
+        // the prompt). Newest-wins by response_id.
+        if (ev.method === 'x.ai/follow_ups') {
+          applyFollowUps(get, set, ev.params)
+          break
+        }
         // Unknown x.ai/* notification — render a dim status line so nothing
         // is silently dropped (matches the host's generic forwarding).
         appendEntry(set, {
@@ -3484,6 +3896,42 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
         break
       }
+      case 'commands_update': {
+        // ACP `available_commands_update` (host-forwarded as
+        // `{type:'commands_update', commands, sessionId}` — `commands`
+        // is the agent's `AvailableCommand[]` passed through untouched).
+        // Defensive extraction: the array may be absent/malformed; only
+        // well-formed entries are kept (name required, rest best-effort).
+        const raw = ev.commands
+        const list = Array.isArray(raw) ? raw : []
+        const agentCommands: AgentCommand[] = []
+        for (const item of list) {
+          if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+          const o = item as Record<string, unknown>
+          const name = typeof o.name === 'string' ? o.name.trim() : ''
+          if (!name) continue
+          let argHint: string | undefined
+          const input = o.input
+          if (typeof input === 'string' && input.trim()) {
+            argHint = input.trim()
+          } else if (input && typeof input === 'object' && !Array.isArray(input)) {
+            const h = (input as Record<string, unknown>).hint
+            if (typeof h === 'string' && h.trim()) argHint = h.trim()
+          }
+          const meta =
+            o._meta && typeof o._meta === 'object' && !Array.isArray(o._meta)
+              ? (o._meta as Record<string, unknown>)
+              : undefined
+          agentCommands.push({
+            name,
+            description: typeof o.description === 'string' ? o.description : undefined,
+            argHint,
+            ...(meta ? { meta } : {}),
+          })
+        }
+        set({ agentCommands })
+        break
+      }
       case 'announcements_update': {
         // x.ai/announcements/update: { gen, announcements: [{id?, title?,
         // message?, severity?, cta?, …}] } — surface each as a status line so
@@ -3500,7 +3948,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           if (!text) continue
           appendEntry(set, {
             kind: 'session_event',
-            text: `公告${sev ? `（${sev}）` : ''}: ${text}`,
+            text,
             warning: sev === 'error' || sev === 'critical',
           })
         }
@@ -3549,6 +3997,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       statusText: 'Thinking',
       awaitingNext: false,
       turnStartedAt: Date.now(),
+      // A manual send starts a new turn: the previous turn's suggestion
+      // chips are retired (TUI clears follow_ups at turn start).
+      followUps: undefined,
+      followUpsResponseId: undefined,
     })
     try {
       // Optional image blocks (Composer image chips): the caller passes
@@ -3971,6 +4423,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const isCurrent = sessionId === get().sessionId
       set({ statusText: `已删除会话 ${sessionId.slice(0, 8)}` })
       void get().refreshSessions()
+      void get().refreshWorkspaces()
       // Deleting the ACTIVE session ends it — fall back to a fresh
       // session (TUI /delete behavior). Historical deletes just refresh
       // the list.
@@ -4271,8 +4724,50 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       const sessions = await transport.listSessions()
       set({ sessions })
+      // Busy 转变检测（完成提醒兜底）：某会话从 busy → idle 且不是
+      // 当前会话 → 通知 + ✓。第一次拉取只建基线，不误报。
+      const next: Record<string, boolean> = {}
+      for (const s of sessions) next[s.sessionId] = s.status?.busy === true
+      const cur = get()
+      for (const [sid, wasBusy] of Object.entries(lastBusySnapshot)) {
+        if (wasBusy && next[sid] === false && sid !== cur.sessionId) {
+          cur.noteSessionCompleted(sid)
+        }
+      }
+      lastBusySnapshot = next
     } catch {
       /* ignore */
+    }
+  },
+
+  refreshWorkspaces: async () => {
+    set({ workspaceLoading: true })
+    try {
+      const workspaces = await transport.workspaceList()
+      set({ workspaces, workspaceLoading: false })
+    } catch {
+      // 降级：workspace-list 不可用时按现有 sessions 的 cwd 分组，
+      // 保证侧边栏永不白屏。
+      const byCwd = new Map<string, WorkspaceSummary[]>()
+      for (const s of get().sessions) {
+        if (!s.cwd) continue
+        const list = byCwd.get(s.cwd) ?? []
+        list.push({
+          sessionId: s.sessionId,
+          cwd: s.cwd,
+          ...(s.title ? { title: s.title } : {}),
+          ...(s.updatedAt ? { updatedAt: s.updatedAt } : {}),
+        })
+        byCwd.set(s.cwd, list)
+      }
+      const workspaces: WorkspaceGroup[] = [...byCwd.entries()].map(
+        ([cwd, sessions]) => ({
+          cwd,
+          label: repoNameFromCwd(cwd),
+          sessions,
+        }),
+      )
+      set({ workspaces, workspaceLoading: false })
     }
   },
 
@@ -4300,6 +4795,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
   newSession: async () => {
     get().stopTopTaskPolling()
     clearSuppressedTools()
+    // A new session inherits the current permission mode (TUI parity:
+    // SessionFlags ride session/new `_meta`; the agent never persists
+    // ask/auto/always-approve). Capture before the reset — yoloMode wins
+    // over autoMode; a miss falls back to the config.toml default. Plan
+    // mode is per-session on the agent side and always starts fresh.
+    const cur = get()
+    const defaultFlags = await ensureDefaultModeFlags()
+    const curFlags = sessionModeFlags(
+      { yoloMode: cur.yoloMode, autoMode: cur.autoMode },
+      defaultFlags,
+    )
+    const inheritMeta = permissionSeedMeta(curFlags)
     set({
       entries: [],
       // Clear the session anchor: until the host's ready(newSessionId)
@@ -4319,11 +4826,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
       memoryFiles: undefined,
       memoryOpen: false,
       subagentIndex: {},
+      pendingSubagentFinishes: {},
       bgTaskIndex: {},
       topTasks: [],
       gitInfo: undefined,
-      yoloMode: undefined,
-      autoMode: undefined,
+      // Keep the inherited permission flags in state so the UI matches
+      // the agent's mode (the fresh session's own restoreModeFlags copy
+      // is empty; the agent only announces yolo_mode_changed on change).
+      yoloMode: curFlags.yoloMode,
+      autoMode: curFlags.autoMode,
       permissionMode: undefined,
       planMode: false,
       mcpServers: [],
@@ -4332,6 +4843,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       expandedGroups: new Set(),
       viewerEntryId: null,
       viewerTask: undefined,
+      followUps: undefined,
+      followUpsResponseId: undefined,
       historySessionId: undefined,
       historyCwd: undefined,
       historyTotalCount: undefined,
@@ -4345,11 +4858,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       turnStartedAt: undefined,
       scheduledTasks: [],
     })
-    await transport.newSession()
-    // A brand-new session has nothing to review — mark it viewed so the
-    // (empty) task state can never flag it as 待处理.
-    const fresh = get().sessionId
-    if (fresh) get().markViewed(fresh)
+    // New session lands in the CURRENT conversation's workspace: inherit
+    // its cwd so "new" starts in the same directory (captured above, before
+    // the anchor reset clears it). Empty cwd (no session yet) → host default.
+    await transport.newSession({
+      ...(cur.cwd ? { cwd: cur.cwd } : {}),
+      ...(inheritMeta ? { meta: inheritMeta } : {}),
+    })
   },
 
   toggleTool: (id) => {
@@ -5181,8 +5696,18 @@ function envelopeToEvent(env: unknown): AcpEvent | null {
         size: up.size as number | undefined,
         cost: up.cost,
       }
-    case 'current_mode_update':
-      return { type: 'modes_update', modes: up.modeState }
+    case 'current_mode_update': {
+      // The stored envelope carries {currentModeId} directly on the update
+      // (the session/new|load `modes` shape), NOT inside modeState — the
+      // old mapping read up.modeState, so plan/permission mode never
+      // survived history replay. Feed either shape through extractModeFlags.
+      const ms =
+        up.modeState ??
+        (typeof up.currentModeId === 'string'
+          ? { currentModeId: up.currentModeId }
+          : undefined)
+      return ms ? { type: 'modes_update', modes: ms } : null
+    }
     case 'config_option_update':
       return { type: 'config_options_update', configOptions: up.configOptions }
     case 'session_info_update':
@@ -5622,6 +6147,187 @@ function appendEntry(set: SetState, entry: EntryWithoutId): void {
   }))
 }
 
+// ── x.ai/follow_ups — turn-end suggestion chips (TUI follow_ups.rs) ─────
+// The TUI renders these as a transient clickable row between the
+// scrollback and the prompt — NEVER as scrollback rows — so the FE parses
+// them into store state for the composer's chip row instead.
+
+/**
+ * x.ai/* notifications with no scrollback UI value — silently dropped in
+ * `handleEvent`'s ext_notification case (the host forwards everything
+ * pass-through, so suppression happens at the render boundary). Aligned
+ * with the TUI: these are status-type notifications shown ONLY inside
+ * their dedicated panels, never as scrollback rows. Everything NOT in
+ * this set still falls through to the dim "扩展通知" status line
+ * (forward visibility).
+ */
+const SILENT_EXT_NOTIFICATIONS = new Set([
+  'x.ai/queue/changed',
+  'x.ai/settings/update',
+  // File-watcher state (TUI file-watch panel) — fires on every change.
+  'x.ai/fs_notify',
+  'x.ai/fs/index',
+  'x.ai/fs/index/delta',
+  // Search engine status (TUI /search panel).
+  'x.ai/search/fuzzy/status',
+  'x.ai/search/content/status',
+  // Pty lifecycle (TUI terminal pane).
+  'x.ai/terminal/pty/notification',
+  // Config reload notice (TUI settings modal; FE has no config editor).
+  'x.ai/config_changed',
+  // MCP server init progress (TUI MCP panel; low-frequency, and the FE
+  // has no MCP init UI to drive).
+  'x.ai/mcp/init_progress',
+])
+
+/** TUI MAX_FOLLOW_UPS — max chips kept from one (server-controlled) delivery. */
+const MAX_FOLLOW_UPS = 6
+/** TUI MAX_FOLLOW_UP_LABEL — max chars per (server-controlled) suggestion. */
+const MAX_FOLLOW_UP_LABEL = 256
+
+/**
+ * Sanitize a server-supplied suggestion label (TUI `sanitize_suggestion`
+ * → `is_unsafe_display_char`): strip control + bidi/format characters so
+ * a chip can neither inject terminal escapes nor spoof layout, bound the
+ * length, and trim surrounding whitespace. Iterated by code point
+ * (Array.from) so surrogate pairs (emoji) survive.
+ */
+function sanitizeFollowUpLabel(label: string): string {
+  const cleaned = Array.from(label)
+    .filter((c) => {
+      const cp = c.codePointAt(0)!
+      const control = cp < 0x20 || (cp >= 0x7f && cp <= 0x9f)
+      const bidiFormat =
+        cp === 0x061c ||
+        (cp >= 0x200b && cp <= 0x200f) ||
+        (cp >= 0x202a && cp <= 0x202e) ||
+        (cp >= 0x2060 && cp <= 0x206f) ||
+        cp === 0xfeff
+      return !control && !bidiFormat
+    })
+    .slice(0, MAX_FOLLOW_UP_LABEL)
+    .join('')
+  return cleaned.trim()
+}
+
+/**
+ * Handle `x.ai/follow_ups` — store turn-end suggestion chips for the
+ * latest assistant response. Wire params (TUI FollowUpsParams, snake_case
+ * verbatim): `{ response_id, suggestions: [{ label, … }], promptId?,
+ * _meta? }`. Only the labels are consumed; count/length are bounded and
+ * labels sanitized at ingestion. No scrollback row — chips live in the
+ * composer, above the input. Newest-wins keyed by `response_id` (TUI
+ * AgentView::apply_follow_ups): a missing id is ignored, a same-id
+ * re-delivery is idempotent, a newer id replaces, and an empty (or
+ * all-sanitized-away) list retracts the chips. Malformed payloads are
+ * ignored (no chip, no scrollback line).
+ */
+function applyFollowUps(
+  get: () => ChatState,
+  set: SetState,
+  params?: Record<string, unknown>,
+): void {
+  let p = params
+  // Defensive: some hosts ship the params as a raw JSON string (the TUI
+  // reads `notif.params` as one) instead of a pre-parsed object.
+  if (typeof p === 'string') {
+    try {
+      p = JSON.parse(p) as Record<string, unknown>
+    } catch {
+      return
+    }
+  }
+  if (!p || typeof p !== 'object' || Array.isArray(p)) return
+  const responseId =
+    (typeof p.response_id === 'string' && p.response_id ? p.response_id : '') ||
+    (typeof p.responseId === 'string' ? p.responseId : '')
+  if (!responseId || responseId === get().followUpsResponseId) return
+  const raw = Array.isArray(p.suggestions) ? p.suggestions : []
+  const suggestions: FollowUp[] = []
+  for (const s of raw.slice(0, MAX_FOLLOW_UPS)) {
+    const label =
+      typeof s === 'string'
+        ? s
+        : s && typeof s === 'object'
+          ? (s as Record<string, unknown>).label
+          : undefined
+    if (typeof label !== 'string') continue
+    const cleaned = sanitizeFollowUpLabel(label)
+    if (cleaned) suggestions.push({ label: cleaned })
+  }
+  set({
+    followUpsResponseId: responseId,
+    followUps: suggestions.length > 0 ? suggestions : undefined,
+  })
+}
+
+/**
+ * Shared plan/permission-flag application — used by the standalone
+ * yolo_mode_changed SSE event, the session_notification tag, and history
+ * replay. The agent sends snake_case ({yolo_mode, auto_mode,
+ * permission_mode}); accept both spellings (camelCase first for
+ * host-normalized paths). Plan mode rides the same wire: permissionMode
+ * 'plan' means the agent is in plan mode (Shift+Tab cycle gear + prompt
+ * flag).
+ */
+function applyModeFlags(set: SetState, p: Record<string, unknown>): void {
+  const yolo =
+    typeof p.yoloMode === 'boolean'
+      ? p.yoloMode
+      : typeof p.yolo_mode === 'boolean'
+        ? p.yolo_mode
+        : undefined
+  const auto =
+    typeof p.autoMode === 'boolean'
+      ? p.autoMode
+      : typeof p.auto_mode === 'boolean'
+        ? p.auto_mode
+        : undefined
+  const perm =
+    typeof p.permissionMode === 'string' && p.permissionMode
+      ? p.permissionMode
+      : typeof p.permission_mode === 'string' && p.permission_mode
+        ? p.permission_mode
+        : undefined
+  const planMode =
+    perm === 'plan' ? true : perm != null && perm !== '' ? false : undefined
+  set({
+    yoloMode: yolo,
+    autoMode: auto,
+    permissionMode: perm,
+    ...(planMode !== undefined ? { planMode } : {}),
+  })
+}
+
+/** Normalize a subagent_finished wire status to the entry status set. */
+function subagentFinishStatus(fields: Record<string, unknown>): SubagentStatus {
+  const raw = typeof fields.status === 'string' ? fields.status : 'completed'
+  return raw === 'completed' || raw === 'failed' || raw === 'cancelled' ? raw : 'completed'
+}
+
+/** Apply a subagent finish to its scrollback entry (shared live/replay). */
+function applySubagentFinish(
+  get: () => ChatState,
+  set: SetState,
+  entryId: string,
+  status: SubagentStatus,
+  durationMs?: number,
+): void {
+  set({
+    entries: get().entries.map((e) =>
+      e.id === entryId && e.kind === 'subagent'
+        ? {
+            ...e,
+            status,
+            running: false,
+            finishedAt: Date.now(),
+            detail: durationMs != null ? `${(durationMs / 1000).toFixed(0)}s` : e.detail,
+          }
+        : e,
+    ),
+  })
+}
+
 /** subagent_spawned / subagent_finished (session_notification carrier). */
 function handleSubagentEvent(
   get: () => ChatState,
@@ -5654,30 +6360,42 @@ function handleSubagentEvent(
         },
       ],
     }))
+    // A finish may have replayed BEFORE its spawn: history loads the
+    // newest page first, so a subagent_finished in a newer page is
+    // orphaned until the older page's subagent_spawned arrives. Apply
+    // the buffered finish now — the row carries the REAL status/duration
+    // instead of being force-sealed by settleTurnEntries.
+    const pending = get().pendingSubagentFinishes[id]
+    if (pending) {
+      applySubagentFinish(get, set, eid, pending.status, pending.durationMs)
+      set((s) => {
+        const next = { ...s.pendingSubagentFinishes }
+        delete next[id]
+        return { pendingSubagentFinishes: next }
+      })
+    }
     return
   }
 
   // finished
-  if (!entryId) return
-  const statusRaw = typeof fields.status === 'string' ? fields.status : 'completed'
-  const status =
-    statusRaw === 'completed' || statusRaw === 'failed' || statusRaw === 'cancelled'
-      ? statusRaw
-      : 'completed'
+  const status = subagentFinishStatus(fields)
+  if (!entryId) {
+    // History replay can deliver the finish before its spawn (page
+    // boundary, newest page first) — buffer it until the spawn replays.
+    // Live finishes never orphan (spawn always precedes finish in real
+    // time). Cleared by every loadHistory / session reset.
+    const durationMs =
+      typeof fields.duration_ms === 'number' ? fields.duration_ms : undefined
+    set((s) => ({
+      pendingSubagentFinishes: {
+        ...s.pendingSubagentFinishes,
+        [id]: { status, ...(durationMs != null ? { durationMs } : {}) },
+      },
+    }))
+    return
+  }
   const durMs = typeof fields.duration_ms === 'number' ? fields.duration_ms : undefined
-  set({
-    entries: get().entries.map((e) =>
-      e.id === entryId && e.kind === 'subagent'
-        ? {
-            ...e,
-            status,
-            running: false,
-            finishedAt: Date.now(),
-            detail: durMs != null ? `${(durMs / 1000).toFixed(0)}s` : e.detail,
-          }
-        : e,
-    ),
-  })
+  applySubagentFinish(get, set, entryId, status, durMs)
 }
 
 /** Non-empty trimmed string, or undefined. */

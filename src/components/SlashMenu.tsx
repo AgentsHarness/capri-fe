@@ -54,6 +54,11 @@ export function SlashMenu({
             <span className="font-mono text-[12px] text-gn-cyan">
               /{m.cmd.name}
             </span>
+            {m.cmd.source === 'agent' && (
+              <span className="ml-1 font-mono text-[10px] text-gn-accent-system">
+                [agent]
+              </span>
+            )}
             {(m.cmd.aliases ?? []).map((a) => (
               <span
                 key={a}

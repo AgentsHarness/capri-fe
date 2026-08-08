@@ -10,13 +10,18 @@ import { useChatStore, type ExtensionsTab } from '../store/chat'
 import { usePromptQueue } from '../store/promptQueue'
 import { THEMES, useThemeStore } from '../store/theme'
 import type { ThemeId } from '../theme/tokens'
-import { transport } from '../api/localTransport'
 
 export type SlashCommand = {
   name: string
   aliases?: string[]
   description: string
   argHint?: string
+  /**
+   * Command origin. Local commands omit it; agent-advertised commands
+   * (ACP `available_commands_update`) set `'agent'` so the menu can tag
+   * them and their `run` sends the raw `/name args` line to the agent.
+   */
+  source?: 'local' | 'agent'
   run: (args: string) => void | Promise<void>
 }
 
@@ -363,7 +368,7 @@ export const slashCommands: SlashCommand[] = [
     name: 'help',
     description: '显示全部命令',
     run: () => {
-      const lines = slashCommands.map((c) => {
+      const lines = mergedSlashCommands().map((c) => {
         const names = [c.name, ...(c.aliases ?? [])]
           .map((n) => `/${n}`)
           .join(' / ')
@@ -526,7 +531,51 @@ export const slashCommands: SlashCommand[] = [
 ]
 
 /**
- * Parse "/name args" — exact match on name/aliases (case-insensitive).
+ * Merge the local registry with the agent's advertised commands (TUI
+ * `CommandRegistry::apply_acp_commands`, slash/registry.rs):
+ *   - local commands always win — an agent name colliding with a local
+ *     name OR alias (case-insensitive) is skipped entirely;
+ *   - agent commands append after the local list (advertisement order,
+ *     duplicates within the agent list dropped);
+ *   - an agent command's `run` sends the raw `/name args` line as a
+ *     USER MESSAGE (TUI `AcpSlashCommand::run` → `PassThrough` →
+ *     `enqueue_prompt_with_skill_tokens`); while a turn is running it
+ *     goes through the existing queue (same as any prompt).
+ */
+export function mergedSlashCommands(): SlashCommand[] {
+  const agentCommands = useChatStore.getState().agentCommands
+  if (agentCommands.length === 0) return slashCommands
+  const claimed = new Set<string>()
+  for (const c of slashCommands) {
+    claimed.add(c.name.toLowerCase())
+    for (const a of c.aliases ?? []) claimed.add(a.toLowerCase())
+  }
+  const out: SlashCommand[] = [...slashCommands]
+  for (const ac of agentCommands) {
+    const name = ac.name.trim()
+    if (!name) continue
+    const key = name.toLowerCase()
+    if (claimed.has(key)) continue // local wins (TUI skips colliding ACP names)
+    claimed.add(key)
+    out.push({
+      name,
+      description: ac.description || name,
+      argHint: ac.argHint,
+      source: 'agent',
+      // TUI semantics: the raw `/name args` line is passed through to the
+      // agent as a user prompt — the agent parses the slash command itself.
+      run: (args) => {
+        const trimmed = args.trim()
+        sendPrompt(trimmed ? `/${name} ${trimmed}` : `/${name}`)
+      },
+    })
+  }
+  return out
+}
+
+/**
+ * Parse "/name args" — exact match on name/aliases (case-insensitive),
+ * over the merged local + agent command list.
  * Returns null for "/" alone and for unknown commands (the caller appends
  * an error row and never sends).
  */
@@ -540,7 +589,7 @@ export function matchSlash(
   const name = (sp === -1 ? body : body.slice(0, sp)).toLowerCase()
   if (!name) return null
   const args = sp === -1 ? '' : body.slice(sp).trim()
-  const cmd = slashCommands.find(
+  const cmd = mergedSlashCommands().find(
     (c) => c.name === name || (c.aliases ?? []).includes(name),
   )
   return cmd ? { cmd, args } : null
@@ -549,13 +598,15 @@ export function matchSlash(
 /**
  * Fuzzy filter for the slash menu: substring over name+aliases+description,
  * ranked (name prefix < name contains < alias prefix < alias contains <
- * description). Stable by command name within a rank.
+ * description). Stable by command name within a rank. Considers the merged
+ * local + agent command list.
  */
 export function filterSlashCommands(input: string): SlashMatch[] {
   const q = input.slice(1).split(/\s/)[0].trim().toLowerCase()
-  if (!q) return slashCommands.map((cmd) => ({ cmd, score: 0 }))
+  const commands = mergedSlashCommands()
+  if (!q) return commands.map((cmd) => ({ cmd, score: 0 }))
   const out: SlashMatch[] = []
-  for (const cmd of slashCommands) {
+  for (const cmd of commands) {
     const name = cmd.name
     const aliases = cmd.aliases ?? []
     if (

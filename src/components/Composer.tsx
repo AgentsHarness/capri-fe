@@ -260,6 +260,8 @@ export function Composer() {
   const modeBanner = useChatStore((s) => s.modeBanner)
   const clearModeBanner = useChatStore((s) => s.clearModeBanner)
   const awaitingNext = useChatStore((s) => s.awaitingNext)
+  /** TUI FollowUps state — turn-end suggestion chips (x.ai/follow_ups). */
+  const followUps = useChatStore((s) => s.followUps)
   const entries = useChatStore((s) => s.entries)
   const topTasks = useChatStore((s) => s.topTasks)
   const tasksBarOpen = useChatStore((s) => s.tasksBarOpen)
@@ -404,6 +406,17 @@ export function Composer() {
   }
 
   /**
+   * TUI follow-up chip click (mouse.rs → Action::SubmitFollowUp →
+   * dispatch_send_prompt_inner literal=true): the suggestion is sent
+   * IMMEDIATELY as a literal model prompt — no busy gating (the TUI does
+   * not intercept mid-turn either). send() retires the chips (turn
+   * start), so the row disappears as the new turn begins.
+   */
+  const sendFollowUp = (label: string) => {
+    void useChatStore.getState().send(label)
+  }
+
+  /**
    * TUI double-Enter / [发送现在]: drain the queue head immediately.
    * `sending` is the mutex shared with the auto-send effect — a user
    * gesture can never race the turn-end auto-send into a double prompt.
@@ -507,9 +520,12 @@ export function Composer() {
     !slashDismissed &&
     text.startsWith('/') &&
     !text.slice(1).includes(' ')
+  // Agent-advertised commands (ACP available_commands_update) feed the
+  // menu — subscribed here so the list refreshes when they arrive.
+  const agentCommands = useChatStore((s) => s.agentCommands)
   const slashMatches = useMemo(
     () => (slashOpen ? filterSlashCommands(text) : []),
-    [slashOpen, text],
+    [slashOpen, text, agentCommands],
   )
   const slashList = useMemo(
     () => slashMatches.map((m) => m.cmd),
@@ -1219,7 +1235,7 @@ export function Composer() {
             <button
               ref={queuePillRef}
               type="button"
-              onClick={() => setQueuePanelOpen((v) => !v)}
+              onClick={() => setQueuePanelOpen(!queuePanelOpen)}
               className="inline-flex min-h-6 items-center gap-1.5 rounded-full border border-gn-prompt-border bg-gn-bg-dark px-2.5 text-[11px] leading-none transition-colors hover:border-gn-prompt-border-active sm:min-h-0"
               title="点击查看发送队列"
             >
@@ -1227,6 +1243,32 @@ export function Composer() {
               <span className="text-gn-gray">·</span>
               <span className="text-gn-gray">Ctrl+Enter 立即发送</span>
             </button>
+          </div>
+        )}
+        {/*
+          ── TUI follow-up suggestion chips (x.ai/follow_ups, follow_ups.rs) ──
+          Turn-end suggestions rendered as a transient row between the
+          scrollback and the prompt (TUI: `[ label ]` chips above the prompt
+          line). Shown only when the turn is over and nothing is in flight;
+          hidden while busy (TUI clears the chips at turn start). Click sends
+          the suggestion immediately as a literal model prompt.
+        */}
+        {followUps && followUps.length > 0 && !busy && (
+          <div
+            className="mb-1.5 flex min-h-6 flex-wrap items-center gap-1.5"
+            style={{ paddingLeft: COMPOSER_BODY_PAD_LEFT_PX }}
+          >
+            {followUps.map((f, i) => (
+              <button
+                key={`${i}-${f.label}`}
+                type="button"
+                onClick={() => sendFollowUp(f.label)}
+                className="inline-flex max-w-full min-h-6 items-center rounded-full border border-gn-prompt-border bg-gn-bg-dark px-2.5 text-[11px] leading-none transition-colors hover:border-gn-prompt-border-active hover:bg-gn-bg-highlight hover:text-gn-fg sm:min-h-0"
+                title="发送该建议"
+              >
+                <span className="truncate text-gn-fg2">{f.label}</span>
+              </button>
+            ))}
           </div>
         )}
         {/*

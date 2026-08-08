@@ -548,7 +548,7 @@ function RunDetail({ run }: { run: WorkflowRun }) {
           <div className="mt-0.5 space-y-0.5">
             {run.phases.map((ph) => {
               const current =
-                run.current_phase === ph.title || ph.state === 'active'
+                run.phase === ph.title || ph.state === 'active'
               return (
                 <div
                   key={ph.title}

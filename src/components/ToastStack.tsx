@@ -1,0 +1,52 @@
+import { useEffect } from 'react'
+import { useChatStore } from '../store/chat'
+
+/** In-page toast auto-dismiss window. */
+const TOAST_TTL_MS = 6000
+
+/**
+ * Completion toasts — top-right stack (below the TopBar), shown when a
+ * session finished while the user was elsewhere and system notifications
+ * are not granted. Each toast auto-dismisses after TOAST_TTL_MS and has
+ * a manual ✕.
+ */
+export function ToastStack() {
+  const toasts = useChatStore((s) => s.toasts)
+  const dismissToast = useChatStore((s) => s.dismissToast)
+
+  // Auto-dismiss: re-arm a timer per toast id (a re-shown notice of the
+  // same session gets a fresh id, so timers never collide).
+  useEffect(() => {
+    if (toasts.length === 0) return
+    const timers = toasts.map((t) =>
+      window.setTimeout(() => dismissToast(t.id), TOAST_TTL_MS),
+    )
+    return () => timers.forEach((id) => window.clearTimeout(id))
+  }, [toasts, dismissToast])
+
+  if (toasts.length === 0) return null
+
+  return (
+    <div className="pointer-events-none fixed right-4 top-14 z-50 flex w-80 flex-col gap-2">
+      {toasts.map((t) => (
+        <div
+          key={t.id}
+          className="pointer-events-auto flex items-start gap-2 rounded border border-gn-prompt-border bg-gn-bg-dark px-3 py-2 shadow-lg"
+        >
+          <span className="mt-px shrink-0 text-[11px] leading-none text-gn-green">✓</span>
+          <span className="min-w-0 flex-1 truncate text-[12px] text-gn-fg" title={t.text}>
+            {t.text}
+          </span>
+          <button
+            type="button"
+            onClick={() => dismissToast(t.id)}
+            className="shrink-0 rounded px-0.5 text-[11px] leading-none text-gn-gutter hover:text-gn-fg"
+            aria-label="关闭提醒"
+          >
+            ✕
+          </button>
+        </div>
+      ))}
+    </div>
+  )
+}

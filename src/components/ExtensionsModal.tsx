@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useChatStore } from '../store/chat'
-import { transport, type ExtensionsPayload } from '../api/localTransport'
-import type { ExtensionHook, ExtensionPlugin, ExtensionSkill } from '../api/types'
+import {
+  transport,
+  type ExtensionsPayload,
+  type ExtensionHook,
+  type ExtensionPlugin,
+  type ExtensionSkill,
+} from '../api/localTransport'
 import { Glyphs } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
 
@@ -32,9 +37,12 @@ const STATUS_FILTERS: ReadonlyArray<{ id: StatusFilter; label: string }> = [
  * unknown state stay visible under any filter (TUI StatusFilter::matches
  * gated on known state).
  */
-function filterByStatus<T extends { enabled?: boolean }>(items: T[], filter: StatusFilter): T[] {
+function filterByStatus<T extends object>(items: T[], filter: StatusFilter): T[] {
   if (filter === 'all') return items
-  return items.filter((x) => x.enabled === undefined || (filter === 'enabled') === x.enabled)
+  return items.filter((x) => {
+    const enabled = (x as { enabled?: boolean }).enabled
+    return enabled === undefined || (filter === 'enabled') === enabled
+  })
 }
 
 type ExtGroup<T> = { key: string; label: string; items: T[] }

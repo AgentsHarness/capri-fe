@@ -1,11 +1,16 @@
 import type {
   AcpEvent,
   ContentBlock,
+  ExtensionHook,
+  ExtensionPlugin,
+  ExtensionSkill,
   HostInfo,
   PermissionScope,
   RewindPoint,
   SessionInfo,
   SessionInfoDetail,
+  WorkspaceGroup,
+  WorkspaceSummary,
 } from './types'
 
 export type TransportHandler = (ev: AcpEvent) => void
@@ -149,7 +154,13 @@ export class LocalTransport {
     if (!res.ok || data.ok === false) throw new Error(data.error || 'client response failed')
   }
 
-  async newSession(config: { cwd?: string; additionalDirectories?: string[]; mcpServers?: unknown[] } = {}) {
+  async newSession(config: {
+    cwd?: string
+    additionalDirectories?: string[]
+    mcpServers?: unknown[]
+    /** Permission-mode seeds (TUI's yoloMode/autoMode) → session/new `_meta`. */
+    meta?: Record<string, unknown>
+  } = {}) {
     const res = await fetch(this.url('/api/session'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -178,7 +189,78 @@ export class LocalTransport {
   }
 
   /**
+   * x.ai/session_summaries/workspace_list — session summaries bucketed
+   * by workspace. Wire shape: all_sessions = { "<cwd>": [summary, ...] },
+   * possibly wrapped in an ExtMethodResult envelope ({ ok, result: {...} }
+   * or deeper) — dug out via findObjectField. Each summary is snake_case
+   * (info.id / info.cwd / session_summary / updated_at / num_messages /
+   * current_model_id) and normalized to WorkspaceGroup[] here.
+   */
+  async workspaceList(): Promise<WorkspaceGroup[]> {
+    const res = await fetch(this.url('/api/session-summaries/workspace-list'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `workspace list failed (${res.status})`)
+    }
+    const all = findObjectField(data, 'all_sessions')
+    const groups: WorkspaceGroup[] = []
+    if (!all) return groups
+    for (const [cwd, raw] of Object.entries(all)) {
+      if (!Array.isArray(raw)) continue
+      const sessions: WorkspaceSummary[] = []
+      for (const s of raw) {
+        if (!s || typeof s !== 'object') continue
+        const o = s as Record<string, unknown>
+        const info =
+          o.info && typeof o.info === 'object' && !Array.isArray(o.info)
+            ? (o.info as Record<string, unknown>)
+            : {}
+        const id =
+          (typeof info.id === 'string' && info.id) ||
+          (typeof o.session_id === 'string' && o.session_id) ||
+          (typeof o.sessionId === 'string' && o.sessionId) ||
+          ''
+        if (!id) continue
+        const summary =
+          (typeof o.session_summary === 'string' && o.session_summary.trim()) ||
+          (typeof o.sessionSummary === 'string' && o.sessionSummary.trim()) ||
+          ''
+        sessions.push({
+          sessionId: id,
+          cwd: (typeof info.cwd === 'string' && info.cwd) || cwd,
+          // session_summary 兜底 info.id 前 12 字符。
+          title: summary || id.slice(0, 12),
+          ...(typeof o.updated_at === 'string' && o.updated_at
+            ? { updatedAt: o.updated_at }
+            : typeof o.updatedAt === 'string' && o.updatedAt
+              ? { updatedAt: o.updatedAt }
+              : {}),
+          ...(typeof o.current_model_id === 'string' && o.current_model_id
+            ? { currentModelId: o.current_model_id }
+            : typeof o.currentModelId === 'string' && o.currentModelId
+              ? { currentModelId: o.currentModelId }
+              : {}),
+          ...(typeof o.num_messages === 'number' && Number.isFinite(o.num_messages)
+            ? { numMessages: o.num_messages }
+            : typeof o.numMessages === 'number' && Number.isFinite(o.numMessages)
+              ? { numMessages: o.numMessages }
+              : {}),
+        })
+      }
+      if (sessions.length > 0) groups.push({ cwd, label: cwd, sessions })
+    }
+    return groups
+  }
+
+  /**
    * Switch the active session to a historical one (session/load).
+   * `meta` (permission-mode seeds, e.g. {yoloMode, autoMode}) is
+   * forwarded as the request `_meta` so the agent restores the session's
+   * permission mode — the agent never persists ask/auto/always-approve.
    * Returns the load response fields (notably `models` SessionModelState
    * and `busy` when focusing an in-flight session) so the UI can update
    * without racing SSE.
@@ -186,6 +268,7 @@ export class LocalTransport {
   async loadSession(
     sessionId: string,
     cwd: string,
+    meta?: Record<string, unknown>,
   ): Promise<{
     models?: unknown
     modes?: unknown
@@ -195,7 +278,7 @@ export class LocalTransport {
     const res = await fetch(this.url('/api/session-load'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, cwd }),
+      body: JSON.stringify({ sessionId, cwd, ...(meta ? { meta } : {}) }),
     })
     const data = await res.json()
     if (!res.ok || data.ok === false) {
@@ -847,6 +930,7 @@ export class LocalTransport {
         name: typeof s.name === 'string' ? s.name : '',
         ...(typeof s.scope === 'string' && s.scope ? { scope: s.scope } : {}),
         ...(typeof s.path === 'string' && s.path ? { path: s.path } : {}),
+        ...(typeof s.enabled === 'boolean' ? { enabled: s.enabled } : {}),
       }))
       .filter((s) => s.name)
     return { hooks, plugins, skills }
@@ -883,27 +967,8 @@ export type McpListServer = {
   status?: string
 }
 
-/** GET /api/extensions — one hook row. */
-export type ExtensionHook = {
-  name: string
-  command?: string
-  event?: string
-  enabled?: boolean
-}
-
-/** GET /api/extensions — one plugin row. */
-export type ExtensionPlugin = {
-  name: string
-  source?: string
-  enabled?: boolean
-}
-
-/** GET /api/extensions — one skill row (path = SKILL.md location). */
-export type ExtensionSkill = {
-  name: string
-  scope?: string
-  path?: string
-}
+/** GET /api/extensions — one hook/plugin/skill row (canonical types). */
+export type { ExtensionHook, ExtensionPlugin, ExtensionSkill } from './types'
 
 /** GET /api/extensions — full payload (arrays always present, maybe empty). */
 export type ExtensionsPayload = {

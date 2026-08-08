@@ -168,11 +168,9 @@ export function TopBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
   const showSessionInfo = useChatStore((s) => s.showSessionInfo)
   const openExtensions = useChatStore((s) => s.openExtensions)
   const openSettings = useChatStore((s) => s.openSettings)
-  const lastViewedAt = useChatStore((s) => s.lastViewedAt)
-  const openedAt = useChatStore((s) => s.openedAt)
   const historyGroups = useMemo(
-    () => groupByState(sessions, { currentSessionId: sessionId, lastViewedAt, openedAt }),
-    [sessions, sessionId, lastViewedAt, openedAt],
+    () => groupByState(sessions, sessionId),
+    [sessions, sessionId],
   )
 
   /** Collapsed status groups in the mobile dropdown (处理中/后台任务/待处理/空闲). */
@@ -190,10 +188,8 @@ export function TopBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
   // Shared braille spinner for "active" rows in the mobile dropdown.
   const anyActive = useMemo(
     () =>
-      sessions.some((s) =>
-        sessionGroupKey(s, { currentSessionId: sessionId, lastViewedAt, openedAt }) === 'active',
-      ),
-    [sessions, sessionId, lastViewedAt, openedAt],
+      sessions.some((s) => sessionGroupKey(s, sessionId) === 'active'),
+    [sessions, sessionId],
   )
   const spinnerFrame = useSessionSpinner(anyActive)
 
@@ -451,7 +447,7 @@ export function TopBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
                         const active = s.sessionId === sessionId
                         // Row icon follows its bucket: 处理中 spinner /
                         // 后台任务 ◇ + bg badge / 待处理 blue diamond / 空闲 hollow ◇.
-                        const key = sessionGroupKey(s, { currentSessionId: sessionId, lastViewedAt, openedAt })
+                        const key = sessionGroupKey(s, sessionId)
                         const state = key === 'active' ? 'active' : 'idle'
                         const pending = key === 'awaiting'
                         return (

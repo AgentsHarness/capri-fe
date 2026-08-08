@@ -166,6 +166,88 @@ body {
   margin-bottom: 0;
 }
 
+/* Code-block syntax highlighting — Tokyo Night token palette (the TUI's
+   syntect tmTheme) on the existing code-surface token. rehype-highlight
+   emits `code.hljs` with `.hljs-*` token spans. */
+.gn-md pre code.hljs {
+  background: transparent;
+  color: var(--color-gn-fg2);
+}
+.gn-md pre code.hljs .hljs-keyword,
+.gn-md pre code.hljs .hljs-doctag,
+.gn-md pre code.hljs .hljs-selector-tag,
+.gn-md pre code.hljs .hljs-meta .hljs-keyword {
+  color: #bb9af7; /* tokyo-night keyword */
+}
+.gn-md pre code.hljs .hljs-string,
+.gn-md pre code.hljs .hljs-regexp,
+.gn-md pre code.hljs .hljs-addition,
+.gn-md pre code.hljs .hljs-char.escape_ {
+  color: #9ece6a; /* tokyo-night string */
+}
+.gn-md pre code.hljs .hljs-comment,
+.gn-md pre code.hljs .hljs-quote {
+  color: #565f89; /* tokyo-night comment */
+  font-style: italic;
+}
+.gn-md pre code.hljs .hljs-title,
+.gn-md pre code.hljs .hljs-title.function_,
+.gn-md pre code.hljs .hljs-section,
+.gn-md pre code.hljs .hljs-tag,
+.gn-md pre code.hljs .hljs-name,
+.gn-md pre code.hljs .hljs-selector-id,
+.gn-md pre code.hljs .hljs-selector-class {
+  color: #7aa2f7; /* tokyo-night function / entity name */
+}
+.gn-md pre code.hljs .hljs-number,
+.gn-md pre code.hljs .hljs-literal,
+.gn-md pre code.hljs .hljs-symbol,
+.gn-md pre code.hljs .hljs-meta {
+  color: #ff9e64; /* tokyo-night number / constant */
+}
+.gn-md pre code.hljs .hljs-type,
+.gn-md pre code.hljs .hljs-built_in,
+.gn-md pre code.hljs .hljs-title.class_ {
+  color: #2ac3de; /* tokyo-night type */
+}
+.gn-md pre code.hljs .hljs-attr,
+.gn-md pre code.hljs .hljs-attribute,
+.gn-md pre code.hljs .hljs-property,
+.gn-md pre code.hljs .hljs-variable,
+.gn-md pre code.hljs .hljs-template-variable,
+.gn-md pre code.hljs .hljs-selector-attr,
+.gn-md pre code.hljs .hljs-selector-pseudo {
+  color: #7dcfff; /* tokyo-night cyan (attribute / property) */
+}
+.gn-md pre code.hljs .hljs-params,
+.gn-md pre code.hljs .hljs-constant,
+.gn-md pre code.hljs .hljs-subst,
+.gn-md pre code.hljs .hljs-formula {
+  color: var(--color-gn-fg2);
+}
+.gn-md pre code.hljs .hljs-operator,
+.gn-md pre code.hljs .hljs-punctuation {
+  color: #89ddff; /* tokyo-night operator */
+}
+.gn-md pre code.hljs .hljs-deletion {
+  color: #f7768e; /* tokyo-night red */
+}
+.gn-md pre code.hljs .hljs-emphasis {
+  font-style: italic;
+}
+.gn-md pre code.hljs .hljs-strong {
+  font-weight: 700;
+}
+
+/* Mermaid diagram block (TUI parity): rendered SVG + ◇ mermaid affordance
+   row. The SVG keeps its own (mermaid dark/default) surface; it must never
+   overflow the message column. */
+.gn-mermaid svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
 /* Prefer reduced motion: AccentRail freezes wave via prefers-reduced-motion
    is handled in JS by still painting solid when frozen; CSS pulse suppressed. */
 @media (prefers-reduced-motion: reduce) {

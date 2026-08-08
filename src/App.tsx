@@ -19,6 +19,7 @@ import { BlockViewer } from './components/BlockViewer'
 import { SessionInfoModal } from './components/SessionInfoModal'
 import { RewindPicker } from './components/RewindPicker'
 import { WorkflowPanel } from './components/WorkflowPanel'
+import { ToastStack } from './components/ToastStack'
 import { registerMcpPanelOpener } from './commands/registry'
 import { useScrollbackKeys } from './hooks/useScrollbackKeys'
 
@@ -72,6 +73,7 @@ export default function App() {
       <SessionInfoModal />
       <RewindPicker />
       <WorkflowPanel />
+      <ToastStack />
     </div>
   )
 }

@@ -41,6 +41,31 @@ export type SessionInfo = {
 }
 
 /**
+ * One session summary row from POST /api/session-summaries/workspace-list
+ * (x.ai/session_summaries/workspace_list). The wire is snake_case
+ * (info.id / info.cwd / session_summary / updated_at / num_messages /
+ * current_model_id) — normalized to camelCase by LocalTransport.
+ */
+export type WorkspaceSummary = {
+  sessionId: string
+  cwd: string
+  /** Display title (agent-backfilled session_summary; falls back to the id prefix). */
+  title?: string
+  /** ISO timestamp of the last update. */
+  updatedAt?: string
+  currentModelId?: string
+  numMessages?: number
+}
+
+/** One workspace bucket: full cwd path → its session summaries. */
+export type WorkspaceGroup = {
+  cwd: string
+  /** Display label (full cwd from the wire; short name via repoNameFromCwd). */
+  label: string
+  sessions: WorkspaceSummary[]
+}
+
+/**
  * One still-running task event (POST /api/session-running-tasks) — the
  * host scan of updates.jsonl, liveness-probed (task_backgrounded orphans
  * whose output log is held open by a live process). Mirrors the wire
@@ -155,10 +180,50 @@ export type ModelOption = {
   contextWindow?: number
 }
 
+/**
+ * One agent-advertised slash command — ACP `AvailableCommand`
+ * (agent-client-protocol-schema, `rename_all = "camelCase"`), forwarded
+ * verbatim by acp-host as the `commands_update` SSE event's `commands`
+ * array. Wire fields: `name`, `description`, `input: { hint }`, `_meta`.
+ * The store normalizes it defensively (name required; the rest optional).
+ */
+export type AgentCommand = {
+  name: string
+  description?: string
+  /** Argument placeholder (wire `input.hint`). */
+  argHint?: string
+  /** Reserved ACP `_meta` (skill identity etc.) — untouched passthrough. */
+  meta?: Record<string, unknown>
+}
+
 export type PendingReq = {
   requestId: string
   method: string
   params?: Record<string, unknown>
+}
+
+/** GET /api/extensions — one hook row. */
+export type ExtensionHook = {
+  name: string
+  command?: string
+  event?: string
+  enabled?: boolean
+}
+
+/** GET /api/extensions — one plugin row. */
+export type ExtensionPlugin = {
+  name: string
+  source?: string
+  enabled?: boolean
+}
+
+/** GET /api/extensions — one skill row (path = SKILL.md location). */
+export type ExtensionSkill = {
+  name: string
+  scope?: string
+  path?: string
+  /** Optional enable state — skills without it stay visible under any filter. */
+  enabled?: boolean
 }
 
 /**
@@ -211,6 +276,13 @@ export type AcpEvent =
       configOptions?: unknown
       pendingRequests?: PendingReq[]
       capabilities?: unknown
+      /**
+       * Unix ms stamp of the current agent process spawn. The agent's
+       * permission mode is in-memory only and resets on restart, so the
+       * client compares this across hello events to detect a restart and
+       * re-seed its known flags.
+       */
+      agentStartedAt?: number
     }
   | {
       type: 'ready'
@@ -296,10 +368,12 @@ export type AcpEvent =
       }
     }
   | { type: 'busy' }
-  | { type: 'done'; stopReason?: string }
+  | { type: 'done'; stopReason?: string; sessionId?: string }
   | { type: 'cancelled' }
-  /** Turn-end marker replayed from stored history (turn_completed). */
-  | { type: 'turn_completed' }
+  /** Turn-end marker replayed from stored history (turn_completed). Live
+      events carry the owning sessionId — other sessions' completions are
+      completion notices, not this session's turn seal. */
+  | { type: 'turn_completed'; sessionId?: string }
   | { type: 'error'; message: string }
   | { type: 'status'; text: string }
   | { type: 'log'; text: string }
@@ -339,6 +413,10 @@ export type AcpEvent =
         yoloMode?: boolean
         autoMode?: boolean
         permissionMode?: string
+        // Wire spelling (agent sends snake_case — TUI prost-derived).
+        yolo_mode?: boolean
+        auto_mode?: boolean
+        permission_mode?: string
       }
     }
   | {
@@ -406,6 +484,22 @@ export type ExitPlanModeReq = {
   sessionId?: string
   toolCallId?: string
   planContent?: string
+}
+
+/**
+ * One `x.ai/follow_ups` turn-end suggestion. Wire shape (TUI
+ * FollowUpSuggestionParam, prost-derived snake_case): `{ label, … }` —
+ * only the human-facing `label` is consumed; `properties` /
+ * `tool_overrides` are ignored.
+ */
+export type FollowUp = {
+  label: string
+}
+
+/** One completion toast (ToastStack) — session finished while away. */
+export type Toast = {
+  id: string
+  text: string
 }
 
 export type SubagentStatus = 'started' | 'completed' | 'failed' | 'cancelled'

@@ -1,15 +1,14 @@
-import type { SessionInfo } from '../api/types'
+import type { SessionInfo, WorkspaceGroup } from '../api/types'
 
 /**
  * History sidebar buckets:
- * - active    处理中 — turn in flight (host active/awaiting: the agent is
- *              working, or waiting on the user for an open question)
+ * - active    处理中 — turn in flight (host status.state 'active': the
+ *              agent is working)
  * - bg        后台任务 — background tasks are STILL RUNNING
  *              (liveness-probed; the top task strip owns them)
- * - awaiting  待处理 — 未读: the session has new activity since the user
- *              last looked at it (and it is not the session being viewed
- *              right now) — something awaiting YOUR attention
- * - idle      空闲 — nothing new since you last looked
+ * - awaiting  待处理 — host 真·等待输入: 权限/提问挂起
+ *              (status.awaitingInput / state 'awaiting')
+ * - idle      空闲 — nothing else applies
  */
 export type SessionGroupKey = 'active' | 'bg' | 'awaiting' | 'idle'
 
@@ -29,43 +28,27 @@ export function byRecency(a: SessionInfo, b: SessionInfo): number {
   )
 }
 
-/** Session updatedAt as epoch ms (0 when absent/unparseable). */
-function updatedMs(s: SessionInfo): number {
-  const iso = s.updatedAt
-  if (!iso) return 0
-  const t = Date.parse(iso)
-  return Number.isFinite(t) ? t : 0
-}
-
 /**
- * Effective dashboard bucket for a session.
- * - busy → 处理中 (incl. awaiting user input);
- * - running bg tasks → 后台任务;
- * - otherwise a pure read/unread model: 待处理 iff the session has
- *   activity AFTER the user last viewed it (and it is not the session
- *   being looked at right now). The default viewed time is the moment
- *   the browser was opened (openedAt) — opening the page marks every
- *   session as read; clicking one (markViewed) marks it precisely.
+ * Effective dashboard bucket for a session. 待处理 is driven by the
+ * host's authentic awaiting-input signal (pending permission / x.ai
+ * question) — no local read/unread timestamps.
  */
 export function sessionGroupKey(
   s: SessionInfo,
-  opts?: {
-    currentSessionId?: string | null
-    lastViewedAt?: Record<string, number>
-    openedAt?: number
-  },
+  currentSessionId?: string | null,
 ): SessionGroupKey {
   const state = s.status?.state
-  // Busy (incl. awaiting user input) → 处理中.
-  if (state === 'active' || state === 'awaiting') return 'active'
+  // Host-authentic "waiting on user input" — a permission request or
+  // x.ai question is pending for this session (host status.awaitingInput,
+  // derived state 'awaiting' = busy + awaitingInput). 待处理 → blue
+  // diamond.
+  if (state === 'awaiting' || s.status?.awaitingInput === true) return 'awaiting'
+  // Busy turn in flight → 处理中.
+  if (state === 'active') return 'active'
   // Still-running background tasks → 后台任务.
   if ((s.bgRunning ?? 0) > 0) return 'bg'
   // Never flag the session being viewed right now.
-  if (opts?.currentSessionId && s.sessionId === opts.currentSessionId) return 'idle'
-  // Viewed time: explicit mark wins; otherwise the browser-open moment.
-  const viewedAt = opts?.lastViewedAt?.[s.sessionId] ?? opts?.openedAt ?? 0
-  // Activity after the last view → 未读 → 待处理.
-  if (updatedMs(s) > viewedAt) return 'awaiting'
+  if (currentSessionId && s.sessionId === currentSessionId) return 'idle'
   return 'idle'
 }
 
@@ -102,11 +85,7 @@ export function groupAccentClass(key: SessionGroupKey): string {
  */
 export function groupByState(
   sessions: SessionInfo[],
-  opts?: {
-    currentSessionId?: string | null
-    lastViewedAt?: Record<string, number>
-    openedAt?: number
-  },
+  currentSessionId?: string | null,
 ): Array<{ key: SessionGroupKey; label: string; items: SessionInfo[] }> {
   const buckets: Record<SessionGroupKey, SessionInfo[]> = {
     active: [],
@@ -115,13 +94,52 @@ export function groupByState(
     idle: [],
   }
   for (const s of sessions) {
-    buckets[sessionGroupKey(s, opts)].push(s)
+    buckets[sessionGroupKey(s, currentSessionId)].push(s)
   }
   return GROUP_ORDER.filter((key) => buckets[key].length > 0).map((key) => ({
     key,
     label: groupLabel(key),
     items: [...buckets[key]].sort(byRecency),
   }))
+}
+
+/**
+ * TUI repo_name_from_cwd — 路径最后两个 Normal 组件以 '-' 连接；
+ * 只有一个组件时取本身。空字符串 → 'unknown'，根 '/' → '/'。
+ * 例：/home/user/fw/1 → "fw-1"，/home/user/xai → "user-xai"，
+ * /xai → "xai"。
+ */
+export function repoNameFromCwd(cwd: string): string {
+  if (!cwd) return 'unknown'
+  const comps = cwd.split('/').filter((c) => c !== '' && c !== '.' && c !== '..')
+  if (comps.length === 0) return '/'
+  if (comps.length === 1) return comps[0]
+  return comps.slice(-2).join('-')
+}
+
+/** 工作区最新活动时间（组内 max updatedAt，epoch ms；无时间戳返回 0）。 */
+function workspaceLatestMs(g: WorkspaceGroup): number {
+  let latest = 0
+  for (const s of g.sessions) {
+    if (!s.updatedAt) continue
+    const t = Date.parse(s.updatedAt)
+    if (Number.isFinite(t) && t > latest) latest = t
+  }
+  return latest
+}
+
+/**
+ * 工作区按最新活动时间降序排序（时间戳缺失的按 label 字母序垫底）。
+ * 与侧边栏"6 小时活跃窗口"共用 workspaceLatestMs 语义：组头排序和
+ * 默认收起判定用同一个时间，避免同一工作区出现排序与折叠不一致。
+ */
+export function groupWorkspaces<T extends WorkspaceGroup>(workspaces: T[]): T[] {
+  return [...workspaces].sort((a, b) => {
+    const ta = workspaceLatestMs(a)
+    const tb = workspaceLatestMs(b)
+    if (ta !== tb) return tb - ta
+    return a.label.localeCompare(b.label)
+  })
 }
 
 /**
