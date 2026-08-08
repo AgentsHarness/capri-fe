@@ -1980,7 +1980,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       let pages = 0
       // Turn metadata of the newest replayed page (real start time + open
       // flag), used below to restore the in-flight turn timer.
-      let replayMeta: { turnStartedAt?: number; turnOpen: boolean } = {
+      let replayMeta: { turnStartedAt?: number; turnEndMs?: number; turnOpen: boolean } = {
         turnOpen: false,
       }
       // Cap auto-pages so a fully-suppressed archive cannot spin forever.
@@ -2052,6 +2052,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
         })
       }
 
+      // Closed turn with both stamps: replay the "Worked for Xs" marker —
+      // the `done` event is not persisted, so the duration derives from
+      // the authoritative _meta.turnStartMs and the turn_completed
+      // envelope timestamp (TUI TurnCompleted marker parity).
+      if (
+        !replayMeta.turnOpen &&
+        replayMeta.turnStartedAt != null &&
+        replayMeta.turnEndMs != null &&
+        replayMeta.turnEndMs >= replayMeta.turnStartedAt
+      ) {
+        appendEntry(
+          set,
+          turnMarker(replayMeta.turnEndMs - replayMeta.turnStartedAt),
+        )
+      }
       set({
         historyLoading: false,
         // Replay of stored thought chunks drives conn to 'busy'; history is
@@ -5501,21 +5516,24 @@ const HISTORY_PAGE_SIZE = 100
 
 /**
  * Replay raw history envelopes through the live event pipeline.
- * Returns the replayed turn's metadata: its real start time (the first
- * user_message envelope timestamp — the shell writes epoch seconds) and
- * whether the turn is still OPEN (the tail has no turn_completed /
- * response_completed marker). loadHistory uses this to restore the turn
- * timer for in-flight sessions ("回合进行中（已进行 Xs）") instead of
- * anchoring it at replay time.
+ * Returns the replayed turn's metadata: its real start time (authoritative
+ * `_meta.turnStartMs` / agentTimestampMs from the shell, falling back to
+ * the first user_message envelope timestamp), the end time (the
+ * turn_completed envelope timestamp) and whether the turn is still OPEN
+ * (no turn_completed / response_completed marker). loadHistory uses this
+ * to restore the in-flight turn timer ("回合进行中（已进行 Xs）") and to
+ * replay the "Worked for Xs" marker of closed turns (the `done` event is
+ * not persisted, so replay derives the duration from the envelope stamps).
  */
 function replayUpdates(
   getStore: () => ChatState,
   updates: unknown[],
-): { turnStartedAt?: number; turnOpen: boolean } {
+): { turnStartedAt?: number; turnEndMs?: number; turnOpen: boolean } {
   let userBuf = ''
   let userIsCron = false
   let userTs: number | undefined
   let turnStartTs: number | undefined
+  let turnEndMs: number | undefined
   let anyEvent = false
   let sawTurnEnd = false
   const flushUser = () => {
@@ -5547,11 +5565,32 @@ function replayUpdates(
     const ev = envelopeToEvent(env)
     if (!ev) continue
     anyEvent = true
-    if (ev.type === 'turn_completed') sawTurnEnd = true
-    // Real turn start: the first user message of the page (epoch seconds
-    // from the shell; first-event timestamp as a fallback for injected
-    // turns without a user prompt).
-    if (ev.type === 'user_message' && turnStartTs == null) {
+    if (ev.type === 'turn_completed') {
+      sawTurnEnd = true
+      // Replay turn end: the envelope timestamp (epoch ms via
+      // envelopeTimestamp) is when the shell wrote the completion.
+      turnEndMs = envelopeTimestamp(env as RawEnvelope)
+    }
+    // Authoritative turn start: the shell stamps `_meta.turnStartMs`
+    // (epoch ms; TUI tracker reads it the same way, falling back to
+    // agentTimestampMs) on every streamed update of the turn. Take the
+    // first one of the page — it belongs to the newest replayed turn.
+    if (turnStartTs == null) {
+      const meta = (env as RawEnvelope).params?._meta as
+        | Record<string, unknown>
+        | undefined
+      const tsMs = meta?.turnStartMs ?? meta?.turn_start_ms ?? meta?.agentTimestampMs
+      if (typeof tsMs === 'number' && Number.isFinite(tsMs)) {
+        turnStartTs = tsMs
+      } else if (typeof tsMs === 'string') {
+        const parsed = Date.parse(tsMs)
+        if (Number.isFinite(parsed)) turnStartTs = parsed
+      }
+    }
+    // Fallback start: the first user message of the page (epoch seconds
+    // from the shell; first-event timestamp for injected turns without a
+    // user prompt).
+    if (turnStartTs == null && ev.type === 'user_message') {
       turnStartTs = envelopeTimestamp(env as RawEnvelope)
     } else if (turnStartTs == null) {
       turnStartTs = envelopeTimestamp(env as RawEnvelope)
@@ -5580,6 +5619,7 @@ function replayUpdates(
   flushUser()
   return {
     turnStartedAt: turnStartTs,
+    turnEndMs,
     turnOpen: anyEvent && !sawTurnEnd,
   }
 }
