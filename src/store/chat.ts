@@ -8,6 +8,7 @@ import type {
   ModelOption,
   PendingReq,
   PermissionScope,
+  RewindMode,
   RewindPoint,
   ScheduledTask,
   ScrollEntry,
@@ -1331,7 +1332,7 @@ type ChatState = {
   /** x.ai/session/rewind_points — candidate rewind targets for the /rewind picker. */
   rewindPoints: () => Promise<RewindPoint[]>
   /** x.ai/session/rewind — rewind the active session to a stored index (TUI /rewind). */
-  rewindExecute: (targetIndex: number) => Promise<void>
+  rewindExecute: (targetIndex: number, mode?: RewindMode) => Promise<void>
   /** x.ai/scheduler/delete — remove a scheduled task (TUI /loop delete). */
   deleteScheduledTask: (taskId: string) => Promise<void>
   /**
@@ -1908,7 +1909,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const s = get()
     if (s.sessions.length === 0) {
       try {
-        const sessions = await transport.listSessions()
+        const { sessions } = await transport.listSessions()
         set({ sessions })
       } catch {
         /* ignore */
@@ -2499,6 +2500,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         break
       }
       case 'busy': {
+        // 多会话广播（host withSid 约定）：非当前会话的 busy 直接忽略。
+        if (ev.sessionId && ev.sessionId !== get().sessionId) break
         // TUI: the Thinking… block is pre-created at stream_start (first
         // chunk), NOT on the busy flag — so a fresh busy is the
         // wait-for-first-token window ("Waiting for response…"). A busy
@@ -2903,6 +2906,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         break
       }
       case 'usage':
+        // 多会话广播（host withSid 约定）：非当前会话的 usage 直接忽略。
+        if (ev.sessionId && ev.sessionId !== get().sessionId) break
         // Merge, don't overwrite: streamed session/update usage events
         // carry only `used`/`size` (no usage object) and must not clobber
         // the turn-accumulated count; x.ai turn_completed events carry the
@@ -3115,6 +3120,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         break
       }
       case 'cancelled': {
+        // 多会话广播（host withSid 约定）：非当前会话的 cancelled 直接忽略。
+        if (ev.sessionId && ev.sessionId !== get().sessionId) break
         // TUI TurnCancelled marker ("Turn cancelled by user in 2.0s.").
         // Idempotent: prompt_complete may have already finalized the turn.
         const turnStart = get().turnStartedAt
@@ -3166,6 +3173,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         break
       }
       case 'error':
+        // 多会话广播（host withSid 约定）：非当前会话的 error 直接忽略。
+        if (ev.sessionId && ev.sessionId !== get().sessionId) break
         set({
           conn: 'error',
           statusText: ev.message,
@@ -3176,6 +3185,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         })
         break
       case 'status':
+        // 多会话广播（host withSid 约定）：非当前会话的 status 直接忽略。
+        if (ev.sessionId && ev.sessionId !== get().sessionId) break
         // Host status (connection warnings) is surfaced in the top-left
         // host button and the composer status line — deliberately NOT in
         // the scrollback.
@@ -3786,23 +3797,62 @@ export const useChatStore = create<ChatState>((set, get) => ({
             break
           }
           // ── subagent progress ticks: state only, never scrollback ────
+          // Wire fields mirror TUI SubagentProgress (xai-grok-shell
+          // extensions/notification.rs): duration_ms / turn_count /
+          // tool_call_count / tokens_used / context_window_tokens /
+          // context_usage_pct / tools_used / error_count. Every tick
+          // merges into the entry so the block viewer shows live
+          // progress (TUI tasks-pane row + dashboard mini gauge); the
+          // `detail` summary keeps the collapsed scrollback row glanceable.
           case 'subagent_progress': {
             const f = fields as Record<string, unknown>
             const id = String(f.subagent_id ?? '')
             const entryId = id ? get().subagentIndex[id] : undefined
             if (!entryId) break
-            const desc = String(f.description ?? '')
-            const turns = f.turn_count
-            const tools = f.tool_call_count
-            const pct = f.context_usage_pct
+            const num = (v: unknown): number | undefined =>
+              typeof v === 'number' && Number.isFinite(v) ? v : undefined
+            const str = (v: unknown): string | undefined =>
+              typeof v === 'string' && v.trim() ? v : undefined
+            const tools = Array.isArray(f.tools_used)
+              ? (f.tools_used as unknown[])
+                  .map((t) => (typeof t === 'string' ? t : ''))
+                  .filter(Boolean)
+              : undefined
+            const turnCount = num(f.turn_count)
+            const toolCount = num(f.tool_call_count)
+            const pct = num(f.context_usage_pct)
+            const tokens = num(f.tokens_used)
+            const windowTokens = num(f.context_window_tokens)
+            const errors = num(f.error_count)
+            const durMs = num(f.duration_ms)
+            const desc = str(f.description)
             set({
               entries: get().entries.map((e) =>
                 e.id === entryId && e.kind === 'subagent'
                   ? {
                       ...e,
-                      detail:
-                        desc ||
-                        `turns=${String(turns ?? '?')} tools=${String(tools ?? '?')}${pct != null ? ` context=${String(pct)}%` : ''}`,
+                      ...(durMs != null ? { durationMs: durMs } : {}),
+                      ...(turnCount != null ? { turns: turnCount } : {}),
+                      ...(toolCount != null ? { toolCalls: toolCount } : {}),
+                      ...(tokens != null ? { tokensUsed: tokens } : {}),
+                      ...(windowTokens != null ? { contextWindowTokens: windowTokens } : {}),
+                      ...(pct != null ? { contextUsagePct: pct } : {}),
+                      ...(errors != null ? { errorCount: errors } : {}),
+                      ...(tools != null ? { toolsUsed: tools } : {}),
+                      // TUI SubagentBlock activity suffix: the wire has
+                      // no activity label, so keep a compact numeric
+                      // summary ("turns=3 tools=7 42%") as the row detail.
+                      // Running only — a late tick must not clobber the
+                      // finish detail ("42s") once the subagent is done.
+                      ...(e.running
+                        ? {
+                            detail:
+                              desc ||
+                              `turns=${String(turnCount ?? '?')} tools=${String(toolCount ?? '?')}${
+                                pct != null ? ` ${String(pct)}%` : ''
+                              }${durMs != null ? ` · ${(durMs / 1000).toFixed(0)}s` : ''}`,
+                          }
+                        : {}),
                     }
                   : e,
               ),
@@ -4008,6 +4058,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         void get().refreshHosts()
         break
       case 'models_update': {
+        // 多会话广播（host withSid 约定）：非当前会话的 models_update 直接忽略。
+        if (ev.sessionId && ev.sessionId !== get().sessionId) break
         const p = (ev.params ?? {}) as Record<string, unknown>
         // Host/agent may push a full SessionModelState ({currentModelId,
         // availableModels}) — apply it as the authoritative session model
@@ -4167,6 +4219,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
         break
       case 'model': {
+        // 多会话广播（host withSid 约定）：非当前会话的 model 直接忽略。
+        if (ev.sessionId && ev.sessionId !== get().sessionId) break
         const name =
           (ev.modelName && String(ev.modelName).trim()) ||
           (ev.modelId && String(ev.modelId).trim()) ||
@@ -4789,15 +4843,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  rewindExecute: async (targetIndex) => {
+  rewindExecute: async (targetIndex, mode) => {
     const s = get()
     if (!s.sessionId || !s.cwd) {
       set({ statusText: '回退失败: 无活动会话' })
       return
     }
     try {
-      await transport.rewindExecute(s.sessionId, targetIndex)
-      set({ statusText: `已回退到索引 ${targetIndex}，重新加载历史…` })
+      const r = await transport.rewindExecute(s.sessionId, targetIndex, mode)
+      set({
+        statusText: `已回退到索引 ${targetIndex}${
+          mode === 'all' ? '（含文件）' : ''
+        }，重新加载历史…`,
+      })
+      // The rewind landed on a point whose prompt the agent echoes back
+      // (RewindResponse.prompt_text). Park it in stashedDraft so the
+      // composer restores it on picker close — replacing the pre-picker
+      // draft with the rewound prompt, ready to edit / resend. No
+      // promptText → the user's original draft comes back untouched.
+      if (r.promptText) set({ stashedDraft: r.promptText })
       // The rewind truncates the conversation tail — reload the current
       // session's history so the scrollback reflects the rewound state.
       // Scheduled tasks belong to the same session, so stash them across
@@ -5045,7 +5109,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   refreshSessions: async () => {
     try {
-      const sessions = await transport.listSessions()
+      const { sessions } = await transport.listSessions()
       set({ sessions })
       // Busy 转变检测（完成提醒兜底）：某会话从 busy → idle 且不是
       // 当前会话 → 通知 + ✓。第一次拉取只建基线，不误报。
@@ -6816,6 +6880,9 @@ function applySubagentFinish(
             status,
             running: false,
             finishedAt: Date.now(),
+            // Authoritative wall-clock (TUI display_elapsed: finished →
+            // SubagentFinished duration_ms, not the local spawn stamp).
+            ...(durationMs != null ? { durationMs } : {}),
             detail: durationMs != null ? `${(durationMs / 1000).toFixed(0)}s` : e.detail,
             ...(output != null ? { output } : {}),
             ...(error != null ? { error } : {}),
@@ -6859,6 +6926,10 @@ function handleSubagentEvent(
           title,
           status: 'started',
           running: true,
+          // FE-local spawn stamp: live elapsed while running (TUI
+          // SubagentInfo.started_at — the wire only carries duration_ms
+          // on progress ticks, which trail by up to 2s).
+          startedAt: Date.now(),
           subagentId: id,
           model: nonBlankStr(fields.model),
           persona: nonBlankStr(fields.persona),

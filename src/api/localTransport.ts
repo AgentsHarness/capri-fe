@@ -8,7 +8,9 @@ import type {
   GitBranch,
   GitBranchesData,
   HostInfo,
+  HostStatus,
   PermissionScope,
+  RewindMode,
   RewindPoint,
   SessionInfo,
   SessionInfoDetail,
@@ -98,7 +100,12 @@ export class LocalTransport {
     this.es = null
   }
 
-  async prompt(blocks: ContentBlock[]): Promise<{ stopReason?: string }> {
+  /**
+   * POST /api/prompt — 200 响应非空时 host 透传 session/prompt 响应的
+   * `_meta`（data.meta）。stopReason 保持原有透传解析；meta 仅 object
+   * 且非空时带上。
+   */
+  async prompt(blocks: ContentBlock[]): Promise<{ stopReason?: string; meta?: Record<string, unknown> }> {
     const res = await fetch(this.url('/api/prompt'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -108,7 +115,17 @@ export class LocalTransport {
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || `prompt failed (${res.status})`)
     }
-    return data
+    const out: { stopReason?: string; meta?: Record<string, unknown> } = {}
+    if (typeof data.stopReason === 'string') out.stopReason = data.stopReason
+    if (
+      data.meta &&
+      typeof data.meta === 'object' &&
+      !Array.isArray(data.meta) &&
+      Object.keys(data.meta as Record<string, unknown>).length > 0
+    ) {
+      out.meta = data.meta as Record<string, unknown>
+    }
+    return out
   }
 
   async cancel(): Promise<void> {
@@ -183,14 +200,27 @@ export class LocalTransport {
     return { hosts: data.hosts ?? [], defaultHostId: data.defaultHostId }
   }
 
-  async listSessions(): Promise<SessionInfo[]> {
+  /**
+   * POST /api/sessions — 会话列表。host 在响应非空时透传 agent 的分页
+   * 游标（data.nextCursor）与元数据（data.meta）；sessions 保持原有
+   * 数组语义，游标/meta 仅在有值时带上（行为向后兼容）。
+   */
+  async listSessions(): Promise<{ sessions: SessionInfo[]; nextCursor?: string; meta?: Record<string, unknown> }> {
     const res = await fetch(this.url('/api/sessions'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: '{}',
     })
     const data = await res.json()
-    return data.sessions ?? []
+    const out: { sessions: SessionInfo[]; nextCursor?: string; meta?: Record<string, unknown> } = {
+      sessions: data.sessions ?? [],
+    }
+    // 防御性解析：nextCursor 仅字符串时带上；meta 仅 object 时带上。
+    if (typeof data.nextCursor === 'string') out.nextCursor = data.nextCursor
+    if (data.meta && typeof data.meta === 'object' && !Array.isArray(data.meta)) {
+      out.meta = data.meta as Record<string, unknown>
+    }
+    return out
   }
 
   /**
@@ -491,7 +521,8 @@ export class LocalTransport {
     return data.result
   }
 
-  async status() {
+  /** GET /api/status — host Status struct 镜像（字段全 optional）。 */
+  async status(): Promise<HostStatus> {
     const res = await fetch(this.url('/api/status'))
     return res.json()
   }
@@ -807,15 +838,47 @@ export class LocalTransport {
   }
 
   /** x.ai/session/rewind — rewind the session to a stored index (TUI /rewind). */
-  async rewindExecute(sessionId: string, targetIndex: number) {
+  async rewindExecute(
+    sessionId: string,
+    targetIndex: number,
+    mode?: RewindMode,
+  ): Promise<{ promptText?: string }> {
     const res = await fetch(this.url('/api/rewind-execute'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, targetIndex }),
+      body: JSON.stringify({
+        sessionId,
+        targetIndex,
+        // Omitted when unset — the host defaults to conversation_only
+        // (TUI /rewind behavior).
+        ...(mode ? { mode } : {}),
+      }),
     })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'rewind failed')
-    return data
+    // The agent reports rewind failure inside `result.success` (TUI
+    // RewindResponse.success) — e.g. when the host omits force/mode and
+    // the agent declines the rollback. Treat `success: false` as an
+    // error so the picker shows the failure instead of pretending the
+    // history was rewound (which left the scrollback unchanged).
+    const result = data.result
+    if (result && typeof result === 'object' && result.success === false) {
+      throw new Error(
+        (typeof result.error === 'string' && result.error) ||
+          `回退失败: 目标点 ${targetIndex} 未被接受`,
+      )
+    }
+    // The rewound point's prompt text (TUI RewindResponse.prompt_text,
+    // snake_case or camelCase on the wire) — the composer restores it
+    // after the rewind so the user can keep editing / resend the prompt
+    // the rollback landed on.
+    let promptText: string | undefined
+    if (result && typeof result === 'object') {
+      const raw = (result as Record<string, unknown>).prompt_text ??
+        (result as Record<string, unknown>).promptText
+      if (typeof raw === 'string' && raw.trim()) promptText = raw
+    }
+    return { promptText }
   }
 
   /** x.ai/scheduler/delete — remove a scheduled task (TUI /loop delete). */

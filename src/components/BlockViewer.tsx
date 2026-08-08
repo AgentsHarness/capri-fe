@@ -8,8 +8,8 @@
  * x.ai/task/list while the task is still running.
  */
 
-import { useEffect, useRef } from 'react'
-import { planTodos, useChatStore, type ViewerTask } from '../store/chat'
+import { useEffect, useRef, useState } from 'react'
+import { formatTurnDuration, planTodos, useChatStore, type ViewerTask } from '../store/chat'
 import type { ScrollEntry } from '../api/types'
 import { subagentMeta } from '../format'
 import { ToolDetail } from './ToolDetail'
@@ -17,7 +17,7 @@ import { Markdown } from './Markdown'
 import { Glyphs, toolHeader } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
 import { TodoMark } from './todoMark'
-import { fmtBytes } from '../format'
+import { fmtBytes, fmtTok } from '../format'
 import { extractToolDetail } from '../scrollback/toolDetail'
 
 /** Poll interval for live bg_task stdout while the viewer is open. */
@@ -342,53 +342,161 @@ function ViewerBody({ entry }: { entry: ScrollEntry }) {
     )
   }
   if (entry.kind === 'subagent') {
-    const meta = subagentMeta(entry.persona, entry.role, entry.model)
-    const stats = [
-      entry.subagentType ? `type · ${entry.subagentType}` : undefined,
-      entry.turns != null ? `turns · ${entry.turns}` : undefined,
-      entry.toolCalls != null ? `tools · ${entry.toolCalls}` : undefined,
-      entry.tokensUsed != null ? `tokens · ${entry.tokensUsed}` : undefined,
-    ].filter((s): s is string => !!s)
-    return (
-      <div className="space-y-2">
-        <div className="font-mono text-[12px] text-gn-fg">{entry.title}</div>
-        {(meta || entry.detail) && (
-          <div className="text-[12px] text-gn-muted">
-            {meta && <span className="font-mono">{meta}</span>}
-            {meta && entry.detail ? ' · ' : null}
-            {entry.detail}
-          </div>
-        )}
-        {entry.error && (
-          <div className="rounded border border-gn-red/40 bg-gn-diff-del-bg px-2.5 py-1.5 font-mono text-[12px] text-gn-red">
-            {entry.error}
-          </div>
-        )}
-        {entry.output ? (
-          <div>
-            <div className="mb-1 text-[11px] font-bold uppercase tracking-wide text-gn-gutter">
-              Output
-            </div>
-            <pre className="max-h-[40vh] overflow-auto whitespace-pre-wrap break-all rounded border border-gn-prompt-border/50 bg-gn-bg-base px-2.5 py-2 font-mono text-[12px] text-gn-fg">
-              {entry.output}
-            </pre>
-          </div>
-        ) : null}
-        {stats.length > 0 && (
-          <div className="font-mono text-[11px] text-gn-gutter">{stats.join(' · ')}</div>
-        )}
-        {entry.subagentId && (
-          <div className="font-mono text-[11px] text-gn-gutter">
-            id · {entry.subagentId}
-          </div>
-        )}
-      </div>
-    )
+    return <SubagentView entry={entry} />
   }
   return (
     <pre className="whitespace-pre-wrap font-mono text-[12px] text-gn-muted">
       {JSON.stringify(entry, null, 2)}
     </pre>
+  )
+}
+
+/** Re-render every second while a running subagent is open (live elapsed). */
+function useLiveTick(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!active) return
+    const t = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(t)
+  }, [active])
+  return now
+}
+
+/**
+ * Subagent block-viewer body — TUI tasks-pane / dashboard parity for live
+ * progress (xai-grok-pager):
+ * - live elapsed: running → wall-clock since spawn (wire duration_ms
+ *   fallback), finished → authoritative SubagentFinished duration_ms
+ *   (SubagentInfo::display_elapsed)
+ * - context mini gauge: context_usage_pct + tokens_used /
+ *   context_window_tokens (dashboard row context_pct)
+ * - live turns / tools / tokens / error_count (SubagentProgress ticks)
+ * - tools_used list (dashboard "Running: {last tool}" source)
+ */
+function SubagentView({
+  entry,
+}: {
+  entry: Extract<ScrollEntry, { kind: 'subagent' }>
+}) {
+  const now = useLiveTick(!!entry.running)
+  const meta = subagentMeta(entry.persona, entry.role, entry.model)
+
+  const elapsedMs = entry.running
+    ? entry.startedAt != null
+      ? now - entry.startedAt
+      : entry.durationMs
+    : entry.durationMs
+
+  // Context mini gauge (TUI dashboard context_pct; urgency breakpoints
+  // match the status-bar ContextChip: ≥90 red, ≥70 yellow, else cyan).
+  const pct = entry.contextUsagePct
+  const gaugeW = 20
+  const filled =
+    pct != null ? Math.min(gaugeW, Math.round((Math.min(100, pct) / 100) * gaugeW)) : 0
+  const gaugeColor =
+    pct == null
+      ? 'text-gn-gutter'
+      : pct >= 90
+        ? 'text-gn-red'
+        : pct >= 70
+          ? 'text-gn-yellow'
+          : 'text-gn-cyan'
+
+  const live =
+    entry.turns != null ||
+    entry.toolCalls != null ||
+    entry.tokensUsed != null ||
+    entry.errorCount != null ||
+    entry.toolsUsed?.length
+  const stats = [
+    entry.subagentType ? `type · ${entry.subagentType}` : undefined,
+    entry.turns != null ? `turns · ${entry.turns}` : undefined,
+    entry.toolCalls != null ? `tools · ${entry.toolCalls}` : undefined,
+    entry.tokensUsed != null ? `tokens · ${fmtTok(entry.tokensUsed)}` : undefined,
+    entry.errorCount != null && entry.errorCount > 0
+      ? `errors · ${entry.errorCount}`
+      : undefined,
+    elapsedMs != null ? `elapsed · ${formatTurnDuration(elapsedMs)}` : undefined,
+  ].filter((s): s is string => !!s)
+
+  return (
+    <div className="space-y-2">
+      <div className="font-mono text-[12px] text-gn-fg">{entry.title}</div>
+      {meta && <div className="font-mono text-[12px] text-gn-muted">{meta}</div>}
+
+      {entry.running && (
+        <div className="space-y-1.5">
+          {/* Live context gauge — hidden until the host reports a window. */}
+          {entry.contextWindowTokens != null && entry.contextWindowTokens > 0 && (
+            <div className="flex items-center gap-2">
+              <span
+                className={`inline-flex items-center gap-1 font-mono text-[12px] leading-none ${gaugeColor}`}
+                title={`上下文 ${Math.round(pct ?? 0)}%`}
+              >
+                <span aria-hidden className="whitespace-nowrap">
+                  <span>{'█'.repeat(filled)}</span>
+                  <span className="text-gn-gray-dim">{'░'.repeat(gaugeW - filled)}</span>
+                </span>
+                <span className="tabular-nums">
+                  {(pct ?? 0).toFixed(1)}%
+                </span>
+              </span>
+              <span className="font-mono text-[11px] tabular-nums text-gn-gutter">
+                {entry.tokensUsed != null
+                  ? `${fmtTok(entry.tokensUsed)} / ${fmtTok(entry.contextWindowTokens)} tok`
+                  : `${fmtTok(entry.contextWindowTokens)} tok window`}
+              </span>
+            </div>
+          )}
+          {live && stats.length > 0 && (
+            <div className="flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[11px] tabular-nums text-gn-gutter">
+              {stats.map((s) => (
+                <span key={s}>{s}</span>
+              ))}
+            </div>
+          )}
+          {entry.toolsUsed && entry.toolsUsed.length > 0 && (
+            <div className="flex flex-wrap items-center gap-x-1.5 font-mono text-[11px] text-gn-gutter">
+              <span className="uppercase tracking-wide text-[10px]">tools</span>
+              {entry.toolsUsed.map((t) => (
+                <span
+                  key={t}
+                  className="rounded border border-gn-prompt-border/60 px-1.5 py-0.5 text-gn-muted"
+                >
+                  {t}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {entry.error && (
+        <div className="rounded border border-gn-red/40 bg-gn-diff-del-bg px-2.5 py-1.5 font-mono text-[12px] text-gn-red">
+          {entry.error}
+        </div>
+      )}
+      {entry.output ? (
+        <div>
+          <div className="mb-1 text-[11px] font-bold uppercase tracking-wide text-gn-gutter">
+            Output
+          </div>
+          <pre className="max-h-[40vh] overflow-auto whitespace-pre-wrap break-all rounded border border-gn-prompt-border/50 bg-gn-bg-base px-2.5 py-2 font-mono text-[12px] text-gn-fg">
+            {entry.output}
+          </pre>
+        </div>
+      ) : null}
+      {!entry.running && stats.length > 0 && (
+        <div className="font-mono text-[11px] tabular-nums text-gn-gutter">
+          {stats.join(' · ')}
+        </div>
+      )}
+      {entry.subagentId && (
+        <div className="font-mono text-[11px] text-gn-gutter">
+          id · {entry.subagentId}
+        </div>
+      )}
+    </div>
   )
 }
 

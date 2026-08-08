@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useChatStore } from '../store/chat'
-import type { RewindPoint } from '../api/types'
+import type { RewindMode, RewindPoint } from '../api/types'
 
 /**
  * /rewind picker modal (TUI /rewind — views/rewind.rs state machine,
@@ -62,6 +62,9 @@ export function RewindPicker() {
     point: RewindPoint
     mode: 'yes' | 'always'
   }>()
+  // Rewind scope: conversation-only (TUI default) or all (files too).
+  // Reset per selection so a fresh pick always starts conversation-only.
+  const [rewindMode, setRewindMode] = useState<RewindMode>('conversation_only')
   const [executing, setExecuting] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
   const reqSeq = useRef(0)
@@ -102,6 +105,7 @@ export function RewindPicker() {
     setPoints([])
     setError(undefined)
     setPending(undefined)
+    setRewindMode('conversation_only')
     setExecuting(false)
     executingRef.current = false
     if (!sessionId) {
@@ -130,7 +134,7 @@ export function RewindPicker() {
       setPending({ point, mode })
       setPhase('executing')
       try {
-        await rewindExecute(point.index)
+        await rewindExecute(point.index, rewindMode)
         // The store reloads the session history; close to reveal it.
         closeRewind()
       } catch (e) {
@@ -140,13 +144,16 @@ export function RewindPicker() {
         setError(e instanceof Error ? e.message : String(e))
       }
     },
-    [rewindExecute, closeRewind],
+    [rewindExecute, closeRewind, rewindMode],
   )
 
   /** Row click / Enter in the picker: confirm layer or direct execute. */
   const selectPoint = useCallback(
     (p: RewindPoint) => {
       if (executingRef.current) return
+      // Fresh pick always starts conversation-only (TUI default); the
+      // confirm layer offers "对话+文件" for points with snapshots.
+      setRewindMode('conversation_only')
       if (confirmBeforeRewind()) {
         setPending({ point: p, mode: 'yes' })
         setConfirmCursor(0)
@@ -200,12 +207,20 @@ export function RewindPicker() {
           break
         }
         case 'confirm': {
+          // Cursor rows: 0 仅对话 · 1 对话+文件 · 2 y · 3 a · 4 n.
+          const filesAllowed = !pending || pending.point.hasFileChanges !== false
           if (e.key === 'j' || e.key === 'ArrowDown') {
             prevent()
-            setConfirmCursor((c) => Math.min(2, c + 1))
+            setConfirmCursor((c) => Math.min(4, c + 1))
           } else if (e.key === 'k' || e.key === 'ArrowUp') {
             prevent()
             setConfirmCursor((c) => Math.max(0, c - 1))
+          } else if (e.key === 'c') {
+            prevent()
+            setRewindMode('conversation_only')
+          } else if (e.key === 'f' && filesAllowed) {
+            prevent()
+            setRewindMode('all')
           } else if (e.key === 'y') {
             prevent()
             if (pending) void execute(pending.point, 'yes')
@@ -219,8 +234,11 @@ export function RewindPicker() {
           } else if (e.key === 'Enter') {
             prevent()
             if (!pending) return
-            if (confirmCursor === 0) void execute(pending.point, 'yes')
-            else if (confirmCursor === 1) void execute(pending.point, 'always')
+            if (confirmCursor === 0) setRewindMode('conversation_only')
+            else if (confirmCursor === 1) {
+              if (filesAllowed) setRewindMode('all')
+            } else if (confirmCursor === 2) void execute(pending.point, 'yes')
+            else if (confirmCursor === 3) void execute(pending.point, 'always')
             else {
               setPending(undefined)
               setPhase('picker')
@@ -361,21 +379,43 @@ export function RewindPicker() {
               </div>
               <div className="mt-3 space-y-1">
                 <RadioRow
+                  k="c"
+                  label="仅对话"
+                  active={confirmCursor === 0}
+                  checked={rewindMode === 'conversation_only'}
+                  onClick={() => setRewindMode('conversation_only')}
+                />
+                <RadioRow
+                  k="f"
+                  label="对话+文件"
+                  disabled={pending.point.hasFileChanges === false}
+                  active={confirmCursor === 1}
+                  checked={rewindMode === 'all'}
+                  onClick={() => setRewindMode('all')}
+                />
+                {pending.point.hasFileChanges === false ? (
+                  <div className="pl-3 text-[10px] text-gn-gutter">
+                    该回退点无文件快照，仅支持对话回退
+                  </div>
+                ) : null}
+              </div>
+              <div className="mt-3 space-y-1">
+                <RadioRow
                   k="y"
                   label="是"
-                  active={confirmCursor === 0}
+                  active={confirmCursor === 2}
                   onClick={() => void execute(pending.point, 'yes')}
                 />
                 <RadioRow
                   k="a"
                   label="是，且不再询问（下次直接回卷）"
-                  active={confirmCursor === 1}
+                  active={confirmCursor === 3}
                   onClick={() => void execute(pending.point, 'always')}
                 />
                 <RadioRow
                   k="n"
                   label="否"
-                  active={confirmCursor === 2}
+                  active={confirmCursor === 4}
                   onClick={() => {
                     setPending(undefined)
                     setPhase('picker')
@@ -385,7 +425,7 @@ export function RewindPicker() {
             </div>
           ) : phase === 'executing' ? (
             <div className="px-4 py-6 text-center text-[12px] text-gn-muted">
-              回退中…
+              回退中{rewindMode === 'all' ? '（含文件）' : ''}…
             </div>
           ) : phase === 'error' ? (
             <div className="px-4 py-5 text-center">
@@ -439,7 +479,11 @@ export function RewindPicker() {
                   ) : null}
                   <span className="block pt-0.5 font-mono text-[10px] text-gn-muted">
                     {formatPointTime(p.timestamp)}
-                    {p.hasFileChanges === false ? ' · 仅对话' : ''}
+                    {p.hasFileChanges === false
+                      ? ' · 仅对话'
+                      : p.hasFileChanges === true
+                        ? ' · 对话+文件'
+                        : ''}
                     {pending?.point.index === p.index && executing ? ' · 回退中…' : ''}
                   </span>
                 </span>
@@ -452,12 +496,12 @@ export function RewindPicker() {
           {phase === 'cancel-offer'
             ? 'y 取消回合并回卷 · n 等它完成 · j/k 移动'
             : phase === 'confirm'
-              ? 'y 是 · a 是且不再询问 · n 否 · j/k 移动 · esc 关闭'
+              ? 'c/f 选择模式（对话 / 对话+文件） · y 是 · a 是且不再询问 · n 否 · j/k 移动 · esc 关闭'
               : phase === 'error'
                 ? 'enter/r 重试 · esc 关闭'
                 : phase === 'picker'
                   ? 'j/k 选择 · enter 确认 · esc 关闭'
-                  : '回退将删除目标点之后的对话内容 · 与 TUI /rewind 一致'}
+                  : '回退将删除目标点之后的对话内容 · 该点的提示词将放回输入框'}
         </footer>
       </div>
     </div>
@@ -469,28 +513,35 @@ function RadioRow({
   k,
   label,
   active,
+  checked,
+  disabled,
   onClick,
 }: {
   k: string
   label: string
   active: boolean
+  /** Radio dot state (defaults to `active` — used by the rewind mode rows). */
+  checked?: boolean
+  disabled?: boolean
   onClick: () => void
 }) {
+  const dot = checked ?? active
   return (
     <button
       type="button"
+      disabled={disabled}
       onClick={onClick}
       className={`flex w-full items-center gap-2 rounded border px-3 py-1.5 text-left text-[12px] ${
         active
           ? 'border-gn-prompt-border-active bg-gn-bg-highlight text-gn-fg'
           : 'border-gn-prompt-border text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg'
-      }`}
+      } ${disabled ? 'cursor-not-allowed opacity-40 hover:bg-transparent hover:text-gn-fg2' : ''}`}
     >
       <span className={`font-mono text-[11px] ${active ? 'text-gn-cyan' : 'text-gn-muted'}`}>
         {k}
       </span>
       <span className="text-gn-muted" aria-hidden>
-        {active ? '●' : '○'}
+        {dot ? '●' : '○'}
       </span>
       <span className="min-w-0 flex-1">{label}</span>
     </button>

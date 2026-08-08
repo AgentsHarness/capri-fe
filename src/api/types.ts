@@ -125,6 +125,13 @@ export type RewindPoint = {
 }
 
 /**
+ * Rewind scope (POST /api/rewind-execute `mode`, TUI RewindExecute mode):
+ * "conversation_only" rolls back the conversation only (TUI /rewind
+ * default); "all" also reverts the point's file snapshots.
+ */
+export type RewindMode = 'conversation_only' | 'all'
+
+/**
  * POST /api/session-info response — authoritative live details of the
  * active session, served by the host on demand (TUI /session-info analog).
  */
@@ -476,8 +483,10 @@ export type AcpEvent =
   | { type: 'tool_call'; toolCall: ToolCall }
   | { type: 'tool_call_update'; toolCallUpdate: ToolCall }
   | { type: 'plan'; entries: unknown }
+  /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
   | {
       type: 'usage'
+      sessionId?: string
       used?: number
       size?: number
       cost?: unknown
@@ -492,9 +501,14 @@ export type AcpEvent =
         [key: string]: unknown
       }
     }
-  | { type: 'busy' }
+  /**
+   * Host 对所有会话广播事件按 withSid 约定附加 sessionId（done/busy/
+   * cancelled/error/status/log/usage/model/models_update 均带）——多会话
+   * 模式下前端据此丢弃非当前会话的事件（store 分发时按 sessionId 过滤）。
+   */
+  | { type: 'busy'; sessionId?: string }
   | { type: 'done'; stopReason?: string; sessionId?: string }
-  | { type: 'cancelled' }
+  | { type: 'cancelled'; sessionId?: string }
   /** Turn-end marker replayed from stored history (turn_completed). Live
       events carry the owning sessionId — other sessions' completions are
       completion notices, not this session's turn seal. */
@@ -513,9 +527,12 @@ export type AcpEvent =
       /** Replay: the turn_completed envelope write time (epoch ms). */
       endMs?: number
     }
-  | { type: 'error'; message: string }
-  | { type: 'status'; text: string }
-  | { type: 'log'; text: string }
+  /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
+  | { type: 'error'; message: string; sessionId?: string }
+  /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
+  | { type: 'status'; text: string; sessionId?: string }
+  /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
+  | { type: 'log'; text: string; sessionId?: string }
   | {
       type: 'client_request'
       requestId: string
@@ -526,8 +543,10 @@ export type AcpEvent =
   | { type: 'config_options_update'; configOptions?: unknown }
   | { type: 'commands_update'; commands?: unknown }
   | { type: 'session_info'; title?: string; updatedAt?: unknown }
+  /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
   | {
       type: 'model'
+      sessionId?: string
       modelId?: string
       modelName?: string
       reasoningEffort?: string
@@ -580,7 +599,8 @@ export type AcpEvent =
   | { type: 'sessions_changed'; params?: Record<string, unknown> }
   /** Hub-level: a host paired / came online / dropped off (acp-hub). */
   | { type: 'hosts_changed'; params?: Record<string, unknown> }
-  | { type: 'models_update'; params?: Record<string, unknown> }
+  /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
+  | { type: 'models_update'; sessionId?: string; params?: Record<string, unknown> }
   | { type: 'announcements_update'; params?: Record<string, unknown> }
   | {
       type: 'scheduled_task_created'
@@ -588,12 +608,30 @@ export type AcpEvent =
       /** Host contract shape: { taskId, prompt, interval, nextFireAt }. */
       task?: Record<string, unknown>
       params?: Record<string, unknown>
+      /**
+       * 原始 wire 字段保全：params 原样（humanSchedule/status/enabled/
+       * createdAt/lastFiredAt/timezone、_meta.eventId 等）。store 现有
+       * 消费逻辑（parseScheduledTask）只读 taskId/prompt/interval/
+       * nextFireAt，无需改动。
+       */
+      rawParams?: Record<string, unknown>
+      /** 原始 task/update 对象（created 才有）。 */
+      rawTask?: Record<string, unknown>
+      /** params._meta（如 x.ai/schedulerGeneration/Revision）。 */
+      meta?: Record<string, unknown>
     }
   | {
       type: 'scheduled_task_deleted'
       sessionId?: string
       taskId?: string
       params?: Record<string, unknown>
+      /**
+       * 原始 wire 字段保全：params 原样（humanSchedule/status/enabled/
+       * createdAt/lastFiredAt/timezone、_meta.eventId 等）。
+       */
+      rawParams?: Record<string, unknown>
+      /** params._meta（如 x.ai/schedulerGeneration/Revision）。 */
+      meta?: Record<string, unknown>
     }
   | {
       type: 'scheduled_task_fired'
@@ -671,6 +709,49 @@ export type AcpEvent =
   | { type: 'leader_reconnected'; sessionId?: string; params?: Record<string, unknown> }
   /** Fallback: any other x.ai/* notification, forwarded verbatim. */
   | { type: 'ext_notification'; method?: string; params?: Record<string, unknown> }
+
+/**
+ * GET /api/status 响应（acp-host Status struct 镜像）。字段全 optional：
+ * ready/busy/booting/sessionId/cwd/hostId/hostName/homeDir/agentInfo/
+ * agentCapabilities/authMeta/modes/configOptions/sessionMeta/models/
+ * bootError/text/pendingRequests/capabilities/roster/agentStartedAt。
+ * pendingRequests 复用 PendingReq[]，其余以 unknown 兜底（host 结构随
+ * 版本演进，前端按需收紧）。
+ */
+export type HostStatus = {
+  ready?: boolean
+  busy?: boolean
+  booting?: boolean
+  sessionId?: string
+  /** 活动会话工作区。 */
+  cwd?: string
+  hostId?: string
+  hostName?: string
+  /** 用户主目录。 */
+  homeDir?: string
+  agentInfo?: unknown
+  agentCapabilities?: unknown
+  authMeta?: unknown
+  modes?: unknown
+  configOptions?: unknown
+  sessionMeta?: unknown
+  models?: unknown
+  /** 启动失败错误信息。 */
+  bootError?: string
+  /**
+   * 启动失败错误信息（旧 host 版本以 `error` 字段返回——chat.ts 的
+   * hello 快照归一化路径同时读 bootError/error）。
+   */
+  error?: string
+  text?: string
+  /** 挂起的客户端请求（x.ai/* 与权限请求）。 */
+  pendingRequests?: PendingReq[]
+  capabilities?: unknown
+  /** 各会话实时状态（SessionState[]）。 */
+  roster?: unknown
+  /** 当前 agent 进程启动时间戳（Unix ms）。 */
+  agentStartedAt?: number
+}
 
 /** One question in an x.ai/ask_user_question request (camelCase wire). */
 export type AskQuestion = {
@@ -814,6 +895,13 @@ export type ScrollEntry =
       detail?: string
       running?: boolean
       finishedAt?: number
+      /** Spawn wall-clock (epoch ms) — FE-local; live elapsed falls back
+       *  to the wire `duration_ms` when absent (TUI display_elapsed:
+       *  finished → duration_ms, running → started_at.elapsed()). */
+      startedAt?: number
+      /** Authoritative wall-clock duration (wire `duration_ms`, progress
+       *  ticks + finish). */
+      durationMs?: number
       /** subagent_id from x.ai/session_notification subagent_spawned. */
       subagentId?: string
       /** Effective model ID used by the subagent (wire `model`). */
@@ -834,6 +922,14 @@ export type ScrollEntry =
       turns?: number
       /** Total tokens consumed by the subagent (wire `tokens_used`). */
       tokensUsed?: number
+      /** Context window capacity (wire `context_window_tokens`, progress). */
+      contextWindowTokens?: number
+      /** Context window usage 0–100 (wire `context_usage_pct`, progress). */
+      contextUsagePct?: number
+      /** Distinct tool names called so far (wire `tools_used`, progress). */
+      toolsUsed?: string[]
+      /** Errors encountered so far (wire `error_count`, progress). */
+      errorCount?: number
     }
   | {
       id: string
