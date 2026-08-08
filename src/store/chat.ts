@@ -1743,6 +1743,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // undefined we are mid-switch and must not leak the old session's
       // events into the fresh scrollback).
       const evSid = (ev as { sessionId?: string }).sessionId
+      // 子代理收口兜底取消（任务 2）：父会话自身的推进事件（chunk/
+      // thought/tool/response_started/client_request/…）说明父回合仍在
+      // 活动（子代理完成后父还会继续输出）——撤销待触发的延迟收口。
+      // 子代理自身的通知（subagent_spawned/progress/finished）不算父
+      // 推进，不取消。
+      if (
+        (evSid == null || evSid === s.sessionId) &&
+        PARENT_TURN_ACTIVITY_TYPES.has(ev.type)
+      ) {
+        clearSubagentSettleTimer()
+      }
       if (
         evSid != null &&
         evSid !== s.sessionId &&
@@ -1756,6 +1767,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // 按 sessionId 路由进 subagent_views 的等价实现。
         if (s.subagentChildIndex[evSid] != null) {
           applySubagentViewEvent(set, evSid, ev)
+          if (TURN_TERMINAL_TYPES.has(ev.type)) {
+            // 主回合终态被归属到已知子代理 sid → 武装延迟收口（父回合
+            // 自己的 done 可能永远不会来）。
+            armSubagentTurnSettleFallback(set, get)
+          } else if (SUBAGENT_VIEW_ACTIVITY_TYPES.has(ev.type)) {
+            // 子代理后续活动（多回合子代理的下一回合）→ 撤消上一终态
+            // 武装的兜底。
+            clearSubagentSettleTimer()
+          }
         }
         return
       }
@@ -2995,54 +3015,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // gets its own TurnCancelled marker from the host's cancelled
         // event (TUI prompt_origin.rs stop_reason mapping) — neither
         // renders a "Worked for" line.
-        const turnStart = get().turnStartedAt
-        const failedTurn =
-          ev.stopReason === 'error' ||
-          ev.stopReason === 'rate_limit' ||
-          ev.stopReason === 'cancelled'
-        // TUI prompt_origin.rs: no-output turns suppress the marker
-        // (had_output → None); bash turns (the `!` shell-mode prompt)
-        // suppress it too (QueueEntryKind::BashCommand → bash_turn →
-        // TurnComplete suppression, queue.rs:785). Only turns with real
-        // output after the user prompt get the "Worked for" line.
-        let bashTurn = false
-        let hasOutput = false
-        for (let i = get().entries.length - 1; i >= 0; i--) {
-          const e = get().entries[i]
-          if (e.kind === 'user') {
-            bashTurn = (e as { isShell?: boolean }).isShell === true
-            break
-          }
-          if (
-            e.kind === 'assistant' ||
-            e.kind === 'thought' ||
-            e.kind === 'tool'
-          ) {
-            hasOutput = true
-            break
-          }
-        }
-        const marker =
-          turnIsLive(get()) && !failedTurn && !bashTurn && hasOutput
-            ? turnMarker(turnStart != null ? Date.now() - turnStart : undefined)
-            : null
-        set((s) => ({
-          conn: 'ready',
-          // Blue "待处理" until the next user message.
-          statusText: '待处理',
-          awaitingNext: true,
-          openAssistantId: undefined,
-          openThoughtId: undefined,
-          turnStartedAt: undefined,
-          // Turn end: the host resolved every outstanding permission request
-          // (approval timeout / completion), so a non-empty pending queue
-          // here is stale — drop it (TUI drain_permission_queue).
-          pending: [],
-          entries: [
-            ...settleTurnEntries(s.entries),
-            ...(marker ? [marker] : []),
-          ],
-        }))
+        finalizeTurn(set, get, ev.stopReason)
         break
       }
       case 'turn_completed': {
@@ -3067,39 +3040,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
             get().noteSessionCompleted(ev.sessionId)
             break
           }
-          // A LIVE turn_completed is the host's relay of the x.ai durable
-          // terminal. The stream's `done` event owns the finalize and the
-          // "Worked for X" marker (TUI parity: PromptResponse /
-          // prompt_complete is the marker source; the notification rail
-          // only fills in when the driver RPC never arrives). Pushing
-          // the plain "Turn completed." form here would stack with
-          // `done`'s marker when the rail beats the stream terminal:
-          // this arm leaves the turn live (turnStartedAt / conn are
-          // untouched), so `done` still sees turnIsLive and appends
-          // "Worked for X".
+          // LIVE turn_completed —— 宿主转发的 x.ai 持久化回合终态（rail）。
+          // 任务 2：此前该分支只 settle 流式条目、把收口留给 `done`
+          // （session/prompt RPC 结果）。但子代理完成后的注入回合
+          // （subagent-complete / 调度注入）不经过 ACP session/prompt
+          // RPC——`done` 与 `prompt_complete` 都不会来，主对话因此永远
+          // 卡在 "Responding…"（实测：父会话在子代理 spawn 后 ~14s 结束
+          // 自身回合，随后 agent 以注入 prompt 唤醒父会话产出最终答复，
+          // 该注入回合只有 turn_completed、没有 done）。改为在这里直接
+          // 收口（rail 收口）；`done` 到达时 turnIsLive 已为 false，
+          // finalizeTurn 的标记被守卫跳过，不会出现双标记（幂等）。
           //
-          // EXCEPTION: failed turns. `done` deliberately skips its marker
-          // for error / rate_limit — the TurnFailed line is this rail's
-          // job (TUI prompt_origin.rs stop_reason mapping). Render it
-          // with the anchored elapsed, deduped via tailAlreadyTurnEnded.
-          // Sealed first so the marker never short-circuits the settle.
-          const sealed = sealThought(get())
-          const settled = settleTurnEntries(sealed.entries)
-          if (!tailAlreadyTurnEnded(settled)) {
-            set({
-              ...sealed,
-              openAssistantId: undefined,
-              openThoughtId: undefined,
-              entries: settled,
-            })
-          }
+          // 失败回合的 TurnFailed 标记仍是本 rail 的职责（done 对
+          // error/rate_limit 不追加 "Worked for"，见 finalizeTurn）：
+          // 收口后补失败标记，tailAlreadyTurnEnded 去重。
+          const railEndTs = get().turnStartedAt
+          finalizeTurn(set, get, stopReason)
           if (stopReason === 'error' || stopReason === 'rate_limit') {
             if (!tailAlreadyTurnEnded(get().entries)) {
-              const ts = get().turnStartedAt
               const { text, warning } = turnEndMarkerText(
                 stopReason,
                 agentResult,
-                ts != null ? Date.now() - ts : undefined,
+                railEndTs != null ? Date.now() - railEndTs : undefined,
               )
               appendEntry(set, {
                 kind: 'session_event',
@@ -5706,6 +5668,162 @@ function isTurnEndLine(e: ScrollEntry): boolean {
       e.text.startsWith('Worked for ') ||
       e.text.endsWith(' still running'))
   )
+}
+
+/**
+ * 回合收口（任务 2，done / live turn_completed / 子代理兜底共用）：
+ * settle 流式条目、按需追加 "Worked for X" 标记、conn 复位 ready、
+ * statusText 清为「待处理」、清空 open 指针与 pending。幂等——重复调用
+ * 只重跑同样的 settle（标记由 turnIsLive 守卫，已收口后不再追加）。
+ * 原 `done` 分支的收口语义原样搬入，行为不变。
+ */
+function finalizeTurn(
+  set: SetState,
+  get: () => ChatState,
+  stopReason: string | undefined,
+): void {
+  const turnStart = get().turnStartedAt
+  const failedTurn =
+    stopReason === 'error' ||
+    stopReason === 'rate_limit' ||
+    stopReason === 'cancelled'
+  // TUI prompt_origin.rs: no-output turns suppress the marker (had_output
+  // → None); bash turns (the `!` shell-mode prompt) suppress it too.
+  let bashTurn = false
+  let hasOutput = false
+  for (let i = get().entries.length - 1; i >= 0; i--) {
+    const e = get().entries[i]
+    if (e.kind === 'user') {
+      bashTurn = (e as { isShell?: boolean }).isShell === true
+      break
+    }
+    if (e.kind === 'assistant' || e.kind === 'thought' || e.kind === 'tool') {
+      hasOutput = true
+      break
+    }
+  }
+  const marker =
+    turnIsLive(get()) && !failedTurn && !bashTurn && hasOutput
+      ? turnMarker(turnStart != null ? Date.now() - turnStart : undefined)
+      : null
+  set((s) => ({
+    conn: 'ready',
+    // Blue "待处理" until the next user message.
+    statusText: '待处理',
+    awaitingNext: true,
+    openAssistantId: undefined,
+    openThoughtId: undefined,
+    turnStartedAt: undefined,
+    // Turn end: the host resolved every outstanding permission request
+    // (approval timeout / completion), so a non-empty pending queue
+    // here is stale — drop it (TUI drain_permission_queue).
+    pending: [],
+    entries: [...settleTurnEntries(s.entries), ...(marker ? [marker] : [])],
+  }))
+}
+
+// ── 子代理回合收口兜底（任务 2）────────────────────────────────────
+// 主回合的终态事件（done/turn_completed/cancelled/prompt_complete）理论
+// 上恒带父会话 sid；但若 agent/宿主把父回合终态归属到子代理会话（已知
+// child sid），init 守卫会把它路由进子代理迷你 scrollback，主回合永远
+// 等不到自己的 done —— 卡在 "Responding…"。这里在已知子代理 sid 的
+// 终态事件到达且父回合仍 live、无未决父活动时，武装一个延迟收口：15 秒
+// 内父会话有任何推进事件（chunk/thought/tool/…）即取消（正常流程中父
+// 会在子代理结束后继续输出，或自己的终态先到），只有父回合确实被遗留
+// 时才触发收口。
+
+const SUBAGENT_SETTLE_GRACE_MS = 15_000
+
+/** 回合收口事件类型（FE 侧 turn 终态）。 */
+const TURN_TERMINAL_TYPES = new Set([
+  'done',
+  'turn_completed',
+  'cancelled',
+  'prompt_complete',
+])
+
+/**
+ * 父会话自身推进事件：任一到达即视为父回合仍在活动（子代理收口兜底
+ * 据此取消）。子代理自身的通知（subagent_spawned/progress/finished）与
+ * 连接层事件（hello/ready/status/…）不在此列。
+ */
+const PARENT_TURN_ACTIVITY_TYPES = new Set([
+  'chunk',
+  'thought',
+  'tool_call',
+  'tool_call_update',
+  'image',
+  'plan',
+  'usage',
+  'response_started',
+  'reasoning_completed',
+  'user_message',
+  'user_chunk',
+  'done',
+  'turn_completed',
+  'cancelled',
+  'prompt_complete',
+  'client_request',
+  'busy',
+  'error',
+])
+
+/**
+ * 子代理会话自身的推进事件：任一到达即视为该子代理仍在活动（多回合
+ * 子代理的下一回合）——撤消上一终态武装的兜底。usage/status 等旁路事件
+ * 不算（回合终态后紧跟的 usage 提取不能取消刚武装的兜底）。
+ */
+const SUBAGENT_VIEW_ACTIVITY_TYPES = new Set([
+  'chunk',
+  'thought',
+  'tool_call',
+  'tool_call_update',
+  'user_message',
+  'user_chunk',
+  'plan',
+  'image',
+  'response_started',
+  'reasoning_completed',
+])
+
+let subagentSettleTimer: number | null = null
+
+function clearSubagentSettleTimer(): void {
+  if (subagentSettleTimer != null) {
+    window.clearTimeout(subagentSettleTimer)
+    subagentSettleTimer = null
+  }
+}
+
+/** 父回合是否有未决活动（open 流式条目 / 运行中工具 / 运行中 workflow）。 */
+function parentTurnHasOpenActivity(s: ChatState): boolean {
+  if (s.openAssistantId != null || s.openThoughtId != null) return true
+  return s.entries.some(
+    (e) =>
+      (e.kind === 'tool' && (e.status === 'pending' || e.status === 'in_progress')) ||
+      (e.kind === 'workflow' && e.running) ||
+      (e.kind === 'thought' && e.streaming),
+  )
+}
+
+/**
+ * 武装兜底：已知子代理会话的收口事件到达且父回合 live、无未决父活动时，
+ * 延迟收口父回合（触发时再复核一次同样的条件）。同一等待窗口内重复的
+ * 终态事件不重复武装。
+ */
+function armSubagentTurnSettleFallback(
+  set: SetState,
+  get: () => ChatState,
+): void {
+  const s = get()
+  if (!turnIsLive(s) || parentTurnHasOpenActivity(s)) return
+  if (subagentSettleTimer != null) return
+  subagentSettleTimer = window.setTimeout(() => {
+    subagentSettleTimer = null
+    const cur = get()
+    if (!turnIsLive(cur) || parentTurnHasOpenActivity(cur)) return
+    finalizeTurn(set, get, undefined)
+  }, SUBAGENT_SETTLE_GRACE_MS)
 }
 
 /**
