@@ -2938,8 +2938,30 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ev.stopReason === 'error' ||
           ev.stopReason === 'rate_limit' ||
           ev.stopReason === 'cancelled'
+        // TUI prompt_origin.rs: no-output turns suppress the marker
+        // (had_output → None); bash turns (the `!` shell-mode prompt)
+        // suppress it too (QueueEntryKind::BashCommand → bash_turn →
+        // TurnComplete suppression, queue.rs:785). Only turns with real
+        // output after the user prompt get the "Worked for" line.
+        let bashTurn = false
+        let hasOutput = false
+        for (let i = get().entries.length - 1; i >= 0; i--) {
+          const e = get().entries[i]
+          if (e.kind === 'user') {
+            bashTurn = (e as { isShell?: boolean }).isShell === true
+            break
+          }
+          if (
+            e.kind === 'assistant' ||
+            e.kind === 'thought' ||
+            e.kind === 'tool'
+          ) {
+            hasOutput = true
+            break
+          }
+        }
         const marker =
-          turnIsLive(get()) && !failedTurn
+          turnIsLive(get()) && !failedTurn && !bashTurn && hasOutput
             ? turnMarker(turnStart != null ? Date.now() - turnStart : undefined)
             : null
         set((s) => ({
