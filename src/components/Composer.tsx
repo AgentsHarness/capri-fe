@@ -42,10 +42,10 @@ const CHIP_MIN_LINES = 4 // TUI: 4, or 2 in compact mode (web has none)
 const CHIP_DISPLAY_BYTES = 10_000
 
 /**
- * Current activity of a busy turn: the newest running entry — thinking or
- * tool — with its label, accent color and start time (TUI turn_status.rs
- * activity label). Falls back to null (the generic status text) when
- * nothing is running.
+ * Current activity of a busy turn: the newest running entry — thinking,
+ * tool or streaming assistant reply — with its label, accent color and
+ * start time (TUI turn_status.rs activity arm). Falls back to null (the
+ * generic status text) when nothing is running.
  */
 function currentActivity(
   entries: ScrollEntry[],
@@ -59,6 +59,12 @@ function currentActivity(
       const verb = toolHeader(e.kindName, false).verb
       const target = (e.title || e.kindName || '').trim()
       return { label: `${verb} ${target}`.trim(), color: Accents.success }
+    }
+    // Streaming reply: the assistant row's `ts` is its response start
+    // (first chunk), so the phase timer is the reply's own duration —
+    // not the whole turn.
+    if (e.kind === 'assistant' && e.streaming) {
+      return { label: 'Responding', color: Accents.gray, startedAt: e.ts }
     }
   }
   return null
