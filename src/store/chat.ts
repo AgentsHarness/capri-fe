@@ -8,6 +8,7 @@ import type {
   ModelOption,
   PendingReq,
   PermissionScope,
+  RewindExecuteResult,
   RewindMode,
   RewindPoint,
   ScheduledTask,
@@ -1059,6 +1060,8 @@ type ChatState = {
   clearCompletedNotice: (sessionId: string) => void
   /** Dismiss one in-page toast by id. */
   dismissToast: (id: string) => void
+  /** Push one in-page toast (top-right stack, auto-dismisses ~6s). */
+  pushToast: (text: string) => void
   /** Record a different session's turn completion: ✓ badge + notify. */
   noteSessionCompleted: (sessionId: string) => void
   /** Git head from x.ai/git_head_changed (TUI status-bar branch). */
@@ -1332,7 +1335,7 @@ type ChatState = {
   /** x.ai/session/rewind_points — candidate rewind targets for the /rewind picker. */
   rewindPoints: () => Promise<RewindPoint[]>
   /** x.ai/session/rewind — rewind the active session to a stored index (TUI /rewind). */
-  rewindExecute: (targetIndex: number, mode?: RewindMode) => Promise<void>
+  rewindExecute: (targetIndex: number, mode?: RewindMode) => Promise<RewindExecuteResult | undefined>
   /** x.ai/scheduler/delete — remove a scheduled task (TUI /loop delete). */
   deleteScheduledTask: (taskId: string) => Promise<void>
   /**
@@ -2128,6 +2131,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   dismissToast: (id) => set({ toasts: get().toasts.filter((t) => t.id !== id) }),
+  pushToast: (text) => {
+    const id = `toast_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+    set({ toasts: [...get().toasts, { id, text }].slice(-4) })
+  },
 
   noteSessionCompleted: (sessionId) => {
     const s = get()
@@ -4847,7 +4854,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const s = get()
     if (!s.sessionId || !s.cwd) {
       set({ statusText: '回退失败: 无活动会话' })
-      return
+      return undefined
     }
     try {
       const r = await transport.rewindExecute(s.sessionId, targetIndex, mode)
@@ -4869,6 +4876,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const keep = get().scheduledTasks
       await get().loadHistory(s.sessionId, s.cwd)
       if (keep.length > 0) set({ scheduledTasks: keep })
+      // Outcome details (reverted files / conflicts) ride back to the
+      // picker so it can surface file-revert feedback (toast / warning).
+      return r
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       set({

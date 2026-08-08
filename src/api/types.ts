@@ -125,6 +125,33 @@ export type RewindPoint = {
 }
 
 /**
+ * One conflicted file reported by x.ai/rewind/execute (agent
+ * RewindConflictInfo — snake_case `conflict_type` on the wire):
+ *   modified_externally — 磁盘内容 ≠ agent 最后写入的样子（外部改动，回退已覆盖）
+ *   deleted_externally  — 磁盘上文件缺失但 agent 留下过内容（外部删除，已从快照恢复）
+ *   created_externally  — 磁盘存在文件但 agent 最后状态没有（外部新建，已按快照处理）
+ */
+export type RewindConflict = {
+  path: string
+  conflictType: string
+}
+
+/**
+ * Successful rewind outcome details (agent RewindResponse — snake_case
+ * wire: reverted_files / clean_files / conflicts / prompt_text).
+ */
+export type RewindExecuteResult = {
+  /** 回退点原文（Composer 恢复用，见 store.rewindExecute）。 */
+  promptText?: string
+  /** 实际还原（写回或删除）的文件。 */
+  revertedFiles?: string[]
+  /** 本就干净、未被动过的文件。 */
+  cleanFiles?: string[]
+  /** 与外部修改冲突的文件（mode=all 时已被快照覆盖）。 */
+  conflicts?: RewindConflict[]
+}
+
+/**
  * Rewind scope (POST /api/rewind-execute `mode`, TUI RewindExecute mode):
  * "conversation_only" rolls back the conversation only (TUI /rewind
  * default); "all" also reverts the point's file snapshots.

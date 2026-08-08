@@ -842,7 +842,7 @@ export class LocalTransport {
     sessionId: string,
     targetIndex: number,
     mode?: RewindMode,
-  ): Promise<{ promptText?: string }> {
+  ): Promise<import('./types').RewindExecuteResult> {
     const res = await fetch(this.url('/api/rewind-execute'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -868,17 +868,43 @@ export class LocalTransport {
           `回退失败: 目标点 ${targetIndex} 未被接受`,
       )
     }
-    // The rewound point's prompt text (TUI RewindResponse.prompt_text,
-    // snake_case or camelCase on the wire) — the composer restores it
-    // after the rewind so the user can keep editing / resend the prompt
-    // the rollback landed on.
-    let promptText: string | undefined
-    if (result && typeof result === 'object') {
-      const raw = (result as Record<string, unknown>).prompt_text ??
-        (result as Record<string, unknown>).promptText
-      if (typeof raw === 'string' && raw.trim()) promptText = raw
+    // RewindResponse detail fields (snake_case or camelCase on the wire):
+    //   prompt_text    — 回退点的 prompt 原文（Composer 恢复用）
+    //   reverted_files — 实际还原（写回/删除）的文件
+    //   clean_files    — 本就干净的文件
+    //   conflicts      — 与外部修改冲突的文件（mode=all 时已被快照覆盖）
+    // 全部防御性解析：非字符串数组 / 非对象项直接丢弃。
+    const o =
+      result && typeof result === 'object' && !Array.isArray(result)
+        ? (result as Record<string, unknown>)
+        : {}
+    const strArr = (snake: string, camel: string): string[] | undefined => {
+      const v = o[snake] ?? o[camel]
+      return Array.isArray(v)
+        ? v.filter((x): x is string => typeof x === 'string')
+        : undefined
     }
-    return { promptText }
+    const rawPrompt =
+      (typeof o.prompt_text === 'string' && o.prompt_text) ||
+      (typeof o.promptText === 'string' && o.promptText)
+    const rawConflicts = Array.isArray(o.conflicts) ? o.conflicts : undefined
+    const conflicts = rawConflicts
+      ?.filter((c): c is Record<string, unknown> => !!c && typeof c === 'object')
+      .map((c) => ({
+        path: String(c.path ?? ''),
+        conflictType: String(c.conflict_type ?? c.conflictType ?? ''),
+      }))
+      .filter((c) => c.path)
+    return {
+      ...(rawPrompt && rawPrompt.trim() ? { promptText: rawPrompt } : {}),
+      ...(strArr('reverted_files', 'revertedFiles')
+        ? { revertedFiles: strArr('reverted_files', 'revertedFiles') }
+        : {}),
+      ...(strArr('clean_files', 'cleanFiles')
+        ? { cleanFiles: strArr('clean_files', 'cleanFiles') }
+        : {}),
+      ...(conflicts && conflicts.length > 0 ? { conflicts } : {}),
+    }
   }
 
   /** x.ai/scheduler/delete — remove a scheduled task (TUI /loop delete). */

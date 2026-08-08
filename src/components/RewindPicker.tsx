@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useChatStore } from '../store/chat'
-import type { RewindMode, RewindPoint } from '../api/types'
+import type { RewindConflict, RewindExecuteResult, RewindMode, RewindPoint } from '../api/types'
 
 /**
  * /rewind picker modal (TUI /rewind — views/rewind.rs state machine,
@@ -14,6 +14,9 @@ import type { RewindMode, RewindPoint } from '../api/types'
  *   loading → picker (j/k move, Enter selects) → confirm (y/a/n) →
  *     executing → modal closes on success; failures render the error
  *     phase with retry (existing inline-error behavior preserved).
+ *   warning — rewind succeeded but files conflicted with external edits
+ *     (mode=all): they were overwritten from snapshots; the list is shown
+ *     before the modal closes so the surprise is surfaced, not silent.
  *
  * confirm-before-rewind is a persistent setting: the confirm layer's
  * "Yes, and don't ask again" flips `acpfe.confirmBeforeRewind` to false
@@ -41,7 +44,7 @@ function disableConfirmBeforeRewind(): void {
   }
 }
 
-type Phase = 'cancel-offer' | 'loading' | 'picker' | 'confirm' | 'executing' | 'error'
+type Phase = 'cancel-offer' | 'loading' | 'picker' | 'confirm' | 'executing' | 'error' | 'warning'
 
 export function RewindPicker() {
   const open = useChatStore((s) => s.rewindOpen)
@@ -66,6 +69,9 @@ export function RewindPicker() {
   // Reset per selection so a fresh pick always starts conversation-only.
   const [rewindMode, setRewindMode] = useState<RewindMode>('conversation_only')
   const [executing, setExecuting] = useState(false)
+  // Last successful rewind outcome (warning phase / toast payload).
+  const [outcome, setOutcome] = useState<RewindExecuteResult>()
+  const pushToast = useChatStore((s) => s.pushToast)
   const panelRef = useRef<HTMLDivElement>(null)
   const reqSeq = useRef(0)
   // One-shot open flow (busy check + initial fetch) per open.
@@ -105,6 +111,7 @@ export function RewindPicker() {
     setPoints([])
     setError(undefined)
     setPending(undefined)
+    setOutcome(undefined)
     setRewindMode('conversation_only')
     setExecuting(false)
     executingRef.current = false
@@ -134,8 +141,25 @@ export function RewindPicker() {
       setPending({ point, mode })
       setPhase('executing')
       try {
-        await rewindExecute(point.index, rewindMode)
-        // The store reloads the session history; close to reveal it.
+        const res = await rewindExecute(point.index, rewindMode)
+        // File conflicts with external edits (mode=all): the snapshots
+        // already overwrote them — surface the list before closing so
+        // the surprise isn't silent (agent force=true clobbers).
+        if (res?.conflicts && res.conflicts.length > 0) {
+          setOutcome(res)
+          setPhase('warning')
+          return
+        }
+        // Clean success: close to reveal the rewound scrollback; a
+        // "restored N files" toast carries the file-revert feedback.
+        const reverted = res?.revertedFiles?.length ?? 0
+        if (rewindMode === 'all' && reverted > 0) {
+          pushToast(
+            `已回退到 #${point.index}：还原 ${reverted} 个文件${
+              res?.cleanFiles?.length ? `（${res.cleanFiles.length} 个未改动）` : ''
+            }`,
+          )
+        }
         closeRewind()
       } catch (e) {
         executingRef.current = false
@@ -144,7 +168,7 @@ export function RewindPicker() {
         setError(e instanceof Error ? e.message : String(e))
       }
     },
-    [rewindExecute, closeRewind, rewindMode],
+    [rewindExecute, closeRewind, rewindMode, pushToast],
   )
 
   /** Row click / Enter in the picker: confirm layer or direct execute. */
@@ -267,6 +291,14 @@ export function RewindPicker() {
           if (e.key === 'Enter' || e.key === 'r') {
             prevent()
             if (pending) void execute(pending.point, pending.mode)
+          }
+          break
+        }
+        case 'warning': {
+          // Acknowledge the conflict list and close (enter / esc).
+          if (e.key === 'Enter' || e.key === 'Escape') {
+            prevent()
+            closeRewind()
           }
           break
         }
@@ -427,6 +459,45 @@ export function RewindPicker() {
             <div className="px-4 py-6 text-center text-[12px] text-gn-muted">
               回退中{rewindMode === 'all' ? '（含文件）' : ''}…
             </div>
+          ) : phase === 'warning' && outcome ? (
+            <div className="px-4 py-5">
+              <div className="text-[12px] leading-snug text-gn-fg">
+                回退成功，但{' '}
+                <span className="font-mono text-gn-yellow">
+                  {outcome.conflicts?.length ?? 0}
+                </span>{' '}
+                个文件与外部修改冲突，已按快照覆盖：
+              </div>
+              <div className="mt-2 max-h-40 overflow-y-auto rounded border border-gn-prompt-border/50">
+                {(outcome.conflicts ?? []).map((c) => (
+                  <div
+                    key={c.path}
+                    className="flex items-start gap-2 border-b border-gn-prompt-border/40 px-2.5 py-1.5 last:border-b-0"
+                  >
+                    <span className="shrink-0 rounded bg-gn-bg-highlight px-1 font-mono text-[10px] leading-[16px] text-gn-yellow">
+                      {conflictLabel(c)}
+                    </span>
+                    <span className="min-w-0 break-all font-mono text-[11px] leading-snug text-gn-fg">
+                      {c.path}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-2 text-[11px] leading-snug text-gn-muted">
+                这些文件在你回退前被外部修改过（编辑器/终端等），快照已还原为 agent
+                当时的状态。
+                {outcome.revertedFiles?.length
+                  ? ` 另有 ${outcome.revertedFiles.length} 个文件正常还原。`
+                  : ''}
+              </div>
+              <button
+                type="button"
+                onClick={closeRewind}
+                className="mt-3 w-full rounded border border-gn-prompt-border px-3 py-1.5 text-[12px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg"
+              >
+                知道了（enter / esc）
+              </button>
+            </div>
           ) : phase === 'error' ? (
             <div className="px-4 py-5 text-center">
               <div className="text-[12px] text-gn-red">回退失败 · {error}</div>
@@ -499,9 +570,11 @@ export function RewindPicker() {
               ? 'c/f 选择模式（对话 / 对话+文件） · y 是 · a 是且不再询问 · n 否 · j/k 移动 · esc 关闭'
               : phase === 'error'
                 ? 'enter/r 重试 · esc 关闭'
-                : phase === 'picker'
-                  ? 'j/k 选择 · enter 确认 · esc 关闭'
-                  : '回退将删除目标点之后的对话内容 · 该点的提示词将放回输入框'}
+                : phase === 'warning'
+                  ? 'enter / esc 关闭'
+                  : phase === 'picker'
+                    ? 'j/k 选择 · enter 确认 · esc 关闭'
+                    : '回退将删除目标点之后的对话内容 · 该点的提示词将放回输入框'}
         </footer>
       </div>
     </div>
@@ -546,6 +619,20 @@ function RadioRow({
       <span className="min-w-0 flex-1">{label}</span>
     </button>
   )
+}
+
+/** Rewind conflict type → short Chinese label (agent RewindConflictInfo). */
+function conflictLabel(c: RewindConflict): string {
+  switch (c.conflictType) {
+    case 'modified_externally':
+      return '外部修改'
+    case 'deleted_externally':
+      return '外部删除'
+    case 'created_externally':
+      return '外部新建'
+    default:
+      return c.conflictType || '冲突'
+  }
 }
 
 /** Rewind point timestamp → "MM/DD HH:MM" (epoch s / ms / ISO all accepted). */
