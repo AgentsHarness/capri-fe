@@ -1,18 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useChatStore, type McpServerInfo } from '../store/chat'
-import type { McpListServer } from '../api/localTransport'
+import type { McpListServer, McpToolInfo } from '../api/localTransport'
 
 /**
  * MCP server panel (x.ai/mcp/server_status + host /api/mcp/*) — web
  * counterpart of the TUI /mcps modal.
  *
  * Upper half: 服务器状态 — the event-stream rows (mcp_server_status),
- * patched in place as notifications arrive; mcpVersion (tools_changed /
- * servers_updated) shows as a "已更新" hint in the footer.
+ * patched in place as notifications arrive, plus the aggregate MCP init
+ * progress (mcp_init_progress: `MCP (connected/total)` bar while
+ * connecting); mcpVersion (tools_changed / servers_updated) shows as a
+ * "已更新" hint in the footer.
  *
  * Lower half: 管理 — GET /api/mcp/list merges the configured servers into
  * the display (rows marked `agent-list`); per-row 启用/禁用 toggle
- * (/api/mcp-toggle), 删除 (/api/mcp-remove, window.confirm), 认证
+ * (/api/mcp-toggle), per-tool 启用/禁用 toggle (/api/mcp-toggle-tool —
+ * the tool list comes from the list response's session.tools, degraded to
+ * 无工具信息 when absent), 删除 (/api/mcp-remove, window.confirm), 认证
  * (/api/mcp-auth-trigger — url/code shown inline), plus a collapsible
  * 添加服务器 form (/api/mcp-add). Merge rule: the event stream wins for
  * status, the list supplements config/source. Every host call degrades to
@@ -27,8 +31,10 @@ export function McpPanel({
 }) {
   const mcpServers = useChatStore((s) => s.mcpServers)
   const mcpVersion = useChatStore((s) => s.mcpVersion)
+  const mcpInit = useChatStore((s) => s.mcpInit)
   const mcpList = useChatStore((s) => s.mcpList)
   const mcpToggle = useChatStore((s) => s.mcpToggle)
+  const mcpToggleTool = useChatStore((s) => s.mcpToggleTool)
   const mcpAdd = useChatStore((s) => s.mcpAdd)
   const mcpRemove = useChatStore((s) => s.mcpRemove)
   const mcpAuthTrigger = useChatStore((s) => s.mcpAuthTrigger)
@@ -39,6 +45,8 @@ export function McpPanel({
   const [listLoading, setListLoading] = useState(false)
   const [listError, setListError] = useState<string>()
   const [busy, setBusy] = useState<{ name: string; action: 'toggle' | 'remove' | 'auth' } | null>(null)
+  /** In-flight per-tool toggle ({server, tool}); exclusive with `busy`. */
+  const [toolBusy, setToolBusy] = useState<{ server: string; tool: string } | null>(null)
   const [actionError, setActionError] = useState<string>()
   const [authResult, setAuthResult] = useState<{ name: string; url?: string; code?: string; message?: string } | null>(null)
   const [addOpen, setAddOpen] = useState(false)
@@ -99,6 +107,10 @@ export function McpPanel({
           env: existing.env ?? l.env,
           url: existing.url ?? l.url,
           enabled: l.enabled,
+          // Tool list comes from the agent list only (event-stream rows
+          // carry no tools). `??` keeps the last-known list when the
+          // fresh response omits it.
+          tools: l.tools ?? existing.tools,
           fromList: true,
         })
       } else {
@@ -113,6 +125,7 @@ export function McpPanel({
           env: l.env,
           url: l.url,
           enabled: l.enabled,
+          tools: l.tools,
           fromList: true,
         })
       }
@@ -125,7 +138,8 @@ export function McpPanel({
     action: 'toggle' | 'remove' | 'auth',
     fn: () => Promise<unknown>,
   ) => {
-    if (busy) return
+    // Server-level actions are exclusive with per-tool toggles too.
+    if (busy || toolBusy) return
     setBusy({ name, action })
     setActionError(undefined)
     setAuthResult(null)
@@ -146,8 +160,41 @@ export function McpPanel({
       useChatStore.setState({ statusText: `已${enabled ? '启用' : '禁用'} MCP 服务器 ${name}` })
     })
 
+  /**
+   * Per-tool enable/disable (POST /api/mcp-toggle-tool — TUI /mcps tool
+   * row toggle → x.ai/mcp/toggle_tool). Optimistic local flip + silent
+   * refresh so the list converges with the agent (tools_changed bumps
+   * mcpVersion in the footer).
+   */
+  const toggleTool = async (server: string, tool: string, enabled: boolean) => {
+    if (busy || toolBusy) return
+    setToolBusy({ server, tool })
+    setActionError(undefined)
+    try {
+      await mcpToggleTool(server, tool, enabled)
+      setList((prev) =>
+        prev.map((s) =>
+          s.name === server
+            ? {
+                ...s,
+                tools: s.tools?.map((t) =>
+                  t.name === tool ? { ...t, enabled } : t,
+                ),
+              }
+            : s,
+        ),
+      )
+      useChatStore.setState({ statusText: `已${enabled ? '启用' : '禁用'}工具 ${tool}（${server}）` })
+      void refreshList()
+    } catch (e) {
+      setActionError(`工具启停「${tool}」失败: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setToolBusy(null)
+    }
+  }
+
   const removeServer = (name: string) => {
-    if (busy) return
+    if (busy || toolBusy) return
     if (!window.confirm(`删除 MCP 服务器「${name}」？此操作不可恢复。`)) return
     void runAction(name, 'remove', async () => {
       await mcpRemove(name)
@@ -231,6 +278,28 @@ export function McpPanel({
           <div className="px-4 pt-2.5 pb-1 text-[10px] uppercase tracking-wider text-gn-gutter">
             服务器状态 · x.ai/mcp/server_status
           </div>
+          {mcpInit && !(mcpInit.total > 0 && mcpInit.connected >= mcpInit.total) ? (
+            <div className="border-b border-gn-prompt-border/50 px-4 py-2">
+              <div className="flex items-center gap-2">
+                <span className="h-2 w-2 shrink-0 rounded-full bg-gn-yellow animate-pulse" />
+                <span className="text-[12px] text-gn-fg2">
+                  {mcpInit.total > 0
+                    ? `MCP 初始化中 · ${mcpInit.connected}/${mcpInit.total} 已连接`
+                    : 'MCP 初始化中…（等待服务器计数）'}
+                </span>
+              </div>
+              {mcpInit.total > 0 ? (
+                <div className="mt-1.5 h-1 w-full overflow-hidden rounded bg-gn-bg-highlight">
+                  <div
+                    className="h-full rounded bg-gn-yellow transition-[width] duration-300"
+                    style={{
+                      width: `${Math.min(100, Math.round((mcpInit.connected / mcpInit.total) * 100))}%`,
+                    }}
+                  />
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           {mcpServers.length === 0 ? (
             <div className="px-4 py-3 text-center text-[12px] text-gn-muted">
               尚未收到服务器状态通知
@@ -344,11 +413,62 @@ export function McpPanel({
                           env: {Object.keys(s.env).join(', ')}
                         </div>
                       ) : null}
+                      {/* 工具列表 — agent wire session.tools（camelCase）；
+                          缺失或为空 → 无工具信息（优雅降级，不报错）。 */}
+                      <div className="mt-1.5">
+                        <span className="text-[10px] uppercase tracking-wider text-gn-gutter">
+                          工具
+                          {s.tools ? ` (${s.tools.length})` : ''}
+                        </span>
+                        {s.tools == null || s.tools.length === 0 ? (
+                          <span className="ml-2 text-[11px] text-gn-muted">
+                            无工具信息
+                          </span>
+                        ) : (
+                          <div className="mt-1 space-y-0.5">
+                            {s.tools.map((t) => (
+                              <div key={t.name} className="flex items-center gap-2">
+                                <span
+                                  className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                                    t.enabled !== false ? 'bg-gn-green' : 'bg-gn-gutter'
+                                  }`}
+                                  title={t.enabled !== false ? '已启用' : '已禁用'}
+                                />
+                                <span
+                                  className="min-w-0 flex-1 truncate font-mono text-[11px] text-gn-fg2"
+                                  title={t.description ? `${t.name} — ${t.description}` : t.name}
+                                >
+                                  {t.displayName ?? t.name}
+                                </span>
+                                <button
+                                  type="button"
+                                  disabled={busy != null || toolBusy != null}
+                                  onClick={() =>
+                                    void toggleTool(s.name, t.name, t.enabled !== false)
+                                  }
+                                  className={`shrink-0 rounded border px-1.5 py-px text-[10.5px] disabled:opacity-50 ${
+                                    t.enabled !== false
+                                      ? 'border-gn-prompt-border text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
+                                      : 'border-gn-prompt-border-active bg-gn-bg-highlight text-gn-fg'
+                                  }`}
+                                  title={`${t.enabled !== false ? '禁用' : '启用'}工具 ${t.name}（/api/mcp/toggle-tool）`}
+                                >
+                                  {toolBusy?.server === s.name && toolBusy?.tool === t.name
+                                    ? '…'
+                                    : t.enabled !== false
+                                      ? '禁用'
+                                      : '启用'}
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-1.5 pt-0.5">
                       <button
                         type="button"
-                        disabled={busy != null}
+                        disabled={busy != null || toolBusy != null}
                         onClick={() => void toggleServer(s.name, !enabled)}
                         className={`rounded border px-2 py-0.5 text-[11px] disabled:opacity-50 ${
                           enabled
@@ -361,7 +481,7 @@ export function McpPanel({
                       </button>
                       <button
                         type="button"
-                        disabled={busy != null}
+                        disabled={busy != null || toolBusy != null}
                         onClick={() => void authServer(s.name)}
                         className="rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
                         title="触发 OAuth 认证（/api/mcp-auth-trigger）"
@@ -370,7 +490,7 @@ export function McpPanel({
                       </button>
                       <button
                         type="button"
-                        disabled={busy != null}
+                        disabled={busy != null || toolBusy != null}
                         onClick={() => removeServer(s.name)}
                         className="rounded border border-gn-diff-del-bg px-2 py-0.5 text-[11px] text-gn-red hover:bg-gn-diff-del-bg disabled:opacity-50"
                         title="删除该服务器（/api/mcp-remove）"
@@ -521,6 +641,9 @@ type McpRow = McpServerInfo & {
   env?: Record<string, string>
   url?: string
   enabled?: boolean
+  /** Tool list from the agent list response (session.tools); undefined
+   *  when the wire carried none (→ 无工具信息). */
+  tools?: McpToolInfo[]
   /** True when this row came (at least in part) from GET /api/mcp/list. */
   fromList: boolean
 }

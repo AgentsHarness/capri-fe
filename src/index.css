@@ -248,6 +248,29 @@ body {
   height: auto;
 }
 
+/* Inline math (TUI latex_to_unicode): mono/italic approximation of the
+   converted Unicode text, using the fg2 text token. */
+.gn-math {
+  font-family: var(--font-ui);
+  font-size: 0.92em;
+  font-style: italic;
+  color: var(--color-gn-fg2);
+}
+
+/* Display math: block-level (span with display:block stays valid inside
+   <p>), centered, mono/italic, multi-line content preserved. */
+.gn-math-block {
+  display: block;
+  margin: 0.45em auto;
+  text-align: center;
+  font-family: var(--font-ui);
+  font-size: 0.92em;
+  font-style: italic;
+  color: var(--color-gn-fg2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* Prefer reduced motion: AccentRail freezes wave via prefers-reduced-motion
    is handled in JS by still painting solid when frozen; CSS pulse suppressed. */
 @media (prefers-reduced-motion: reduce) {

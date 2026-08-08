@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEven
 import { planTodos, useChatStore } from '../store/chat'
 import type { ScrollEntry } from '../api/types'
 import { Glyphs, toolHeader } from '../theme/glyphs'
+import { thoughtDisplayMode } from '../scrollback/thoughtMode'
 import { todoMark } from './StatusChips'
 import {
   ICON_COL_CLASS,
@@ -144,6 +145,10 @@ function entryFailed(e: ScrollEntry): boolean {
 
 /** UserPromptBlock COLLAPSED_MAX_LINES. */
 const USER_COLLAPSED_MAX_LINES = 3
+/** ThinkingBlock truncated preview: head lines before "…" (TUI truncated view). */
+const THOUGHT_TRUNCATED_HEAD_LINES = 5
+/** ThinkingBlock truncated preview: tail lines after "…" (TUI truncated_lines default = 3). */
+const THOUGHT_TRUNCATED_TAIL_LINES = 3
 /** Conservative content width for foldability estimate (TUI MIN_CONTENT_WIDTH). */
 const USER_MIN_CONTENT_WIDTH = 60
 /** Pause between scroll-up page loads (also shields the anchor-restore
@@ -173,8 +178,7 @@ function userIsFoldable(text: string): boolean {
 /**
  * Collapse user text to at most max visual lines, appending " …" when truncated
  * (UserPromptBlock::wrap_prompt_lines with max_lines).
- */
-function collapseUserText(text: string, maxLines: number): { text: string; truncated: boolean } {
+ */function collapseUserText(text: string, maxLines: number): { text: string; truncated: boolean } {
   const logical = text.split('\n')
   const out: string[] = []
   let visual = 0
@@ -206,9 +210,27 @@ function collapseUserText(text: string, maxLines: number): { text: string; trunc
   return { text: out.join('\n'), truncated: false }
 }
 
+/**
+ * ThinkingBlock truncated preview (TUI render_truncated): the first
+ * THOUGHT_TRUNCATED_HEAD_LINES lines, "…", then the last
+ * THOUGHT_TRUNCATED_TAIL_LINES lines. Short bodies (≤ head+tail) show whole.
+ */
+function truncatedThoughtLines(text: string): string[] {
+  const all = text.split('\n')
+  const cap = THOUGHT_TRUNCATED_HEAD_LINES + THOUGHT_TRUNCATED_TAIL_LINES
+  if (all.length <= cap) return all
+  return [
+    ...all.slice(0, THOUGHT_TRUNCATED_HEAD_LINES),
+    Glyphs.ellipsis,
+    ...all.slice(-THOUGHT_TRUNCATED_TAIL_LINES),
+  ]
+}
+
 function entryExpanded(e: ScrollEntry): boolean {
   if (e.kind === 'tool') return !!e.expanded
-  if (e.kind === 'thought') return !!e.open
+  // Thought: only the fully-collapsed header counts as folded (truncated
+  // and expanded both show body content).
+  if (e.kind === 'thought') return thoughtDisplayMode(e) !== 'collapsed'
   if (e.kind === 'session_event') return !!e.open
   // User defaults to collapsed when foldable (TUI default_display_mode).
   if (e.kind === 'user') {
@@ -284,7 +306,7 @@ function entryAtMinFold(e: ScrollEntry): boolean {
   }
   if (e.kind === 'thought') {
     if (e.streaming) return false // live body visible; not at min fold chrome
-    return !e.open
+    return thoughtDisplayMode(e) === 'collapsed'
   }
   if (e.kind === 'user') {
     if (!userIsFoldable(e.text)) return false
@@ -396,7 +418,8 @@ function accentOpts(
 function isDensePackable(e: ScrollEntry): boolean {
   if (e.kind === 'group_header') return true
   if (e.kind === 'tool') return !e.expanded
-  if (e.kind === 'thought') return !e.open && !e.streaming
+  if (e.kind === 'thought')
+    return thoughtDisplayMode(e) === 'collapsed' && !e.streaming
   if (e.kind === 'subagent' || e.kind === 'bg_task' || e.kind === 'workflow')
     return true
   return false
@@ -868,7 +891,12 @@ const EntryView = memo(function EntryView({
   }
 
   if (e.kind === 'thought') {
-    const showBody = e.streaming || e.open
+    const mode = thoughtDisplayMode(e)
+    const showBody = e.streaming || mode !== 'collapsed'
+    // Truncated (default after finish): header + head/tail preview, no
+    // internal scroll (the tail must stay visible). Streaming/expanded:
+    // full body in a capped scroll container.
+    const truncated = mode === 'truncated' && !e.streaming
     return (
       <EntryShell {...shell}>
         <button
@@ -910,12 +938,16 @@ const EntryView = memo(function EntryView({
         {showBody && (
           <div
             ref={bodyRef}
-            className="gn-no-scrollbar mt-1 min-h-[1.2em] max-h-[6.5em] overflow-y-auto overscroll-contain border-l pl-3 text-[12.5px] leading-relaxed"
+            className={
+              truncated
+                ? 'mt-1 border-l pl-3 text-[12.5px] leading-relaxed'
+                : 'gn-no-scrollbar mt-1 min-h-[1.2em] max-h-[6.5em] overflow-y-auto overscroll-contain border-l pl-3 text-[12.5px] leading-relaxed'
+            }
             style={{ borderColor: 'color-mix(in srgb, var(--color-gn-gray-dim) 40%, transparent)' }}
           >
             {e.text ? (
               <div className="italic text-gn-muted whitespace-pre-wrap break-words">
-                {e.text}
+                {truncated ? truncatedThoughtLines(e.text).join('\n') : e.text}
                 {e.streaming && (
                   <span
                     className="ml-0.5 inline-block h-[0.9em] w-[0.4em] translate-y-[1px] animate-pulse align-text-bottom"

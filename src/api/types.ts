@@ -202,6 +202,99 @@ export type PendingReq = {
   params?: Record<string, unknown>
 }
 
+/**
+ * One git file change — x.ai/git/* wire shape (xai-grok-workspace-types
+ * rpc/git.rs GitFileChange, camelCase). `type` is the lowercase ChangeType
+ * serialization: create | edit | delete | rename | copy | typechange |
+ * untracked.
+ */
+export type GitFileChange = {
+  path: string
+  oldPath?: string
+  type:
+    | 'create'
+    | 'edit'
+    | 'delete'
+    | 'rename'
+    | 'copy'
+    | 'typechange'
+    | 'untracked'
+  /** Whether this change is staged (index vs HEAD); absent for commit diffs. */
+  staged?: boolean
+  additions: number
+  deletions: number
+  /** Unified diff text — only when the request asked for patches. */
+  patch?: string
+  patchBytes?: number
+  patchLines?: number
+  oldText?: string
+  newText?: string
+}
+
+/** x.ai/git/status structured data (rpc/git.rs GitStatusData, camelCase). */
+export type GitStatusData = {
+  root?: string
+  mainRoot?: string
+  isWorktree?: boolean
+  branch?: string
+  commit?: string
+  upstream?: string
+  remoteUrl?: string
+  /** Commits ahead of upstream (local commits not pushed). */
+  ahead?: number
+  /** Commits behind upstream (remote commits not pulled). */
+  behind?: number
+  /** Index vs HEAD. */
+  staged: GitFileChange[]
+  /** Worktree vs index (includes untracked when includeUntracked). */
+  unstaged: GitFileChange[]
+}
+
+/** x.ai/git/diffs response (rpc/git.rs GitDiffsData, camelCase). */
+export type GitDiffsData = {
+  files: GitFileChange[]
+}
+
+/** One file read by x.ai/git/files (rpc/git.rs GitReadFile, camelCase). */
+export type GitReadFile = {
+  path: string
+  version: string
+  content: string
+  isBinary?: boolean
+}
+
+/** x.ai/git/files response (rpc/git.rs GitReadFilesData, camelCase). */
+export type GitReadFilesData = {
+  files: GitReadFile[]
+  errors?: unknown[]
+}
+
+/**
+ * x.ai/billing config (xai-grok-shell extensions/billing.rs BillingConfig,
+ * camelCase). Only the fields the credits chip consumes are typed; the
+ * rest passes through the wire untouched.
+ */
+export type BillingConfig = {
+  /** Included credit usage as a percentage of the allowance (0–100). */
+  creditUsagePercent?: number
+  /** Remaining prepaid balance in USD cents (positive = bought credits). */
+  prepaidBalance?: { val: number }
+  /** Deprecated: included monthly credit budget in cents. */
+  monthlyLimit?: { val: number }
+  /** Deprecated: credits used this period in cents. */
+  used?: { val: number }
+  currentPeriod?: { start?: string; end?: string }
+  [k: string]: unknown
+}
+
+/** x.ai/billing top-level response (BillingConfigResponse). */
+export type BillingConfigResponse = {
+  config?: BillingConfig | null
+  onDemandEnabled?: boolean
+  subscriptionTier?: string
+  [k: string]: unknown
+}
+
 /** GET /api/extensions — one hook row. */
 export type ExtensionHook = {
   name: string
@@ -234,10 +327,30 @@ export type ExtensionSkill = {
  * Host contract (parallel): POST /api/permission-response `scope` field,
  * parsed verbatim — field names must match exactly.
  */
-export type PermissionScope = {
+export type BashCommandScope = {
   commandParts: string[]
   isGlob: boolean
 }
+
+/**
+ * TUI `McpScopeSelection` (xai-grok-workspace permission/prompter.rs,
+ * serde tag = "kind", snake_case variants) — the response `_meta` the TUI
+ * attaches when the user picks "always allow" on an MCP prompt:
+ *   {"kind": "tool",   "tool_name": "<server>__<tool>"}  → exact tool
+ *   {"kind": "server", "server": "<server>"}             → whole server
+ * Sent in the same `scope` field as the bash scope (different request
+ * types take different encodings). The current host only relays
+ * commandParts/isGlob to the agent (bridge.go RespondPermissionWithMeta);
+ * an MCP-shaped scope is dropped there and the agent's no-meta fallback
+ * grants exact-tool scope — this wire is forward-compatible with hosts
+ * that relay McpScopeSelection.
+ */
+export type McpScopeSelection =
+  | { kind: 'tool'; tool_name: string }
+  | { kind: 'server'; server: string }
+
+/** Structured "always allow" scope — bash or MCP encoding. */
+export type PermissionScope = BashCommandScope | McpScopeSelection
 
 export type ToolCall = {
   toolCallId?: string
@@ -432,6 +545,12 @@ export type AcpEvent =
     }
   | { type: 'mcp_tools_changed'; params?: Record<string, unknown> }
   | { type: 'mcp_servers_updated'; params?: Record<string, unknown> }
+  | {
+      type: 'mcp_init_progress'
+      /** x.ai/mcp/init_progress forwarded verbatim (shell emits
+       *  camelCase {total, connected, sessionId}). */
+      params?: { total?: number; connected?: number; sessionId?: string }
+    }
   | { type: 'sessions_changed'; params?: Record<string, unknown> }
   /** Hub-level: a host paired / came online / dropped off (acp-hub). */
   | { type: 'hosts_changed'; params?: Record<string, unknown> }
@@ -553,7 +672,18 @@ export type ScrollEntry =
       id: string
       kind: 'thought'
       text: string
+      /**
+       * Legacy fold flag (pre-displayMode entries): `true` meant the body
+       * was shown. New code writes `displayMode`; this survives only as a
+       * replay-compat input (missing displayMode + open → 'expanded').
+       */
       open?: boolean
+      /**
+       * ThinkingBlock display mode (TUI three-state): 'collapsed' = header
+       * only, 'truncated' (default) = header + head/tail preview, 'expanded'
+       * = full body. Missing → 'truncated' (replay compat).
+       */
+      displayMode?: 'collapsed' | 'truncated' | 'expanded'
       streaming?: boolean
       elapsed?: string
       startedAt?: number

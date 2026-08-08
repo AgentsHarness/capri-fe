@@ -9,6 +9,7 @@ import {
   sanitizeTitle,
   sessionContextPct,
   sessionGroupKey,
+  sessionSubtitle,
 } from './historyGroups'
 import { Glyphs } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
@@ -270,6 +271,7 @@ export function HistorySidebar() {
                     const key = sessionGroupKey(s, sessionId)
                     const state = key === 'active' ? 'active' : 'idle'
                     const pending = key === 'awaiting'
+                    const subtitle = sessionSubtitle(s)
                     const renaming = renamingId === s.sessionId
                     // TUI RowState::allows_delete — only settled rows may be
                     // deleted; Working / NeedsInput (处理中 bucket) and
@@ -367,6 +369,7 @@ export function HistorySidebar() {
                             className="block truncate font-mono text-[10px] text-gn-muted"
                             title={s.updatedAt ? absTime(s.updatedAt) : undefined}
                           >
+                            {subtitle ? `${subtitle} · ` : ''}
                             {s.updatedAt ? fmtTime(s.updatedAt) : ''}
                           </span>
                         </span>

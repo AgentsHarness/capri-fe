@@ -9,6 +9,7 @@
 
 import type { ScrollEntry } from '../api/types'
 import { toolFamily } from '../theme/toolFamily'
+import { thoughtDisplayMode } from './thoughtMode'
 
 /** Eager verb-fold kinds (ToolCallBlock::verb_group_kind). */
 export type VerbGroupKind =
@@ -112,7 +113,8 @@ export function labelKind(e: ScrollEntry): VerbGroupKind | null {
 
 function isCollapsed(e: ScrollEntry): boolean {
   if (e.kind === 'tool') return !e.expanded
-  if (e.kind === 'thought') return !e.open && !e.streaming
+  if (e.kind === 'thought')
+    return thoughtDisplayMode(e) === 'collapsed' && !e.streaming
   if (e.kind === 'subagent' || e.kind === 'bg_task' || e.kind === 'workflow') return true
   return false
 }

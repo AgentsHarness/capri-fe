@@ -362,6 +362,130 @@ export class LocalTransport {
     return data
   }
 
+  // ── Git workspace panel (POST /api/git/* → x.ai/git/* passthrough) ──
+  // Host contract: {ok: true, result: <agent raw result>} where the agent
+  // result is an ExtMethodResult envelope ({result, error}) for ext
+  // methods — unwrapped by unwrapExtResult below (legacy flat payloads
+  // also pass through). All calls are cwd-scoped (gitRoot wire key).
+
+  /**
+   * POST /api/git/status {cwd?, includeUntracked?} → x.ai/git/status.
+   * The host defaults includeUntracked to true; the agent's structured
+   * GitStatusData (branch / staged / unstaged) lands in the envelope.
+   */
+  async gitStatus(
+    opts: { cwd?: string; includeUntracked?: boolean } = {},
+  ): Promise<import('./types').GitStatusData> {
+    return unwrapExtResult<import('./types').GitStatusData>(
+      await this.xaiCall('/api/git/status', opts),
+    )
+  }
+
+  /**
+   * POST /api/git/diffs {cwd?, from, to, paths?} → x.ai/git/diffs.
+   * `from`/`to` are git refs — "HEAD"/"working"/"staged" or a commit-ish.
+   * The host does not forward includePatch, so patch text is usually
+   * absent; the panel degrades to stats (+ content via /api/git/files
+   * for untracked files) and renders the patch when it is present.
+   */
+  async gitDiffs(opts: {
+    cwd?: string
+    from: string
+    to: string
+    paths?: string[]
+  }): Promise<import('./types').GitDiffsData> {
+    return unwrapExtResult<import('./types').GitDiffsData>(
+      await this.xaiCall('/api/git/diffs', opts),
+    )
+  }
+
+  /** POST /api/git/stage {cwd?, paths?} → x.ai/git/stage. */
+  async gitStage(opts: { cwd?: string; paths?: string[] }): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/git/stage', opts))
+  }
+
+  /** POST /api/git/unstage {cwd?, paths?} → x.ai/git/unstage. */
+  async gitUnstage(opts: { cwd?: string; paths?: string[] }): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/git/unstage', opts))
+  }
+
+  /**
+   * POST /api/git/discard {cwd?, paths?, includeUntracked?} →
+   * x.ai/git/discard. includeUntracked only reaches the agent when
+   * explicitly provided — the panel sends it for untracked rows.
+   */
+  async gitDiscard(opts: {
+    cwd?: string
+    paths?: string[]
+    includeUntracked?: boolean
+  }): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/git/discard', opts))
+  }
+
+  /** POST /api/git/commit {cwd?, message, amend?, signoff?, push?} → x.ai/git/commit. */
+  async gitCommit(opts: {
+    cwd?: string
+    message: string
+    amend?: boolean
+    signoff?: boolean
+    push?: boolean
+  }): Promise<unknown> {
+    return unwrapExtResult(await this.xaiCall('/api/git/commit', opts))
+  }
+
+  /**
+   * POST /api/git/files {cwd?, paths, version?} → x.ai/git/files —
+   * file content at a version ("working" / "staged" / commit-ish). Used
+   * by the git panel to preview untracked files (git diff never shows
+   * them).
+   */
+  async gitFiles(opts: {
+    cwd?: string
+    paths: string[]
+    version?: string
+  }): Promise<import('./types').GitReadFilesData> {
+    return unwrapExtResult<import('./types').GitReadFilesData>(
+      await this.xaiCall('/api/git/files', opts),
+    )
+  }
+
+  /**
+   * POST /api/billing {sessionId?} → _x.ai/billing. Response shape is the
+   * agent's BillingConfigResponse ({ config: { creditUsagePercent,
+   * prepaidBalance: { val }, … }, onDemandEnabled, … }) — no ExtMethodResult
+   * envelope (billing is a plain method). Unwraps {ok, result} only.
+   */
+  async billing(sessionId?: string): Promise<import('./types').BillingConfigResponse> {
+    const res = await fetch(this.url('/api/billing'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(sessionId ? { sessionId } : {}),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `billing failed (${res.status})`)
+    }
+    const result = data.result ?? {}
+    return result && typeof result === 'object' ? result : {}
+  }
+
+  /**
+   * Shared x.ai/* passthrough call: POST `path` with JSON `body`,
+   * returns the agent's raw `result` (the host answers {ok, result}).
+   */
+  private async xaiCall(path: string, body: Record<string, unknown>): Promise<unknown> {
+    const res = await fetch(this.url(path), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `${path} failed (${res.status})`)
+    }
+    return data.result
+  }
+
   async status() {
     const res = await fetch(this.url('/api/status'))
     return res.json()
@@ -762,6 +886,24 @@ export class LocalTransport {
                 )
               : (s.env as Record<string, string>)
             : undefined
+        // Tool list — agent wire (mcps_modal.rs McpsServerSession, camelCase):
+        // session.tools = [{name, displayName?, description?, enabled?}].
+        // Absent (older agents / config-only entries) → undefined; the
+        // panel then renders 无工具信息 instead of an empty list.
+        const rawTools = Array.isArray(sess.tools) ? sess.tools : []
+        const tools: McpToolInfo[] = rawTools
+          .filter((t): t is Record<string, unknown> => !!t && typeof t === 'object')
+          .map((t) => ({
+            name: typeof t.name === 'string' ? t.name : '',
+            ...(typeof t.displayName === 'string' && t.displayName
+              ? { displayName: t.displayName }
+              : {}),
+            ...(typeof t.description === 'string' && t.description
+              ? { description: t.description }
+              : {}),
+            ...(typeof t.enabled === 'boolean' ? { enabled: t.enabled } : {}),
+          }))
+          .filter((t) => t.name)
         return {
           name: typeof s.name === 'string' ? s.name : '',
           ...(typeof s.command === 'string' && s.command ? { command: s.command } : {}),
@@ -779,10 +921,35 @@ export class LocalTransport {
             : typeof sess.status === 'string' && sess.status
               ? { status: sess.status }
               : {}),
+          // Only attach the tools array when the wire actually carried one
+          // (empty array = a connected server with zero tools; undefined =
+          // no tool info at all).
+          ...(Array.isArray(sess.tools) ? { tools } : {}),
         }
       })
       .filter((s) => s.name)
     return { servers }
+  }
+
+  /** POST /api/mcp-toggle-tool — enable/disable one tool of a server
+   *  (TUI /mcps tool row toggle → x.ai/mcp/toggle_tool). Body is
+   *  camelCase ({serverName, toolName, enabled}); the host maps it to the
+   *  agent's snake_case wire (session_id/server_name/tool_name/enabled). */
+  async mcpToggleTool(
+    serverName: string,
+    toolName: string,
+    enabled: boolean,
+  ): Promise<Record<string, unknown>> {
+    const res = await fetch(this.url('/api/mcp/toggle-tool'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ serverName, toolName, enabled }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `mcp toggle tool failed (${res.status})`)
+    }
+    return data
   }
 
   /** POST /api/mcp-toggle — enable/disable a server (TUI /mcps Space). */
@@ -953,6 +1120,200 @@ export class LocalTransport {
       cli: findObjectField(data, 'cli'),
     }
   }
+
+  // ── Terminals (x.ai/terminal/* — host /api/terminal/*) ──────────────
+  // Host contract (http_ext2.go /api/terminal/* + grok-build
+  // extensions/terminal.rs): every endpoint answers `{ok:true,
+  // result:<agent raw result>}`; failures are HTTP errors or
+  // `{ok:false, error}`. Output delivery is split:
+  //  - piped (non-interactive) terminals → POLL /api/terminal/output
+  //    (cumulative snapshot incl. exitStatus; no SSE push exists);
+  //  - PTY terminals → `pty_notification` SSE events (host broadcasts
+  //    x.ai/terminal/pty/notification as {type:'pty_notification',
+  //    params:{terminalId, type: output|exit|process_started|
+  //    process_ended, data?<base64>, outputOffset?, isReplay?,
+  //    exitCode?, signal?}}). x.ai/terminal/output does NOT serve PTYs
+  //    (the agent looks those up by terminal_id alone, in a different
+  //    registry) — so interactive terminals are never polled.
+
+  /** POST /api/terminal/list — live terminals (piped + PTY) of the session. */
+  async terminalList(): Promise<{ terminals: TerminalInfo[] }> {
+    const res = await fetch(this.url('/api/terminal/list'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `terminal list failed (${res.status})`)
+    }
+    const terminals = (findArrayField(data, 'terminals') as Record<string, unknown>[])
+      .map(parseTerminalInfo)
+      .filter((t) => t.terminalId)
+    return { terminals }
+  }
+
+  /** POST /api/terminal/create — run `command` in a piped terminal. */
+  async terminalCreate(params: {
+    command: string
+    args?: string[]
+    env?: Record<string, string>
+    cwd?: string
+    outputByteLimit?: number
+  }): Promise<{ terminalId: string }> {
+    const res = await fetch(this.url('/api/terminal/create'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `terminal create failed (${res.status})`)
+    }
+    const id = findField(data, 'terminalId')
+    if (typeof id !== 'string' || !id) {
+      throw new Error('terminal create: 响应缺少 terminalId')
+    }
+    return { terminalId: id }
+  }
+
+  /** POST /api/terminal/output — cumulative output snapshot (piped only). */
+  async terminalOutput(terminalId: string): Promise<TerminalOutput> {
+    const res = await fetch(this.url('/api/terminal/output'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ terminalId }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `terminal output failed (${res.status})`)
+    }
+    const raw = findField(data, 'output')
+    const esRaw = findField(data, 'exitStatus') ?? findField(data, 'exit_status')
+    const es =
+      esRaw && typeof esRaw === 'object' && !Array.isArray(esRaw)
+        ? (esRaw as Record<string, unknown>)
+        : undefined
+    return {
+      output: typeof raw === 'string' ? raw : '',
+      truncated: findField(data, 'truncated') === true,
+      ...(es
+        ? {
+            exitStatus: {
+              ...(es.exitCode != null || es.exit_code != null
+                ? { exitCode: ((es.exitCode ?? es.exit_code) as number) ?? null }
+                : {}),
+              ...(typeof es.signal === 'string' && es.signal ? { signal: es.signal } : {}),
+            },
+          }
+        : {}),
+    }
+  }
+
+  /** POST /api/terminal/kill — kill a terminal; outcome killed|already_exited. */
+  async terminalKill(terminalId: string): Promise<{ outcome?: string }> {
+    const res = await fetch(this.url('/api/terminal/kill'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ terminalId }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `terminal kill failed (${res.status})`)
+    }
+    const outcome = findField(data, 'outcome')
+    return outcome && typeof outcome === 'string' ? { outcome } : {}
+  }
+
+  /** POST /api/terminal/release — forget a terminal (kills a running child). */
+  async terminalRelease(terminalId: string): Promise<void> {
+    const res = await fetch(this.url('/api/terminal/release'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ terminalId }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `terminal release failed (${res.status})`)
+    }
+  }
+
+  /**
+   * POST /api/terminal/background — mark a piped terminal backgrounded:
+   * the process keeps running and the agent continues (TUI bg_task).
+   */
+  async terminalBackground(terminalId: string): Promise<void> {
+    const res = await fetch(this.url('/api/terminal/background'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ terminalId }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `terminal background failed (${res.status})`)
+    }
+  }
+
+  /** POST /api/terminal/pty/create — interactive shell PTY (SSE-pushed output). */
+  async terminalPtyCreate(params: {
+    shell?: string
+    cwd?: string
+    sessionId?: string
+    env?: Record<string, string>
+    rows?: number
+    cols?: number
+    name?: string
+    meta?: Record<string, unknown>
+  }): Promise<{ terminalId: string }> {
+    const res = await fetch(this.url('/api/terminal/pty/create'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `pty create failed (${res.status})`)
+    }
+    const id = findField(data, 'terminalId')
+    if (typeof id !== 'string' || !id) {
+      throw new Error('pty create: 响应缺少 terminalId')
+    }
+    return { terminalId: id }
+  }
+
+  /** POST /api/terminal/pty/resize — resize an interactive PTY. */
+  async terminalPtyResize(terminalId: string, rows: number, cols: number): Promise<void> {
+    const res = await fetch(this.url('/api/terminal/pty/resize'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ terminalId, rows, cols }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `pty resize failed (${res.status})`)
+    }
+  }
+
+  /**
+   * POST /api/terminal/pty/input — fire-and-forget `_x.ai/terminal/pty/input`
+   * notification; `data` is base64 (raw bytes, UTF-8). Success answers
+   * {ok:true, result} — nothing to return.
+   */
+  async terminalPtyInput(terminalId: string, data: string): Promise<void> {
+    const res = await fetch(this.url('/api/terminal/pty/input'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ terminalId, data }),
+    })
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>
+    if (!res.ok || body.ok === false) {
+      throw new Error(
+        typeof body.error === 'string' && body.error
+          ? body.error
+          : `pty input failed (${res.status})`,
+      )
+    }
+  }
 }
 
 /** One configured MCP server from GET /api/mcp/list (host reads config). */
@@ -965,6 +1326,20 @@ export type McpListServer = {
   source?: string
   url?: string
   status?: string
+  /**
+   * Tools of the server's live session (agent wire `session.tools`,
+   * camelCase). Undefined = the wire carried no tool info (config-only
+   * entry / older agent) — the panel degrades to 无工具信息.
+   */
+  tools?: McpToolInfo[]
+}
+
+/** One MCP tool row (mcps_modal.rs McpToolDetail — camelCase wire). */
+export type McpToolInfo = {
+  name: string
+  displayName?: string
+  description?: string
+  enabled?: boolean
 }
 
 /** GET /api/extensions — one hook/plugin/skill row (canonical types). */
@@ -983,6 +1358,82 @@ export type SettingsPayload = {
   session?: Record<string, unknown>
   models?: Record<string, unknown>
   cli?: Record<string, unknown>
+}
+
+/** One terminal row from x.ai/terminal/list (agent TerminalInfo, camelCase). */
+export type TerminalInfo = {
+  terminalId: string
+  status: 'connecting' | 'connected' | 'exited' | 'error'
+  interactive: boolean
+  name?: string
+  exitCode?: number | null
+  cwd?: string
+  /** Bytes consumed so far (cumulative). */
+  outputOffset: number
+  /** Unix seconds (agent SystemTime::as_secs). */
+  createdAt: number
+}
+
+/** x.ai/terminal/output — cumulative snapshot for piped terminals. */
+export type TerminalOutput = {
+  output: string
+  truncated: boolean
+  exitStatus?: { exitCode?: number | null; signal?: string }
+}
+
+/** Parse one agent TerminalInfo (snake_case or camelCase wire fields). */
+export function parseTerminalInfo(t: Record<string, unknown>): TerminalInfo {
+  const id = t.terminal_id ?? t.terminalId
+  const status = String(t.status ?? 'connecting')
+  return {
+    terminalId: id == null ? '' : String(id),
+    status: (['connecting', 'connected', 'exited', 'error'] as const).includes(
+      status as TerminalInfo['status'],
+    )
+      ? (status as TerminalInfo['status'])
+      : 'connecting',
+    interactive: t.interactive === true,
+    ...(typeof t.name === 'string' && t.name ? { name: t.name } : {}),
+    ...(t.exitCode != null || t.exit_code != null
+      ? { exitCode: ((t.exitCode ?? t.exit_code) as number) ?? null }
+      : {}),
+    ...(typeof t.cwd === 'string' && t.cwd ? { cwd: t.cwd } : {}),
+    outputOffset:
+      typeof t.outputOffset === 'number'
+        ? t.outputOffset
+        : typeof t.output_offset === 'number'
+          ? t.output_offset
+          : 0,
+    createdAt:
+      typeof t.createdAt === 'number'
+        ? t.createdAt
+        : typeof t.created_at === 'number'
+          ? t.created_at
+          : 0,
+  }
+}
+
+/**
+ * Depth-first search for a `<key>: any` field in nested JSON (walks
+ * `result` / `data` / `payload` envelopes — the `{ok, result:{result,
+ * error}}` ExtMethodResult nesting included; any value type).
+ */
+function findField(root: unknown, key: string): unknown {
+  const seen = new Set<unknown>()
+  const walk = (v: unknown, depth: number): unknown => {
+    if (v == null || depth > 6) return undefined
+    if (typeof v !== 'object' || Array.isArray(v)) return undefined
+    if (seen.has(v)) return undefined
+    seen.add(v)
+    const o = v as Record<string, unknown>
+    if (key in o && o[key] !== undefined && o[key] !== null) return o[key]
+    for (const k of ['result', 'data', 'payload']) {
+      const found = walk(o[k], depth + 1)
+      if (found !== undefined) return found
+    }
+    return undefined
+  }
+  return walk(root, 0)
 }
 
 /**
@@ -1033,6 +1484,28 @@ function findObjectField(
     return undefined
   }
   return walk(root, 0)
+}
+
+/**
+ * Unwrap the agent's ExtMethodResult envelope ({result: T, error?}) from
+ * the host's {ok, result} passthrough. The envelope's `error` field is
+ * skipped on success (serde skip_serializing_if), so presence of the
+ * `result` key alone identifies the envelope; a non-null `error` throws.
+ * A legacy flat payload (no `result` key) passes through untouched.
+ */
+function unwrapExtResult<T>(raw: unknown): T {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const o = raw as Record<string, unknown>
+    if ('result' in o) {
+      if (o.error != null && o.error !== false && o.error !== '') {
+        throw new Error(
+          typeof o.error === 'string' ? o.error : JSON.stringify(o.error),
+        )
+      }
+      if (o.result != null) return o.result as T
+    }
+  }
+  return raw as T
 }
 
 export const transport = new LocalTransport()

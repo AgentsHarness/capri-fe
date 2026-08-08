@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useChatStore } from '../store/chat'
 import { ThemePicker } from './ThemePicker'
-import { fmtTime, groupAccentClass, groupByState, sessionGroupKey } from './historyGroups'
+import { fmtTime, groupAccentClass, groupByState, sessionGroupKey, sessionSubtitle } from './historyGroups'
 import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS } from '../theme/layout'
 import { Glyphs } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
 import { SessionStateIcon, stateLabel, useSessionSpinner } from './SessionStateIcon'
 import {
   ContextChip,
+  CreditsChip,
   GoalChip,
+  McpChip,
+  QueueBadge,
   RunningChip,
   RunningTasksBar,
   filterRunningEntries,
@@ -18,10 +21,11 @@ import {
 
 /**
  * Workspace + git + status chips — the whole TUI status-bar row (branch +
- * `~`-shortened cwd on the left, ⠋N / goal / context / todo on the right).
- * Click ⠋N toggles the sticky {@link RunningTasksBar} under the bar.
+ * `~`-shortened cwd on the left, ⠋N / goal / ⠋ MCP / context / queue /
+ * todo / credits on the right — TUI status.push order). Click ⠋N toggles
+ * the sticky {@link RunningTasksBar} under the bar.
  */
-export function WorkspaceBar() {
+export function WorkspaceBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
   const gitInfo = useChatStore((s) => s.gitInfo)
   const cwd = useChatStore((s) => s.cwd)
   const homeDir = useChatStore((s) => s.homeDir)
@@ -112,7 +116,8 @@ export function WorkspaceBar() {
 
         <div className="flex-1" />
 
-        {/* ⠋N toggles sticky task list · goal · context · todo */}
+        {/* ⠋N toggles sticky task list · goal · ⠋ MCP · context · queue · todo · credits
+            (TUI status.push order: bg_tasks → goal → mcp → context → queue → badge → credits) */}
         <RunningChip
           entries={entries}
           topTasks={topTasks}
@@ -120,6 +125,7 @@ export function WorkspaceBar() {
           onToggle={() => setTasksBarOpen(!tasksOpen)}
         />
         <GoalChip goalState={goalState} contextUsed={usage?.used} />
+        {onOpenMcp && <McpChip onOpen={onOpenMcp} />}
         <ContextChip
           used={usage?.used}
           size={
@@ -129,7 +135,9 @@ export function WorkspaceBar() {
           }
           turnTokens={usage?.turnTokens}
         />
+        <QueueBadge />
         <TodoChip todos={todos} goalState={goalState} />
+        <CreditsChip />
       </div>
       {/* Sticky task rows under the bar (not a floating popup). */}
       <RunningTasksBar entries={entries} topTasks={topTasks} open={tasksOpen} />
@@ -142,7 +150,15 @@ export function WorkspaceBar() {
  * Host switcher pre-wired for multi-host; git branch + session actions
  * (fork / rename / recap) live off the x.ai extension surface.
  */
-export function TopBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
+export function TopBar({
+  onOpenMcp,
+  onOpenGit,
+  onOpenTerm,
+}: {
+  onOpenMcp?: () => void
+  onOpenGit?: () => void
+  onOpenTerm?: () => void
+}) {
   const hostName = useChatStore((s) => s.hostName)
   const hostId = useChatStore((s) => s.hostId)
   const hosts = useChatStore((s) => s.hosts)
@@ -298,6 +314,26 @@ export function TopBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
             mcp
           </button>
         )}
+        {onOpenGit && (
+          <button
+            type="button"
+            onClick={onOpenGit}
+            className="rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+            title="Git 面板 — 工作区状态 / diff / 提交"
+          >
+            git
+          </button>
+        )}
+        {onOpenTerm && (
+          <button
+            type="button"
+            onClick={onOpenTerm}
+            className="rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+            title="终端（x.ai/terminal · 管道终端 + 交互 PTY）"
+          >
+            term
+          </button>
+        )}
         <button
           type="button"
           onClick={() => openExtensions('hooks')}
@@ -450,6 +486,7 @@ export function TopBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
                         const key = sessionGroupKey(s, sessionId)
                         const state = key === 'active' ? 'active' : 'idle'
                         const pending = key === 'awaiting'
+                        const subtitle = sessionSubtitle(s)
                         return (
                           <div
                             key={s.sessionId}
@@ -480,6 +517,7 @@ export function TopBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
                                 {s.title || s.sessionId.slice(0, 12)}
                               </span>
                               <span className="block truncate font-mono text-[10px] text-gn-muted">
+                                {subtitle ? `${subtitle} · ` : ''}
                                 {s.updatedAt ? fmtTime(s.updatedAt) : ''}
                               </span>
                             </span>

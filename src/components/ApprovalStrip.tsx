@@ -5,7 +5,16 @@ import { IconGlyph } from './IconGlyph'
 import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS } from '../theme/layout'
 import type { PendingReq, PermissionScope, ScrollEntry } from '../api/types'
 
-type Option = { optionId: string; name?: string; kind?: string; label?: string }
+/** One permission option from the request params. `meta` is the ACP
+ *  PermissionOption `meta` map (camelCase wire) — the TUI reads
+ *  McpToolPermission / BashCommandPermission off it. */
+type Option = {
+  optionId: string
+  name?: string
+  kind?: string
+  label?: string
+  meta?: unknown
+}
 
 /**
  * Permission strip — maps to TUI PermissionView sitting above the prompt.
@@ -16,8 +25,13 @@ type Option = { optionId: string; name?: string; kind?: string; label?: string }
  *   Tab/Shift+Tab   walk the options, wrapping
  *   1–9             pick that option directly
  *   Enter           confirm the focused option
- *   ←/→             cycle the "always allow" scope preset (only when an
- *                   always/始终 option exists — 精确 → 目录 → 通配)
+ *   ←/→             cycle the "always allow" scope preset — bash:
+ *                   精确 → 目录 → 通配 (TUI arrow word-scope); MCP
+ *                   prompts: 精确工具 → 整个 server (TUI McpScope
+ *                   Tool/Server toggle, hidden without a `server__`
+ *                   prefix)
+ *   e               open the free-form bash pattern editor (TUI e key;
+ *                   pre-filled with the command, Enter persists)
  *   Ctrl+F          expand/collapse the bash command body (TUI Ctrl-F)
  *   Esc             "park": hand the keyboard back to the scrollback (the
  *                   card stays on screen; Tab/Space returns; parked Esc is
@@ -43,6 +57,11 @@ export function ApprovalStrip() {
    *  RejectOnce: picking the reject row opens the followup input first —
    *  the reply is only sent once the feedback is confirmed). */
   const [rejectOption, setRejectOption] = useState<string | undefined>(undefined)
+  /** Free-form bash pattern editor (TUI e key → PatternEdit focus): the
+   *  current buffer, or null when closed. Enter persists the pattern as a
+   *  glob grant (scope {commandParts: [pattern], isGlob: true}); Esc
+   *  discards and returns to the option rows. */
+  const [patternEdit, setPatternEdit] = useState<string | null>(null)
 
   const req = pending[0]
   const options = (req?.params?.options as Option[] | undefined) || []
@@ -57,16 +76,51 @@ export function ApprovalStrip() {
   const commandLines = command ? command.split('\n') : []
   const collapsible = commandLines.length > PERMISSION_COLLAPSED_ROWS
   const hasAlways = options.some(isAlwaysOption)
+
+  // ── MCP scope (TUI McpScopeState) ─────────────────────────────────
+  // Detection mirrors the TUI (acp_handler/permissions.rs
+  // enqueue_permission): the `allow-always-mcp` option carrying
+  // McpToolPermission meta {prompt_prefix, tool_name, server_prefix} is
+  // the source of truth; the tool_call rawInput variant
+  // (UseTool/MCPTool — mcp_args_lines) and a `server__tool` title are
+  // defensive fallbacks for hosts that strip option meta.
+  const mcp = deriveMcp(options, toolCall)
+  // Scope presets: Tool ↔ Server only when the tool name has a `__`
+  // server segment (TUI has_adjustable_scope; no prefix → tool-only).
+  const mcpScopes: ReadonlyArray<'tool' | 'server'> = mcp.serverPrefix
+    ? ['tool', 'server']
+    : ['tool']
+  const mcpScope = mcpScopes[scopeIdx % mcpScopes.length] ?? 'tool'
+  /** TUI dynamic_option_label scope text: "(Server) Action" for tool
+   *  scope, "all tools from <Server>" (title-cased) for server scope. */
+  const mcpScopeText =
+    mcpScope === 'server' && mcp.serverPrefix
+      ? `all tools from ${mcpTitleizeSegment(mcp.serverPrefix)}`
+      : mcpToolDisplayName(mcp.toolName, mcp.serverPrefix)
+  /** ←/→ meaningful: always option present; MCP additionally needs the
+   *  `__` server segment (TUI has_adjustable_scope). */
+  const arrowsEnabled = hasAlways && (!mcp.isMcp || !!mcp.serverPrefix)
+
   // TUI ←/→ presets for the scope an "always" answer would remember. The
   // structured scope rides along in the permission response as `scope`.
-  const scopeText = SCOPE_PRESETS[scopeIdx % SCOPE_PRESETS.length]
+  const scopeText = mcp.isMcp
+    ? mcpScopeText
+    : SCOPE_PRESETS[scopeIdx % SCOPE_PRESETS.length]
 
   /** Structured scope for the current ←/→ preset, or undefined when there
-   *  is no command to scope. Mirrors TUI BashCommandSelectedTerms
-   *  construction (dispatch/permissions.rs L86-107): arrow word-scope is a
-   *  literal command-prefix word list (is_glob false), the free-form
-   *  pattern is a single text (is_glob true). */
+   *  is no command to scope. Bash mirrors TUI BashCommandSelectedTerms
+   *  construction (dispatch/permissions.rs build_selection_meta):
+   *  arrow word-scope is a literal command-prefix word list (is_glob
+   *  false), the pattern editor's confirmed pattern is a single text
+   *  (is_glob true). MCP mirrors TUI McpScopeSelection (kind-tagged). */
   function scopeForPreset(): PermissionScope | undefined {
+    if (mcp.isMcp) {
+      if (!mcp.toolName) return undefined
+      if (mcpScope === 'server' && mcp.serverPrefix) {
+        return { kind: 'server', server: mcp.serverPrefix }
+      }
+      return { kind: 'tool', tool_name: mcp.toolName }
+    }
     const words = command.trim().split(/\s+/).filter(Boolean)
     if (words.length === 0) return undefined
     const rawInput =
@@ -87,8 +141,9 @@ export function ApprovalStrip() {
           isGlob: false,
         }
       case '通配':
-        // The whole command as a single glob pattern (TUI pattern editor).
-        return { commandParts: [command], isGlob: true }
+        // The pattern editor's confirmed pattern (pre-filled with the
+        // command) as a single glob (TUI pattern editor, e key).
+        return { commandParts: [patternEdit ?? command], isGlob: true }
       default: // '精确' — every word, literal prefix.
         return { commandParts: words, isGlob: false }
     }
@@ -146,6 +201,7 @@ export function ApprovalStrip() {
     setFollowupOpen(false)
     setFollowupText('')
     setRejectOption(undefined)
+    setPatternEdit(null)
   }, [req?.requestId])
 
   // Keyboard ownership while a permission request is open. Capture phase +
@@ -163,6 +219,12 @@ export function ApprovalStrip() {
       // Fresh options straight from the store (never stale closures).
       const opts = (st.pending[0].params?.options as Option[] | undefined) || []
       const hasAlwaysOpt = opts.some(isAlwaysOption)
+      // Fresh MCP facts (allow-always-mcp option meta / toolCall variant).
+      const tc = st.pending[0].params?.toolCall as
+        | { title?: string; rawInput?: unknown; raw_input?: unknown }
+        | undefined
+      const mcpNow = deriveMcp(opts, tc)
+      const commandNow = typeof tc?.title === 'string' ? tc.title : ''
       // Browser chords (Cmd/Ctrl/Alt) pass through untouched.
       if (e.metaKey || e.altKey) return
 
@@ -198,6 +260,40 @@ export function ApprovalStrip() {
           // Other Ctrl chords: keep them from reaching the scrollback keys,
           // but don't preventDefault (browser copy/paste still works).
           e.stopImmediatePropagation()
+        }
+        return
+      }
+
+      if (patternEdit !== null) {
+        // Free-form pattern editor owns the row (TUI PatternEdit focus):
+        // Enter persists the pattern as a glob grant, Esc discards it;
+        // every other key edits the buffer (no preventDefault — the
+        // focused input receives it) and must never reach the option keys.
+        if (e.key === 'Enter') {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          const text = patternEdit.trim()
+          if (!text) return // blank → stay in the editor (TUI trimmed gate)
+          // The editor authors an ALLOW pattern: dispatch through the
+          // scoped allow-always row (TUI selects the allow-always-command
+          // row on Enter).
+          const target =
+            opts.find((o) => o.optionId === 'allow-always-command') ??
+            opts[sel] ??
+            opts.find(isAlwaysOption)
+          setPatternEdit(null)
+          if (target && isAlwaysOption(target)) {
+            void respond(req.requestId, target.optionId, false, {
+              commandParts: [text],
+              isGlob: true,
+            })
+          } else if (target) {
+            void respond(req.requestId, target.optionId, false, undefined)
+          }
+        } else if (e.key === 'Escape') {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          setPatternEdit(null)
         }
         return
       }
@@ -292,14 +388,29 @@ export function ApprovalStrip() {
         case 'h':
         case 'ArrowRight':
         case 'l':
-          // ←/→ widen/narrow the scope an "always" answer remembers. With
-          // no always option they are swallowed no-ops (never fold keys).
-          if (hasAlwaysOpt) {
-            setScopeIdx((i) =>
-              e.key === 'ArrowLeft' || e.key === 'h'
-                ? (i + SCOPE_PRESETS.length - 1) % SCOPE_PRESETS.length
-                : (i + 1) % SCOPE_PRESETS.length,
-            )
+          // ←/→ widen/narrow the scope an "always" answer remembers —
+          // bash: 精确/目录/通配; MCP: 精确工具/整个 server (only when
+          // the tool name has a `__` server segment). Without an
+          // adjustable scope they are swallowed no-ops (never fold keys).
+          if (hasAlwaysOpt && (!mcpNow.isMcp || !!mcpNow.serverPrefix)) {
+            const dir = e.key === 'ArrowLeft' || e.key === 'h' ? -1 : 1
+            const count = mcpNow.isMcp
+              ? mcpNow.serverPrefix
+                ? 2
+                : 1
+              : SCOPE_PRESETS.length
+            const next = (scopeIdx + dir + count) % count
+            setScopeIdx(next)
+            // Bash: landing on 通配 opens the pattern editor (TUI e-key
+            // flow, pre-filled with the command); leaving it closes the
+            // editor. MCP prompts have no pattern editor.
+            if (!mcpNow.isMcp) {
+              if (next === SCOPE_PRESETS.length - 1 && patternEdit === null) {
+                setPatternEdit(commandNow)
+              } else if (next !== SCOPE_PRESETS.length - 1 && patternEdit !== null) {
+                setPatternEdit(null)
+              }
+            }
           }
           break
         case 'Enter': {
@@ -320,6 +431,22 @@ export function ApprovalStrip() {
           )
           break
         }
+        case 'e':
+          // TUI e key: open the free-form pattern editor on a bash prompt
+          // (has_editable_bash_pattern — pre-filled with the command;
+          // Enter persists, Esc discards). MCP prompts have no editor.
+          if (
+            !mcpNow.isMcp &&
+            commandNow.trim() &&
+            hasAlwaysOpt &&
+            patternEdit === null
+          ) {
+            setScopeIdx(SCOPE_PRESETS.length - 1)
+            setPatternEdit(commandNow)
+            break
+          }
+          handled = false
+          break
         case 'Escape':
           setParked(true)
           break
@@ -352,7 +479,7 @@ export function ApprovalStrip() {
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [req, respond, sel, parked, scopeIdx, followupOpen, followupText, rejectOption, expanded, collapsible])
+  }, [req, respond, sel, parked, scopeIdx, followupOpen, followupText, rejectOption, patternEdit, expanded, collapsible])
 
   if (pending.length === 0) return null
 
@@ -434,12 +561,85 @@ export function ApprovalStrip() {
             )}
           </div>
         )}
-        {hasAlways && (
+        {hasAlways && (!mcp.isMcp || !!mcp.serverPrefix) && (
           <div className="mb-2 flex items-center gap-2 pl-5 text-[11.5px] text-gn-cyan">
-            <span>←/→ 调整始终允许范围</span>
-            <span className="rounded border border-gn-cyan/40 bg-gn-bg-base px-1.5 py-[1px] font-mono">
+            <span>
+              {mcp.isMcp ? '←/→ 切换允许范围' : '←/→ 调整始终允许范围'}
+            </span>
+            <span
+              className="rounded border border-gn-cyan/40 bg-gn-bg-base px-1.5 py-[1px] font-mono"
+              title={
+                mcp.isMcp && mcp.serverPrefix
+                  ? '精确工具: 仅该工具 · 整个 server: 该服务器的全部工具'
+                  : undefined
+              }
+            >
               {scopeText}
             </span>
+            {!mcp.isMcp && patternEdit === null && (
+              <button
+                type="button"
+                onClick={() => {
+                  setScopeIdx(SCOPE_PRESETS.length - 1)
+                  setPatternEdit(command)
+                }}
+                className="rounded border border-gn-cyan/40 px-1.5 py-[1px] text-[10.5px] text-gn-cyan transition-colors hover:bg-gn-bg-highlight"
+                title="打开自由模式 glob 编辑器（TUI e 键）"
+              >
+                e 编辑
+              </button>
+            )}
+          </div>
+        )}
+        {/* Free-form bash pattern editor (TUI e key → PatternEdit focus):
+            single-line input pre-filled with the command; Enter persists
+            the pattern as {commandParts:[pattern], isGlob:true}, Esc
+            discards. Mouse users get 保存/取消. */}
+        {!mcp.isMcp && patternEdit !== null && (
+          <div className="mb-2 flex items-center gap-1.5 pl-5">
+            <input
+              autoFocus
+              value={patternEdit}
+              onChange={(e) => setPatternEdit(e.target.value)}
+              onFocus={(e) => {
+                const v = e.target.value
+                e.target.setSelectionRange(v.length, v.length)
+              }}
+              placeholder="glob 模式，如 gh api repos/*"
+              className="min-w-0 flex-1 rounded border border-gn-cyan/40 bg-gn-bg-base px-2 py-1 font-mono text-[12px] text-gn-fg outline-none placeholder:text-gn-muted"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                const text = patternEdit.trim()
+                const target =
+                  options.find((o) => o.optionId === 'allow-always-command') ??
+                  options[sel] ??
+                  options.find(isAlwaysOption)
+                setPatternEdit(null)
+                if (!text || !target) return
+                void respond(
+                  req.requestId,
+                  target.optionId,
+                  false,
+                  isAlwaysOption(target)
+                    ? { commandParts: [text], isGlob: true }
+                    : undefined,
+                )
+              }}
+              className="shrink-0 rounded border border-gn-cyan/40 px-2 py-1 text-[11px] text-gn-cyan transition-colors hover:bg-gn-bg-highlight"
+              title="Enter 确认 · 以 glob 模式保存"
+            >
+              保存
+            </button>
+            <button
+              type="button"
+              onClick={() => setPatternEdit(null)}
+              className="shrink-0 rounded border border-gn-prompt-border px-2 py-1 text-[11px] text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+              title="Esc 取消"
+            >
+              取消
+            </button>
           </div>
         )}
         {/* TUI PermissionView: options are full-width rows, one per line —
@@ -541,7 +741,10 @@ export function ApprovalStrip() {
               ↑/↓ 或 j/k 选择 · <span className="text-gn-fg2">1-9</span> 直接选 ·{' '}
               <span className="text-gn-fg2">Enter</span> 确认 ·{' '}
               <span className="text-gn-fg2">Esc</span> 暂停键盘
-              {hasAlways ? ' · ←/→ 调整始终允许范围' : ''}
+              {arrowsEnabled
+                ? ` · ←/→ ${mcp.isMcp ? '切换允许范围' : '调整始终允许范围'}`
+                : ''}
+              {!mcp.isMcp && hasAlways && patternEdit === null ? ' · e 编辑模式' : ''}
               {collapsible && !expanded ? ' · Ctrl+F 展开命令' : ''}
             </span>
           )}
@@ -554,8 +757,98 @@ export function ApprovalStrip() {
 /** TUI ←/→ scope presets for an "always allow" answer. Each maps to a
  *  structured BashCommandSelectedTerms (see scopeForPreset): 精确 = every
  *  command word, 目录 = first word + working directory, 通配 = the whole
- *  command as a glob. */
+ *  command as a glob (editable via the e-key pattern editor). MCP prompts
+ *  replace this with the Tool/Server pair (McpScopeSelection). */
 const SCOPE_PRESETS = ['精确', '目录', '通配']
+
+/** TUI mcp_titleize_segment (xai-grok-workspace permission/prompter.rs):
+ *  split on '_', capitalize each word's first char, join with spaces —
+ *  "list_issues" → "List Issues"; camelCase/hyphens pass through. */
+function mcpTitleizeSegment(name: string): string {
+  return name
+    .split('_')
+    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
+    .join(' ')
+}
+
+/** TUI mcp_tool_display_name — "(Server) Action" with both segments
+ *  title-cased when a server prefix exists, else the title-cased tool
+ *  name. The scope badge shows exactly this for tool-scope. */
+function mcpToolDisplayName(toolName: string, serverPrefix?: string): string {
+  if (serverPrefix && toolName.startsWith(`${serverPrefix}__`)) {
+    const action = toolName.slice(serverPrefix.length + 2)
+    return `(${mcpTitleizeSegment(serverPrefix)}) ${mcpTitleizeSegment(action)}`
+  }
+  return mcpTitleizeSegment(toolName)
+}
+
+/** TUI parse_mcp_qualified_name (xai-grok-mcp servers.rs): exactly one
+ *  `__` delimiter with non-empty segments → {server, tool}, else
+ *  undefined (zero or 2+ delimiters are not qualified MCP ids). */
+function parseMcpQualifiedName(
+  name: string,
+): { server: string; tool: string } | undefined {
+  const idx = name.indexOf('__')
+  if (idx <= 0) return undefined
+  if (name.indexOf('__', idx + 2) !== -1) return undefined
+  const server = name.slice(0, idx)
+  const tool = name.slice(idx + 2)
+  if (!server || !tool) return undefined
+  return { server, tool }
+}
+
+/** McpToolPermission meta (TUI prompter.rs) — attached to the
+ *  `allow-always-mcp` option: {prompt_prefix, tool_name, server_prefix}. */
+type McpPermMeta = {
+  prompt_prefix?: string
+  tool_name?: string
+  server_prefix?: string | null
+}
+
+/** Read McpToolPermission off the `allow-always-mcp` option's meta —
+ *  the TUI's source of truth for MCP scope state (acp_handler/
+ *  permissions.rs enqueue_permission). Undefined = not an MCP prompt. */
+function mcpOptionMeta(opts: Option[]): McpPermMeta | undefined {
+  const opt = opts.find((o) => o.optionId === 'allow-always-mcp')
+  const meta = opt?.meta
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return undefined
+  return meta as McpPermMeta
+}
+
+/**
+ * MCP permission derivation shared by the render and the key handler.
+ * Primary detection: the `allow-always-mcp` option carrying McpToolPermission
+ * meta (TUI enqueue_permission). Defensive fallbacks for hosts that strip
+ * option meta: the tool_call rawInput variant UseTool/MCPTool (TUI
+ * mcp_args_lines) and a qualified `server__tool` title.
+ */
+function deriveMcp(
+  opts: Option[],
+  toolCall: { title?: string; rawInput?: unknown; raw_input?: unknown } | undefined,
+): { isMcp: boolean; toolName: string; serverPrefix?: string } {
+  const meta = mcpOptionMeta(opts)
+  const ri = (toolCall?.rawInput ?? toolCall?.raw_input) as
+    | Record<string, unknown>
+    | undefined
+  const variant = ri?.variant
+  const qualified =
+    typeof toolCall?.title === 'string'
+      ? parseMcpQualifiedName(toolCall.title)
+      : undefined
+  const toolName =
+    (typeof meta?.tool_name === 'string' && meta.tool_name) ||
+    (typeof ri?.tool_name === 'string' && ri.tool_name) ||
+    (qualified?.tool ?? '') ||
+    (typeof toolCall?.title === 'string' ? toolCall.title : '')
+  const serverPrefix =
+    (typeof meta?.server_prefix === 'string' && meta.server_prefix) ||
+    parseMcpQualifiedName(toolName)?.server
+  return {
+    isMcp: !!meta || variant === 'UseTool' || variant === 'MCPTool' || !!qualified,
+    toolName,
+    serverPrefix,
+  }
+}
 
 /** TUI PERMISSION_COLLAPSED_ROWS (permission_view.rs) — bash body rows
  *  shown before folding with "… Ctrl-F to expand". */

@@ -2,12 +2,20 @@ import { useEffect, useRef, useState } from 'react'
 import { useChatStore } from '../store/chat'
 import { Glyphs } from '../theme/glyphs'
 import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS } from '../theme/layout'
-import { Markdown } from './Markdown'
 
 /**
  * x.ai/exit_plan_mode approval strip — web counterpart of the TUI plan
  * approval view (plan_approval_view.rs + agent_view/plan.rs). Approving
  * leaves plan mode and starts the implement turn.
+ *
+ * Plan review is LINE-BASED like the TUI's commenting mode: the preview
+ * shows the plan with 1:1 line numbers; clicking a line selects it
+ * (Shift+click / drag selects a range). Sending "请求修改" with a
+ * selection composes a line comment in the TUI format:
+ *   single line: "Proposed plan line 12:"
+ *   range:       "Proposed plan lines 1-3:"
+ *   body:        "> <snippet>" per selected line, then "Comment:\n<正文>"
+ * (plan_approval_view.rs format_feedback / inline_plan_snippets).
  *
  * Keyboard (the strip owns these keys while mounted, TUI plan approval):
  *   a        approve
@@ -23,6 +31,24 @@ import { Markdown } from './Markdown'
  *   cancelled  { outcome:"cancelled", feedback? }   ("request changes")
  *   abandoned  { outcome:"abandoned" }              ("quit plan")
  */
+
+/**
+ * TUI inline_plan_snippets + format_feedback (plan_approval_view.rs):
+ * `{label}\n{> snippet lines}\n\nComment:\n{正文}`. Lines are 1-based;
+ * `end` is inclusive (the TUI's half-open range end − 1).
+ */
+function buildLineComment(lines: string[], start: number, end: number, text: string): string {
+  const label =
+    start === end
+      ? `Proposed plan line ${start}:`
+      : `Proposed plan lines ${start}-${end}:`
+  const snippets = lines
+    .slice(start - 1, end)
+    .map((l) => `> ${l}`)
+    .join('\n')
+  return `${label}\n${snippets}\n\nComment:\n${text}`
+}
+
 export function PlanApproval() {
   const xaiRequests = useChatStore((s) => s.xaiRequests)
   const respondXai = useChatStore((s) => s.respondXai)
@@ -30,13 +56,35 @@ export function PlanApproval() {
 
   const req = xaiRequests.find((r) => r.method === 'x.ai/exit_plan_mode')
   const [feedback, setFeedback] = useState('')
-  const [showPlan, setShowPlan] = useState(false)
+  const [showPlan, setShowPlan] = useState(true)
   const feedbackRef = useRef<HTMLInputElement>(null)
+  // Selected plan line range (1-based inclusive; null = none selected).
+  const [selStart, setSelStart] = useState<number | null>(null)
+  const [selEnd, setSelEnd] = useState<number | null>(null)
+  /** Drag anchor: the line the drag started on (null = not dragging). */
+  const [dragAnchor, setDragAnchor] = useState<number | null>(null)
+
+  // Pure derivations — declared before the effects below so the keydown
+  // effect's deps can reference them (no TDZ at the useEffect call site).
+  const planContent =
+    typeof req?.params?.planContent === 'string' ? req.params.planContent : undefined
+  // TUI plan.rs: whitespace-only bodies count as "no plan".
+  const hasPlan = planContent != null && planContent.trim() !== ''
+  const planLines = hasPlan && planContent != null ? planContent.split('\n') : []
+
+  /** 选中范围（1-based 升序）；null = 无选中。 */
+  const selection =
+    selStart != null && selEnd != null
+      ? { start: Math.min(selStart, selEnd), end: Math.max(selStart, selEnd) }
+      : null
 
   // Fresh state for each new request.
   useEffect(() => {
     setFeedback('')
-    setShowPlan(false)
+    setShowPlan(true)
+    setSelStart(null)
+    setSelEnd(null)
+    setDragAnchor(null)
   }, [req?.requestId])
 
   useEffect(() => {
@@ -54,14 +102,20 @@ export function PlanApproval() {
         void dismissXai(req.requestId)
         return
       }
-      // Enter: empty feedback → approve; text present → request changes.
+      // Enter: empty feedback → approve; text present → request changes
+      // (with a line selection, the feedback is composed as a line
+      // comment — same format as the 请求修改 button).
       // Claimed from the body (focus outside inputs) or the feedback input.
       if (e.key === 'Enter' && (!typing || inFeedback)) {
         e.preventDefault()
         e.stopImmediatePropagation()
         const fb = feedback.trim()
         if (fb) {
-          void respondXai(req.requestId, { outcome: 'cancelled', feedback: fb })
+          let body = fb
+          if (selection) {
+            body = buildLineComment(planLines, selection.start, selection.end, fb)
+          }
+          void respondXai(req.requestId, { outcome: 'cancelled', feedback: body })
         } else {
           void respondXai(req.requestId, { outcome: 'approved' })
         }
@@ -82,13 +136,34 @@ export function PlanApproval() {
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [req, respondXai, dismissXai, feedback])
+  }, [req, respondXai, dismissXai, feedback, selection, planLines])
 
   if (!req) return null
-  const planContent =
-    typeof req.params?.planContent === 'string' ? req.params.planContent : undefined
-  // TUI plan.rs: whitespace-only bodies count as "no plan".
-  const hasPlan = planContent != null && planContent.trim() !== ''
+
+  const selectLine = (line: number, extend: boolean) => {
+    if (extend) {
+      // Shift+点击: 从当前锚点扩展到该行（TUI Commenting 范围选择）。
+      if (selStart != null) {
+        setSelEnd(line)
+      } else {
+        setSelStart(line)
+        setSelEnd(line)
+      }
+    }
+  }
+
+  /** 请求修改：选中行 → 组装行级评论；否则仅正文。 */
+  const sendRevision = () => {
+    const fb = feedback.trim()
+    let body = fb
+    if (fb && selection) {
+      body = buildLineComment(planLines, selection.start, selection.end, fb)
+    }
+    void respondXai(req.requestId, {
+      outcome: 'cancelled',
+      ...(body ? { feedback: body } : {}),
+    })
+  }
 
   return (
     <div className="border-t border-gn-yellow/30 bg-gn-bg-dark py-2.5">
@@ -105,17 +180,82 @@ export function PlanApproval() {
 
         {hasPlan ? (
           <div className="mb-2 rounded border border-gn-prompt-border bg-gn-bg-base px-3 py-2">
-            <button
-              type="button"
-              onClick={() => setShowPlan((v) => !v)}
-              className="mb-1 text-[11px] font-semibold text-gn-muted hover:text-gn-fg"
-            >
-              {showPlan ? '▾ 收起计划' : '▸ 查看计划'} (
-              {planContent.split('\n').length} 行)
-            </button>
+            <div className="mb-1 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowPlan((v) => !v)}
+                className="text-[11px] font-semibold text-gn-muted hover:text-gn-fg"
+              >
+                {showPlan ? '▾ 收起计划' : '▸ 查看计划'} ({planLines.length} 行)
+              </button>
+              {showPlan && selection && (
+                <span className="min-w-0 truncate font-mono text-[10.5px] text-gn-cyan">
+                  已选中第 {selection.start}-
+                  {selection.end} 行 · 请求修改时生成行级评论
+                </span>
+              )}
+            </div>
             {showPlan && (
               <div className="gn-no-scrollbar max-h-[50vh] overflow-y-auto text-[12.5px]">
-                <Markdown source={planContent} />
+                {/* 行号 1:1 —— TUI Commenting 模式的计划预览（行号 + 点击选行）。 */}
+                <div
+                  className="select-none"
+                  onMouseUp={() => setDragAnchor(null)}
+                  onMouseLeave={() => setDragAnchor(null)}
+                >
+                  {planLines.map((line, i) => {
+                    const n = i + 1
+                    const selected =
+                      selection != null && n >= selection.start && n <= selection.end
+                    return (
+                      <div
+                        key={n}
+                        onMouseDown={(e) => {
+                          // 单击 = 锚定到该行；按住拖动 = 范围扩展；
+                          // Shift+点击在 onClick 里从锚点扩展。
+                          if (!e.shiftKey) {
+                            setDragAnchor(n)
+                            setSelStart(n)
+                            setSelEnd(n)
+                          }
+                        }}
+                        onMouseEnter={() => {
+                          // 拖动经过的行加入范围。
+                          if (dragAnchor != null) {
+                            setSelStart(dragAnchor)
+                            setSelEnd(n)
+                          }
+                        }}
+                        onClick={(e) => {
+                          if (e.shiftKey) selectLine(n, true)
+                        }}
+                        className={`flex cursor-pointer items-stretch hover:bg-gn-bg-highlight ${
+                          selected ? 'bg-gn-bg-highlight' : ''
+                        }`}
+                        title={
+                          selection
+                            ? 'Shift+点击或拖动扩展选择范围'
+                            : '点击选中该行（Shift+点击或拖动选范围）'
+                        }
+                      >
+                        <span
+                          className={`shrink-0 w-8 select-none border-r border-gn-prompt-border/40 pr-1.5 text-right font-mono text-[10.5px] leading-[1.45] tabular-nums ${
+                            selected ? 'text-gn-cyan' : 'text-gn-gutter'
+                          }`}
+                        >
+                          {n}
+                        </span>
+                        <span
+                          className={`min-w-0 flex-1 whitespace-pre-wrap break-all pl-1.5 leading-[1.45] ${
+                            selected ? 'text-gn-fg' : 'text-gn-fg2'
+                          }`}
+                        >
+                          {line || ' '}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
               </div>
             )}
           </div>
@@ -149,8 +289,19 @@ export function PlanApproval() {
           </button>
           <button
             type="button"
-            onClick={() => feedbackRef.current?.focus()}
+            onClick={() => {
+              if (feedback.trim()) {
+                sendRevision()
+              } else {
+                feedbackRef.current?.focus()
+              }
+            }}
             className="min-h-10 rounded border border-gn-prompt-border bg-gn-bg-base px-3 py-1.5 text-[12.5px] text-gn-fg2 hover:bg-gn-bg-highlight"
+            title={
+              selection
+                ? '以行级评论发送修改意见（Proposed plan lines …）'
+                : '发送修改意见'
+            }
           >
             请求修改
           </button>
@@ -174,6 +325,12 @@ export function PlanApproval() {
           <span className="text-gn-fg2">a</span> 批准 ·{' '}
           <span className="text-gn-fg2">Enter</span> 提交 ·{' '}
           <span className="text-gn-fg2">s</span> 写意见
+          {selection && (
+            <>
+              {' · '}
+              <span className="text-gn-fg2">点击行</span> 重新锚定选择
+            </>
+          )}
         </div>
       </div>
     </div>

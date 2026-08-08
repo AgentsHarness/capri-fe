@@ -4,6 +4,9 @@ import { createPortal } from 'react-dom'
 import { SPINNER_FRAMES } from '../theme/glyphs'
 import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS } from '../theme/layout'
 import { useChatStore } from '../store/chat'
+import { usePromptQueue } from '../store/promptQueue'
+import { transport } from '../api/localTransport'
+import type { BillingConfig } from '../api/types'
 import { useSessionSpinner } from './SessionStateIcon'
 import type { ScrollEntry, TopTask } from '../api/types'
 import type { TodoItem } from '../store/chat'
@@ -1008,4 +1011,133 @@ function formatScheduledFire(v: string): string {
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   }
   return v
+}
+
+// ── MCP / queue / credits chips (TUI status-bar items) ───────────────
+
+/**
+ * Wire statuses that count as "connected" for the MCP chip — the agent
+ * serializes McpServerStatus lowercase (`ready`); a couple of defensive
+ * aliases keep the count honest against older spellings.
+ */
+function isMcpConnected(status?: string): boolean {
+  if (!status) return false
+  const s = status.toLowerCase()
+  return s === 'ready' || s === 'connected' || s === 'running' || s === 'ok'
+}
+
+/**
+ * `⠋ MCP (N/M)` chip — TUI mcp_status_line (gray_dim, after the goal
+ * chip): connected/total server counts from the x.ai/mcp/server_status
+ * stream (store mcpServers). Hidden until the stream reports servers;
+ * click opens the MCP panel.
+ */
+export function McpChip({ onOpen }: { onOpen: () => void }) {
+  const mcpServers = useChatStore((s) => s.mcpServers)
+  const total = mcpServers.length
+  if (total === 0) return null
+  const connected = mcpServers.filter((s) => isMcpConnected(s.status)).length
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-gray-dim hover:bg-gn-bg-highlight hover:text-gn-muted"
+      title={`MCP 服务器 ${connected}/${total} 已连接 · 点击打开 MCP 面板`}
+    >
+      <span className="mr-1" aria-hidden>
+        ⠋
+      </span>
+      MCP ({connected}/{total})
+    </button>
+  )
+}
+
+/**
+ * `+N` queue badge — TUI queue item (accent_user, after the context
+ * chip): mid-turn queued prompt count. Hidden at 0; click toggles the
+ * composer's queue panel (same store flag the queue pill uses).
+ */
+export function QueueBadge() {
+  const queue = usePromptQueue((s) => s.queue)
+  const open = useChatStore((s) => s.queuePanelOpen)
+  const setQueuePanelOpen = useChatStore((s) => s.setQueuePanelOpen)
+  if (queue.length === 0) return null
+  return (
+    <button
+      type="button"
+      onClick={() => setQueuePanelOpen(!open)}
+      aria-expanded={open}
+      className={`rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-fg2 hover:bg-gn-bg-highlight ${
+        open ? 'bg-gn-bg-highlight' : ''
+      }`}
+      title={open ? '收起发送队列' : `发送队列 · ${queue.length} 条待发（点击切换）`}
+    >
+      +{queue.length}
+    </button>
+  )
+}
+
+/**
+ * Credits chip — TUI credit_bar_line ("Credits used: XX%", after the
+ * todo badge). Data from POST /api/billing (creditUsagePercent;
+ * prepaidBalance shows in the hover title). Color follows the TUI
+ * breakpoints: ≥100% error, ≥80% warning, else success. The whole chip
+ * is omitted when billing yields no usable data (silent, never errors).
+ */
+export function CreditsChip() {
+  const sessionId = useChatStore((s) => s.sessionId)
+  const [billing, setBilling] = useState<BillingConfig | null | undefined>(undefined)
+  useEffect(() => {
+    let alive = true
+    setBilling(undefined)
+    transport
+      .billing(sessionId)
+      .then((resp) => {
+        if (alive) setBilling(resp.config ?? null)
+      })
+      .catch(() => {
+        if (alive) setBilling(null)
+      })
+    return () => {
+      alive = false
+    }
+  }, [sessionId])
+
+  // usage percent: prefer creditUsagePercent; fall back to used/limit.
+  const cfg = billing ?? undefined
+  let pct: number | undefined
+  if (cfg?.creditUsagePercent != null && Number.isFinite(cfg.creditUsagePercent)) {
+    pct = cfg.creditUsagePercent
+  } else {
+    const used = cfg?.used?.val
+    const limit = cfg?.monthlyLimit?.val
+    if (typeof used === 'number' && typeof limit === 'number' && limit > 0) {
+      pct = (used / limit) * 100
+    }
+  }
+  const prepaidCents = cfg?.prepaidBalance?.val
+  const prepaid =
+    typeof prepaidCents === 'number' && prepaidCents > 0 ? prepaidCents : undefined
+  if (pct == null && prepaid == null) return null
+
+  const color =
+    pct != null && pct >= 100
+      ? 'text-gn-red'
+      : pct != null && pct >= 80
+        ? 'text-gn-yellow'
+        : 'text-gn-green'
+  const title = [
+    pct != null ? `Credits used: ${Math.round(pct)}%` : 'Credits used: N/A',
+    prepaid != null ? `prepaid $${(prepaid / 100).toFixed(2)}` : undefined,
+  ]
+    .filter(Boolean)
+    .join(' · ')
+  return (
+    <span
+      className={`rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums ${color}`}
+      title={title}
+    >
+      {pct != null ? `credits ${Math.round(pct)}%` : `credits $${(prepaid! / 100).toFixed(2)}`}
+    </span>
+  )
 }

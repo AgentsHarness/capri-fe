@@ -5,6 +5,7 @@ import { TopBar, WorkspaceBar } from './components/TopBar'
 import { ErrorBanner } from './components/ErrorBanner'
 import { HistorySidebar } from './components/HistorySidebar'
 import { Scrollback } from './components/Scrollback'
+import { TurnStatusBar } from './components/TurnStatusBar'
 import { Composer } from './components/Composer'
 import { ApprovalStrip } from './components/ApprovalStrip'
 import { PlanApproval } from './components/PlanApproval'
@@ -15,6 +16,8 @@ import { MemoryModal } from './components/MemoryModal'
 import { McpPanel } from './components/McpPanel'
 import { ExtensionsModal } from './components/ExtensionsModal'
 import { SettingsModal } from './components/SettingsModal'
+import { GitPanel } from './components/GitPanel'
+import { TerminalPanel } from './components/TerminalPanel'
 import { BlockViewer } from './components/BlockViewer'
 import { SessionInfoModal } from './components/SessionInfoModal'
 import { RewindPicker } from './components/RewindPicker'
@@ -27,6 +30,7 @@ import { useScrollbackKeys } from './hooks/useScrollbackKeys'
  * Agent-view layout (TUI):
  *   [status bar]
  *   [scrollback …………]  ← j/k select · ←/→ fold · Enter view
+ *   [turn status line?] ← busy only (TUI turn_status between scrollback and prompt)
  *   [permission strip?] / [plan approval?]
  *   [prompt + info line]
  *   [block viewer modal?] / [question modal?] / [mcp panel?]
@@ -35,6 +39,8 @@ export default function App() {
   const init = useChatStore((s) => s.init)
   const initTheme = useThemeStore((s) => s.init)
   const [mcpOpen, setMcpOpen] = useState(false)
+  const [gitOpen, setGitOpen] = useState(false)
+  const [termOpen, setTermOpen] = useState(false)
   useScrollbackKeys()
 
   useEffect(() => init(), [init])
@@ -47,7 +53,7 @@ export default function App() {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-gn-bg-base text-gn-fg font-ui transition-colors duration-150">
-      <TopBar onOpenMcp={() => setMcpOpen(true)} />
+      <TopBar onOpenMcp={() => setMcpOpen(true)} onOpenGit={() => setGitOpen(true)} onOpenTerm={() => setTermOpen(true)} />
       {/* Host errors / connection warnings — always visible, dismissible. */}
       <ErrorBanner />
       <div className="flex min-h-0 flex-1">
@@ -55,8 +61,9 @@ export default function App() {
         <HistorySidebar />
         <main className="flex min-h-0 flex-1 flex-col">
           {/* Workspace + git — scrollback top-left (TUI status-bar left). */}
-          <WorkspaceBar />
+          <WorkspaceBar onOpenMcp={() => setMcpOpen(true)} />
           <Scrollback />
+          <TurnStatusBar />
           <ApprovalStrip />
           <PlanApproval />
           <CancelPanel />
@@ -68,8 +75,10 @@ export default function App() {
       <DiffReviewModal />
       <MemoryModal />
       <McpPanel open={mcpOpen} onClose={() => setMcpOpen(false)} />
+      <TerminalPanel open={termOpen} onClose={() => setTermOpen(false)} />
       <ExtensionsModal />
       <SettingsModal />
+      <GitPanel open={gitOpen} onClose={() => setGitOpen(false)} />
       <SessionInfoModal />
       <RewindPicker />
       <WorkflowPanel />

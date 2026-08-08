@@ -6,6 +6,7 @@ import rehypeHighlight from 'rehype-highlight'
 import type { Components } from 'react-markdown'
 import type { Mermaid } from 'mermaid'
 import { useThemeStore } from '../store/theme'
+import { remarkMathPlugin, normalizeMathDelimiters } from './latexMath'
 
 /* ------------------------------------------------------------------------
  * Mermaid diagrams — TUI parity (`◇ mermaid` + `[Open Image] [Copy Source]`,
@@ -312,8 +313,20 @@ type Props = {
  * needs the current raw source; rehype-highlight runs offline (highlight.js
  * core) with `ignoreMissing` so ```mermaid and unknown languages pass
  * through untouched during streaming.
+ *
+ * Math: remarkMathPlugin converts `$…$` / `$$…$$` / `\(…\)` / `\[…\]` spans
+ * in text nodes (never inside code) to Unicode approximations — TUI
+ * latex_to_unicode parity. Unclosed delimiters stay literal until closed
+ * (same "closed-only" rule as mermaid), so streaming tails render as plain
+ * text until the closing delimiter arrives.
  */
 export const Markdown = memo(function Markdown({ source, className = '' }: Props) {
+  // Delimiter normalization runs on the RAW source (before markdown
+  // parsing) so `\(…\)` / `\[…\]` / `$$…$$` reach the parser in canonical
+  // `$` form and their interior backslashes survive CommonMark escapes.
+  // Mermaid detection keeps using the raw source — the normalizer copies
+  // fenced/inline code verbatim, so both views agree.
+  const normalized = normalizeMathDelimiters(source)
   const closedMermaid = closedMermaidBodies(source)
   const components: Components = {
     ...baseComponents,
@@ -348,11 +361,11 @@ export const Markdown = memo(function Markdown({ source, className = '' }: Props
   return (
     <div className={`gn-md ${className}`}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkMathPlugin]}
         rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }]]}
         components={components}
       >
-        {source}
+        {normalized}
       </ReactMarkdown>
     </div>
   )

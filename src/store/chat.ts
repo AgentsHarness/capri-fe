@@ -30,6 +30,13 @@ import {
   scanGroups,
   spanContaining,
 } from '../scrollback/verbGroup'
+import {
+  nextThoughtMode,
+  thoughtDisplayMode,
+  thoughtModeStepDown,
+  thoughtModeStepUp,
+  type ThoughtDisplayMode,
+} from '../scrollback/thoughtMode'
 let entrySeq = 0
 const nid = () => `e_${++entrySeq}_${Date.now()}`
 
@@ -842,6 +849,19 @@ export type McpServerInfo = {
   detail?: string
 }
 
+/**
+ * MCP init progress (x.ai/mcp/init_progress — shell wire {total,
+ * connected, sessionId}, camelCase). Aggregate counts, not per-server:
+ * the TUI status bar renders the chip `MCP (connected/total)` while
+ * `total > 0`, and "Starting session…" for the total==0 startup seed.
+ */
+export type McpInitProgress = {
+  total: number
+  connected: number
+  /** First-seen epoch ms (for a "connecting since …" hint). */
+  startedAt: number
+}
+
 /** Extensions modal tabs (TUI /hooks /plugins /skills /marketplace). */
 export type ExtensionsTab = 'hooks' | 'plugins' | 'skills' | 'marketplace'
 
@@ -1039,6 +1059,13 @@ type ChatState = {
   mcpServers: McpServerInfo[]
   /** Bumped on mcp tools_changed / servers_updated so panels can refresh. */
   mcpVersion: number
+  /**
+   * MCP init progress (x.ai/mcp/init_progress → mcp_init_progress) — the
+   * aggregate connected/total counts the TUI status bar shows as
+   * `MCP (connected/total)` while initializing. Undefined = no init in
+   * flight. Reset on session switches, replaced on every progress event.
+   */
+  mcpInit?: McpInitProgress
   /**
    * Turn-end suggestion chips (`x.ai/follow_ups`) — TUI FollowUps state.
    * Rendered by the Composer above the input, never as scrollback rows
@@ -1389,6 +1416,8 @@ type ChatState = {
   mcpList: () => Promise<McpListServer[]>
   /** POST /api/mcp-toggle — enable/disable a server. */
   mcpToggle: (name: string, enabled: boolean) => Promise<void>
+  /** POST /api/mcp-toggle-tool — enable/disable one tool of a server. */
+  mcpToggleTool: (serverName: string, toolName: string, enabled: boolean) => Promise<void>
   /** POST /api/mcp-add — add a stdio server. */
   mcpAdd: (server: {
     name: string
@@ -1467,6 +1496,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   toasts: [],
   mcpServers: [],
   mcpVersion: 0,
+  mcpInit: undefined,
   followUps: undefined,
   followUpsResponseId: undefined,
   models: [],
@@ -1928,6 +1958,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       permissionMode: undefined,
       planMode: false,
       mcpServers: [],
+      mcpInit: undefined,
       selectedId: null,
       focusMode: 'prompt',
       expandedGroups: new Set(),
@@ -2401,7 +2432,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 id,
                 kind: 'thought',
                 text: '',
-                open: true, // live: show flowing body
+                displayMode: 'expanded', // live: show flowing body
                 streaming: true,
                 startedAt: Date.now(),
               },
@@ -2609,7 +2640,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
               id,
               kind: 'thought',
               text: '',
-              open: true,
+              displayMode: 'expanded',
               streaming: true,
               startedAt: Date.now(),
               // Replay carries the server-reported original duration
@@ -2632,7 +2663,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   ...e,
                   text: e.text + text,
                   streaming: true,
-                  open: true, // keep body visible while flowing
+                  displayMode: 'expanded', // keep body visible while flowing
                   // Last chunk wins (TUI tracker updates on every chunk).
                   ...(ev.elapsedMs != null ? { elapsedMs: ev.elapsedMs } : {}),
                 }
@@ -2915,7 +2946,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
           entries: [
             ...s.entries.map((e) => {
               if (e.kind === 'thought' && e.streaming) {
-                return { ...e, streaming: false, finishedAt: Date.now(), open: false }
+                return {
+                  ...e,
+                  streaming: false,
+                  finishedAt: Date.now(),
+                  displayMode: 'truncated' as const,
+                }
               }
               if (
                 e.kind === 'tool' &&
@@ -3712,6 +3748,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
         })
         break
       }
+      case 'mcp_init_progress': {
+        // x.ai/mcp/init_progress → mcp_init_progress (host bridge.go
+        // forwards params verbatim; shell emits camelCase {total,
+        // connected, sessionId} — acp_session_impl/mcp.rs). The TUI
+        // status-bar chip is `MCP (connected/total)`; the startup seed
+        // total==0 renders "Starting session…". No scrollback row.
+        applyMcpInitProgress(set, ev.params)
+        break
+      }
       case 'mcp_tools_changed':
       case 'mcp_servers_updated':
         set({ mcpVersion: get().mcpVersion + 1 })
@@ -3826,10 +3871,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
         //   terminal pane).
         // - x.ai/config_changed — config reload notice (TUI settings
         //   modal; FE has no config editor).
-        // - x.ai/mcp/init_progress — MCP server init progress (TUI MCP
-        //   panel; low-frequency, and the FE has no MCP init UI).
         // - x.ai/queue/changed, x.ai/settings/update — pre-existing
         //   silences, same rationale.
+        // x.ai/mcp/init_progress is NOT silent: the current host forwards
+        // it as the typed `mcp_init_progress` event (consumed above); an
+        // older host that falls back to ext_notification is consumed here
+        // the same way — never rendered as a status line.
+        if (ev.method === 'x.ai/mcp/init_progress') {
+          applyMcpInitProgress(set, ev.params)
+          break
+        }
         if (SILENT_EXT_NOTIFICATIONS.has(ev.method ?? '')) break
         // x.ai/follow_ups — turn-end suggestion chips (TUI follow_ups.rs):
         // parsed into store state for the Composer's chip row; NO
@@ -3985,7 +4036,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           id: thoughtId,
           kind: 'thought',
           text: '',
-          open: true,
+          displayMode: 'expanded',
           streaming: true,
           startedAt: Date.now(),
         },
@@ -4528,6 +4579,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     await transport.mcpToggle(name, enabled)
   },
 
+  mcpToggleTool: async (serverName, toolName, enabled) => {
+    await transport.mcpToggleTool(serverName, toolName, enabled)
+  },
+
   mcpAdd: async (server) => {
     await transport.mcpAdd(server)
   },
@@ -4838,6 +4893,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       permissionMode: undefined,
       planMode: false,
       mcpServers: [],
+      mcpInit: undefined,
       selectedId: null,
       focusMode: 'prompt',
       expandedGroups: new Set(),
@@ -4880,7 +4936,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   toggleThought: (id) => {
     set({
       entries: get().entries.map((e) =>
-        e.id === id && e.kind === 'thought' ? { ...e, open: !e.open } : e,
+        e.id === id && e.kind === 'thought'
+          ? { ...e, displayMode: nextThoughtMode(thoughtDisplayMode(e)) }
+          : e,
       ),
       selectedId: id,
       focusMode: 'scrollback',
@@ -4950,7 +5008,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     const memberCollapsed =
       (entry.kind === 'tool' && !entry.expanded) ||
-      (entry.kind === 'thought' && !entry.open)
+      (entry.kind === 'thought' && thoughtDisplayMode(entry) === 'collapsed')
 
     // ← on already-collapsed member inside an expanded group → fold the group
     if (!expanded && memberCollapsed) {
@@ -4979,10 +5037,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return
     }
     if (entry.kind === 'thought') {
-      if (!!entry.open === expanded) return
+      // Three-state ladder (TUI collapse_mode/expand_selected): → steps up
+      // collapsed → truncated → expanded; ← steps down expanded → truncated
+      // → collapsed.
+      const cur = thoughtDisplayMode(entry)
+      const target: ThoughtDisplayMode = expanded
+        ? thoughtModeStepUp(cur)
+        : thoughtModeStepDown(cur)
+      if (target === cur) return
       set({
         entries: entries.map((e) =>
-          e.id === selectedId && e.kind === 'thought' ? { ...e, open: expanded } : e,
+          e.id === selectedId && e.kind === 'thought'
+            ? { ...e, displayMode: target }
+            : e,
         ),
         focusMode: 'scrollback',
       })
@@ -5022,7 +5089,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (!e) return
     // Inline fold only (←/→/click/Space). Enter uses openViewer instead.
     if (e.kind === 'tool') get().setExpanded(!e.expanded)
-    else if (e.kind === 'thought') get().setExpanded(!e.open)
+    else if (e.kind === 'thought') get().toggleThought(e.id)
     else if (e.kind === 'user') get().setExpanded(!e.expanded)
     else if (e.kind === 'session_event' && e.recap) get().setExpanded(!e.open)
     else {
@@ -5286,7 +5353,7 @@ function settleTurnEntries(entries: ScrollEntry[]): ScrollEntry[] {
         ...e,
         streaming: false,
         elapsed,
-        open: false,
+        displayMode: 'truncated',
         finishedAt: Date.now(),
       }
     }
@@ -6102,13 +6169,13 @@ function sealThought(
           : e.startedAt != null
             ? formatElapsed(Date.now() - e.startedAt)
             : e.elapsed
-      // Collapse body after finish (TUI collapsed "Thought for Xs")
+      // Collapse body after finish (TUI truncated "Thought for Xs" preview)
       // finishedAt drives the short finish-flash accent (EntryRenderer)
       return {
         ...e,
         streaming: false,
         elapsed,
-        open: false,
+        displayMode: 'truncated',
         finishedAt: Date.now(),
       }
     }),
@@ -6147,6 +6214,31 @@ function appendEntry(set: SetState, entry: EntryWithoutId): void {
   }))
 }
 
+/**
+ * Consume an x.ai/mcp/init_progress payload into `mcpInit` state — the
+ * TUI McpInitProgress analog (total/connected counts, camelCase wire from
+ * the shell; snake_case tolerated defensively). Malformed payloads are
+ * ignored (state keeps its last value).
+ */
+function applyMcpInitProgress(set: SetState, params: unknown): void {
+  const p =
+    params && typeof params === 'object' && !Array.isArray(params)
+      ? (params as Record<string, unknown>)
+      : {}
+  const num = (v: unknown): number | undefined =>
+    typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined
+  const total = num(p.total) ?? num(p.totalCount) ?? num(p.total_count)
+  const connected = num(p.connected) ?? num(p.connectedCount) ?? num(p.connected_count)
+  if (total == null || connected == null) return
+  set({
+    mcpInit: {
+      total,
+      connected,
+      startedAt: Date.now(),
+    },
+  })
+}
+
 // ── x.ai/follow_ups — turn-end suggestion chips (TUI follow_ups.rs) ─────
 // The TUI renders these as a transient clickable row between the
 // scrollback and the prompt — NEVER as scrollback rows — so the FE parses
@@ -6175,9 +6267,10 @@ const SILENT_EXT_NOTIFICATIONS = new Set([
   'x.ai/terminal/pty/notification',
   // Config reload notice (TUI settings modal; FE has no config editor).
   'x.ai/config_changed',
-  // MCP server init progress (TUI MCP panel; low-frequency, and the FE
-  // has no MCP init UI to drive).
-  'x.ai/mcp/init_progress',
+  // NOTE: x.ai/mcp/init_progress is intentionally NOT here — it is
+  // consumed into mcpInit state (McpPanel init progress), both as the
+  // typed `mcp_init_progress` event and via the ext_notification
+  // fallback in handleEvent.
 ])
 
 /** TUI MAX_FOLLOW_UPS — max chips kept from one (server-controlled) delivery. */

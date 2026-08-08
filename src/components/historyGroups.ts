@@ -152,6 +152,25 @@ export function absTime(iso: string): string {
 }
 
 /**
+ * 会话行副行（title 下的第二行，有数据才显示）——宿主 /api/sessions 的
+ * SessionState 只提供 lastActiveAt（epoch ms，最后一次发 prompt 的时间），
+ * 没有"最后工具/最后消息"或待处理预览字段：
+ * - 待处理会话（awaitingInput / state 'awaiting'）→ 通用 "Pending: …"；
+ * - 其他会话 → lastActiveAt 有值时显示 "最后活动 Xm ago"；
+ * - 都没有 → undefined（不显示副行）。
+ */
+export function sessionSubtitle(s: SessionInfo): string | undefined {
+  if (s.status?.awaitingInput === true || s.status?.state === 'awaiting') {
+    return 'Pending: …'
+  }
+  const t = s.status?.lastActiveAt
+  if (typeof t === 'number' && Number.isFinite(t) && t > 0) {
+    return `最后活动 ${fmtTime(new Date(t).toISOString())}`
+  }
+  return undefined
+}
+
+/**
  * Relative time — TUI format_time_ago (session_picker.rs):
  * now / Xm ago / Xh ago / Xd ago / Xmo ago. Rows hover to the absolute
  * timestamp (absTime) via the title attribute.
