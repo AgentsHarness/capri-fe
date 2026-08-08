@@ -841,12 +841,11 @@ export function Composer() {
   const idleCueVisible = !busy && conn === 'ready' && awaitingNext && idleCue != null
   // Busy arm: dynamic activity label (newest running tool / thinking) with
   // its phase timer — TUI turn_status.rs activity arm. Falls back to the
-  // static statusText when nothing is running.
+  // static statusText when nothing is running. The phase timer shows ONLY
+  // for activities with a real start stamp (live tools / thinking) — the
+  // right-hand turn timer already covers the rest; never fall back to the
+  // turn start (it would duplicate the total timer).
   const activity = useMemo(() => currentActivity(entries), [entries])
-  // Phase timer source: the activity's own start; tools replayed from
-  // history carry none, so the turn start is the closest proxy (TUI
-  // tracker falls back the same way).
-  const phaseStart = activity?.startedAt ?? turnStartedAt
   const statusVisible =
     busy ||
     conn === 'connecting' ||
@@ -1240,9 +1239,9 @@ export function Composer() {
                     >
                       {activity?.label ?? statusText}
                     </span>
-                    {phaseStart != null && (
+                    {activity?.startedAt != null && (
                       <span className="shrink-0 tabular-nums text-gn-gray">
-                        {formatTurnDuration(Date.now() - phaseStart)}
+                        {formatTurnDuration(Date.now() - activity.startedAt)}
                       </span>
                     )}
                   </>

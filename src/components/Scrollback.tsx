@@ -686,6 +686,8 @@ const EntryView = memo(function EntryView({
   const toggleUser = useChatStore((s) => s.toggleUser)
   const openViewer = useChatStore((s) => s.openViewer)
   const selectEntry = useChatStore((s) => s.selectEntry)
+  const cancelSubagent = useChatStore((s) => s.cancelSubagent)
+  const killTask = useChatStore((s) => s.killTask)
   const onSelect = () => selectEntry(e.id)
   // Distinguish single-click (fold) vs double-click (viewer): defer single
   // until after the double-click window so dblclick doesn't also toggle.
@@ -1132,7 +1134,6 @@ const EntryView = memo(function EntryView({
           : e.status === 'cancelled'
             ? 'Agent cancelled'
             : 'Agent failed'
-    const cancelSubagent = useChatStore((s) => s.cancelSubagent)
     return (
       <EntryShell {...shell}>
         <div className={`flex items-center gap-1.5 ${dense ? 'py-0' : 'py-[2px]'} text-[13px] leading-[1.35]`}>
@@ -1202,7 +1203,6 @@ const EntryView = memo(function EntryView({
         : e.status === 'completed'
           ? 'completed'
           : 'failed'
-    const killTask = useChatStore((s) => s.killTask)
     return (
       <EntryShell {...shell}>
         <div
