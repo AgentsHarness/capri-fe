@@ -21,13 +21,13 @@ import {
   spanContaining,
   type DisplayRow,
 } from '../scrollback/verbGroup'
+import { AccentRail } from './AccentRail'
 import {
-  AccentRail,
   Accents,
   resolveAccent,
   resolveBullet,
   type AccentResolveOpts,
-} from './AccentRail'
+} from '../theme/accents'
 import { SelectionBox } from './SelectionBox'
 import { Markdown } from './Markdown'
 import { ToolDetail } from './ToolDetail'

@@ -23,7 +23,7 @@ import {
 } from '../theme/layout'
 import { IconGlyph } from './IconGlyph'
 import { fmtTok } from './StatusChips'
-import { Accents } from './AccentRail'
+import { Accents } from '../theme/accents'
 import { SlashMenu } from './SlashMenu'
 import {
   filterSlashCommands,
@@ -53,7 +53,8 @@ function currentActivity(
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i]
     if (e.kind === 'thought' && e.streaming) {
-      return { label: 'Thinking', color: Accents.thinkingDefault, startedAt: e.startedAt }
+      // TUI turn_status.rs: "Thinking…" (text_secondary).
+      return { label: 'Thinking…', color: Accents.thinkingDefault, startedAt: e.startedAt }
     }
     if (e.kind === 'tool' && (e.status === 'pending' || e.status === 'in_progress')) {
       const verb = toolHeader(e.kindName, false).verb
@@ -62,9 +63,9 @@ function currentActivity(
     }
     // Streaming reply: the assistant row's `ts` is its response start
     // (first chunk), so the phase timer is the reply's own duration —
-    // not the whole turn.
+    // not the whole turn. TUI: current_agent_msg → "Responding…".
     if (e.kind === 'assistant' && e.streaming) {
-      return { label: 'Responding', color: Accents.gray, startedAt: e.ts }
+      return { label: 'Responding…', color: Accents.gray, startedAt: e.ts }
     }
   }
   return null
