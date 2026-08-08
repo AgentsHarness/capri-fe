@@ -1978,6 +1978,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       let loaded = 0
       let total = 0
       let pages = 0
+      // Turn metadata of the newest replayed page (real start time + open
+      // flag), used below to restore the in-flight turn timer.
+      let replayMeta: { turnStartedAt?: number; turnOpen: boolean } = {
+        turnOpen: false,
+      }
       // Cap auto-pages so a fully-suppressed archive cannot spin forever.
       const MAX_AUTO_PAGES = 30
 
@@ -1992,7 +1997,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
         if (pages === 0) {
           // Newest page: rebuild from scratch.
-          replayUpdates(get, updates)
+          replayMeta = replayUpdates(get, updates)
         } else {
           // Older page: same prepend semantics as loadMoreHistory.
           const split = get().entries.length
@@ -2052,7 +2057,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // Replay of stored thought chunks drives conn to 'busy'; history is
         // not a live turn — the user must be able to type right away.
         conn: 'ready',
-        statusText: `历史已加载 (共 ${get().historyTotalCount ?? '?'} 条更新)`,
+        // In-flight session (replayed tail has no turn_completed): restore
+        // the REAL turn start from the envelope timestamps so the timer
+        // reads "已进行 Xs" instead of anchoring at replay time. Live
+        // events arriving after the replay keep this start (busy keeps
+        // turnStartedAt via ??). Closed turns clear it.
+        ...(replayMeta.turnOpen
+          ? {
+              turnStartedAt: replayMeta.turnStartedAt,
+              statusText: replayMeta.turnStartedAt
+                ? `回合进行中（已进行 ${formatTurnDuration(
+                    Date.now() - replayMeta.turnStartedAt,
+                  )}）`
+                : '回合进行中',
+            }
+          : {
+              turnStartedAt: undefined,
+              statusText: `历史已加载 (共 ${get().historyTotalCount ?? '?'} 条更新)`,
+            }),
         historyLoadedAt: Date.now(),
       })
     } catch (e) {
@@ -5453,11 +5475,25 @@ function settleTurnEntries(entries: ScrollEntry[]): ScrollEntry[] {
 /** Updates per history page; older pages load on scroll-up. */
 const HISTORY_PAGE_SIZE = 100
 
-/** Replay raw history envelopes through the live event pipeline. */
-function replayUpdates(getStore: () => ChatState, updates: unknown[]): void {
+/**
+ * Replay raw history envelopes through the live event pipeline.
+ * Returns the replayed turn's metadata: its real start time (the first
+ * user_message envelope timestamp — the shell writes epoch seconds) and
+ * whether the turn is still OPEN (the tail has no turn_completed /
+ * response_completed marker). loadHistory uses this to restore the turn
+ * timer for in-flight sessions ("回合进行中（已进行 Xs）") instead of
+ * anchoring it at replay time.
+ */
+function replayUpdates(
+  getStore: () => ChatState,
+  updates: unknown[],
+): { turnStartedAt?: number; turnOpen: boolean } {
   let userBuf = ''
   let userIsCron = false
   let userTs: number | undefined
+  let turnStartTs: number | undefined
+  let anyEvent = false
+  let sawTurnEnd = false
   const flushUser = () => {
     if (userBuf) {
       getStore().handleEvent({
@@ -5486,6 +5522,16 @@ function replayUpdates(getStore: () => ChatState, updates: unknown[]): void {
     // the host's liveness probe (replayRunningTasks).
     const ev = envelopeToEvent(env)
     if (!ev) continue
+    anyEvent = true
+    if (ev.type === 'turn_completed') sawTurnEnd = true
+    // Real turn start: the first user message of the page (epoch seconds
+    // from the shell; first-event timestamp as a fallback for injected
+    // turns without a user prompt).
+    if (ev.type === 'user_message' && turnStartTs == null) {
+      turnStartTs = envelopeTimestamp(env as RawEnvelope)
+    } else if (turnStartTs == null) {
+      turnStartTs = envelopeTimestamp(env as RawEnvelope)
+    }
     // A STILL-RUNNING task's "started" row belongs ONLY in the top task
     // strip (host liveness probe) — never as a dangling scrollback row
     // without its completion. Live rows are unaffected (this path is
@@ -5508,6 +5554,10 @@ function replayUpdates(getStore: () => ChatState, updates: unknown[]): void {
     getStore().handleEvent(ev)
   }
   flushUser()
+  return {
+    turnStartedAt: turnStartTs,
+    turnOpen: anyEvent && !sawTurnEnd,
+  }
 }
 
 /** Accumulated session tokens from a stored envelope's `_meta.totalTokens`. */
