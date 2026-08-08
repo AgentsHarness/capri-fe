@@ -304,6 +304,15 @@ const baseComponents: Components = {
 type Props = {
   source: string
   className?: string
+  /**
+   * Live-streaming source: render as plain pre-wrap text instead of
+   * parsing markdown. react-markdown re-parses the WHOLE source plus
+   * rehype-highlight re-highlights every code block per chunk — on a
+   * long reply that is the dominant main-thread cost of streaming (the
+   * TUI analog renders plain text too). The full markdown render happens
+   * once when the turn seals and `streaming` drops.
+   */
+  streaming?: boolean
 }
 
 /**
@@ -320,7 +329,21 @@ type Props = {
  * (same "closed-only" rule as mermaid), so streaming tails render as plain
  * text until the closing delimiter arrives.
  */
-export const Markdown = memo(function Markdown({ source, className = '' }: Props) {
+export const Markdown = memo(function Markdown({
+  source,
+  className = '',
+  streaming = false,
+}: Props) {
+  // Streaming: plain pre-wrap text, zero parse cost per chunk. The
+  // formatting render below runs once when the turn seals (streaming → false).
+  if (streaming) {
+    return (
+      <div className={`gn-md ${className}`}>
+        <div className="whitespace-pre-wrap break-words">{source}</div>
+      </div>
+    )
+  }
+
   // Delimiter normalization runs on the RAW source (before markdown
   // parsing) so `\(…\)` / `\[…\]` / `$$…$$` reach the parser in canonical
   // `$` form and their interior backslashes survive CommonMark escapes.

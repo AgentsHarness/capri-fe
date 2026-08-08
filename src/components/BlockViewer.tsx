@@ -44,6 +44,7 @@ export function BlockViewer() {
   const viewerId = useChatStore((s) => s.viewerEntryId)
   const taskView = useChatStore((s) => s.viewerTask)
   const entries = useChatStore((s) => s.entries)
+  const liveStream = useChatStore((s) => s.liveStream)
   const closeViewer = useChatStore((s) => s.closeViewer)
   const refreshTaskOutput = useChatStore((s) => s.refreshTaskOutput)
   const panelRef = useRef<HTMLDivElement>(null)
@@ -52,9 +53,15 @@ export function BlockViewer() {
   const entry = viewerId
     ? entries.find((e) => e.id === viewerId) ?? null
     : null
+  // Live-streamed text lives OUT of entries — merge it in for the viewer
+  // (an open viewer on the streaming entry shows the in-flight text).
+  const liveEntry =
+    entry && liveStream?.entryId === entry.id && 'text' in entry
+      ? { ...entry, text: entry.text + liveStream.text }
+      : entry
   // Task-only view (top strip / history replay): the log lives in
   // viewerTask, fetched session-scoped — one code path with bg_task rows.
-  const active = taskView ? taskViewToEntry(taskView) : entry
+  const active = taskView ? taskViewToEntry(taskView) : liveEntry
 
   // Focus trap + Esc
   useEffect(() => {

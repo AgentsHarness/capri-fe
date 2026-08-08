@@ -4,6 +4,7 @@
  */
 
 import type { ToolCall } from '../api/types'
+import { useState } from 'react'
 import {
   EXEC_FIRST,
   EXEC_LAST,
@@ -17,6 +18,32 @@ import {
 } from '../scrollback/toolDetail'
 import { IconGlyph } from './IconGlyph'
 import { fmtBytes } from '../format'
+
+/**
+ * 大输出分页：超过 PAGE_LINES 行时只渲染前 PAGE_LINES 行，点击
+ * "显示更多"逐页追加（避免一次挂几万个 DOM 节点把页面拖死）。
+ */
+const PAGE_LINES = 1000
+
+function MoreLinesButton({
+  total,
+  visible,
+  onMore,
+}: {
+  total: number
+  visible: number
+  onMore: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onMore}
+      className="block w-full px-2 py-1 text-left font-mono text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+    >
+      … +{total - visible} lines (click to load more)
+    </button>
+  )
+}
 
 type Props = {
   raw: ToolCall
@@ -131,9 +158,16 @@ function StdoutPanel({
     !full && last === 0 && raw.length > first
       ? [...raw.slice(0, first), `… +${raw.length - first} lines`]
       : lines
+  // Full view (viewer) with a very long output: page the rows instead of
+  // mounting all of them at once.
+  const [visible, setVisible] = useState(() =>
+    Math.min(display.length, PAGE_LINES),
+  )
+  const showMore = visible < display.length
+  const rows = showMore ? display.slice(0, visible) : display
   return (
     <Panel full={full}>
-      {display.map((line, i) => (
+      {rows.map((line, i) => (
         <div
           key={i}
           className={`px-2 font-mono text-[12px] leading-[1.4] whitespace-pre-wrap break-all ${
@@ -143,6 +177,15 @@ function StdoutPanel({
           {line || ' '}
         </div>
       ))}
+      {showMore && (
+        <MoreLinesButton
+          total={display.length}
+          visible={visible}
+          onMore={() =>
+            setVisible((v) => Math.min(v + PAGE_LINES, display.length))
+          }
+        />
+      )}
     </Panel>
   )
 }
@@ -175,6 +218,9 @@ function ReadBody({
   d: Extract<Detail, { kind: 'read' }>
   full: boolean
 }) {
+  // Full view (viewer) with a very long file: page the rows instead of
+  // mounting all of them at once. Unconditional hook (early returns below).
+  const [visible, setVisible] = useState(PAGE_LINES)
   if (d.error) return <ErrorLine text={d.error} />
   if (d.media === 'image') {
     const src = readImageSrc(d.content)
@@ -219,10 +265,12 @@ function ReadBody({
   } else {
     rows = rawLines.map((text, i) => ({ no: base + i, text }))
   }
+  const showMore = visible < rows.length
+  const shown = showMore ? rows.slice(0, visible) : rows
 
   return (
     <Panel full={full}>
-      {rows.map((r, i) =>
+      {shown.map((r, i) =>
         r.ellipsis ? (
           <div key={i} className="px-2 font-mono text-[11px] text-gn-muted">
             {r.text}
@@ -240,6 +288,13 @@ function ReadBody({
             </span>
           </div>
         ),
+      )}
+      {showMore && (
+        <MoreLinesButton
+          total={rows.length}
+          visible={visible}
+          onMore={() => setVisible((v) => Math.min(v + PAGE_LINES, rows.length))}
+        />
       )}
     </Panel>
   )
@@ -293,6 +348,9 @@ function EditBody({
   d: Extract<Detail, { kind: 'edit' }>
   full: boolean
 }) {
+  // Full view (viewer) with a huge diff: page the rows instead of mounting
+  // all of them at once. Unconditional hook (early return below).
+  const [visible, setVisible] = useState(PAGE_LINES)
   if (d.error) return <ErrorLine text={d.error} />
   if (!d.lines.length) return <MetaLine>(no diff)</MetaLine>
 
@@ -307,6 +365,10 @@ function EditBody({
       ...tail,
     ]
   }
+  // Full view (viewer) with a huge diff: page the rows instead of mounting
+  // all of them at once.
+  const showMore = visible < lines.length
+  const shown = showMore ? lines.slice(0, visible) : lines
 
   const gutterW = Math.max(
     2,
@@ -323,9 +385,18 @@ function EditBody({
         </MetaLine>
       )}
       <Panel full={full}>
-        {lines.map((l, i) => (
+        {shown.map((l, i) => (
           <DiffRow key={i} line={l} gutterW={gutterW} />
         ))}
+        {showMore && (
+          <MoreLinesButton
+            total={lines.length}
+            visible={visible}
+            onMore={() =>
+              setVisible((v) => Math.min(v + PAGE_LINES, lines.length))
+            }
+          />
+        )}
       </Panel>
     </div>
   )

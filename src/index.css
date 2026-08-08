@@ -278,3 +278,24 @@ body {
     animation: none !important;
   }
 }
+
+/* ── Scrollback render-window culling ────────────────────────────────
+   content-visibility skips rendering/layout for entries outside the
+   viewport, so a long scrollback (hundreds of rows) only pays for the
+   visible band. Offsets:
+   - Streaming rows are exempt: their height changes every chunk and they
+     are the one row that must always paint.
+   - Selected / hovered rows are exempt: the SelectionBox rails extend
+     12px beyond the entry edges, which paint containment would clip.
+   - contain-intrinsic-size: auto remembers the last rendered height
+     (fallback 44px), keeping scrollHeight estimates in the right ballpark
+     for the follow-to-bottom / scroll-anchor logic. */
+[data-entry-id] {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 44px;
+}
+[data-entry-id][data-streaming='1'],
+[data-entry-id][aria-selected='true'],
+[data-entry-id]:has(:hover) {
+  content-visibility: visible;
+}
