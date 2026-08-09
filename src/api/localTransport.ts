@@ -54,8 +54,8 @@ export class AgentTurnError extends Error {
  * Host selection (hub mode):
  * - API calls carry `?host=<hostId>`; the hub relays them to that host
  *   (acp-host ignores the query param, so local mode is unaffected).
- * - `/events` streams every host's events tagged with hostId; events for
- *   non-selected hosts are filtered out here. Hub-level events (hello,
+ * - Live stream: hub uses WebSocket `/ws/fe` (events tagged with hostId);
+ *   local acp-host still uses SSE `/events`. Hub-level events (hello,
  *   hosts_changed) carry no hostId and always pass through.
  */
 /**
@@ -80,13 +80,38 @@ export class AccessTokenError extends Error {
   }
 }
 
+type HubWsFrame =
+  | { type: 'hello'; service?: string; hosts?: unknown; defaultHostId?: string; seqs?: Record<string, number>; [k: string]: unknown }
+  | { type: 'events'; events: AcpEvent[] }
+  | { type: 'ping'; ts?: number }
+  | { type: string; [k: string]: unknown }
+
 export class LocalTransport {
   private es: EventSource | null = null
+  private ws: WebSocket | null = null
   private handlers = new Set<TransportHandler>()
   private base: string
   private selectedHostId: string | null = null
-  /** Shared secret for hub FE_TOKEN (Authorization / SSE ?token=). */
+  /** Shared secret for hub FE_TOKEN (Authorization / WS ?token=). */
   private accessToken: string
+  /** Prefer WS (hub). Flips to false after a failed first WS attempt so local host uses SSE. */
+  private preferWS = true
+  private sawHubHello = false
+  private intentionalClose = false
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private reconnectAttempt = 0
+  /** Last event seq seen per host (gap-pull bookkeeping). */
+  private lastSeq = new Map<string, number>()
+  /** In-flight gap pulls per host (dedupe). */
+  private pulling = new Set<string>()
+  /**
+   * Connection generation: bumped on every connect()/disconnect(). Async
+   * callbacks (onopen/onclose/reconnect timer/gap-pull) capture the gen at
+   * creation and bail when a newer generation owns the transport, so stale
+   * sockets can never spawn duplicate EventSource/WebSocket connections
+   * (the React StrictMode double-mount race).
+   */
+  private gen = 0
 
   constructor(base = '', accessToken = resolveAccessToken()) {
     this.base = base.replace(/\/$/, '')
@@ -105,7 +130,7 @@ export class LocalTransport {
   /**
    * Update the access token at runtime (e.g. after the user pastes a
    * hub FE_TOKEN). Persists to localStorage when possible and reconnects
-   * the SSE stream so the new token takes effect immediately.
+   * the live stream so the new token takes effect immediately.
    */
   setAccessToken(token: string | null) {
     const next = (token ?? '').trim()
@@ -116,7 +141,10 @@ export class LocalTransport {
     } catch {
       /* ignore */
     }
-    if (this.es) this.connect()
+    // Token change: re-try WS in case we are talking to a hub.
+    this.preferWS = true
+    this.sawHubHello = false
+    if (this.es || this.ws) this.connect()
   }
 
   getAccessToken(): string {
@@ -177,16 +205,189 @@ export class LocalTransport {
     return fetch(input, { ...init, headers })
   }
 
+  /** Build the hub live WebSocket URL (relative base → current page host). */
+  private liveWsURL(): string {
+    const httpBase = this.base || `${location.protocol}//${location.host}`
+    const u = new URL(httpBase, location.href)
+    u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:'
+    u.pathname = '/ws/fe'
+    const params = new URLSearchParams()
+    if (this.accessToken) params.set('token', this.accessToken)
+    // Ask the hub to flate-compress events frames; the browser
+    // DecompressionStream API decodes them.
+    if (typeof DecompressionStream !== 'undefined') params.set('c', '1')
+    u.search = params.toString()
+    u.hash = ''
+    return u.toString()
+  }
+
+  /**
+   * Gap-pull: fetch buffered hub events for a host with seq > after and
+   * emit them in order (deduped per host; one pull at a time). gen guards
+   * against stale responses after a reconnect.
+   */
+  private async gapPull(hostId: string, after: number, gen = this.gen) {
+    if (gen !== this.gen) return
+    if (this.pulling.has(hostId)) return
+    this.pulling.add(hostId)
+    try {
+      const qs = `?host=${encodeURIComponent(hostId)}&after=${after}`
+      const res = await this.fetch(`${this.base}/api/events${qs}`)
+      if (!res.ok) return
+      const body = (await res.json()) as { events?: Array<AcpEvent & { seq?: number }> }
+      const evs = body.events || []
+      // Fill the gap; skip events a live frame already delivered.
+      for (const ev of evs) {
+        if (gen !== this.gen) return
+        const seen = this.lastSeq.get(hostId) ?? 0
+        const s = ev.seq ?? 0
+        if (s <= seen) continue
+        this.lastSeq.set(hostId, s)
+        this.emit(ev)
+      }
+    } catch {
+      /* offline; the next hello/events re-triggers the pull */
+    } finally {
+      this.pulling.delete(hostId)
+    }
+  }
+
+  /** Track seq + detect gaps on a live event (hub mode only). */
+  private trackSeq(ev: AcpEvent) {
+    const host = (ev as { hostId?: string }).hostId
+    const seq = (ev as { seq?: number }).seq
+    if (!host || typeof seq !== 'number' || seq <= 0) return
+    const prev = this.lastSeq.get(host) ?? 0
+    // Duplicate: gap-pull already delivered this seq.
+    if (seq <= prev) return
+    if (prev > 0 && seq > prev + 1) {
+      void this.gapPull(host, prev)
+    }
+    this.lastSeq.set(host, seq)
+  }
+
+  /**
+   * Reconcile after (re)connect: if the hub's last seq for our selected
+   * host is ahead of what we have, pull the missing slice.
+   */
+  private reconcileSeq(seqs?: Record<string, number>) {
+    if (!seqs || !this.selectedHostId) return
+    const hubSeq = seqs[this.selectedHostId]
+    if (typeof hubSeq !== 'number') return
+    const mine = this.lastSeq.get(this.selectedHostId) ?? 0
+    if (hubSeq > mine) void this.gapPull(this.selectedHostId, mine)
+  }
+
+  private async onWsMessage(msg: MessageEvent) {
+    let text: string
+    if (typeof msg.data === 'string') {
+      text = msg.data
+    } else if (msg.data instanceof Blob) {
+      // Compressed binary frame (flate/deflate-raw).
+      const buf = await msg.data.arrayBuffer()
+      if (typeof DecompressionStream === 'undefined') return
+      const ds = new DecompressionStream('deflate-raw')
+      const stream = new Blob([buf]).stream().pipeThrough(ds)
+      text = await new Response(stream).text()
+    } else {
+      return
+    }
+    let data: HubWsFrame
+    try {
+      data = JSON.parse(text) as HubWsFrame
+    } catch {
+      return
+    }
+    if (!data || typeof data !== 'object' || !('type' in data)) return
+    if (data.type === 'ping') return
+    if (data.type === 'hello' && (data as { service?: string }).service === 'hub') {
+      this.sawHubHello = true
+      this.emit(data as unknown as AcpEvent)
+      this.reconcileSeq((data as { seqs?: Record<string, number> }).seqs)
+      return
+    }
+    if (data.type === 'events' && Array.isArray((data as { events?: unknown }).events)) {
+      for (const ev of (data as { events: AcpEvent[] }).events) {
+        if (ev && typeof ev === 'object' && 'type' in ev) {
+          this.trackSeq(ev)
+          this.emit(ev)
+        }
+      }
+      return
+    }
+    // Flat event frames (hosts_changed, etc.)
+    this.emit(data as unknown as AcpEvent)
+  }
+
   connect() {
     this.disconnect()
-    // EventSource cannot set Authorization headers — pass token as query
-    // when configured (hub accepts ?token= as an FE_TOKEN source).
+    const gen = ++this.gen
+    this.intentionalClose = false
+    this.reconnectAttempt = 0
+    if (this.preferWS) this.connectWS(gen)
+    else this.connectSSE(gen)
+  }
+
+  private connectWS(gen: number) {
+    let ws: WebSocket
+    try {
+      ws = new WebSocket(this.liveWsURL())
+    } catch {
+      if (gen !== this.gen) return
+      this.preferWS = false
+      this.connectSSE(gen)
+      return
+    }
+    this.ws = ws
+
+    ws.onopen = () => {
+      if (gen !== this.gen || this.ws !== ws) return
+      this.reconnectAttempt = 0
+    }
+
+    ws.onmessage = (msg) => {
+      if (gen !== this.gen || this.ws !== ws) return
+      void this.onWsMessage(msg)
+    }
+
+    ws.onclose = () => {
+      // Stale socket (superseded by a newer connect()/disconnect()) must
+      // not fall back to SSE or schedule reconnects.
+      if (gen !== this.gen || this.ws !== ws) return
+      this.ws = null
+      if (this.intentionalClose) return
+      // First attempt failed without a hub hello → local host path (SSE).
+      if (!this.sawHubHello) {
+        this.preferWS = false
+        this.connectSSE(gen)
+        return
+      }
+      const delay = Math.min(30_000, 1000 * 2 ** Math.min(this.reconnectAttempt, 5))
+      this.reconnectAttempt += 1
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null
+        if (gen !== this.gen || this.intentionalClose) return
+        this.connectWS(gen)
+      }, delay)
+    }
+
+    ws.onerror = () => {
+      // onclose follows; no extra work
+    }
+  }
+
+  private connectSSE(gen: number) {
+    if (gen !== this.gen) return
+    if (this.es) return // already on the SSE path; never double-connect
+    // Local acp-host: EventSource cannot set Authorization headers — token
+    // query is unused locally but kept for symmetry if a proxy gates it.
     const eventsURL = this.accessToken
       ? `${this.base}/events?token=${encodeURIComponent(this.accessToken)}`
       : `${this.base}/events`
     const es = new EventSource(eventsURL)
     this.es = es
     es.onmessage = (msg) => {
+      if (gen !== this.gen || this.es !== es) return
       try {
         const data = JSON.parse(msg.data) as AcpEvent
         if (data && typeof data === 'object' && 'type' in data) {
@@ -202,6 +403,14 @@ export class LocalTransport {
   }
 
   disconnect() {
+    this.gen += 1 // invalidate every in-flight callback of this generation
+    this.intentionalClose = true
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+    this.ws?.close()
+    this.ws = null
     this.es?.close()
     this.es = null
   }

@@ -59,17 +59,25 @@ npm run dev
 ## Hub 多 Host 模式
 
 ```bash
-# 终端 1 — Hub
-cd ../acp-hub && go run ./cmd/acp-hub          # :8787，日志打印配对码
+# 终端 1 — Hub（生产务必设置 FE_TOKEN）
+cd ../acp-hub && FE_TOKEN=dev-secret go run ./cmd/acp-hub          # :8787，日志打印配对码
 
 # 终端 2..N — 每台机器一个 Host
 cd ../acp-host && HUB_URL=http://<hub>:8787 HUB_PAIR_CODE=<code> go run ./cmd/acp-host
 
-# 终端 M — 前端指向 Hub
+# 终端 M — 前端指向 Hub（密钥由用户在页面上输入，不要打进构建）
 VITE_PROXY_TARGET=http://localhost:8787 npm run dev
 ```
 
 打开 http://localhost:5173 后从左上角选择 Host。
+
+Hub 设置了 `FE_TOKEN` 时：
+
+1. 前端启动探测 `/api/hosts`，若 `401` 则弹出**访问密钥**输入框
+2. 用户输入与 Hub 相同的密钥；仅写入本机 `localStorage.acp-fe-token`
+3. 之后 API 带 `Authorization: Bearer …`，SSE 带 `?token=`（`EventSource` 无法设 header）
+
+**不要**把密钥编进 `VITE_*` 或静态资源；生产构建应无 token 环境变量。
 
 ## 环境
 
