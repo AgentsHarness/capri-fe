@@ -16,9 +16,9 @@ import { McpPanel } from './components/McpPanel'
 import { ExtensionsModal } from './components/ExtensionsModal'
 import { SettingsModal } from './components/SettingsModal'
 import { GitPanel } from './components/GitPanel'
-import { TerminalPanel } from './components/TerminalPanel'
 import { BlockViewer } from './components/BlockViewer'
 import { SessionInfoModal } from './components/SessionInfoModal'
+import { UsageModal } from './components/UsageModal'
 import { RewindPicker } from './components/RewindPicker'
 import { WorkflowPanel } from './components/WorkflowPanel'
 import { ToastStack } from './components/ToastStack'
@@ -39,7 +39,6 @@ export default function App() {
   const initTheme = useThemeStore((s) => s.init)
   const [mcpOpen, setMcpOpen] = useState(false)
   const [gitOpen, setGitOpen] = useState(false)
-  const [termOpen, setTermOpen] = useState(false)
   useScrollbackKeys()
 
   useEffect(() => init(), [init])
@@ -52,7 +51,7 @@ export default function App() {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-gn-bg-base text-gn-fg font-ui transition-colors duration-150">
-      <TopBar onOpenMcp={() => setMcpOpen(true)} onOpenGit={() => setGitOpen(true)} onOpenTerm={() => setTermOpen(true)} />
+      <TopBar onOpenMcp={() => setMcpOpen(true)} onOpenGit={() => setGitOpen(true)} />
       {/* Host errors / connection warnings — always visible, dismissible. */}
       <ErrorBanner />
       <div className="flex min-h-0 flex-1">
@@ -73,11 +72,11 @@ export default function App() {
       <DiffReviewModal />
       <MemoryModal />
       <McpPanel open={mcpOpen} onClose={() => setMcpOpen(false)} />
-      <TerminalPanel open={termOpen} onClose={() => setTermOpen(false)} />
       <ExtensionsModal />
       <SettingsModal />
       <GitPanel open={gitOpen} onClose={() => setGitOpen(false)} />
       <SessionInfoModal />
+      <UsageModal />
       <RewindPicker />
       <WorkflowPanel />
       <ToastStack />

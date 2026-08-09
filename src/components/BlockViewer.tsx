@@ -21,6 +21,7 @@ import type { ScrollEntry } from '../api/types'
 import { subagentMeta } from '../format'
 import { ToolDetail } from './ToolDetail'
 import { Markdown } from './Markdown'
+import { Ansi } from './Ansi'
 import { Glyphs, SPINNER_FRAMES, toolHeader } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
 import { TodoMark } from './todoMark'
@@ -477,7 +478,7 @@ function ViewerBody({
           </div>
           {stdout ? (
             <pre className="whitespace-pre-wrap break-words font-mono text-[12px] leading-[1.45] text-gn-fg">
-              {stdout}
+              <Ansi text={stdout} />
             </pre>
           ) : (
             <div className="text-[12px] text-gn-muted">

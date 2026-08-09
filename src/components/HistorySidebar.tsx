@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { Plus } from 'lucide-react'
 import { useChatStore } from '../store/chat'
 import { SessionHistoryList } from './SessionHistoryList'
 
@@ -20,6 +21,7 @@ export function HistorySidebar() {
   const refreshSessions = useChatStore((s) => s.refreshSessions)
   const refreshWorkspaces = useChatStore((s) => s.refreshWorkspaces)
   const resetToEmpty = useChatStore((s) => s.resetToEmpty)
+  const sidebarCollapsed = useChatStore((s) => s.sidebarCollapsed)
 
   useEffect(() => {
     void refreshSessions()
@@ -27,17 +29,26 @@ export function HistorySidebar() {
   }, [refreshSessions, refreshWorkspaces])
 
   return (
-    <aside className="hidden w-72 shrink-0 flex-col bg-gn-bg-base lg:flex">
-      <div className="flex items-center gap-2 border-b border-gn-prompt-border px-3 py-2">
+    <aside
+      className={`hidden shrink-0 flex-col overflow-hidden bg-gn-bg-base transition-[width] duration-200 ease-out lg:flex ${
+        sidebarCollapsed ? 'w-0 border-r-0' : 'w-72 border-r border-gn-prompt-border/60'
+      }`}
+    >
+      {/* No border under the header — the group headers carry their own
+          border-b, and removing this line lets the top edge sit flush with
+          the borderless WorkspaceBar. py-2 + compact button matches the
+          (taller) WorkspaceBar row height so the "会话 new" header lines up. */}
+      <div className="flex min-h-[37px] items-center gap-2 border-b border-gn-prompt-border px-3 py-2">
         <span className="text-[10.5px] font-medium uppercase tracking-wide text-gn-gutter">
           会话
         </span>
         <button
           type="button"
           onClick={() => resetToEmpty()}
-          className="ml-auto min-h-8 rounded border border-transparent px-2 py-0.5 text-[12px] text-gn-cyan hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg"
+          className="ml-auto flex items-center gap-1 rounded px-2 py-1 text-[12px] leading-none text-gn-cyan hover:bg-gn-bg-highlight hover:text-gn-fg"
           title="新建会话：先进入空状态，选择工作目录后开始"
         >
+          <Plus size={12} strokeWidth={2.5} />
           new
         </button>
       </div>

@@ -18,6 +18,7 @@ import {
 } from '../scrollback/toolDetail'
 import { IconGlyph } from './IconGlyph'
 import { fmtBytes } from '../format'
+import { Ansi } from './Ansi'
 
 /**
  * Full-viewer page size for long stdout / read / edit bodies.
@@ -117,7 +118,7 @@ function ErrorLine({ text }: { text: string }) {
       className="whitespace-pre-wrap break-words py-0.5"
       style={{ color: 'var(--color-gn-accent-error)' }}
     >
-      {text}
+      <Ansi text={text} />
     </div>
   )
 }
@@ -176,7 +177,11 @@ function StdoutPanel({
             line.startsWith('… +') ? 'text-gn-muted' : 'text-gn-fg'
           }`}
         >
-          {line || ' '}
+          {line.startsWith('… +') ? (
+            line
+          ) : (
+            <Ansi text={line || ' '} />
+          )}
         </div>
       ))}
       {showMore && (

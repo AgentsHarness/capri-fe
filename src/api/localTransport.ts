@@ -545,6 +545,27 @@ export class LocalTransport {
   }
 
   /**
+   * POST /api/usage-report {cwd?, sessionId?, from?, to?} — 宿主侧 token
+   * 用量聚合（跨会话 · 时间窗口 · 按模型分组）。非 x.ai 直通：响应就是
+   * {ok:true, result: UsageReportData}，无 ExtMethodResult 信封。
+   */
+  async usageReport(
+    opts: { cwd?: string; sessionId?: string; from?: number; to?: number } = {},
+  ): Promise<import('./types').UsageReportData> {
+    const res = await fetch(this.url('/api/usage-report'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(opts),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `usage report failed (${res.status})`)
+    }
+    const result = data.result ?? {}
+    return result && typeof result === 'object' ? result : {}
+  }
+
+  /**
    * Shared x.ai/* passthrough call: POST `path` with JSON `body`,
    * returns the agent's raw `result` (the host answers {ok, result}).
    */
@@ -1328,33 +1349,11 @@ export class LocalTransport {
   // Host contract (http_ext2.go /api/terminal/* + grok-build
   // extensions/terminal.rs): every endpoint answers `{ok:true,
   // result:<agent raw result>}`; failures are HTTP errors or
-  // `{ok:false, error}`. Output delivery is split:
-  //  - piped (non-interactive) terminals → POLL /api/terminal/output
-  //    (cumulative snapshot incl. exitStatus; no SSE push exists);
-  //  - PTY terminals → `pty_notification` SSE events (host broadcasts
-  //    x.ai/terminal/pty/notification as {type:'pty_notification',
-  //    params:{terminalId, type: output|exit|process_started|
-  //    process_ended, data?<base64>, outputOffset?, isReplay?,
-  //    exitCode?, signal?}}). x.ai/terminal/output does NOT serve PTYs
-  //    (the agent looks those up by terminal_id alone, in a different
-  //    registry) — so interactive terminals are never polled.
-
-  /** POST /api/terminal/list — live terminals (piped + PTY) of the session. */
-  async terminalList(): Promise<{ terminals: TerminalInfo[] }> {
-    const res = await fetch(this.url('/api/terminal/list'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: '{}',
-    })
-    const data = await res.json().catch(() => ({}))
-    if (!res.ok || data.ok === false) {
-      throw new Error(data.error || `terminal list failed (${res.status})`)
-    }
-    const terminals = (findArrayField(data, 'terminals') as Record<string, unknown>[])
-      .map(parseTerminalInfo)
-      .filter((t) => t.terminalId)
-    return { terminals }
-  }
+  // `{ok:false, error}`. Only the piped-terminal methods the FE still
+  // needs are kept: `!` shell-mode direct execution (create / output /
+  // wait-for-exit / release) and the composer's [↓] send-to-background
+  // (background). The interactive-PTY panel (term button) was removed;
+  // its methods (list / pty/* / kill) are gone with it.
 
   /** POST /api/terminal/create — run `command` in a piped terminal. */
   async terminalCreate(params: {
@@ -1413,21 +1412,6 @@ export class LocalTransport {
     }
   }
 
-  /** POST /api/terminal/kill — kill a terminal; outcome killed|already_exited. */
-  async terminalKill(terminalId: string): Promise<{ outcome?: string }> {
-    const res = await fetch(this.url('/api/terminal/kill'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ terminalId }),
-    })
-    const data = await res.json().catch(() => ({}))
-    if (!res.ok || data.ok === false) {
-      throw new Error(data.error || `terminal kill failed (${res.status})`)
-    }
-    const outcome = findField(data, 'outcome')
-    return outcome && typeof outcome === 'string' ? { outcome } : {}
-  }
-
   /** POST /api/terminal/release — forget a terminal (kills a running child). */
   async terminalRelease(terminalId: string): Promise<void> {
     const res = await fetch(this.url('/api/terminal/release'), {
@@ -1454,67 +1438,6 @@ export class LocalTransport {
     const data = await res.json().catch(() => ({}))
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || `terminal background failed (${res.status})`)
-    }
-  }
-
-  /** POST /api/terminal/pty/create — interactive shell PTY (SSE-pushed output). */
-  async terminalPtyCreate(params: {
-    shell?: string
-    cwd?: string
-    sessionId?: string
-    env?: Record<string, string>
-    rows?: number
-    cols?: number
-    name?: string
-    meta?: Record<string, unknown>
-  }): Promise<{ terminalId: string }> {
-    const res = await fetch(this.url('/api/terminal/pty/create'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
-    })
-    const data = await res.json().catch(() => ({}))
-    if (!res.ok || data.ok === false) {
-      throw new Error(data.error || `pty create failed (${res.status})`)
-    }
-    const id = findField(data, 'terminalId')
-    if (typeof id !== 'string' || !id) {
-      throw new Error('pty create: 响应缺少 terminalId')
-    }
-    return { terminalId: id }
-  }
-
-  /** POST /api/terminal/pty/resize — resize an interactive PTY. */
-  async terminalPtyResize(terminalId: string, rows: number, cols: number): Promise<void> {
-    const res = await fetch(this.url('/api/terminal/pty/resize'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ terminalId, rows, cols }),
-    })
-    const data = await res.json().catch(() => ({}))
-    if (!res.ok || data.ok === false) {
-      throw new Error(data.error || `pty resize failed (${res.status})`)
-    }
-  }
-
-  /**
-   * POST /api/terminal/pty/input — fire-and-forget `_x.ai/terminal/pty/input`
-   * notification; `data` is base64 (raw bytes, UTF-8). Success answers
-   * {ok:true, result} — nothing to return.
-   */
-  async terminalPtyInput(terminalId: string, data: string): Promise<void> {
-    const res = await fetch(this.url('/api/terminal/pty/input'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ terminalId, data }),
-    })
-    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>
-    if (!res.ok || body.ok === false) {
-      throw new Error(
-        typeof body.error === 'string' && body.error
-          ? body.error
-          : `pty input failed (${res.status})`,
-      )
     }
   }
 
@@ -2094,17 +2017,6 @@ export class LocalTransport {
     }
   }
 
-  /** POST /api/terminal/pty/load {terminalId, meta?} → x.ai/terminal/pty/load
-   *  （meta → wire `_meta` 透传）。 */
-  async terminalPtyLoad(opts: {
-    terminalId: string
-    meta?: Record<string, unknown>
-  }): Promise<unknown> {
-    const body: Record<string, unknown> = { terminalId: opts.terminalId }
-    if (opts.meta && Object.keys(opts.meta).length > 0) body._meta = opts.meta
-    return unwrapExtResult(await this.xaiCall('/api/terminal/pty/load', body))
-  }
-
   // ── 指令 / 其它 ─────────────────────────────────────────────────────
 
   /** POST /api/commands-list {sessionId?} → x.ai/commands/list. */
@@ -2235,57 +2147,11 @@ export type SettingsPayload = {
   cli?: Record<string, unknown>
 }
 
-/** One terminal row from x.ai/terminal/list (agent TerminalInfo, camelCase). */
-export type TerminalInfo = {
-  terminalId: string
-  status: 'connecting' | 'connected' | 'exited' | 'error'
-  interactive: boolean
-  name?: string
-  exitCode?: number | null
-  cwd?: string
-  /** Bytes consumed so far (cumulative). */
-  outputOffset: number
-  /** Unix seconds (agent SystemTime::as_secs). */
-  createdAt: number
-}
-
 /** x.ai/terminal/output — cumulative snapshot for piped terminals. */
 export type TerminalOutput = {
   output: string
   truncated: boolean
   exitStatus?: { exitCode?: number | null; signal?: string }
-}
-
-/** Parse one agent TerminalInfo (snake_case or camelCase wire fields). */
-export function parseTerminalInfo(t: Record<string, unknown>): TerminalInfo {
-  const id = t.terminal_id ?? t.terminalId
-  const status = String(t.status ?? 'connecting')
-  return {
-    terminalId: id == null ? '' : String(id),
-    status: (['connecting', 'connected', 'exited', 'error'] as const).includes(
-      status as TerminalInfo['status'],
-    )
-      ? (status as TerminalInfo['status'])
-      : 'connecting',
-    interactive: t.interactive === true,
-    ...(typeof t.name === 'string' && t.name ? { name: t.name } : {}),
-    ...(t.exitCode != null || t.exit_code != null
-      ? { exitCode: ((t.exitCode ?? t.exit_code) as number) ?? null }
-      : {}),
-    ...(typeof t.cwd === 'string' && t.cwd ? { cwd: t.cwd } : {}),
-    outputOffset:
-      typeof t.outputOffset === 'number'
-        ? t.outputOffset
-        : typeof t.output_offset === 'number'
-          ? t.output_offset
-          : 0,
-    createdAt:
-      typeof t.createdAt === 'number'
-        ? t.createdAt
-        : typeof t.created_at === 'number'
-          ? t.created_at
-          : 0,
-  }
 }
 
 /**

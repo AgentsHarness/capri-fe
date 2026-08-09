@@ -1057,6 +1057,9 @@ type ChatState = {
    */
   emptyCwd?: string
   historyOpen: boolean
+  /** Desktop (lg+) persistent sidebar collapsed state — toggled by the TopBar collapse icon. */
+  sidebarCollapsed: boolean
+  toggleSidebar: () => void
   historyLoading: boolean
   /** Bumped when a history load finishes; Scrollback re-follows the bottom. */
   historyLoadedAt?: number
@@ -1302,6 +1305,10 @@ type ChatState = {
   viewerTask?: ViewerTask
   /** /session-info modal visibility (TUI session-info command). */
   sessionInfoOpen: boolean
+  /** /usage modal visibility — 宿主侧 token 用量聚合 + billing credits。 */
+  usageOpen: boolean
+  openUsage: () => void
+  closeUsage: () => void
   /**
    * Sticky running-tasks bar under the top bar (TUI tasks pane). Toggled
    * by the ⠋N chip and the composer's idle still-running cue — shared so
@@ -1423,6 +1430,10 @@ type ChatState = {
   appendLocalEntry: (entry: {
     kind: 'user' | 'session_event' | 'error'
     text: string
+    /** Render a user row with the TUI `$ ` shell prefix (direct `!` exec). */
+    isShell?: boolean
+    /** Render `session_event` text as ANSI-colored output (raw bytes kept). */
+    ansi?: boolean
   }) => void
   respondPermission: (
     requestId: string,
@@ -1652,6 +1663,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   workspaces: [],
   workspaceLoading: false,
   historyOpen: false,
+  sidebarCollapsed: false,
+  toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
   historyLoading: false,
   historyLoadedCount: 0,
   historyHasMore: false,
@@ -1685,6 +1698,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   viewerEntryId: null,
   viewerTask: undefined,
   sessionInfoOpen: false,
+  usageOpen: false,
   tasksBarOpen: false,
   setTasksBarOpen: (open) => set({ tasksBarOpen: open }),
   showTimestamps: true,
@@ -2142,6 +2156,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   openSessionInfo: () => set({ sessionInfoOpen: true }),
   closeSessionInfo: () => set({ sessionInfoOpen: false }),
+
+  openUsage: () => set({ usageOpen: true }),
+  closeUsage: () => set({ usageOpen: false }),
 
   showSessionInfo: async () => {
     try {
@@ -2708,6 +2725,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
           // The user is looking at this session now — clear its notice.
           if (ev.sessionId) get().clearCompletedNotice(ev.sessionId)
           void get().refreshGitInfo()
+        }
+        // Fresh page / refresh landing on an already-active session: the
+        // hello snapshot carries sessionId/cwd but NOT the message history
+        // (the host never replays it on connect), so replay it here. Guard
+        // on empty entries so a mid-session reconnect (timeline already
+        // live) never reloads, and skip while history is being loaded.
+        if (ev.sessionId && get().entries.length === 0 && !get().historyLoading) {
+          void get().loadHistory(ev.sessionId, ev.cwd || '')
         }
         // Agent restart (host respawned the agent → in-memory permission
         // mode reset): re-seed the browser-known flags once per instance.
@@ -4464,8 +4489,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         //   state (TUI file-watch panel); fires on every file change.
         // - x.ai/search/fuzzy/status / search/content/status — search
         //   engine status (TUI /search panel).
-        // - x.ai/terminal/pty/notification — pty lifecycle (TUI
-        //   terminal pane).
         // - x.ai/config_changed — config reload notice (TUI settings
         //   modal; FE has no config editor).
         // - x.ai/settings/update — pre-existing silence, same rationale.
@@ -7702,8 +7725,6 @@ const SILENT_EXT_NOTIFICATIONS = new Set([
   // Search engine status (TUI /search panel).
   'x.ai/search/fuzzy/status',
   'x.ai/search/content/status',
-  // Pty lifecycle (TUI terminal pane).
-  'x.ai/terminal/pty/notification',
   // Config reload notice (TUI settings modal; FE has no config editor).
   'x.ai/config_changed',
   // NOTE: x.ai/mcp/init_progress is intentionally NOT here — it is

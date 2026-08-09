@@ -1,4 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
+import {
+  Activity,
+  Boxes,
+  GitBranch,
+  History,
+  Plus,
+  Puzzle,
+  Settings,
+} from 'lucide-react'
 import { useChatStore } from '../store/chat'
 import { ThemeOptions, ThemePicker } from './ThemePicker'
 import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS } from '../theme/layout'
@@ -66,7 +75,7 @@ export function WorkspaceBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
           the chip cluster is one unit that wraps to a right-aligned second
           line instead of overflowing/clipping past the viewport edge. */}
       <div
-        className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 py-1 text-[14px] select-none`}
+        className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} flex min-h-[37px] min-w-0 flex-wrap items-center gap-x-2 gap-y-1 py-2 text-[14px] select-none`}
       >
         {/* Git head (x.ai/git_head_changed) — TUI status-bar branch.
             Detached HEAD renders as "⎇ detached" (TUI render.rs: empty
@@ -154,11 +163,9 @@ export function WorkspaceBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
 export function TopBar({
   onOpenMcp,
   onOpenGit,
-  onOpenTerm,
 }: {
   onOpenMcp?: () => void
   onOpenGit?: () => void
-  onOpenTerm?: () => void
 }) {
   const hostName = useChatStore((s) => s.hostName)
   const hostId = useChatStore((s) => s.hostId)
@@ -174,6 +181,9 @@ export function TopBar({
   const closeHistory = useChatStore((s) => s.closeHistory)
   const openExtensions = useChatStore((s) => s.openExtensions)
   const openSettings = useChatStore((s) => s.openSettings)
+  const openUsage = useChatStore((s) => s.openUsage)
+  const sidebarCollapsed = useChatStore((s) => s.sidebarCollapsed)
+  const toggleSidebar = useChatStore((s) => s.toggleSidebar)
 
   const [openHosts, setOpenHosts] = useState(false)
   // Mobile (lg:hidden) "更多" menu — the secondary action buttons fold
@@ -208,9 +218,32 @@ export function TopBar({
   // context on this chrome, absolute z-40 children still lose to later
   // siblings and chat text "shows through" the history panel.
   return (
-    <header className="relative z-40 select-none bg-gn-bg-base">
+    <header className="relative z-40 select-none border-b border-gn-prompt-border bg-gn-bg-base">
       {/* Main row: host switcher + actions. */}
       <div className="flex shrink-0 items-center gap-2 px-3 py-[6px] sm:px-4 text-[12px] text-gn-muted">
+        {/* Desktop-only sidebar collapse toggle — sits left of the host switcher. */}
+        <button
+          type="button"
+          onClick={toggleSidebar}
+          aria-label={sidebarCollapsed ? '展开会话侧边栏' : '折叠会话侧边栏'}
+          title={sidebarCollapsed ? '展开会话侧边栏' : '折叠会话侧边栏'}
+          className="hidden min-h-8 items-center rounded px-1.5 hover:bg-gn-bg-highlight hover:text-gn-fg lg:inline-flex"
+        >
+          <svg
+            width="13"
+            height="13"
+            viewBox="0 0 14 14"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.3"
+            className="shrink-0"
+            aria-hidden
+          >
+            <rect x="1.2" y="2.2" width="11.6" height="9.6" rx="1" />
+            <line x1="5" y1="2.2" x2="5" y2="11.8" />
+            <path d="M2.4 5h1.4M2.4 8h1.4" />
+          </svg>
+        </button>
         <div className="relative min-w-0">
           <button
             type="button"
@@ -287,9 +320,10 @@ export function TopBar({
             <button
               type="button"
               onClick={onOpenMcp}
-              className="rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+              className="inline-flex items-center gap-1 rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
               title="MCP 服务器状态"
             >
+              <Boxes size={13} strokeWidth={2} aria-hidden />
               mcp
             </button>
           )}
@@ -297,54 +331,51 @@ export function TopBar({
             <button
               type="button"
               onClick={onOpenGit}
-              className="rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+              className="inline-flex items-center gap-1 rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
               title="Git 面板 — 工作区状态 / diff / 提交"
             >
+              <GitBranch size={13} strokeWidth={2} aria-hidden />
               git
-            </button>
-          )}
-          {onOpenTerm && (
-            <button
-              type="button"
-              onClick={onOpenTerm}
-              className="rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
-              title="终端（x.ai/terminal · 管道终端 + 交互 PTY）"
-            >
-              term
             </button>
           )}
           <button
             type="button"
             onClick={() => openExtensions('hooks')}
-            className="rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+            className="inline-flex items-center gap-1 rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
             title="扩展（/hooks /plugins /skills /marketplace）"
           >
+            <Puzzle size={13} strokeWidth={2} aria-hidden />
             ext
           </button>
           <button
             type="button"
-            onClick={openSettings}
-            className="rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
-            title="设置（F2 · config.toml 只读展示）"
+            onClick={openUsage}
+            className="inline-flex items-center gap-1 rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+            title="usage — token 用量聚合（按模型/时间窗口）+ billing credits"
           >
-            settings
+            <Activity size={13} strokeWidth={2} aria-hidden />
+            usage
           </button>
           <button
             type="button"
-            onClick={() => resetToEmpty()}
-            className="rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+            onClick={openSettings}
+            className="inline-flex items-center gap-1 rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+            title="设置（F2 · config.toml 只读展示）"
           >
-            new
+            <Settings size={13} strokeWidth={2} aria-hidden />
+            settings
           </button>
         </div>
-        {/* Mobile-only new — sits left of history (no ⋮ dive needed). */}
+        {/* Mobile-only new — sits left of history (no ⋮ dive needed).
+            Desktop relies on the sidebar "会话 new" header button. */}
         <div className="lg:hidden">
           <button
             type="button"
             onClick={() => resetToEmpty()}
-            className="rounded border border-transparent px-2 py-0.5 min-h-8 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg"
+            className="inline-flex items-center gap-1 rounded border border-transparent px-2 py-0.5 min-h-8 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg"
             title="新建会话（先进入空状态选择工作目录）"
           >
+            <Plus size={13} strokeWidth={2} aria-hidden />
             new
           </button>
         </div>
@@ -353,13 +384,14 @@ export function TopBar({
           <button
             type="button"
             onClick={() => (historyOpen ? closeHistory() : void openHistory())}
-            className={`rounded border px-2 py-0.5 min-h-8 ${
+            className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 min-h-8 ${
               historyOpen
                 ? 'border-gn-prompt-border bg-gn-bg-highlight text-gn-fg'
                 : 'border-transparent hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg'
             }`}
             title="加载历史会话"
           >
+            <History size={13} strokeWidth={2} aria-hidden />
             history
           </button>
           {historyOpen && (
@@ -394,7 +426,7 @@ export function TopBar({
             onClick={() => setMoreOpen((v) => !v)}
             aria-expanded={moreOpen}
             aria-label="更多操作"
-            title="更多操作：theme / mcp / git / term / ext / settings"
+            title="更多操作：theme / mcp / git / ext / settings"
             className={`rounded border px-2 py-0.5 min-h-8 ${
               moreOpen
                 ? 'border-gn-prompt-border bg-gn-bg-highlight text-gn-fg'
@@ -447,6 +479,7 @@ export function TopBar({
                     className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
                     title="MCP 服务器状态"
                   >
+                    <Boxes size={14} strokeWidth={2} aria-hidden />
                     mcp
                   </button>
                 )}
@@ -460,20 +493,8 @@ export function TopBar({
                     className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
                     title="Git 面板 — 工作区状态 / diff / 提交"
                   >
+                    <GitBranch size={14} strokeWidth={2} aria-hidden />
                     git
-                  </button>
-                )}
-                {onOpenTerm && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMoreOpen(false)
-                      onOpenTerm()
-                    }}
-                    className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-                    title="终端（x.ai/terminal · 管道终端 + 交互 PTY）"
-                  >
-                    term
                   </button>
                 )}
                 <button
@@ -485,7 +506,20 @@ export function TopBar({
                   className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
                   title="扩展（/hooks /plugins /skills /marketplace）"
                 >
+                  <Puzzle size={14} strokeWidth={2} aria-hidden />
                   ext
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMoreOpen(false)
+                    openUsage()
+                  }}
+                  className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                  title="usage — token 用量聚合（按模型/时间窗口）+ billing credits"
+                >
+                  <Activity size={14} strokeWidth={2} aria-hidden />
+                  usage
                 </button>
                 <button
                   type="button"
@@ -496,6 +530,7 @@ export function TopBar({
                   className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
                   title="设置（F2 · config.toml 只读展示）"
                 >
+                  <Settings size={14} strokeWidth={2} aria-hidden />
                   settings
                 </button>
               </div>

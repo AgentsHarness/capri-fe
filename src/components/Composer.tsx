@@ -168,7 +168,7 @@ type PasteChip = {
 const HISTORY_KEY = 'acpfe.promptHistory'
 const HISTORY_MAX = 50
 
-type HistoryItem = { text: string; ts: number }
+type HistoryItem = { text: string; ts: number; shell?: boolean }
 
 function loadPromptHistory(): HistoryItem[] {
   try {
@@ -182,6 +182,7 @@ function loadPromptHistory(): HistoryItem[] {
         out.push({
           text: x.text,
           ts: typeof x.ts === 'number' ? x.ts : Date.now(),
+          shell: x.shell === true,
         })
         if (out.length >= HISTORY_MAX) break
       }
@@ -439,12 +440,12 @@ export function Composer() {
   /** Counter for clipboard images without a filename (TUI `[Image #N]`). */
   const unnamedImgRef = useRef(0)
 
-  const pushHistory = (sentText: string) => {
+  const pushHistory = (sentText: string, isShell = false) => {
     const t = sentText.trim()
     if (!t) return
     setHistory((prev) => {
-      if (prev[0]?.text === t) return prev // same as latest → skip
-      const next = [{ text: t, ts: Date.now() }, ...prev].slice(0, HISTORY_MAX)
+      if (prev[0]?.text === t && prev[0]?.shell === isShell) return prev // same as latest → skip
+      const next = [{ text: t, ts: Date.now(), shell: isShell }, ...prev].slice(0, HISTORY_MAX)
       savePromptHistory(next)
       return next
     })
@@ -512,6 +513,20 @@ export function Composer() {
     // Record history only when the host accepted the prompt (send
     // swallows transport errors into conn: 'error').
     if (useChatStore.getState().conn !== 'error') pushHistory(expandedText)
+    taRef.current?.focus()
+  }
+
+  /**
+   * TUI ↑ history recall: fill the buffer with the recalled prompt.
+   * Recalled `!` shell commands RE-ENTER shell mode (docs: "Recalled !
+   * shell commands re-enter shell mode") — the `!` lives in the prefix,
+   * the buffer holds only the command.
+   */
+  const recallHistory = (item: HistoryItem) => {
+    setText(item.text)
+    setShellMode(item.shell === true)
+    setHistOpen(false)
+    setPendingCaret(item.text.length)
     taRef.current?.focus()
   }
 
@@ -596,28 +611,43 @@ export function Composer() {
   }
 
   /**
-   * TUI shell mode submit: the command goes to the agent as a normal
-   * prompt (contract: store.send(text, undefined, { fromShell: true }) —
-   * the merged store tags the user row so the scrollback renders it with
-   * the TUI `$ ` prefix). The local store signature doesn't carry `opts`
-   * yet (align/render does); the cast keeps this call contract-shaped.
-   * Submit exits shell mode back to plain input.
+   * TUI `!` mode: run the command DIRECTLY in a piped terminal and render
+   * `$ cmd` + the raw output locally — NOT sent to the agent as a prompt
+   * (the TUI executes the shell command itself and streams its result).
+   * Exits shell mode back to plain input.
    */
   const submitShell = async (cmd: string) => {
     setText('')
     setShellMode(false)
     setChips([])
     const st = useChatStore.getState()
-    await (
-      st.send as (
-        t: string,
-        b?: ContentBlock[],
-        o?: { fromShell?: boolean },
-      ) => Promise<void>
-    )(cmd, undefined, { fromShell: true })
-    // Record history only when the host accepted the prompt (send
-    // swallows transport errors into conn: 'error') — same as submitCurrent.
-    if (useChatStore.getState().conn !== 'error') pushHistory(cmd)
+    try {
+      const { terminalId } = await transport.terminalCreate({
+        command: cmd,
+        cwd: st.cwd || undefined,
+      })
+      // Block until the process exits so we can show the final output.
+      await transport.terminalWaitForExit(terminalId)
+      const out = await transport.terminalOutput(terminalId)
+      // `$ cmd` row, then the raw output below it (rendered with ANSI color
+      // via the shared <Ansi> component — not stripped).
+      st.appendLocalEntry({ kind: 'user', text: cmd, isShell: true })
+      const output = out.output ?? ''
+      if (output.trim()) st.appendLocalEntry({ kind: 'session_event', text: output, ansi: true })
+      const code = out.exitStatus?.exitCode
+      if (code != null && code !== 0) {
+        st.appendLocalEntry({ kind: 'session_event', text: `exit ${code}` })
+      }
+      await transport.terminalRelease(terminalId).catch(() => {})
+    } catch (e) {
+      st.appendLocalEntry({
+        kind: 'error',
+        text: `命令执行失败: ${e instanceof Error ? e.message : String(e)}`,
+      })
+    }
+    // Record history only when the host accepted the command — shell
+    // submissions are tagged so recalling them re-enters shell mode.
+    if (useChatStore.getState().conn !== 'error') pushHistory(cmd, true)
     taRef.current?.focus()
   }
 
@@ -1684,20 +1714,18 @@ export function Composer() {
                   <button
                     key={`${h.ts}-${i}`}
                     type="button"
-                    onClick={() => {
-                      setText(h.text)
-                      setHistOpen(false)
-                      setPendingCaret(h.text.length)
-                      taRef.current?.focus()
-                    }}
+                    onClick={() => recallHistory(h)}
                     onMouseEnter={() => setHistSel(i)}
                     className={`block w-full truncate px-3 py-1 text-left text-[11.5px] transition-colors ${
                       i === histSel
                         ? 'bg-gn-bg-highlight text-gn-fg'
                         : 'text-gn-fg2'
                     }`}
-                    title={`${h.text}\n${new Date(h.ts).toLocaleString()}`}
+                    title={`${h.shell ? '! ' : ''}${h.text}\n${new Date(h.ts).toLocaleString()}`}
                   >
+                    {h.shell ? (
+                      <span className="text-gn-cyan">! </span>
+                    ) : null}
                     {h.text}
                   </button>
                 ))}
@@ -1905,11 +1933,7 @@ export function Composer() {
                     if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey) {
                       e.preventDefault()
                       const item = history[histSel]
-                      if (item) {
-                        setText(item.text)
-                        setHistOpen(false)
-                        setPendingCaret(item.text.length)
-                      }
+                      if (item) recallHistory(item)
                       return
                     }
                     if (e.key === 'Escape') {

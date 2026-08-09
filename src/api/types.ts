@@ -329,6 +329,39 @@ export type BillingConfigResponse = {
   [k: string]: unknown
 }
 
+/**
+ * 宿主侧 /api/usage-report 的单个统计行（总计或一个模型）。字段与 agent
+ * 的 usage 对象一一对应；cacheHitRate 为派生命中率（cachedRead/input，
+ * 0–1）。全部 optional —— 旧宿主没有该端点时前端防御性降级。
+ */
+export type TokenUsageStat = {
+  inputTokens?: number
+  outputTokens?: number
+  totalTokens?: number
+  cachedReadTokens?: number
+  cacheCreationTokens?: number
+  reasoningTokens?: number
+  modelCalls?: number
+  /** 统计到的回合终态事件数。 */
+  turns?: number
+  /** 命中率 0–1（cachedReadTokens / inputTokens）。 */
+  cacheHitRate?: number
+}
+
+/**
+ * POST /api/usage-report 响应（宿主侧聚合，非 x.ai 直通）。from/to 为
+ * 归一化后的 unix 秒窗口；total 为总计，byModel 按模型分组（无分组数据
+ * 归 "unknown"）。
+ */
+export type UsageReportData = {
+  from?: number
+  to?: number
+  /** 覆盖的会话数（有窗口内事件的 updates.jsonl 文件数）。 */
+  sessions?: number
+  total?: TokenUsageStat
+  byModel?: Record<string, TokenUsageStat>
+}
+
 /** GET /api/extensions — one hook row. */
 export type ExtensionHook = {
   name: string
@@ -702,25 +735,6 @@ export type AcpEvent =
         responseId?: string
         suggestions?: Array<string | { label?: string; [k: string]: unknown }>
         follow_ups?: Array<string | { label?: string; [k: string]: unknown }>
-        [k: string]: unknown
-      }
-    }
-  /** PTY lifecycle push (host broadcasts x.ai/terminal/pty/notification as
-      this typed event — bridge.go). TerminalPanel consumes it; fields stay
-      optional/loose to match the local PtyEvent shape there. */
-  | {
-      type: 'pty_notification'
-      sessionId?: string
-      params?: {
-        terminalId?: string
-        /** output | exit | process_started | process_ended. */
-        type?: string
-        /** Base64 raw PTY bytes (output kind). */
-        data?: string
-        outputOffset?: number
-        isReplay?: boolean
-        exitCode?: number
-        signal?: string
         [k: string]: unknown
       }
     }

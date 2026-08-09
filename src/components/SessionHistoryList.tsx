@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { ChevronRight, Pencil, Pin, Plus, Trash2 } from 'lucide-react'
 import { useChatStore } from '../store/chat'
 import type { SessionInfo, WorkspaceSummary } from '../api/types'
 import {
@@ -16,6 +17,11 @@ import { Glyphs } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
 import { SessionStateIcon } from './SessionStateIcon'
 import { stateLabel, useSessionSpinner } from './sessionState'
+import {
+  sortSessionsWithPins,
+  sortWorkspacesWithPins,
+  usePins,
+} from './historyPins'
 
 /** 组内默认显示的会话行数（超出折叠为"加载更多"）。 */
 const WORKSPACE_ROWS_LIMIT = 4
@@ -80,6 +86,11 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
   const deleteSession = useChatStore((s) => s.deleteSession)
   const newSession = useChatStore((s) => s.newSession)
   const completedNotices = useChatStore((s) => s.completedNotices)
+  // 浏览器本地置顶偏好（工作目录 / 会话），见 historyPins.ts。
+  const pinnedWorkspaces = usePins((s) => s.pinnedWorkspaces)
+  const pinnedSessions = usePins((s) => s.pinnedSessions)
+  const toggleWorkspacePin = usePins((s) => s.toggleWorkspacePin)
+  const toggleSessionPin = usePins((s) => s.toggleSessionPin)
 
   /**
    * 按 sessionId 把 live 状态覆盖到 workspace 摘要行上；当前会话的
@@ -105,7 +116,8 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
     }
     const merged: MergedGroup[] = workspaces.map((g) => ({
       ...g,
-      sessions: g.sessions.map(toRow).sort(byUpdatedDesc),
+      // 置顶的会话排在本工作区最前（内部仍按 updatedAt 降序）。
+      sessions: sortSessionsWithPins(g.sessions.map(toRow), pinnedSessions, byUpdatedDesc),
     }))
     // 兜底：当前会话的 cwd 不在 workspace-list 里时，用 live sessions
     // 中该 cwd 的会话补一个组（groupWorkspaces 会把它 pin 到最前）。
@@ -121,11 +133,16 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
           }),
         )
       if (rows.length > 0) {
-        merged.push({ cwd, label: repoNameFromCwd(cwd), sessions: rows })
+        merged.push({
+          cwd,
+          label: repoNameFromCwd(cwd),
+          sessions: sortSessionsWithPins(rows, pinnedSessions, byUpdatedDesc),
+        })
       }
     }
-    return groupWorkspaces(merged)
-  }, [workspaces, sessions, cwd])
+    // 置顶的工作目录永远在最前（内部仍按 groupWorkspaces 活跃度排序）。
+    return sortWorkspacesWithPins(groupWorkspaces(merged), pinnedWorkspaces)
+  }, [workspaces, sessions, cwd, pinnedWorkspaces, pinnedSessions])
 
   /**
    * 默认收起判定：工作区最新活动（组内 max updatedAt）超过 6 小时 → 收起。
@@ -305,6 +322,15 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
                   <IconGlyph glyph={isCollapsed ? Glyphs.chevron : Glyphs.chevronDown} />
                 </span>
                 <span className="min-w-0 truncate text-[10.5px] font-medium tracking-wide text-gn-fg">
+                  {pinnedWorkspaces.has(g.cwd) && (
+                    <span
+                      className="mr-1 inline-block align-[-0.1em] text-gn-yellow"
+                      title="已置顶此工作目录"
+                      aria-label="已置顶"
+                    >
+                      <Pin size={12} strokeWidth={2.5} />
+                    </span>
+                  )}
                   {repoNameFromCwd(g.cwd)}
                 </span>
                 <span className="shrink-0 text-[10px] tabular-nums text-gn-gutter">
@@ -359,7 +385,7 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
                           if (!historyLoading) void continueSession(s.sessionId, s.cwd || '')
                         }
                       }}
-                      className={`group flex w-full cursor-pointer select-none items-center gap-2 px-3 py-2 text-left hover:bg-gn-bg-highlight ${historyLoading ? 'opacity-50' : ''} ${active ? 'bg-gn-bg-highlight' : ''}`}
+                      className={`group flex w-full cursor-pointer select-none items-center gap-2 px-3 py-2 text-left hover:bg-gn-bg-highlight ${active ? 'bg-gn-bg-highlight' : ''}`}
                       title={`${s.title || s.sessionId.slice(0, 12)} · ${stateLabel(key)}${s.cwd ? ` · ${s.cwd}` : ''}`}
                     >
                       {completedNotices[s.sessionId] != null ? (
@@ -404,6 +430,15 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
                           />
                         ) : (
                           <span className="flex min-w-0 items-center gap-1">
+                            {pinnedSessions.has(s.sessionId) && (
+                              <span
+                                className="shrink-0 text-gn-yellow"
+                                title="已置顶此会话"
+                                aria-label="已置顶"
+                              >
+                                <Pin size={12} strokeWidth={2.5} />
+                              </span>
+                            )}
                             <span
                               className={`block min-w-0 flex-1 truncate text-[12px] ${active ? 'text-gn-cyan' : 'text-gn-fg'}`}
                               onDoubleClick={(e) => {
@@ -530,7 +565,10 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
                       closeMenu()
                     }}
                   >
-                    <span aria-hidden className="inline-block w-4 shrink-0 text-center">›</span> 打开会话
+                    <span aria-hidden className="inline-block w-4 shrink-0 text-center">
+                      <ChevronRight size={14} strokeWidth={2.5} />
+                    </span>{' '}
+                    打开会话
                   </MenuItem>
                   <MenuItem
                     disabled={menu.row.sessionId !== sessionId}
@@ -540,7 +578,21 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
                       closeMenu()
                     }}
                   >
-                    <span aria-hidden className="inline-block w-4 shrink-0 text-center">✎</span> 重命名
+                    <span aria-hidden className="inline-block w-4 shrink-0 text-center">
+                      <Pencil size={14} strokeWidth={2.5} />
+                    </span>{' '}
+                    重命名
+                  </MenuItem>
+                  <MenuItem
+                    onClick={() => {
+                      toggleSessionPin(menu.row.sessionId)
+                      closeMenu()
+                    }}
+                  >
+                    <span aria-hidden className="inline-block w-4 shrink-0 text-center text-gn-yellow">
+                      <Pin size={14} strokeWidth={2.5} />
+                    </span>{' '}
+                    {pinnedSessions.has(menu.row.sessionId) ? '取消置顶' : '置顶此会话'}
                   </MenuItem>
                   <div className="my-0.5 border-t border-gn-prompt-border/60" />
                   <MenuItem
@@ -555,18 +607,37 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
                       closeMenu()
                     }}
                   >
-                    <span aria-hidden className="inline-block w-4 shrink-0 text-center">✕</span> 删除
+                    <span aria-hidden className="inline-block w-4 shrink-0 text-center">
+                      <Trash2 size={14} strokeWidth={2.5} />
+                    </span>{' '}
+                    删除
                   </MenuItem>
                 </>
               ) : (
-                <MenuItem
-                  onClick={() => {
-                    void newSession(menu.cwd)
-                    closeMenu()
-                  }}
-                >
-                  <span aria-hidden className="inline-block w-4 shrink-0 text-center">＋</span> 在此目录新建会话
-                </MenuItem>
+                <>
+                  <MenuItem
+                    onClick={() => {
+                      toggleWorkspacePin(menu.cwd)
+                      closeMenu()
+                    }}
+                  >
+                    <span aria-hidden className="inline-block w-4 shrink-0 text-center text-gn-yellow">
+                      <Pin size={14} strokeWidth={2.5} />
+                    </span>{' '}
+                    {pinnedWorkspaces.has(menu.cwd) ? '取消置顶' : '置顶此目录'}
+                  </MenuItem>
+                  <MenuItem
+                    onClick={() => {
+                      void newSession(menu.cwd)
+                      closeMenu()
+                    }}
+                  >
+                    <span aria-hidden className="inline-block w-4 shrink-0 text-center">
+                      <Plus size={14} strokeWidth={2.5} />
+                    </span>{' '}
+                    在此目录新建会话
+                  </MenuItem>
+                </>
               )}
             </div>
           </div>,
