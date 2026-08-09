@@ -8,23 +8,35 @@
  * x.ai/task/list while the task is still running.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import { formatTurnDuration, planTodos, useChatStore, type ViewerTask } from '../store/chat'
 import type { ScrollEntry } from '../api/types'
 import { subagentMeta } from '../format'
 import { ToolDetail } from './ToolDetail'
 import { Markdown } from './Markdown'
-import { Glyphs, toolHeader } from '../theme/glyphs'
+import { Glyphs, SPINNER_FRAMES, toolHeader } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
 import { TodoMark } from './todoMark'
 import { fmtBytes, fmtTok } from '../format'
 import { extractToolDetail } from '../scrollback/toolDetail'
 import { mergeLiveText } from '../scrollback/liveText'
+import { useSessionSpinner } from './sessionState'
 import {
   EntryView,
   GroupHeaderView,
   type EntryViewActions,
 } from './Scrollback'
+import {
+  USER_COLLAPSED_MAX_LINES,
+  collapseUserText,
+} from '../scrollback/userText'
 import {
   displayRowKey,
   isDensePackableRow,
@@ -77,6 +89,12 @@ export function BlockViewer() {
   // Task-only view (top strip / history replay): the log lives in
   // viewerTask, fetched session-scoped — one code path with bg_task rows.
   const active = taskView ? taskViewToEntry(taskView) : liveEntry
+
+  // 子代理弹窗 live 时钟：运行中每秒刷新（标题栏 elapsed + 状态区统计），
+  // 同一时钟驱动标题栏状态图标（spinner / ✓ / ✗）。
+  const subRunning = active?.kind === 'subagent' && !!active.running
+  const now = useLiveTick(subRunning)
+  const spinnerFrame = useSessionSpinner(subRunning)
 
   // Focus trap + Esc
   useEffect(() => {
@@ -134,7 +152,18 @@ export function BlockViewer() {
   if ((!viewerId || !entry) && !taskView) return null
   if (!active) return null
 
-  const { title, subtitle } = viewerChrome(active)
+  // 子代理标题栏（TUI 全屏边框视图 title bar）：状态图标 + label + 加粗
+  // 描述 + model + 活动后缀 · elapsed（见 subagentChrome）。
+  const subChrome =
+    active.kind === 'subagent'
+      ? subagentChrome(active, now, spinnerFrame)
+      : null
+  const { title, subtitle } = subChrome
+    ? {
+        title: subChrome.label,
+        subtitle: (active as Extract<ScrollEntry, { kind: 'subagent' }>).title,
+      }
+    : viewerChrome(active)
 
   return (
     <div
@@ -154,12 +183,37 @@ export function BlockViewer() {
         {/* Title bar */}
         <header className="flex shrink-0 items-center gap-2 border-b border-gn-prompt-border bg-gn-bg-dark px-3 py-2 sm:rounded-t">
           <div className="min-w-0 flex-1">
-            <div className="truncate text-[13px] font-bold text-gn-fg">{title}</div>
-            {subtitle ? (
-              <div className="truncate font-mono text-[11px] text-gn-muted">
-                {subtitle}
-              </div>
-            ) : null}
+            {subChrome ? (
+              <>
+                {/* TUI 边框视图 title bar：状态图标 + label + 加粗描述同一行，
+                    移动端标题截断、metaLine 单独一行。 */}
+                <div className="flex min-w-0 items-center gap-1.5">
+                  {subChrome.icon}
+                  <span className="shrink-0 text-[13px] font-bold text-gn-fg">
+                    {title}
+                  </span>
+                  {subtitle ? (
+                    <span className="min-w-0 truncate font-mono text-[12px] text-gn-muted">
+                      {subtitle}
+                    </span>
+                  ) : null}
+                </div>
+                {subChrome.metaLine ? (
+                  <div className="mt-0.5 truncate font-mono text-[11px] text-gn-gutter">
+                    {subChrome.metaLine}
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <div className="truncate text-[13px] font-bold text-gn-fg">{title}</div>
+                {subtitle ? (
+                  <div className="truncate font-mono text-[11px] text-gn-muted">
+                    {subtitle}
+                  </div>
+                ) : null}
+              </>
+            )}
           </div>
           <span className="hidden text-[10px] text-gn-gutter sm:inline">
             esc close · scroll to read
@@ -177,12 +231,17 @@ export function BlockViewer() {
           </button>
         </header>
 
-        {/* Full content — no truncation */}
+        {/* Full content — no truncation. 子代理：外层不滚动（px/py 由
+            SubagentView 内部布局负责），时间线自身占满剩余区域滚动。 */}
         <div
           ref={bodyScrollRef}
-          className="gn-scroll min-h-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4"
+          className={
+            active.kind === 'subagent'
+              ? 'min-h-0 flex-1 overflow-hidden'
+              : 'gn-scroll min-h-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4'
+          }
         >
-          <ViewerBody entry={active} />
+          <ViewerBody entry={active} now={now} />
         </div>
       </div>
     </div>
@@ -244,7 +303,73 @@ function viewerChrome(e: ScrollEntry): { title: string; subtitle?: string } {
   return { title: e.kind }
 }
 
-function ViewerBody({ entry }: { entry: ScrollEntry }) {
+/**
+ * 子代理标题栏（TUI 全屏边框视图 title bar）：状态图标（spinner / ✓ / ✗）
+ * + label（Agent running / done / cancelled / failed）+ 加粗描述 + model
+ * （persona · role · model）+ 活动后缀 · elapsed。活动后缀用 TUI dashboard
+ * 的 “Running: {last tool}”，无工具时退回 wire 的 detail 摘要。
+ */
+function subagentChrome(
+  e: Extract<ScrollEntry, { kind: 'subagent' }>,
+  now: number,
+  spinnerFrame: number,
+): { icon: ReactNode; label: string; metaLine: string } {
+  const running = !!e.running
+  const label = running
+    ? 'Agent running'
+    : e.status === 'completed'
+      ? 'Agent done'
+      : e.status === 'cancelled'
+        ? 'Agent cancelled'
+        : 'Agent failed'
+  const icon = running ? (
+    <span className="shrink-0 text-gn-accent-running" aria-hidden>
+      {SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length]}
+    </span>
+  ) : (
+    <span
+      className={`shrink-0 ${
+        e.status === 'completed'
+          ? 'text-gn-green'
+          : e.status === 'cancelled'
+            ? 'text-gn-yellow'
+            : 'text-gn-red'
+      }`}
+      aria-hidden
+    >
+      {e.status === 'completed' ? Glyphs.checkMark : Glyphs.ballotX}
+    </span>
+  )
+  const meta = subagentMeta(e.persona, e.role, e.model).trim()
+  const elapsedMs = running
+    ? e.startedAt != null
+      ? now - e.startedAt
+      : e.durationMs
+    : e.durationMs
+  const elapsed = elapsedMs != null ? formatTurnDuration(elapsedMs) : undefined
+  const activity =
+    running && e.toolsUsed?.length
+      ? `Running: ${e.toolsUsed[e.toolsUsed.length - 1]}`
+      : running && e.detail
+        ? e.detail
+        : undefined
+  const metaLine = [
+    meta || undefined,
+    activity,
+    elapsed != null ? `elapsed ${elapsed}` : undefined,
+  ]
+    .filter((s): s is string => !!s)
+    .join(' · ')
+  return { icon, label, metaLine }
+}
+
+function ViewerBody({
+  entry,
+  now,
+}: {
+  entry: ScrollEntry
+  now: number
+}) {
   if (entry.kind === 'tool' && entry.raw) {
     return (
       <ToolDetail
@@ -366,7 +491,7 @@ function ViewerBody({ entry }: { entry: ScrollEntry }) {
     )
   }
   if (entry.kind === 'subagent') {
-    return <SubagentView entry={entry} />
+    return <SubagentView entry={entry} now={now} />
   }
   return (
     <pre className="whitespace-pre-wrap font-mono text-[12px] text-gn-muted">
@@ -395,15 +520,20 @@ function useLiveTick(active: boolean): number {
  * - context mini gauge: context_usage_pct + tokens_used /
  *   context_window_tokens (dashboard row context_pct)
  * - live turns / tools / tokens / error_count (SubagentProgress ticks)
- * - tools_used list (dashboard "Running: {last tool}" source)
+ * - 标题栏（status icon + label + 描述 + model + 活动后缀 · elapsed）在
+ *   BlockViewer 的 header 里（subagentChrome）；tools_used 芯片不展示
+ *   （冗余，活动后缀已含最近工具）
+ *
+ * 布局：状态区（gauge/统计/error）shrink-0 置顶，时间线 flex-1 占满
+ * 剩余区域并自行滚动——移动端全屏弹窗下时间线撑满视口剩余高度。
  */
 function SubagentView({
   entry,
+  now,
 }: {
   entry: Extract<ScrollEntry, { kind: 'subagent' }>
+  now: number
 }) {
-  const now = useLiveTick(!!entry.running)
-  const meta = subagentMeta(entry.persona, entry.role, entry.model)
   const subagentViews = useChatStore((s) => s.subagentViews)
   // 迷你 scrollback 按 child_session_id 取数（宿主转发的子代理会话事件流）。
   const childSid = entry.childSessionId
@@ -430,12 +560,6 @@ function SubagentView({
           ? 'text-gn-yellow'
           : 'text-gn-cyan'
 
-  const live =
-    entry.turns != null ||
-    entry.toolCalls != null ||
-    entry.tokensUsed != null ||
-    entry.errorCount != null ||
-    entry.toolsUsed?.length
   const stats = [
     entry.subagentType ? `type · ${entry.subagentType}` : undefined,
     entry.turns != null ? `turns · ${entry.turns}` : undefined,
@@ -445,15 +569,14 @@ function SubagentView({
       ? `errors · ${entry.errorCount}`
       : undefined,
     elapsedMs != null ? `elapsed · ${formatTurnDuration(elapsedMs)}` : undefined,
+    entry.subagentId ? `id · ${entry.subagentId}` : undefined,
   ].filter((s): s is string => !!s)
 
   return (
-    <div className="space-y-2">
-      <div className="font-mono text-[12px] text-gn-fg">{entry.title}</div>
-      {meta && <div className="font-mono text-[12px] text-gn-muted">{meta}</div>}
-
-      {/* 状态区置顶：running 的 gauge/统计/tools_used + error + 结束态统计 */}
-      <div className="space-y-1.5">
+    <div className="flex h-full min-h-0 flex-col">
+      {/* 状态区（标题栏之下，不随时间线滚动）：gauge + 统计 + error。
+          id 脚注并入统计行，不再单独占行。 */}
+      <div className="shrink-0 space-y-1.5 px-3 pt-3 sm:px-4">
         {entry.running && (
           <>
             {/* Live context gauge — hidden until the host reports a window. */}
@@ -478,23 +601,10 @@ function SubagentView({
                 </span>
               </div>
             )}
-            {live && stats.length > 0 && (
+            {stats.length > 0 && (
               <div className="flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[11px] tabular-nums text-gn-gutter">
                 {stats.map((s) => (
                   <span key={s}>{s}</span>
-                ))}
-              </div>
-            )}
-            {entry.toolsUsed && entry.toolsUsed.length > 0 && (
-              <div className="flex flex-wrap items-center gap-x-1.5 font-mono text-[11px] text-gn-gutter">
-                <span className="uppercase tracking-wide text-[10px]">tools</span>
-                {entry.toolsUsed.map((t) => (
-                  <span
-                    key={t}
-                    className="rounded border border-gn-prompt-border/60 px-1.5 py-0.5 text-gn-muted"
-                  >
-                    {t}
-                  </span>
                 ))}
               </div>
             )}
@@ -512,7 +622,7 @@ function SubagentView({
         )}
       </div>
 
-      {/* 活动时间线（scrollback）置底：状态区之后、id 脚注之前 */}
+      {/* 活动时间线占满剩余区域（flex-1 自行滚动），状态区之后。 */}
       {childSid && (
         <SubagentTimeline
           childSid={childSid}
@@ -521,12 +631,6 @@ function SubagentView({
           now={now}
           prompt={entry.title && entry.title !== entry.subagentId ? entry.title : ''}
         />
-      )}
-
-      {entry.subagentId && (
-        <div className="font-mono text-[11px] text-gn-gutter">
-          id · {entry.subagentId}
-        </div>
       )}
     </div>
   )
@@ -561,6 +665,10 @@ function SubagentTimeline({
   prompt: string
 }) {
   const fetchSubagentView = useChatStore((s) => s.fetchSubagentView)
+  const loadMoreSubagentView = useChatStore((s) => s.loadMoreSubagentView)
+  const view = useChatStore((s) =>
+    childSid ? s.subagentViews[childSid] : undefined,
+  )
   const scrollRef = useRef<HTMLDivElement>(null)
   // 迷你视图的折叠/选中全部局部化：主 scrollback 的 expandedGroups /
   // selectedId 不接（mini 条目不在主 entries 里）。
@@ -578,12 +686,112 @@ function SubagentTimeline({
     if (items.length === 0) void fetchSubagentView(childSid)
   }, [childSid, items, fetchSubagentView])
 
-  // running 时自动滚到底（与 bg_task 的 stick-to-bottom 同款）。
+  // 上滑分页门控：仅回放填充的视图（loadedCount > 0）提供；宿主给了
+  // totalCount 时严格比较，否则拉完一页即停。
+  const loadedCount = view?.loadedCount ?? 0
+  const hasMore =
+    loadedCount > 0 &&
+    (view?.totalCount != null ? loadedCount < view.totalCount : false)
+  const loadingMore = view?.fetchState === 'loading' && items.length > 0
+
+  // 内容不满视口（无滚动条）且有更早分页时自动补页——否则 onScroll 永远
+  // 不触发，上滑分页无法启动。成功继续补（直到出现滚动条或拉尽），失败
+  // 停止（避免无滚动条时无限重试）。纯 live 视图 hasMore=false 不受影响。
+  const autoFillStopped = useRef(false)
   useEffect(() => {
-    if (!running) return
+    autoFillStopped.current = false
+  }, [childSid])
+  useEffect(() => {
+    if (autoFillStopped.current) return
+    if (!hasMore || loadingMore) return
+    const el = scrollRef.current
+    if (!el || el.scrollHeight > el.clientHeight + 1) return
+    void loadMoreSubagentView(childSid).then((ok) => {
+      autoFillStopped.current = !ok
+    })
+  }, [hasMore, loadingMore, items, childSid, loadMoreSubagentView])
+
+  // 用户主动上滑 → 暂停自动滚底（标准 stick-to-bottom 语义）；滚回
+  // 底部附近自动恢复。流式输出期间上滑浏览历史不再被拉回。
+  const [userScrolledUp, setUserScrolledUp] = useState(false)
+  // 流式条目的正文自滚交给外层容器统一滚底：mini 传一个恒空 ref
+  // （streamBodyRef 存在即跳过 EntryView 的条目自滚），body 内上滑
+  // 不会被"自滚拉回"。
+  const miniStreamBodyRef = useRef<HTMLDivElement | null>(null)
+
+  // ── TUI sticky prompt header（主 scrollback sticky.rs 同款）────────
+  // 上滑浏览历史时，把「顶部已滚出视口的最后一条 user 消息」钉在滚动
+  // 区顶部（随滚动切换），滚回顶部（scrollTop 0）不钉。
+  const userById = useMemo(() => {
+    const m = new Map<string, ScrollEntry>()
+    for (const e of items) if (e.kind === 'user') m.set(e.id, e)
+    return m
+  }, [items])
+  const userEls = useRef<Map<string, HTMLElement>>(new Map())
+  const [pinnedId, setPinnedId] = useState<string | null>(null)
+  const updatePinned = useCallback(() => {
+    const box = scrollRef.current
+    const els = userEls.current
+    if (!box || els.size === 0) {
+      setPinnedId(null)
+      return
+    }
+    let pinned: string | null = null
+    if (box.scrollTop > 0) {
+      const boxTop = box.getBoundingClientRect().top
+      for (const [id, el] of els) {
+        // 条目顶部在容器坐标系（滚动无关）；最后一条 top < scrollTop 的被钉。
+        const top = el.getBoundingClientRect().top - boxTop + box.scrollTop
+        if (top < box.scrollTop) pinned = id
+        else break // 条目按文档序排列
+      }
+    }
+    setPinnedId(pinned)
+  }, [])
+  // 缓存 user 条目 DOM 元素；条目/折叠布局变化时重算钉选。
+  useEffect(() => {
+    const box = scrollRef.current
+    const map = new Map<string, HTMLElement>()
+    if (box) {
+      for (const id of userById.keys()) {
+        const el = box.querySelector(`[data-entry-id="${id}"]`)
+        if (el instanceof HTMLElement) map.set(id, el)
+      }
+    }
+    userEls.current = map
+    updatePinned()
+  }, [userById, updatePinned, folds])
+  const pinnedUser = pinnedId ? (userById.get(pinnedId) ?? null) : null
+
+  // 上滑到顶 → 加载更早的一页；加载前记住距底部距离，prepend 后恢复
+  // 视口位置（内容插在顶部，距底距离不变 = 视觉位置稳定）。
+  const onScroll = () => {
+    const el = scrollRef.current
+    if (!el) return
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+    if (nearBottom && userScrolledUp) setUserScrolledUp(false)
+    else if (!nearBottom && !userScrolledUp) setUserScrolledUp(true)
+    updatePinned()
+    if (el.scrollTop > 8 || loadingMore || !hasMore) return
+    const distFromBottom = el.scrollHeight - el.scrollTop
+    void loadMoreSubagentView(childSid).then(() => {
+      requestAnimationFrame(() => {
+        const el2 = scrollRef.current
+        if (el2) el2.scrollTop = el2.scrollHeight - distFromBottom
+      })
+    })
+  }
+
+  // running 时自动滚到底（与 bg_task 的 stick-to-bottom 同款）；用户
+  // 主动上滑（userScrolledUp）期间暂停，滚回底部恢复。流式思考正文
+  // 由这里统一滚底（EntryView 的条目自滚已被 streamBodyRef 关闭）。
+  useEffect(() => {
+    if (!running || userScrolledUp) return
+    const bodyEl = miniStreamBodyRef.current
+    if (bodyEl) bodyEl.scrollTop = bodyEl.scrollHeight
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
-  }, [running, items])
+  }, [running, items, userScrolledUp])
 
   // 主 scrollback 同款分组管线：scanGroups → projectDisplayRows。
   const { rows, spans } = useMemo(() => {
@@ -593,21 +801,34 @@ function SubagentTimeline({
 
   // 折叠覆盖（按条目 id）：工具/用户折叠与思考 displayMode 本地化——
   // 不写回 store，渲染时以 patch 合并进条目（EntryView 的 patch 语义）。
-  // patch 对象按 (id, kind, value) 缓存，保证引用稳定——EntryView 的
-  // memo 比较（entryViewEqual 的 patch === patch）才不会失效。
+  // 思考块不默认折叠：流式思考展开正文、收口后折叠（与主 live scrollback
+  // 完全一致）；用户点击只切换已收口思考的展开态。
+  // 兜底：子代理已结束（running:false）但视图里仍有 streaming 思考条目
+  // （回放分页截断 / 终态事件缺失）→ 展示为已收口（"Thought" + 折叠）。
+  // patch 对象按 (id, kind, value, running, streaming) 缓存，保证引用
+  // 稳定——EntryView 的 memo 比较（entryViewEqual 的 patch === patch）
+  // 才不会失效。
   const foldPatchCache = useRef(new Map<string, Partial<ScrollEntry>>())
   const foldPatch = (e: ScrollEntry): Partial<ScrollEntry> | undefined => {
     const v = folds.get(e.id)
-    if (v == null) return undefined
+    // 未折叠过、也无已结束兜底需要 → 不 patch（走条目自身状态）。
+    if (v == null && !(e.kind === 'thought' && !running && e.streaming)) {
+      return undefined
+    }
     const cache = foldPatchCache.current
-    const key = `${e.id}:${e.kind}:${String(v)}`
+    const key = `${e.id}:${e.kind}:${String(v)}:${String(running)}:${'streaming' in e ? String(e.streaming) : 'none'}`
     let p = cache.get(key)
     if (!p) {
-      p =
-        e.kind === 'thought'
-          ? ({ displayMode: v ? 'expanded' : 'collapsed' } as Partial<ScrollEntry>)
-          : ({ expanded: v } as Partial<ScrollEntry>)
-      cache.set(key, p)
+      if (e.kind === 'thought') {
+        p = {
+          displayMode: v ? 'expanded' : 'collapsed',
+          ...(!running && e.streaming ? { streaming: false } : {}),
+        } as Partial<ScrollEntry>
+        cache.set(key, p)
+      } else if (v != null) {
+        p = { expanded: v } as Partial<ScrollEntry>
+        cache.set(key, p)
+      }
     }
     return p
   }
@@ -647,20 +868,27 @@ function SubagentTimeline({
   )
 
   return (
-    <div className="space-y-1">
-      <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-gn-gutter">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 items-center gap-2 px-3 pt-3 text-[10px] uppercase tracking-wider text-gn-gutter sm:px-4">
         <span>activity</span>
         {running && (
           <span className="normal-case tracking-normal text-gn-accent-running">live</span>
         )}
+        {loadingMore && (
+          <span className="normal-case tracking-normal text-gn-muted">
+            加载更早…
+          </span>
+        )}
       </div>
-      {/* 平铺无边框盒（主 scrollback 同款）：滚动容器只保留 max-h / overflow 与滚动条样式 */}
+      {/* 平铺无边框盒（主 scrollback 同款）：滚动容器占满弹窗剩余区域
+          （flex-1），自行滚动——不再固定 35vh。上滑到顶触发更早分页。 */}
       <div
         ref={scrollRef}
-        className="gn-scroll max-h-[35vh] overflow-y-auto"
+        onScroll={onScroll}
+        className="gn-scroll min-h-0 flex-1 overflow-y-auto pb-2"
       >
         {items.length === 0 ? (
-          <div className="space-y-1.5">
+          <div className="space-y-1.5 px-3 sm:px-4">
             {promptEntry && (
               <EntryView
                 e={promptEntry}
@@ -678,6 +906,28 @@ function SubagentTimeline({
           </div>
         ) : (
           <div className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} py-1`}>
+            {/* TUI sticky prompt header（主 scrollback sticky.rs 同款）：与
+                rows 同父级才能获得整列高度作为 sticky 滚动范围——上滑时把
+                已滚出顶部的最后一条 user 消息钉在滚动区顶部（随滚动切换）。 */}
+            {pinnedUser?.kind === 'user' && (
+              <div
+                className="sticky top-0 z-10 mb-1 border-b border-gn-prompt-border/40 font-ui text-[12.5px] leading-[1.35] text-gn-fg select-none"
+                style={{ backgroundColor: 'var(--color-gn-bg-highlight)' }}
+              >
+                <div className="flex items-start gap-1.5 px-2.5 py-[7px]">
+                  <span
+                    className="mt-[1.5px] shrink-0"
+                    style={{ color: 'var(--color-gn-accent-user)' }}
+                    aria-hidden
+                  >
+                    {Glyphs.promptArrow}
+                  </span>
+                  <div className="min-w-0 flex-1 whitespace-pre-wrap break-words">
+                    {collapseUserText(pinnedUser.text, USER_COLLAPSED_MAX_LINES).text}
+                  </div>
+                </div>
+              </div>
+            )}
             {rows.map((row, i) => {
               const dense = isDensePackableRow(row)
               const densePrev = i > 0 && isDensePackableRow(rows[i - 1])
@@ -713,6 +963,7 @@ function SubagentTimeline({
                   denseNext={denseNext}
                   actions={actions}
                   patch={foldPatch(e)}
+                  streamBodyRef={miniStreamBodyRef}
                 />
               )
             })}

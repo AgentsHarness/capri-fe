@@ -1011,16 +1011,9 @@ type ChatState = {
   /** Turn start (epoch ms) for the TUI "Worked for Xs" completion marker. */
   turnStartedAt?: number
   /**
-   * 进行中的思考段（一次连续的 thought 流）——首个 thought chunk 开始，
-   * 回答（chunk）/ tool_call / 回合终态 / 用户输入收口。速率只在
-   * thinking 期间计算；回答流与工具执行不更新数字（回答开始即收口）。
-   * 宿主不提供逐段 token 数据（usage 只在回合终态），按流式字符估算段内
-   * 输出速度。
-   */
-  genSegment?: { startTs: number; chars: number; cjkChars: number }
-  /**
-   * 最近一次思考段的平均输出速度（估算 tok/s）——thinking 期间为实时
-   * 值，收口后为最终值；新一轮发送时清空。回答流期间不更新。
+   * 生成输出速率（估算 tok/s）——host 流式期间推送 gen_rate 事件实时更新；
+   * 工具执行/turn 结束推送冻结终值；新一轮发送清空（host 在
+   * user_message_chunk 时静默复位，不发事件）。
    */
   genRate?: number
   /**
@@ -1475,6 +1468,14 @@ type ChatState = {
    * idle with an empty timeline.
    */
   fetchSubagentView: (childSessionId: string) => Promise<void>
+  /**
+   * 上滑加载子代理时间线更早的一页（负 offset 分页，主 scrollback
+   * loadMoreHistory 同款）：新页 prepend 到时间线前面，跨页截断的
+   * assistant/thought 缝合。仅回放填充的视图（loadedCount > 0）提供——
+   * 纯 live 捕获的视图历史从 spawn 起已完整，回放会与 live 重复。
+   * 返回 true = 加载成功（可能还有更多），false = 无更多/失败。
+   */
+  loadMoreSubagentView: (childSessionId: string) => Promise<boolean>
   toggleGroupExpansion: (anchorId: string) => void
   /** Open / close the /session-info modal. */
   openSessionInfo: () => void
@@ -1932,7 +1933,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const host = get().hosts.find((h) => h.hostId === hostId)
     clearSuppressedTools()
     clearStreamBuf()
-    rearmGenRate()
     set({
       selectedHostId: hostId,
       hostId,
@@ -2078,9 +2078,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
     clearSuppressedTools()
     // 流式缓冲丢弃：换会话后旧流的文本绝不能落进新 scrollback。
     clearStreamBuf()
-    // 重放门控复位：加载会话本身不是重放（重放只发生在在途回合的
-    // live 重流，由 continueSession 的 busy 分支单独 disarm）。
-    rearmGenRate()
     set({
       historyOpen: false,
       historyLoading: true,
@@ -2137,7 +2134,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       todos: undefined,
       turnStartedAt: undefined,
       genRate: undefined,
-      genSegment: undefined,
       scheduledTasks: [],
     })
     try {
@@ -2396,8 +2392,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
           // status text instead of the generic host wait.
           const hasLocalStreaming =
             get().openThoughtId != null || get().openAssistantId != null
-          // 重放门控：同上——加载在途回合后的批量重流不算 live 速率。
-          if (!hasLocalStreaming) disarmGenRateForReplay()
           set({
             historyLoading: false,
             conn: 'busy',
@@ -2605,17 +2599,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
           // host to sync the in-flight turn.
           const hasLocalStreaming =
             get().openThoughtId != null || get().openAssistantId != null
-          // 重放门控：本端无本地流式状态（新页面/他端回合）时，紧接的
-          // 重流是该在途回合的重放内容——第一个思考块不显示速率。
-          if (!hasLocalStreaming) disarmGenRateForReplay()
           set({
             conn: 'busy',
             statusText: hasLocalStreaming ? get().statusText : 'Waiting for host…',
             awaitingNext: false,
             turnStartedAt: busyTurn,
-            ...(newTurn
-              ? { genRate: undefined, genSegment: undefined }
-              : {}),
+            ...(newTurn ? { genRate: undefined } : {}),
             error: undefined,
             statusWarning: undefined,
           })
@@ -2685,9 +2674,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           statusText: hasLocalStreaming ? s.statusText : 'Waiting for response…',
           awaitingNext: false,
           turnStartedAt,
-          ...(newTurn
-            ? { genRate: undefined, genSegment: undefined }
-            : {}),
+          ...(newTurn ? { genRate: undefined } : {}),
           // A turn starting means the system recovered — clear stale
           // error/status banners.
           error: undefined,
@@ -2697,8 +2684,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
       case 'user_message':
       case 'user_chunk': {
-        // 用户输入 = 生成段收口（回放时无进行中的段，空操作）。
-        sealGenSegment(set, get)
         // Live echo (user_chunk) or history replay (user_message). Classify
         // like TUI handle_user_message: cron → UserPromptBlock::cron, other
         // system-reminder / auto-wake echoes → hidden, else normal prompt.
@@ -2844,10 +2829,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       case 'chunk': {
         const text = ev.text || ''
         const ts = ev.ts ?? Date.now()
-        // 思考→回答边界：thinking 结束即收口思考段（冻结速率）。速率只
-        // 在 thinking 期间计算与更新（thought 流）；回答流不累计字符、
-        // 不更新数字——回答开始即把速率定格在思考段的最终值。
-        if (get().openThoughtId != null) sealGenSegment(set, get)
         // seal open thought when assistant starts speaking
         const sealed = sealThought(get())
         const { openAssistantId, entries } = sealed
@@ -2922,13 +2903,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // streaming; ALL in-flight text lives in liveStream (same as
         // assistant first chunk). UI merges with mergeLiveText(e.text, live).
         if (!openThoughtId || !entries.some((e) => e.id === openThoughtId && e.kind === 'thought')) {
-          // 重放门控（genRateReplayChunk）：重放 dump 的块不开始段、
-          // 不显示速率；窗口内出现 ≥ QUIET_MS 的间隔即恢复——同一思考
-          // 块内的 live 续流也能正确开始段。
-          if (genRateReplayChunk()) {
-            beginGenSegment(set, get)
-            accumulateGenSegmentChars(text)
-          }
           const id = nid()
           openThoughtId = id
           entries = [
@@ -2965,10 +2939,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           assertStreamInvariants(get(), 'thought:first')
           break
         }
-        // 已有进行中的思考块：思考段继续计时（重放窗口内无段，此处
-        // 空操作；窗口内到达间隔 ≥ QUIET_MS 时恢复实时并开始段），
-        // 文本进合并缓冲，rAF 统一落库（每帧至多一次 set()——移动端思考
-        // 流渲染卡顿的主因）。
+        // 已有进行中的思考块：文本进合并缓冲，rAF 统一落库（每帧至多一次
+        // set()——移动端思考流渲染卡顿的主因）。
         if (sealedForeignLive) {
           // Apply the sealed foreign stream + drop the stale liveStream
           // pointer so UI does not double-render (entry already has text).
@@ -2978,19 +2950,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
             liveStream: null,
           })
         }
-        if (genRateReplayChunk()) {
-          beginGenSegment(set, get)
-          accumulateGenSegmentChars(text)
-        }
         appendStreamBuf(set, get, 'thought', text, ev.elapsedMs)
         break
       }
       case 'tool_call': {
-        // 工具调用 = 生成段收口：回应的连续输出到此为止，工具执行
-        // 时间不计入速率。
-        sealGenSegment(set, get)
         // Seal assistant stream (liveStream → entry + streaming:false) so
-        // data-streaming / content-visibility drop immediately; then seal
+        // the streaming flag drops immediately; then seal
         // any open thought. Do not leave assistant streaming:true until
         // turn-end settleTurnEntries.
         const sealedAsst = sealAssistantStream(get())
@@ -3155,6 +3120,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
         })
         break
       }
+      case 'gen_rate': {
+        // 多会话广播（host withSid 约定）：非当前会话的 gen_rate 直接忽略。
+        if (ev.sessionId && ev.sessionId !== get().sessionId) break
+        // 生成输出速率（估算 tok/s）由 host 推送：流式期间 ≥250ms 一条
+        // live 值，工具执行/turn 结束发冻结值；user_message_chunk 时
+        // host 静默复位不发事件（FE 在 send 时清空）。
+        if (ev.rate == null) break
+        set({ genRate: ev.rate })
+        break
+      }
       case 'usage':
         // 多会话广播（host withSid 约定）：非当前会话的 usage 直接忽略。
         if (ev.sessionId && ev.sessionId !== get().sessionId) break
@@ -3317,8 +3292,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       case 'cancelled': {
         // 多会话广播（host withSid 约定）：非当前会话的 cancelled 直接忽略。
         if (ev.sessionId && ev.sessionId !== get().sessionId) break
-        // 取消 = 生成段收口（已生成的部分仍可给出速率）。
-        sealGenSegment(set, get)
         // TUI TurnCancelled marker ("Turn cancelled by user in 2.0s.").
         // Idempotent: prompt_complete may have already finalized the turn.
         const turnStart = get().turnStartedAt
@@ -3383,8 +3356,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       case 'error': {
         // 多会话广播（host withSid 约定）：非当前会话的 error 直接忽略。
         if (ev.sessionId && ev.sessionId !== get().sessionId) break
-        // 回合失败 = 生成段收口（已生成的部分仍可给出速率）。
-        sealGenSegment(set, get)
         // Host withSid 约定：带 sessionId 的 error 是 agent 回合失败——
         // host 只是透传 agent 的错误（如模型 API 400 "Internal Error"），
         // host 本身没坏。渲染成 scrollback 错误行即可，不翻转连接状态、
@@ -4360,8 +4331,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // `done`; guarded on conn busy so a stale duplicate after `done`
         // (or during an idle gap) is a no-op.
         if (get().conn !== 'busy') break
-        // 回合终态 = 生成段收口（若仍在流式输出）。
-        sealGenSegment(set, get)
         const turnStart = get().turnStartedAt
         const marker = turnMarker(turnStart != null ? Date.now() - turnStart : undefined)
         // Turn end: merge live text into its entry before the settle.
@@ -4587,8 +4556,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
   send: async (text: string, blocks?: ContentBlock[], opts?: { fromShell?: boolean }) => {
     const t = text.trim()
     if (!t) return
-    // 重放门控复位：用户主动发送 = 新一轮真正 live 的输出，速率立即可显示。
-    rearmGenRate()
     // 流式缓冲先落库：上一回合的思考文本完整后再收口/追加用户行。
     flushStreamBuf(set, get)
     // Seal any leftover thought from prior turn, then append the user row.
@@ -4624,9 +4591,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // chips are retired (TUI clears follow_ups at turn start).
       followUps: undefined,
       followUpsResponseId: undefined,
-      // 新回合开始：上一回合的生成段速率失效。
+      // 新回合开始：上一回合的速率数字失效（host 在 user_message_chunk
+      // 时静默复位，不发事件）。
       genRate: undefined,
-      genSegment: undefined,
     })
     try {
       // Optional image blocks (Composer image chips): the caller passes
@@ -5483,7 +5450,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
     get().stopTopTaskPolling()
     clearSuppressedTools()
     clearStreamBuf()
-    rearmGenRate()
     // A new session inherits the current permission mode (TUI parity:
     // SessionFlags ride session/new `_meta`; the agent never persists
     // ask/auto/always-approve). Capture before the reset — yoloMode wins
@@ -5556,7 +5522,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       usage: undefined,
       turnStartedAt: undefined,
       genRate: undefined,
-      genSegment: undefined,
       scheduledTasks: [],
     })
     // New session lands in the CURRENT conversation's workspace: inherit
@@ -5875,6 +5840,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const ev = envelopeToEvent(env)
         if (ev) applySubagentViewEvent(set, childSessionId, ev)
       }
+      // 记录分页游标（包络条数——与宿主负 offset 语义一致，过滤掉的非
+      // scrollback 事件不占游标位）：回放填充的视图（loadedCount > 0）
+      // 才支持上滑分页。
+      const total = r.totalCount ?? (r.updates?.length ?? 0)
+      set((st) => {
+        const v = st.subagentViews[childSessionId]
+        if (!v) return {}
+        return {
+          subagentViews: {
+            ...st.subagentViews,
+            [childSessionId]: {
+              ...v,
+              fetchState: 'loaded',
+              loadedCount: r.updates?.length ?? 0,
+              totalCount: total,
+            },
+          },
+        }
+      })
     } catch {
       // 拉取失败（离线 / 宿主无该子代理会话）——保持空视图，结束状态置
       // loaded 防止弹窗打开期间的重试风暴。
@@ -5889,6 +5873,105 @@ export const useChatStore = create<ChatState>((set, get) => ({
           },
         }
       })
+    }
+  },
+
+  loadMoreSubagentView: async (childSessionId): Promise<boolean> => {
+    const s = get()
+    const view = s.subagentViews[childSessionId]
+    if (!view || view.fetchState === 'loading') return false
+    const loaded = view.loadedCount ?? 0
+    // 只有回放填充的视图提供上滑（纯 live 捕获历史已完整，回放会重复）。
+    const hasMore =
+      loaded > 0 && (view.totalCount != null ? loaded < view.totalCount : false)
+    if (!hasMore) return false
+    const cwd = s.cwd
+    if (!cwd) return false
+    set({
+      subagentViews: {
+        ...s.subagentViews,
+        [childSessionId]: { ...view, fetchState: 'loading' },
+      },
+    })
+    try {
+      // 分页游标 = 已消耗的包络条数（loadedCount，宿主负 offset 语义）：
+      // 子代理事件流里大量 usage/status 等非 scrollback 包络被过滤，条目
+      // 数 ≠ 包络数，用条目数算 offset 会与已加载页重叠。
+      const r = await transport.loadSessionHistory(childSessionId, cwd, {
+        offset: -(loaded + SUBAGENT_VIEW_PAGE_SIZE),
+        limit: SUBAGENT_VIEW_PAGE_SIZE,
+      })
+      // 回放前记住旧时间线起点：回放 append 的新（更早）页随后移到前面。
+      const split = get().subagentViews[childSessionId]?.items.length ?? 0
+      for (const env of r.updates ?? []) {
+        const envParams = (env as { params?: { sessionId?: unknown } } | null)
+          ?.params
+        const envSid = envParams?.sessionId
+        if (typeof envSid === 'string' && envSid !== childSessionId) continue
+        const ev = envelopeToEvent(env)
+        if (ev) applySubagentViewEvent(set, childSessionId, ev)
+      }
+      const after = get().subagentViews[childSessionId]
+      if (!after) return false
+      let oldItems = after.items.slice(0, split)
+      const newItems = after.items.slice(split)
+      // 跨页截断缝合：assistant / thought 各半拼回一条（主 scrollback
+      // loadMoreHistory 同款）；历史数据缝合后收口，不再停留流式态。
+      const lastNew = newItems[newItems.length - 1]
+      const firstOld = oldItems[0]
+      if (lastNew?.kind === 'assistant' && firstOld?.kind === 'assistant') {
+        newItems[newItems.length - 1] = {
+          ...lastNew,
+          text: lastNew.text + firstOld.text,
+          streaming: false,
+        }
+        oldItems = oldItems.slice(1)
+      } else if (lastNew?.kind === 'thought' && firstOld?.kind === 'thought') {
+        newItems[newItems.length - 1] = {
+          ...lastNew,
+          text: lastNew.text + firstOld.text,
+          streaming: false,
+          displayMode: 'collapsed' as const,
+          finishedAt: Date.now(),
+        }
+        oldItems = oldItems.slice(1)
+      }
+      // 更早的页在前；保留最新 SUBAGENT_VIEW_MAX_ITEMS 条（丢弃最旧）。
+      const merged = [...newItems, ...oldItems]
+      const capped =
+        merged.length > SUBAGENT_VIEW_MAX_ITEMS
+          ? merged.slice(-SUBAGENT_VIEW_MAX_ITEMS)
+          : merged
+      const fetched = r.updates?.length ?? 0
+      const total = r.totalCount ?? view.totalCount ?? loaded + fetched
+      const loadedNew = fetched === 0 ? total : Math.min(loaded + fetched, total)
+      set({
+        subagentViews: {
+          ...s.subagentViews,
+          [childSessionId]: {
+            ...after,
+            items: capped,
+            fetchState: 'loaded',
+            loadedCount: loadedNew,
+            totalCount: total,
+          },
+        },
+      })
+      return true
+    } catch {
+      // 加载失败静默：恢复 loaded，下次上滑/自动补页重试（返回 false 让
+      // 自动补页停止，避免无滚动条时无限重试）。
+      set((st) => {
+        const v = st.subagentViews[childSessionId]
+        if (!v) return {}
+        return {
+          subagentViews: {
+            ...st.subagentViews,
+            [childSessionId]: { ...v, fetchState: 'loaded' },
+          },
+        }
+      })
+      return false
     }
   },
 }))
@@ -5991,10 +6074,6 @@ let streamBufElapsedMs: number | undefined
 /** DEV: chunks coalesced into the current streamBuf frame (perf.mark detail). */
 let streamBufChunkCount = 0
 
-/** 尚未落库的思考段字符统计（与文本一起在 flush 时发布实时速率）。 */
-let genSegPendingChars = 0
-let genSegPendingCjk = 0
-
 /** 追加一段流式文本到合并缓冲；首次追加时调度 rAF flush。 */
 function appendStreamBuf(
   set: SetState,
@@ -6071,30 +6150,8 @@ function flushStreamBuf(set: SetState, get: () => ChatState): void {
       !openThoughtId ||
       !s.entries.some((e) => e.id === openThoughtId && e.kind === 'thought')
     ) {
-      // 已收口/被清除：丢弃缓冲文本与未发布字符统计。
-      genSegPendingChars = 0
-      genSegPendingCjk = 0
+      // 已收口/被清除：丢弃缓冲文本。
       return
-    }
-    // 思考段字符 + 实时速率与文本同一 set() 落库（一次渲染）。
-    let segPatch: Partial<ChatState> = {}
-    const seg = s.genSegment
-    if (seg) {
-      const merged = {
-        ...seg,
-        chars: seg.chars + genSegPendingChars,
-        cjkChars: seg.cjkChars + genSegPendingCjk,
-      }
-      genSegPendingChars = 0
-      genSegPendingCjk = 0
-      const rate = genRateIfPublishable(merged)
-      segPatch = {
-        genSegment: merged,
-        ...(rate != null ? { genRate: rate } : {}),
-      }
-    } else {
-      genSegPendingChars = 0
-      genSegPendingCjk = 0
     }
     set({
       conn: 'busy',
@@ -6102,7 +6159,6 @@ function flushStreamBuf(set: SetState, get: () => ChatState): void {
       awaitingNext: false,
       openThoughtId,
       openAssistantId: undefined,
-      ...segPatch,
       // 落库目标 = liveStream（perf 合并）：entries 流式期间引用不变，
       // 只有正在流的行经 liveText 重渲染——分组/折叠/memo 全跳过。
       liveStream: {
@@ -6146,148 +6202,10 @@ function clearStreamBuf(): void {
   streamBufKind = null
   streamBufElapsedMs = undefined
   streamBufChunkCount = 0
-  genSegPendingChars = 0
-  genSegPendingCjk = 0
   if (streamBufRaf != null) {
     cancelAnimationFrame(streamBufRaf)
     streamBufRaf = null
   }
-}
-
-// ── 思考段输出速率（按流式字符估算）────────────────────────────────
-// 宿主不提供逐段 token 计数（usage 只在回合终态带 outputTokens），所以
-// 按流式文本字符估算：ASCII ≈ 4 字符/token，CJK ≈ 1.5 字符/token。
-// "思考段" = 一次连续的 thought 流：首个 thought chunk 开始，回答
-// （chunk）/ tool_call / 回合终态 / 用户输入收口。速率只在 thinking
-// 期间计算与更新（thought 流实时发布）；回答流与工具执行时间不计入、
-// 不更新数字——回答开始即把速率定格在思考段的最终值。
-//
-// 重放门控：会话加载/重连遇在途回合时，宿主把该回合已生成的内容以
-// live 形态批量重流（continueSession 的 500ms 宽限窗之后、或页面刷新
-// 重连 hello(busy) 之后）——"重放块"的速率没有意义（字符÷极短耗时
-// = 虚高几万）。重放 dump 的 chunk 背靠背到达（毫秒级间隔），而真正
-// live 的续流 chunk 之间有模型生成延迟：因此按到达间隔判定——窗口内
-// 出现 ≥ GEN_RATE_REPLAY_QUIET_MS 的静默即视为重放结束、恢复实时
-// 速率（同一思考块内的 live 续流也能正确显示；旧规则"第二个新思考块
-// 才恢复"在该场景整段不显示速率，且会把多阶段重放误判为 live）。
-// 用户发送新消息 / 新建会话 / 切换会话后立即恢复。
-
-/** 思考段不足此毫秒数不发布速率（段太短、并发事件误配时数字无意义）。 */
-const GEN_SEGMENT_MIN_MS = 500
-
-/**
- * 重放门控状态：false = 处于重放窗口（在途回合批量重流正在/即将到达），
- * 不开始段、不显示速率。窗口内按 chunk 到达间隔判定是否恢复：
- * 重放 dump 的 chunk 背靠背到达，真正 live 的续流与前一 chunk 之间有
- * 模型生成延迟（见 genRateReplayChunk）。用户发送新消息 / 新建会话 /
- * 加载历史时复位为 true。
- */
-let genRateArmed = true
-/** 重放窗口内最近一个 thought chunk 的到达时间；-1 = 窗口尚未播种。 */
-let genRateLastChunkTs = -1
-
-/** 重放窗口内 chunk 间隔超过此毫秒数 → 重放结束，恢复实时速率。
- * 重放 dump 的 chunk 间隔是毫秒级（网络批量投递），live 续流则带模型
- * 生成延迟（思考通常 ≥ 数百 ms/chunk）；800ms 把两者分开。 */
-const GEN_RATE_REPLAY_QUIET_MS = 800
-
-/** 进入重放窗口（在途回合批量重流即将/正在到达）。 */
-function disarmGenRateForReplay(): void {
-  genRateArmed = false
-  genRateLastChunkTs = -1
-}
-
-/** 退出重放窗口（用户主动动作 / 会话切换），速率立即可显示。 */
-function rearmGenRate(): void {
-  genRateArmed = true
-  genRateLastChunkTs = -1
-}
-
-/**
- * 重放窗口内到达一个 thought chunk。返回是否处于实时状态（可开始段 /
- * 累计字符）：
- * - 窗口第一个 chunk 播种窗口（无论与 disarm 间隔多久都视为重放开始）；
- * - 之后与上一 chunk 的间隔 ≥ GEN_RATE_REPLAY_QUIET_MS → 重放结束，
- *   恢复实时（同一思考块内的 live 续流也能正确开始段）。
- * 恢复时清掉残留的字符统计（arm 前同一 rAF 帧内累计的重放尾部字符
- * 不计入实时段）。
- */
-function genRateReplayChunk(): boolean {
-  if (genRateArmed) return true
-  const now = Date.now()
-  if (genRateLastChunkTs < 0) {
-    genRateLastChunkTs = now
-    return false
-  }
-  if (now - genRateLastChunkTs >= GEN_RATE_REPLAY_QUIET_MS) {
-    genRateArmed = true
-    genSegPendingChars = 0
-    genSegPendingCjk = 0
-    return true
-  }
-  genRateLastChunkTs = now
-  return false
-}
-
-/** 思考段速率（tok/s）；时长不足（段太短/事件误配）时不发布。 */
-function genRateIfPublishable(seg: {
-  startTs: number
-  chars: number
-  cjkChars: number
-}): number | undefined {
-  const elapsedMs = Date.now() - seg.startTs
-  if (elapsedMs < GEN_SEGMENT_MIN_MS) return undefined
-  return genSegmentTokens(seg) / (elapsedMs / 1000)
-}
-
-function genSegmentTokens(seg: { chars: number; cjkChars: number }): number {
-  return (seg.chars - seg.cjkChars) / 4 + seg.cjkChars / 1.5
-}
-
-/** 开始一个思考段（已有进行中的段或重放块时为空操作；历史回放中不开始）。 */
-function beginGenSegment(set: SetState, get: () => ChatState): void {
-  const s = get()
-  if (s.historyLoading || s.historyLoadingMore) return
-  if (!genRateArmed) return // 重放块：不开始段
-  if (s.genSegment != null) return
-  set({ genSegment: { startTs: Date.now(), chars: 0, cjkChars: 0 } })
-}
-
-/** 向当前思考段累计流式字符（无 set()——与文本一起在 rAF flush 时发布）。 */
-function accumulateGenSegmentChars(text: string): void {
-  if (!text) return
-  let cjk = 0
-  for (let i = 0; i < text.length; i++) {
-    const c = text.charCodeAt(i)
-    if (
-      (c >= 0x4e00 && c <= 0x9fff) ||
-      (c >= 0x3400 && c <= 0x4dbf) ||
-      (c >= 0xf900 && c <= 0xfaff)
-    ) {
-      cjk++
-    }
-  }
-  genSegPendingChars += text.length
-  genSegPendingCjk += cjk
-}
-
-/** 收口当前思考段：冻结最终速率。无进行中的段时为空操作。 */
-function sealGenSegment(set: SetState, get: () => ChatState): void {
-  const seg = get().genSegment
-  if (!seg) return
-  // 折叠尚未随 flush 发布的字符（单 chunk 思考等未触发 flush 的路径）。
-  const merged = {
-    ...seg,
-    chars: seg.chars + genSegPendingChars,
-    cjkChars: seg.cjkChars + genSegPendingCjk,
-  }
-  genSegPendingChars = 0
-  genSegPendingCjk = 0
-  const rate = genRateIfPublishable(merged)
-  set({
-    ...(rate != null ? { genRate: rate } : {}),
-    genSegment: undefined,
-  })
 }
 
 /**
@@ -6305,8 +6223,6 @@ function finalizeTurn(
   // 流式缓冲先落库：收口前的最后一段思考文本不能丢（兜底定时器路径
   // 不经 handleEvent，这里统一保证）。
   flushStreamBuf(set, get)
-  // 回合收口 = 最后一个生成段收口（若仍在流式输出）。
-  sealGenSegment(set, get)
   const turnStart = get().turnStartedAt
   const failedTurn =
     stopReason === 'error' ||
@@ -7503,8 +7419,7 @@ function flushLiveStream(s: ChatState): ChatState {
  * Seal an open assistant stream mid-turn (tool_call / plan / send interrupt).
  * Merges liveStream text into its entry via flushLiveStream (once — no
  * double-append), clears openAssistantId, and sets streaming:false on the
- * assistant entry so data-streaming / content-visibility exemptions drop
- * immediately. Idempotent when no assistant is open. Does NOT seal
+ * assistant entry. Idempotent when no assistant is open. Does NOT seal
  * thoughts — callers chain sealThought when needed.
  * settleTurnEntries remains the turn-end path (also sets streaming:false;
  * safe / idempotent).
@@ -8024,6 +7939,23 @@ function handleSubagentEvent(
     turns,
     tokensUsed,
   )
+  // 子代理结束兜底：迷你视图里还挂着的流式条目（streaming 思考/回答）
+  // 立即收口——回放分页截断或终态事件缺失时，表头不再停留 "Thinking…"。
+  const childSid = nonBlankStr(fields.child_session_id)
+  if (childSid) {
+    set((s) => {
+      const view = s.subagentViews[childSid]
+      if (!view) return {}
+      const items = sealSubagentStreaming(view.items)
+      if (items === view.items) return {}
+      return {
+        subagentViews: {
+          ...s.subagentViews,
+          [childSid]: { ...view, items },
+        },
+      }
+    })
+  }
 }
 
 /** Non-empty trimmed string, or undefined. */
@@ -8040,8 +7972,45 @@ function nonBlankStr(v: unknown): string | undefined {
 // → EntryShell/AccentRail/Bullet），不再自造一套条目与样式。live 事件
 // 与按需历史回放（fetchSubagentView）共用同一个处理器。
 
-/** 每个子代理视图最多保留的条目数（防内存膨胀，超出丢弃最旧）。 */
-const SUBAGENT_VIEW_MAX_ITEMS = 500
+/**
+ * 每个子代理视图最多保留的条目数（防内存膨胀，超出丢弃最旧），同时作为
+ * 首次回放的拉取页大小。与主 scrollback 的渲染窗口/历史分页统一为 100。
+ */
+const SUBAGENT_VIEW_MAX_ITEMS = 100
+
+/** 上滑分页每页事件条数（与 SUBAGENT_VIEW_MAX_ITEMS 统一，主 scrollback
+ *  HISTORY_PAGE_SIZE 同量级）。 */
+const SUBAGENT_VIEW_PAGE_SIZE = 100
+
+/**
+ * 子代理流式条目即时收口（与主 scrollback sealThought / sealAssistantStream
+ * 对齐）：thought → assistant / tool_call / plan 等推进事件到达时立即收口
+ * 进行中的思考/回答段，而不是等到回合终态 done——否则运行中的每个
+ * thinking 段都挂着 "Thinking…" 表头直到回合结束（TUI finish_thinking
+ * on tool start 同款）。无变化时返回原引用（不触发 store 更新）。
+ */
+function sealSubagentStreaming(items: ScrollEntry[]): ScrollEntry[] {
+  let changed = false
+  const sealed = items.map((it) => {
+    if (it.kind === 'assistant' && it.streaming) {
+      changed = true
+      return { ...it, streaming: false }
+    }
+    if (it.kind === 'thought' && it.streaming) {
+      changed = true
+      return {
+        ...it,
+        streaming: false,
+        displayMode: 'collapsed' as const,
+        finishedAt: Date.now(),
+        elapsed:
+          it.startedAt != null ? formatElapsed(Date.now() - it.startedAt) : it.elapsed,
+      }
+    }
+    return it
+  })
+  return changed ? sealed : items
+}
 
 /** 子代理视图的时间线末尾追加一条（含上限裁剪）。 */
 function subagentViewPush(
@@ -8096,14 +8065,16 @@ function subagentViewAppend(
       if (ev.hideFromScrollback === true) return items
       const text = (ev.displayText ?? ev.text) || ''
       if (!text.trim()) return items
+      // 用户插话 = 流切换，先收口挂着的思考/回答段。
+      const sealed = sealSubagentStreaming(items)
       // 同一用户回合的连续 chunk 聚合进最后一条 user（主 scrollback 同款）。
-      const last = items[items.length - 1]
+      const last = sealed[sealed.length - 1]
       if (last && last.kind === 'user') {
-        const next = [...items]
+        const next = [...sealed]
         next[next.length - 1] = { ...last, text: last.text + text }
         return next
       }
-      return subagentViewPush(items, {
+      return subagentViewPush(sealed, {
         id: nid(),
         kind: 'user',
         text,
@@ -8114,12 +8085,15 @@ function subagentViewAppend(
       const text = ev.text ?? ''
       if (!text) return items
       const last = items[items.length - 1]
-      if (last && last.kind === 'assistant') {
+      if (last && last.kind === 'assistant' && last.streaming) {
         const next = [...items]
         next[next.length - 1] = { ...last, text: last.text + text, streaming: true }
         return next
       }
-      return subagentViewPush(items, {
+      // 流切换：thinking 段结束进入回答段 → 先收口思考（主 scrollback
+      // 流切换 seal 同款），回答段新起一条。
+      const sealed = sealSubagentStreaming(items)
+      return subagentViewPush(sealed, {
         id: nid(),
         kind: 'assistant',
         text,
@@ -8131,12 +8105,13 @@ function subagentViewAppend(
       const text = ev.text ?? ''
       if (!text) return items
       const last = items[items.length - 1]
-      if (last && last.kind === 'thought') {
+      if (last && last.kind === 'thought' && last.streaming) {
         const next = [...items]
         next[next.length - 1] = { ...last, text: last.text + text, streaming: true }
         return next
       }
-      return subagentViewPush(items, {
+      // 新思考段：先收口前面挂着的流（多段思考/回放防御），再开新条目。
+      return subagentViewPush(sealSubagentStreaming(items), {
         id: nid(),
         kind: 'thought',
         text,
@@ -8146,48 +8121,59 @@ function subagentViewAppend(
       })
     }
     case 'tool_call': {
+      // 工具开始 = 思考/回答段即时收口（TUI finish_thinking on tool
+      // start，主 scrollback tool_call 分支 sealThought 同款）——否则
+      // 运行中的每段 thinking 都挂着 "Thinking…" 直到回合终态。
+      const sealed = sealSubagentStreaming(items)
       const tc = ev.toolCall || {}
       const item = subagentToolItem(tc)
       // 同 toolCallId 重复到达时原地替换，避免双行。
       const idx = item.toolCallId
-        ? items.findIndex(
+        ? sealed.findIndex(
             (it) => it.kind === 'tool' && it.toolCallId === item.toolCallId,
           )
         : -1
       if (idx >= 0) {
-        const next = [...items]
+        const next = [...sealed]
         next[idx] = item
         return next
       }
-      return subagentViewPush(items, item)
+      return subagentViewPush(sealed, item)
     }
     case 'tool_call_update': {
+      // 工具行更新同样视为思考段推进（回放/边界防御），先收口挂着的流。
+      const sealed = sealSubagentStreaming(items)
       const tc = ev.toolCallUpdate || {}
       const toolCallId = toolCallIdOf(tc)
       if (toolCallId) {
-        const idx = items.findIndex(
+        const idx = sealed.findIndex(
           (it) => it.kind === 'tool' && it.toolCallId === toolCallId,
         )
         if (idx >= 0) {
-          const existing = items[idx]
+          const existing = sealed[idx]
           if (existing.kind === 'tool') {
             // 与主 scrollback 相同：update 的字段合并进 raw，标题/动词重算。
             const merged: ToolCall = { ...(existing.raw || {}), ...tc }
-            const next = [...items]
+            const next = [...sealed]
             next[idx] = subagentToolItem(merged, existing)
             return next
           }
         }
       }
       // 未找到对应条目（回放分页边界）：按首次 tool_call 追加。
-      return subagentViewAppend(items, { type: 'tool_call', toolCall: tc })
+      return subagentViewAppend(sealed, { type: 'tool_call', toolCall: tc })
     }
     case 'plan':
-      return subagentViewPush(items, { id: nid(), kind: 'plan', entries: ev.entries })
+      // plan 展示 = 流切换（主 scrollback plan 分支同样收口思考段）。
+      return subagentViewPush(sealSubagentStreaming(items), {
+        id: nid(),
+        kind: 'plan',
+        entries: ev.entries,
+      })
     case 'image': {
       const src = imageSrc(ev.data, ev.mimeType)
       if (!src) return items
-      return subagentViewPush(items, {
+      return subagentViewPush(sealSubagentStreaming(items), {
         id: nid(),
         kind: 'image',
         data: src,
@@ -8201,22 +8187,7 @@ function subagentViewAppend(
       // 回合收口：assistant/thought 停止 streaming（thought 与主 scrollback
       // settleTurnEntries 一致：折叠 + 本地 elapsed），追加回合结束标记——
       // 主 scrollback 同款：turn 标记用 session_event 条目。
-      const sealed = items.map((it) => {
-        if (it.kind === 'assistant' && it.streaming) {
-          return { ...it, streaming: false }
-        }
-        if (it.kind === 'thought' && it.streaming) {
-          return {
-            ...it,
-            streaming: false,
-            displayMode: 'collapsed' as const,
-            finishedAt: Date.now(),
-            elapsed:
-              it.startedAt != null ? formatElapsed(Date.now() - it.startedAt) : it.elapsed,
-          }
-        }
-        return it
-      })
+      const sealed = sealSubagentStreaming(items)
       const marker: ScrollEntry = {
         id: nid(),
         kind: 'session_event',

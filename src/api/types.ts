@@ -528,6 +528,15 @@ export type AcpEvent =
         [key: string]: unknown
       }
     }
+  /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
+  | {
+      type: 'gen_rate'
+      sessionId?: string
+      /** 生成输出速率（估算 tok/s）。 */
+      rate?: number
+      /** true = 流式期间实时值；false = 工具执行/turn 结束的冻结值。 */
+      active?: boolean
+    }
   /**
    * Host 对所有会话广播事件按 withSid 约定附加 sessionId（done/busy/
    * cancelled/error/status/log/usage/model/models_update 均带）——多会话
@@ -1049,6 +1058,17 @@ export type SubagentViewState = {
    * idle → loading → loaded (loaded also on failure — no retry storm).
    */
   fetchState?: 'idle' | 'loading' | 'loaded'
+  /**
+   * 已回放的事件条数（宿主包络条数语义）——负 offset 分页游标，与主
+   * scrollback 的 historyLoadedCount 同款。0 = 从未回放过（纯 live 捕获，
+   * 不提供上滑分页，避免与 live 事件重复）。
+   */
+  loadedCount?: number
+  /**
+   * 宿主侧会话事件总数（session-updates 的 totalCount）；缺失时按
+   * loadedCount 兜底 → 拉完一页即认为无更多。
+   */
+  totalCount?: number
 }
 
 /**

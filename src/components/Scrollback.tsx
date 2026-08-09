@@ -4,6 +4,11 @@ import type { ScrollEntry } from '../api/types'
 import { subagentMeta } from '../format'
 import { Glyphs, SPINNER_FRAMES, SPINNER_INTERVAL_MS, toolHeader } from '../theme/glyphs'
 import { thoughtDisplayMode } from '../scrollback/thoughtMode'
+import {
+  USER_COLLAPSED_MAX_LINES,
+  collapseUserText,
+  userIsFoldable,
+} from '../scrollback/userText'
 import { TodoMark } from './todoMark'
 import {
   ICON_COL_CLASS,
@@ -149,14 +154,10 @@ function entryFailed(e: ScrollEntry): boolean {
   return false
 }
 
-/** UserPromptBlock COLLAPSED_MAX_LINES. */
-const USER_COLLAPSED_MAX_LINES = 3
 /** ThinkingBlock truncated preview: head lines before "…" (TUI truncated view). */
 const THOUGHT_TRUNCATED_HEAD_LINES = 5
 /** ThinkingBlock truncated preview: tail lines after "…" (TUI truncated_lines default = 3). */
 const THOUGHT_TRUNCATED_TAIL_LINES = 3
-/** Conservative content width for foldability estimate (TUI MIN_CONTENT_WIDTH). */
-const USER_MIN_CONTENT_WIDTH = 60
 /** Pause between scroll-up page loads (also shields the anchor-restore
  *  scroll event from chaining the next page immediately). */
 const TOP_PAGE_COOLDOWN_MS = 400
@@ -172,59 +173,6 @@ const TOUCH_UP_SWIPE_PX = 8
  * modes.
  */
 const MAX_RENDER_ENTRIES = 100
-
-/**
- * Estimate visual line count for a user prompt (wrap-aware, matches TUI
- * UserPromptBlock::is_foldable).
- */
-function userVisualLines(text: string): number {
-  let visual = 0
-  const lines = text.split('\n')
-  for (const line of lines) {
-    const w = line.length
-    visual += w === 0 ? 1 : Math.ceil(w / USER_MIN_CONTENT_WIDTH)
-  }
-  return visual || 1
-}
-
-function userIsFoldable(text: string): boolean {
-  return userVisualLines(text) > USER_COLLAPSED_MAX_LINES
-}
-
-/**
- * Collapse user text to at most max visual lines, appending " …" when truncated
- * (UserPromptBlock::wrap_prompt_lines with max_lines).
- */function collapseUserText(text: string, maxLines: number): { text: string; truncated: boolean } {
-  const logical = text.split('\n')
-  const out: string[] = []
-  let visual = 0
-  for (let i = 0; i < logical.length; i++) {
-    const line = logical[i]
-    const w = line.length
-    const need = w === 0 ? 1 : Math.ceil(w / USER_MIN_CONTENT_WIDTH)
-    if (visual + need > maxLines) {
-      const remaining = maxLines - visual
-      if (remaining <= 0) {
-        // Mark last line with ellipsis
-        if (out.length > 0) {
-          const last = out[out.length - 1]
-          out[out.length - 1] = last.replace(/\s*$/, '') + ' ' + Glyphs.ellipsis
-        } else {
-          out.push(Glyphs.ellipsis)
-        }
-        return { text: out.join('\n'), truncated: true }
-      }
-      // Fit head of this line into remaining visual rows, leave room for " …"
-      const chars = remaining * USER_MIN_CONTENT_WIDTH
-      const head = line.slice(0, Math.max(1, chars - 2)).replace(/\s+$/, '')
-      out.push(head + ' ' + Glyphs.ellipsis)
-      return { text: out.join('\n'), truncated: true }
-    }
-    out.push(line)
-    visual += need
-  }
-  return { text: out.join('\n'), truncated: false }
-}
 
 /**
  * ThinkingBlock truncated preview (TUI render_truncated): the first
@@ -1018,6 +966,8 @@ export const EntryView = memo(function EntryView({
 
   if (e.kind === 'thought') {
     const mode = thoughtDisplayMode(e)
+    // 流式思考展开正文（live 可见），收口后按 displayMode 折叠/展开——
+    // 主 scrollback 与子代理弹窗共用同一行为。
     const showBody = e.streaming || mode !== 'collapsed'
     // Truncated (default after finish): header + head/tail preview, no
     // internal scroll (the tail must stay visible). Streaming/expanded:
@@ -1067,7 +1017,7 @@ export const EntryView = memo(function EntryView({
             className={
               truncated
                 ? 'mt-1 border-l pl-3 text-[12.5px] leading-relaxed'
-                : 'gn-no-scrollbar mt-1 min-h-[1.2em] max-h-[6.5em] overflow-y-auto overscroll-contain border-l pl-3 text-[12.5px] leading-relaxed'
+                : 'gn-no-scrollbar mt-1 min-h-[1.2em] max-h-[6.5em] overflow-y-auto border-l pl-3 text-[12.5px] leading-relaxed'
             }
             style={{ borderColor: 'color-mix(in srgb, var(--color-gn-gray-dim) 40%, transparent)' }}
           >
@@ -1720,11 +1670,11 @@ export function Scrollback() {
     return () => window.clearTimeout(id)
   }, [entries])
 
-  // Auto-follow only when near bottom. Direct scrollTop would land on the
-  // *estimated* bottom when out-of-view rows use content-visibility
-  // (their heights are placeholders) — scrollIntoView resolves real
-  // layout, so the follow is exact. `auto` behavior keeps it instant
-  // (no smooth animation restart per flush, same as before).
+  // Auto-follow only when near bottom (every mounted row is at real
+  // height — MAX_RENDER_ENTRIES caps the DOM, no content-visibility
+  // placeholders — so scrollIntoView lands exactly at the tail).
+  // `auto` behavior keeps it instant (no smooth animation restart per
+  // flush, same as before).
   //
   // Entries / row-count changes re-run via React effect. liveStream text
   // growth must NOT re-render Scrollback — subscribe outside React and

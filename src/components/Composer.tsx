@@ -993,7 +993,8 @@ export function Composer() {
     conn === 'error' ||
     conn === 'offline' ||
     idleCueVisible
-  // 生成速度显示（状态行总时间右侧）：按流式字符估算的 tok/s。
+  // 生成速度（状态行总时间右侧）：host 推送的 gen_rate（估算 tok/s），
+  // 流式期间实时更新，工具阶段/回合结束冻结终值。
   const genRateLabel =
     genRate != null && genRate > 0 ? Math.round(genRate) : undefined
   const [spinnerFrame, setSpinnerFrame] = useState(0)
@@ -1437,12 +1438,11 @@ export function Composer() {
                     {formatTurnDuration(Date.now() - turnStartedAt)}
                   </span>
                 )}
-                {/* 生成速度（估算 tok/s）：流式中实时、工具执行中冻结，
-                    总时间右侧；⇣ 图标 + T 单位。 */}
+                {/* 生成速度（估算 tok/s）：host 推送的 gen_rate（流式实时，工具/回合结束冻结）。 */}
                 {busy && genRateLabel != null && (
                   <span
                     className="tabular-nums text-gn-gray"
-                    title={`生成速度（按流式字符估算，工具执行时间不计入）${genRateLabel}t`}
+                    title={`生成速度 ≈${genRateLabel} tok/s（host 推送的 gen_rate 估算；流式期间实时更新，工具执行/回合结束冻结）`}
                   >
                     ⇣{genRateLabel}t
                   </span>

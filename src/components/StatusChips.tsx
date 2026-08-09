@@ -741,6 +741,17 @@ export function RunningTasksBar({
     void syncLiveTasks()
     if (sessionId && cwd) void refreshTopTasks(sessionId, cwd)
   }
+  // 刷新按钮挂在第一个区块的标题行右侧——不单独占一行。
+  const refreshBtn = (
+    <button
+      type="button"
+      onClick={refresh}
+      className="rounded border border-transparent px-1.5 py-0.5 text-[10.5px] text-gn-muted hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg"
+      title="重新同步运行中任务与调度任务列表"
+    >
+      刷新
+    </button>
+  )
 
   return (
     <div
@@ -753,21 +764,14 @@ export function RunningTasksBar({
       <div
         className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} flex max-h-[min(28vh,12rem)] flex-col overflow-y-auto py-0.5`}
       >
-        {/* Panel header — refresh re-syncs both sections. */}
-        <div className="flex items-center justify-end gap-1 py-0.5">
-          <button
-            type="button"
-            onClick={refresh}
-            className="rounded border border-transparent px-1.5 py-0.5 text-[10.5px] text-gn-muted hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg"
-            title="重新同步运行中任务与调度任务列表"
-          >
-            刷新
-          </button>
-        </div>
+        {/* 区块标题行：左侧标题 + 右侧刷新（不再单独一行）。 */}
         {count > 0 && (
           <>
-            <div className="px-1 pb-0.5 pt-1 text-[10px] uppercase tracking-wider text-gn-gutter">
-              运行中 · {count}
+            <div className="flex items-center justify-between gap-2 px-1 pb-0.5 pt-1">
+              <span className="text-[10px] uppercase tracking-wider text-gn-gutter">
+                运行中 · {count}
+              </span>
+              {refreshBtn}
             </div>
             {topTasks.map((t) => (
               <div
@@ -878,8 +882,12 @@ export function RunningTasksBar({
         )}
         {scheduledTasks.length > 0 && (
           <>
-            <div className="px-1 pb-0.5 pt-1 text-[10px] uppercase tracking-wider text-gn-gutter">
-              调度任务 · {scheduledTasks.length}
+            <div className="flex items-center justify-between gap-2 px-1 pb-0.5 pt-1">
+              <span className="text-[10px] uppercase tracking-wider text-gn-gutter">
+                调度任务 · {scheduledTasks.length}
+              </span>
+              {/* 只有调度任务区块时（无运行中区块）刷新挂在这里。 */}
+              {count === 0 ? refreshBtn : null}
             </div>
             {scheduledTasks.map((t) => (
               <div
