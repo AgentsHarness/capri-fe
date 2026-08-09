@@ -542,6 +542,7 @@ export function EntryShell({
     <div
       data-entry-id={e.id}
       data-dense={dense ? '1' : undefined}
+      data-streaming={'streaming' in e && e.streaming ? '1' : undefined}
       role="option"
       aria-selected={selected}
       onClick={onSelect}
@@ -662,6 +663,12 @@ type EntryViewProps = {
   selected: boolean
   pendingFreeze: boolean
   now: number
+  /**
+   * Live-stream text for this entry (from the store's liveStream when the
+   * entry is the one currently streaming). Merged with e.text at render;
+   * changes drive this row's re-render without touching the entries array.
+   */
+  liveText?: string
   dense?: boolean
   denseNext?: boolean
   densePrev?: boolean
@@ -740,6 +747,7 @@ function entryViewEqual(prev: EntryViewProps, next: EntryViewProps): boolean {
     prev.e === next.e &&
     prev.selected === next.selected &&
     prev.pendingFreeze === next.pendingFreeze &&
+    prev.liveText === next.liveText &&
     prev.dense === next.dense &&
     prev.denseNext === next.denseNext &&
     prev.densePrev === next.densePrev &&
@@ -759,6 +767,7 @@ export const EntryView = memo(function EntryView({
   selected,
   pendingFreeze,
   now,
+  liveText,
   dense = false,
   denseNext = false,
   densePrev = false,
@@ -816,7 +825,8 @@ export const EntryView = memo(function EntryView({
   const localBodyRef = useRef<HTMLDivElement>(null)
   const bodyRef = streamBodyRef ?? localBodyRef
   const thoughtStreaming = e.kind === 'thought' ? e.streaming : false
-  const thoughtText = e.kind === 'thought' ? e.text : undefined
+  const thoughtText =
+    e.kind === 'thought' ? (liveText ?? e.text) : undefined
   useEffect(() => {
     // 主 scrollback：固定由父组件统一做（合并的流式滚动 effect，每帧
     // 一次布局读写）；迷你 scrollback 没有 streamBodyRef，条目自己固定。
@@ -952,7 +962,13 @@ export const EntryView = memo(function EntryView({
             only — the time itself is hidden on mobile) so text never runs
             under it; the hover expansion still overlays content by design. */}
         <div className="group relative min-w-0 sm:pr-9">
-          <Markdown source={e.text} streaming={e.streaming} />
+          {/* liveText carries the in-flight stream; entry.text is the sealed
+              part. streaming 在 liveText 存在期间恒真 → Markdown 走纯文本
+              直出,收口后一次性分块渐进格式化。 */}
+          <Markdown
+            source={liveText ?? e.text}
+            streaming={liveText != null}
+          />
           {/* Agent-embedded images render below the text. */}
           {e.images?.length ? (
             <div className="mt-1.5">
@@ -1050,13 +1066,15 @@ export const EntryView = memo(function EntryView({
             }
             style={{ borderColor: 'color-mix(in srgb, var(--color-gn-gray-dim) 40%, transparent)' }}
           >
-            {e.text ? (
+            {thoughtText ? (
               <div className="italic text-gn-muted whitespace-pre-wrap break-words">
+                {/* thoughtText = liveText ?? e.text：流式期间用 liveStream
+                    文本（有界尾部渲染），收口后回退 entry.text。 */}
                 {e.streaming
-                  ? streamThoughtBody(e.text)
+                  ? streamThoughtBody(thoughtText)
                   : truncated
-                    ? truncatedThoughtLines(e.text).join('\n')
-                    : e.text}
+                    ? truncatedThoughtLines(thoughtText).join('\n')
+                    : thoughtText}
                 {e.streaming && (
                   <span
                     className="ml-0.5 inline-block h-[0.9em] w-[0.4em] translate-y-[1px] animate-pulse align-text-bottom"
@@ -1453,15 +1471,6 @@ export const EntryView = memo(function EntryView({
   return null
 }, entryViewEqual)
 
-/** True when any entry is mid finish-flash and needs a clock tick. */
-function needsFlashClock(entries: ScrollEntry[], now: number): boolean {
-  return entries.some((e) => {
-    if (e.kind !== 'tool' && e.kind !== 'thought') return false
-    const fa = e.finishedAt
-    return fa != null && now - fa < FINISH_FLASH_MS
-  })
-}
-
 /** 显示行 key（实现移入 verbGroup.ts，主/迷你 scrollback 共用）。 */
 
 function displayRowToEntry(row: DisplayRow): ScrollEntry {
@@ -1489,6 +1498,7 @@ function displayRowToEntry(row: DisplayRow): ScrollEntry {
 
 export function Scrollback() {
   const entries = useChatStore((s) => s.entries)
+  const liveStream = useChatStore((s) => s.liveStream)
   const selectedId = useChatStore((s) => s.selectedId)
   const focusMode = useChatStore((s) => s.focusMode)
   const pending = useChatStore((s) => s.pending)
@@ -1682,38 +1692,42 @@ export function Scrollback() {
   // Pending permission freezes running waves (is_pending_user_input)
   const pendingFreeze = pending.length > 0
 
-  // Clock for finish-flash window (~50ms) while any entry is flashing
+  // Clock for finish-flash window (~50ms) while any entry is flashing.
+  // Precise scheduling: one setTimeout at the earliest flash expiry instead
+  // of a 50ms interval ticking the whole list — a flash window costs a
+  // single re-render, not 20 per second.
   useEffect(() => {
-    if (!needsFlashClock(entries, Date.now())) return
-    let id: number | undefined
-    const tick = () => {
-      const n = Date.now()
-      setNow(n)
-      if (!needsFlashClock(entries, n) && id != null) {
-        clearInterval(id)
-        id = undefined
+    const now = Date.now()
+    let next: number | null = null
+    for (const e of entries) {
+      if (e.kind !== 'tool' && e.kind !== 'thought') continue
+      const fa = e.finishedAt
+      if (fa != null && now - fa < FINISH_FLASH_MS) {
+        const due = fa + FINISH_FLASH_MS
+        if (next == null || due < next) next = due
       }
     }
-    id = window.setInterval(tick, 50)
-    return () => {
-      if (id != null) clearInterval(id)
-    }
+    if (next == null) return
+    const id = window.setTimeout(() => {
+      setNow(Date.now())
+    }, Math.max(1, next - now + 1))
+    return () => window.clearTimeout(id)
   }, [entries])
 
-  // Auto-follow only when near bottom. Direct scrollTop (not smooth
-  // scrollIntoView): during streaming this fires per flush and each smooth
-  // animation restarts — instant follow is what TUI gll does.
-  // 与流式思考 body 的内部固定合并成一个 passive effect：rAF 合并后的
-  // 流式 flush 每帧至多一次，两次滚动固定在同一提交后完成（每帧一次
-  // 布局读写，不再每 chunk 两次）。
+  // Auto-follow only when near bottom. Direct scrollTop would land on the
+  // *estimated* bottom when out-of-view rows use content-visibility
+  // (their heights are placeholders) — scrollIntoView resolves real
+  // layout, so the follow is exact. `auto` behavior keeps it instant
+  // (no smooth animation restart per flush, same as before).
+  // 与流式思考 body 的内部固定合并成一个 passive effect：liveStream 文本
+  // 变化驱动（entries 流式期间不变），每帧至多一次布局读写。
   useEffect(() => {
     if (followRef.current) {
-      const box = boxRef.current
-      if (box) box.scrollTop = box.scrollHeight
+      bottomRef.current?.scrollIntoView({ block: 'end', behavior: 'auto' })
     }
     const bodyEl = streamBodyRef.current
     if (bodyEl) bodyEl.scrollTop = bodyEl.scrollHeight
-  }, [entries, displayRows.length])
+  }, [entries, displayRows.length, liveStream?.text])
 
   // History load: always re-follow the bottom (scrollback was reset)
   useEffect(() => {
@@ -1979,6 +1993,11 @@ export function Scrollback() {
               selected={row.entry.id === selectedId && focusMode === 'scrollback'}
               pendingFreeze={pendingFreeze}
               now={now}
+              liveText={
+                liveStream?.entryId === row.entry.id
+                  ? liveStream.text
+                  : undefined
+              }
               inGroup={spanContaining(spans, row.index) != null}
               dense={dense}
               densePrev={densePrev}

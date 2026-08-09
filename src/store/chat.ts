@@ -1187,6 +1187,16 @@ type ChatState = {
   openAssistantId?: string
   openThoughtId?: string
   /**
+   * Live streaming text, kept OUT of `entries`. Chunk events only mutate
+   * this single field instead of re-creating the entries array, so the
+   * scrollback grouping (scanGroups / projectDisplayRows) and every
+   * memoized row skip their per-chunk recompute — the only re-render per
+   * chunk is the one streaming entry. Flushed into its entry (entry.text
+   * += liveStream.text) at seal / turn end; consumers that render entry
+   * text (Scrollback, BlockViewer) merge it while the entry is streaming.
+   */
+  liveStream: { entryId: string; text: string; elapsedMs?: number } | null
+  /**
    * User row id inserted optimistically by send(). Live user_chunk echoes
    * absorb into this row instead of appending a second UserPromptBlock.
    */
@@ -1535,6 +1545,7 @@ function sendControlPrompt(
 
 export const useChatStore = create<ChatState>((set, get) => ({
   entries: [],
+  liveStream: null,
   conn: 'connecting',
   statusText: '连接中…',
   awaitingNext: false,
@@ -1925,6 +1936,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       cwd: undefined,
       homeDir: undefined,
       entries: [],
+      liveStream: null,
       sessions: [],
       workspaces: [],
       workspaceLoading: false,
@@ -2077,6 +2089,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       historyPrependedAt: undefined,
       historyAnchorId: undefined,
       entries: [],
+      liveStream: null,
       openAssistantId: undefined,
       openThoughtId: undefined,
       pendingOptimisticUserId: undefined,
@@ -2173,6 +2186,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             entries: [...newEntries, ...oldEntries],
             openAssistantId: undefined,
             openThoughtId: undefined,
+            liveStream: null,
           })
         }
 
@@ -2194,6 +2208,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           historyHasMore: hasMore,
           conn: 'ready',
           entries: settled,
+          liveStream: null,
         })
 
         if (hasDisplayableScrollback(settled)) break
@@ -2459,6 +2474,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         entries: get().turnStartedAt == null ? settleTurnEntries(merged) : merged,
         openAssistantId: undefined,
         openThoughtId: undefined,
+        liveStream: null,
         // Replay of stored thought chunks drives conn to 'busy' — paging
         // history is not a live turn.
         conn: 'ready',
@@ -2701,7 +2717,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ev.type === 'user_message' ? ev.isCron : metaCron,
         )
         if (!classified) break
-        const sealed = sealThought(get())
+        // Close the assistant stream: merge liveStream text into the
+        // entry BEFORE the streaming:false seal, then seal any thought.
+        const flushed = flushLiveStream(get())
+        const sealed = sealThought(flushed)
         const entries = sealed.entries.map((e) =>
           e.id === sealed.openAssistantId && e.kind === 'assistant'
             ? { ...e, streaming: false }
@@ -2845,7 +2864,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
             awaitingNext: false,
             openAssistantId: id,
             openThoughtId: undefined,
-            entries: [...entries, { id, kind: 'assistant', text, streaming: true, ts }],
+            entries: [
+              ...entries,
+              { id, kind: 'assistant', text: '', streaming: true, ts },
+            ],
+            liveStream: { entryId: id, text },
           })
         }
         break
@@ -2856,6 +2879,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const s = get()
         let openThoughtId = s.openThoughtId
         let entries = s.entries
+        // Stream switch (assistant → thought, or a stale live stream):
+        // flush the previous stream into its entry before the new one
+        // starts, so no text is lost when the pointer moves.
+        const prevLs = s.liveStream
+        if (prevLs && prevLs.entryId !== openThoughtId) {
+          entries = entries.map((e) =>
+            e.id === prevLs.entryId && 'text' in e
+              ? { ...e, text: e.text + prevLs.text }
+              : e,
+          )
+        }
 
         // If placeholder missing (reconnect mid-turn), create one — with
         // THIS chunk inline so the Thinking… block never shows empty.
@@ -2909,7 +2943,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // 工具调用 = 生成段收口：回应的连续输出到此为止，工具执行
         // 时间不计入速率。
         sealGenSegment(set, get)
-        const sealed = sealThought(get())
+        // 回答流文本先并入条目（liveStream → entry，工具执行期间回答
+        // 条目展示完整文本），再收口思考段。
+        const flushed = flushLiveStream(get())
+        const sealed = sealThought(flushed)
         const tc = ev.toolCall || {}
         const toolCallId = toolCallIdOf(tc)
         // TUI: bg-task plumbing / background execute / task-spawn / todo /
@@ -3059,6 +3096,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const planFlag = (ev as unknown as { planMode?: unknown }).planMode
         set({
           openAssistantId: undefined,
+          // Plan updates can arrive mid-stream (a plan-driven run): merge
+          // any live text before the assistant pointer drops.
+          ...flushLiveStream(get()),
           todoCounts: counts,
           todos: items,
           // Some hosts piggyback the plan-mode flag on the plan event —
@@ -3182,7 +3222,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // timing. The idle watcher cue ("N commands still running") is
         // NOT a scrollback line — it lives in the composer turn-status
         // line (TUI turn_status.rs idle arm), gated on awaitingNext.
-        const sealed = sealThought(get())
+        // 回合收口：assistant 的 liveStream 文本先并入条目（sealThought
+        // 只处理思考；不 flush 的话文本滞留 liveStream，切会话即丢）。
+        const flushed = flushLiveStream(get())
+        const sealed = sealThought(flushed)
         const settled = settleTurnEntries(sealed.entries)
         if (tailAlreadyTurnEnded(settled)) {
           set({
@@ -3241,17 +3284,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   : 'Turn cancelled.',
             }
           : null
-        set((s) => ({
-          conn: 'ready',
-          statusText: '待处理',
-          awaitingNext: true,
-          openAssistantId: undefined,
-          openThoughtId: undefined,
-          turnStartedAt: undefined,
-          xaiRequests: [], // host answered every pending x.ai request already
-          pending: [], // …and every pending permission request (turn cancelled)
-          entries: [
-            ...s.entries.map((e) => {
+        set((s) => {
+          // Merge any live text into its entry first (cancel rewrites the
+          // streaming entries; without the flush the text would be lost).
+          const flushed = flushLiveStream(s)
+          return {
+            conn: 'ready',
+            statusText: '待处理',
+            awaitingNext: true,
+            openAssistantId: undefined,
+            openThoughtId: undefined,
+            turnStartedAt: undefined,
+            xaiRequests: [], // host answered every pending x.ai request already
+            pending: [], // …and every pending permission request (turn cancelled)
+            // flushLiveStream's liveStream: null rides on the entry merge —
+            // zustand set() shallow-merges, so carry it explicitly.
+            liveStream: null,
+            entries: [
+              ...flushed.entries.map((e) => {
               if (e.kind === 'thought' && e.streaming) {
                 return {
                   ...e,
@@ -3275,7 +3325,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
             }),
             ...(marker ? [marker] : []),
           ],
-        }))
+          }
+        })
         break
       }
       case 'error': {
@@ -4262,7 +4313,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         sealGenSegment(set, get)
         const turnStart = get().turnStartedAt
         const marker = turnMarker(turnStart != null ? Date.now() - turnStart : undefined)
-        const sealed = sealThought(get())
+        // Turn end: merge live text into its entry before the settle.
+        const flushed = flushLiveStream(get())
+        const sealed = sealThought(flushed)
         set({
           ...sealed,
           conn: 'ready',
@@ -4492,7 +4545,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // 2nd row). NO pre-created Thinking… shell: TUI pre-creates the
     // thinking block at stream_start (first chunk), so between send and
     // the first token the status line reads "Waiting for response…".
-    const sealed = sealThought(get())
+    // A new turn closes any stale stream — flush before the pointers drop.
+    const flushed = flushLiveStream(get())
+    const sealed = sealThought(flushed)
     const userId = nid()
     // Shell-mode submissions (Composer `!` mode → prompt path) mark the
     // user row so the scrollback renders it with the TUI `$ ` prefix.
@@ -5391,6 +5446,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const inheritMeta = permissionSeedMeta(curFlags)
     set({
       entries: [],
+      liveStream: null,
       // Clear the session anchor: until the host's ready(newSessionId)
       // arrives, session-scoped events are dropped (no cross-session leak).
       sessionId: undefined,
@@ -5960,18 +6016,16 @@ function flushStreamBuf(set: SetState, get: () => ChatState): void {
       openThoughtId,
       openAssistantId: undefined,
       ...segPatch,
-      entries: s.entries.map((e) =>
-        e.id === openThoughtId && e.kind === 'thought'
-          ? {
-              ...e,
-              text: e.text + text,
-              streaming: true,
-              displayMode: 'expanded', // keep body visible while flowing
-              // Last chunk wins (TUI tracker updates on every chunk).
-              ...(bufElapsedMs != null ? { elapsedMs: bufElapsedMs } : {}),
-            }
-          : e,
-      ),
+      // 落库目标 = liveStream（perf 合并）：entries 流式期间引用不变，
+      // 只有正在流的行经 liveText 重渲染——分组/折叠/memo 全跳过。
+      liveStream: {
+        entryId: openThoughtId,
+        text:
+          (s.liveStream?.entryId === openThoughtId ? s.liveStream.text : '') +
+          text,
+        // Last chunk wins (TUI tracker updates on every chunk).
+        ...(bufElapsedMs != null ? { elapsedMs: bufElapsedMs } : {}),
+      },
     })
     return
   }
@@ -5988,11 +6042,12 @@ function flushStreamBuf(set: SetState, get: () => ChatState): void {
     statusText: 'Responding…',
     awaitingNext: false,
     openAssistantId,
-    entries: s.entries.map((e) =>
-      e.id === openAssistantId && e.kind === 'assistant'
-        ? { ...e, text: e.text + text, streaming: true }
-        : e,
-    ),
+    liveStream: {
+      entryId: openAssistantId,
+      text:
+        (s.liveStream?.entryId === openAssistantId ? s.liveStream.text : '') +
+        text,
+    },
   })
 }
 
@@ -6186,20 +6241,29 @@ function finalizeTurn(
     turnIsLive(get()) && !failedTurn && !bashTurn && hasOutput
       ? turnMarker(turnStart != null ? Date.now() - turnStart : undefined)
       : null
-  set((s) => ({
-    conn: 'ready',
-    // Blue "待处理" until the next user message.
-    statusText: '待处理',
-    awaitingNext: true,
-    openAssistantId: undefined,
-    openThoughtId: undefined,
-    turnStartedAt: undefined,
-    // Turn end: the host resolved every outstanding permission request
-    // (approval timeout / completion), so a non-empty pending queue
-    // here is stale — drop it (TUI drain_permission_queue).
-    pending: [],
-    entries: [...settleTurnEntries(s.entries), ...(marker ? [marker] : [])],
-  }))
+  set((s) => {
+    // 收口前把 liveStream 文本并入对应条目（流式期间文本在 liveStream，
+    // 回合终态必须落回 entry.text；flushLiveStream 同时清空 liveStream）。
+    const flushed = flushLiveStream(s)
+    return {
+      conn: 'ready',
+      // Blue "待处理" until the next user message.
+      statusText: '待处理',
+      awaitingNext: true,
+      openAssistantId: undefined,
+      openThoughtId: undefined,
+      turnStartedAt: undefined,
+      // Turn end: the host resolved every outstanding permission request
+      // (approval timeout / completion), so a non-empty pending queue
+      // here is stale — drop it (TUI drain_permission_queue).
+      pending: [],
+      liveStream: null,
+      entries: [
+        ...settleTurnEntries(flushed.entries),
+        ...(marker ? [marker] : []),
+      ],
+    }
+  })
 }
 
 // ── 子代理回合收口兜底（任务 2）────────────────────────────────────
@@ -7302,17 +7366,50 @@ function extractModelFromAgentInfo(info: unknown): string | undefined {
 }
 
 /**
+ * Merge the live stream into its entry (once, idempotent): writes
+ * liveStream.text into the entry (entry.text += text) and clears the
+ * stream. Callers run this BEFORE any seal/settle path that must see the
+ * final text — sealThought, the turn-end settles, user_message (closes
+ * the assistant stream), tool_call (closes the assistant stream). O(n)
+ * but only ever runs at low-frequency boundaries, never per chunk.
+ */
+function flushLiveStream(s: ChatState): ChatState {
+  const ls = s.liveStream
+  if (!ls) return s
+  return {
+    ...s,
+    liveStream: null,
+    entries: s.entries.map((e) =>
+      e.id === ls.entryId && 'text' in e
+        ? {
+            ...e,
+            text: e.text + ls.text,
+            // Last chunk wins (TUI tracker updates on every chunk).
+            ...(ls.elapsedMs != null ? { elapsedMs: ls.elapsedMs } : {}),
+          }
+        : e,
+    ),
+  }
+}
+
+/**
  * Finish an open thought block when content moves on.
  * Empty placeholder (busy fired but no thought chunks) is removed entirely.
  */
 function sealThought(
   s: ChatState,
-): Pick<ChatState, 'entries' | 'openAssistantId' | 'openThoughtId'> {
+): Pick<ChatState, 'entries' | 'openAssistantId' | 'openThoughtId' | 'liveStream'> {
+  // Live-streamed thought text lives OUT of entries — merge it in before
+  // the empty-placeholder check and the finish bookkeeping.
+  if (s.openThoughtId && s.liveStream?.entryId === s.openThoughtId) {
+    s = flushLiveStream(s)
+  }
   if (!s.openThoughtId) {
     return {
       entries: s.entries,
       openAssistantId: s.openAssistantId,
       openThoughtId: s.openThoughtId,
+      liveStream: s.liveStream,
     }
   }
   const tid = s.openThoughtId
@@ -7322,12 +7419,14 @@ function sealThought(
     return {
       openAssistantId: s.openAssistantId,
       openThoughtId: undefined,
+      liveStream: s.liveStream,
       entries: s.entries.filter((e) => e.id !== tid),
     }
   }
   return {
     openAssistantId: s.openAssistantId,
     openThoughtId: undefined,
+    liveStream: s.liveStream,
     entries: s.entries.map((e) => {
       if (e.id !== tid || e.kind !== 'thought') return e
       // Replay: prefer the server-reported original duration; live falls
