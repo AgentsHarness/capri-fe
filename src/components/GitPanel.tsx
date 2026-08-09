@@ -462,7 +462,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
             </span>
           ) : null}
           {rows.length > 0 && (
-            <span className="font-mono text-[11px] text-gn-muted">
+            <span className="hidden font-mono text-[11px] text-gn-muted sm:inline">
               {rows.filter((r) => r.status === 'staged').length} staged ·{' '}
               {rows.filter((r) => r.status === 'modified').length} modified ·{' '}
               {rows.filter((r) => r.status === 'untracked').length} untracked
@@ -503,7 +503,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
         ) : (
           <div className="flex min-h-0 flex-1">
             {/* File list — 工作区状态。 */}
-            <div className="gn-no-scrollbar w-64 shrink-0 overflow-y-auto border-r border-gn-prompt-border">
+            <div className="gn-no-scrollbar w-44 shrink-0 overflow-y-auto border-r border-gn-prompt-border sm:w-64">
               {/* 分支列表 — x.ai/git/branches；点击切换（两段确认）。 */}
               <div className="border-b border-gn-prompt-border/50 px-3 pb-1.5 pt-2">
                 <div className="text-[10px] uppercase tracking-wider text-gn-gutter">

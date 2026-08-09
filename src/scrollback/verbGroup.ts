@@ -429,16 +429,63 @@ export function truncationLabel(
   return { text, running, failed: failedCount > 0 }
 }
 
+/** Truncation header label (TUI count excludes the header itself). */
+function truncationHeaderLabel(
+  entries: ScrollEntry[],
+  span: GroupSpan,
+  kind: { type: 'truncation'; participants: number; hidden: number },
+  showThinking: boolean,
+): GroupLabel {
+  const base =
+    truncationLabel(entries, span, showThinking) ||
+    ({ text: `${kind.hidden - 1} more`, running: false, failed: false } satisfies GroupLabel)
+  if (!truncationLabel(entries, span, showThinking)) {
+    base.text = `${Math.max(0, kind.hidden - 1)} more`
+  }
+  return base
+}
+
+/**
+ * Build a group-header row, reusing the cached row when the span object is
+ * unchanged (see projectDisplayRows' headerCache). `makeLabel` is lazy —
+ * on a cache hit it never runs, so the per-flush label recompute
+ * (runStep over the span members) disappears.
+ */
+function headerRowFor(
+  span: GroupSpan,
+  family: 'verb' | 'truncation',
+  makeLabel: () => GroupLabel,
+  cache?: Map<GroupSpan, DisplayRow>,
+): DisplayRow {
+  const cached = cache?.get(span)
+  if (cached) return cached
+  const row: DisplayRow = {
+    type: 'group_header',
+    id: `gh_${span.anchorId}`,
+    span,
+    label: makeLabel(),
+    family,
+  }
+  cache?.set(span, row)
+  return row
+}
+
 // ── Project to display rows ────────────────────────────────────────────
 
 /**
  * Build the flat list of rows the scrollback renders.
  * Collapsed verb/truncation members are omitted; headers are synthetic.
+ *
+ * `headerCache` (optional): span-keyed map of previously built header rows.
+ * Scrollback caches spans keyed on groupingSignature — on a cache hit every
+ * span is the same object, so header rows (label text included) are reused
+ * verbatim and the per-flush label recompute + header re-render disappear.
  */
 export function projectDisplayRows(
   entries: ScrollEntry[],
   spans: GroupSpan[],
   showThinking = true,
+  headerCache?: Map<GroupSpan, DisplayRow>,
 ): DisplayRow[] {
   const spanByStart = new Map(spans.map((s) => [s.range.start, s]))
   const hidden = new Set<number>()
@@ -479,35 +526,15 @@ export function projectDisplayRows(
   while (i < entries.length) {
     const span = spanByStart.get(i)
     if (span && !span.expanded && span.kind.type === 'verb') {
-      rows.push({
-        type: 'group_header',
-        id: `gh_${span.anchorId}`,
-        span,
-        label: verbGroupLabel(entries, span, showThinking),
-        family: 'verb',
-      })
+      rows.push(headerRowFor(span, 'verb', () => verbGroupLabel(entries, span, showThinking), headerCache))
       i = span.range.end
       continue
     }
     if (span && !span.expanded && span.kind.type === 'truncation') {
-      const label =
-        truncationLabel(entries, span, showThinking) ||
-        ({
-          text: `${span.kind.hidden - 1} more`,
-          running: false,
-          failed: false,
-        } satisfies GroupLabel)
-      // TUI count excludes the header itself: hidden - 1 for plain "N more"
-      if (!truncationLabel(entries, span, showThinking)) {
-        label.text = `${Math.max(0, span.kind.hidden - 1)} more`
-      }
-      rows.push({
-        type: 'group_header',
-        id: `gh_${span.anchorId}`,
-        span,
-        label,
-        family: 'truncation',
-      })
+      const kind = span.kind
+      rows.push(
+        headerRowFor(span, 'truncation', () => truncationHeaderLabel(entries, span, kind, showThinking), headerCache),
+      )
       // skip hidden prefix; emit remaining visible tail
       for (let j = span.range.start; j < span.range.end; j++) {
         if (hidden.has(j)) continue
@@ -518,13 +545,7 @@ export function projectDisplayRows(
     }
     if (span && span.expanded && span.kind.type === 'verb') {
       // collapse header + all claimed entries (transparent keep their rows too)
-      rows.push({
-        type: 'group_header',
-        id: `gh_${span.anchorId}`,
-        span,
-        label: verbGroupLabel(entries, span, showThinking),
-        family: 'verb',
-      })
+      rows.push(headerRowFor(span, 'verb', () => verbGroupLabel(entries, span, showThinking), headerCache))
       for (let j = span.range.start; j < span.range.end; j++) {
         rows.push({ type: 'entry', entry: entries[j], index: j })
       }
@@ -532,19 +553,22 @@ export function projectDisplayRows(
       continue
     }
     if (span && span.expanded && span.kind.type === 'truncation') {
-      rows.push({
-        type: 'group_header',
-        id: `gh_${span.anchorId}`,
-        span,
-        label: {
-          text:
-            truncationLabel(entries, span, showThinking)?.text ||
-            `${span.kind.participants - 1} tool calls`,
-          running: truncationLabel(entries, span, showThinking)?.running || false,
-          failed: truncationLabel(entries, span, showThinking)?.failed || false,
-        },
-        family: 'truncation',
-      })
+      const kind = span.kind
+      rows.push(
+        headerRowFor(
+          span,
+          'truncation',
+          () => {
+            const tlab = truncationLabel(entries, span, showThinking)
+            return {
+              text: tlab?.text || `${kind.participants - 1} tool calls`,
+              running: tlab?.running || false,
+              failed: tlab?.failed || false,
+            }
+          },
+          headerCache,
+        ),
+      )
       for (let j = span.range.start; j < span.range.end; j++) {
         rows.push({ type: 'entry', entry: entries[j], index: j })
       }
@@ -560,12 +584,72 @@ export function projectDisplayRows(
   return rows
 }
 
-/** Find group span containing entry index (if any). */
+/**
+ * Find group span containing entry index (if any).
+ * Spans are sorted by `range.start` (scanGroups sorts before returning),
+ * so this is a binary search — called once per displayed row, linear
+ * find would be O(rows × spans) per flush.
+ */
 export function spanContaining(
   spans: GroupSpan[],
   idx: number,
 ): GroupSpan | undefined {
-  return spans.find((s) => idx >= s.range.start && idx < s.range.end)
+  let lo = 0
+  let hi = spans.length - 1
+  let found = -1
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    if (spans[mid].range.start <= idx) {
+      found = mid
+      lo = mid + 1
+    } else {
+      hi = mid - 1
+    }
+  }
+  if (found === -1) return undefined
+  const s = spans[found]
+  return idx < s.range.end ? s : undefined
+}
+
+/**
+ * Cheap per-entry signature of the fields that participate in grouping
+ * (verb runs / truncation folds). Text CONTENT is deliberately excluded:
+ * streaming appends change only the text, and running/streaming entries
+ * never participate in grouping — so the signature is stable across
+ * streaming flushes and scanGroups can be skipped (Scrollback caches
+ * spans keyed on this signature).
+ *
+ * The id fold (length + first/last chars + djb2) detects insertion,
+ * removal and reorder of entries that carry identical grouping flags.
+ */
+export function groupingSignature(entries: ScrollEntry[]): string {
+  const parts = new Array<string>(entries.length + 1)
+  parts[0] = `${entries.length}:`
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i]
+    const id = e.id
+    let h = 5381
+    for (let j = 0; j < id.length; j++) {
+      h = ((h << 5) + h + id.charCodeAt(j)) | 0
+    }
+    let s = `${e.kind[0]}${id.length}${id[0] ?? ''}${id[id.length - 1] ?? ''}${h.toString(36)}`
+    switch (e.kind) {
+      case 'tool':
+        s += `${e.expanded ? '1' : '0'}${e.status ?? ''}`
+        break
+      case 'thought':
+        s += `${thoughtDisplayMode(e)[0]}${e.streaming ? 's' : ''}${e.text.trim() ? 'x' : ''}`
+        break
+      case 'subagent':
+        s += `${e.status ?? ''}${e.running ? 'r' : ''}`
+        break
+      case 'bg_task':
+        s += `${e.running ? 'r' : ''}`
+        break
+    }
+    parts[i + 1] = s
+  }
+  return parts.join('')
 }
 
 // ── 显示行辅助（主 scrollback 与迷你 scrollback 共用）──────────────────

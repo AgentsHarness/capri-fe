@@ -403,12 +403,8 @@ export const slashCommands: SlashCommand[] = [
       const st = useChatStore.getState()
       const a = args.trim()
       if (!a) {
-        // 无参 → 打开目标详情面板（与 GoalChip 点击共用同一面板）。
-        if (!st.goalState) {
-          err('/goal: 暂无目标状态（goal_updated 事件尚未到达）')
-          return
-        }
-        st.setGoalPanelOpen(true)
+        // 无参 = status（与真 TUI 一致：/goal 无参查询当前目标状态）。
+        st.goalStatus()
         return
       }
       const lower = a.toLowerCase()
@@ -428,9 +424,9 @@ export const slashCommands: SlashCommand[] = [
         st.goalClear()
         return
       }
-      // 其余按目标描述处理: `<objective> [--budget <tokens>]` — budget
-      // 从描述中剥离后随提示词路径一并传达（协议无 goal 控制 wire 方法，
-      // 全部经由 update_goal 工具的提示词路径，见 chat.ts goalSet）。
+      // 其余按目标描述处理: `<objective> [--budget <tokens>]`。budget 是
+      // token 预算，由 host 的 goal 引擎强制执行（剥离后单独传参，不再
+      // 拼进描述文字）。
       const budgetMatch = a.match(/--budget\s+([\d.]+[kKmM]?)/i)
       const objective = budgetMatch ? a.slice(0, budgetMatch.index).trim() : a
       if (!objective) {
@@ -439,8 +435,8 @@ export const slashCommands: SlashCommand[] = [
         )
         return
       }
-      const budgetNote = budgetMatch ? `，token 预算 ${budgetMatch[1]}` : ''
-      st.goalSet(`${objective}${budgetNote}`)
+      const budget = budgetMatch ? Math.round(Number(budgetMatch[1])) : undefined
+      void st.goalSet(objective, budget)
     },
   },
   {

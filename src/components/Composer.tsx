@@ -365,6 +365,7 @@ export function Composer() {
   const send = useChatStore((s) => s.send)
   const conn = useChatStore((s) => s.conn)
   const usage = useChatStore((s) => s.usage)
+  const genRate = useChatStore((s) => s.genRate)
   const statusText = useChatStore((s) => s.statusText)
   const modeBanner = useChatStore((s) => s.modeBanner)
   const clearModeBanner = useChatStore((s) => s.clearModeBanner)
@@ -527,17 +528,44 @@ export function Composer() {
 
   /**
    * TUI double-Enter / [发送现在]: drain the queue head immediately.
-   * `sending` is the mutex shared with the auto-send effect — a user
-   * gesture can never race the turn-end auto-send into a double prompt.
+   * The head may only be sent while the session is IDLE — the host rejects
+   * prompts mid-turn (409 "上一条消息还在处理中"), so a running turn is
+   * cancelled first, exactly like Ctrl+Enter sendNow (TUI send-now is
+   * cancel-and-send). `sending` is the mutex shared with the auto-send
+   * effect and is armed BEFORE the cancel, so the cancelled turn's
+   * ready+awaitingNext state can never race into a second auto-send.
+   * The lock only spans the cancel→dequeue→send-start window: send() flips
+   * conn to 'busy' synchronously, which already blocks the auto-send
+   * effect — holding the lock until the turn ends (send() resolves at
+   * turn completion) would silently swallow every Enter in the meantime.
    */
   const sendQueuedHead = async () => {
     const q = usePromptQueue.getState()
     if (q.sending) return
-    const head = q.dequeue()
-    if (!head) return
     q.setSending(true)
     try {
-      await useChatStore.getState().send(head.text, head.blocks)
+      // TUI send-now: cancel the running turn (background tasks keep
+      // running), then send the head as the next prompt.
+      if (useChatStore.getState().conn === 'busy') {
+        await useChatStore.getState().cancel()
+        // Let the cancelled SSE land first so it can't clobber the new
+        // turn's busy state (bounded wait; no-op when already idle).
+        for (
+          let i = 0;
+          i < 50 && useChatStore.getState().conn === 'busy';
+          i++
+        ) {
+          await new Promise((r) => setTimeout(r, 10))
+        }
+      }
+      const head = q.dequeue()
+      if (!head) return
+      const sendPromise = useChatStore.getState().send(head.text, head.blocks)
+      // 竞态窗口已过：send() 同步置 conn=busy，自动发送 effect 不会再
+      // 触发——立即释放锁，否则整回合（send 在回合完成时才 resolve）
+      // 期间 onSubmit 的 sending 守卫会把 Enter 静默吞掉。
+      q.setSending(false)
+      await sendPromise
       if (useChatStore.getState().conn !== 'error') pushHistory(head.text)
     } finally {
       q.setSending(false)
@@ -965,6 +993,9 @@ export function Composer() {
     conn === 'error' ||
     conn === 'offline' ||
     idleCueVisible
+  // 生成速度显示（状态行总时间右侧）：按流式字符估算的 tok/s。
+  const genRateLabel =
+    genRate != null && genRate > 0 ? Math.round(genRate) : undefined
   const [spinnerFrame, setSpinnerFrame] = useState(0)
   useEffect(() => {
     if (!statusVisible) return
@@ -1281,6 +1312,27 @@ export function Composer() {
     return out
   }, [usage, conn, statusText, permissionMode, yoloMode, autoMode, planMode])
 
+  // ── TUI queue hint (turn_status.rs: `· N queued`) ──
+  // 队列状态不进状态行（右侧簇在窄屏会挤）——独立一行，字号与 busy
+  // 状态块一致（13.5px / tabular-nums / 灰色），纵向尽量收窄。
+  const queueRow =
+    queue.length > 0 && (
+      <div
+        className="mb-1 flex min-h-4 items-center gap-1.5 pb-1 pr-0.5 font-ui text-[13.5px] leading-[1.4] select-none"
+        style={{ paddingLeft: COMPOSER_BODY_PAD_LEFT_PX }}
+      >
+        <button
+          ref={queuePillRef}
+          type="button"
+          onClick={() => setQueuePanelOpen(!queuePanelOpen)}
+          className="inline-flex min-h-5 items-center rounded px-1 tabular-nums text-gn-gray transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg sm:min-h-0"
+          title="点击查看发送队列（发送现在 / 删除 / 编辑）"
+        >
+          · {queue.length} queued
+        </button>
+      </div>
+    )
+
   return (
     <div className="safe-pb bg-gn-bg-base pt-1">
       <div className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS}`}>
@@ -1385,9 +1437,14 @@ export function Composer() {
                     {formatTurnDuration(Date.now() - turnStartedAt)}
                   </span>
                 )}
-                {busy && usage?.used != null && (
-                  <span className="tabular-nums text-gn-gray">
-                    ⇣{fmtTok(usage.used)}
+                {/* 生成速度（估算 tok/s）：流式中实时、工具执行中冻结，
+                    总时间右侧；⇣ 图标 + T 单位。 */}
+                {busy && genRateLabel != null && (
+                  <span
+                    className="tabular-nums text-gn-gray"
+                    title={`生成速度（按流式字符估算，工具执行时间不计入）${genRateLabel}t`}
+                  >
+                    ⇣{genRateLabel}t
                   </span>
                 )}
                 {/* [↓] send-to-background (TUI DemoteToBackground) — hover
@@ -1428,25 +1485,10 @@ export function Composer() {
             )}
           </div>
         )}
-        {/* TUI queue pill — visible while prompts are queued mid-turn.
-            Click toggles the queue panel (delete items / send now). */}
-        {queue.length > 0 && (
-          <div className="mb-1.5" style={{ paddingLeft: COMPOSER_BODY_PAD_LEFT_PX }}>
-            <button
-              ref={queuePillRef}
-              type="button"
-              onClick={() => setQueuePanelOpen(!queuePanelOpen)}
-              className="inline-flex min-h-6 items-center gap-1.5 rounded-full border border-gn-prompt-border bg-gn-bg-dark px-2.5 text-[11px] leading-none transition-colors hover:border-gn-prompt-border-active sm:min-h-0"
-              title="点击查看发送队列"
-            >
-              <span className="text-gn-cyan">已排队 {queue.length} 条</span>
-              <span className="text-gn-gray">·</span>
-              <span className="text-gn-gray">Ctrl+Enter 立即发送</span>
-            </button>
-          </div>
-        )}
-        {/*
-          ── TUI follow-up suggestion chips (x.ai/follow_ups, follow_ups.rs) ──
+        {/* TUI queue hint 独立一行（不挤状态行）：排队中/空闲有剩余条目时
+            都显示，点击展开队列面板。 */}
+        {queueRow}
+        {/* ── TUI follow-up suggestion chips (x.ai/follow_ups, follow_ups.rs) ──
           Turn-end suggestions rendered as a transient row between the
           scrollback and the prompt (TUI: `[ label ]` chips above the prompt
           line). Shown only when the turn is over and nothing is in flight;
@@ -1563,7 +1605,7 @@ export function Composer() {
                               usePromptQueue.getState().moveUp(i)
                               setQueueSel(Math.max(0, i - 1))
                             }}
-                            className="shrink-0 rounded px-1 text-gn-gray opacity-0 transition-opacity group-hover:opacity-100 hover:bg-gn-bg-highlight hover:text-gn-fg"
+                            className="shrink-0 rounded px-1 text-gn-gray transition-opacity hover:bg-gn-bg-highlight hover:text-gn-fg sm:opacity-0 sm:group-hover:opacity-100"
                             title="上移 (Shift+K / Ctrl+↑)"
                           >
                             ↑
@@ -1574,7 +1616,7 @@ export function Composer() {
                               usePromptQueue.getState().moveDown(i)
                               setQueueSel(Math.min(queue.length - 1, i + 1))
                             }}
-                            className="shrink-0 rounded px-1 text-gn-gray opacity-0 transition-opacity group-hover:opacity-100 hover:bg-gn-bg-highlight hover:text-gn-fg"
+                            className="shrink-0 rounded px-1 text-gn-gray transition-opacity hover:bg-gn-bg-highlight hover:text-gn-fg sm:opacity-0 sm:group-hover:opacity-100"
                             title="下移 (Shift+J / Ctrl+↓)"
                           >
                             ↓
@@ -1582,7 +1624,7 @@ export function Composer() {
                           <button
                             type="button"
                             onClick={() => usePromptQueue.getState().startEdit(i)}
-                            className="shrink-0 rounded px-1 text-gn-gray opacity-0 transition-opacity group-hover:opacity-100 hover:bg-gn-bg-highlight hover:text-gn-fg"
+                            className="shrink-0 rounded px-1 text-gn-gray transition-opacity hover:bg-gn-bg-highlight hover:text-gn-fg sm:opacity-0 sm:group-hover:opacity-100"
                             title="编辑 (e)"
                           >
                             e
@@ -1590,7 +1632,7 @@ export function Composer() {
                           <button
                             type="button"
                             onClick={() => usePromptQueue.getState().removeAt(q.id)}
-                            className="shrink-0 rounded px-1 text-gn-gray opacity-0 transition-opacity group-hover:opacity-100 hover:bg-gn-bg-highlight hover:text-gn-red"
+                            className="shrink-0 rounded px-1 text-gn-gray transition-opacity hover:bg-gn-bg-highlight hover:text-gn-red sm:opacity-0 sm:group-hover:opacity-100"
                             title="从队列删除 (x)"
                           >
                             {Glyphs.ballotX}
@@ -1618,7 +1660,9 @@ export function Composer() {
                   清空
                 </button>
                 <span className="flex-1" />
-                <span className="text-[10px] text-gn-gray">
+                {/* 键盘快捷键提示仅桌面显示——触屏没有 hover/快捷键，窄屏
+                    也放不下（10px × 90 字 ≈ 460px）。 */}
+                <span className="hidden text-[10px] text-gn-gray sm:inline">
                   {queueEditIndex != null
                     ? 'Enter 保存 · Shift+Enter 换行 · Esc 取消'
                     : 'x 删除 · e 编辑 · ↑↓ 选择 · Shift+K/↑ 上移 · Shift+J/↓ 下移 · Esc 关闭'}

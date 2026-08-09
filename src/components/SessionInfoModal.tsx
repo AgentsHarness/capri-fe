@@ -292,7 +292,7 @@ export function SessionInfoModal() {
         </div>
 
         <footer className="rounded-b border-t border-gn-prompt-border px-4 py-2">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={() => void refreshUsage()}

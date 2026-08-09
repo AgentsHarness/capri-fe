@@ -23,6 +23,31 @@ import type {
 export type TransportHandler = (ev: AcpEvent) => void
 
 /**
+ * Turn-level failure from POST /api/prompt — the host answered (any HTTP
+ * status) with an error envelope ({ok:false, error} or non-2xx). The host
+ * is a relay: such failures are the AGENT's (e.g. the model API's 400
+ * "Internal Error: …"), not a host outage — the store renders them as a
+ * scrollback error row instead of flipping the connection to 'error'.
+ * Network-level failures (fetch rejection — host unreachable) stay plain
+ * Errors and keep the host-error treatment.
+ */
+export type AgentTurnKind = 'rejected' | 'unreachable'
+
+export class AgentTurnError extends Error {
+  /**
+   * 'rejected' — agent 回复了 JSON-RPC 错误（进程活着，只是拒绝了回合）；
+   * 'unreachable' — agent 不可达（host 返回 502：超时/写失败/boot 失败，
+   * host 正在重启 agent）。
+   */
+  kind: AgentTurnKind
+  constructor(kind: AgentTurnKind, message: string) {
+    super(message)
+    this.name = 'AgentTurnError'
+    this.kind = kind
+  }
+}
+
+/**
  * LocalTransport talks to acp-host on the same machine (or via Vite proxy),
  * or to acp-hub when running in hub mode.
  *
@@ -104,6 +129,11 @@ export class LocalTransport {
    * POST /api/prompt — 200 响应非空时 host 透传 session/prompt 响应的
    * `_meta`（data.meta）。stopReason 保持原有透传解析；meta 仅 object
    * 且非空时带上。
+   *
+   * 失败分类：host 是 agent 的透传层——HTTP 错误响应（!res.ok 或
+   * ok:false）说明 host 活着、错误来自 agent（如模型 API 400
+   * "Internal Error"），抛 AgentTurnError 由 store 渲染成回合错误行；
+   * 只有网络级失败（fetch 拒绝 = host 不可达）才保持普通 Error。
    */
   async prompt(blocks: ContentBlock[]): Promise<{ stopReason?: string; meta?: Record<string, unknown> }> {
     const res = await fetch(this.url('/api/prompt'), {
@@ -111,9 +141,19 @@ export class LocalTransport {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ blocks }),
     })
-    const data = await res.json()
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>
     if (!res.ok || data.ok === false) {
-      throw new Error(data.error || `prompt failed (${res.status})`)
+      // 三档 wire 约定（host writeAgentError）：
+      //   200 + {ok:false, error}            → agent 拒绝了请求（RPCError）
+      //   502 + {ok:false, error}            → agent 不可达（传输级失败）
+      //   其余非 2xx（400/404/409/500）       → host 语义/内部错误
+      // 全部说明 host 活着 → 回合级错误；只有 fetch 网络拒绝才是 host 级。
+      throw new AgentTurnError(
+        res.status === 502 ? 'unreachable' : 'rejected',
+        typeof data.error === 'string' && data.error
+          ? data.error
+          : `prompt failed (${res.status})`,
+      )
     }
     const out: { stopReason?: string; meta?: Record<string, unknown> } = {}
     if (typeof data.stopReason === 'string') out.stopReason = data.stopReason
@@ -634,6 +674,75 @@ export class LocalTransport {
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || 'permissions reset failed')
     }
+  }
+
+  // ── /api/goal/* — host-side goal engine (TUI /goal parity) ────────
+  // The host owns the goal tracker (goal.go); these endpoints control it
+  // directly. Each returns {ok, goal} where goal mirrors the TUI's
+  // goal_updated payload (null when no goal is set). The host also
+  // broadcasts goal_updated events as state changes.
+
+  /** Set an autonomous goal on the active session (starts the goal loop). */
+  async goalSet(objective: string, tokenBudget?: number) {
+    const res = await fetch(this.url('/api/goal/set'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        objective,
+        ...(tokenBudget && tokenBudget > 0 ? { tokenBudget } : {}),
+      }),
+    })
+    const data = await res.json()
+    if (!res.ok || data.ok === false) throw new Error(data.error || 'goal set failed')
+    return data
+  }
+
+  /** Current goal state snapshot (no agent round-trip). */
+  async goalStatus() {
+    const res = await fetch(this.url('/api/goal/status'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    const data = await res.json()
+    if (!res.ok || data.ok === false) throw new Error(data.error || 'goal status failed')
+    return data
+  }
+
+  /** Pause the active goal (user_paused). */
+  async goalPause() {
+    const res = await fetch(this.url('/api/goal/pause'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    const data = await res.json()
+    if (!res.ok || data.ok === false) throw new Error(data.error || 'goal pause failed')
+    return data
+  }
+
+  /** Resume a paused goal. */
+  async goalResume() {
+    const res = await fetch(this.url('/api/goal/resume'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    const data = await res.json()
+    if (!res.ok || data.ok === false) throw new Error(data.error || 'goal resume failed')
+    return data
+  }
+
+  /** Clear the goal (cleared). */
+  async goalClear() {
+    const res = await fetch(this.url('/api/goal/clear'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    const data = await res.json()
+    if (!res.ok || data.ok === false) throw new Error(data.error || 'goal clear failed')
+    return data
   }
 
   /** x.ai/subagent/cancel. */

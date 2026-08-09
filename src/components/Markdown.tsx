@@ -1,4 +1,4 @@
-import { memo, useEffect, isValidElement, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, isValidElement, useState } from 'react'
 import type { ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -304,23 +304,81 @@ const baseComponents: Components = {
 type Props = {
   source: string
   className?: string
+  /** 流式输出中:纯文本渲染(零解析),收口后分块渐进格式化。 */
+  streaming?: boolean
+}
+
+/** 收口后开始格式化的延迟毫秒数(让"完成"先呈现,解析落在空闲帧)。 */
+const MARKDOWN_SETTLE_DELAY_MS = 60
+/** 渐进格式化的单块最大字符数(每帧只渲染一块,单帧成本有界)。 */
+const SETTLE_CHUNK_MAX_CHARS = 2048
+
+/**
+ * 把 settle 后的全文按结构完整的位置切成 ≤SETTLE_CHUNK_MAX_CHARS 的
+ * 片段:代码围栏内部、表格/引用/列表连段内部不切,切点只在结构闭合处
+ * 的空行——保证每个片段自身是完整 markdown,渐进渲染时不会出现半截
+ * 结构(未闭合的围栏/表格会退回纯文本,视觉跳动)。
+ */
+function splitSettleChunks(source: string): string[] {
+  const lines = source.split('\n')
+  const chunks: string[] = []
+  let cur: string[] = []
+  let curLen = 0
+  let inFence = false
+  let prevSig = '' // 上一非空行(判断空行是否为结构边界)
+  const flush = () => {
+    if (cur.length === 0) return
+    chunks.push(cur.join('\n'))
+    cur = []
+    curLen = 0
+  }
+  const structureLine = (line: string) =>
+    /^[ \t]*(?:[-*+]|\d+[.)])[ \t]/.test(line) || // 列表项
+    /^[ \t]*\|/.test(line) || // 表格行
+    /^[ \t]*>/.test(line) // 引用行
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (/^[ \t]*(?:```|~~~)/.test(line)) inFence = !inFence
+    cur.push(line)
+    curLen += line.length + 1
+    if (trimmed === '') {
+      // 空行:块够大且前后都不是跨空行结构时作为切分点
+      if (
+        curLen >= SETTLE_CHUNK_MAX_CHARS * 0.8 &&
+        !inFence &&
+        prevSig !== '' &&
+        !structureLine(prevSig)
+      ) {
+        flush()
+      }
+      prevSig = ''
+      continue
+    }
+    prevSig = trimmed
+    // 超长且当前行不是表格/引用/列表行:就地切(下一行起新块)
+    if (
+      curLen >= SETTLE_CHUNK_MAX_CHARS &&
+      !inFence &&
+      !structureLine(line)
+    ) {
+      flush()
+    }
+  }
+  flush()
+  return chunks
 }
 
 /**
- * Memoized: during streaming only the active entry's `source` changes, so
- * unchanged assistant messages skip the (expensive) markdown re-parse on
- * every chunk. `code`/`pre` are built per render because mermaid detection
- * needs the current raw source; rehype-highlight runs offline (highlight.js
- * core) with `ignoreMissing` so ```mermaid and unknown languages pass
- * through untouched during streaming.
- *
- * Math: remarkMathPlugin converts `$…$` / `$$…$$` / `\(…\)` / `\[…\]` spans
- * in text nodes (never inside code) to Unicode approximations — TUI
- * latex_to_unicode parity. Unclosed delimiters stay literal until closed
- * (same "closed-only" rule as mermaid), so streaming tails render as plain
- * text until the closing delimiter arrives.
+ * 单块 markdown 渲染(mermaid 检测/数学归一化/代码高亮全管线)。
+ * memo:source 不变即不重渲染——渐进渲染时已渲染的块原样复用。
  */
-export const Markdown = memo(function Markdown({ source, className = '' }: Props) {
+const MarkdownBody = memo(function MarkdownBody({
+  source,
+  className = '',
+}: {
+  source: string
+  className?: string
+}) {
   // Delimiter normalization runs on the RAW source (before markdown
   // parsing) so `\(…\)` / `\[…\]` / `$$…$$` reach the parser in canonical
   // `$` form and their interior backslashes survive CommonMark escapes.
@@ -369,4 +427,100 @@ export const Markdown = memo(function Markdown({ source, className = '' }: Props
       </ReactMarkdown>
     </div>
   )
+})
+
+/**
+ * 渐进格式化:settle 后按块逐帧渲染(settleBatch 每帧 +1),把"一次性
+ * 全量解析 9000 字符 + 代码高亮 + DOM 构建"的长时间阻塞摊平成每帧
+ * 一块的小更新(手机上总耗时不变,但单帧成本有界、主线程持续可响应)。
+ *
+ * 钉底纪律:本组件在格式化期间/完成后**绝不**滚动——读 scrollHeight 会
+ * 让浏览器同步布局整个滚动容器(500 行历史在低端机上 200-500ms/次)。
+ * 滚动到底由 Scrollback 的自动跟随在**收口事件**时完成:streaming 变
+ * false 触发 store 更新 → 自动跟随 effect 执行 box.scrollTop = 
+ * scrollHeight——此刻内容仍是纯文本、DOM 未变、布局干净,读是 O(1),
+ * 滚动零成本。格式化(渐进)期间与完成后都不再滚动。
+ */
+function SettleBody({
+  source,
+  className = '',
+}: {
+  source: string
+  className?: string
+}) {
+  const chunks = useMemo(() => splitSettleChunks(source), [source])
+  const [batch, setBatch] = useState(1)
+  useEffect(() => {
+    if (batch >= chunks.length) return
+    const raf = requestAnimationFrame(() =>
+      setBatch((b) => Math.min(b + 1, chunks.length)),
+    )
+    return () => cancelAnimationFrame(raf)
+  }, [batch, chunks.length])
+
+  return (
+    <div className={`gn-md ${className}`}>
+      {chunks.slice(0, batch).map((c, i) => (
+        <MarkdownBody key={i} source={c} />
+      ))}
+    </div>
+  )
+}
+
+/**
+ * Memoized: during streaming only the active entry's `source` changes, so
+ * unchanged assistant messages skip the (expensive) markdown re-parse on
+ * every chunk. `code`/`pre` are built per render because mermaid detection
+ * needs the current raw source; rehype-highlight runs offline (highlight.js
+ * core) with `ignoreMissing` so ```mermaid and unknown languages pass
+ * through untouched during streaming.
+ *
+ * Math: remarkMathPlugin converts `$…$` / `$$…$$` / `\(…\)` / `\[…\]` spans
+ * in text nodes (never inside code) to Unicode approximations — TUI
+ * latex_to_unicode parity. Unclosed delimiters stay literal until closed
+ * (same "closed-only" rule as mermaid), so streaming tails render as plain
+ * text until the closing delimiter arrives.
+ *
+ * Cost model: while `streaming` the body is plain pre-wrap text — the full
+ * markdown pipeline (parse + highlight.js per code block + React tree
+ * rebuild + layout) is simply not run per frame, which is what makes long
+ * replies stutter on mobile even with a tail window. After the stream
+ * settles, the formatted render happens in chunks (one ~2KB block per
+ * frame via SettleBody), so the one-time full-format cost is spread over
+ * several frames instead of one multi-second main-thread stall.
+ */
+export const Markdown = memo(function Markdown({ source, className = '', streaming = false }: Props) {
+  // 收口延迟一拍再开始格式化:流式期间零解析;流结束后 60ms 起分块
+  // 渐进格式化。静态实例(查看器/弹窗,从未 streaming)不经过 settle——
+  // 直接全文格式化。
+  const wasStreaming = useRef(false)
+  const [settledSource, setSettledSource] = useState<string | null>(null)
+  useEffect(() => {
+    if (streaming) {
+      wasStreaming.current = true
+      return
+    }
+    if (!wasStreaming.current) return
+    const t = window.setTimeout(
+      () => setSettledSource(source),
+      MARKDOWN_SETTLE_DELAY_MS,
+    )
+    return () => window.clearTimeout(t)
+  }, [streaming, source])
+
+  // 流式期间(以及收口后的 settle 等待期):纯文本直出——每帧只有一个
+  // 文本节点更新,没有 markdown 解析/代码高亮/DOM 重建/布局级联。
+  if (streaming || (wasStreaming.current && settledSource == null)) {
+    return (
+      <div className={`gn-md ${className}`}>
+        <div className="whitespace-pre-wrap break-words">{source}</div>
+      </div>
+    )
+  }
+  if (wasStreaming.current) {
+    // 经历过流式:分块渐进格式化(每帧一块,单帧成本有界)。
+    return <SettleBody source={settledSource ?? source} className={className} />
+  }
+  // 静态实例(查看器/弹窗/历史回放):直接全量格式化。
+  return <MarkdownBody source={source} className={className} />
 })

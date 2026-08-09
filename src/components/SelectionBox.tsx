@@ -54,7 +54,9 @@ export function SelectionBox({
 
   return (
     <div
-      className="pointer-events-none absolute z-[1] select-none"
+      // 移动端不显示选中框：选中是桌面键盘导航（j/k）的视觉指示，触屏
+      // 上没有该交互；隐藏后条目选中态仍由底色/accent 体现（sm: = 桌面）。
+      className="pointer-events-none absolute z-[1] hidden select-none sm:block"
       style={{
         left: -OUTSET_X_PX,
         right: -OUTSET_X_PX,

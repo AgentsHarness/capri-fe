@@ -58,7 +58,7 @@ export default function App() {
       <div className="flex min-h-0 flex-1">
         {/* Persistent desktop history sidebar; mobile history lives in the TopBar dropdown. */}
         <HistorySidebar />
-        <main className="flex min-h-0 flex-1 flex-col">
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col">
           {/* Workspace + git — scrollback top-left (TUI status-bar left). */}
           <WorkspaceBar onOpenMcp={() => setMcpOpen(true)} />
           <Scrollback />

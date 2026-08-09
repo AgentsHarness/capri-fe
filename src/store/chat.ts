@@ -24,7 +24,7 @@ import type {
   WorkspaceGroup,
   WorkspaceSummary,
 } from '../api/types'
-import { transport, type McpListServer } from '../api/localTransport'
+import { transport, AgentTurnError, type McpListServer } from '../api/localTransport'
 import { applyQueueChanged, usePromptQueue } from './promptQueue'
 import { toolHeader } from '../theme/glyphs'
 import { repoNameFromCwd } from '../components/historyGroups'
@@ -53,6 +53,14 @@ const NOTICE_DEDUP_WINDOW_MS = 30_000
  * 会话，多会话切换时可能错标）。
  */
 let lastBusySnapshot: Record<string, boolean> = {}
+
+/**
+ * 已显示过的公告指纹（模块级，非响应式）：key = 公告 id（无 id 回退到
+ * title—message 内容），value = severity + 文案指纹。announcements_update
+ * 只在公告内容变化时落新行——TUI 在每次 /new、启动后 2s 都会 Force 重推
+ * 同一份列表，没有这层去重 scrollback 会被同样的公告行刷屏。
+ */
+const displayedAnnouncementFingerprints = new Map<string, string>()
 
 // ── cancel-turn preference (TUI cancel_subagents_on_turn_cancel) ────
 // Saved by the cancel panel's "Always stop" / "Always continue" options.
@@ -1003,6 +1011,19 @@ type ChatState = {
   /** Turn start (epoch ms) for the TUI "Worked for Xs" completion marker. */
   turnStartedAt?: number
   /**
+   * 进行中的思考段（一次连续的 thought 流）——首个 thought chunk 开始，
+   * 回答（chunk）/ tool_call / 回合终态 / 用户输入收口。速率只在
+   * thinking 期间计算；回答流与工具执行不更新数字（回答开始即收口）。
+   * 宿主不提供逐段 token 数据（usage 只在回合终态），按流式字符估算段内
+   * 输出速度。
+   */
+  genSegment?: { startTs: number; chars: number; cjkChars: number }
+  /**
+   * 最近一次思考段的平均输出速度（估算 tok/s）——thinking 期间为实时
+   * 值，收口后为最终值；新一轮发送时清空。回答流期间不更新。
+   */
+  genRate?: number
+  /**
    * True after a turn finishes until the next send — UI shows blue "待处理"
    * (session is idle and waiting for the next user prompt).
    */
@@ -1285,12 +1306,11 @@ type ChatState = {
   /** POST /api/permissions-reset — forget remembered permission rules. */
   resetPermissions: () => Promise<void>
 
-  // ── goal mode (TUI /goal) — PROMPT-PATH control ─────────────────────
-  // The wire defines `goal_updated` notifications but NO goal control
-  // methods, so every goal action instructs the agent (which owns the
-  // update_goal tool) through send()/promptQueue — the best feasible
-  // port of the TUI's /goal set/status/pause/resume/clear.
-  goalSet: (objective: string) => void
+  // ── goal mode (TUI /goal) — HOST-ENGINE control ───────────────────
+  // The host owns the goal tracker and /api/goal/* endpoints (the wire
+  // defines goal_updated notifications but NO goal control methods, so
+  // the engine lives host-side, not in prompts).
+  goalSet: (objective: string, tokenBudget?: number) => void
   goalStatus: () => void
   goalPause: () => void
   goalResume: () => void
@@ -1486,11 +1506,13 @@ function imageSrc(data: string, mimeType?: string): string | undefined {
 }
 
 /**
- * Send a goal/workflow control prompt through the PROMPT path: queue
+ * Send a workflow control prompt through the PROMPT path: queue
  * mid-turn like any Enter prompt (promptQueue auto-sends at turn end),
  * send immediately otherwise. `feedback` lands on the status line AFTER
  * send()'s synchronous 'Thinking' stamp so the confirmation stays
  * visible; the next connection event replaces it.
+ * (Goals no longer use this path — they are driven by the host engine
+ * via /api/goal/*; see the goalSet docs above.)
  */
 function sendControlPrompt(
   get: () => ChatState,
@@ -1612,48 +1634,75 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }),
   planMode: false,
 
-  // ── goal mode — PROMPT-PATH control (see ChatState docs) ────────────
-  goalSet: (objective) => {
+  // ── goal mode — HOST-ENGINE control (TUI /goal parity) ─────────────
+  // The host owns the goal tracker (acp-host goal.go): these actions call
+  // /api/goal/* directly instead of the old prompt path (the wire has no
+  // goal control methods, and the prompt path only worked when the agent
+  // happened to have an update_goal tool). Responses carry the current
+  // goal state, applied to goalState immediately; the host also
+  // broadcasts goal_updated events on every state change.
+  goalSet: async (objective, tokenBudget) => {
     const o = objective.trim()
     if (!o) {
       set({ statusText: '目标设定失败: 缺少目标描述' })
       return
     }
-    sendControlPrompt(
-      get,
-      set,
-      `请设定自主目标（用 update_goal 工具）：${o}`,
-      '目标设定指令已发送',
-    )
+    // Tolerate a trailing --budget in the objective for direct callers.
+    let budget = tokenBudget
+    const budgetMatch = o.match(/--budget\s+([\d.]+[kKmM]?)/i)
+    const clean = budgetMatch ? o.slice(0, budgetMatch.index).trim() : o
+    if (budgetMatch && budget == null) {
+      const n = Number(budgetMatch[1])
+      if (!Number.isNaN(n)) budget = Math.round(n)
+    }
+    try {
+      const data = await transport.goalSet(clean, budget)
+      if (data.goal) set({ goalState: data.goal, goalReceivedAt: Date.now() })
+      set({ statusText: '目标已设定，开始执行' })
+    } catch (e) {
+      set({ statusText: `目标设定失败: ${e instanceof Error ? e.message : e}` })
+    }
   },
-  goalStatus: () =>
-    sendControlPrompt(
-      get,
-      set,
-      '请报告当前自主目标状态（goal status）',
-      '目标状态查询已发送',
-    ),
-  goalPause: () =>
-    sendControlPrompt(
-      get,
-      set,
-      '请暂停当前自主目标（用 update_goal 工具暂停目标执行）',
-      '目标暂停指令已发送',
-    ),
-  goalResume: () =>
-    sendControlPrompt(
-      get,
-      set,
-      '请恢复当前自主目标（用 update_goal 工具恢复目标执行）',
-      '目标恢复指令已发送',
-    ),
-  goalClear: () =>
-    sendControlPrompt(
-      get,
-      set,
-      '请清除当前自主目标（用 update_goal 工具清除目标）',
-      '目标清除指令已发送',
-    ),
+  goalStatus: async () => {
+    try {
+      const data = await transport.goalStatus()
+      if (data.goal) {
+        set({ goalState: data.goal, goalReceivedAt: Date.now() })
+        set({ statusText: `目标状态: ${String(data.goal.status)}` })
+      } else {
+        set({ statusText: '暂无目标状态（当前没有进行中的目标）' })
+      }
+    } catch (e) {
+      set({ statusText: `目标状态查询失败: ${e instanceof Error ? e.message : e}` })
+    }
+  },
+  goalPause: async () => {
+    try {
+      const data = await transport.goalPause()
+      if (data.goal) set({ goalState: data.goal, goalReceivedAt: Date.now() })
+      set({ statusText: '目标已暂停' })
+    } catch (e) {
+      set({ statusText: `目标暂停失败: ${e instanceof Error ? e.message : e}` })
+    }
+  },
+  goalResume: async () => {
+    try {
+      const data = await transport.goalResume()
+      if (data.goal) set({ goalState: data.goal, goalReceivedAt: Date.now() })
+      set({ statusText: '目标已恢复' })
+    } catch (e) {
+      set({ statusText: `目标恢复失败: ${e instanceof Error ? e.message : e}` })
+    }
+  },
+  goalClear: async () => {
+    try {
+      const data = await transport.goalClear()
+      if (data.goal) set({ goalState: data.goal, goalReceivedAt: Date.now() })
+      set({ statusText: '目标已清除' })
+    } catch (e) {
+      set({ statusText: `目标清除失败: ${e instanceof Error ? e.message : e}` })
+    }
+  },
 
   /**
    * Workflow pause/resume/stop — same protocol gap as goals: no wire
@@ -1866,6 +1915,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
     const host = get().hosts.find((h) => h.hostId === hostId)
     clearSuppressedTools()
+    clearStreamBuf()
+    rearmGenRate()
     set({
       selectedHostId: hostId,
       hostId,
@@ -2008,6 +2059,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // history when the tail is all suppressed noise (e.g. orphan Bash
     // streams on "start acpfe") so the user still sees real messages.
     clearSuppressedTools()
+    // 流式缓冲丢弃：换会话后旧流的文本绝不能落进新 scrollback。
+    clearStreamBuf()
+    // 重放门控复位：加载会话本身不是重放（重放只发生在在途回合的
+    // live 重流，由 continueSession 的 busy 分支单独 disarm）。
+    rearmGenRate()
     set({
       historyOpen: false,
       historyLoading: true,
@@ -2062,6 +2118,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       todoCounts: undefined,
       todos: undefined,
       turnStartedAt: undefined,
+      genRate: undefined,
+      genSegment: undefined,
       scheduledTasks: [],
     })
     try {
@@ -2086,12 +2144,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
         total = r.totalCount ?? total
 
         if (pages === 0) {
-          // Newest page: rebuild from scratch.
+          // Newest page: rebuild from scratch. This page carries the
+          // session's FINAL context usage (newest envelope) — the only
+          // page allowed to update the context chip.
           replayMeta = replayUpdates(get, updates)
         } else {
-          // Older page: same prepend semantics as loadMoreHistory.
+          // Older page: same prepend semantics as loadMoreHistory. Usage
+          // must NOT be applied — it belongs to the newest page only.
           const split = get().entries.length
-          replayUpdates(get, updates)
+          replayUpdates(get, updates, { applyUsage: false })
           const after = get()
           let oldEntries = after.entries.slice(0, split)
           const newEntries = after.entries.slice(split).map((e, i, arr) =>
@@ -2315,6 +2376,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           // status text instead of the generic host wait.
           const hasLocalStreaming =
             get().openThoughtId != null || get().openAssistantId != null
+          // 重放门控：同上——加载在途回合后的批量重流不算 live 速率。
+          if (!hasLocalStreaming) disarmGenRateForReplay()
           set({
             historyLoading: false,
             conn: 'busy',
@@ -2365,9 +2428,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       })
       const fetched = r.updates?.length ?? 0
       // Replay appends; remember where the previous timeline started so the
-      // new (older) page can be moved in front of it afterwards.
+      // new (older) page can be moved in front of it afterwards. Older
+      // pages never update the context chip (applyUsage: false) — only the
+      // newest page (loadHistory) carries the session's current usage.
       const split = get().entries.length
-      replayUpdates(get, r.updates ?? [])
+      replayUpdates(get, r.updates ?? [], { applyUsage: false })
       const after = get()
       let oldEntries = after.entries.slice(0, split)
       const newEntries = after.entries.slice(split).map((e, i, arr) =>
@@ -2443,6 +2508,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   handleEvent: (ev) => {
+    // 流式合并缓冲：非流式事件（收口/状态/…）处理前强制 flush，保证
+    // tool_call/chunk/回合终态之前的思考文本已落库；同类流式事件
+    // （thought,thought,… / chunk,chunk,…）之间不 flush——由 rAF 合并。
+    if (ev.type === 'thought' ? streamBufKind === 'assistant' : streamBufText !== '') {
+      flushStreamBuf(set, get)
+    }
     // Host typed-event carrier (protocol alignment — "single typed event
     // per kind"): modeled x.ai kinds arrive as {type: <kind>, update,
     // sessionId} with the verbatim SessionUpdate envelope in `update`
@@ -2504,6 +2575,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           // Preserve an existing turn timer across mid-turn re-busy/reconnect;
           // otherwise anchor it now (same rule as the `busy` event handler).
           const busyTurn = get().turnStartedAt ?? Date.now()
+          const newTurn = get().turnStartedAt == null
           // The busy flag alone is not "waiting for host": a reconnect
           // mid-turn keeps this frontend's own streaming state, and its
           // live status text (Thinking… / Responding…) must stand. Only a
@@ -2512,11 +2584,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
           // host to sync the in-flight turn.
           const hasLocalStreaming =
             get().openThoughtId != null || get().openAssistantId != null
+          // 重放门控：本端无本地流式状态（新页面/他端回合）时，紧接的
+          // 重流是该在途回合的重放内容——第一个思考块不显示速率。
+          if (!hasLocalStreaming) disarmGenRateForReplay()
           set({
             conn: 'busy',
             statusText: hasLocalStreaming ? get().statusText : 'Waiting for host…',
             awaitingNext: false,
             turnStartedAt: busyTurn,
+            ...(newTurn
+              ? { genRate: undefined, genSegment: undefined }
+              : {}),
             error: undefined,
             statusWarning: undefined,
           })
@@ -2576,6 +2654,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const s = get()
         // Anchor the "Worked for Xs" timer; don't reset on mid-turn re-busy.
         const turnStartedAt = s.turnStartedAt ?? Date.now()
+        // 新回合开始（上一回合已收口 → turnStartedAt 为空）时，上一回合的
+        // 生成段速率失效；mid-turn re-busy（tool 调用等）保留。
+        const newTurn = s.turnStartedAt == null
         const hasLocalStreaming =
           s.openThoughtId != null || s.openAssistantId != null
         set({
@@ -2583,6 +2664,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
           statusText: hasLocalStreaming ? s.statusText : 'Waiting for response…',
           awaitingNext: false,
           turnStartedAt,
+          ...(newTurn
+            ? { genRate: undefined, genSegment: undefined }
+            : {}),
           // A turn starting means the system recovered — clear stale
           // error/status banners.
           error: undefined,
@@ -2592,6 +2676,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
       case 'user_message':
       case 'user_chunk': {
+        // 用户输入 = 生成段收口（回放时无进行中的段，空操作）。
+        sealGenSegment(set, get)
         // Live echo (user_chunk) or history replay (user_message). Classify
         // like TUI handle_user_message: cron → UserPromptBlock::cron, other
         // system-reminder / auto-wake echoes → hidden, else normal prompt.
@@ -2734,21 +2820,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
       case 'chunk': {
         const text = ev.text || ''
         const ts = ev.ts ?? Date.now()
+        // 思考→回答边界：thinking 结束即收口思考段（冻结速率）。速率只
+        // 在 thinking 期间计算与更新（thought 流）；回答流不累计字符、
+        // 不更新数字——回答开始即把速率定格在思考段的最终值。
+        if (get().openThoughtId != null) sealGenSegment(set, get)
         // seal open thought when assistant starts speaking
         const sealed = sealThought(get())
         const { openAssistantId, entries } = sealed
         if (openAssistantId) {
+          // 已有回答条目：文本进合并缓冲（rAF 统一落库，见 appendStreamBuf）。
           set({
             ...sealed,
             conn: 'busy',
             statusText: 'Responding…',
             awaitingNext: false,
-            entries: entries.map((e) =>
-              e.id === openAssistantId && e.kind === 'assistant'
-                ? { ...e, text: e.text + text, streaming: true }
-                : e,
-            ),
           })
+          appendStreamBuf(set, get, 'assistant', text)
         } else {
           const id = nid()
           set({
@@ -2770,8 +2857,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
         let openThoughtId = s.openThoughtId
         let entries = s.entries
 
-        // If placeholder missing (reconnect mid-turn), create one
+        // If placeholder missing (reconnect mid-turn), create one — with
+        // THIS chunk inline so the Thinking… block never shows empty.
         if (!openThoughtId || !entries.some((e) => e.id === openThoughtId && e.kind === 'thought')) {
+          // 重放门控（genRateReplayChunk）：重放 dump 的块不开始段、
+          // 不显示速率；窗口内出现 ≥ QUIET_MS 的间隔即恢复——同一思考
+          // 块内的 live 续流也能正确开始段。
+          if (genRateReplayChunk()) {
+            beginGenSegment(set, get)
+            accumulateGenSegmentChars(text)
+          }
           const id = nid()
           openThoughtId = id
           entries = [
@@ -2779,7 +2874,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             {
               id,
               kind: 'thought',
-              text: '',
+              text,
               displayMode: 'expanded',
               streaming: true,
               startedAt: Date.now(),
@@ -2789,30 +2884,31 @@ export const useChatStore = create<ChatState>((set, get) => ({
               ...(ev.elapsedMs != null ? { elapsedMs: ev.elapsedMs } : {}),
             },
           ]
+          set({
+            conn: 'busy',
+            statusText: 'Thinking…',
+            awaitingNext: false,
+            openThoughtId,
+            openAssistantId: undefined,
+            entries,
+          })
+          break
         }
-
-        set({
-          conn: 'busy',
-          statusText: 'Thinking…',
-          awaitingNext: false,
-          openThoughtId,
-          openAssistantId: undefined,
-          entries: entries.map((e) =>
-            e.id === openThoughtId && e.kind === 'thought'
-              ? {
-                  ...e,
-                  text: e.text + text,
-                  streaming: true,
-                  displayMode: 'expanded', // keep body visible while flowing
-                  // Last chunk wins (TUI tracker updates on every chunk).
-                  ...(ev.elapsedMs != null ? { elapsedMs: ev.elapsedMs } : {}),
-                }
-              : e,
-          ),
-        })
+        // 已有进行中的思考块：思考段继续计时（重放窗口内无段，此处
+        // 空操作；窗口内到达间隔 ≥ QUIET_MS 时恢复实时并开始段），
+        // 文本进合并缓冲，rAF 统一落库（每帧至多一次 set()——移动端思考
+        // 流渲染卡顿的主因）。
+        if (genRateReplayChunk()) {
+          beginGenSegment(set, get)
+          accumulateGenSegmentChars(text)
+        }
+        appendStreamBuf(set, get, 'thought', text, ev.elapsedMs)
         break
       }
       case 'tool_call': {
+        // 工具调用 = 生成段收口：回应的连续输出到此为止，工具执行
+        // 时间不计入速率。
+        sealGenSegment(set, get)
         const sealed = sealThought(get())
         const tc = ev.toolCall || {}
         const toolCallId = toolCallIdOf(tc)
@@ -2981,8 +3077,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // used). The turn total is the standard usage.totalTokens /
         // total_tokens field — the frontend separates it from the
         // context-window `used`.
+        const u = ev.usage
         set((s) => {
-          const u = ev.usage
           const turnTokens =
             typeof u?.totalTokens === 'number'
               ? u.totalTokens
@@ -3130,6 +3226,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       case 'cancelled': {
         // 多会话广播（host withSid 约定）：非当前会话的 cancelled 直接忽略。
         if (ev.sessionId && ev.sessionId !== get().sessionId) break
+        // 取消 = 生成段收口（已生成的部分仍可给出速率）。
+        sealGenSegment(set, get)
         // TUI TurnCancelled marker ("Turn cancelled by user in 2.0s.").
         // Idempotent: prompt_complete may have already finalized the turn.
         const turnStart = get().turnStartedAt
@@ -3180,9 +3278,35 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }))
         break
       }
-      case 'error':
+      case 'error': {
         // 多会话广播（host withSid 约定）：非当前会话的 error 直接忽略。
         if (ev.sessionId && ev.sessionId !== get().sessionId) break
+        // 回合失败 = 生成段收口（已生成的部分仍可给出速率）。
+        sealGenSegment(set, get)
+        // Host withSid 约定：带 sessionId 的 error 是 agent 回合失败——
+        // host 只是透传 agent 的错误（如模型 API 400 "Internal Error"），
+        // host 本身没坏。渲染成 scrollback 错误行即可，不翻转连接状态、
+        // 不亮红色 Host 横幅。不带 sessionId 的 error 才是 host 级错误
+        // （boot 失败：agent 进程起不来 / initialize / authenticate 失败），
+        // 保留原硬错误处理。
+        if (ev.sessionId) {
+          const s = get()
+          set({
+            conn: s.conn === 'busy' ? 'ready' : s.conn,
+            // source='transport'：host↔agent 传输断了（agent 可能正被
+            // host 重启）——给恢复提示；'agent'/缺省：agent 报错，直接
+            // 显示错误文本。
+            statusText:
+              ev.source === 'transport'
+                ? 'agent 连接异常，正在重启…'
+                : ev.message,
+            error: undefined,
+            statusWarning: undefined,
+            turnStartedAt: undefined,
+            entries: [...s.entries, { id: nid(), kind: 'error', text: ev.message }],
+          })
+          break
+        }
         set({
           conn: 'error',
           statusText: ev.message,
@@ -3192,6 +3316,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           entries: [...get().entries, { id: nid(), kind: 'error', text: ev.message }],
         })
         break
+      }
       case 'status':
         // 多会话广播（host withSid 约定）：非当前会话的 status 直接忽略。
         if (ev.sessionId && ev.sessionId !== get().sessionId) break
@@ -3396,12 +3521,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
             if (!summary.trim()) break
             // Two-part recap block: bold "Recap" header + muted body
             // (TUI session_event Recap). The body IS the summary text;
-            // the scrollback renders the header separately.
+            // the scrollback renders the header separately. 默认展开：
+            // 摘要全文（含换行）直接显示，点击行可折叠成单行预览。
             appendEntry(set, {
               kind: 'session_event',
               text: summary,
               recap: true,
-              open: false,
+              open: true,
             })
             break
           }
@@ -3507,14 +3633,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 warning: true,
               })
             } else {
-              // TUI turn_status.rs: Retrying → "Retrying (attempt N)…"
-              // (warning). The compressed turn resumes after compact —
-              // back to the wait-for-token window.
-              appendEntry(set, {
-                kind: 'session_event',
-                text: attempt != null ? `重试中… (attempt ${String(attempt)})` : '重试中…',
-                warning: true,
-              })
+              // TUI turn_status.rs: Retrying → "Retrying (attempt N)…".
+              // 重试中状态由 composer busy 行（statusText fallback）展示，
+              // 不往 scrollback 追加条目——transient 状态只在 busy 框出现；
+              // 终态（failed / exhausted）仍保留在 scrollback。
               set({
                 statusText:
                   attempt != null
@@ -4136,6 +4258,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // `done`; guarded on conn busy so a stale duplicate after `done`
         // (or during an idle gap) is a no-op.
         if (get().conn !== 'busy') break
+        // 回合终态 = 生成段收口（若仍在流式输出）。
+        sealGenSegment(set, get)
         const turnStart = get().turnStartedAt
         const marker = turnMarker(turnStart != null ? Date.now() - turnStart : undefined)
         const sealed = sealThought(get())
@@ -4308,7 +4432,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       case 'announcements_update': {
         // x.ai/announcements/update: { gen, announcements: [{id?, title?,
         // message?, severity?, cta?, …}] } — surface each as a status line so
-        // the event is consumed instead of silently dropped.
+        // the event is consumed instead of silently dropped. The host/TUI
+        // re-pushes the SAME list on every /new, startup, and settings
+        // refresh — only append a row when an announcement's content
+        // actually changed (dedup by id, content-fallback like the TUI's
+        // announcement_hide_key).
         const p = (ev.params ?? {}) as Record<string, unknown>
         const items = Array.isArray(p.announcements) ? p.announcements : []
         for (const a of items) {
@@ -4319,6 +4447,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
           const sev = typeof o.severity === 'string' && o.severity ? o.severity : ''
           const text = [title, message].filter(Boolean).join(' — ')
           if (!text) continue
+          // Key: the announcement id when present, else its rendered content
+          // (same fallback semantics as the TUI's announcement_hide_key).
+          const rawId = typeof o.id === 'string' ? o.id.trim() : ''
+          const key = rawId || `content:${text}`
+          const fingerprint = `${sev}\u{1f}${text}`
+          if (displayedAnnouncementFingerprints.get(key) === fingerprint) continue
+          displayedAnnouncementFingerprints.set(key, fingerprint)
           appendEntry(set, {
             kind: 'session_event',
             text,
@@ -4348,6 +4483,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   send: async (text: string, blocks?: ContentBlock[], opts?: { fromShell?: boolean }) => {
     const t = text.trim()
     if (!t) return
+    // 重放门控复位：用户主动发送 = 新一轮真正 live 的输出，速率立即可显示。
+    rearmGenRate()
+    // 流式缓冲先落库：上一回合的思考文本完整后再收口/追加用户行。
+    flushStreamBuf(set, get)
     // Seal any leftover thought from prior turn, then append the user row.
     // Tag the user row so the live user_chunk echo merges into it (not a
     // 2nd row). NO pre-created Thinking… shell: TUI pre-creates the
@@ -4378,6 +4517,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // chips are retired (TUI clears follow_ups at turn start).
       followUps: undefined,
       followUpsResponseId: undefined,
+      // 新回合开始：上一回合的生成段速率失效。
+      genRate: undefined,
+      genSegment: undefined,
     })
     try {
       // Optional image blocks (Composer image chips): the caller passes
@@ -4388,15 +4530,46 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       // drop empty thinking shell on failure
-      const after = sealThought(get())
+      const s = get()
+      const after = sealThought(s)
+      // 回合失败 ≠ 连接失败：HTTP 错误响应说明 host 活着，错误来自 agent
+      // （host 只是透传，如模型 API 400 "Internal Error"）——滚动一条错误
+      // 行即可，连接保持就绪、不亮红色 Host 横幅。只有网络级失败（fetch
+      // 拒绝 = host 不可达，即 AgentTurnError 之外的异常）才进 host 错误
+      // 处理（conn: 'error' + 横幅）。
+      if (!(e instanceof AgentTurnError)) {
+        set({
+          ...after,
+          pendingOptimisticUserId: undefined,
+          conn: 'error',
+          statusText: msg,
+          awaitingNext: false,
+          turnStartedAt: undefined,
+          entries: [...after.entries, { id: nid(), kind: 'error', text: msg }],
+        })
+        return
+      }
+      // host 的 SSE error 事件（同文本）通常先于 HTTP 响应到达、已滚过
+      // 一行——按文本去重，避免同一回合错误出现两行。
+      const last = after.entries[after.entries.length - 1]
+      const dup = last && last.kind === 'error' && last.text === msg
       set({
         ...after,
         pendingOptimisticUserId: undefined,
-        conn: 'error',
-        statusText: msg,
+        conn: s.conn === 'busy' ? 'ready' : s.conn,
+        // unreachable（502/传输断）：agent 正被 host 重启——给恢复提示；
+        // rejected：agent 报错，直接显示错误文本。
+        statusText:
+          e instanceof AgentTurnError && e.kind === 'unreachable'
+            ? 'agent 连接异常，正在重启…'
+            : msg,
+        error: undefined,
+        statusWarning: undefined,
         awaitingNext: false,
         turnStartedAt: undefined,
-        entries: [...after.entries, { id: nid(), kind: 'error', text: msg }],
+        entries: dup
+          ? after.entries
+          : [...after.entries, { id: nid(), kind: 'error', text: msg }],
       })
     }
   },
@@ -4672,7 +4845,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   respondPermission: async (requestId, optionId, cancelled, scope, followupMessage) => {
-    await transport.respondPermission(requestId, optionId, cancelled, scope, followupMessage)
+    try {
+      await transport.respondPermission(requestId, optionId, cancelled, scope, followupMessage)
+    } catch (e) {
+      // P0: 失败（网络抖动 / ok:false）不得静默——之前无 try/catch，pending
+      // 不清理、无 UI 反馈、void 调用产生 unhandled rejection，权限卡停在
+      // waiting on you 用户以为没点中。失败时 toast 提示并保留 pending 可重试。
+      const msg = e instanceof Error ? e.message : String(e)
+      get().pushToast(`权限应答失败: ${msg}`)
+      return
+    }
     set({ pending: get().pending.filter((p) => p.requestId !== requestId) })
   },
 
@@ -5193,6 +5375,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   newSession: async () => {
     get().stopTopTaskPolling()
     clearSuppressedTools()
+    clearStreamBuf()
+    rearmGenRate()
     // A new session inherits the current permission mode (TUI parity:
     // SessionFlags ride session/new `_meta`; the agent never persists
     // ask/auto/always-approve). Capture before the reset — yoloMode wins
@@ -5263,6 +5447,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // this; newSession was the only path that missed it).
       usage: undefined,
       turnStartedAt: undefined,
+      genRate: undefined,
+      genSegment: undefined,
       scheduledTasks: [],
     })
     // New session lands in the CURRENT conversation's workspace: inherit
@@ -5679,6 +5865,286 @@ function isTurnEndLine(e: ScrollEntry): boolean {
   )
 }
 
+// ── 流式文本合并缓冲（rAF flush）────────────────────────────
+// 移动端思考/回答流渲染卡顿主因：每个 SSE chunk 一次 set() + 一次完整
+// 渲染 + 两次强制布局。chunk 文本先落进模块级缓冲，requestAnimationFrame
+// 统一落库（每帧至多一次 set()）。顺序保证：handleEvent 入口对"非同类
+// 流式事件"强制先 flush——tool_call/chunk/回合终态等收口类事件处理前，
+// 缓冲的思考文本必已写入条目。
+type StreamBufKind = 'thought' | 'assistant'
+
+let streamBufText = ''
+let streamBufKind: StreamBufKind | null = null
+let streamBufRaf: number | null = null
+/** 缓冲内 chunk 携带的 elapsedMs（replay），flush 时"最后一个 chunk 生效"。 */
+let streamBufElapsedMs: number | undefined
+
+/** 尚未落库的思考段字符统计（与文本一起在 flush 时发布实时速率）。 */
+let genSegPendingChars = 0
+let genSegPendingCjk = 0
+
+/** 追加一段流式文本到合并缓冲；首次追加时调度 rAF flush。 */
+function appendStreamBuf(
+  set: SetState,
+  get: () => ChatState,
+  kind: StreamBufKind,
+  text: string,
+  elapsedMs?: number,
+): void {
+  if (!text) return
+  // 缓冲里是另一种流（异常交错，如回答中回补思考）：先落库保序。
+  if (streamBufKind != null && streamBufKind !== kind) flushStreamBuf(set, get)
+  streamBufText += text
+  streamBufKind = kind
+  if (elapsedMs != null) streamBufElapsedMs = elapsedMs
+  if (streamBufRaf == null) {
+    streamBufRaf = requestAnimationFrame(() => {
+      streamBufRaf = null
+      flushStreamBuf(set, get)
+    })
+  }
+}
+
+/**
+ * 把缓冲的流式文本一次性落库（每帧至多一次）。目标条目已被收口/清除时
+ * 丢弃缓冲（stop/会话切换后的残留文本不应再入 scrollback）。
+ */
+function flushStreamBuf(set: SetState, get: () => ChatState): void {
+  const text = streamBufText
+  const kind = streamBufKind
+  if (!text || !kind) return
+  const bufElapsedMs = streamBufElapsedMs
+  streamBufText = ''
+  streamBufKind = null
+  streamBufElapsedMs = undefined
+  if (streamBufRaf != null) {
+    cancelAnimationFrame(streamBufRaf)
+    streamBufRaf = null
+  }
+  const s = get()
+  if (kind === 'thought') {
+    const openThoughtId = s.openThoughtId
+    if (
+      !openThoughtId ||
+      !s.entries.some((e) => e.id === openThoughtId && e.kind === 'thought')
+    ) {
+      // 已收口/被清除：丢弃缓冲文本与未发布字符统计。
+      genSegPendingChars = 0
+      genSegPendingCjk = 0
+      return
+    }
+    // 思考段字符 + 实时速率与文本同一 set() 落库（一次渲染）。
+    let segPatch: Partial<ChatState> = {}
+    const seg = s.genSegment
+    if (seg) {
+      const merged = {
+        ...seg,
+        chars: seg.chars + genSegPendingChars,
+        cjkChars: seg.cjkChars + genSegPendingCjk,
+      }
+      genSegPendingChars = 0
+      genSegPendingCjk = 0
+      const rate = genRateIfPublishable(merged)
+      segPatch = {
+        genSegment: merged,
+        ...(rate != null ? { genRate: rate } : {}),
+      }
+    } else {
+      genSegPendingChars = 0
+      genSegPendingCjk = 0
+    }
+    set({
+      conn: 'busy',
+      statusText: 'Thinking…',
+      awaitingNext: false,
+      openThoughtId,
+      openAssistantId: undefined,
+      ...segPatch,
+      entries: s.entries.map((e) =>
+        e.id === openThoughtId && e.kind === 'thought'
+          ? {
+              ...e,
+              text: e.text + text,
+              streaming: true,
+              displayMode: 'expanded', // keep body visible while flowing
+              // Last chunk wins (TUI tracker updates on every chunk).
+              ...(bufElapsedMs != null ? { elapsedMs: bufElapsedMs } : {}),
+            }
+          : e,
+      ),
+    })
+    return
+  }
+  // assistant
+  const openAssistantId = s.openAssistantId
+  if (
+    !openAssistantId ||
+    !s.entries.some((e) => e.id === openAssistantId && e.kind === 'assistant')
+  ) {
+    return // 已收口：丢弃缓冲文本。
+  }
+  set({
+    conn: 'busy',
+    statusText: 'Responding…',
+    awaitingNext: false,
+    openAssistantId,
+    entries: s.entries.map((e) =>
+      e.id === openAssistantId && e.kind === 'assistant'
+        ? { ...e, text: e.text + text, streaming: true }
+        : e,
+    ),
+  })
+}
+
+/** 会话/历史切换：丢弃未落库的流式文本与字符统计。 */
+function clearStreamBuf(): void {
+  streamBufText = ''
+  streamBufKind = null
+  streamBufElapsedMs = undefined
+  genSegPendingChars = 0
+  genSegPendingCjk = 0
+  if (streamBufRaf != null) {
+    cancelAnimationFrame(streamBufRaf)
+    streamBufRaf = null
+  }
+}
+
+// ── 思考段输出速率（按流式字符估算）────────────────────────────────
+// 宿主不提供逐段 token 计数（usage 只在回合终态带 outputTokens），所以
+// 按流式文本字符估算：ASCII ≈ 4 字符/token，CJK ≈ 1.5 字符/token。
+// "思考段" = 一次连续的 thought 流：首个 thought chunk 开始，回答
+// （chunk）/ tool_call / 回合终态 / 用户输入收口。速率只在 thinking
+// 期间计算与更新（thought 流实时发布）；回答流与工具执行时间不计入、
+// 不更新数字——回答开始即把速率定格在思考段的最终值。
+//
+// 重放门控：会话加载/重连遇在途回合时，宿主把该回合已生成的内容以
+// live 形态批量重流（continueSession 的 500ms 宽限窗之后、或页面刷新
+// 重连 hello(busy) 之后）——"重放块"的速率没有意义（字符÷极短耗时
+// = 虚高几万）。重放 dump 的 chunk 背靠背到达（毫秒级间隔），而真正
+// live 的续流 chunk 之间有模型生成延迟：因此按到达间隔判定——窗口内
+// 出现 ≥ GEN_RATE_REPLAY_QUIET_MS 的静默即视为重放结束、恢复实时
+// 速率（同一思考块内的 live 续流也能正确显示；旧规则"第二个新思考块
+// 才恢复"在该场景整段不显示速率，且会把多阶段重放误判为 live）。
+// 用户发送新消息 / 新建会话 / 切换会话后立即恢复。
+
+/** 思考段不足此毫秒数不发布速率（段太短、并发事件误配时数字无意义）。 */
+const GEN_SEGMENT_MIN_MS = 500
+
+/**
+ * 重放门控状态：false = 处于重放窗口（在途回合批量重流正在/即将到达），
+ * 不开始段、不显示速率。窗口内按 chunk 到达间隔判定是否恢复：
+ * 重放 dump 的 chunk 背靠背到达，真正 live 的续流与前一 chunk 之间有
+ * 模型生成延迟（见 genRateReplayChunk）。用户发送新消息 / 新建会话 /
+ * 加载历史时复位为 true。
+ */
+let genRateArmed = true
+/** 重放窗口内最近一个 thought chunk 的到达时间；-1 = 窗口尚未播种。 */
+let genRateLastChunkTs = -1
+
+/** 重放窗口内 chunk 间隔超过此毫秒数 → 重放结束，恢复实时速率。
+ * 重放 dump 的 chunk 间隔是毫秒级（网络批量投递），live 续流则带模型
+ * 生成延迟（思考通常 ≥ 数百 ms/chunk）；800ms 把两者分开。 */
+const GEN_RATE_REPLAY_QUIET_MS = 800
+
+/** 进入重放窗口（在途回合批量重流即将/正在到达）。 */
+function disarmGenRateForReplay(): void {
+  genRateArmed = false
+  genRateLastChunkTs = -1
+}
+
+/** 退出重放窗口（用户主动动作 / 会话切换），速率立即可显示。 */
+function rearmGenRate(): void {
+  genRateArmed = true
+  genRateLastChunkTs = -1
+}
+
+/**
+ * 重放窗口内到达一个 thought chunk。返回是否处于实时状态（可开始段 /
+ * 累计字符）：
+ * - 窗口第一个 chunk 播种窗口（无论与 disarm 间隔多久都视为重放开始）；
+ * - 之后与上一 chunk 的间隔 ≥ GEN_RATE_REPLAY_QUIET_MS → 重放结束，
+ *   恢复实时（同一思考块内的 live 续流也能正确开始段）。
+ * 恢复时清掉残留的字符统计（arm 前同一 rAF 帧内累计的重放尾部字符
+ * 不计入实时段）。
+ */
+function genRateReplayChunk(): boolean {
+  if (genRateArmed) return true
+  const now = Date.now()
+  if (genRateLastChunkTs < 0) {
+    genRateLastChunkTs = now
+    return false
+  }
+  if (now - genRateLastChunkTs >= GEN_RATE_REPLAY_QUIET_MS) {
+    genRateArmed = true
+    genSegPendingChars = 0
+    genSegPendingCjk = 0
+    return true
+  }
+  genRateLastChunkTs = now
+  return false
+}
+
+/** 思考段速率（tok/s）；时长不足（段太短/事件误配）时不发布。 */
+function genRateIfPublishable(seg: {
+  startTs: number
+  chars: number
+  cjkChars: number
+}): number | undefined {
+  const elapsedMs = Date.now() - seg.startTs
+  if (elapsedMs < GEN_SEGMENT_MIN_MS) return undefined
+  return genSegmentTokens(seg) / (elapsedMs / 1000)
+}
+
+function genSegmentTokens(seg: { chars: number; cjkChars: number }): number {
+  return (seg.chars - seg.cjkChars) / 4 + seg.cjkChars / 1.5
+}
+
+/** 开始一个思考段（已有进行中的段或重放块时为空操作；历史回放中不开始）。 */
+function beginGenSegment(set: SetState, get: () => ChatState): void {
+  const s = get()
+  if (s.historyLoading || s.historyLoadingMore) return
+  if (!genRateArmed) return // 重放块：不开始段
+  if (s.genSegment != null) return
+  set({ genSegment: { startTs: Date.now(), chars: 0, cjkChars: 0 } })
+}
+
+/** 向当前思考段累计流式字符（无 set()——与文本一起在 rAF flush 时发布）。 */
+function accumulateGenSegmentChars(text: string): void {
+  if (!text) return
+  let cjk = 0
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i)
+    if (
+      (c >= 0x4e00 && c <= 0x9fff) ||
+      (c >= 0x3400 && c <= 0x4dbf) ||
+      (c >= 0xf900 && c <= 0xfaff)
+    ) {
+      cjk++
+    }
+  }
+  genSegPendingChars += text.length
+  genSegPendingCjk += cjk
+}
+
+/** 收口当前思考段：冻结最终速率。无进行中的段时为空操作。 */
+function sealGenSegment(set: SetState, get: () => ChatState): void {
+  const seg = get().genSegment
+  if (!seg) return
+  // 折叠尚未随 flush 发布的字符（单 chunk 思考等未触发 flush 的路径）。
+  const merged = {
+    ...seg,
+    chars: seg.chars + genSegPendingChars,
+    cjkChars: seg.cjkChars + genSegPendingCjk,
+  }
+  genSegPendingChars = 0
+  genSegPendingCjk = 0
+  const rate = genRateIfPublishable(merged)
+  set({
+    ...(rate != null ? { genRate: rate } : {}),
+    genSegment: undefined,
+  })
+}
+
 /**
  * 回合收口（任务 2，done / live turn_completed / 子代理兜底共用）：
  * settle 流式条目、按需追加 "Worked for X" 标记、conn 复位 ready、
@@ -5691,6 +6157,11 @@ function finalizeTurn(
   get: () => ChatState,
   stopReason: string | undefined,
 ): void {
+  // 流式缓冲先落库：收口前的最后一段思考文本不能丢（兜底定时器路径
+  // 不经 handleEvent，这里统一保证）。
+  flushStreamBuf(set, get)
+  // 回合收口 = 最后一个生成段收口（若仍在流式输出）。
+  sealGenSegment(set, get)
   const turnStart = get().turnStartedAt
   const failedTurn =
     stopReason === 'error' ||
@@ -6002,10 +6473,16 @@ const HISTORY_PAGE_SIZE = 100
  * closing turn's tracked start into the event so the marker carries the
  * true duration (the `done` event is not persisted, so replay derives
  * the duration from the envelope stamps).
+ *
+ * opts.applyUsage (default true): whether this page may update the
+ * context chip. History pages load newest-first, so only the NEWEST page
+ * may apply usage — older pages (loadHistory auto-paging / loadMoreHistory)
+ * must not rewrite the chip with older token counts.
  */
 function replayUpdates(
   getStore: () => ChatState,
   updates: unknown[],
+  opts?: { applyUsage?: boolean },
 ): { turnStartedAt?: number; turnOpen: boolean } {
   let userBuf = ''
   let userIsCron = false
@@ -6013,6 +6490,9 @@ function replayUpdates(
   let turnStartTs: number | undefined
   let anyEvent = false
   let sawTurnEnd = false
+  // Newest envelope's session-accumulated token count of this page; the
+  // usage event is fired once after the loop (last envelope wins).
+  let pageMetaUsed: number | undefined
   const flushUser = () => {
     if (userBuf) {
       getStore().handleEvent({
@@ -6030,10 +6510,14 @@ function replayUpdates(
     // Every envelope carries the session-accumulated token count in
     // `_meta.totalTokens`. The live bridge surfaces it as a usage event
     // (TUI ⇣ counter / context chip); replay must do the same or the
-    // context chip stays empty after restoring history.
-    const metaUsed = envelopeTotalTokens(env)
-    if (metaUsed != null && metaUsed > 0) {
-      getStore().handleEvent({ type: 'usage', used: metaUsed })
+    // context chip stays empty after restoring history. Pages are
+    // fetched newest-first, so only the newest page applies it (see
+    // opts.applyUsage) — otherwise the chip would end up at the OLDEST
+    // page's count and every scroll-up page would rewrite it with older
+    // values.
+    if (opts?.applyUsage !== false) {
+      const metaUsed = envelopeTotalTokens(env)
+      if (metaUsed != null && metaUsed > 0) pageMetaUsed = metaUsed
     }
     // History replay shows stored task lifecycle events as display-only
     // informational lines (envelopeToEvent) — never captured into the
@@ -6100,6 +6584,12 @@ function replayUpdates(
     getStore().handleEvent(ev)
   }
   flushUser()
+  // Apply the page's newest token count once (after the loop, so no
+  // per-envelope chip flicker; the last envelope of the page is the
+  // newest point in time).
+  if (pageMetaUsed != null) {
+    getStore().handleEvent({ type: 'usage', used: pageMetaUsed })
+  }
   // The LAST turn is open when it never completed (no turn_completed in
   // the page) or when a new turn started after the page's last completion
   // (the tracker re-captured a start). turnStartedAt is then that current

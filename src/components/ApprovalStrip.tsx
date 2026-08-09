@@ -498,7 +498,7 @@ export function ApprovalStrip() {
         {provenance && (
           <div className="mb-1 text-[11px] text-gn-muted">{provenance}</div>
         )}
-        <div className="mb-1.5 flex items-center gap-2 text-[12px]">
+        <div className="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px]">
           <span className="text-gn-yellow animate-pulse" aria-hidden>
             <IconGlyph glyph={Glyphs.diamondFilled} color="currentColor" />
           </span>
@@ -564,7 +564,7 @@ export function ApprovalStrip() {
           </div>
         )}
         {hasAlways && (!mcp.isMcp || !!mcp.serverPrefix) && (
-          <div className="mb-2 flex items-center gap-2 pl-5 text-[11.5px] text-gn-cyan">
+          <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 pl-5 text-[11.5px] text-gn-cyan">
             <span>
               {mcp.isMcp ? '←/→ 切换允许范围' : '←/→ 调整始终允许范围'}
             </span>

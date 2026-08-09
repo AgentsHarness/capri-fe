@@ -1,16 +1,14 @@
-import { useEffect, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import type { ReactNode, RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { SPINNER_FRAMES } from '../theme/glyphs'
 import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS } from '../theme/layout'
 import { useChatStore } from '../store/chat'
 import { usePromptQueue } from '../store/promptQueue'
-import { transport } from '../api/localTransport'
-import type { BillingConfig } from '../api/types'
+import type { ScrollEntry, TopTask } from '../api/types'
 import { useSessionSpinner } from './sessionState'
 import { TodoMark, CheckMarkIcon } from './todoMark'
 import { fmtTok, fmtElapsedCompact, filterRunningEntries, type RunningEntry } from '../format'
-import type { ScrollEntry, TopTask } from '../api/types'
 import type { TodoItem } from '../store/chat'
 
 /**
@@ -51,7 +49,7 @@ export function ContextChip({
   const pctStr = `${pct.toFixed(1)}%`.padStart(5, ' ')
   return (
     <span
-      className={`rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums ${color}`}
+      className={`shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums ${color}`}
       title={`上下文 ${Math.round(pct)}% (${fmtTok(used)} / ${fmtTok(size)})${
         turnTokens != null ? ` · 本回合累计 ${fmtTok(turnTokens)}` : ''
       }`}
@@ -126,7 +124,7 @@ export function TodoChip({
         onClick={() => expandable && setOpen((v) => !v)}
         aria-expanded={expandable ? open : undefined}
         aria-controls={expandable ? 'todo-inline-panel' : undefined}
-        className={`flex items-center gap-0.5 rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-fg2 hover:bg-gn-bg-highlight ${expandable ? 'cursor-pointer' : 'cursor-default'} ${
+        className={`flex items-center gap-0.5 rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-fg2 hover:bg-gn-bg-highlight whitespace-nowrap ${expandable ? 'cursor-pointer' : 'cursor-default'} ${
           open && expandable ? 'bg-gn-bg-highlight' : ''
         }`}
         title={objective ? `目标: ${objective}` : '待办进度'}
@@ -325,13 +323,54 @@ function ChipDropdown({
   children,
   label,
   widthClass,
+  anchorRef,
 }: {
   open: boolean
   onClose: () => void
   children: ReactNode
   label: string
   widthClass?: string
+  anchorRef: RefObject<HTMLElement | null>
 }) {
+  // Viewport-pinned placement (same measure-and-clamp pattern as the
+  // composer model picker): a pure `absolute right-0` anchor assumes the
+  // trigger chip sits flush right, but on mobile the chip cluster wraps —
+  // the goal chip often lands mid-row, pushing a w-96 panel past the
+  // LEFT edge of the screen. Measure the chip and clamp so both edges
+  // stay inside the viewport; re-place on resize/scroll.
+  const [pos, setPos] = useState<{ left: number; top: number; width: number } | null>(null)
+  useLayoutEffect(() => {
+    if (!open) {
+      setPos(null)
+      return
+    }
+    const place = () => {
+      const el = anchorRef.current
+      if (!el) return
+      const r = el.getBoundingClientRect()
+      const pad = 8
+      const gap = 4 // mt-1
+      const vw = window.innerWidth
+      // Match the panel's width classes: w-96 capped by max-w-[92vw]
+      // (w-80 fallback keeps the same viewport math).
+      const width = Math.min(
+        widthClass === 'w-96' ? 384 : widthClass === 'w-80' ? 320 : 384,
+        Math.floor(vw * 0.92),
+      )
+      // Prefer right-aligning to the chip (TUI goal-detail sits under
+      // the status item), then shift left so the panel never leaves the
+      // screen on either side.
+      const left = Math.max(pad, Math.min(r.right - width, vw - pad - width))
+      setPos({ left, top: r.bottom + gap, width })
+    }
+    place()
+    window.addEventListener('resize', place)
+    window.addEventListener('scroll', place, true)
+    return () => {
+      window.removeEventListener('resize', place)
+      window.removeEventListener('scroll', place, true)
+    }
+  }, [open, anchorRef, widthClass])
   if (!open) return null
   return (
     <>
@@ -341,14 +380,17 @@ function ChipDropdown({
         aria-label="close"
         onClick={onClose}
       />
-      <div
-        className={`absolute right-0 top-full z-40 mt-1 max-h-[55vh] overflow-y-auto rounded border border-gn-prompt-border bg-gn-bg-base shadow-xl py-1 ${widthClass ?? 'w-80 max-w-[92vw]'}`}
-      >
-        <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-gn-gutter">
-          {label}
+      {pos ? (
+        <div
+          className={`fixed z-40 max-h-[55vh] max-w-[92vw] overflow-y-auto rounded border border-gn-prompt-border bg-gn-bg-base shadow-xl py-1 ${widthClass ?? 'w-80'}`}
+          style={{ left: pos.left, top: pos.top, width: pos.width }}
+        >
+          <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-gn-gutter">
+            {label}
+          </div>
+          {children}
         </div>
-        {children}
-      </div>
+      ) : null}
     </>
   )
 }
@@ -366,8 +408,8 @@ export function GoalChip({
   goalState?: Record<string, unknown>
   contextUsed?: number
 }) {
-  // Panel visibility lives in the store so `/goal` (no args) can open
-  // the exact same detail panel the chip toggles.
+  // Panel visibility lives in the store so the GoalChip can toggle the
+  // goal detail panel.
   const open = useChatStore((s) => s.goalPanelOpen)
   const setOpen = useChatStore((s) => s.setGoalPanelOpen)
   const goalStatus = useChatStore((s) => s.goalStatus)
@@ -376,6 +418,9 @@ export function GoalChip({
   const goalClear = useChatStore((s) => s.goalClear)
   const goalReceivedAt = useChatStore((s) => s.goalReceivedAt)
   const setWorkflowPanelOpen = useChatStore((s) => s.setWorkflowPanelOpen)
+  // Anchor for the viewport-pinned goal panel (ChipDropdown measures the
+  // chip's rect and clamps the panel inside the screen).
+  const wrapRef = useRef<HTMLDivElement>(null)
   // Action feedback: the status line carries the last instruction's
   // confirmation; the error line surfaces host-level failures.
   const statusText = useChatStore((s) => s.statusText)
@@ -423,25 +468,31 @@ export function GoalChip({
   const lastEventDetail = typeof goalState.last_event_detail === 'string' ? goalState.last_event_detail : ''
 
   return (
-    <div className="relative">
+    <div className="relative" ref={wrapRef}>
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className={`rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums ${chipClass}`}
+        className={`flex min-w-0 items-center rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums ${chipClass}`}
         title={objective ? `目标: ${objective}` : '目标状态'}
       >
         {active && (
-          <span className="mr-1 inline-block" aria-hidden>
+          <span className="mr-1 shrink-0" aria-hidden>
             {SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length]}
           </span>
         )}
-        [Goal: {label}] {tokensDisplay} {fmtElapsedCompact(elapsed)}
+        {/* Long goal lines (label + tokens + elapsed) truncate on mobile
+            instead of wrapping inside the chip; the full text is one tap
+            away in the goal panel / title tooltip. */}
+        <span className="truncate max-w-[min(58vw,26rem)] lg:max-w-none">
+          [Goal: {label}] {tokensDisplay} {fmtElapsedCompact(elapsed)}
+        </span>
       </button>
       <ChipDropdown
         open={open}
         onClose={() => setOpen(false)}
         label={`goal · ${label}${active ? ' · 运行中' : ''}`}
         widthClass="w-96"
+        anchorRef={wrapRef}
       >
         {objective && (
           <div className="px-3 py-1.5 text-[12px] leading-snug text-gn-fg">
@@ -533,14 +584,14 @@ export function GoalChip({
             </div>
           )}
         </div>
-        {/* ── goal controls — PROMPT PATH (no wire methods; see chat.ts
-            goalSet docs: the agent owns update_goal, the FE instructs). */}
+        {/* ── goal controls — HOST ENGINE (acp-host goal.go /api/goal/*,
+            TUI /goal parity; see chat.ts goalSet docs). */}
         <div className="flex flex-wrap items-center gap-1 border-t border-gn-prompt-border px-3 py-2">
           <button
             type="button"
             onClick={() => goalStatus()}
             className="rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg"
-            title="发送提示词: 请报告当前自主目标状态（goal status）"
+            title="查询当前自主目标状态"
           >
             状态
           </button>
@@ -549,7 +600,7 @@ export function GoalChip({
             disabled={!active}
             onClick={() => goalPause()}
             className="rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40"
-            title="发送提示词: 请暂停当前自主目标（用 update_goal 工具）"
+            title="暂停当前自主目标"
           >
             暂停
           </button>
@@ -558,7 +609,7 @@ export function GoalChip({
             disabled={!paused}
             onClick={() => goalResume()}
             className="rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40"
-            title="发送提示词: 请恢复当前自主目标（用 update_goal 工具）"
+            title="恢复当前自主目标"
           >
             恢复
           </button>
@@ -566,7 +617,7 @@ export function GoalChip({
             type="button"
             onClick={() => goalClear()}
             className="rounded border border-gn-red/40 px-2 py-0.5 text-[11px] text-gn-red opacity-80 hover:bg-gn-diff-del-bg hover:opacity-100"
-            title="发送提示词: 请清除当前自主目标（用 update_goal 工具）"
+            title="清除当前自主目标"
           >
             清除
           </button>
@@ -632,7 +683,7 @@ export function RunningChip({
       onClick={onToggle}
       aria-expanded={open}
       aria-controls="running-tasks-bar"
-      className={`rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-accent-running hover:bg-gn-bg-highlight ${
+      className={`shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-accent-running hover:bg-gn-bg-highlight ${
         open ? 'bg-gn-bg-highlight' : ''
       }`}
       title={
@@ -926,7 +977,7 @@ export function McpChip({ onOpen }: { onOpen: () => void }) {
     <button
       type="button"
       onClick={onOpen}
-      className="rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-gray-dim hover:bg-gn-bg-highlight hover:text-gn-muted"
+      className="shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-gray-dim hover:bg-gn-bg-highlight hover:text-gn-muted"
       title={`MCP 服务器 ${connected}/${total} 已连接 · 点击打开 MCP 面板`}
     >
       <span className="mr-1" aria-hidden>
@@ -952,77 +1003,12 @@ export function QueueBadge() {
       type="button"
       onClick={() => setQueuePanelOpen(!open)}
       aria-expanded={open}
-      className={`rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-fg2 hover:bg-gn-bg-highlight ${
+      className={`shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-fg2 hover:bg-gn-bg-highlight ${
         open ? 'bg-gn-bg-highlight' : ''
       }`}
       title={open ? '收起发送队列' : `发送队列 · ${queue.length} 条待发（点击切换）`}
     >
       +{queue.length}
     </button>
-  )
-}
-
-/**
- * Credits chip — TUI credit_bar_line ("Credits used: XX%", after the
- * todo badge). Data from POST /api/billing (creditUsagePercent;
- * prepaidBalance shows in the hover title). Color follows the TUI
- * breakpoints: ≥100% error, ≥80% warning, else success. The whole chip
- * is omitted when billing yields no usable data (silent, never errors).
- */
-export function CreditsChip() {
-  const sessionId = useChatStore((s) => s.sessionId)
-  const [billing, setBilling] = useState<BillingConfig | null | undefined>(undefined)
-  useEffect(() => {
-    let alive = true
-    setBilling(undefined)
-    transport
-      .billing(sessionId)
-      .then((resp) => {
-        if (alive) setBilling(resp.config ?? null)
-      })
-      .catch(() => {
-        if (alive) setBilling(null)
-      })
-    return () => {
-      alive = false
-    }
-  }, [sessionId])
-
-  // usage percent: prefer creditUsagePercent; fall back to used/limit.
-  const cfg = billing ?? undefined
-  let pct: number | undefined
-  if (cfg?.creditUsagePercent != null && Number.isFinite(cfg.creditUsagePercent)) {
-    pct = cfg.creditUsagePercent
-  } else {
-    const used = cfg?.used?.val
-    const limit = cfg?.monthlyLimit?.val
-    if (typeof used === 'number' && typeof limit === 'number' && limit > 0) {
-      pct = (used / limit) * 100
-    }
-  }
-  const prepaidCents = cfg?.prepaidBalance?.val
-  const prepaid =
-    typeof prepaidCents === 'number' && prepaidCents > 0 ? prepaidCents : undefined
-  if (pct == null && prepaid == null) return null
-
-  const color =
-    pct != null && pct >= 100
-      ? 'text-gn-red'
-      : pct != null && pct >= 80
-        ? 'text-gn-yellow'
-        : 'text-gn-green'
-  const title = [
-    pct != null ? `Credits used: ${Math.round(pct)}%` : 'Credits used: N/A',
-    prepaid != null ? `prepaid $${(prepaid / 100).toFixed(2)}` : undefined,
-  ]
-    .filter(Boolean)
-    .join(' · ')
-  return (
-    <span
-      className={`rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums ${color}`}
-      title={title}
-    >
-      {pct != null ? `credits ${Math.round(pct)}%` : `credits $${(prepaid! / 100).toFixed(2)}`}
-    </span>
   )
 }

@@ -1,8 +1,8 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { planTodos, useChatStore } from '../store/chat'
 import type { ScrollEntry } from '../api/types'
 import { subagentMeta } from '../format'
-import { Glyphs, toolHeader } from '../theme/glyphs'
+import { Glyphs, SPINNER_FRAMES, SPINNER_INTERVAL_MS, toolHeader } from '../theme/glyphs'
 import { thoughtDisplayMode } from '../scrollback/thoughtMode'
 import { TodoMark } from './todoMark'
 import {
@@ -18,11 +18,13 @@ import { FINISH_FLASH_MS } from '../theme/wave'
 import { IconGlyph } from './IconGlyph'
 import {
   displayRowKey,
+  groupingSignature,
   isDensePackableRow,
   projectDisplayRows,
   scanGroups,
   spanContaining,
   type DisplayRow,
+  type GroupSpan,
 } from '../scrollback/verbGroup'
 import { AccentRail } from './AccentRail'
 import {
@@ -168,7 +170,7 @@ const TOUCH_UP_SWIPE_PX = 8
  * (loadHistory pages) renders everything loaded, since paging is
  * user-driven.
  */
-const MAX_RENDER_ENTRIES = 500
+const MAX_RENDER_ENTRIES = 100
 
 /**
  * Estimate visual line count for a user prompt (wrap-aware, matches TUI
@@ -237,6 +239,45 @@ function truncatedThoughtLines(text: string): string[] {
     Glyphs.ellipsis,
     ...all.slice(-THOUGHT_TRUNCATED_TAIL_LINES),
   ]
+}
+
+/**
+ * Streaming ThinkingBlock body: while the thought flows, render only the
+ * TAIL of the accumulated text (newest lines) instead of the full body —
+ * per-flush DOM/text cost stays flat as the thought grows (the full text
+ * lives in the store / the dblclick viewer). Null = whole text fits in
+ * the budget (render verbatim).
+ */
+const THOUGHT_STREAM_TAIL_MAX_CHARS = 1600
+const THOUGHT_STREAM_TAIL_MAX_LINES = 6
+/** Line-start snap allowance near the char-window edge (chars). */
+const THOUGHT_STREAM_TAIL_SNAP_PAD = 400
+
+function thoughtStreamTail(text: string): string | null {
+  if (text.length <= THOUGHT_STREAM_TAIL_MAX_CHARS) return null
+  const windowStart = text.length - THOUGHT_STREAM_TAIL_MAX_CHARS
+  // Snap to a line start when the line begins near the window edge; a
+  // line that starts much earlier (giant unwrapped paragraph) would blow
+  // the char budget — hard-cut instead.
+  const nl = text.lastIndexOf('\n', windowStart - 1)
+  const start =
+    nl !== -1 && windowStart - (nl + 1) <= THOUGHT_STREAM_TAIL_SNAP_PAD
+      ? nl + 1
+      : windowStart
+  // Line-count cap: dense tails render at most MAX_LINES lines.
+  let lines = 0
+  for (let i = start; i < text.length; i++) {
+    if (text.charCodeAt(i) === 10 && ++lines >= THOUGHT_STREAM_TAIL_MAX_LINES - 1) {
+      return text.slice(i + 1)
+    }
+  }
+  return text.slice(start)
+}
+
+/** Streaming thought body text: bounded tail, leading "…" when truncated. */
+function streamThoughtBody(text: string): string {
+  const tail = thoughtStreamTail(text)
+  return tail == null ? text : `${Glyphs.ellipsis}\n${tail}`
 }
 
 function entryExpanded(e: ScrollEntry): boolean {
@@ -633,6 +674,12 @@ type EntryViewProps = {
    * 不传 → 恒为 undefined，行为与 memo 比较完全不变。
    */
   patch?: Partial<ScrollEntry>
+  /**
+   * 主 scrollback 的合并流式滚动固定：流式思考期间挂到思考 body 元素上，
+   * 由父组件统一固定（每帧一次布局读写）；迷你 scrollback 不传 → 条目
+   * 自己固定。恒为稳定引用（useRef 对象），memo 比较只做引用相等。
+   */
+  streamBodyRef?: { current: HTMLDivElement | null }
 }
 
 /**
@@ -701,6 +748,7 @@ function entryViewEqual(prev: EntryViewProps, next: EntryViewProps): boolean {
     // mini 用 useMemo/useState setter 构造 → 引用稳定）。patch 同理。
     prev.actions === next.actions &&
     prev.patch === next.patch &&
+    prev.streamBodyRef === next.streamBodyRef &&
     (prev.now === next.now ||
       (!entryFlashActive(prev.e, prev.now) && !entryFlashActive(next.e, next.now)))
   )
@@ -717,6 +765,7 @@ export const EntryView = memo(function EntryView({
   inGroup = false,
   actions,
   patch,
+  streamBodyRef,
 }: EntryViewProps) {
   // 迷你 scrollback 折叠覆盖：patch 合并进渲染条目（不写回 store）。
   const e = patch ? ({ ...eProp, ...patch } as ScrollEntry) : eProp
@@ -764,14 +813,23 @@ export const EntryView = memo(function EntryView({
 
   // Thought body preview: cap at 4 lines with internal scroll; keep the
   // newest line visible while streaming (full text lives in the viewer).
-  const bodyRef = useRef<HTMLDivElement>(null)
+  const localBodyRef = useRef<HTMLDivElement>(null)
+  const bodyRef = streamBodyRef ?? localBodyRef
   const thoughtStreaming = e.kind === 'thought' ? e.streaming : false
   const thoughtText = e.kind === 'thought' ? e.text : undefined
   useEffect(() => {
-    if (!thoughtStreaming) return
+    // 主 scrollback：固定由父组件统一做（合并的流式滚动 effect，每帧
+    // 一次布局读写）；迷你 scrollback 没有 streamBodyRef，条目自己固定。
+    if (!thoughtStreaming || streamBodyRef) return
     const el = bodyRef.current
     if (el) el.scrollTop = el.scrollHeight
-  }, [thoughtStreaming, thoughtText])
+  }, [thoughtStreaming, thoughtText, streamBodyRef, bodyRef])
+  // 流式期间把思考 body 元素注册给父组件（父 effect 每帧固定一次；
+  // 收口/卸载时父组件读到 null 即停止固定）。
+  useEffect(() => {
+    if (!streamBodyRef) return
+    streamBodyRef.current = thoughtStreaming ? bodyRef.current : null
+  }, [streamBodyRef, thoughtStreaming, e.id, bodyRef])
   const shell = {
     e,
     selected,
@@ -894,7 +952,7 @@ export const EntryView = memo(function EntryView({
             only — the time itself is hidden on mobile) so text never runs
             under it; the hover expansion still overlays content by design. */}
         <div className="group relative min-w-0 sm:pr-9">
-          <Markdown source={e.text} />
+          <Markdown source={e.text} streaming={e.streaming} />
           {/* Agent-embedded images render below the text. */}
           {e.images?.length ? (
             <div className="mt-1.5">
@@ -994,7 +1052,11 @@ export const EntryView = memo(function EntryView({
           >
             {e.text ? (
               <div className="italic text-gn-muted whitespace-pre-wrap break-words">
-                {truncated ? truncatedThoughtLines(e.text).join('\n') : e.text}
+                {e.streaming
+                  ? streamThoughtBody(e.text)
+                  : truncated
+                    ? truncatedThoughtLines(e.text).join('\n')
+                    : e.text}
                 {e.streaming && (
                   <span
                     className="ml-0.5 inline-block h-[0.9em] w-[0.4em] translate-y-[1px] animate-pulse align-text-bottom"
@@ -1297,10 +1359,11 @@ export const EntryView = memo(function EntryView({
 
   if (e.kind === 'session_event') {
     // Recap events are two-part (TUI session_event recap_output): bold
-    // "Recap" header + muted summary body, foldable via `open` (←/→ /
-    // click). Collapsed shows the header with a one-line preview; expanded
-    // shows the full body. Warning events keep the warning text color AND
-    // get the warning accent rail (resolveAccent sessionEvent.warning).
+    // "Recap" header + muted summary body, foldable via `open` (←/→).
+    // Default expanded: the full summary renders with line breaks
+    // (pre-wrap); collapsing is a keyboard-only action. Warning events
+    // keep the warning text color AND get the warning accent rail
+    // (resolveAccent sessionEvent.warning).
     return (
       <EntryShell {...shell}>
         <div className="flex items-start gap-1.5 py-[2px] text-[13px] leading-[1.35]">
@@ -1432,6 +1495,7 @@ export function Scrollback() {
   const expandedGroups = useChatStore((s) => s.expandedGroups)
   const historyLoadedAt = useChatStore((s) => s.historyLoadedAt)
   const historyHasMore = useChatStore((s) => s.historyHasMore)
+  const historyLoading = useChatStore((s) => s.historyLoading)
   const historyLoadingMore = useChatStore((s) => s.historyLoadingMore)
   const historyPrependedAt = useChatStore((s) => s.historyPrependedAt)
   const historyAnchorId = useChatStore((s) => s.historyAnchorId)
@@ -1447,18 +1511,61 @@ export function Scrollback() {
   const touchStartYRef = useRef<number | null>(null)
   const touchYRef = useRef<number | null>(null)
   const [now, setNow] = useState(() => Date.now())
+  // History-switch loading indicator: same braille spinner as the
+  // composer turn-status line (TUI glyphs.rs), ~7.5fps. The overlay
+  // stays mounted permanently (pointer-events-none); opacity is toggled
+  // by class so the 300 ms transition plays for BOTH the fade-in and
+  // the fade-out — a conditionally mounted element would never paint
+  // its starting opacity before the first frame, so the fade would
+  // be skipped.
+  const loadingVisible = historyLoading && entries.length === 0
+  const [spinnerFrame, setSpinnerFrame] = useState(0)
+  useEffect(() => {
+    if (!loadingVisible) return
+    const t = window.setInterval(
+      () => setSpinnerFrame((v) => (v + 1) % SPINNER_FRAMES.length),
+      SPINNER_INTERVAL_MS,
+    )
+    return () => window.clearInterval(t)
+  }, [loadingVisible])
+  // Content fade-in after a history switch: the new entries render in
+  // the same commit that bumps historyLoadedAt. A useLayoutEffect drops
+  // the column to opacity 0 BEFORE the browser paints (full-opacity
+  // content is never shown, so no 100→0 transition flash), then a single
+  // rAF restores it and the 300 ms transition plays a real fade-in —
+  // cross-fading with the loading overlay's fade-out instead of a pop.
+  const [contentVisible, setContentVisible] = useState(true)
+  useLayoutEffect(() => {
+    if (historyLoadedAt == null) return
+    setContentVisible(false)
+    const raf = requestAnimationFrame(() => setContentVisible(true))
+    return () => cancelAnimationFrame(raf)
+  }, [historyLoadedAt])
 
   // ── TUI sticky prompt header (scrollback/sticky.rs) ──────────────
   // The last user prompt whose top has scrolled past the viewport top is
   // pinned as a sticky header; it switches as you scroll. Tracked via
   // scroll position against the user entries' container-space tops.
   // Uses the render window (entries outside it have no DOM elements).
+  // ── Live-mode render window ──────────────────────────────────────
+  // Bounded at MAX_RENDER_ENTRIES so streaming flushes keep the DOM flat
+  // (the store keeps every entry). Scrolling to the top grows the window
+  // one page at a time via maybeLoadOlderHistory — 已截断内容不用切历史
+  // 就能继续向上翻。History mode renders everything (host paging instead).
+  const [renderLimit, setRenderLimit] = useState(MAX_RENDER_ENTRIES)
+  // Anchor for the local-prepend scroll restore (mirrors historyPrependedAt).
+  const [expandAnchorId, setExpandAnchorId] = useState<string | null>(null)
+  // New session / history switch → window back to the default cap.
+  useEffect(() => {
+    setRenderLimit(MAX_RENDER_ENTRIES)
+    setExpandAnchorId(null)
+  }, [historyLoadedAt])
   const renderEntries = useMemo(
     () =>
-      historyLoadedAt != null || entries.length <= MAX_RENDER_ENTRIES
+      historyLoadedAt != null || entries.length <= renderLimit
         ? entries
-        : entries.slice(-MAX_RENDER_ENTRIES),
-    [historyLoadedAt, entries],
+        : entries.slice(-renderLimit),
+    [historyLoadedAt, entries, renderLimit],
   )
   const truncatedCount = entries.length - renderEntries.length
   const userById = useMemo(() => {
@@ -1532,9 +1639,44 @@ export function Scrollback() {
 
   const pinnedUser = pinnedId ? (userById.get(pinnedId) ?? null) : null
 
+  // ── 分组缓存（groupingSignature）────────────────────────────
+  // 流式 flush 只改文本、不改分组相关字段：签名命中时跳过全量 scanGroups，
+  // span 与 header 行（含 label）直接复用——每帧主成本从 O(n) 分组扫描
+  // 降到 O(n) 签名比对。签名/展开集变化（收口、工具状态、折叠切换、新
+  // 条目…）时全量重扫并重建缓存。流式思考条目的 id 单独跟踪（合并滚动
+  // 固定需要把它指给父组件的 streamBodyRef）。
+  const spansCacheRef = useRef<{
+    sig: string
+    expanded: ReadonlySet<string>
+    spans: GroupSpan[]
+    headers: Map<GroupSpan, DisplayRow>
+  } | null>(null)
+  const streamingThoughtId = useMemo(() => {
+    for (let i = renderEntries.length - 1; i >= 0; i--) {
+      const e = renderEntries[i]
+      if (e.kind === 'thought' && e.streaming) return e.id
+    }
+    return null
+  }, [renderEntries])
+  // 流式滚动固定（合并 effect）：流式思考 body 由 EntryView 注册到这里。
+  const streamBodyRef = useRef<HTMLDivElement | null>(null)
+
   const { rows: displayRows, spans } = useMemo(() => {
+    const sig = groupingSignature(renderEntries)
+    const c = spansCacheRef.current
+    if (c && c.expanded === expandedGroups && sig === c.sig) {
+      // 分组结构未变（纯流式文本增长）：span 与 header 行（含 label）
+      // 复用，跳过 scanGroups 与 label 重算。
+      return {
+        rows: projectDisplayRows(renderEntries, c.spans, true, c.headers),
+        spans: c.spans,
+      }
+    }
     const spans = scanGroups(renderEntries, expandedGroups)
-    return { rows: projectDisplayRows(renderEntries, spans), spans }
+    const headers = new Map<GroupSpan, DisplayRow>()
+    const rows = projectDisplayRows(renderEntries, spans, true, headers)
+    spansCacheRef.current = { sig, expanded: expandedGroups, spans, headers }
+    return { rows, spans }
   }, [renderEntries, expandedGroups])
 
   // Pending permission freezes running waves (is_pending_user_input)
@@ -1559,12 +1701,18 @@ export function Scrollback() {
   }, [entries])
 
   // Auto-follow only when near bottom. Direct scrollTop (not smooth
-  // scrollIntoView): during streaming this fires per chunk and each smooth
+  // scrollIntoView): during streaming this fires per flush and each smooth
   // animation restarts — instant follow is what TUI gll does.
+  // 与流式思考 body 的内部固定合并成一个 passive effect：rAF 合并后的
+  // 流式 flush 每帧至多一次，两次滚动固定在同一提交后完成（每帧一次
+  // 布局读写，不再每 chunk 两次）。
   useEffect(() => {
-    if (!followRef.current) return
-    const box = boxRef.current
-    if (box) box.scrollTop = box.scrollHeight
+    if (followRef.current) {
+      const box = boxRef.current
+      if (box) box.scrollTop = box.scrollHeight
+    }
+    const bodyEl = streamBodyRef.current
+    if (bodyEl) bodyEl.scrollTop = bodyEl.scrollHeight
   }, [entries, displayRows.length])
 
   // History load: always re-follow the bottom (scrollback was reset)
@@ -1586,6 +1734,18 @@ export function Scrollback() {
       ?.scrollIntoView({ block: 'start', behavior: 'auto' })
   }, [historyPrependedAt, historyAnchorId])
 
+  // Local truncation page prepended: restore the scroll anchor exactly
+  // like the host-history path above (same cooldown, one page per visit
+  // to the top region).
+  useEffect(() => {
+    if (!expandAnchorId) return
+    topPageCooldownRef.current = Date.now() + TOP_PAGE_COOLDOWN_MS
+    boxRef.current
+      ?.querySelector(`[data-entry-id="${expandAnchorId}"]`)
+      ?.scrollIntoView({ block: 'start', behavior: 'auto' })
+    setExpandAnchorId(null)
+  }, [expandAnchorId])
+
   // Re-arm after ANY paging attempt finishes (success or failure): a
   // failed fetch can be retried with the next gesture; a successful one
   // is gated by the prepend cooldown above.
@@ -1606,17 +1766,30 @@ export function Scrollback() {
   const maybeLoadOlderHistory = useCallback(() => {
     const box = boxRef.current
     if (!box) return
-    if (!historyHasMore || historyLoadingMore) return
     if (!topPageArmedRef.current) return
     if (Date.now() < topPageCooldownRef.current) return
     topPageArmedRef.current = false
+    // Live-mode truncation first: the older entries are still in the
+    // store — grow the render window one page and restore the anchor so
+    // the view doesn't jump (new rows land above the previously first
+    // row). Re-armed immediately like the host-path loading-finish
+    // re-arm; the cooldown keeps repeated top visits to one page each.
+    if (truncatedCount > 0) {
+      const anchorId = renderEntries[0]?.id
+      followRef.current = false
+      setRenderLimit((v) => v + MAX_RENDER_ENTRIES)
+      setExpandAnchorId(anchorId ?? null)
+      topPageArmedRef.current = true
+      return
+    }
+    if (!historyHasMore || historyLoadingMore) return
     // Browsing older history: never yank the view back to the bottom on
     // prepend, even if the follow flag was left armed (e.g. wheel-up at
     // the very top with no prior scroll event).
     followRef.current = false
     const firstEl = box.querySelector('[data-entry-id]')
     void loadMoreHistory(firstEl?.getAttribute('data-entry-id') ?? undefined)
-  }, [historyHasMore, historyLoadingMore, loadMoreHistory])
+  }, [historyHasMore, historyLoadingMore, loadMoreHistory, renderEntries, truncatedCount])
 
   // Scroll selected into view
   useEffect(() => {
@@ -1628,7 +1801,8 @@ export function Scrollback() {
   return (
     <div
       ref={boxRef}
-      className="gn-scroll flex-1 overflow-y-auto overscroll-contain outline-none"
+      className="gn-scroll relative flex-1 overflow-y-auto overscroll-contain outline-none"
+      data-scrollback-box=""
       tabIndex={0}
       role="listbox"
       aria-label="Scrollback"
@@ -1682,6 +1856,13 @@ export function Scrollback() {
         }
       }}
     >
+      {/* Fade-in wrapper for freshly loaded history content — see the
+          contentVisible layout effect above. */}
+      <div
+        className={`transition-opacity duration-300 ${
+          contentVisible ? 'opacity-100' : 'opacity-0'
+        }`}
+      >
       {(historyHasMore || historyLoadingMore) && entries.length > 0 && (
         // Clickable fallback: when content doesn't overflow there is no
         // scrollbar, so scroll-to-top never fires. Tapping the hint loads
@@ -1705,34 +1886,17 @@ export function Scrollback() {
             : '↑ 点击或向上滚动加载更早历史'}
         </button>
       )}
-      {entries.length === 0 && (
-        <div className="mx-auto mt-[12vh] max-w-md px-6 text-center text-gn-muted text-[13px] leading-[1.9]">
-          <div className="mb-3 text-[28px] tracking-wide text-gn-magenta font-semibold">grok</div>
-          <p>
-            Agent Client Protocol · GrokNight
-            <br />
-            工具由 Host 上的 Agent 执行
-          </p>
-          <p className="mt-3 text-[12px] text-gn-gutter">
-            <kbd className="rounded border border-gn-prompt-border bg-gn-bg-highlight px-1.5 py-0.5 text-gn-fg2">
-              tab
-            </kbd>{' '}
-            滚动区 ·{' '}
-            <kbd className="rounded border border-gn-prompt-border bg-gn-bg-highlight px-1.5 py-0.5 text-gn-fg2">
-              j/k
-            </kbd>{' '}
-            选中 ·{' '}
-            <kbd className="rounded border border-gn-prompt-border bg-gn-bg-highlight px-1.5 py-0.5 text-gn-fg2">
-              ←/→
-            </kbd>{' '}
-            收起/展开 ·{' '}
-            <kbd className="rounded border border-gn-prompt-border bg-gn-bg-highlight px-1.5 py-0.5 text-gn-fg2">
-              enter
-            </kbd>{' '}
-            弹窗全文
-          </p>
-        </div>
-      )}
+      <div
+        aria-hidden={!loadingVisible}
+        className={`pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2 select-none transition-opacity duration-300 ${
+          loadingVisible ? 'opacity-100' : 'opacity-0'
+        }`}
+      >
+        <span className="text-[15px] leading-none text-gn-muted">
+          {SPINNER_FRAMES[spinnerFrame]}
+        </span>
+        <span className="text-[12.5px] text-gn-muted">加载会话…</span>
+      </div>
       <div className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} py-3`}>
         {/* TUI sticky prompt header (sticky.rs): the last user prompt
             scrolled past the top, collapsed to 3 lines; switches as you
@@ -1774,12 +1938,19 @@ export function Scrollback() {
           </div>
         )}
         {truncatedCount > 0 && (
-          <div
-            className="py-1.5 text-center text-[11px] text-gn-gutter select-none"
-            title="更早内容仍保留在会话中，可打开历史查看"
+          // Clickable like the host-history hint: same page-expansion path
+          // as scrolling up at the top (maybeLoadOlderHistory).
+          <button
+            type="button"
+            onClick={(ev) => {
+              ev.stopPropagation()
+              maybeLoadOlderHistory()
+            }}
+            className="mx-auto block w-full py-1.5 text-center text-[11px] text-gn-gutter select-none transition-colors hover:text-gn-muted"
+            title="更早内容仍保留在会话中 · 向上滑动或点击加载更多"
           >
-            已截断 {truncatedCount} 条更早内容 · 仅显示最近 {MAX_RENDER_ENTRIES} 条
-          </div>
+            已截断 {truncatedCount} 条更早内容 · 向上滑动或点击加载
+          </button>
         )}
         {displayRows.map((row, i) => {
           const dense = isDensePackableRow(row)
@@ -1812,9 +1983,15 @@ export function Scrollback() {
               dense={dense}
               densePrev={densePrev}
               denseNext={denseNext}
+              streamBodyRef={
+                row.entry.kind === 'thought' && row.entry.id === streamingThoughtId
+                  ? streamBodyRef
+                  : undefined
+              }
             />
           )
         })}
+        </div>
       </div>
       <div ref={bottomRef} />
     </div>

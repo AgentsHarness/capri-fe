@@ -1,15 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useChatStore } from '../store/chat'
-import { ThemePicker } from './ThemePicker'
-import { fmtTime, groupAccentClass, groupByState, sessionGroupKey, sessionSubtitle } from './historyGroups'
+import { ThemeOptions, ThemePicker } from './ThemePicker'
 import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS } from '../theme/layout'
-import { Glyphs } from '../theme/glyphs'
-import { IconGlyph } from './IconGlyph'
-import { SessionStateIcon } from './SessionStateIcon'
-import { stateLabel, useSessionSpinner } from './sessionState'
+import { SessionHistoryList } from './SessionHistoryList'
 import {
   ContextChip,
-  CreditsChip,
   GoalChip,
   McpChip,
   QueueBadge,
@@ -66,16 +61,19 @@ export function WorkspaceBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
   // dropdowns aren't covered when the sticky header is pinned.
   return (
     <div className="sticky top-0 z-30 shrink-0 bg-gn-bg-base">
-      {/* Content column matches scrollback/composer (mx-auto max-w-[960px]) */}
+      {/* Content column matches scrollback/composer (mx-auto max-w-[960px]).
+          Mobile: the row wraps — left (branch/cwd) stays on the first line,
+          the chip cluster is one unit that wraps to a right-aligned second
+          line instead of overflowing/clipping past the viewport edge. */}
       <div
-        className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} flex min-w-0 items-center gap-2 py-1 text-[14px] select-none`}
+        className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 py-1 text-[14px] select-none`}
       >
         {/* Git head (x.ai/git_head_changed) — TUI status-bar branch.
             Detached HEAD renders as "⎇ detached" (TUI render.rs: empty
             branch → "{icon} detached"); worktrees get the `wt` badge. */}
         {gitInfo?.branch ? (
           <span
-            className="flex min-w-0 max-w-[24vw] items-center gap-1 truncate font-mono text-[13px] text-gn-cyan"
+            className="flex min-w-0 max-w-[18vw] items-center gap-1 truncate font-mono text-[13px] text-gn-cyan sm:max-w-[24vw]"
             title={
               gitInfo.isWorktree
                 ? `${gitInfo.branch} · worktree${gitInfo.mainRepo ? ` of ${gitInfo.mainRepo}` : ''}`
@@ -98,13 +96,13 @@ export function WorkspaceBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
             repo when present. */}
         {cwd ? (
           <span
-            className="flex min-w-0 max-w-[38vw] items-center truncate font-mono text-[13px] text-gn-gray-dim sm:max-w-[52vw]"
+            className="flex min-w-0 max-w-[30vw] items-center truncate font-mono text-[13px] text-gn-gray-dim sm:max-w-[52vw]"
             title={cwd}
           >
             {shortCwd(cwd, homeDir)}
             {gitInfo?.isWorktree && gitInfo.mainRepo ? (
               <span
-                className="min-w-0 max-w-[16vw] truncate"
+                className="min-w-0 max-w-[10vw] truncate sm:max-w-[16vw]"
                 title={gitInfo.mainRepo}
               >
                 {' '}
@@ -114,30 +112,33 @@ export function WorkspaceBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
           </span>
         ) : null}
 
-        <div className="flex-1" />
-
-        {/* ⠋N toggles sticky task list · goal · ⠋ MCP · context · queue · todo · credits
-            (TUI status.push order: bg_tasks → goal → mcp → context → queue → badge → credits) */}
-        <RunningChip
-          entries={entries}
-          topTasks={topTasks}
-          open={tasksOpen}
-          onToggle={() => setTasksBarOpen(!tasksOpen)}
-        />
-        <GoalChip goalState={goalState} contextUsed={usage?.used} />
-        {onOpenMcp && <McpChip onOpen={onOpenMcp} />}
-        <ContextChip
-          used={usage?.used}
-          size={
-            usage?.size ??
-            (models.find((m) => m.name === modelName)?.contextWindow ??
-              models[0]?.contextWindow)
-          }
-          turnTokens={usage?.turnTokens}
-        />
-        <QueueBadge />
-        <TodoChip todos={todos} goalState={goalState} />
-        <CreditsChip />
+        {/* Chip cluster — right-aligned; wraps as a unit onto a second
+            line on narrow screens (never clips past the viewport edge).
+            max-w-full caps the cluster at the row width so its chips wrap
+            internally instead of stretching the page (flex min-content). */}
+        <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
+          {/* ⠋N toggles sticky task list · goal · ⠋ MCP · context · queue · todo · credits
+              (TUI status.push order: bg_tasks → goal → mcp → context → queue → badge → credits) */}
+          <RunningChip
+            entries={entries}
+            topTasks={topTasks}
+            open={tasksOpen}
+            onToggle={() => setTasksBarOpen(!tasksOpen)}
+          />
+          <GoalChip goalState={goalState} contextUsed={usage?.used} />
+          {onOpenMcp && <McpChip onOpen={onOpenMcp} />}
+          <ContextChip
+            used={usage?.used}
+            size={
+              usage?.size ??
+              (models.find((m) => m.name === modelName)?.contextWindow ??
+                models[0]?.contextWindow)
+            }
+            turnTokens={usage?.turnTokens}
+          />
+          <QueueBadge />
+          <TodoChip todos={todos} goalState={goalState} />
+        </div>
       </div>
       {/* Sticky task rows under the bar (not a floating popup). */}
       <RunningTasksBar entries={entries} topTasks={topTasks} open={tasksOpen} />
@@ -167,47 +168,19 @@ export function TopBar({
   const conn = useChatStore((s) => s.conn)
   const hostError = useChatStore((s) => s.error)
   const hostNotice = useChatStore((s) => s.statusWarning)
-  const sessionId = useChatStore((s) => s.sessionId)
   const newSession = useChatStore((s) => s.newSession)
-  const sessions = useChatStore((s) => s.sessions)
   const historyOpen = useChatStore((s) => s.historyOpen)
-  const historyLoading = useChatStore((s) => s.historyLoading)
   const openHistory = useChatStore((s) => s.openHistory)
   const closeHistory = useChatStore((s) => s.closeHistory)
-  const continueSession = useChatStore((s) => s.continueSession)
-  const forkSession = useChatStore((s) => s.forkSession)
-  const renameSession = useChatStore((s) => s.renameSession)
-  const requestRecap = useChatStore((s) => s.requestRecap)
-  const deleteSession = useChatStore((s) => s.deleteSession)
-  const compactSession = useChatStore((s) => s.compactSession)
-  const openRewind = useChatStore((s) => s.openRewind)
-  const showSessionInfo = useChatStore((s) => s.showSessionInfo)
   const openExtensions = useChatStore((s) => s.openExtensions)
   const openSettings = useChatStore((s) => s.openSettings)
-  const historyGroups = useMemo(
-    () => groupByState(sessions, sessionId),
-    [sessions, sessionId],
-  )
 
-  /** Collapsed status groups in the mobile dropdown (处理中/后台任务/待处理/空闲). */
-  const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(new Set())
-  const toggleGroup = (key: string) => {
-    setCollapsedGroups((prev) => {
-      const next = new Set(prev)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
-      return next
-    })
-  }
   const [openHosts, setOpenHosts] = useState(false)
-
-  // Shared braille spinner for "active" rows in the mobile dropdown.
-  const anyActive = useMemo(
-    () =>
-      sessions.some((s) => sessionGroupKey(s, sessionId) === 'active'),
-    [sessions, sessionId],
-  )
-  const spinnerFrame = useSessionSpinner(anyActive)
+  // Mobile (lg:hidden) "更多" menu — the secondary action buttons fold
+  // into one ⋮ trigger; clicking expands them vertically.
+  const [moreOpen, setMoreOpen] = useState(false)
+  // The theme row expands inline (accordion) inside the 更多 menu.
+  const [themeExpanded, setThemeExpanded] = useState(false)
 
   // Host label reflects connection health: abnormal → "connecting" / "error".
   // An active host status message (error / connection warning) replaces the
@@ -230,15 +203,19 @@ export function TopBar({
         ? 'text-gn-red'
         : ''
 
+  // relative z-40 so host/history/more dropdowns stack above WorkspaceBar
+  // (sticky z-30) and scrollback sticky prompts (z-10). Without a stacking
+  // context on this chrome, absolute z-40 children still lose to later
+  // siblings and chat text "shows through" the history panel.
   return (
-    <header className="select-none bg-gn-bg-base">
+    <header className="relative z-40 select-none bg-gn-bg-base">
       {/* Main row: host switcher + actions. */}
       <div className="flex shrink-0 items-center gap-2 px-3 py-[6px] sm:px-4 text-[12px] text-gn-muted">
         <div className="relative min-w-0">
           <button
             type="button"
             onClick={() => setOpenHosts((v) => !v)}
-            className={`flex max-w-[46vw] sm:max-w-xs items-center gap-1 truncate rounded px-1.5 py-0.5 hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8 ${hostLabelColor}`}
+            className={`flex max-w-[40vw] sm:max-w-xs items-center gap-1 truncate rounded px-1.5 py-0.5 hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8 ${hostLabelColor}`}
             title={
               notice
                 ? `${notice}${hostName ? ` · ${hostName}` : ''}`
@@ -303,263 +280,227 @@ export function TopBar({
 
         <div className="flex-1" />
 
-        <ThemePicker />
-        {onOpenMcp && (
-          <button
-            type="button"
-            onClick={onOpenMcp}
-            className="rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
-            title="MCP 服务器状态"
-          >
-            mcp
-          </button>
-        )}
-        {onOpenGit && (
-          <button
-            type="button"
-            onClick={onOpenGit}
-            className="rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
-            title="Git 面板 — 工作区状态 / diff / 提交"
-          >
-            git
-          </button>
-        )}
-        {onOpenTerm && (
-          <button
-            type="button"
-            onClick={onOpenTerm}
-            className="rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
-            title="终端（x.ai/terminal · 管道终端 + 交互 PTY）"
-          >
-            term
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={() => openExtensions('hooks')}
-          className="rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
-          title="扩展（/hooks /plugins /skills /marketplace）"
-        >
-          ext
-        </button>
-        <button
-          type="button"
-          onClick={openSettings}
-          className="rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
-          title="设置（F2 · config.toml 只读展示）"
-        >
-          settings
-        </button>
-        <button
-          type="button"
-          onClick={() => void newSession()}
-          className="rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
-        >
-          new
-        </button>
-        {/* Mobile-only history trigger — desktop history lives in the persistent left sidebar. */}
-        <div className="relative lg:hidden">
-        <button
-          type="button"
-          onClick={() => (historyOpen ? closeHistory() : void openHistory())}
-          className={`rounded border px-2 py-0.5 min-h-8 ${
-            historyOpen
-              ? 'border-gn-prompt-border bg-gn-bg-highlight text-gn-fg'
-              : 'border-transparent hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg'
-          }`}
-          title="加载历史会话"
-        >
-          history
-        </button>
-        {historyOpen && (
-          <>
+        {/* Desktop-only inline actions — on mobile they fold into the ⋮ menu below. */}
+        <div className="hidden items-center gap-2 lg:flex">
+          <ThemePicker />
+          {onOpenMcp && (
             <button
               type="button"
-              className="fixed inset-0 z-30 cursor-default"
-              aria-label="close"
-              onClick={closeHistory}
-            />
-            {/* Mobile dropdown — desktop history lives in the left sidebar. */}
-            <div className="absolute right-0 top-full z-40 mt-1 max-h-[70vh] w-80 max-w-[92vw] overflow-y-auto rounded border border-gn-prompt-border bg-gn-bg-base shadow-xl py-1">
-              {/* Session actions (x.ai ext methods). */}
-              <div className="flex items-center gap-1 border-b border-gn-prompt-border px-2 py-1.5">
+              onClick={onOpenMcp}
+              className="rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+              title="MCP 服务器状态"
+            >
+              mcp
+            </button>
+          )}
+          {onOpenGit && (
+            <button
+              type="button"
+              onClick={onOpenGit}
+              className="rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+              title="Git 面板 — 工作区状态 / diff / 提交"
+            >
+              git
+            </button>
+          )}
+          {onOpenTerm && (
+            <button
+              type="button"
+              onClick={onOpenTerm}
+              className="rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+              title="终端（x.ai/terminal · 管道终端 + 交互 PTY）"
+            >
+              term
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => openExtensions('hooks')}
+            className="rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+            title="扩展（/hooks /plugins /skills /marketplace）"
+          >
+            ext
+          </button>
+          <button
+            type="button"
+            onClick={openSettings}
+            className="rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+            title="设置（F2 · config.toml 只读展示）"
+          >
+            settings
+          </button>
+          <button
+            type="button"
+            onClick={() => void newSession()}
+            className="rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+          >
+            new
+          </button>
+        </div>
+        {/* Mobile-only history trigger — desktop history lives in the persistent left sidebar. */}
+        <div className="relative lg:hidden">
+          <button
+            type="button"
+            onClick={() => (historyOpen ? closeHistory() : void openHistory())}
+            className={`rounded border px-2 py-0.5 min-h-8 ${
+              historyOpen
+                ? 'border-gn-prompt-border bg-gn-bg-highlight text-gn-fg'
+                : 'border-transparent hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg'
+            }`}
+            title="加载历史会话"
+          >
+            history
+          </button>
+          {historyOpen && (
+            <>
+              <button
+                type="button"
+                className="fixed inset-0 z-30 cursor-default"
+                aria-label="close"
+                onClick={closeHistory}
+              />
+              {/* Mobile dropdown — renders the SAME workspace-grouped list as
+                  the desktop sidebar (SessionHistoryList), so the two ends
+                  stay in sync (分组 / 折叠 / 加载更多 / 重命名 / 删除).
+                  Width is viewport-capped: right-anchored to the history
+                  button, a fixed w-80 would poke past the LEFT edge on
+                  narrow phones (320px). */}
+              <div
+                className="absolute right-0 top-full z-40 mt-1 max-h-[70vh] w-[min(84vw,20rem)] overflow-y-auto rounded border border-gn-prompt-border bg-gn-bg-base shadow-xl isolate"
+                style={{ backgroundColor: 'var(--color-gn-bg-base)' }}
+              >
+                <SessionHistoryList />
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Mobile-only "更多" — the secondary action buttons fold into one ⋮
+            trigger; clicking expands them vertically under the button. */}
+        <div className="relative lg:hidden">
+          <button
+            type="button"
+            onClick={() => setMoreOpen((v) => !v)}
+            aria-expanded={moreOpen}
+            aria-label="更多操作"
+            title="更多操作：theme / mcp / git / term / ext / settings / new"
+            className={`rounded border px-2 py-0.5 min-h-8 ${
+              moreOpen
+                ? 'border-gn-prompt-border bg-gn-bg-highlight text-gn-fg'
+                : 'border-transparent hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg'
+            }`}
+          >
+            ⋮
+          </button>
+          {moreOpen && (
+            <>
+              <button
+                type="button"
+                className="fixed inset-0 z-30 cursor-default"
+                aria-label="close"
+                onClick={() => setMoreOpen(false)}
+              />
+              <div className="absolute right-0 top-full z-40 mt-1 max-h-[70vh] w-64 max-w-[90vw] overflow-y-auto rounded border border-gn-prompt-border bg-gn-bg-base shadow-xl py-1">
+                <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-gn-gutter">
+                  more
+                </div>
+                {/* theme — inline accordion, same options as the desktop picker. */}
+                <button
+                  type="button"
+                  onClick={() => setThemeExpanded((v) => !v)}
+                  className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                  title={themeExpanded ? '收起主题选项' : '展开主题选项'}
+                >
+                  <span className="min-w-0 flex-1">theme</span>
+                  <span className="shrink-0 text-gn-gutter" aria-hidden>
+                    {themeExpanded ? '▴' : '▾'}
+                  </span>
+                </button>
+                {themeExpanded && (
+                  <div className="border-t border-gn-prompt-border/60 py-1">
+                    <ThemeOptions
+                      onSelect={() => {
+                        setMoreOpen(false)
+                        setThemeExpanded(false)
+                      }}
+                    />
+                  </div>
+                )}
+                {onOpenMcp && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMoreOpen(false)
+                      onOpenMcp()
+                    }}
+                    className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                    title="MCP 服务器状态"
+                  >
+                    mcp
+                  </button>
+                )}
+                {onOpenGit && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMoreOpen(false)
+                      onOpenGit()
+                    }}
+                    className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                    title="Git 面板 — 工作区状态 / diff / 提交"
+                  >
+                    git
+                  </button>
+                )}
+                {onOpenTerm && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMoreOpen(false)
+                      onOpenTerm()
+                    }}
+                    className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                    title="终端（x.ai/terminal · 管道终端 + 交互 PTY）"
+                  >
+                    term
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => {
-                    closeHistory()
-                    void requestRecap()
+                    setMoreOpen(false)
+                    openExtensions('hooks')
                   }}
-                  className="rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-                  title="x.ai/recap — 生成「我在哪」摘要"
+                  className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                  title="扩展（/hooks /plugins /skills /marketplace）"
                 >
-                  recap
+                  ext
                 </button>
                 <button
                   type="button"
                   onClick={() => {
-                    closeHistory()
-                    void showSessionInfo()
+                    setMoreOpen(false)
+                    openSettings()
                   }}
-                  className="rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-                  title="x.ai/session-info — 当前会话详情入滚动区"
+                  className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                  title="设置（F2 · config.toml 只读展示）"
                 >
-                  session-info
+                  settings
                 </button>
                 <button
                   type="button"
                   onClick={() => {
-                    closeHistory()
-                    void forkSession()
+                    setMoreOpen(false)
+                    void newSession()
                   }}
-                  className="rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-                  title="x.ai/session/fork — 从当前会话派生新会话"
+                  className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                  title="新会话"
                 >
-                  fork
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    closeHistory()
-                    const title = window.prompt('新会话标题：')
-                    if (title && title.trim()) void renameSession(title.trim())
-                  }}
-                  className="rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-                  title="x.ai/session/rename"
-                >
-                  rename
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    closeHistory()
-                    const note = window.prompt('压缩说明（可留空）：')
-                    if (note !== null) void compactSession(note.trim() || undefined)
-                  }}
-                  className="rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-                  title="x.ai/session/compact — 压缩当前会话上下文"
-                >
-                  compact
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    closeHistory()
-                    openRewind()
-                  }}
-                  className="rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-                  title="x.ai/session/rewind — 回退到历史检查点"
-                >
-                  rewind
+                  new
                 </button>
               </div>
-              {historyGroups.length === 0 && (
-                <div className="px-3 py-2 text-[11px] text-gn-muted">没有历史会话</div>
-              )}
-              {historyGroups.map((g) => {
-                const isCollapsed = collapsedGroups.has(g.key)
-                return (
-                  <div key={g.key}>
-                    {/* Status group header — sticky, click to collapse/expand. */}
-                    <button
-                      type="button"
-                      onClick={() => toggleGroup(g.key)}
-                      className="sticky top-0 z-10 flex w-full cursor-pointer items-center gap-2 border-y border-gn-prompt-border bg-gn-bg-base px-3 py-1 text-left hover:bg-gn-bg-highlight"
-                      title={isCollapsed ? `展开${g.label}会话` : `收起${g.label}会话`}
-                    >
-                      <span className="shrink-0 text-gn-gutter" aria-hidden>
-                        <IconGlyph glyph={isCollapsed ? Glyphs.chevron : Glyphs.chevronDown} />
-                      </span>
-                      <span
-                        className={`min-w-0 truncate text-[10.5px] font-medium tracking-wide ${groupAccentClass(g.key)}`}
-                      >
-                        {g.label}
-                      </span>
-                      <span className="shrink-0 text-[10px] tabular-nums text-gn-gutter">
-                        {g.items.length}
-                      </span>
-                    </button>
-                    {!isCollapsed &&
-                      g.items.map((s) => {
-                        const active = s.sessionId === sessionId
-                        // Row icon follows its bucket: 处理中 spinner /
-                        // 后台任务 ◇ + bg badge / 待处理 blue diamond / 空闲 hollow ◇.
-                        const key = sessionGroupKey(s, sessionId)
-                        const state = key === 'active' ? 'active' : 'idle'
-                        const pending = key === 'awaiting'
-                        const subtitle = sessionSubtitle(s)
-                        return (
-                          <div
-                            key={s.sessionId}
-                            role="button"
-                            tabIndex={0}
-                            aria-disabled={historyLoading}
-                            onClick={() => {
-                              if (!historyLoading) void continueSession(s.sessionId, s.cwd || '')
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter' || e.key === ' ') {
-                                e.preventDefault()
-                                if (!historyLoading) void continueSession(s.sessionId, s.cwd || '')
-                              }
-                            }}
-                            className={`group flex w-full cursor-pointer select-none items-center gap-2 px-3 py-2 text-left hover:bg-gn-bg-highlight ${historyLoading ? 'opacity-50' : ''} ${active ? 'bg-gn-bg-highlight' : ''}`}
-                            title={`${s.title || s.sessionId.slice(0, 12)} · ${stateLabel(key)}${s.cwd ? ` · ${s.cwd}` : ''}`}
-                          >
-                            <SessionStateIcon
-                              state={state}
-                              pending={pending}
-                              spinnerFrame={spinnerFrame}
-                            />
-                            <span className="min-w-0 flex-1">
-                              <span
-                                className={`block truncate text-[12px] ${active ? 'text-gn-cyan' : 'text-gn-fg'}`}
-                              >
-                                {s.title || s.sessionId.slice(0, 12)}
-                              </span>
-                              <span className="block truncate font-mono text-[10px] text-gn-muted">
-                                {subtitle ? `${subtitle} · ` : ''}
-                                {s.updatedAt ? fmtTime(s.updatedAt) : ''}
-                              </span>
-                            </span>
-                            {((s.bgRunning ?? 0) > 0) && (
-                              <span
-                                className="shrink-0 rounded border border-gn-gutter/70 px-1 font-mono text-[9px] leading-[13px] text-gn-muted"
-                                title={`该会话有 ${s.bgRunning} 个仍在运行的后台任务（历史共 ${s.bgCount ?? 0} 个）`}
-                              >
-                                bg
-                              </span>
-                            )}
-                            {active && (
-                              <span className="shrink-0 text-[9px] text-gn-cyan">当前</span>
-                            )}
-                            {/* Row-hover delete (x.ai/session/delete — TUI /delete). */}
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                const ok = window.confirm(
-                                  `删除会话「${s.title || s.sessionId.slice(0, 12)}」？此操作不可恢复。`,
-                                )
-                                if (ok) void deleteSession(s.sessionId, s.cwd || '')
-                              }}
-                              className="shrink-0 rounded px-1 text-[11px] leading-none text-gn-red opacity-40 hover:bg-gn-diff-del-bg hover:opacity-100"
-                              title="删除会话（/delete）"
-                              aria-label="删除会话"
-                            >
-                              ✕
-                            </button>
-                          </div>
-                        )
-                      })}
-                  </div>
-                )
-              })}
-              {historyLoading && (
-                <div className="px-3 py-2 text-[11px] text-gn-muted">加载中…</div>
-              )}
-            </div>
-          </>
-        )}
+            </>
+          )}
         </div>
       </div>
     </header>

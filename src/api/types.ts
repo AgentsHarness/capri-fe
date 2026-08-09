@@ -555,7 +555,18 @@ export type AcpEvent =
       endMs?: number
     }
   /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
-  | { type: 'error'; message: string; sessionId?: string }
+  | {
+      type: 'error'
+      message: string
+      sessionId?: string
+      /**
+       * 回合失败来源（host bridge 标记）：'agent' = agent 回复了 JSON-RPC
+       * 错误（进程活着，只是拒绝了回合）；'transport' = host↔agent 传输
+       * 失败（超时/写失败，agent 可能不可达、正在被 host 重启）。缺省 =
+       * 老版本 host（按 'agent' 处理）。
+       */
+      source?: 'agent' | 'transport'
+    }
   /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
   | { type: 'status'; text: string; sessionId?: string }
   /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */

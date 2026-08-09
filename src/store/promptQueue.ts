@@ -10,7 +10,9 @@ import { transport } from '../api/localTransport'
  *
  * `sending` is a mutual-exclusion flag: the auto-send effect and user
  * gestures (double-Enter / [发送现在]) share one drain path, so a user
- * Enter can never race the auto-send into a double prompt.
+ * Enter can never race the auto-send into a double prompt. [发送现在]
+ * follows TUI send-now semantics: a running turn is cancelled first
+ * (the host rejects prompts mid-turn with 409), then the head is sent.
  *
  * Queue-panel row operations (TUI queue.rs / queue_edit.rs):
  *   - `e` / Enter / double-click enters edit mode for a row; the row
@@ -58,6 +60,14 @@ type PromptQueueState = {
   /** True while a queued prompt is being sent (guards auto-send races). */
   sending: boolean
   /**
+   * Ids that left the LOCAL queue for sending / deletion (dequeue /
+   * removeAt / clear). A stale `queue_changed` broadcast — the agent-side
+   * queue/remove hasn't landed yet — must never resurrect them;
+   * applyQueueChanged drops these rows (TUI retire_optimistic_echo parity:
+   * once a row is gone it never reappears in a later broadcast).
+   */
+  drainedIds: Set<string>
+  /**
    * Queue-panel edit mode (TUI PromptMode::EditingQueued): index of the
    * row being edited. The row renders as a textarea; Enter saves, Esc
    * cancels, Shift+Enter inserts a newline.
@@ -87,6 +97,7 @@ type PromptQueueState = {
 export const usePromptQueue = create<PromptQueueState>((set, get) => ({
   queue: [],
   sending: false,
+  drainedIds: new Set(),
   editIndex: null,
   editDraft: '',
   enqueue: (item) => {
@@ -100,6 +111,8 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
     if (!head) return undefined
     set((s) => ({
       queue: s.queue.slice(1),
+      // 出队（发送）即永别：后续广播不得复活该行。
+      drainedIds: new Set(s.drainedIds).add(head.id),
       // The edited row was the head — leave edit mode; otherwise shift.
       editIndex:
         s.editIndex == null
@@ -126,6 +139,8 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
       }
       return {
         queue,
+        // 删除即永别：后续广播不得复活该行。
+        drainedIds: new Set(s.drainedIds).add(id),
         editIndex,
         editDraft: editIndex == null ? '' : s.editDraft,
       }
@@ -133,7 +148,12 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
     syncQueue(() => transport.queueRemove({ id }))
   },
   clear: () => {
-    set({ queue: [], editIndex: null, editDraft: '' })
+    set((s) => ({
+      queue: [],
+      editIndex: null,
+      editDraft: '',
+      drainedIds: new Set([...s.drainedIds, ...s.queue.map((q) => q.id)]),
+    }))
     syncQueue(() => transport.queueClear())
   },
   setSending: (v) => set({ sending: v }),
@@ -235,9 +255,12 @@ function findQueueArray(root: unknown): unknown[] | null {
 export function applyQueueChanged(params: unknown): boolean {
   const list = findQueueArray(params)
   if (!list) return false
-  const prev = usePromptQueue.getState().queue
+  const { queue: prev, drainedIds } = usePromptQueue.getState()
   const byId = new Map(prev.map((q) => [q.id, q]))
   const queue: QueuedPrompt[] = []
+  // 解析成功（id+text 齐全）的行数——区分「广播里没有可解析行」与
+  // 「行都合法但已被 drainedIds 过滤」，前者才判定为形状不符。
+  let parsed = 0
   for (const raw of list) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue
     const o = raw as Record<string, unknown>
@@ -252,6 +275,9 @@ export function applyQueueChanged(params: unknown): boolean {
       (typeof o.prompt === 'string' && o.prompt) ||
       ''
     if (!text) continue
+    parsed++
+    // 已出队/已删除的行：stale 广播不得复活它们。
+    if (drainedIds.has(id)) continue
     const existing = byId.get(id)
     queue.push(
       existing
@@ -272,8 +298,8 @@ export function applyQueueChanged(params: unknown): boolean {
           },
     )
   }
-  // A non-empty array whose rows are all unparseable → not our shape.
-  if (queue.length === 0 && list.length > 0) return false
+  // A non-empty array with no parseable row → not our shape.
+  if (parsed === 0 && list.length > 0) return false
   usePromptQueue.setState((s) => {
     if (s.editIndex != null) {
       const editedId = s.queue[s.editIndex]?.id
