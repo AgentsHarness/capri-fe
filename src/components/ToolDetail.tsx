@@ -20,10 +20,12 @@ import { IconGlyph } from './IconGlyph'
 import { fmtBytes } from '../format'
 
 /**
- * 大输出分页：超过 PAGE_LINES 行时只渲染前 PAGE_LINES 行，点击
- * "显示更多"逐页追加（避免一次挂几万个 DOM 节点把页面拖死）。
+ * Full-viewer page size for long stdout / read / edit bodies.
+ * Only the expanded viewer path pages by this; inline truncation still uses
+ * EXEC_FIRST/LAST, READ_FIRST/LAST, INLINE_MAX from toolDetail.ts.
+ * Keep small (≤250) so mobile DOM stays light — load-more adds one page at a time.
  */
-const PAGE_LINES = 1000
+const VIEWER_PAGE_LINES = 200
 
 function MoreLinesButton({
   total,
@@ -161,7 +163,7 @@ function StdoutPanel({
   // Full view (viewer) with a very long output: page the rows instead of
   // mounting all of them at once.
   const [visible, setVisible] = useState(() =>
-    Math.min(display.length, PAGE_LINES),
+    Math.min(display.length, VIEWER_PAGE_LINES),
   )
   const showMore = visible < display.length
   const rows = showMore ? display.slice(0, visible) : display
@@ -182,7 +184,7 @@ function StdoutPanel({
           total={display.length}
           visible={visible}
           onMore={() =>
-            setVisible((v) => Math.min(v + PAGE_LINES, display.length))
+            setVisible((v) => Math.min(v + VIEWER_PAGE_LINES, display.length))
           }
         />
       )}
@@ -220,7 +222,7 @@ function ReadBody({
 }) {
   // Full view (viewer) with a very long file: page the rows instead of
   // mounting all of them at once. Unconditional hook (early returns below).
-  const [visible, setVisible] = useState(PAGE_LINES)
+  const [visible, setVisible] = useState(VIEWER_PAGE_LINES)
   if (d.error) return <ErrorLine text={d.error} />
   if (d.media === 'image') {
     const src = readImageSrc(d.content)
@@ -293,7 +295,7 @@ function ReadBody({
         <MoreLinesButton
           total={rows.length}
           visible={visible}
-          onMore={() => setVisible((v) => Math.min(v + PAGE_LINES, rows.length))}
+          onMore={() => setVisible((v) => Math.min(v + VIEWER_PAGE_LINES, rows.length))}
         />
       )}
     </Panel>
@@ -350,7 +352,7 @@ function EditBody({
 }) {
   // Full view (viewer) with a huge diff: page the rows instead of mounting
   // all of them at once. Unconditional hook (early return below).
-  const [visible, setVisible] = useState(PAGE_LINES)
+  const [visible, setVisible] = useState(VIEWER_PAGE_LINES)
   if (d.error) return <ErrorLine text={d.error} />
   if (!d.lines.length) return <MetaLine>(no diff)</MetaLine>
 
@@ -393,7 +395,7 @@ function EditBody({
             total={lines.length}
             visible={visible}
             onMore={() =>
-              setVisible((v) => Math.min(v + PAGE_LINES, lines.length))
+              setVisible((v) => Math.min(v + VIEWER_PAGE_LINES, lines.length))
             }
           />
         )}
