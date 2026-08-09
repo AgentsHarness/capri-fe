@@ -489,7 +489,7 @@ export type AcpEvent =
       /** authenticate `_meta` passthrough (host only sends when non-nil). */
       authMeta?: unknown
     }
-  | { type: 'chunk'; text: string; messageId?: string; ts?: number }
+  | { type: 'chunk'; text: string; messageId?: string; ts?: number; sessionId?: string }
   | {
       type: 'user_chunk'
       text: string
@@ -498,6 +498,8 @@ export type AcpEvent =
       /** Forwarded content-block meta (content._meta): display override + cron framing. */
       displayText?: string
       displayAsCron?: boolean
+      /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
+      sessionId?: string
     }
   /**
    * Image content block from agent_message_chunk / user_message_chunk
@@ -527,7 +529,7 @@ export type AcpEvent =
    * Aggregated user message (history replay or live user_chunk).
    * `isCron` matches TUI UserPromptBlock::cron (scheduled /loop fire).
    */
-  | { type: 'user_message'; text: string; ts?: number; isCron?: boolean }
+  | { type: 'user_message'; text: string; ts?: number; isCron?: boolean; sessionId?: string }
   | {
       type: 'thought'
       text: string
@@ -539,10 +541,12 @@ export type AcpEvent =
        * ThinkingBlock::streaming_replay parity).
        */
       elapsedMs?: number
+      /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
+      sessionId?: string
     }
-  | { type: 'tool_call'; toolCall: ToolCall }
-  | { type: 'tool_call_update'; toolCallUpdate: ToolCall }
-  | { type: 'plan'; entries: unknown }
+  | { type: 'tool_call'; toolCall: ToolCall; sessionId?: string }
+  | { type: 'tool_call_update'; toolCallUpdate: ToolCall; sessionId?: string }
+  | { type: 'plan'; entries: unknown; sessionId?: string }
   /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
   | {
       type: 'usage'
@@ -722,7 +726,12 @@ export type AcpEvent =
       params?: Record<string, unknown>
     }
   | { type: 'scheduled_task_inject_prompt'; params?: Record<string, unknown> }
-  | { type: 'prompt_complete'; params?: Record<string, unknown> }
+  | {
+      type: 'prompt_complete'
+      params?: Record<string, unknown>
+      /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
+      sessionId?: string
+    }
   /** Turn-end suggestion chips (host broadcasts x.ai/follow_ups as this
       typed event — bridge.go). Params shape matches what applyFollowUps
       (store/chat.ts) consumes: snake_case response_id (camelCase
@@ -1057,8 +1066,8 @@ export type ScrollEntry =
  * Mini scrollback of one subagent session (keyed by child_session_id).
  * Fed by the host's broadcast of the child session's own event stream
  * (live) and by on-demand history fetch of the child session's updates
- * (replay — TUI replay_inherited_updates 同款). Bounded to the most
- * recent SUBAGENT_VIEW_MAX_ITEMS items.
+ * (replay — TUI replay_inherited_updates 同款). No item cap — older
+ * history is paged in on scroll-up.
  *
  * items 直接复用主 scrollback 的 ScrollEntry 模型——BlockViewer 的迷你
  * 时间线与主 scrollback 走同一条渲染管线（scanGroups/projectDisplayRows

@@ -58,14 +58,39 @@ export class AgentTurnError extends Error {
  *   non-selected hosts are filtered out here. Hub-level events (hello,
  *   hosts_changed) carry no hostId and always pass through.
  */
+/**
+ * Resolve the hub access token for browser requests.
+ * Only localStorage (`acp-fe-token`) — users type the secret in the gate UI;
+ * it is never baked into the production build.
+ * Hub enforces FE_TOKEN server-side; local acp-host ignores the header.
+ */
+function resolveAccessToken(): string {
+  try {
+    return localStorage.getItem('acp-fe-token')?.trim() || ''
+  } catch {
+    return ''
+  }
+}
+
+/** Thrown when the hub rejects the browser token (or none was sent). */
+export class AccessTokenError extends Error {
+  constructor(message = '需要有效的访问 token') {
+    super(message)
+    this.name = 'AccessTokenError'
+  }
+}
+
 export class LocalTransport {
   private es: EventSource | null = null
   private handlers = new Set<TransportHandler>()
   private base: string
   private selectedHostId: string | null = null
+  /** Shared secret for hub FE_TOKEN (Authorization / SSE ?token=). */
+  private accessToken: string
 
-  constructor(base = '') {
+  constructor(base = '', accessToken = resolveAccessToken()) {
     this.base = base.replace(/\/$/, '')
+    this.accessToken = accessToken
   }
 
   /** Select the target host for API calls + event filtering (null = none). */
@@ -75,6 +100,44 @@ export class LocalTransport {
 
   getHost(): string | null {
     return this.selectedHostId
+  }
+
+  /**
+   * Update the access token at runtime (e.g. after the user pastes a
+   * hub FE_TOKEN). Persists to localStorage when possible and reconnects
+   * the SSE stream so the new token takes effect immediately.
+   */
+  setAccessToken(token: string | null) {
+    const next = (token ?? '').trim()
+    this.accessToken = next
+    try {
+      if (next) localStorage.setItem('acp-fe-token', next)
+      else localStorage.removeItem('acp-fe-token')
+    } catch {
+      /* ignore */
+    }
+    if (this.es) this.connect()
+  }
+
+  getAccessToken(): string {
+    return this.accessToken
+  }
+
+  /**
+   * Probe whether the hub accepts the current (or empty) browser token.
+   * - `ok` — open or token valid
+   * - `need_token` — hub requires FE_TOKEN and this client is rejected
+   * - `error` — network / other failure (treat as non-auth; show main UI)
+   */
+  async probeAccess(): Promise<'ok' | 'need_token' | 'error'> {
+    try {
+      const res = await this.fetch(`${this.base}/api/hosts`)
+      if (res.status === 401) return 'need_token'
+      if (!res.ok) return 'error'
+      return 'ok'
+    } catch {
+      return 'error'
+    }
   }
 
   onEvent(handler: TransportHandler): () => void {
@@ -101,9 +164,27 @@ export class LocalTransport {
     return `${this.base}${path}${qs}`
   }
 
+  /**
+   * fetch wrapper that attaches Authorization: Bearer when a hub FE
+   * token is configured. All API calls go through this so token handling
+   * stays in one place.
+   */
+  private fetch(input: string, init: RequestInit = {}): Promise<Response> {
+    const headers = new Headers(init.headers)
+    if (this.accessToken && !headers.has('Authorization')) {
+      headers.set('Authorization', `Bearer ${this.accessToken}`)
+    }
+    return fetch(input, { ...init, headers })
+  }
+
   connect() {
     this.disconnect()
-    const es = new EventSource(`${this.base}/events`)
+    // EventSource cannot set Authorization headers — pass token as query
+    // when configured (hub accepts ?token= as an FE_TOKEN source).
+    const eventsURL = this.accessToken
+      ? `${this.base}/events?token=${encodeURIComponent(this.accessToken)}`
+      : `${this.base}/events`
+    const es = new EventSource(eventsURL)
     this.es = es
     es.onmessage = (msg) => {
       try {
@@ -130,16 +211,25 @@ export class LocalTransport {
    * `_meta`（data.meta）。stopReason 保持原有透传解析；meta 仅 object
    * 且非空时带上。
    *
+   * `sessionId`（可选，缺省 = host 的 active 会话）：按会话发 prompt。
+   * host bridge 是多会话的——带着目标 sessionId 的 prompt 会在那个会话
+   * 里跑（可与当前 active 会话的回合并行），用于后台队列投递。
+   *
    * 失败分类：host 是 agent 的透传层——HTTP 错误响应（!res.ok 或
    * ok:false）说明 host 活着、错误来自 agent（如模型 API 400
    * "Internal Error"），抛 AgentTurnError 由 store 渲染成回合错误行；
    * 只有网络级失败（fetch 拒绝 = host 不可达）才保持普通 Error。
    */
-  async prompt(blocks: ContentBlock[]): Promise<{ stopReason?: string; meta?: Record<string, unknown> }> {
-    const res = await fetch(this.url('/api/prompt'), {
+  async prompt(
+    blocks: ContentBlock[],
+    opts: { sessionId?: string } = {},
+  ): Promise<{ stopReason?: string; meta?: Record<string, unknown> }> {
+    const body: Record<string, unknown> = { blocks }
+    if (opts.sessionId) body.sessionId = opts.sessionId
+    const res = await this.fetch(this.url('/api/prompt'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ blocks }),
+      body: JSON.stringify(body),
     })
     const data = (await res.json().catch(() => ({}))) as Record<string, unknown>
     if (!res.ok || data.ok === false) {
@@ -169,7 +259,7 @@ export class LocalTransport {
   }
 
   async cancel(): Promise<void> {
-    await fetch(this.url('/api/cancel'), { method: 'POST' })
+    await this.fetch(this.url('/api/cancel'), { method: 'POST' })
   }
 
   async respondPermission(
@@ -186,7 +276,7 @@ export class LocalTransport {
     /** Optional followup message on a reject (TUI RejectOnce followup). */
     followupMessage?: string,
   ) {
-    const res = await fetch(this.url('/api/permission-response'), {
+    const res = await this.fetch(this.url('/api/permission-response'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -207,7 +297,7 @@ export class LocalTransport {
    * rejects the request.
    */
   async respondClientRequest(requestId: string, result?: Record<string, unknown>, error?: string) {
-    const res = await fetch(this.url('/api/client-response'), {
+    const res = await this.fetch(this.url('/api/client-response'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ requestId, result, error }),
@@ -223,7 +313,7 @@ export class LocalTransport {
     /** Permission-mode seeds (TUI's yoloMode/autoMode) → session/new `_meta`. */
     meta?: Record<string, unknown>
   } = {}) {
-    const res = await fetch(this.url('/api/session'), {
+    const res = await this.fetch(this.url('/api/session'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(config),
@@ -235,8 +325,27 @@ export class LocalTransport {
 
   /** Host registry + hub default selection (hub-level endpoint, no relay). */
   async listHosts(): Promise<{ hosts: HostInfo[]; defaultHostId?: string }> {
-    const res = await fetch(`${this.base}/api/hosts`)
-    const data = await res.json()
+    const res = await this.fetch(`${this.base}/api/hosts`)
+    const data = (await res.json().catch(() => ({}))) as {
+      hosts?: HostInfo[]
+      defaultHostId?: string
+      error?: string
+      ok?: boolean
+    }
+    if (res.status === 401) {
+      throw new AccessTokenError(
+        typeof data.error === 'string' && data.error
+          ? data.error
+          : '需要有效的访问 token',
+      )
+    }
+    if (!res.ok) {
+      throw new Error(
+        typeof data.error === 'string' && data.error
+          ? data.error
+          : `hosts failed (${res.status})`,
+      )
+    }
     return { hosts: data.hosts ?? [], defaultHostId: data.defaultHostId }
   }
 
@@ -246,7 +355,7 @@ export class LocalTransport {
    * 数组语义，游标/meta 仅在有值时带上（行为向后兼容）。
    */
   async listSessions(): Promise<{ sessions: SessionInfo[]; nextCursor?: string; meta?: Record<string, unknown> }> {
-    const res = await fetch(this.url('/api/sessions'), {
+    const res = await this.fetch(this.url('/api/sessions'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: '{}',
@@ -272,7 +381,7 @@ export class LocalTransport {
    * current_model_id) and normalized to WorkspaceGroup[] here.
    */
   async workspaceList(): Promise<WorkspaceGroup[]> {
-    const res = await fetch(this.url('/api/session-summaries/workspace-list'), {
+    const res = await this.fetch(this.url('/api/session-summaries/workspace-list'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: '{}',
@@ -350,7 +459,7 @@ export class LocalTransport {
     configOptions?: unknown
     busy?: boolean
   }> {
-    const res = await fetch(this.url('/api/session-load'), {
+    const res = await this.fetch(this.url('/api/session-load'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId, cwd, ...(meta ? { meta } : {}) }),
@@ -380,7 +489,7 @@ export class LocalTransport {
     hasMore?: boolean
     updates?: unknown[]
   }> {
-    const res = await fetch(this.url('/api/session-updates'), {
+    const res = await this.fetch(this.url('/api/session-updates'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId, cwd, ...opts }),
@@ -403,7 +512,7 @@ export class LocalTransport {
     sessionId: string,
     cwd: string,
   ): Promise<{ events?: import('./types').TaskTimelineEvent[] }> {
-    const res = await fetch(this.url('/api/session-running-tasks'), {
+    const res = await this.fetch(this.url('/api/session-running-tasks'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId, cwd }),
@@ -425,7 +534,7 @@ export class LocalTransport {
     sessionId: string,
     cwd: string,
   ): Promise<{ branch?: string; isWorktree?: boolean; mainRepo?: string }> {
-    const res = await fetch(this.url('/api/git-info'), {
+    const res = await this.fetch(this.url('/api/git-info'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId, cwd }),
@@ -531,7 +640,7 @@ export class LocalTransport {
    * envelope (billing is a plain method). Unwraps {ok, result} only.
    */
   async billing(sessionId?: string): Promise<import('./types').BillingConfigResponse> {
-    const res = await fetch(this.url('/api/billing'), {
+    const res = await this.fetch(this.url('/api/billing'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(sessionId ? { sessionId } : {}),
@@ -552,7 +661,7 @@ export class LocalTransport {
   async usageReport(
     opts: { cwd?: string; sessionId?: string; from?: number; to?: number } = {},
   ): Promise<import('./types').UsageReportData> {
-    const res = await fetch(this.url('/api/usage-report'), {
+    const res = await this.fetch(this.url('/api/usage-report'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(opts),
@@ -570,7 +679,7 @@ export class LocalTransport {
    * returns the agent's raw `result` (the host answers {ok, result}).
    */
   private async xaiCall(path: string, body: Record<string, unknown>): Promise<unknown> {
-    const res = await fetch(this.url(path), {
+    const res = await this.fetch(this.url(path), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -584,13 +693,13 @@ export class LocalTransport {
 
   /** GET /api/status — host Status struct 镜像（字段全 optional）。 */
   async status(): Promise<HostStatus> {
-    const res = await fetch(this.url('/api/status'))
+    const res = await this.fetch(this.url('/api/status'))
     return res.json()
   }
 
   /** x.ai/session-info — authoritative session details at open time. */
   async sessionInfo(): Promise<SessionInfoDetail> {
-    const res = await fetch(this.url('/api/session-info'), { method: 'POST' })
+    const res = await this.fetch(this.url('/api/session-info'), { method: 'POST' })
     const data = await res.json()
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || `session info failed (${res.status})`)
@@ -603,7 +712,7 @@ export class LocalTransport {
 
   /** x.ai/session/fork — fork the current session (TUI /fork). */
   async forkSession(params: Record<string, unknown> = {}) {
-    const res = await fetch(this.url('/api/session-fork'), {
+    const res = await this.fetch(this.url('/api/session-fork'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
@@ -615,7 +724,7 @@ export class LocalTransport {
 
   /** x.ai/session/rename. */
   async renameSession(title: string) {
-    const res = await fetch(this.url('/api/session-rename'), {
+    const res = await this.fetch(this.url('/api/session-rename'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title }),
@@ -627,7 +736,7 @@ export class LocalTransport {
 
   /** x.ai/recap — fire-and-forget "where was I" summary. */
   async recap(auto = false) {
-    const res = await fetch(this.url('/api/recap'), {
+    const res = await this.fetch(this.url('/api/recap'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ auto }),
@@ -639,7 +748,7 @@ export class LocalTransport {
 
   /** session/setModel — switch the session's model (grok /model). */
   async setModel(modelId: string, reasoningEffort?: string) {
-    const res = await fetch(this.url('/api/set-model'), {
+    const res = await this.fetch(this.url('/api/set-model'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ modelId, ...(reasoningEffort ? { reasoningEffort } : {}) }),
@@ -651,7 +760,7 @@ export class LocalTransport {
 
   /** x.ai/set-mode (host /api/set-mode) — switch permission mode (TUI /plan, /normal). */
   async setMode(modeId: string) {
-    const res = await fetch(this.url('/api/set-mode'), {
+    const res = await this.fetch(this.url('/api/set-mode'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ modeId }),
@@ -669,7 +778,7 @@ export class LocalTransport {
   async togglePlanMode(
     sessionId?: string,
   ): Promise<{ ok?: boolean; planMode?: boolean }> {
-    const res = await fetch(this.url('/api/toggle-plan-mode'), {
+    const res = await this.fetch(this.url('/api/toggle-plan-mode'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(sessionId ? { sessionId } : {}),
@@ -686,7 +795,7 @@ export class LocalTransport {
    * remembered permission rule (always-allow patterns, etc.).
    */
   async permissionsReset(sessionId?: string): Promise<void> {
-    const res = await fetch(this.url('/api/permissions-reset'), {
+    const res = await this.fetch(this.url('/api/permissions-reset'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(sessionId ? { sessionId } : {}),
@@ -705,7 +814,7 @@ export class LocalTransport {
 
   /** Set an autonomous goal on the active session (starts the goal loop). */
   async goalSet(objective: string, tokenBudget?: number) {
-    const res = await fetch(this.url('/api/goal/set'), {
+    const res = await this.fetch(this.url('/api/goal/set'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -720,7 +829,7 @@ export class LocalTransport {
 
   /** Current goal state snapshot (no agent round-trip). */
   async goalStatus() {
-    const res = await fetch(this.url('/api/goal/status'), {
+    const res = await this.fetch(this.url('/api/goal/status'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
@@ -732,7 +841,7 @@ export class LocalTransport {
 
   /** Pause the active goal (user_paused). */
   async goalPause() {
-    const res = await fetch(this.url('/api/goal/pause'), {
+    const res = await this.fetch(this.url('/api/goal/pause'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
@@ -744,7 +853,7 @@ export class LocalTransport {
 
   /** Resume a paused goal. */
   async goalResume() {
-    const res = await fetch(this.url('/api/goal/resume'), {
+    const res = await this.fetch(this.url('/api/goal/resume'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
@@ -756,7 +865,7 @@ export class LocalTransport {
 
   /** Clear the goal (cleared). */
   async goalClear() {
-    const res = await fetch(this.url('/api/goal/clear'), {
+    const res = await this.fetch(this.url('/api/goal/clear'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
@@ -768,7 +877,7 @@ export class LocalTransport {
 
   /** x.ai/subagent/cancel. */
   async cancelSubagent(subagentId: string) {
-    const res = await fetch(this.url('/api/subagent-cancel'), {
+    const res = await this.fetch(this.url('/api/subagent-cancel'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ subagentId }),
@@ -780,7 +889,7 @@ export class LocalTransport {
 
   /** x.ai/task/kill — kill a background task. */
   async killTask(taskId: string) {
-    const res = await fetch(this.url('/api/task-kill'), {
+    const res = await this.fetch(this.url('/api/task-kill'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ taskId }),
@@ -849,7 +958,7 @@ export class LocalTransport {
       truncated?: boolean
     }>
   > {
-    const res = await fetch(this.url('/api/task-list'), {
+    const res = await this.fetch(this.url('/api/task-list'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
@@ -890,7 +999,7 @@ export class LocalTransport {
     running?: boolean
     failed?: boolean
   }> {
-    const res = await fetch(this.url('/api/task-output'), {
+    const res = await this.fetch(this.url('/api/task-output'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -909,7 +1018,7 @@ export class LocalTransport {
    * ACTIVE session ends it; the UI falls back to a fresh session.
    */
   async sessionDelete(sessionId: string, cwd: string) {
-    const res = await fetch(this.url('/api/session-delete'), {
+    const res = await this.fetch(this.url('/api/session-delete'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId, cwd }),
@@ -923,7 +1032,7 @@ export class LocalTransport {
 
   /** x.ai/session/compact — compress the active session's context (TUI /compact). */
   async compact(sessionId: string, note?: string) {
-    const res = await fetch(this.url('/api/compact'), {
+    const res = await this.fetch(this.url('/api/compact'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId, ...(note ? { note } : {}) }),
@@ -942,7 +1051,7 @@ export class LocalTransport {
     sessionId: string,
     cwd: string,
   ): Promise<{ points: RewindPoint[] }> {
-    const res = await fetch(this.url('/api/rewind-points'), {
+    const res = await this.fetch(this.url('/api/rewind-points'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId, cwd }),
@@ -973,7 +1082,7 @@ export class LocalTransport {
     targetIndex: number,
     mode?: RewindMode,
   ): Promise<import('./types').RewindExecuteResult> {
-    const res = await fetch(this.url('/api/rewind-execute'), {
+    const res = await this.fetch(this.url('/api/rewind-execute'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1039,7 +1148,7 @@ export class LocalTransport {
 
   /** x.ai/scheduler/delete — remove a scheduled task (TUI /loop delete). */
   async schedulerDelete(sessionId: string, taskId: string) {
-    const res = await fetch(this.url('/api/scheduler-delete'), {
+    const res = await this.fetch(this.url('/api/scheduler-delete'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId, taskId }),
@@ -1058,7 +1167,7 @@ export class LocalTransport {
    * work — 404s degrade gracefully in the caller).
    */
   async memoryFlush(sessionId: string) {
-    const res = await fetch(this.url('/api/memory-flush'), {
+    const res = await this.fetch(this.url('/api/memory-flush'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId }),
@@ -1081,7 +1190,7 @@ export class LocalTransport {
    * dropped rather than failing the whole list.
    */
   async mcpList(): Promise<{ servers: McpListServer[] }> {
-    const res = await fetch(this.url('/api/mcp/list'))
+    const res = await this.fetch(this.url('/api/mcp/list'))
     const data = await res.json().catch(() => ({}))
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || `mcp list failed (${res.status})`)
@@ -1164,7 +1273,7 @@ export class LocalTransport {
     toolName: string,
     enabled: boolean,
   ): Promise<Record<string, unknown>> {
-    const res = await fetch(this.url('/api/mcp/toggle-tool'), {
+    const res = await this.fetch(this.url('/api/mcp/toggle-tool'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ serverName, toolName, enabled }),
@@ -1181,7 +1290,7 @@ export class LocalTransport {
     name: string,
     enabled: boolean,
   ): Promise<Record<string, unknown>> {
-    const res = await fetch(this.url('/api/mcp-toggle'), {
+    const res = await this.fetch(this.url('/api/mcp-toggle'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, enabled }),
@@ -1200,7 +1309,7 @@ export class LocalTransport {
     args?: string[]
     env?: Record<string, string>
   }): Promise<Record<string, unknown>> {
-    const res = await fetch(this.url('/api/mcp-add'), {
+    const res = await this.fetch(this.url('/api/mcp-add'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ server }),
@@ -1214,7 +1323,7 @@ export class LocalTransport {
 
   /** POST /api/mcp-remove — remove a server (TUI /mcps x). */
   async mcpRemove(name: string): Promise<Record<string, unknown>> {
-    const res = await fetch(this.url('/api/mcp-remove'), {
+    const res = await this.fetch(this.url('/api/mcp-remove'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
@@ -1234,7 +1343,7 @@ export class LocalTransport {
    * agent's rewrite contract (rawText + contextSummary).
    */
   async memoryRewrite(sessionId: string, rawText: string, contextSummary?: string) {
-    const res = await fetch(this.url('/api/memory-rewrite'), {
+    const res = await this.fetch(this.url('/api/memory-rewrite'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1255,7 +1364,7 @@ export class LocalTransport {
    * May return `{ url, code }` / `{ url }` for the UI to surface.
    */
   async mcpAuthTrigger(name: string): Promise<Record<string, unknown>> {
-    const res = await fetch(this.url('/api/mcp-auth-trigger'), {
+    const res = await this.fetch(this.url('/api/mcp-auth-trigger'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
@@ -1293,7 +1402,7 @@ export class LocalTransport {
    * parsed defensively (unknown fields dropped).
    */
   async extensions(): Promise<ExtensionsPayload> {
-    const res = await fetch(this.url('/api/extensions'))
+    const res = await this.fetch(this.url('/api/extensions'))
     const data = await res.json().catch(() => ({}))
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || `extensions failed (${res.status})`)
@@ -1332,7 +1441,7 @@ export class LocalTransport {
    * Groups may be absent; objects are dug out of envelopes defensively.
    */
   async settings(): Promise<SettingsPayload> {
-    const res = await fetch(this.url('/api/settings'))
+    const res = await this.fetch(this.url('/api/settings'))
     const data = await res.json().catch(() => ({}))
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || `settings failed (${res.status})`)
@@ -1363,7 +1472,7 @@ export class LocalTransport {
     cwd?: string
     outputByteLimit?: number
   }): Promise<{ terminalId: string }> {
-    const res = await fetch(this.url('/api/terminal/create'), {
+    const res = await this.fetch(this.url('/api/terminal/create'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
@@ -1381,7 +1490,7 @@ export class LocalTransport {
 
   /** POST /api/terminal/output — cumulative output snapshot (piped only). */
   async terminalOutput(terminalId: string): Promise<TerminalOutput> {
-    const res = await fetch(this.url('/api/terminal/output'), {
+    const res = await this.fetch(this.url('/api/terminal/output'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ terminalId }),
@@ -1414,7 +1523,7 @@ export class LocalTransport {
 
   /** POST /api/terminal/release — forget a terminal (kills a running child). */
   async terminalRelease(terminalId: string): Promise<void> {
-    const res = await fetch(this.url('/api/terminal/release'), {
+    const res = await this.fetch(this.url('/api/terminal/release'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ terminalId }),
@@ -1430,7 +1539,7 @@ export class LocalTransport {
    * the process keeps running and the agent continues (TUI bg_task).
    */
   async terminalBackground(terminalId: string): Promise<void> {
-    const res = await fetch(this.url('/api/terminal/background'), {
+    const res = await this.fetch(this.url('/api/terminal/background'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ terminalId }),
@@ -1766,7 +1875,7 @@ export class LocalTransport {
    * 输入，否则 idle）。
    */
   async sessionState(sessionId: string): Promise<SessionState> {
-    const res = await fetch(this.url('/api/session-state'), {
+    const res = await this.fetch(this.url('/api/session-state'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId }),
@@ -1946,54 +2055,79 @@ export class LocalTransport {
   //    成功无 result；权威状态经 x.ai/queue/changed 广播回传）──────────
 
   /** POST /api/queue/remove {id, expectedVersion?} → x.ai/queue/remove. */
-  async queueRemove(opts: { id: string; expectedVersion?: number }): Promise<void> {
+  /**
+   * POST /api/queue/remove {id, sessionId?} → x.ai/queue/remove.
+   * `sessionId`（可选，缺省 = host 的 active 会话）由调用方带上队列
+   * 所属会话：host 转发时优先用它，避免切换竞态下落到新会话的队列。
+   */
+  async queueRemove(
+    opts: { id: string; expectedVersion?: number },
+    sessionId?: string,
+  ): Promise<void> {
     const body: Record<string, unknown> = { id: opts.id }
     if (opts.expectedVersion !== undefined && opts.expectedVersion !== 0) {
       body.expectedVersion = opts.expectedVersion
     }
+    if (sessionId) body.sessionId = sessionId
     await this.xaiCall('/api/queue/remove', body)
   }
 
-  /** POST /api/queue/clear → x.ai/queue/clear（无参）。 */
-  async queueClear(): Promise<void> {
-    await this.xaiCall('/api/queue/clear', {})
+  /** POST /api/queue/clear {sessionId?} → x.ai/queue/clear（无参）。 */
+  async queueClear(sessionId?: string): Promise<void> {
+    const body: Record<string, unknown> = {}
+    if (sessionId) body.sessionId = sessionId
+    await this.xaiCall('/api/queue/clear', body)
   }
 
-  /** POST /api/queue/reorder {ids} → x.ai/queue/reorder（wire 键 orderedIds）。 */
-  async queueReorder(opts: { ids: string[] }): Promise<void> {
+  /** POST /api/queue/reorder {ids, sessionId?} → x.ai/queue/reorder（wire 键 orderedIds）。 */
+  async queueReorder(opts: { ids: string[] }, sessionId?: string): Promise<void> {
     const body: Record<string, unknown> = {}
     if (opts.ids.length > 0) body.orderedIds = opts.ids
+    if (sessionId) body.sessionId = sessionId
     await this.xaiCall('/api/queue/reorder', body)
   }
 
-  /** POST /api/queue/edit {id, newText} → x.ai/queue/edit. */
-  async queueEdit(opts: { id: string; newText: string }): Promise<void> {
-    await this.xaiCall('/api/queue/edit', opts)
+  /** POST /api/queue/edit {id, newText, sessionId?} → x.ai/queue/edit. */
+  async queueEdit(
+    opts: { id: string; newText: string },
+    sessionId?: string,
+  ): Promise<void> {
+    const body: Record<string, unknown> = { id: opts.id, newText: opts.newText }
+    if (sessionId) body.sessionId = sessionId
+    await this.xaiCall('/api/queue/edit', body)
   }
 
-  /** POST /api/queue/interject {id, newText?, expectedVersion?} →
+  /** POST /api/queue/interject {id, newText?, expectedVersion?, sessionId?} →
    *  x.ai/queue/interject — 插入新提示 / 就地插话。 */
-  async queueInterject(opts: {
-    id: string
-    newText?: string
-    expectedVersion?: number
-  }): Promise<void> {
+  async queueInterject(
+    opts: {
+      id: string
+      newText?: string
+      expectedVersion?: number
+    },
+    sessionId?: string,
+  ): Promise<void> {
     const body: Record<string, unknown> = { id: opts.id }
     if (opts.newText) body.newText = opts.newText
     if (opts.expectedVersion !== undefined && opts.expectedVersion !== 0) {
       body.expectedVersion = opts.expectedVersion
     }
+    if (sessionId) body.sessionId = sessionId
     await this.xaiCall('/api/queue/interject', body)
   }
 
-  /** POST /api/queue/hold-edit {id} → x.ai/queue/hold_edit（编辑锁）。 */
-  async queueHoldEdit(opts: { id: string }): Promise<void> {
-    await this.xaiCall('/api/queue/hold-edit', opts)
+  /** POST /api/queue/hold-edit {id, sessionId?} → x.ai/queue/hold_edit（编辑锁）。 */
+  async queueHoldEdit(opts: { id: string }, sessionId?: string): Promise<void> {
+    const body: Record<string, unknown> = { id: opts.id }
+    if (sessionId) body.sessionId = sessionId
+    await this.xaiCall('/api/queue/hold-edit', body)
   }
 
-  /** POST /api/queue/release-edit {id} → x.ai/queue/release_edit（释放编辑锁）。 */
-  async queueReleaseEdit(opts: { id: string }): Promise<void> {
-    await this.xaiCall('/api/queue/release-edit', opts)
+  /** POST /api/queue/release-edit {id, sessionId?} → x.ai/queue/release_edit（释放编辑锁）。 */
+  async queueReleaseEdit(opts: { id: string }, sessionId?: string): Promise<void> {
+    const body: Record<string, unknown> = { id: opts.id }
+    if (sessionId) body.sessionId = sessionId
+    await this.xaiCall('/api/queue/release-edit', body)
   }
 
   // ── 终端扩展 ────────────────────────────────────────────────────────

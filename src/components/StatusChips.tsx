@@ -17,20 +17,14 @@ import type { TodoItem } from '../store/chat'
  * usage climbs). Hidden until the host reports a non-zero window.
  *
  * Hovered mirrors TUI context_bar: the tokens swap for a progress bar
- * filling the same width plus the 5-col percentage (`████ 42.0%`), with
- * the turn-accumulated count (host `turnTokens`, from
- * response_completed / turn_completed usage) shown separately to the
- * right of the bar — "████ 42.0% ⇣1.5M" — so the context-window usage
- * and the turn total never get conflated.
+ * filling the same width plus the 5-col percentage (`████ 42.0%`).
  */
 export function ContextChip({
   used,
   size,
-  turnTokens,
 }: {
   used?: number
   size?: number
-  turnTokens?: number
 }) {
   const [hovered, setHovered] = useState(false)
   if (used == null || size == null || size <= 0) return null
@@ -49,10 +43,8 @@ export function ContextChip({
   const pctStr = `${pct.toFixed(1)}%`.padStart(5, ' ')
   return (
     <span
-      className={`shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums ${color}`}
-      title={`上下文 ${Math.round(pct)}% (${fmtTok(used)} / ${fmtTok(size)})${
-        turnTokens != null ? ` · 本回合累计 ${fmtTok(turnTokens)}` : ''
-      }`}
+      className={`shrink-0 whitespace-nowrap rounded px-0 py-0.5 font-mono text-[12px] leading-none tabular-nums ${color}`}
+      title={`上下文 ${Math.round(pct)}% (${fmtTok(used)} / ${fmtTok(size)})`}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
@@ -65,9 +57,6 @@ export function ContextChip({
             <span className="text-gn-gray-dim">{'░'.repeat(barWidth - filled)}</span>
           </span>
           <span className="text-gn-fg2">{pctStr}</span>
-          {turnTokens != null ? (
-            <span className="text-gn-gutter">⇣{fmtTok(turnTokens)}</span>
-          ) : null}
         </span>
       ) : (
         defaultStr
@@ -710,8 +699,7 @@ export function RunningChip({
  *  - 「调度任务」— /loop scheduled tasks (prompt summary, interval,
  *    nextFireAt, delete button).
  * Shown when {@link RunningChip} is open — not a floating popup, sticks
- * under the status bar. A「刷新」button re-syncs both lists
- * (syncLiveTasks + refreshTopTasks).
+ * under the status bar.
  */
 export function RunningTasksBar({
   entries,
@@ -726,32 +714,12 @@ export function RunningTasksBar({
   const count = running.length + topTasks.length
   const scheduledTasks = useChatStore((s) => s.scheduledTasks)
   const deleteScheduledTask = useChatStore((s) => s.deleteScheduledTask)
-  const syncLiveTasks = useChatStore((s) => s.syncLiveTasks)
-  const refreshTopTasks = useChatStore((s) => s.refreshTopTasks)
-  const sessionId = useChatStore((s) => s.sessionId)
-  const cwd = useChatStore((s) => s.cwd)
   const spinnerFrame = useSessionSpinner(count > 0 && open)
   const cancelSubagent = useChatStore((s) => s.cancelSubagent)
   const killTask = useChatStore((s) => s.killTask)
   const openViewer = useChatStore((s) => s.openViewer)
   const openTaskViewer = useChatStore((s) => s.openTaskViewer)
   if (!open || (count === 0 && scheduledTasks.length === 0)) return null
-
-  const refresh = () => {
-    void syncLiveTasks()
-    if (sessionId && cwd) void refreshTopTasks(sessionId, cwd)
-  }
-  // 刷新按钮挂在第一个区块的标题行右侧——不单独占一行。
-  const refreshBtn = (
-    <button
-      type="button"
-      onClick={refresh}
-      className="rounded border border-transparent px-1.5 py-0.5 text-[10.5px] text-gn-muted hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg"
-      title="重新同步运行中任务与调度任务列表"
-    >
-      刷新
-    </button>
-  )
 
   return (
     <div
@@ -764,15 +732,9 @@ export function RunningTasksBar({
       <div
         className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} flex max-h-[min(28vh,12rem)] flex-col overflow-y-auto py-0.5`}
       >
-        {/* 区块标题行：左侧标题 + 右侧刷新（不再单独一行）。 */}
+        {/* 运行中区块：直接列出任务，无标题行。 */}
         {count > 0 && (
           <>
-            <div className="flex items-center justify-between gap-2 px-1 pb-0.5 pt-1">
-              <span className="text-[10px] uppercase tracking-wider text-gn-gutter">
-                运行中 · {count}
-              </span>
-              {refreshBtn}
-            </div>
             {topTasks.map((t) => (
               <div
                 key={`restored-${t.taskId}`}
@@ -882,12 +844,10 @@ export function RunningTasksBar({
         )}
         {scheduledTasks.length > 0 && (
           <>
-            <div className="flex items-center justify-between gap-2 px-1 pb-0.5 pt-1">
+            <div className="flex items-center gap-2 px-1 pb-0.5 pt-1">
               <span className="text-[10px] uppercase tracking-wider text-gn-gutter">
                 调度任务 · {scheduledTasks.length}
               </span>
-              {/* 只有调度任务区块时（无运行中区块）刷新挂在这里。 */}
-              {count === 0 ? refreshBtn : null}
             </div>
             {scheduledTasks.map((t) => (
               <div

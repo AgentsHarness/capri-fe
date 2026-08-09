@@ -282,7 +282,6 @@ export function ExtensionsModal() {
       >
         <header className="flex items-center gap-2 rounded-t border-b border-gn-prompt-border bg-gn-bg-dark px-4 py-2.5">
           <span className="text-[13px] font-bold text-gn-fg">extensions</span>
-          <span className="text-[11px] text-gn-muted">hooks · plugins · skills · marketplace</span>
           <button
             type="button"
             onClick={close}
@@ -334,7 +333,7 @@ export function ExtensionsModal() {
           </div>
         )}
 
-        <div className="max-h-[52vh] overflow-y-auto py-1">
+        <div className="max-h-[52vh] overflow-y-auto pb-1">
           {loading ? (
             <div className="px-4 py-6 text-center text-[12px] text-gn-muted">
               加载扩展…
@@ -368,10 +367,6 @@ export function ExtensionsModal() {
             <MarketplaceTab />
           )}
         </div>
-
-        <footer className="rounded-b border-t border-gn-prompt-border px-4 py-2 text-[11px] text-gn-gutter">
-          本地扫描来自 ~/.grok（GET /api/extensions）· skills 另有 agent 注册表（x.ai/skills/list，可实时启停）
-        </footer>
       </div>
     </div>
   )

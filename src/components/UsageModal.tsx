@@ -117,11 +117,22 @@ export function UsageModal() {
       >
         <header className="flex items-center gap-2 rounded-t border-b border-gn-prompt-border bg-gn-bg-dark px-4 py-2.5">
           <span className="font-mono text-[13px] font-bold text-gn-fg">/usage</span>
-          <span className="text-[11px] text-gn-muted">token 用量 · 按模型分组 · credits</span>
+          <button
+            type="button"
+            onClick={() => {
+              void fetchBilling()
+              void fetchUsage(windowKey)
+            }}
+            disabled={billingLoading || usageLoading}
+            className="ml-auto rounded px-2 py-0.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
+            title="重新拉取 billing + 用量聚合"
+          >
+            {billingLoading || usageLoading ? '刷新中…' : '刷新'}
+          </button>
           <button
             type="button"
             onClick={close}
-            className="ml-auto rounded px-2 py-0.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+            className="rounded px-2 py-0.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
           >
             esc
           </button>
@@ -251,26 +262,6 @@ export function UsageModal() {
             )}
           </Section>
         </div>
-
-        <footer className="rounded-b border-t border-gn-prompt-border px-4 py-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                void fetchBilling()
-                void fetchUsage(windowKey)
-              }}
-              disabled={billingLoading || usageLoading}
-              className="rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
-              title="重新拉取 billing + 用量聚合"
-            >
-              {billingLoading || usageLoading ? '刷新中…' : '刷新'}
-            </button>
-            <span className="ml-auto text-[11px] text-gn-gutter">
-              宿主侧统计 · 命中率 = 缓存命中 / 输入
-            </span>
-          </div>
-        </footer>
       </div>
     </div>
   )
@@ -294,7 +285,7 @@ type WindowKey = (typeof WINDOWS)[number]['key']
 /** 区块容器：标题行 + 内容。 */
 function Section({ title, hint, children }: { title: string; hint: string; children: React.ReactNode }) {
   return (
-    <section className="border-b border-gn-prompt-border/60 pb-3">
+    <section className="border-b border-gn-prompt-border/60 pb-3 last:border-b-0">
       <div className="flex items-baseline gap-2 px-4 pt-3">
         <span className="text-[10px] uppercase tracking-wider text-gn-gutter">{title}</span>
         <span className="text-[10.5px] text-gn-muted/80">{hint}</span>

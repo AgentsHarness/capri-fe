@@ -248,6 +248,11 @@ function resetSessionState(
     viewerTask: undefined,
     followUps: undefined,
     followUpsResponseId: undefined,
+    // 标题/目标/工作流是会话级状态：切会话必须清空，否则新会话沿用
+    // 旧会话的标题、目标芯片与工作流面板。
+    sessionTitle: undefined,
+    goalState: undefined,
+    workflowRuns: {},
     historySessionId: undefined,
     historyCwd: undefined,
     historyTotalCount: undefined,
@@ -268,6 +273,13 @@ function resetSessionState(
     genRate: undefined,
     scheduledTasks: [],
   })
+  // 跨会话防线：会话复位时撤销在飞的子代理收口兜底——它属于离开的
+  // 会话，绝不能在新会话里触发收口（F1 的 sessionId 守卫之外的兜底）。
+  clearSubagentSettleTimer()
+  // The prompt queue is per-session widget state: the session-tracking
+  // subscription below (switchSession on every sessionId change) stashes
+  // this session's queue under its id when the anchor clears here, and
+  // the queue returns when the session becomes active again.
 }
 
 // ── agent-restart re-seed ───────────────────────────────────────────
@@ -1070,10 +1082,12 @@ type ChatState = {
   historyLoadedCount: number
   historyHasMore: boolean
   historyLoadingMore: boolean
+  /** 加载更早历史失败的原因（按钮上就地显示；下次分页时清除）。 */
+  historyLoadError?: string
   /** Bumped when an older page is prepended; Scrollback restores position. */
   historyPrependedAt?: number
   historyAnchorId?: string
-  usage?: { used?: number; size?: number; turnTokens?: number }
+  usage?: { used?: number; size?: number }
   pending: PendingReq[]
   modes?: unknown
   /**
@@ -1434,6 +1448,8 @@ type ChatState = {
     isShell?: boolean
     /** Render `session_event` text as ANSI-colored output (raw bytes kept). */
     ansi?: boolean
+    /** Amber accent (warning rail + text) for session_event rows. */
+    warning?: boolean
   }) => void
   respondPermission: (
     requestId: string,
@@ -1537,6 +1553,16 @@ type ChatState = {
   stopTopTaskPolling: () => void
   /** Switch the active session to a historical one and load its tail. */
   continueSession: (sessionId: string, cwd: string) => Promise<void>
+  /**
+   * Background queue delivery: send a non-active session's queued prompt
+   * head when ITS turn ended (done while the user views another session).
+   * The agent is multi-session — session/prompt targeted at that
+   * sessionId runs the turn there in parallel; the head is popped from
+   * the session's stash and re-queued on rejection (409 busy race /
+   * transport failure). Each completed turn re-triggers via done, so a
+   * multi-item queue drains turn by turn without leaving the current view.
+   */
+  sendQueuedToSession: (targetId: string) => Promise<void>
   handleEvent: (ev: AcpEvent) => void
   toggleTool: (id: string) => void
   toggleThought: (id: string) => void
@@ -1641,10 +1667,13 @@ function sendControlPrompt(
 ): void {
   const st = get()
   if (st.conn === 'busy') {
-    usePromptQueue.getState().enqueue({
-      text,
-      blocks: [{ type: 'text', text }],
-    })
+    usePromptQueue.getState().enqueue(
+      {
+        text,
+        blocks: [{ type: 'text', text }],
+      },
+      st.sessionId ?? '',
+    )
     set({ statusText: `${feedback}（已排队，回合结束后发送）` })
     return
   }
@@ -2112,6 +2141,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   setModel: async (modelId, reasoningEffort) => {
+    const prevName = get().modelName
+    const prevEffort = get().reasoningEffort
     try {
       await transport.setModel(modelId, reasoningEffort)
       // Optimistic: agent broadcasts model_changed on success, but the
@@ -2126,14 +2157,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
         def?.value ??
         def?.id ??
         m?.reasoningEffort
+      const name = m?.name || modelId
       set({
-        modelName: m?.name || modelId,
+        modelName: name,
         reasoningEffort: effort,
       })
-    } catch (e) {
+      // Model switch feedback goes to the scrollback (session_event),
+      // like the TUI's `Switched to <model>` pager toast. The host's
+      // model_changed broadcast also prints its own line. Amber accent
+      // (warning) makes the switch visible in the timeline.
       appendEntry(set, {
         kind: 'session_event',
-        text: `切换模型失败: ${e instanceof Error ? e.message : String(e)}`,
+        text:
+          prevName && prevName !== name
+            ? `模型已从 ${modelLabel(prevName, prevEffort)} 切换到 ${modelLabel(name, effort)}`
+            : `模型已切换到 ${modelLabel(name, effort)}`,
+        warning: true,
+      })
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      appendEntry(set, {
+        kind: 'session_event',
+        text: `切换模型失败: ${msg}`,
         warning: true,
       })
     }
@@ -2182,8 +2227,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   loadHistory: async (sessionId: string, cwd: string) => {
     // Reset the scrollback; load the newest page, then auto-page older
-    // history when the tail is all suppressed noise (e.g. orphan Bash
-    // streams on "start acpfe") so the user still sees real messages.
+    // history until a real user message appears — the tail can be pure
+    // suppressed noise or long-running tool streams (e.g. orphan Bash
+    // streams on "start acpfe") with no user prompt in the newest 100,
+    // and resuming should still land on the conversation itself.
     clearSuppressedTools()
     // 流式缓冲丢弃：换会话后旧流的文本绝不能落进新 scrollback。
     clearStreamBuf()
@@ -2197,6 +2244,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       historyLoadedCount: 0,
       historyHasMore: false,
       historyLoadingMore: false,
+      historyLoadError: undefined,
       historyPrependedAt: undefined,
       historyAnchorId: undefined,
       entries: [],
@@ -2243,6 +2291,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       todos: undefined,
       turnStartedAt: undefined,
       genRate: undefined,
+      // 换会话复位：旧会话的「待处理」标记绝不能在新会话触发 Composer
+      // 自动发送；标题/目标/工作流同理是会话级状态，须一并清空。
+      awaitingNext: false,
+      sessionTitle: undefined,
+      goalState: undefined,
+      workflowRuns: {},
       scheduledTasks: [],
     })
     try {
@@ -2311,7 +2365,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           get().turnStartedAt == null
             ? settleTurnEntries(get().entries)
             : get().entries
-        const hasMore = (total || 0) > loaded && fetched > 0
+        const hasMore = historyHasMorePage(total || undefined, loaded, fetched)
         set({
           historyTotalCount: total || undefined,
           historyLoadedCount: loaded,
@@ -2321,10 +2375,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
           liveStream: null,
         })
 
-        if (hasDisplayableScrollback(settled)) break
+        if (hasUserMessage(settled)) break
         if (!hasMore) break
         set({
-          statusText: `历史偏空，继续加载更早记录… (${loaded}/${total || '?'})`,
+          statusText: `最近记录中没有用户消息，继续加载更早… (${loaded}/${total || '?'})`,
         })
       }
       set({
@@ -2423,6 +2477,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   continueSession: async (sessionId: string, cwd: string) => {
     if (get().historyLoading || get().historyLoadingMore) return
+    // The prompt queue is per-session: swap the active queue to the
+    // target session's NOW (stash the current session's queue under its
+    // id, restore the target's) — before any async work, so neither the
+    // old session's queue can auto-send here nor its rows show in the
+    // panel during the switch. The session-tracking subscription makes
+    // the same call idempotently when sessionId is re-anchored below.
+    usePromptQueue.getState().switchSession(sessionId)
     // Opening the session clears its completion notice.
     get().clearCompletedNotice(sessionId)
     set({ historyOpen: false, historyLoading: true })
@@ -2499,6 +2560,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
           // Same local-streaming guard as hello: if THIS frontend is
           // already streaming a turn (reconnect mid-turn), keep its live
           // status text instead of the generic host wait.
+          // Preserve the REAL turn start that loadHistory just restored
+          // from the envelope meta (in-flight turn) — the ?? only anchors
+          // at now when the replay had nothing to restore, matching the
+          // hello/busy handlers; an unconditional Date.now() here would
+          // restart the composer's total-turn timer from zero.
           const hasLocalStreaming =
             get().openThoughtId != null || get().openAssistantId != null
           set({
@@ -2507,13 +2573,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
             statusText: hasLocalStreaming ? get().statusText : 'Waiting for host…',
             awaitingNext: false,
             sessionId,
-            turnStartedAt: Date.now(),
+            turnStartedAt: get().turnStartedAt ?? Date.now(),
           })
         } else {
+          // Idle resume: arm the auto-send when this session still has
+          // queued prompts. Their turn ended while another session was
+          // active — the `done` was session-filtered, so `awaitingNext`
+          // never flipped here; setting it now lets the composer's
+          // auto-send effect deliver the queue head, honoring "queued
+          // follow-ups run after the current turn ends".
+          const queued = usePromptQueue.getState().queue.length > 0
           set({
             historyLoading: false,
-            statusText: `已切换到会话 ${sessionId.slice(0, 8)}，可继续对话`,
+            statusText: queued
+              ? `已切换到会话 ${sessionId.slice(0, 8)}，队列将自动发送`
+              : `已切换到会话 ${sessionId.slice(0, 8)}，可继续对话`,
             sessionId,
+            awaitingNext: queued,
           })
         }
         // TUI rebuilds the tasks pane from the live registry after load —
@@ -2531,6 +2607,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
+  sendQueuedToSession: async (targetId) => {
+    // Background delivery targets a NON-active session whose turn just
+    // ended; the active session's queue drains through the normal path.
+    const st = get()
+    if (!targetId || targetId === st.sessionId || st.historyLoading) return
+    const head = usePromptQueue.getState().dequeueFrom(targetId)
+    if (!head) return
+    try {
+      // session/prompt with the target sessionId runs the turn there —
+      // the agent is multi-session, so it proceeds in parallel while the
+      // user keeps working in the current session. Not awaited past the
+      // fetch: the RPC resolves when THAT turn completes, and its done
+      // re-triggers this path for the next queued item.
+      await transport.prompt(head.blocks, { sessionId: targetId })
+    } catch {
+      // 409 (target turn restarted in the same tick) / transport failure:
+      // put the item back at the front; the session's next done retries.
+      usePromptQueue.getState().requeueFront(targetId, head)
+    }
+  },
+
   loadMoreHistory: async (anchorId?: string) => {
     const s = get()
     if (
@@ -2542,7 +2639,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     ) {
       return
     }
-    set({ historyLoadingMore: true, historyAnchorId: anchorId })
+    set({ historyLoadingMore: true, historyAnchorId: anchorId, historyLoadError: undefined })
     const loaded = s.historyLoadedCount
     try {
       const r = await transport.loadSessionHistory(s.historySessionId, s.historyCwd, {
@@ -2569,7 +2666,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         newEntries[newEntries.length - 1] = { ...lastNew, text: lastNew.text + firstOld.text }
         oldEntries = oldEntries.slice(1)
       }
-      const total = r.totalCount ?? s.historyTotalCount ?? loaded + fetched
+      const rawTotal = r.totalCount ?? s.historyTotalCount
+      const total = rawTotal ?? loaded + fetched
       const loadedNew = fetched === 0 ? total : Math.min(loaded + fetched, total)
       // Same settled-transcript rule as loadHistory: a tool that is still
       // running here never received its completion in any loaded page
@@ -2589,11 +2687,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
         historyLoadingMore: false,
         historyTotalCount: total,
         historyLoadedCount: loadedNew,
-        historyHasMore: total > loadedNew,
+        historyHasMore: historyHasMorePage(rawTotal, loadedNew, fetched),
+        historyLoadError: undefined,
         historyPrependedAt: Date.now(),
       })
-    } catch {
-      set({ historyLoadingMore: false })
+    } catch (e) {
+      // 失败必须就地可见：静默吞掉会让「点击加载」看起来无效（按钮闪
+      // 一下恢复、什么也没发生）。错误显示在加载按钮上，下次点击/上滑
+      // 自动重试。
+      set({
+        historyLoadingMore: false,
+        historyLoadError: `加载更早历史失败：${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      })
     }
   },
 
@@ -2801,6 +2908,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
       case 'user_message':
       case 'user_chunk': {
+        // 多会话广播（host withSid 约定）：非当前会话的回合流事件忽略
+        // （后台回合的 echo 不能进当前 transcript；replay 无 sessionId，
+        // 照常通过）。
+        if (ev.sessionId && ev.sessionId !== get().sessionId) break
         // Live echo (user_chunk) or history replay (user_message). Classify
         // like TUI handle_user_message: cron → UserPromptBlock::cron, other
         // system-reminder / auto-wake echoes → hidden, else normal prompt.
@@ -2886,6 +2997,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         break
       }
       case 'image': {
+        // 多会话广播（host withSid 约定）：非当前会话忽略。
+        if (ev.sessionId && ev.sessionId !== get().sessionId) break
         // Image content block (agent_message_chunk / user_message_chunk).
         // 1. Open assistant row → append (sealing any open thought, same
         //    as text chunks);
@@ -2944,6 +3057,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         break
       }
       case 'chunk': {
+        // 多会话广播（host withSid 约定）：非当前会话忽略。
+        if (ev.sessionId && ev.sessionId !== get().sessionId) break
         const text = ev.text || ''
         const ts = ev.ts ?? Date.now()
         // seal open thought when assistant starts speaking
@@ -2977,6 +3092,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         break
       }
       case 'thought': {
+        // 多会话广播（host withSid 约定）：非当前会话忽略。
+        if (ev.sessionId && ev.sessionId !== get().sessionId) break
         const text = ev.text || ''
         if (!text) break
         const s = get()
@@ -3071,6 +3188,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         break
       }
       case 'tool_call': {
+        // 多会话广播（host withSid 约定）：非当前会话忽略。
+        if (ev.sessionId && ev.sessionId !== get().sessionId) break
         // Seal assistant stream (liveStream → entry + streaming:false) so
         // the streaming flag drops immediately; then seal
         // any open thought. Do not leave assistant streaming:true until
@@ -3131,6 +3250,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         break
       }
       case 'tool_call_update': {
+        // 多会话广播（host withSid 约定）：非当前会话忽略。
+        if (ev.sessionId && ev.sessionId !== get().sessionId) break
         const tc = ev.toolCallUpdate || {}
         const toolCallId = toolCallIdOf(tc)
         if (!toolCallId) break
@@ -3219,6 +3340,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         break
       }
       case 'plan': {
+        // 多会话广播（host withSid 约定）：非当前会话忽略（后台回合的
+        // plan 不能覆盖当前会话的 todo 面板）。
+        if (ev.sessionId && ev.sessionId !== get().sessionId) break
         // Plan updates are the todo source (TUI todo pane + status-bar
         // badge). Matches the TUI: plan entries never land in the
         // scrollback — the TopBar TodoChip is the single display surface.
@@ -3252,27 +3376,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (ev.sessionId && ev.sessionId !== get().sessionId) break
         // Merge, don't overwrite: streamed session/update usage events
         // carry only `used`/`size` (no usage object) and must not clobber
-        // the turn-accumulated count; x.ai turn_completed events carry the
-        // standard usage object but may lack _meta.totalTokens (keep last
-        // used). The turn total is the standard usage.totalTokens /
-        // total_tokens field — the frontend separates it from the
-        // context-window `used`.
-        const u = ev.usage
-        set((s) => {
-          const turnTokens =
-            typeof u?.totalTokens === 'number'
-              ? u.totalTokens
-              : typeof u?.total_tokens === 'number'
-                ? u.total_tokens
-                : s.usage?.turnTokens
-          return {
-            usage: {
-              used: ev.used ?? s.usage?.used,
-              size: ev.size ?? s.usage?.size,
-              turnTokens,
-            },
-          }
-        })
+        // the context-window `used`.
+        set((s) => ({
+          usage: {
+            used: ev.used ?? s.usage?.used,
+            size: ev.size ?? s.usage?.size,
+          },
+        }))
         break
       case 'done': {
         // Live done events carry the owning sessionId. A turn finished in
@@ -3281,6 +3391,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // another session's done would wrongly finalize the active one).
         if (ev.sessionId && ev.sessionId !== get().sessionId) {
           get().noteSessionCompleted(ev.sessionId)
+          // That session's turn ended while another session is active:
+          // deliver its queued follow-up head in the background (the
+          // agent is multi-session — the prompt runs there in parallel;
+          // the session's own turn-stream events stay filtered out of
+          // this view). Each finished background turn re-enters here, so
+          // a multi-item queue drains turn by turn without switching view.
+          if (ev.sessionId) void get().sendQueuedToSession(ev.sessionId)
           break
         }
         // TUI TurnCompleted marker ("Worked for 2.0s") — the last scrollback
@@ -3936,14 +4053,38 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 ? (fields._meta as Record<string, unknown>).reasoningEffort ??
                   (fields._meta as Record<string, unknown>).reasoning_effort
                 : undefined)
-            const effort =
+            const name = m?.name || id
+            const prevName = get().modelName
+            const prevEffort = get().reasoningEffort
+            // Wire effort only for the new model's label: if the
+            // broadcast omits it, the parens are dropped rather than
+            // recycling the previous model's effort into the new one.
+            // The state update below also skips when the wire omits it
+            // (leaving reasoningEffort untouched — same as the old
+            // no-op fallback).
+            const wireEffort =
               typeof effortRaw === 'string' && effortRaw.trim()
                 ? effortRaw.trim()
-                : get().reasoningEffort
+                : undefined
             set({
-              modelName: m?.name || id,
-              ...(effort ? { reasoningEffort: effort } : {}),
+              modelName: name,
+              ...(wireEffort ? { reasoningEffort: wireEffort } : {}),
             })
+            // A model_changed broadcast marks a switch point: print the
+            // "模型已从 xx(effort) 切换到 xx(effort)" line. The echo of
+            // our own optimistic setModel usually arrives after modelName
+            // was already updated (prevName === name) — nothing switched
+            // from this store's perspective, so it stays silent (the
+            // setModel line already recorded it). The host never persists
+            // model_changed, so replay shows switches via the
+            // user_message_chunk modelId diff in replayUpdates instead.
+            if (prevName && prevName !== name) {
+              appendEntry(set, {
+                kind: 'session_event',
+                text: `模型已从 ${modelLabel(prevName, prevEffort)} 切换到 ${modelLabel(name, wireEffort)}`,
+                warning: true,
+              })
+            }
             break
           }
           // ── workflows (TUI workflows pane) ───────────────────────────
@@ -4442,6 +4583,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // the driver — ignore the inject signal and wait for user_chunk.
         break
       case 'prompt_complete': {
+        // 多会话广播（host withSid 约定）：非当前会话的回合终态忽略——
+        // 否则后台回合的 prompt_complete 会把当前会话的回合错误收尾。
+        if (ev.sessionId && ev.sessionId !== get().sessionId) break
         // Agent-side turn end: x.ai/session/prompt_complete fires for EVERY
         // prompt turn — user-sent turns also get a host `done`, but
         // scheduled injections end with only this. Finalize exactly like
@@ -4469,6 +4613,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         break
       }
       case 'follow_ups': {
+        // 多会话广播（host withSid 约定）：非当前会话的跟进建议忽略。
+        if (ev.sessionId && ev.sessionId !== get().sessionId) break
         // Typed carrier for x.ai/follow_ups (host bridge.go broadcasts it
         // as {type:'follow_ups', params}) — turn-end suggestion chips (TUI
         // follow_ups.rs): parsed into store state for the Composer's chip
@@ -4657,9 +4803,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // layer: mutations are mirrored fire-and-forget, the snapshot is
         // applied here). Guard on session id: withSid attaches the
         // emitting session — a stale broadcast from another session must
-        // not clobber our queue.
+        // not clobber our queue. The emitting sessionId also tags the
+        // queue so drains stay session-scoped.
         if (!ev.sessionId || ev.sessionId === get().sessionId) {
-          applyQueueChanged(ev.params)
+          applyQueueChanged(ev.params, ev.sessionId)
         }
         break
       }
@@ -5825,7 +5972,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       e.kind !== 'error' &&
       e.kind !== 'plan' &&
       e.kind !== 'bg_task' &&
-      e.kind !== 'subagent'
+      e.kind !== 'subagent' &&
+      e.kind !== 'workflow'
     ) {
       return
     }
@@ -5901,7 +6049,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   fetchSubagentView: async (childSessionId) => {
     const s = get()
     const view = s.subagentViews[childSessionId]
-    if (!view || view.items.length > 0 || view.fetchState === 'loading' || view.fetchState === 'loaded') {
+    // 打开即回放完整历史：不再因“已有 live 条目”而跳过。磁盘 updates.jsonl
+    // 是权威完整来源，live 只是流式尾巴——live 捕获非空只代表“正在输出”，
+    // 不代表历史完整。回放成功后以回放结果重建 items（见下方合并逻辑）。
+    if (!view || view.fetchState === 'loading' || view.fetchState === 'loaded') {
       return
     }
     // 子代理与父会话同 cwd（宿主 session-updates 按 sessionId+cwd 分页）。
@@ -5918,15 +6069,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // （时间正序）回放——同一 applySubagentViewEvent 处理器，live 与
       // 回放事件不会出现两套渲染逻辑。
       const r = await transport.loadSessionHistory(childSessionId, cwd, {
-        offset: -SUBAGENT_VIEW_MAX_ITEMS,
-        limit: SUBAGENT_VIEW_MAX_ITEMS,
+        offset: -SUBAGENT_VIEW_PAGE_SIZE,
+        limit: SUBAGENT_VIEW_PAGE_SIZE,
       })
-      // 拉取期间 live 事件已到达（视图非空）→ 跳过回放：没有事件 id 可
-      // 去重，混入会造成重复/乱序；live 流已接管后续内容（TUI 靠事件 id
-      // 去重，这里取更保守的策略）。
-      if ((get().subagentViews[childSessionId]?.items.length ?? 0) > 0) {
-        return
-      }
+      // 先独立回放出一条基线（磁盘权威），再与现有 live 条目合并：
+      // - 回放有内容 → 用它重建视图（丢弃 pre-loading 的 live 子集，避免重复/乱序）
+      // - 回放为空（子代理会话无落盘 / 宿主未找到该子代理）→ 保留现有 live
+      //   捕获，不丢流。
+      let replayed: ScrollEntry[] = []
       for (const env of r.updates ?? []) {
         // 防御（任务 3）：存储包络带 params.sessionId——只有属于该子代理
         // 会话（或未带 sid 的旧格式）的包络才回放。若 x.ai/session/updates
@@ -5938,7 +6088,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const envSid = envParams?.sessionId
         if (typeof envSid === 'string' && envSid !== childSessionId) continue
         const ev = envelopeToEvent(env)
-        if (ev) applySubagentViewEvent(set, childSessionId, ev)
+        if (ev) replayed = subagentViewAppend(replayed, ev)
       }
       // 记录分页游标（包络条数——与宿主负 offset 语义一致，过滤掉的非
       // scrollback 事件不占游标位）：回放填充的视图（loadedCount > 0）
@@ -5947,11 +6097,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set((st) => {
         const v = st.subagentViews[childSessionId]
         if (!v) return {}
+        // 回放为权威基线：有内容则整体替换（含历史中被 live 抢先捕获的子集
+        // 一并去重）；回放为空则保留现有 live 捕获，保证正在输出的流不丢。
+        const items = replayed.length > 0 ? replayed : v.items
         return {
           subagentViews: {
             ...st.subagentViews,
             [childSessionId]: {
               ...v,
+              items,
               fetchState: 'loaded',
               loadedCount: r.updates?.length ?? 0,
               totalCount: total,
@@ -6036,12 +6190,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
         oldItems = oldItems.slice(1)
       }
-      // 更早的页在前；保留最新 SUBAGENT_VIEW_MAX_ITEMS 条（丢弃最旧）。
+      // 更早的页在前拼接；不设条目上限——由用户上滑分页控制（不再丢弃最旧）。
       const merged = [...newItems, ...oldItems]
-      const capped =
-        merged.length > SUBAGENT_VIEW_MAX_ITEMS
-          ? merged.slice(-SUBAGENT_VIEW_MAX_ITEMS)
-          : merged
       const fetched = r.updates?.length ?? 0
       const total = r.totalCount ?? view.totalCount ?? loaded + fetched
       const loadedNew = fetched === 0 ? total : Math.min(loaded + fetched, total)
@@ -6050,7 +6200,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ...s.subagentViews,
           [childSessionId]: {
             ...after,
-            items: capped,
+            items: merged,
             fetchState: 'loaded',
             loadedCount: loadedNew,
             totalCount: total,
@@ -6075,6 +6225,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 }))
+
+// ── prompt-queue session tracking ──────────────────────────────────
+// The prompt queue is per-session widget state: every sessionId change
+// swaps the queue store's active queue (stash the old session's queue
+// under its id, restore the new session's). This single hook covers
+// newSession, continueSession, resetToEmpty, hello/ready re-anchors and
+// any future path — a queued prompt can never be delivered into another
+// session, and it is still there (visible, auto-sendable) when its own
+// session becomes active again.
+useChatStore.subscribe((state, prev) => {
+  if (state.sessionId !== prev.sessionId) {
+    usePromptQueue.getState().switchSession(state.sessionId)
+  }
+})
 
 /** Selectable row ids in display order (entries + synthetic group headers). */
 function selectableRowIds(
@@ -6468,9 +6632,15 @@ function armSubagentTurnSettleFallback(
   const s = get()
   if (!turnIsLive(s) || parentTurnHasOpenActivity(s)) return
   if (subagentSettleTimer != null) return
+  // 武装时捕获兜底所属的父会话：定时器可能在会话切换之后才触发，而
+  // finalizeTurn 作用于当前会话的 conn/entries/streamBuf——跨会话触发
+  // 会把刚切换的新会话的活跃回合错误收口。
+  const armedSessionId = s.sessionId
   subagentSettleTimer = window.setTimeout(() => {
     subagentSettleTimer = null
     const cur = get()
+    // 会话已切换：兜底属于离开的会话，绝不为当前会话收口。
+    if (cur.sessionId !== armedSessionId) return
     if (!turnIsLive(cur) || parentTurnHasOpenActivity(cur)) return
     finalizeTurn(set, get, undefined)
   }, SUBAGENT_SETTLE_GRACE_MS)
@@ -6550,35 +6720,13 @@ export function stillRunningCue(
 }
 
 /**
- * Whether the scrollback has anything a user would recognize as conversation
- * content. Used after history load: a page of only suppressed tool streams
- * (or empty) should trigger auto-paging older history.
+ * Whether the loaded scrollback contains a real user prompt. Used after
+ * history load: a page with no user message (pure suppressed tool
+ * streams / long-running task tail) should trigger auto-paging older
+ * history until the conversation itself shows up.
  */
-function hasDisplayableScrollback(entries: ScrollEntry[]): boolean {
-  for (const e of entries) {
-    switch (e.kind) {
-      case 'user':
-      case 'assistant':
-      case 'image':
-      case 'thought':
-      case 'tool':
-      case 'plan':
-      case 'subagent':
-      case 'workflow':
-      case 'bg_task':
-      case 'error':
-        return true
-      case 'session_event':
-        // Recap / markers are real UI chrome; bare status spam is not.
-        if (e.recap || e.warning || (e.text && e.text.trim())) return true
-        break
-      case 'status':
-        break
-      default:
-        break
-    }
-  }
-  return false
+function hasUserMessage(entries: ScrollEntry[]): boolean {
+  return entries.some((e) => e.kind === 'user')
 }
 
 /** Settle streaming/running entries at turn end (assistant/thought/tool). */
@@ -6632,22 +6780,64 @@ function settleTurnEntries(entries: ScrollEntry[]): ScrollEntry[] {
 const HISTORY_PAGE_SIZE = 100
 
 /**
+ * 分页「还有更早」判定：优先用宿主 totalCount（total > loaded）；totalCount
+ * 缺失/为 0 时回退到「整页拉满」（fetched >= 页大小）。否则宿主一旦省略
+ * totalCount，hasMore 恒为 false → 按钮不出现、上滑无反应，用户看到的就是
+ * 「没有滚动条、点击加载无效」。
+ */
+function historyHasMorePage(
+  total: number | undefined,
+  loaded: number,
+  fetched: number,
+): boolean {
+  if (fetched <= 0) return false
+  if (total != null && total > 0) return total > loaded
+  return fetched >= HISTORY_PAGE_SIZE
+}
+
+/**
+ * Display name for a model id via the current catalog (id fallback).
+ */
+function modelDisplayName(getStore: () => ChatState, modelId: string): string {
+  return getStore().models.find((m) => m.modelId === modelId)?.name || modelId
+}
+
+/**
+ * `模型名(effort)` — parens only when an effort is known.
+ */
+function modelLabel(name: string, effort?: string | null): string {
+  return effort ? `${name}(${effort})` : name
+}
+
+/**
  * Replay raw history envelopes through the live event pipeline.
  * Returns the replayed turn's metadata: the current turn's real start
- * time (authoritative `_meta.turnStartMs` / agentTimestampMs from the
- * shell, falling back to the first user_message envelope timestamp) and
- * whether that turn is still OPEN (no turn_completed / response_completed
- * after its start). loadHistory uses this to restore the in-flight turn
- * timer ("回合进行中（已进行 Xs）"). Turn-end markers are rendered
- * per-turn by the `turn_completed` handler: this function injects each
- * closing turn's tracked start into the event so the marker carries the
- * true duration (the `done` event is not persisted, so replay derives
- * the duration from the envelope stamps).
+ * time (authoritative `_meta.turnStartMs` from the shell, falling back
+ * to the turn's earliest agentTimestampMs) and whether that turn is
+ * still OPEN (no turn_completed / response_completed after its start).
+ * loadHistory uses this to restore the in-flight turn timer
+ * ("回合进行中（已进行 Xs）"). Turn-end markers are rendered per-turn by
+ * the `turn_completed` handler: this function injects each closing turn's
+ * tracked start into the event so the marker carries the true duration
+ * (the `done` event is not persisted, so replay derives the duration
+ * from the stored envelope stamps — turnStartMs → the completion's own
+ * agentTimestampMs, the same pair the TUI's anchored elapsed reads).
+ * A completion whose turn's envelopes all live in an older page (page
+ * boundary cut) has no start to pair and falls back to a plain
+ * "Turn completed." marker.
  *
  * opts.applyUsage (default true): whether this page may update the
  * context chip. History pages load newest-first, so only the NEWEST page
  * may apply usage — older pages (loadHistory auto-paging / loadMoreHistory)
  * must not rewrite the chip with older token counts.
+ *
+ * Model switch lines: the host never persists model_changed, but every
+ * user_message_chunk carries `_meta.modelId` (the model that served that
+ * prompt). A change between consecutive user chunks marks a switch point,
+ * and a "模型已从 xx 切换到 xx" line is inserted ahead of that user row
+ * (no effort info is persisted, so replay shows model names only).
+ * Detection is page-local (pages replay newest-first), so a switch
+ * straddling a page boundary is not caught.
  */
 function replayUpdates(
   getStore: () => ChatState,
@@ -6658,8 +6848,12 @@ function replayUpdates(
   let userIsCron = false
   let userTs: number | undefined
   let turnStartTs: number | undefined
+  /** Whether turnStartTs came from the authoritative _meta.turnStartMs. */
+  let turnStartIsMeta = false
   let anyEvent = false
   let sawTurnEnd = false
+  // Model id of the last replayed user_message_chunk (page-local).
+  let prevReplayModelId: string | undefined
   // Newest envelope's session-accumulated token count of this page; the
   // usage event is fired once after the loop (last envelope wins).
   let pageMetaUsed: number | undefined
@@ -6689,6 +6883,28 @@ function replayUpdates(
       const metaUsed = envelopeTotalTokens(env)
       if (metaUsed != null && metaUsed > 0) pageMetaUsed = metaUsed
     }
+    // Model switch point: consecutive user chunks served by different
+    // models. Insert the "模型已从 xx 切换到 xx" line BEFORE the
+    // buffered user row flushes, so it renders above the first message
+    // of the new model.
+    const rawUp = (env as RawEnvelope).params?.update
+    if (rawUp?.sessionUpdate === 'user_message_chunk') {
+      const chunkMeta = rawUp._meta as Record<string, unknown> | undefined
+      const mid =
+        typeof chunkMeta?.modelId === 'string' && chunkMeta.modelId
+          ? chunkMeta.modelId
+          : undefined
+      if (mid) {
+        if (prevReplayModelId && prevReplayModelId !== mid) {
+          getStore().appendLocalEntry({
+            kind: 'session_event',
+            text: `模型已从 ${modelDisplayName(getStore, prevReplayModelId)} 切换到 ${modelDisplayName(getStore, mid)}`,
+            warning: true,
+          })
+        }
+        prevReplayModelId = mid
+      }
+    }
     // History replay shows stored task lifecycle events as display-only
     // informational lines (envelopeToEvent) — never captured into the
     // task system. The live running set is established once at resume via
@@ -6700,37 +6916,58 @@ function replayUpdates(
       sawTurnEnd = true
       // Attach this closing turn's real start (tracked from the envelope
       // meta below) so the marker renders "Worked for X" / "Turn failed
-      // in X" with the true duration. `endMs` comes from the completion
-      // envelope's own timestamp (when the shell wrote it — the same
-      // stamp the TUI's anchored elapsed reads). Reset the tracker so the
-      // NEXT turn's start is captured from its own first envelope — the
-      // old first-start→last-end pairing spanned multiple turns whenever
-      // a page covered more than one closed turn.
+      // in X" with the true duration. `endMs` is the completion's own
+      // agentTimestampMs (turnCompletedEvent prefers it over the coarse
+      // envelope write stamp — a late-flushed log would otherwise inflate
+      // the duration by minutes). Reset the tracker so the NEXT turn's
+      // start is captured from its own envelopes — the old
+      // first-start→last-end pairing spanned multiple turns whenever a
+      // page covered more than one closed turn.
       ev.turnStartedAt = turnStartTs
       turnStartTs = undefined
+      turnStartIsMeta = false
     }
     // Authoritative turn start: the shell stamps `_meta.turnStartMs`
-    // (epoch ms; TUI tracker reads it the same way, falling back to
-    // agentTimestampMs) on every streamed update of the turn. Take the
-    // first one of the page — it belongs to the newest replayed turn.
-    // The completion envelope itself never re-opens a turn.
-    if (turnStartTs == null && ev.type !== 'turn_completed') {
+    // (epoch ms; the TUI tracker reads it the same way) on every streamed
+    // update of the turn. Adopt it whenever it appears — a meta-carrying
+    // chunk refines/overrides any agentTs fallback captured earlier in
+    // the same turn. The completion envelope itself never re-opens a turn.
+    if (ev.type !== 'turn_completed') {
       const meta = (env as RawEnvelope).params?._meta as
         | Record<string, unknown>
         | undefined
-      const tsMs = meta?.turnStartMs ?? meta?.turn_start_ms ?? meta?.agentTimestampMs
+      const tsMs = meta?.turnStartMs ?? meta?.turn_start_ms
+      let parsed: number | undefined
       if (typeof tsMs === 'number' && Number.isFinite(tsMs)) {
-        turnStartTs = tsMs
+        parsed = tsMs
       } else if (typeof tsMs === 'string') {
-        const parsed = Date.parse(tsMs)
-        if (Number.isFinite(parsed)) turnStartTs = parsed
+        const p = Date.parse(tsMs)
+        if (Number.isFinite(p)) parsed = p
       }
-    }
-    // Fallback start: the first user message of the page (epoch seconds
-    // from the shell; first-event timestamp for injected turns without a
-    // user prompt).
-    if (turnStartTs == null && ev.type !== 'turn_completed') {
-      turnStartTs = envelopeTimestamp(env as RawEnvelope)
+      if (parsed != null) {
+        if (!turnStartIsMeta || parsed !== turnStartTs) {
+          turnStartTs = parsed
+          turnStartIsMeta = true
+        }
+      } else if (!turnStartIsMeta) {
+        // Fallback: the turn's EARLIEST agent timestamp (user chunks
+        // carry the prompt time; a turn-end envelope like retry_state
+        // would otherwise be misread as the start). Min-refinement never
+        // overrides the authoritative turnStartMs.
+        let cand: number | undefined
+        const ats = meta?.agentTimestampMs
+        if (typeof ats === 'number' && Number.isFinite(ats) && ats > 0) {
+          cand = ats
+        } else if (typeof ats === 'string') {
+          const p = Date.parse(ats)
+          if (Number.isFinite(p)) cand = p
+        }
+        // No agentTs → the coarse envelope write stamp (epoch seconds).
+        if (cand == null) cand = envelopeTimestamp(env as RawEnvelope)
+        if (cand != null && (turnStartTs == null || cand < turnStartTs)) {
+          turnStartTs = cand
+        }
+      }
     }
     // A STILL-RUNNING task's "started" row belongs ONLY in the top task
     // strip (host liveness probe) — never as a dangling scrollback row
@@ -7006,7 +7243,7 @@ function envelopeToEvent(env: unknown): AcpEvent | null {
   // Turn-end markers are the exception: they finalize streaming blocks.
   if (e.method === '_x.ai/session/update') {
     if (up.sessionUpdate === 'turn_completed' || up.sessionUpdate === 'response_completed') {
-      return turnCompletedEvent(up, envelopeTimestamp(e))
+      return turnCompletedEvent(up, completionEndMs(e))
     }
     // Display-only task rows under the x.ai carrier too (same look as live).
     const taskEv = historicalTaskEvent(up)
@@ -7115,7 +7352,7 @@ function envelopeToEvent(env: unknown): AcpEvent | null {
     // streaming forever — "stuck mid-thinking" after resuming history.
     case 'turn_completed':
     case 'response_completed':
-      return turnCompletedEvent(up, envelopeTimestamp(e))
+      return turnCompletedEvent(up, completionEndMs(e))
     default:
       // Standard carrier lifecycle kinds: route through the same
       // session_notification channel as the live bridge's default arm
@@ -7129,11 +7366,28 @@ function envelopeToEvent(env: unknown): AcpEvent | null {
 }
 
 /**
+ * Completion end stamp: the completion envelope's own `_meta.agentTimestampMs`
+ * (ms precision, the agent's turn-end time — the same stamp the TUI's
+ * anchored elapsed reads). Falls back to the envelope write timestamp
+ * (coarse seconds) for old logs without meta.
+ */
+function completionEndMs(e: RawEnvelope): number | undefined {
+  const meta = (e.params?._meta ?? {}) as Record<string, unknown>
+  const ats = meta.agentTimestampMs
+  if (typeof ats === 'number' && Number.isFinite(ats) && ats > 0) return ats
+  if (typeof ats === 'string') {
+    const p = Date.parse(ats)
+    if (Number.isFinite(p)) return p
+  }
+  return envelopeTimestamp(e)
+}
+
+/**
  * Build the typed `turn_completed` event from a stored envelope's update.
  * Carries the turn's stop_reason / agent_result (so replay can render the
  * correct marker — TurnFailed / TurnCancelled / Worked for — instead of a
- * blanket "Turn completed.") plus the envelope write time as the turn's end
- * stamp (replayUpdates injects the real start from the envelope meta).
+ * blanket "Turn completed.") plus the completion's agentTimestampMs as the
+ * turn's end stamp (replayUpdates injects the real start from the meta).
  */
 function turnCompletedEvent(
   up: Record<string, unknown>,
@@ -8071,13 +8325,10 @@ function nonBlankStr(v: unknown): string | undefined {
 // 与按需历史回放（fetchSubagentView）共用同一个处理器。
 
 /**
- * 每个子代理视图最多保留的条目数（防内存膨胀，超出丢弃最旧），同时作为
- * 首次回放的拉取页大小。与主 scrollback 的渲染窗口/历史分页统一为 100。
+ * 子代理视图的分页大小（首次回放与上滑分页统一，与主 scrollback 的
+ * HISTORY_PAGE_SIZE 同量级）。不设条目上限——完整历史由用户上滑分页获取，
+ * 不再丢弃最旧条目。
  */
-const SUBAGENT_VIEW_MAX_ITEMS = 100
-
-/** 上滑分页每页事件条数（与 SUBAGENT_VIEW_MAX_ITEMS 统一，主 scrollback
- *  HISTORY_PAGE_SIZE 同量级）。 */
 const SUBAGENT_VIEW_PAGE_SIZE = 100
 
 /**
@@ -8110,15 +8361,12 @@ function sealSubagentStreaming(items: ScrollEntry[]): ScrollEntry[] {
   return changed ? sealed : items
 }
 
-/** 子代理视图的时间线末尾追加一条（含上限裁剪）。 */
+/** 子代理视图的时间线末尾追加一条（不设条目上限——由用户上滑分页控制）。 */
 function subagentViewPush(
   items: ScrollEntry[],
   item: ScrollEntry,
 ): ScrollEntry[] {
-  const next = [...items, item]
-  return next.length > SUBAGENT_VIEW_MAX_ITEMS
-    ? next.slice(-SUBAGENT_VIEW_MAX_ITEMS)
-    : next
+  return [...items, item]
 }
 
 /** 把子代理会话的一个 AcpEvent 追加进对应视图（纯逻辑，live/回放共用）。 */

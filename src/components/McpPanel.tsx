@@ -30,7 +30,6 @@ export function McpPanel({
   onClose: () => void
 }) {
   const mcpServers = useChatStore((s) => s.mcpServers)
-  const mcpVersion = useChatStore((s) => s.mcpVersion)
   const mcpInit = useChatStore((s) => s.mcpInit)
   const mcpList = useChatStore((s) => s.mcpList)
   const mcpToggle = useChatStore((s) => s.mcpToggle)
@@ -858,13 +857,6 @@ export function McpPanel({
             )}
           </div>
         </div>
-
-        <footer className="rounded-b border-t border-gn-prompt-border px-4 py-2 text-[11px] text-gn-gutter">
-          {mcpVersion > 0
-            ? `工具列表已更新 ${mcpVersion} 次（x.ai/mcp/tools_changed） · `
-            : ''}
-          增删/启停后需重启会话（或让 agent 重新初始化 MCP）才生效
-        </footer>
       </div>
     </div>
   )

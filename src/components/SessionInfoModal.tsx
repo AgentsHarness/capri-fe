@@ -238,7 +238,6 @@ export function SessionInfoModal() {
       >
         <header className="flex items-center gap-2 rounded-t border-b border-gn-prompt-border bg-gn-bg-dark px-4 py-2.5">
           <span className="font-mono text-[13px] font-bold text-gn-fg">/session-info</span>
-          <span className="text-[11px] text-gn-muted">当前会话详情</span>
           <button
             type="button"
             onClick={close}

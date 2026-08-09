@@ -10,6 +10,7 @@ import {
   userIsFoldable,
 } from '../scrollback/userText'
 import { TodoMark } from './todoMark'
+import { WorkspaceBar } from './TopBar'
 import { DirectoryPickerModal } from './DirectoryPickerModal'
 import {
   ICON_COL_CLASS,
@@ -562,8 +563,20 @@ function formatPromptTimeFull(ts: number): string {
 /**
  * TUI right-aligned message timestamp overlay (scrollback_pane
  * show_timestamps): short form always, expands to "HH:MM:SS | Mon D" on
- * hover. Absolutely positioned (pointer-events-none) so the wider hover
- * form never reflows the message content — it covers it, as in the TUI.
+ * hover of the time area itself (not the whole entry — hovering the row
+ * never expands it). Absolutely positioned so the wider hover form never
+ * reflows the message content — it covers it, as in the TUI.
+ *
+ * Hard-won constraints (verified empirically in Chrome):
+ * - The swap is driven by the OUTER span's own :hover via the custom
+ *   .gn-pt classes (index.css) — NOT group-hover:, whose :is(:where(.group)
+ *   :hover *) matches ANY .group ancestor, so the entry row's group class
+ *   would expand the time on any row hover.
+ * - The outer span's width is pinned to the FULL form's width
+ *   (w-[17ch], text-right): an absolutely-positioned span shrinks to
+ *   width 0 when both children are display:none, collapsing the hover
+ *   target and the full form's box (flicker/vanish). Fixed width keeps
+ *   the box — and the :hover on it — stable across the swap.
  * Parent needs `group relative`; `className` supplies the top offset and
  * `shiftRight` clears a right-edge chevron (12px), keeping the same 8px
  * base margin from the edge in both cases.
@@ -584,11 +597,11 @@ function PromptTime({
   return (
     <span
       aria-hidden
-      className={`pointer-events-none absolute text-[11px] leading-none text-gn-gray ${className}`}
+      className={`gn-pt absolute w-[17ch] text-right text-[11px] leading-none text-gn-gray ${className}`}
       style={{ right: shiftRight ? 20 : 8 }}
     >
-      <span className="group-hover:hidden">{formatPromptTime(ts)}</span>
-      <span className="hidden group-hover:inline">{formatPromptTimeFull(ts)}</span>
+      <span className="gn-pt-short">{formatPromptTime(ts)}</span>
+      <span className="gn-pt-full">{formatPromptTimeFull(ts)}</span>
     </span>
   )
 }
@@ -773,21 +786,15 @@ export const EntryView = memo(function EntryView({
   const caret = expandableGlyph(e, selected || hovered)
   const bulletGlyph = caret ?? undefined
 
-  // Thought body preview: cap at 4 lines with internal scroll; keep the
-  // newest line visible while streaming (full text lives in the viewer).
+  // Thought body preview: cap at 4 lines (max-h 6.5em == 4 lines @
+  // leading-relaxed), overflow clipped — no internal scroll (the full
+  // text lives in the viewer).
   const localBodyRef = useRef<HTMLDivElement>(null)
   const bodyRef = streamBodyRef ?? localBodyRef
   const thoughtStreaming = e.kind === 'thought' ? e.streaming : false
   // Additive: base entry text + liveStream delta (see mergeLiveText).
   const thoughtText =
     e.kind === 'thought' ? mergeLiveText(e.text, liveText) : undefined
-  useEffect(() => {
-    // 主 scrollback：固定由父组件统一做（合并的流式滚动 effect，每帧
-    // 一次布局读写）；迷你 scrollback 没有 streamBodyRef，条目自己固定。
-    if (!thoughtStreaming || streamBodyRef) return
-    const el = bodyRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [thoughtStreaming, thoughtText, streamBodyRef, bodyRef])
   // 流式期间把思考 body 元素注册给父组件（父 effect 每帧固定一次；
   // 收口/卸载时父组件读到 null 即停止固定）。
   useEffect(() => {
@@ -922,7 +929,15 @@ export const EntryView = memo(function EntryView({
         {/* Reserve the short-form time's width (TUI ts_reserved=10 cols; sm:
             only — the time itself is hidden on mobile) so text never runs
             under it; the hover expansion still overlays content by design. */}
-        <div className="group relative min-w-0 sm:pr-9">
+        <div
+          className="group relative min-w-0 sm:pr-9"
+          title="dblclick / enter · view"
+          onDoubleClick={(ev) => {
+            ev.stopPropagation()
+            ev.preventDefault()
+            onHeaderDblClick()
+          }}
+        >
           <Markdown source={displayText} streaming={streamActive} />
           {/* Agent-embedded images render below the text. */}
           {e.images?.length ? (
@@ -1019,7 +1034,7 @@ export const EntryView = memo(function EntryView({
             className={
               truncated
                 ? 'mt-1 border-l pl-3 text-[12.5px] leading-relaxed'
-                : 'gn-no-scrollbar mt-1 min-h-[1.2em] max-h-[6.5em] overflow-y-auto border-l pl-3 text-[12.5px] leading-relaxed'
+                : 'mt-1 min-h-[1.2em] max-h-[6.5em] overflow-hidden border-l pl-3 text-[12.5px] leading-relaxed'
             }
             style={{ borderColor: 'color-mix(in srgb, var(--color-gn-gray-dim) 40%, transparent)' }}
           >
@@ -1123,7 +1138,6 @@ export const EntryView = memo(function EntryView({
               ev.stopPropagation()
               openViewer(e.id)
             }}
-            className="cursor-zoom-in"
             title="double-click or enter for full view"
           >
             <ToolDetail raw={e.raw} kindName={e.kindName} full={false} />
@@ -1136,7 +1150,15 @@ export const EntryView = memo(function EntryView({
   if (e.kind === 'error') {
     return (
       <EntryShell {...shell}>
-        <div className="flex items-start gap-1.5 py-0.5 text-[13px] leading-[1.35]">
+        <div
+          className="flex items-start gap-1.5 py-0.5 text-[13px] leading-[1.35]"
+          title="dblclick / enter · view"
+          onDoubleClick={(ev) => {
+            ev.stopPropagation()
+            ev.preventDefault()
+            onHeaderDblClick()
+          }}
+        >
           <Bullet color={Accents.error} glyph={Glyphs.ballotX} />
           <div className="whitespace-pre-wrap break-words" style={{ color: Accents.error }}>
             {e.text}
@@ -1174,34 +1196,43 @@ export const EntryView = memo(function EntryView({
     const items = planTodos(e.entries).items
     return (
       <EntryShell {...shell}>
-        <div className="mb-1 text-[12px] font-bold" style={{ color: Accents.plan }}>
-          Plan
-        </div>
-        {items.length === 0 ? (
-          <div className="text-[11px] text-gn-muted">（空计划）</div>
-        ) : (
-          <div className="space-y-[2px]">
-            {items.map((t, i) => (
-              <div key={t.id ?? i} className="flex items-start gap-2 text-[12.5px] leading-snug">
-                <span className="mt-[1px] shrink-0 font-mono text-[11px]" aria-hidden>
-                  <TodoMark status={t.status} />
-                </span>
-                <span
-                  className={`min-w-0 flex-1 break-words ${
-                    t.status === 'completed' || t.status === 'cancelled'
-                      ? 'text-gn-muted'
-                      : 'text-gn-fg'
-                  }`}
-                >
-                  {t.content}
-                </span>
-                {t.priority && (
-                  <span className="shrink-0 text-[10px] text-gn-gutter">{t.priority}</span>
-                )}
-              </div>
-            ))}
+        <div
+          title="dblclick / enter · view"
+          onDoubleClick={(ev) => {
+            ev.stopPropagation()
+            ev.preventDefault()
+            onHeaderDblClick()
+          }}
+        >
+          <div className="mb-1 text-[12px] font-bold" style={{ color: Accents.plan }}>
+            Plan
           </div>
-        )}
+          {items.length === 0 ? (
+            <div className="text-[11px] text-gn-muted">（空计划）</div>
+          ) : (
+            <div className="space-y-[2px]">
+              {items.map((t, i) => (
+                <div key={t.id ?? i} className="flex items-start gap-2 text-[12.5px] leading-snug">
+                  <span className="mt-[1px] shrink-0 font-mono text-[11px]" aria-hidden>
+                    <TodoMark status={t.status} />
+                  </span>
+                  <span
+                    className={`min-w-0 flex-1 break-words ${
+                      t.status === 'completed' || t.status === 'cancelled'
+                        ? 'text-gn-muted'
+                        : 'text-gn-fg'
+                    }`}
+                  >
+                    {t.content}
+                  </span>
+                  {t.priority && (
+                    <span className="shrink-0 text-[10px] text-gn-gutter">{t.priority}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </EntryShell>
     )
   }
@@ -1217,9 +1248,20 @@ export const EntryView = memo(function EntryView({
             : 'Agent failed'
     return (
       <EntryShell {...shell}>
-        <div className={`flex items-center gap-1.5 ${dense ? 'py-0' : 'py-[2px]'} text-[13px] leading-[1.35]`}>
+        <div
+          className={`flex items-center gap-1.5 ${dense ? 'py-0' : 'py-[2px]'} text-[13px] leading-[1.35]`}
+          title="dblclick / enter · view subagent"
+          onDoubleClick={(ev) => {
+            ev.stopPropagation()
+            ev.preventDefault()
+            onHeaderDblClick()
+          }}
+        >
           <Bullet color={bullet.color} animated={bullet.animated} />
-          <span className="font-bold" style={{ color: bullet.color }}>
+          <span
+            className="shrink-0 whitespace-nowrap font-bold"
+            style={{ color: bullet.color }}
+          >
             {label}
           </span>
           <span className="min-w-0 truncate font-mono text-[12.5px] text-gn-muted">
@@ -1264,9 +1306,20 @@ export const EntryView = memo(function EntryView({
               : 'Workflow cancelled'
     return (
       <EntryShell {...shell}>
-        <div className={`flex items-center gap-1.5 ${dense ? 'py-0' : 'py-[2px]'} text-[13px] leading-[1.35]`}>
+        <div
+          className={`flex items-center gap-1.5 ${dense ? 'py-0' : 'py-[2px]'} text-[13px] leading-[1.35]`}
+          title="dblclick / enter · view workflow"
+          onDoubleClick={(ev) => {
+            ev.stopPropagation()
+            ev.preventDefault()
+            onHeaderDblClick()
+          }}
+        >
           <Bullet color={bullet.color} animated={bullet.animated} />
-          <span className="font-bold" style={{ color: bullet.color }}>
+          <span
+            className="shrink-0 whitespace-nowrap font-bold"
+            style={{ color: bullet.color }}
+          >
             {label}
           </span>
           <span className="min-w-0 truncate font-mono text-[12.5px] text-gn-muted">
@@ -1301,10 +1354,13 @@ export const EntryView = memo(function EntryView({
           }}
         >
           <Bullet color={bullet.color} animated={bullet.animated} />
-          <span className="font-bold" style={{ color: bullet.color }}>
+          <span
+            className="shrink-0 whitespace-nowrap font-bold"
+            style={{ color: bullet.color }}
+          >
             Task
           </span>
-          <span className="text-gn-muted">{verb}:</span>
+          <span className="shrink-0 whitespace-nowrap text-gn-muted">{verb}:</span>
           <span className="min-w-0 truncate font-mono text-[12.5px] text-gn-fg">
             {e.title}
           </span>
@@ -1547,7 +1603,7 @@ function EmptyStatePicker() {
   )
 }
 
-export function Scrollback() {
+export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
   const entries = useChatStore((s) => s.entries)
   // No active session (deleted the current one / fresh boot): show the
   // empty-state hint instead of a blank scrollback.
@@ -1563,13 +1619,20 @@ export function Scrollback() {
   const historyHasMore = useChatStore((s) => s.historyHasMore)
   const historyLoading = useChatStore((s) => s.historyLoading)
   const historyLoadingMore = useChatStore((s) => s.historyLoadingMore)
+  const historyLoadError = useChatStore((s) => s.historyLoadError)
   const historyPrependedAt = useChatStore((s) => s.historyPrependedAt)
   const historyAnchorId = useChatStore((s) => s.historyAnchorId)
   const toggleGroupExpansion = useChatStore((s) => s.toggleGroupExpansion)
   const loadMoreHistory = useChatStore((s) => s.loadMoreHistory)
   const bottomRef = useRef<HTMLDivElement>(null)
   const boxRef = useRef<HTMLDivElement>(null)
+  /** Fade wrapper around history rows — ResizeObserver target for stick-to-bottom. */
+  const contentRef = useRef<HTMLDivElement>(null)
   const followRef = useRef(true)
+  // Last scrollTop seen, to tell "user scrolled UP" (unfollow, no matter
+  // how small the distance — a sub-80px scroll must not keep following)
+  // from "scrolled to the bottom" (re-follow).
+  const lastScrollTopRef = useRef(0)
   // ── Scroll-up paging gates (see maybeLoadOlderHistory) ──────────
   const topPageArmedRef = useRef(true)
   const topPageCooldownRef = useRef(0)
@@ -1577,6 +1640,36 @@ export function Scrollback() {
   const touchStartYRef = useRef<number | null>(null)
   const touchYRef = useRef<number | null>(null)
   const [now, setNow] = useState(() => Date.now())
+  // ── Sticky workspace-bar height ────────────────────────────────
+  // The WorkspaceBar (sticky top-0 inside this scroll container) is 37px
+  // when idle but grows when the tasks bar is open / rows wrap on mobile.
+  // The pinned user-prompt header sticks at `top: wsBarH` so it always
+  // lands flush below the bar (a hardcoded 37px left it sliding under the
+  // taller bar, covered by its z-30 background).
+  const [wsBarH, setWsBarH] = useState(37)
+  const wsBarElRef = useRef<HTMLDivElement | null>(null)
+  const wsBarRoRef = useRef<ResizeObserver | null>(null)
+  // Callback ref: attaches the observer on mount (and re-attaches if the
+  // element is ever remounted), disconnects on unmount — no effect-timing
+  // dependency.
+  const workspaceRef = useCallback((el: HTMLDivElement | null) => {
+    if (wsBarElRef.current === el) return
+    wsBarElRef.current = el
+    wsBarRoRef.current?.disconnect()
+    wsBarRoRef.current = null
+    if (!el) return
+    const report = (h: number) =>
+      setWsBarH((prev) => (Math.abs(prev - h) < 0.5 ? prev : h))
+    // Sync first measurement so the very first paint is already correct
+    // (e.g. the tasks bar is open when the session loads).
+    report(el.getBoundingClientRect().height)
+    const ro = new ResizeObserver((entries) => {
+      const h = entries[0]?.contentRect.height
+      if (h != null) report(h)
+    })
+    wsBarRoRef.current = ro
+    ro.observe(el)
+  }, [])
   // History-switch loading indicator: same braille spinner as the
   // composer turn-status line (TUI glyphs.rs), ~7.5fps. The overlay
   // stays mounted permanently (pointer-events-none); opacity is toggled
@@ -1618,20 +1711,40 @@ export function Scrollback() {
   // the DOM flat (the store keeps every entry). Scrolling to the top grows
   // the window one page at a time via maybeLoadOlderHistory; once the
   // local window covers the store, host history paging continues.
+  //
+  // Floor: always keep the most recent user prompt mounted. loadHistory
+  // auto-pages until the store has a user (tool-stream tails often fill
+  // the newest page alone), and live turns can grow past 100 entries
+  // after a prompt — without this floor the user row sits outside
+  // renderEntries, sticky never finds a pin target, and resume looks
+  // like "paged in the prompt but no sticky header".
   const [renderLimit, setRenderLimit] = useState(MAX_RENDER_ENTRIES)
   // Anchor for the local-prepend scroll restore (mirrors historyPrependedAt).
   const [expandAnchorId, setExpandAnchorId] = useState<string | null>(null)
   // New session / history switch → window back to the default cap.
+  // The last-user floor (below) still applies on the same commit.
   useEffect(() => {
     setRenderLimit(MAX_RENDER_ENTRIES)
     setExpandAnchorId(null)
   }, [historyLoadedAt])
+  const lastUserRenderFloor = useMemo(() => {
+    let lastUserIdx = -1
+    for (let i = entries.length - 1; i >= 0; i--) {
+      if (entries[i].kind === 'user') {
+        lastUserIdx = i
+        break
+      }
+    }
+    if (lastUserIdx < 0) return MAX_RENDER_ENTRIES
+    return Math.max(MAX_RENDER_ENTRIES, entries.length - lastUserIdx)
+  }, [entries])
+  const effectiveRenderLimit = Math.max(renderLimit, lastUserRenderFloor)
   const renderEntries = useMemo(
     () =>
-      entries.length <= renderLimit
+      entries.length <= effectiveRenderLimit
         ? entries
-        : entries.slice(-renderLimit),
-    [entries, renderLimit],
+        : entries.slice(-effectiveRenderLimit),
+    [entries, effectiveRenderLimit],
   )
   const truncatedCount = entries.length - renderEntries.length
   const userById = useMemo(() => {
@@ -1646,12 +1759,17 @@ export function Scrollback() {
     const box = boxRef.current
     const els = userEls.current
     if (!box || els.size === 0) {
-      setPinnedId(null)
+      setPinnedId((prev) => (prev == null ? prev : null))
       return
     }
     let pinned: string | null = null
     // sticky.rs: pin the last prompt with y_virtual < scroll_offset; at the
     // very top (scrollTop 0) nothing is pinned.
+    //
+    // The visual sticky is an out-of-flow overlay (zero-height sticky shell +
+    // absolute band) so mount/unmount never changes document height — an
+    // in-flow sticky clone used to shift every row, which raced ResizeObserver
+    // pin-bottom and flipped pin at the threshold (visible jitter).
     if (box.scrollTop > 0) {
       const boxTop = box.getBoundingClientRect().top
       for (const [id, el] of els) {
@@ -1661,7 +1779,7 @@ export function Scrollback() {
         else break // entries are in document order
       }
     }
-    setPinnedId(pinned)
+    setPinnedId((prev) => (prev === pinned ? prev : pinned))
   }, [])
 
   // Cache user entry elements (rebuilt on entry changes; positions shift on
@@ -1772,20 +1890,56 @@ export function Scrollback() {
 
   // Auto-follow only when near bottom (every mounted row is at real
   // height — MAX_RENDER_ENTRIES caps the DOM, no content-visibility
-  // placeholders — so scrollIntoView lands exactly at the tail).
-  // `auto` behavior keeps it instant (no smooth animation restart per
-  // flush, same as before).
+  // placeholders — so a direct scrollTop write lands exactly at the tail).
+  //
+  // Prefer `box.scrollTop = scrollHeight` over scrollIntoView: the latter
+  // can race nested sticky headers / incomplete layout and is noisier with
+  // intermediate scroll events. Sync lastScrollTopRef so onScroll does not
+  // treat a programmatic jump as a user gesture.
   //
   // Entries / row-count changes re-run via React effect. liveStream text
   // growth must NOT re-render Scrollback — subscribe outside React and
-  // pin the bottom / thought body from refs only.
+  // pin the bottom / thought body from refs only. Async height growth
+  // (sticky pin mount, mermaid, images) is covered by the content
+  // ResizeObserver below while follow is armed.
+  const scrollToBottom = useCallback((force = false) => {
+    const box = boxRef.current
+    if (!box) return
+    if (!force && !followRef.current) return
+    box.scrollTop = box.scrollHeight
+    lastScrollTopRef.current = box.scrollTop
+  }, [])
   const pinStreamScroll = useCallback(() => {
-    if (followRef.current) {
-      bottomRef.current?.scrollIntoView({ block: 'end', behavior: 'auto' })
-    }
+    scrollToBottom(false)
     const bodyEl = streamBodyRef.current
     if (bodyEl) bodyEl.scrollTop = bodyEl.scrollHeight
-  }, [])
+  }, [scrollToBottom])
+  // Content height changes while following → re-pin bottom. Covers
+  // session-switch after historyLoadedAt (markdown/mermaid paint) and
+  // other late layout without store entry churn. Sticky overlay is
+  // out-of-flow so it does not feed this observer (no pin↔height loop).
+  useEffect(() => {
+    const content = contentRef.current
+    if (!content || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      if (!followRef.current) return
+      scrollToBottom(true)
+    })
+    ro.observe(content)
+    return () => ro.disconnect()
+  }, [scrollToBottom])
+  // 发送消息（新的 user 行落到末尾，含 `!` 直执行）→ 强制回到底部跟随。
+  // 用户可能之前向上滚动过（哪怕 1px 也会暂停跟随），发送时视口必须跳
+  // 回最新位置看结果；只看 id 变化，历史 prepend / 流式 flush 不触发。
+  const lastUserEntryIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    const last = entries[entries.length - 1]
+    if (last?.kind !== 'user') return
+    if (lastUserEntryIdRef.current === last.id) return
+    lastUserEntryIdRef.current = last.id
+    followRef.current = true
+    scrollToBottom(true)
+  }, [entries, scrollToBottom])
   useEffect(() => {
     pinStreamScroll()
   }, [entries, displayRows.length, pinStreamScroll])
@@ -1796,12 +1950,18 @@ export function Scrollback() {
     })
   }, [pinStreamScroll])
 
-  // History load: always re-follow the bottom (scrollback was reset)
-  useEffect(() => {
+  // History load: always re-follow the bottom (scrollback was reset).
+  // useLayoutEffect so the first paint of the new session is already at
+  // the tail — a post-paint useEffect left a visible flash mid-scroll and
+  // raced with onScroll clamp (content shrink → scrollTop drop → false
+  // unfollow) on some switches. ResizeObserver then holds the pin while
+  // sticky/mermaid/images finish laying out.
+  useLayoutEffect(() => {
     if (!historyLoadedAt) return
     followRef.current = true
-    bottomRef.current?.scrollIntoView({ behavior: 'auto' })
-  }, [historyLoadedAt])
+    scrollToBottom(true)
+    scheduleUpdatePinned()
+  }, [historyLoadedAt, scrollToBottom, scheduleUpdatePinned])
 
   // Older page prepended: restore the scroll anchor (previously first row).
   // Cooldown: the anchor restore itself fires a scroll event at the top,
@@ -1843,12 +2003,18 @@ export function Scrollback() {
    * Disarmed on trigger; re-armed when the user scrolls away from the top
    * (onScroll) or when a paging attempt finishes (effect above), so a
    * single gesture can never chain pages.
+   *
+   * `bypassCooldown` is for EXPLICIT clicks on the load-older button: the
+   * 400ms cooldown exists to stop the anchor-restore scroll event (fired
+   * right after a prepend) from chaining the next page — it must not
+   * swallow a deliberate user click (a double-click on the button within
+   * the window would otherwise silently do nothing).
    */
-  const maybeLoadOlderHistory = useCallback(() => {
+  const maybeLoadOlderHistory = useCallback((bypassCooldown = false) => {
     const box = boxRef.current
     if (!box) return
     if (!topPageArmedRef.current) return
-    if (Date.now() < topPageCooldownRef.current) return
+    if (!bypassCooldown && Date.now() < topPageCooldownRef.current) return
     topPageArmedRef.current = false
     // Live-mode truncation first: the older entries are still in the
     // store — grow the render window one page and restore the anchor so
@@ -1858,7 +2024,10 @@ export function Scrollback() {
     if (truncatedCount > 0) {
       const anchorId = renderEntries[0]?.id
       followRef.current = false
-      setRenderLimit((v) => v + MAX_RENDER_ENTRIES)
+      // Grow from the *effective* window (may already be > renderLimit due
+      // to the last-user floor), otherwise one "page" click can be a no-op
+      // when floor already covers renderLimit + N.
+      setRenderLimit(effectiveRenderLimit + MAX_RENDER_ENTRIES)
       setExpandAnchorId(anchorId ?? null)
       topPageArmedRef.current = true
       return
@@ -1870,7 +2039,14 @@ export function Scrollback() {
     followRef.current = false
     const firstEl = box.querySelector('[data-entry-id]')
     void loadMoreHistory(firstEl?.getAttribute('data-entry-id') ?? undefined)
-  }, [historyHasMore, historyLoadingMore, loadMoreHistory, renderEntries, truncatedCount])
+  }, [
+    historyHasMore,
+    historyLoadingMore,
+    loadMoreHistory,
+    renderEntries,
+    truncatedCount,
+    effectiveRenderLimit,
+  ])
 
   // Scroll selected into view
   useEffect(() => {
@@ -1880,10 +2056,14 @@ export function Scrollback() {
   }, [selectedId, focusMode, displayRows])
 
   return (
+    // Reserve the scrollbar gutter even when nothing overflows, so the
+    // centered content column stays pixel-aligned with the fixed bottom
+    // prompt area (App reserves the same gutter there).
     <div
       ref={boxRef}
       className="gn-scroll relative flex-1 overflow-y-auto overscroll-contain outline-none"
       data-scrollback-box=""
+      style={{ scrollbarGutter: 'stable' }}
       tabIndex={0}
       role="listbox"
       aria-label="Scrollback"
@@ -1891,7 +2071,18 @@ export function Scrollback() {
       onScroll={(e) => {
         const t = e.currentTarget
         const dist = t.scrollHeight - t.scrollTop - t.clientHeight
-        followRef.current = dist < 80
+        // 用户滑动优先：scrollTop 变小且已离开底部 → 暂停跟随（哪怕只
+        // 滚 1px）。关键：切换会话时内容变矮，浏览器会把 scrollTop 钳到
+        // 新 max——也会出现 scrollTop 变小，但此时 dist≈0，不能当作用户
+        // 上滑，否则 follow 被误关，historyLoadedAt 钉底 effect 之后的
+        // 流式/高度增长就不再贴底。滚回真正底部（dist<4）才恢复跟随。
+        const prevTop = lastScrollTopRef.current
+        lastScrollTopRef.current = t.scrollTop
+        if (t.scrollTop < prevTop && dist >= 4) {
+          followRef.current = false
+        } else if (dist < 4) {
+          followRef.current = true
+        }
         scheduleUpdatePinned()
         // Near the top of a loaded history: fetch the next older page.
         // Re-arm when the user scrolls away from the top region so one
@@ -1937,37 +2128,56 @@ export function Scrollback() {
         }
       }}
     >
+      {/* Workspace + git status bar — sticky header of the scrollback. Sits
+          outside the fade-in wrapper so it's always present while history
+          content cross-fades in; the scrollback body scrolls under it. */}
+      <WorkspaceBar onOpenMcp={onOpenMcp} topRef={workspaceRef} />
       {/* Fade-in wrapper for freshly loaded history content — see the
           contentVisible layout effect above. transition-opacity is applied
           ONLY in the visible state: dropping to opacity-0 must be instant
           (no 100→0 transition), so the hidden frame actually recalc+paint
           and the restore then plays a real 0→100 fade. */}
       <div
+        ref={contentRef}
         className={`${
           contentVisible ? 'transition-opacity duration-300 opacity-100' : 'opacity-0'
         }`}
       >
-      {(historyHasMore || historyLoadingMore) && entries.length > 0 && (
+      {(historyHasMore || historyLoadingMore || truncatedCount > 0) &&
+        entries.length > 0 && (
         // Clickable fallback: when content doesn't overflow there is no
         // scrollbar, so scroll-to-top never fires. Tapping the hint loads
         // the next older page the same way the near-top scroll path does.
+        // Also shown while the render window is truncated (live session
+        // with more store entries than MAX_RENDER_ENTRIES) — that state
+        // has no host paging (historyHasMore=false) but still pages
+        // locally, so it needs the same affordance.
         <button
           type="button"
           disabled={historyLoadingMore}
           onClick={(ev) => {
             ev.stopPropagation()
-            maybeLoadOlderHistory()
+            // Explicit click: never swallowed by the prepend cooldown.
+            maybeLoadOlderHistory(true)
           }}
           className="mx-auto block w-full py-1.5 text-center text-[11px] text-gn-gutter select-none transition-colors hover:text-gn-muted disabled:cursor-default disabled:hover:text-gn-gutter"
           title={
             historyLoadingMore
               ? undefined
-              : '点击或向上滚动加载更早历史'
+              : historyLoadError
+                ? historyLoadError
+                : '点击或向上滚动加载更早历史'
           }
         >
-          {historyLoadingMore
-            ? '加载更早历史…'
-            : '↑ 点击或向上滚动加载更早历史'}
+          {historyLoadingMore ? (
+            '加载更早历史…'
+          ) : historyLoadError ? (
+            <span className="text-gn-red">{historyLoadError} · 点击重试</span>
+          ) : truncatedCount > 0 && !historyHasMore ? (
+            '↑ 点击或向上滚动查看更早消息'
+          ) : (
+            '↑ 点击或向上滚动加载更早历史'
+          )}
         </button>
       )}
       <div
@@ -1982,45 +2192,55 @@ export function Scrollback() {
         <span className="text-[12.5px] text-gn-muted">加载会话…</span>
       </div>
       <div className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} py-3`}>
-        {/* TUI sticky prompt header (sticky.rs): the last user prompt
-            scrolled past the top, collapsed to 3 lines; switches as you
-            scroll. Solid band covers entries passing underneath. */}
-        {pinnedUser?.kind === 'user' && (
-          <div
-            className="group relative sticky top-0 z-10 mb-2 font-ui text-[13.5px] leading-[1.35] text-gn-fg select-none"
-            style={{ backgroundColor: 'var(--color-gn-bg-highlight)' }}
-          >
-            <div className="flex items-start gap-1.5 px-2.5 py-[11px]">
-              <span
-                className="mt-[1.5px] shrink-0"
-                style={{
-                  color: (pinnedUser as { isShell?: boolean }).isShell
-                    ? 'var(--color-gn-cyan)'
-                    : 'var(--color-gn-accent-user)',
-                }}
-              >
-                <IconGlyph
-                  glyph={
-                    (pinnedUser as { isShell?: boolean }).isShell
-                      ? '$'
-                      : pinnedUser.isCron
-                        ? Glyphs.cronPrompt
-                        : Glyphs.promptArrow
-                  }
-                  color={
-                    (pinnedUser as { isShell?: boolean }).isShell
+        {/* TUI sticky prompt header (sticky.rs): last user prompt scrolled
+            past the top, collapsed to 3 lines; switches as you scroll.
+            Zero-height sticky shell + absolute band = no layout shift when
+            the pin mounts/unmounts (in-flow clone used to push all rows and
+            jitter against pin-threshold / scroll-follow). */}
+        <div
+          className="pointer-events-none sticky z-10 h-0 overflow-visible"
+          style={{ top: wsBarH }}
+          aria-hidden={pinnedUser?.kind !== 'user'}
+        >
+          {pinnedUser?.kind === 'user' && (
+            <div
+              className="pointer-events-auto absolute inset-x-0 top-0 font-ui text-[13.5px] leading-[1.35] text-gn-fg select-none"
+              style={{
+                backgroundColor: 'var(--color-gn-bg-highlight)',
+              }}
+            >
+              <div className="flex items-start gap-1.5 px-2.5 py-[11px]">
+                <span
+                  className="mt-[1.5px] shrink-0"
+                  style={{
+                    color: (pinnedUser as { isShell?: boolean }).isShell
                       ? 'var(--color-gn-cyan)'
-                      : 'var(--color-gn-accent-user)'
-                  }
-                />
-              </span>
-              <div className="min-w-0 flex-1 whitespace-pre-wrap break-words">
-                {collapseUserText(pinnedUser.text, USER_COLLAPSED_MAX_LINES).text}
+                      : 'var(--color-gn-accent-user)',
+                  }}
+                >
+                  <IconGlyph
+                    glyph={
+                      (pinnedUser as { isShell?: boolean }).isShell
+                        ? '$'
+                        : pinnedUser.isCron
+                          ? Glyphs.cronPrompt
+                          : Glyphs.promptArrow
+                    }
+                    color={
+                      (pinnedUser as { isShell?: boolean }).isShell
+                        ? 'var(--color-gn-cyan)'
+                        : 'var(--color-gn-accent-user)'
+                    }
+                  />
+                </span>
+                <div className="min-w-0 flex-1 whitespace-pre-wrap break-words">
+                  {collapseUserText(pinnedUser.text, USER_COLLAPSED_MAX_LINES).text}
+                </div>
+                <PromptTime ts={pinnedUser.ts} className="top-[14.5px]" />
               </div>
-              <PromptTime ts={pinnedUser.ts} className="top-[14.5px]" />
             </div>
-          </div>
-        )}
+          )}
+        </div>
         {truncatedCount > 0 && (
           // Clickable like the host-history hint: same page-expansion path
           // as scrolling up at the top (maybeLoadOlderHistory).

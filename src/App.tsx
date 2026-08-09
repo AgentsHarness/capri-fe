@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useChatStore } from './store/chat'
 import { useThemeStore } from './store/theme'
-import { TopBar, WorkspaceBar } from './components/TopBar'
+import { transport } from './api/localTransport'
+import { AccessTokenGate } from './components/AccessTokenGate'
+import { TopBar } from './components/TopBar'
 import { ErrorBanner } from './components/ErrorBanner'
 import { HistorySidebar } from './components/HistorySidebar'
 import { Scrollback } from './components/Scrollback'
@@ -25,6 +27,8 @@ import { ToastStack } from './components/ToastStack'
 import { registerMcpPanelOpener } from './commands/registry'
 import { useScrollbackKeys } from './hooks/useScrollbackKeys'
 
+type AccessPhase = 'checking' | 'gate' | 'ready'
+
 /**
  * Agent-view layout (TUI):
  *   [status bar]
@@ -35,14 +39,85 @@ import { useScrollbackKeys } from './hooks/useScrollbackKeys'
  *   [block viewer modal?] / [question modal?] / [mcp panel?]
  */
 export default function App() {
-  const init = useChatStore((s) => s.init)
   const initTheme = useThemeStore((s) => s.init)
+  const [phase, setPhase] = useState<AccessPhase>('checking')
+  const [gateError, setGateError] = useState<string>()
+  const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => initTheme(), [initTheme])
+
+  // Probe hub access before mounting the main shell. Local mode (no
+  // FE_TOKEN) returns ok immediately; hub with FE_TOKEN shows the gate.
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const r = await transport.probeAccess()
+      if (cancelled) return
+      if (r === 'need_token') {
+        setGateError(
+          transport.getAccessToken()
+            ? '密钥无效或已过期，请重新输入'
+            : undefined,
+        )
+        setPhase('gate')
+        return
+      }
+      // ok or network error → enter app (ErrorBanner covers offline)
+      setPhase('ready')
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const handleTokenSubmit = useCallback(async (token: string) => {
+    setSubmitting(true)
+    setGateError(undefined)
+    try {
+      transport.setAccessToken(token)
+      const r = await transport.probeAccess()
+      if (r === 'ok') {
+        setPhase('ready')
+        return
+      }
+      if (r === 'need_token') {
+        setGateError('密钥无效，请检查后重试')
+        return
+      }
+      setGateError('无法连接 Hub，请稍后重试')
+    } finally {
+      setSubmitting(false)
+    }
+  }, [])
+
+  if (phase === 'checking') {
+    return (
+      <div className="flex h-full min-h-0 items-center justify-center bg-gn-bg-base text-[13px] text-gn-muted font-ui">
+        连接中…
+      </div>
+    )
+  }
+
+  if (phase === 'gate') {
+    return (
+      <AccessTokenGate
+        error={gateError}
+        submitting={submitting}
+        onSubmit={handleTokenSubmit}
+      />
+    )
+  }
+
+  return <AppShell />
+}
+
+function AppShell() {
+  const init = useChatStore((s) => s.init)
   const [mcpOpen, setMcpOpen] = useState(false)
   const [gitOpen, setGitOpen] = useState(false)
   useScrollbackKeys()
 
   useEffect(() => init(), [init])
-  useEffect(() => initTheme(), [initTheme])
   // /mcps opens the MCP panel — the opener lives in App (local state).
   useEffect(() => {
     registerMcpPanelOpener(() => setMcpOpen(true))
@@ -58,9 +133,12 @@ export default function App() {
         {/* Persistent desktop history sidebar; mobile history lives in the TopBar dropdown. */}
         <HistorySidebar />
         <main className="flex min-h-0 min-w-0 flex-1 flex-col">
-          {/* Workspace + git — scrollback top-left (TUI status-bar left). */}
-          <WorkspaceBar onOpenMcp={() => setMcpOpen(true)} />
-          <Scrollback />
+          {/* Workspace + git — sticky scrollback header (TUI status-bar left). */}
+          <Scrollback onOpenMcp={() => setMcpOpen(true)} />
+          {/* Composer + strips stay in flow at the bottom of main — no
+              overlay, so no bottom padding hacks. The composer wrapper is
+              intentionally not a scroll container (its floating panels —
+              slash menu / queue / question card — must not be clipped). */}
           <ApprovalStrip />
           <PlanApproval />
           <CancelPanel />

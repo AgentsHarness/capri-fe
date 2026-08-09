@@ -344,7 +344,6 @@ export function RewindPicker() {
       >
         <header className="flex items-center gap-2 rounded-t border-b border-gn-prompt-border bg-gn-bg-dark px-4 py-2.5">
           <span className="font-mono text-[13px] font-bold text-gn-fg">/rewind</span>
-          <span className="text-[11px] text-gn-muted">回退到历史检查点</span>
           <button
             type="button"
             onClick={closeRewind}
@@ -562,20 +561,6 @@ export function RewindPicker() {
             ))
           )}
         </div>
-
-        <footer className="rounded-b border-t border-gn-prompt-border px-4 py-2 text-[11px] text-gn-gutter">
-          {phase === 'cancel-offer'
-            ? 'y 取消回合并回卷 · n 等它完成 · j/k 移动'
-            : phase === 'confirm'
-              ? 'c/f 选择模式（对话 / 对话+文件） · y 是 · a 是且不再询问 · n 否 · j/k 移动 · esc 关闭'
-              : phase === 'error'
-                ? 'enter/r 重试 · esc 关闭'
-                : phase === 'warning'
-                  ? 'enter / esc 关闭'
-                  : phase === 'picker'
-                    ? 'j/k 选择 · enter 确认 · esc 关闭'
-                    : '回退将删除目标点之后的对话内容 · 该点的提示词将放回输入框'}
-        </footer>
       </div>
     </div>
   )

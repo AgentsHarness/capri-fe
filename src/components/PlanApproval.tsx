@@ -287,11 +287,9 @@ export function PlanApproval() {
           <button
             type="button"
             onClick={() => void respondXai(req.requestId, { outcome: 'approved' })}
-            className="min-h-10 rounded border border-gn-green/50 bg-gn-bg-base px-3 py-1.5 text-[12.5px] text-gn-fg hover:bg-gn-bg-highlight"
+            className="inline-flex min-h-10 items-center gap-1 rounded border border-gn-green/50 bg-gn-bg-base px-3 py-1.5 text-[12.5px] text-gn-fg hover:bg-gn-bg-highlight"
           >
-            <span className="mr-1 inline-flex items-center">
-              {Glyphs.checkMark}
-            </span>
+            {Glyphs.checkMark}
             批准并开始实施
           </button>
           <button

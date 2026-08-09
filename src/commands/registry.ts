@@ -74,10 +74,14 @@ function openExtensionsCmd(tab: ExtensionsTab) {
 function sendPrompt(text: string) {
   const st = useChatStore.getState()
   if (st.conn === 'busy') {
-    usePromptQueue.getState().enqueue({
-      text,
-      blocks: [{ type: 'text', text }],
-    })
+    // Tag with the active session so the queue never drains into another.
+    usePromptQueue.getState().enqueue(
+      {
+        text,
+        blocks: [{ type: 'text', text }],
+      },
+      st.sessionId ?? '',
+    )
     return
   }
   void st.send(text)
@@ -312,10 +316,14 @@ export const slashCommands: SlashCommand[] = [
       const st = useChatStore.getState()
       if (st.conn === 'busy') {
         // Mid-turn: queue like any Enter prompt; auto-sends at turn end.
-        usePromptQueue.getState().enqueue({
-          text,
-          blocks: [{ type: 'text', text }],
-        })
+        // Tag with the active session so it never drains into another.
+        usePromptQueue.getState().enqueue(
+          {
+            text,
+            blocks: [{ type: 'text', text }],
+          },
+          st.sessionId ?? '',
+        )
         return
       }
       void st.send(text)

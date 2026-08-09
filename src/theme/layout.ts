@@ -39,8 +39,11 @@ export const CONTENT_COLUMN_CLASS = 'mx-auto w-full max-w-[960px]'
 /**
  * Outer horizontal padding on the centered column (sm).
  * Selection + accent sit at the content edge inside this pad.
+ * Must exceed SelectionBox's OUTSET_X_PX (12px) on sm+, so the selection
+ * rail never sits flush against the container edge when the centered
+ * column fills a container narrower than max-w (e.g. the block viewer).
  */
-export const COLUMN_PAD_X_CLASS = 'px-2 sm:px-3'
+export const COLUMN_PAD_X_CLASS = 'px-4 sm:px-5'
 
 /**
  * Fixed icon column — TUI is 1 cell + trailing space; web uses a centered

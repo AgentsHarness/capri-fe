@@ -30,7 +30,8 @@ const WORKSPACE_ROWS_LIMIT = 4
 const ROW_MENU_W = 176
 const ROW_MENU_H = 128
 
-/** 点击"加载更多"每次追加的行数，循环直到组内会话全部显示。 */
+/** 点击"加载更多"每次追加的行数，循环直到组内会话全部显示；
+ *  展开超过 WORKSPACE_ROWS_LIMIT 后出现"收起"，点击回到 WORKSPACE_ROWS_LIMIT。 */
 const LOAD_MORE_STEP = 10
 
 /** 工作区活跃窗口：最新活动在 6 小时内的默认展开，超过默认收起。 */
@@ -68,7 +69,7 @@ function byUpdatedDesc(a: WorkspaceSummary, b: WorkspaceSummary): number {
 /**
  * 历史会话列表 — 按工作区（cwd）分组的共享实现，桌面端持久侧边栏
  * （HistorySidebar）与移动端顶栏 history 下拉共用同一份数据与交互：
- * 分组折叠 / "加载更多"（每次 10 个） / 行内重命名 / 行操作菜单
+ * 分组折叠 / "加载更多"（每次 10 个）+"收起"（回到 4 个） / 行内重命名 / 行操作菜单
  * （桌面右键、移动端 ⋮；打开 / 重命名 / 删除，删除走确认弹窗） /
  * 上下文进度条，保证两端永远一致。
  *
@@ -186,13 +187,22 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
 
   /**
    * 组内已展开的行数（key = cwd）；初始显示最近 4 个，点击
-   * "加载更多"每次追加 LOAD_MORE_STEP（10）个，循环直到全部显示。
+   * "加载更多"每次追加 LOAD_MORE_STEP（10）个，循环直到全部显示；
+   * 一旦展开超过 4 个，"收起"即出现（与"加载更多"并排），
+   * 点击回到 WORKSPACE_ROWS_LIMIT，无需等全部加载完。
    */
   const [visibleCount, setVisibleCount] = useState<ReadonlyMap<string, number>>(new Map())
   const expandMore = (key: string) => {
     setVisibleCount((prev) => {
       const next = new Map(prev)
       next.set(key, (prev.get(key) ?? WORKSPACE_ROWS_LIMIT) + LOAD_MORE_STEP)
+      return next
+    })
+  }
+  const collapseMore = (key: string) => {
+    setVisibleCount((prev) => {
+      const next = new Map(prev)
+      next.set(key, WORKSPACE_ROWS_LIMIT)
       return next
     })
   }
@@ -518,15 +528,29 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
                     </div>
                   )
                 })}
-                {g.sessions.length > shown && (
-                  <button
-                    type="button"
-                    onClick={() => expandMore(g.cwd)}
-                    className="flex w-full cursor-pointer items-center justify-center gap-2 px-3 py-1 text-center text-[10.5px] text-gn-cyan hover:bg-gn-bg-highlight"
-                    title={`再加载 ${Math.min(LOAD_MORE_STEP, g.sessions.length - shown)} 个会话`}
-                  >
-                    加载更多 {Math.min(LOAD_MORE_STEP, g.sessions.length - shown)} 个
-                  </button>
+                {g.sessions.length > WORKSPACE_ROWS_LIMIT && (
+                  <div className="flex">
+                    {shown > WORKSPACE_ROWS_LIMIT && (
+                      <button
+                        type="button"
+                        onClick={() => collapseMore(g.cwd)}
+                        className="flex flex-1 cursor-pointer items-center justify-center gap-2 px-3 py-1 text-center text-[10.5px] text-gn-muted hover:bg-gn-bg-highlight"
+                        title={`收起为最近 ${WORKSPACE_ROWS_LIMIT} 个会话`}
+                      >
+                        收起
+                      </button>
+                    )}
+                    {g.sessions.length > shown && (
+                      <button
+                        type="button"
+                        onClick={() => expandMore(g.cwd)}
+                        className="flex flex-1 cursor-pointer items-center justify-center gap-2 px-3 py-1 text-center text-[10.5px] text-gn-cyan hover:bg-gn-bg-highlight"
+                        title={`再加载 ${Math.min(LOAD_MORE_STEP, g.sessions.length - shown)} 个会话`}
+                      >
+                        加载更多 {Math.min(LOAD_MORE_STEP, g.sessions.length - shown)} 个
+                      </button>
+                    )}
+                  </div>
                 )}
               </>
             )}
