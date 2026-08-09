@@ -1889,10 +1889,13 @@ export function Scrollback() {
       }}
     >
       {/* Fade-in wrapper for freshly loaded history content — see the
-          contentVisible layout effect above. */}
+          contentVisible layout effect above. transition-opacity is applied
+          ONLY in the visible state: dropping to opacity-0 must be instant
+          (no 100→0 transition), so the hidden frame actually recalc+paint
+          and the restore then plays a real 0→100 fade. */}
       <div
-        className={`transition-opacity duration-300 ${
-          contentVisible ? 'opacity-100' : 'opacity-0'
+        className={`${
+          contentVisible ? 'transition-opacity duration-300 opacity-100' : 'opacity-0'
         }`}
       >
       {(historyHasMore || historyLoadingMore) && entries.length > 0 && (
