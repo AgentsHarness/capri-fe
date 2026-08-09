@@ -93,13 +93,16 @@ body {
 }
 
 /* Scrollbar — terminal style (Windows Terminal / macOS Terminal overlay feel):
-   thin, transparent track, translucent thumb that fades in when the pointer
-   is over the scroll area and darkens when grabbing it. Applied globally so
-   every scrollable region (scrollback, history sidebar, panels, pickers)
+   thin, transparent track, translucent thumb that darkens when grabbed.
+   The rest-state thumb must stay clearly visible (≈60% of gray-dim on the
+   near-black base) — a fainter thumb is effectively "no scrollbar" on
+   trackpad setups where macOS hides overlay scrollbars at rest, and users
+   can neither drag it nor discover that the area scrolls. Applied globally
+   so every scrollable region (scrollback, history sidebar, panels, pickers)
    matches; theme variables keep it consistent across themes. */
 * {
   scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--color-gn-gray-dim) 55%, transparent) transparent;
+  scrollbar-color: color-mix(in srgb, var(--color-gn-gray-dim) 65%, transparent) transparent;
 }
 *::-webkit-scrollbar {
   width: 6px;
@@ -109,15 +112,15 @@ body {
   background: transparent;
 }
 *::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--color-gn-gray-dim) 30%, transparent);
+  background: color-mix(in srgb, var(--color-gn-gray-dim) 60%, transparent);
   border-radius: 3px;
 }
-/* Fade in while engaging the scroll area (hover covers wheel scrolling). */
+/* Darken while engaging the scroll area (hover covers wheel scrolling). */
 *:hover::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--color-gn-gray-dim) 55%, transparent);
+  background: color-mix(in srgb, var(--color-gn-gray-dim) 75%, transparent);
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--color-gn-gray-dim) 85%, transparent);
+  background: color-mix(in srgb, var(--color-gn-gray-dim) 90%, transparent);
 }
 /* Legacy marker class kept for existing usage; rules are global now. */
 .gn-scroll {
@@ -130,6 +133,34 @@ body {
 }
 .gn-no-scrollbar::-webkit-scrollbar {
   display: none;
+}
+
+/* PromptTime hover swap (short ⇄ full timestamp). The outer .gn-pt span is
+   the ONLY hover trigger — group-hover: would also fire on the entry row's
+   .group ancestor, expanding the time when hovering anywhere on the entry.
+   The outer span's width is pinned (w-[17ch] + text-right on the element)
+   so its box — and thus :hover — never moves or collapses during the swap
+   (a display:none swap inside an absolute shrink-to-fit span collapses it
+   to width 0 and the full form never appears under the pointer). */
+.gn-pt-short {
+  display: inline;
+}
+.gn-pt-full {
+  display: none;
+}
+.gn-pt:hover .gn-pt-short {
+  display: none;
+}
+/* Expanded form gets a solid chip backing (opaque bg + rounded + inline
+   padding) so it reads as a distinct badge over the message text it
+   covers. No border, no line-height change; nowrap guards against the
+   fixed-width outer span wrapping the wider full form. */
+.gn-pt:hover .gn-pt-full {
+  display: inline;
+  background: var(--color-gn-bg-dark);
+  border-radius: 3px;
+  padding: 0 4px;
+  white-space: nowrap;
 }
 
 /* Composer bottom: caption sits on the border (-bottom-[5px]); leave room so

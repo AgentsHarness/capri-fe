@@ -535,16 +535,14 @@ export function ApprovalStrip() {
                   void respond(req.requestId, undefined, true)
                 }
               }}
-              className={`rounded border px-2 py-[3px] text-[11px] transition-colors ${
+              className={`inline-flex items-center gap-1 rounded border px-2 py-[3px] text-[11px] transition-colors ${
                 followupOpen
                   ? 'border-gn-red/70 bg-gn-diff-del-bg text-gn-red'
                   : 'border-gn-red/40 text-gn-red hover:bg-gn-diff-del-bg'
               }`}
               title="拒绝并取消该请求（可附带给 agent 的反馈）"
             >
-              <span className="mr-1 inline-flex items-center">
-                <IconGlyph glyph={Glyphs.ballotX} color="currentColor" />
-              </span>
+              <IconGlyph glyph={Glyphs.ballotX} color="currentColor" />
               reject
             </button>
           </span>

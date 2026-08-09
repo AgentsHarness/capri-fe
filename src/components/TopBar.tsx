@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type Ref } from 'react'
 import {
   Activity,
   Boxes,
@@ -29,7 +29,15 @@ import { filterRunningEntries, shortCwd } from '../format'
  * todo / credits on the right — TUI status.push order). Click ⠋N toggles
  * the sticky {@link RunningTasksBar} under the bar.
  */
-export function WorkspaceBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
+export function WorkspaceBar({
+  onOpenMcp,
+  topRef,
+}: {
+  onOpenMcp?: () => void
+  /** Scrollback measures this sticky bar's rendered height to offset the
+   *  pinned user-prompt header below it (grows with the tasks bar). */
+  topRef?: Ref<HTMLDivElement>
+}) {
   const gitInfo = useChatStore((s) => s.gitInfo)
   const cwd = useChatStore((s) => s.cwd)
   const homeDir = useChatStore((s) => s.homeDir)
@@ -69,7 +77,7 @@ export function WorkspaceBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
   // z-30 above scrollback sticky user prompt (z-10) so todo/goal
   // dropdowns aren't covered when the sticky header is pinned.
   return (
-    <div className="sticky top-0 z-30 shrink-0 bg-gn-bg-base">
+    <div ref={topRef} className="sticky top-0 z-30 shrink-0 bg-gn-bg-base">
       {/* Content column matches scrollback/composer (mx-auto max-w-[960px]).
           Mobile: the row wraps — left (branch/cwd) stays on the first line,
           the chip cluster is one unit that wraps to a right-aligned second
@@ -143,7 +151,6 @@ export function WorkspaceBar({ onOpenMcp }: { onOpenMcp?: () => void }) {
               (models.find((m) => m.name === modelName)?.contextWindow ??
                 models[0]?.contextWindow)
             }
-            turnTokens={usage?.turnTokens}
           />
           <QueueBadge />
           <TodoChip todos={todos} goalState={goalState} />

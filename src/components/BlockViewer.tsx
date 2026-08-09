@@ -222,12 +222,10 @@ export function BlockViewer() {
           <button
             type="button"
             onClick={() => closeViewer()}
-            className="shrink-0 rounded border border-transparent px-2 py-1 text-[12px] text-gn-muted hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+            className="inline-flex shrink-0 items-center gap-1 rounded border border-transparent px-2 py-1 text-[12px] text-gn-muted hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
             aria-label="Close viewer"
           >
-            <span className="mr-1 inline-flex items-center">
-              <IconGlyph glyph={Glyphs.ballotX} color="currentColor" />
-            </span>
+            <IconGlyph glyph={Glyphs.ballotX} color="currentColor" />
             close
           </button>
         </header>
@@ -299,6 +297,12 @@ function viewerChrome(e: ScrollEntry): { title: string; subtitle?: string } {
     return {
       title: e.running ? 'Agent running' : `Agent ${e.status}`,
       subtitle: e.title,
+    }
+  }
+  if (e.kind === 'workflow') {
+    return {
+      title: 'Workflow',
+      subtitle: e.running ? 'running' : e.status,
     }
   }
   return { title: e.kind }
@@ -494,6 +498,39 @@ function ViewerBody({
   if (entry.kind === 'subagent') {
     return <SubagentView entry={entry} now={now} />
   }
+  if (entry.kind === 'workflow') {
+    return (
+      <div className="space-y-3">
+        <div className="rounded border border-gn-prompt-border bg-gn-bg-dark px-3 py-2 font-mono text-[12px] leading-relaxed text-gn-fg">
+          <div className="mb-1 text-[10px] uppercase tracking-wider text-gn-gutter">
+            status
+          </div>
+          <div className="whitespace-pre-wrap break-words">
+            {entry.status}
+            {entry.running ? ' · running' : ''}
+          </div>
+        </div>
+        {entry.detail && (
+          <div>
+            <div className="mb-1 text-[10px] uppercase tracking-wider text-gn-gutter">
+              detail
+            </div>
+            <pre className="whitespace-pre-wrap break-words font-mono text-[12px] leading-[1.45] text-gn-fg">
+              {entry.detail}
+            </pre>
+          </div>
+        )}
+        {entry.title && entry.title !== entry.detail && (
+          <div>
+            <div className="mb-1 text-[10px] uppercase tracking-wider text-gn-gutter">
+              name
+            </div>
+            <div className="text-[12.5px] text-gn-fg">{entry.title}</div>
+          </div>
+        )}
+      </div>
+    )
+  }
   return (
     <pre className="whitespace-pre-wrap font-mono text-[12px] text-gn-muted">
       {JSON.stringify(entry, null, 2)}
@@ -652,6 +689,10 @@ function SubagentView({
  * 局部化），不接主 store 的 selectEntry/openViewer——mini 条目不在主
  * entries 里，openViewer 会找不到目标。
  */
+/** 迷你子代理时间线的渲染窗口：store 全量保留 items，DOM 只挂最新 N 条，
+ *  上滑到顶逐页展开（与主 scrollback MAX_RENDER_ENTRIES 同款）。 */
+const MINI_MAX_RENDER_ENTRIES = 100
+
 function SubagentTimeline({
   childSid,
   items,
@@ -681,11 +722,29 @@ function SubagentTimeline({
   )
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
-  // 打开时若时间线为空，按 child_session_id 拉取该子代理会话的更新
-  // 回放（TUI replay_inherited_updates 同款）。
+  // ── Render window（与主 scrollback MAX_RENDER_ENTRIES 同款）──────────
+  // store 全量保留 items；DOM 只挂最新 N 条（slice 取尾部，live 流永远在
+  // 窗口内）。truncatedCount>0 表示还有更早条目在 store 但未挂 DOM——上滑
+  // 到顶逐页展开窗口露出，盖满 store 后再走宿主分页（loadMoreSubagentView）。
+  const [renderLimit, setRenderLimit] = useState(MINI_MAX_RENDER_ENTRIES)
+  const renderItems = useMemo(
+    () => (items.length <= renderLimit ? items : items.slice(-renderLimit)),
+    [items, renderLimit],
+  )
+  const truncatedCount = items.length - renderItems.length
+  // 切换子代理 → 窗口回到默认。
   useEffect(() => {
-    if (items.length === 0) void fetchSubagentView(childSid)
-  }, [childSid, items, fetchSubagentView])
+    setRenderLimit(MINI_MAX_RENDER_ENTRIES)
+  }, [childSid])
+
+  // 打开时若尚未回放过（idle），按 child_session_id 拉取该子代理会话的更新
+  // 回放（TUI replay_inherited_updates 同款）。不看 items 是否为空——即使
+  // live 已捕获到正在输出的 thinking，也以磁盘回放的完整历史为基线重建。
+  useEffect(() => {
+    if (view && view.fetchState !== 'loading' && view.fetchState !== 'loaded') {
+      void fetchSubagentView(childSid)
+    }
+  }, [childSid, view, fetchSubagentView])
 
   // 上滑分页门控：仅回放填充的视图（loadedCount > 0）提供；宿主给了
   // totalCount 时严格比较，否则拉完一页即停。
@@ -695,22 +754,28 @@ function SubagentTimeline({
     (view?.totalCount != null ? loadedCount < view.totalCount : false)
   const loadingMore = view?.fetchState === 'loading' && items.length > 0
 
-  // 内容不满视口（无滚动条）且有更早分页时自动补页——否则 onScroll 永远
-  // 不触发，上滑分页无法启动。成功继续补（直到出现滚动条或拉尽），失败
-  // 停止（避免无滚动条时无限重试）。纯 live 视图 hasMore=false 不受影响。
+  // 内容不满视口（无滚动条）时自动补内容——否则 onScroll 永远不触发。
+  // 优先展开渲染窗口（truncatedCount>0，还有更早在 store）；窗口盖满后
+  // 再走宿主分页。成功继续补（直到出现滚动条或拉尽），失败停止。纯 live
+  // 视图 hasMore=false 不受影响。
   const autoFillStopped = useRef(false)
   useEffect(() => {
     autoFillStopped.current = false
   }, [childSid])
   useEffect(() => {
     if (autoFillStopped.current) return
-    if (!hasMore || loadingMore) return
+    if (loadingMore) return
     const el = scrollRef.current
     if (!el || el.scrollHeight > el.clientHeight + 1) return
+    if (truncatedCount > 0) {
+      setRenderLimit((v) => v + MINI_MAX_RENDER_ENTRIES)
+      return
+    }
+    if (!hasMore) return
     void loadMoreSubagentView(childSid).then((ok) => {
       autoFillStopped.current = !ok
     })
-  }, [hasMore, loadingMore, items, childSid, loadMoreSubagentView])
+  }, [hasMore, loadingMore, renderItems, truncatedCount, childSid, loadMoreSubagentView])
 
   // 用户主动上滑 → 暂停自动滚底（标准 stick-to-bottom 语义）；滚回
   // 底部附近自动恢复。流式输出期间上滑浏览历史不再被拉回。
@@ -725,19 +790,21 @@ function SubagentTimeline({
   // 区顶部（随滚动切换），滚回顶部（scrollTop 0）不钉。
   const userById = useMemo(() => {
     const m = new Map<string, ScrollEntry>()
-    for (const e of items) if (e.kind === 'user') m.set(e.id, e)
+    for (const e of renderItems) if (e.kind === 'user') m.set(e.id, e)
     return m
-  }, [items])
+  }, [renderItems])
   const userEls = useRef<Map<string, HTMLElement>>(new Map())
   const [pinnedId, setPinnedId] = useState<string | null>(null)
   const updatePinned = useCallback(() => {
     const box = scrollRef.current
     const els = userEls.current
     if (!box || els.size === 0) {
-      setPinnedId(null)
+      setPinnedId((prev) => (prev == null ? prev : null))
       return
     }
     let pinned: string | null = null
+    // 钉选语义同 sticky.rs；视觉条用零高度 sticky + absolute，吸附时不
+    // 改变文档流高度，避免 pin 开关抖动。
     if (box.scrollTop > 0) {
       const boxTop = box.getBoundingClientRect().top
       for (const [id, el] of els) {
@@ -747,7 +814,7 @@ function SubagentTimeline({
         else break // 条目按文档序排列
       }
     }
-    setPinnedId(pinned)
+    setPinnedId((prev) => (prev === pinned ? prev : pinned))
   }, [])
   // 缓存 user 条目 DOM 元素；条目/折叠布局变化时重算钉选。
   useEffect(() => {
@@ -773,7 +840,18 @@ function SubagentTimeline({
     if (nearBottom && userScrolledUp) setUserScrolledUp(false)
     else if (!nearBottom && !userScrolledUp) setUserScrolledUp(true)
     updatePinned()
-    if (el.scrollTop > 8 || loadingMore || !hasMore) return
+    if (el.scrollTop > 8 || loadingMore) return
+    // 渲染窗口还没盖满 store：先展开窗口露出更早条目（不触达宿主）。
+    if (truncatedCount > 0) {
+      const distFromBottom = el.scrollHeight - el.scrollTop
+      setRenderLimit((v) => v + MINI_MAX_RENDER_ENTRIES)
+      requestAnimationFrame(() => {
+        const el2 = scrollRef.current
+        if (el2) el2.scrollTop = el2.scrollHeight - distFromBottom
+      })
+      return
+    }
+    if (!hasMore) return
     const distFromBottom = el.scrollHeight - el.scrollTop
     void loadMoreSubagentView(childSid).then(() => {
       requestAnimationFrame(() => {
@@ -795,10 +873,11 @@ function SubagentTimeline({
   }, [running, items, userScrolledUp])
 
   // 主 scrollback 同款分组管线：scanGroups → projectDisplayRows。
+  // 只用渲染窗口内的条目（renderItems），DOM 保持扁平。
   const { rows, spans } = useMemo(() => {
-    const spans = scanGroups(items, expandedGroups)
-    return { rows: projectDisplayRows(items, spans), spans }
-  }, [items, expandedGroups])
+    const spans = scanGroups(renderItems, expandedGroups)
+    return { rows: projectDisplayRows(renderItems, spans), spans }
+  }, [renderItems, expandedGroups])
 
   // 折叠覆盖（按条目 id）：工具/用户折叠与思考 displayMode 本地化——
   // 不写回 store，渲染时以 patch 合并进条目（EntryView 的 patch 语义）。
@@ -888,7 +967,7 @@ function SubagentTimeline({
         onScroll={onScroll}
         className="gn-scroll min-h-0 flex-1 overflow-y-auto pb-2"
       >
-        {items.length === 0 ? (
+        {renderItems.length === 0 ? (
           <div className="space-y-1.5 px-3 sm:px-4">
             {promptEntry && (
               <EntryView
@@ -908,27 +987,32 @@ function SubagentTimeline({
         ) : (
           <div className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} py-1`}>
             {/* TUI sticky prompt header（主 scrollback sticky.rs 同款）：与
-                rows 同父级才能获得整列高度作为 sticky 滚动范围——上滑时把
-                已滚出顶部的最后一条 user 消息钉在滚动区顶部（随滚动切换）。 */}
-            {pinnedUser?.kind === 'user' && (
-              <div
-                className="sticky top-0 z-10 mb-1 border-b border-gn-prompt-border/40 font-ui text-[12.5px] leading-[1.35] text-gn-fg select-none"
-                style={{ backgroundColor: 'var(--color-gn-bg-highlight)' }}
-              >
-                <div className="flex items-start gap-1.5 px-2.5 py-[7px]">
-                  <span
-                    className="mt-[1.5px] shrink-0"
-                    style={{ color: 'var(--color-gn-accent-user)' }}
-                    aria-hidden
-                  >
-                    {Glyphs.promptArrow}
-                  </span>
-                  <div className="min-w-0 flex-1 whitespace-pre-wrap break-words">
-                    {collapseUserText(pinnedUser.text, USER_COLLAPSED_MAX_LINES).text}
+                rows 同父级才能获得整列高度作为 sticky 滚动范围。零高度
+                sticky 壳 + absolute 条：吸附不改文档流，避免抖动。 */}
+            <div
+              className="pointer-events-none sticky top-0 z-10 h-0 overflow-visible"
+              aria-hidden={pinnedUser?.kind !== 'user'}
+            >
+              {pinnedUser?.kind === 'user' && (
+                <div
+                  className="pointer-events-auto absolute inset-x-0 top-0 border-b border-gn-prompt-border/40 font-ui text-[12.5px] leading-[1.35] text-gn-fg select-none"
+                  style={{ backgroundColor: 'var(--color-gn-bg-highlight)' }}
+                >
+                  <div className="flex items-start gap-1.5 px-2.5 py-[7px]">
+                    <span
+                      className="mt-[1.5px] shrink-0"
+                      style={{ color: 'var(--color-gn-accent-user)' }}
+                      aria-hidden
+                    >
+                      {Glyphs.promptArrow}
+                    </span>
+                    <div className="min-w-0 flex-1 whitespace-pre-wrap break-words">
+                      {collapseUserText(pinnedUser.text, USER_COLLAPSED_MAX_LINES).text}
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
             {rows.map((row, i) => {
               const dense = isDensePackableRow(row)
               const densePrev = i > 0 && isDensePackableRow(rows[i - 1])

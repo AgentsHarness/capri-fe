@@ -105,7 +105,6 @@ export function SettingsModal() {
       >
         <header className="flex items-center gap-2 rounded-t border-b border-gn-prompt-border bg-gn-bg-dark px-4 py-2.5">
           <span className="text-[13px] font-bold text-gn-fg">settings</span>
-          <span className="text-[11px] text-gn-muted">F2 · config.toml 只读展示</span>
           <button
             type="button"
             onClick={close}
@@ -139,7 +138,7 @@ export function SettingsModal() {
             sections.map((g) => {
               const group = data?.[g.key] ?? {}
               return (
-                <section key={g.key} className="border-b border-gn-prompt-border/50 py-1">
+                <section key={g.key} className="border-b border-gn-prompt-border/50 py-1 last:border-b-0">
                   <div className="px-4 pt-2 pb-1 text-[10px] uppercase tracking-wider text-gn-gutter">
                     [{g.key}] {g.label}
                   </div>
@@ -160,10 +159,6 @@ export function SettingsModal() {
             })
           )}
         </div>
-
-        <footer className="rounded-b border-t border-gn-prompt-border px-4 py-2 text-[11px] text-gn-gutter">
-          设置修改请在 config.toml（~/.grok/config.toml）中进行 · 当前为只读展示
-        </footer>
       </div>
     </div>
   )

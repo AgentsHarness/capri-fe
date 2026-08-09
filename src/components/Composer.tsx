@@ -64,7 +64,11 @@ function currentActivity(
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i]
     if (e.kind === 'subagent' && e.running) {
-      return { label: 'Waiting on subagent…', color: Accents.gray }
+      return {
+        label: 'Waiting on subagent…',
+        color: Accents.gray,
+        startedAt: e.startedAt,
+      }
     }
   }
   // 2) Awaiting background task output(s) (get_command_or_subagent_output /
@@ -101,7 +105,11 @@ function currentActivity(
         title.startsWith('Await:') ||
         title.startsWith('Sleep ')
       ) {
-        return { label: 'Sleeping…', color: Accents.gray }
+        return {
+          label: 'Sleeping…',
+          color: Accents.gray,
+          startedAt: e.startedAt,
+        }
       }
       break // newest running tool only
     }
@@ -135,6 +143,10 @@ function currentActivity(
       return {
         label: `${verb} ${target}`.trim(),
         color: isAsk || hasDesc ? Accents.gray : Accents.success,
+        // The tool's own start stamp (stamped on live running tools) —
+        // the phase timer counts this entry's duration, not the whole
+        // turn up to now.
+        startedAt: e.startedAt,
       }
     }
     // Streaming reply: the assistant row's `ts` is its response start
@@ -402,6 +414,32 @@ export function Composer() {
   const taRef = useRef<HTMLTextAreaElement>(null)
   const busy = conn === 'busy'
 
+  // ── Scrollbar gutter alignment ────────────────────────────────────
+  // The scrollback box reserves its scrollbar gutter via
+  // scrollbar-gutter: stable so its centered column never jumps when the
+  // scrollbar appears. The composer must reserve the SAME width on its
+  // right side or its prompt column sits ~5px off the transcript column.
+  // scrollbar-gutter only takes effect on scroll containers, and the
+  // composer wrapper must NOT be one — overflow-y:auto there clipped the
+  // floating slash menu / queue panel / portaled question card (their
+  // tops extend far above the wrapper's padding box). So measure the
+  // gutter with a hidden probe and reserve it as padding-right instead.
+  const [gutterPx, setGutterPx] = useState(0)
+  useEffect(() => {
+    const measure = () => {
+      const probe = document.createElement('div')
+      probe.style.cssText =
+        'position:fixed;visibility:hidden;top:0;left:0;width:100px;height:50px;overflow-y:auto;scrollbar-gutter:stable'
+      document.body.appendChild(probe)
+      const w = probe.clientWidth
+      probe.remove()
+      setGutterPx(100 - w)
+    }
+    measure()
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
+  }, [])
+
   // ── TUI rewind prompt stash (views/rewind.rs StashedPrompt) ──
   // While the /rewind picker is open the draft is parked in the store
   // (stashedDraft) and restored when it closes — a rewind reloads the
@@ -557,6 +595,16 @@ export function Composer() {
   const sendQueuedHead = async () => {
     const q = usePromptQueue.getState()
     if (q.sending) return
+    // Stale-queue guard: the queue is tagged with the session it was
+    // queued in. If that session is no longer active (a sessionId change
+    // path missed the tracking subscription, or the host switched
+    // sessions), NEVER deliver it here — swap to the active session's
+    // queue instead (the stray queue stays stashed under its own id).
+    const activeSession = useChatStore.getState().sessionId ?? ''
+    if (q.sessionId != null && q.sessionId !== activeSession) {
+      q.switchSession(activeSession || undefined)
+      return
+    }
     q.setSending(true)
     try {
       // TUI send-now: cancel the running turn (background tasks keep
@@ -575,13 +623,24 @@ export function Composer() {
       }
       const head = q.dequeue()
       if (!head) return
-      const sendPromise = useChatStore.getState().send(head.text, head.blocks)
-      // 竞态窗口已过：send() 同步置 conn=busy，自动发送 effect 不会再
-      // 触发——立即释放锁，否则整回合（send 在回合完成时才 resolve）
-      // 期间 onSubmit 的 sending 守卫会把 Enter 静默吞掉。
-      q.setSending(false)
-      await sendPromise
-      if (useChatStore.getState().conn !== 'error') pushHistory(head.text)
+      try {
+        const sendPromise = useChatStore.getState().send(head.text, head.blocks)
+        // 竞态窗口已过：send() 同步置 conn=busy，自动发送 effect 不会再
+        // 触发——立即释放锁，否则整回合（send 在回合完成时才 resolve）
+        // 期间 onSubmit 的 sending 守卫会把 Enter 静默吞掉。
+        q.setSending(false)
+        await sendPromise
+        if (useChatStore.getState().conn !== 'error') pushHistory(head.text)
+      } catch {
+        // 发送被拒（host 409「上一条消息还在处理中」——cancel 尚未落到
+        // host 侧 / 传输失败）：队首已出队，必须放回当前会话队首，否则
+        // 该条永久丢失（与 chat.ts sendQueuedToSession 的 requeue-on-error
+        // 同款）。错误已由 send() 渲染成 scrollback 行，不重复处理。
+        const active = useChatStore.getState().sessionId
+        if (active) usePromptQueue.getState().requeueFront(active, head)
+      } finally {
+        q.setSending(false)
+      }
     } finally {
       q.setSending(false)
     }
@@ -680,7 +739,8 @@ export function Composer() {
       const { expandedText, blocks } = buildBlocks(text, chips)
       setText('')
       setChips([])
-      q.enqueue({ text: expandedText, blocks })
+      // Tag the queue with the active session so drains stay session-scoped.
+      q.enqueue({ text: expandedText, blocks }, st.sessionId ?? '')
       taRef.current?.focus()
       return
     }
@@ -993,11 +1053,30 @@ export function Composer() {
   // Busy arm: dynamic activity label (newest running tool / thinking /
   // streaming reply) with its phase timer — TUI turn_status.rs activity
   // arm. Falls back to the static statusText when nothing is running.
-  // Phase timer: the activity's own start stamp; only the no-activity
-  // window (e.g. "Waiting for Host" right after the turn starts) falls
-  // back to the turn start — there the wait IS the whole turn so far.
+  // Phase timer anchors: the activity's own start stamp when it has one
+  // (thought / tool / subagent / streaming reply); stamp-less phases
+  // (bg-task waits, no-activity "Waiting for response…" windows) anchor
+  // at the moment the phase became current — so a mid-turn wait counts
+  // from when the last entry ended, not from the turn start.
   const activity = useMemo(() => currentActivity(entries), [entries])
-  const phaseStart = activity?.startedAt ?? (busy ? turnStartedAt : undefined)
+  // Phase identity for anchor tracking: activity label (+ entry stamp)
+  // while something runs, else the status text of the wait window. When
+  // it changes (a new entry arrived / a new wait began), the anchor is
+  // reset so the timer starts counting the new phase from zero.
+  const phaseKey =
+    activity != null
+      ? `a:${activity.label}:${activity.startedAt ?? ''}`
+      : busy
+        ? `w:${statusText}`
+        : ''
+  const lastPhaseKey = useRef('')
+  const phaseAnchor = useRef<number | undefined>(undefined)
+  if (phaseKey !== lastPhaseKey.current) {
+    lastPhaseKey.current = phaseKey
+    phaseAnchor.current = phaseKey !== '' ? Date.now() : undefined
+  }
+  const phaseStart =
+    activity?.startedAt ?? (busy ? (phaseAnchor.current ?? turnStartedAt) : undefined)
   // [↓] send-to-background (TUI DemoteToBackground): shown while a
   // running execute tool exists — demotes that command to a background
   // task via x.ai/terminal/background (the agent then reports it through
@@ -1060,37 +1139,12 @@ export function Composer() {
     }
   }, [modeBanner, clearModeBanner])
 
-  // Collapse unfocused prompt height (PromptViewConfig.collapse_unfocused)
-  const collapsed = !promptFocused && !text
-
-  // TUI max_prompt_height = area.height / 2 (agent_view/render.rs):
-  // the prompt grows to fit every wrapped line, capped at half the
-  // viewport; beyond that the textarea scrolls internally with the
-  // cursor kept visible (scrollbar hidden via gn-no-scrollbar).
-  const [maxPromptH, setMaxPromptH] = useState(() =>
-    Math.max(20, Math.round(window.innerHeight / 2)),
-  )
-  useEffect(() => {
-    const onResize = () =>
-      setMaxPromptH(Math.max(20, Math.round(window.innerHeight / 2)))
-    window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
-  }, [])
-
-  useEffect(() => {
-    const el = taRef.current
-    if (!el) return
-    el.style.height = 'auto'
-    const max = collapsed ? 20 : maxPromptH
-    el.style.height = `${Math.min(el.scrollHeight, max)}px`
-  }, [text, collapsed, maxPromptH])
-
-  // TUI collapsed render forces scroll to top (set_scroll_override(Some(0))).
-  useEffect(() => {
-    const el = taRef.current
-    if (!el || !collapsed) return
-    el.scrollTop = 0
-  }, [collapsed])
+  // 固定高度：composer 始终保持在编辑状态的单行高度，不再随焦点/内容
+  // 动态伸缩（移除 TUI PromptViewConfig.collapse_unfocused 折叠与
+  // max_prompt_height 半视口增长）——多行内容在输入框内部滚动
+  // （gn-no-scrollbar 隐藏滚动条，光标由原生 textarea 保持可见）。
+  // 此前的高度 effect（collapsed ? 20px : min(scrollHeight, 视口/2)）
+  // 已整体移除。
 
   // Restore the caret after a programmatic text edit (chip insert/expand).
   // Runs once per pending request (deps on pendingCaret) — the request is
@@ -1103,8 +1157,14 @@ export function Composer() {
     setPendingCaret(null)
   }, [pendingCaret])
 
-  // Keep focus in sync with store focusMode (Tab toggles)
+  // Keep focus in sync with store focusMode (Tab toggles) — but skip the
+  // initial mount so a page refresh doesn't steal focus into the composer.
+  const focusInitRef = useRef(true)
   useEffect(() => {
+    if (focusInitRef.current) {
+      focusInitRef.current = false
+      return
+    }
     if (focusMode === 'prompt') {
       taRef.current?.focus()
     } else {
@@ -1349,7 +1409,11 @@ export function Composer() {
   const queueRow =
     queue.length > 0 && (
       <div
-        className="mb-1 flex min-h-4 items-center gap-1.5 pb-1 pr-0.5 font-ui text-[13.5px] leading-[1.4] select-none"
+        // Same vertical rhythm as the status line: pb-2 below the row,
+        // no extra top margin — spacing to the row above comes from that
+        // row's own bottom padding (8px between stacked rows, 8px before
+        // the chrome).
+        className="flex min-h-4 items-center gap-1.5 pb-2 pr-0.5 font-ui text-[13.5px] leading-[1.4] select-none"
         style={{ paddingLeft: COMPOSER_BODY_PAD_LEFT_PX }}
       >
         <button
@@ -1365,7 +1429,19 @@ export function Composer() {
     )
 
   return (
-    <div className="safe-pb bg-gn-bg-base pt-1">
+    // In-flow bottom area (no overlay). Deliberately NOT a scroll
+    // container: the slash menu / queue panel float above the chrome and
+    // the question card portals into the anchor above the input — all of
+    // them extend far above this box's top edge, and an overflow-y:auto
+    // here would clip them (only a thin sliver of the panels stayed
+    // visible; elementFromPoint showed the scrollback covering them).
+    // Column alignment with the scrollback's gutter is kept via the
+    // runtime-measured paddingRight (gutterPx) instead — see the
+    // measurement effect above.
+    <div
+      className="safe-pb bg-gn-bg-base pt-1"
+      style={gutterPx ? { paddingRight: `${gutterPx}px` } : undefined}
+    >
       <div className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS}`}>
         {/* ── TUI mode-switch banner (notices.rs) — above the prompt,
             full brightness 2 s, fade-out 0.3 s. ── */}
@@ -1786,9 +1862,7 @@ export function Composer() {
               ICON_COL_INSET - 1 for the ❯ box to land exactly on the
               scrollback icon track (matches the turn-status spinner). */}
           <div
-            className={`flex min-w-0 items-start gap-1.5 pr-3 ${
-              collapsed ? 'py-0' : 'py-1'
-            }`}
+            className="flex min-w-0 items-start gap-1.5 py-1 pr-3"
             style={{
               paddingLeft: COMPOSER_BODY_PAD_LEFT_PX - 1,
               // Unfocused dim (blend_area 0.66 toward bg) for content only
@@ -2235,7 +2309,10 @@ export function Composer() {
                 placeholder={
                   shellMode
                     ? '发送命令给 agent（! 前缀）'
-                    : promptFocused
+                    : // 占位提示只看真实焦点（focused），不看 store 的
+                      // focusMode：后者默认就是 'prompt' 且失焦不清，
+                      // 用它判断会导致「Build anything」几乎永远不显示。
+                      focused
                       ? ''
                       : 'Build anything'
                 }
@@ -2315,16 +2392,6 @@ export function Composer() {
                           >
                             {m.name || m.modelId}
                           </span>
-                          {m.agentType && (
-                            <span className="ml-1.5 text-[10px] text-gn-muted">
-                              {m.agentType}
-                            </span>
-                          )}
-                          {m.description && (
-                            <div className="mt-0.5 text-[10px] leading-[1.4] text-gn-muted">
-                              {m.description}
-                            </div>
-                          )}
                         </button>
                         {efforts.length > 0 && (
                           <div className="mt-1.5 flex flex-wrap gap-1">

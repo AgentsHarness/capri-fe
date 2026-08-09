@@ -72,9 +72,6 @@ export function WorkflowPanel() {
   const setSelectedWorkflowRunId = useChatStore((s) => s.setSelectedWorkflowRunId)
   const workflowControl = useChatStore((s) => s.workflowControl)
   const saveWorkflowScript = useChatStore((s) => s.saveWorkflowScript)
-  // Action feedback: status line + error line (same pattern as GoalChip).
-  const statusText = useChatStore((s) => s.statusText)
-  const error = useChatStore((s) => s.error)
   const panelRef = useRef<HTMLDivElement>(null)
   // List cursor (TUI selected_run); the detail run lives in the store.
   const [cursor, setCursor] = useState(0)
@@ -246,24 +243,6 @@ export function WorkflowPanel() {
             ))
           )}
         </div>
-
-        <footer className="rounded-b border-t border-gn-prompt-border px-4 py-2 font-mono text-[10.5px]">
-          {statusText && (
-            <div className="truncate text-gn-muted" title={statusText}>
-              status · {statusText}
-            </div>
-          )}
-          {error && (
-            <div className="truncate text-gn-red" title={error}>
-              error · {error}
-            </div>
-          )}
-          <div className="mt-0.5 text-gn-gutter">
-            {detailRun
-              ? 'p 暂停 · r 恢复 · x 停止 · s 保存脚本 · esc 返回列表'
-              : 'j/k 或 ↑↓ 选择 · enter 打开详情 · p/r/x/s 控制选中运行 · esc 关闭'}
-          </div>
-        </footer>
       </div>
     </div>
   )

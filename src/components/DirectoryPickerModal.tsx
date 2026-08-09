@@ -180,7 +180,6 @@ export function DirectoryPickerModal({
       >
         <header className="flex items-center gap-2 rounded-t border-b border-gn-prompt-border bg-gn-bg-dark px-4 py-2.5">
           <span className="text-[13px] font-bold text-gn-fg">选择工作目录</span>
-          <span className="text-[11px] text-gn-muted">浏览并选择新会话的工作目录</span>
           <button
             type="button"
             onClick={onClose}
