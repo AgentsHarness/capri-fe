@@ -12,6 +12,13 @@ export default defineConfig({
       // Local mode: forward API/SSE to acp-host.
       // Hub mode: VITE_PROXY_TARGET=http://localhost:8787 npm run dev
       '/api': { target: process.env.VITE_PROXY_TARGET || 'http://localhost:8765', changeOrigin: true },
+      // Hub live stream (WebSocket). Local host has no /ws/fe — FE falls back to SSE.
+      '/ws/fe': {
+        target: process.env.VITE_PROXY_TARGET || 'http://localhost:8765',
+        changeOrigin: true,
+        ws: true,
+      },
+      // Local acp-host live stream (SSE).
       '/events': {
         target: process.env.VITE_PROXY_TARGET || 'http://localhost:8765',
         changeOrigin: true,

@@ -2486,7 +2486,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     usePromptQueue.getState().switchSession(sessionId)
     // Opening the session clears its completion notice.
     get().clearCompletedNotice(sessionId)
-    set({ historyOpen: false, historyLoading: true })
+    // Clear the previous session's timeline NOW so the loading indicator
+    // (historyLoading && entries.length === 0) shows immediately; the new
+    // timeline replaces it once loadHistory returns.
+    set({ historyOpen: false, historyLoading: true, entries: [] })
     try {
       // 1) Make this session the active one (session/load or focus-if-busy);
       // 2) load its tail. Models come from the HTTP response — more reliable
