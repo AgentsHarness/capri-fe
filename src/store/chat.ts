@@ -195,6 +195,81 @@ function permissionSeedMeta(
   }
 }
 
+/**
+ * 清空当前会话的全部本地状态，落到"无会话"空状态（sessionId 置空，
+ * 直到宿主 ready(newSessionId) 到达前，session 级事件一律丢弃，防止
+ * 跨会话串扰）。newSession 与"删除当前会话落到空状态"共用同一份 reset；
+ * flags 透传权限模式（newSession 继承旧会话权限；删除场景传空即默认）。
+ */
+function resetSessionState(
+  set: (partial: Partial<ChatState>) => void,
+  flags: Pick<ModeFlags, 'yoloMode' | 'autoMode'> = {},
+): void {
+  set({
+    entries: [],
+    liveStream: null,
+    // Clear the session anchor: until the host's ready(newSessionId)
+    // arrives, session-scoped events are dropped (no cross-session leak).
+    sessionId: undefined,
+    cwd: undefined,
+    emptyCwd: undefined,
+    openAssistantId: undefined,
+    openThoughtId: undefined,
+    pendingOptimisticUserId: undefined,
+    awaitingNext: false,
+    statusText: '就绪',
+    toolIndex: {},
+    pending: [],
+    xaiRequests: [],
+    diffReview: undefined,
+    diffReviewOpen: false,
+    memoryFiles: undefined,
+    memoryOpen: false,
+    subagentIndex: {},
+    pendingSubagentFinishes: {},
+    subagentChildIndex: {},
+    subagentViews: {},
+    bgTaskIndex: {},
+    topTasks: [],
+    gitInfo: undefined,
+    // Keep the inherited permission flags in state so the UI matches
+    // the agent's mode (the fresh session's own restoreModeFlags copy
+    // is empty; the agent only announces yolo_mode_changed on change).
+    yoloMode: flags.yoloMode,
+    autoMode: flags.autoMode,
+    permissionMode: undefined,
+    planMode: false,
+    mcpServers: [],
+    mcpInit: undefined,
+    selectedId: null,
+    focusMode: 'prompt',
+    expandedGroups: new Set(),
+    viewerEntryId: null,
+    viewerTask: undefined,
+    followUps: undefined,
+    followUpsResponseId: undefined,
+    historySessionId: undefined,
+    historyCwd: undefined,
+    historyTotalCount: undefined,
+    historyLoadedCount: 0,
+    historyHasMore: false,
+    historyLoadingMore: false,
+    historyPrependedAt: undefined,
+    historyAnchorId: undefined,
+    todoCounts: undefined,
+    todos: undefined,
+    // A fresh session starts with an empty context window — drop the
+    // previous session's usage or the top-right context chip keeps
+    // showing the old conversation's tokens until the first
+    // usage_update/turn_completed arrives (loadHistory already resets
+    // this; newSession was the only path that missed it).
+    usage: undefined,
+    turnStartedAt: undefined,
+    genRate: undefined,
+    scheduledTasks: [],
+  })
+}
+
 // ── agent-restart re-seed ───────────────────────────────────────────
 // The agent's permission mode lives in ITS process memory only — host
 // restart (or agent crash) resets every session to the default ask while
@@ -976,6 +1051,11 @@ type ChatState = {
   /** Session summaries bucketed by workspace (workspace-list). */
   workspaces: WorkspaceGroup[]
   workspaceLoading: boolean
+  /**
+   * 空状态（无活动会话）时用户选/输入的工作目录；发送消息时用它
+   * 创建新会话（空串 = 宿主默认目录）。resetSessionState 清空。
+   */
+  emptyCwd?: string
   historyOpen: boolean
   historyLoading: boolean
   /** Bumped when a history load finishes; Scrollback re-follows the bottom. */
@@ -1401,7 +1481,19 @@ type ChatState = {
   refreshWorkspaces: () => Promise<void>
   /** Fetch git branch/worktree state for the active session (x.ai/git/info). */
   refreshGitInfo: () => Promise<void>
-  newSession: () => Promise<void>
+  /**
+   * Create a fresh session. cwd 显式指定时（右键分组"在此目录新建"）
+   * 用指定目录；缺省继承当前会话的 cwd；两者皆空 → 宿主默认目录。
+   */
+  newSession: (cwd?: string) => Promise<void>
+  /**
+   * 进入无会话空状态（不创建会话）：停轮询、清流式缓冲、清空全部
+   * 会话状态。侧边栏顶部 new 点击后先落在这里，用户选好工作目录
+   * （或直接输入消息触发宿主自动创建）才真正创建会话。
+   */
+  resetToEmpty: () => void
+  /** 空状态工作目录（用户输入/选择）；发送消息时用于创建新会话。 */
+  setEmptyCwd: (cwd: string) => void
   refreshHosts: () => Promise<void>
   /** Switch the target host (hub mode); resets per-host UI state. */
   switchHost: (hostId: string) => Promise<void>
@@ -4556,6 +4648,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
   send: async (text: string, blocks?: ContentBlock[], opts?: { fromShell?: boolean }) => {
     const t = text.trim()
     if (!t) return
+    // 空状态（无活动会话）：发送消息即开始新对话 — 先用空状态选择的
+    // 工作目录创建会话（目录留空 → 宿主默认），POST /api/session 响应
+    // 携带 sessionId，锚定后直接发送本条消息。
+    if (!get().sessionId) {
+      const emptyCwd = get().emptyCwd?.trim()
+      try {
+        await get().newSession(emptyCwd || undefined)
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        set({
+          entries: [
+            ...get().entries,
+            { id: nid(), kind: 'error', text: `创建会话失败: ${msg}` },
+          ],
+        })
+        return
+      }
+    }
     // 流式缓冲先落库：上一回合的思考文本完整后再收口/追加用户行。
     flushStreamBuf(set, get)
     // Seal any leftover thought from prior turn, then append the user row.
@@ -5055,16 +5165,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   deleteSession: async (sessionId, cwd) => {
+    // Capture the verdict BEFORE the delete request: sessionDelete can
+    // take a while (worktree cleanup etc.), and the user may switch to
+    // that session mid-request — the auto-fallback decision must reflect
+    // the session's identity when the delete was issued, not after the
+    // await (otherwise a historical delete could spuriously end the
+    // newly-focused session and create a fresh one).
+    const isCurrent = sessionId === get().sessionId
     try {
       await transport.sessionDelete(sessionId, cwd)
-      const isCurrent = sessionId === get().sessionId
       set({ statusText: `已删除会话 ${sessionId.slice(0, 8)}` })
       void get().refreshSessions()
       void get().refreshWorkspaces()
-      // Deleting the ACTIVE session ends it — fall back to a fresh
-      // session (TUI /delete behavior). Historical deletes just refresh
-      // the list.
-      if (isCurrent) await get().newSession()
+      // Deleting the ACTIVE session lands in the EMPTY state (no
+      // auto-new): reset all session-scoped state and drop the anchor.
+      // The host clears its active-session pointer on the same delete,
+      // so the next prompt without a sessionId creates a fresh session
+      // there. Historical deletes just refresh the list.
+      if (isCurrent) get().resetToEmpty()
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       set({
@@ -5446,7 +5564,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  newSession: async () => {
+  newSession: async (cwd?: string) => {
     get().stopTopTaskPolling()
     clearSuppressedTools()
     clearStreamBuf()
@@ -5462,75 +5580,34 @@ export const useChatStore = create<ChatState>((set, get) => ({
       defaultFlags,
     )
     const inheritMeta = permissionSeedMeta(curFlags)
-    set({
-      entries: [],
-      liveStream: null,
-      // Clear the session anchor: until the host's ready(newSessionId)
-      // arrives, session-scoped events are dropped (no cross-session leak).
-      sessionId: undefined,
-      cwd: undefined,
-      openAssistantId: undefined,
-      openThoughtId: undefined,
-      pendingOptimisticUserId: undefined,
-      awaitingNext: false,
-      statusText: '就绪',
-      toolIndex: {},
-      pending: [],
-      xaiRequests: [],
-      diffReview: undefined,
-      diffReviewOpen: false,
-      memoryFiles: undefined,
-      memoryOpen: false,
-      subagentIndex: {},
-      pendingSubagentFinishes: {},
-      subagentChildIndex: {},
-      subagentViews: {},
-      bgTaskIndex: {},
-      topTasks: [],
-      gitInfo: undefined,
-      // Keep the inherited permission flags in state so the UI matches
-      // the agent's mode (the fresh session's own restoreModeFlags copy
-      // is empty; the agent only announces yolo_mode_changed on change).
-      yoloMode: curFlags.yoloMode,
-      autoMode: curFlags.autoMode,
-      permissionMode: undefined,
-      planMode: false,
-      mcpServers: [],
-      mcpInit: undefined,
-      selectedId: null,
-      focusMode: 'prompt',
-      expandedGroups: new Set(),
-      viewerEntryId: null,
-      viewerTask: undefined,
-      followUps: undefined,
-      followUpsResponseId: undefined,
-      historySessionId: undefined,
-      historyCwd: undefined,
-      historyTotalCount: undefined,
-      historyLoadedCount: 0,
-      historyHasMore: false,
-      historyLoadingMore: false,
-      historyPrependedAt: undefined,
-      historyAnchorId: undefined,
-      todoCounts: undefined,
-      todos: undefined,
-      // A fresh session starts with an empty context window — drop the
-      // previous session's usage or the top-right context chip keeps
-      // showing the old conversation's tokens until the first
-      // usage_update/turn_completed arrives (loadHistory already resets
-      // this; newSession was the only path that missed it).
-      usage: undefined,
-      turnStartedAt: undefined,
-      genRate: undefined,
-      scheduledTasks: [],
-    })
+    resetSessionState(set, { yoloMode: curFlags.yoloMode, autoMode: curFlags.autoMode })
     // New session lands in the CURRENT conversation's workspace: inherit
     // its cwd so "new" starts in the same directory (captured above, before
-    // the anchor reset clears it). Empty cwd (no session yet) → host default.
-    await transport.newSession({
-      ...(cur.cwd ? { cwd: cur.cwd } : {}),
+    // the anchor reset clears it). An explicit cwd (sidebar group
+    // right-click "新建会话") wins; empty cwd (no session yet) → host default.
+    const startCwd = cwd ?? cur.cwd
+    const res = await transport.newSession({
+      ...(startCwd ? { cwd: startCwd } : {}),
       ...(inheritMeta ? { meta: inheritMeta } : {}),
     })
+    // POST /api/session 响应直接携带新会话 id（host Snapshot）——提前
+    // 锚定 sessionId，不等 SSE ready（ready 到达时幂等覆盖）。空状态
+    // 发送消息时依赖这一点：newSession 返回后即可继续发 prompt。
+    const sid = (res as { sessionId?: unknown } | null)?.sessionId
+    if (typeof sid === 'string' && sid) {
+      set({ sessionId: sid, cwd: startCwd || undefined })
+    }
+  },
+
+  resetToEmpty: () => {
+    get().stopTopTaskPolling()
+    clearSuppressedTools()
+    clearStreamBuf()
+    resetSessionState(set)
+  },
+
+  setEmptyCwd: (cwd) => {
+    set({ emptyCwd: cwd })
   },
 
   toggleTool: (id) => {

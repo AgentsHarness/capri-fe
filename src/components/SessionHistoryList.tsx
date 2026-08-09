@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useChatStore } from '../store/chat'
 import type { SessionInfo, WorkspaceSummary } from '../api/types'
 import {
@@ -16,11 +17,12 @@ import { IconGlyph } from './IconGlyph'
 import { SessionStateIcon } from './SessionStateIcon'
 import { stateLabel, useSessionSpinner } from './sessionState'
 
-/** Two-stage delete window — TUI CONFIRM_WINDOW (2s). */
-const CONFIRM_WINDOW_MS = 2000
-
 /** 组内默认显示的会话行数（超出折叠为"加载更多"）。 */
 const WORKSPACE_ROWS_LIMIT = 4
+
+/** 行操作菜单（右键 / ⋮）的估算尺寸，用于视口边界 clamp。 */
+const ROW_MENU_W = 176
+const ROW_MENU_H = 128
 
 /** 点击"加载更多"每次追加的行数，循环直到组内会话全部显示。 */
 const LOAD_MORE_STEP = 10
@@ -60,14 +62,14 @@ function byUpdatedDesc(a: WorkspaceSummary, b: WorkspaceSummary): number {
 /**
  * 历史会话列表 — 按工作区（cwd）分组的共享实现，桌面端持久侧边栏
  * （HistorySidebar）与移动端顶栏 history 下拉共用同一份数据与交互：
- * 分组折叠 / "加载更多"（每次 10 个） / 行内重命名 / 两段式删除 / 上下文进度条，
- * 保证两端永远一致。
+ * 分组折叠 / "加载更多"（每次 10 个） / 行内重命名 / 行操作菜单
+ * （桌面右键、移动端 ⋮；打开 / 重命名 / 删除，删除走确认弹窗） /
+ * 上下文进度条，保证两端永远一致。
  *
  * 数据由宿主 sessions_changed 通知 + 挂载时的 refresh 保持新鲜；本组件
  * 不负责拉取（HistorySidebar 挂载即全局拉一次）。
  */
-export function SessionHistoryList() {
-  const sessions = useChatStore((s) => s.sessions)
+export function SessionHistoryList() {  const sessions = useChatStore((s) => s.sessions)
   const workspaces = useChatStore((s) => s.workspaces)
   const workspaceLoading = useChatStore((s) => s.workspaceLoading)
   const sessionId = useChatStore((s) => s.sessionId)
@@ -76,6 +78,7 @@ export function SessionHistoryList() {
   const continueSession = useChatStore((s) => s.continueSession)
   const renameSession = useChatStore((s) => s.renameSession)
   const deleteSession = useChatStore((s) => s.deleteSession)
+  const newSession = useChatStore((s) => s.newSession)
   const completedNotices = useChatStore((s) => s.completedNotices)
 
   /**
@@ -183,7 +186,7 @@ export function SessionHistoryList() {
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameText, setRenameText] = useState('')
   const renameInputRef = useRef<HTMLInputElement>(null)
-  const startRename = (s: MergedRow) => {
+  const startRename = (s: { sessionId: string; title?: string }) => {
     setRenamingId(s.sessionId)
     setRenameText(s.title ?? '')
     requestAnimationFrame(() => renameInputRef.current?.select())
@@ -202,27 +205,61 @@ export function SessionHistoryList() {
   }
   const cancelRename = () => setRenamingId(null)
 
-  // ── two-stage delete (TUI [✗] + CONFIRM_WINDOW) ────────────────────
-  const [armedDelete, setArmedDelete] = useState<{ id: string; at: number } | null>(null)
-  useEffect(() => {
-    if (!armedDelete) return
-    const t = window.setTimeout(
-      () => setArmedDelete((cur) => (cur && cur.at === armedDelete.at ? null : cur)),
-      CONFIRM_WINDOW_MS,
-    )
-    return () => window.clearTimeout(t)
-  }, [armedDelete])
-  const onDeleteClick = (e: React.MouseEvent, s: MergedRow) => {
-    e.stopPropagation()
-    if (armedDelete?.id === s.sessionId && Date.now() - armedDelete.at < CONFIRM_WINDOW_MS) {
-      setArmedDelete(null)
-      void deleteSession(s.sessionId, s.cwd || '')
-    } else {
-      setArmedDelete({ id: s.sessionId, at: Date.now() })
+  // ── row / group action menu (desktop right-click / mobile ⋮) ───────
+  // One shared floating menu with two targets:
+  //  - row   : 打开会话 / 重命名(仅当前) / 删除(非运行中，含当前会话 —
+  //            删当前会话落到空状态)；删除走确认弹窗。
+  //  - group : 右键工作区分组头 → "在此目录新建会话"。
+  type MenuState =
+    | { kind: 'row'; row: MergedRow; x: number; y: number }
+    | { kind: 'group'; cwd: string; x: number; y: number }
+  const [menu, setMenu] = useState<MenuState | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<MergedRow | null>(null)
+  const closeMenu = () => setMenu(null)
+  const openMenu = (
+    m: { kind: 'row'; row: MergedRow } | { kind: 'group'; cwd: string },
+    x: number,
+    y: number,
+  ) => {
+    const pos = {
+      x: Math.max(8, Math.min(x, window.innerWidth - ROW_MENU_W - 8)),
+      y: Math.max(8, Math.min(y, window.innerHeight - ROW_MENU_H - 8)),
     }
+    setMenu(
+      m.kind === 'row'
+        ? { kind: 'row', row: m.row, ...pos }
+        : { kind: 'group', cwd: m.cwd, ...pos },
+    )
   }
-  const deleteArmed = (id: string) =>
-    armedDelete?.id === id && Date.now() - armedDelete.at < CONFIRM_WINDOW_MS
+  // Esc closes the menu; scrolling the list while the menu floats over a
+  // row would strand it on the wrong row, so any scroll dismisses it too.
+  useEffect(() => {
+    if (!menu) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeMenu()
+    }
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('scroll', closeMenu, true)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('scroll', closeMenu, true)
+    }
+  }, [menu])
+  // Esc also closes the delete-confirm dialog.
+  useEffect(() => {
+    if (!deleteTarget) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setDeleteTarget(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [deleteTarget])
+  const confirmDelete = () => {
+    if (!deleteTarget) return
+    const { sessionId, cwd } = deleteTarget
+    setDeleteTarget(null)
+    void deleteSession(sessionId, cwd || '')
+  }
 
   // Shared braille spinner for any "active" rows (same cadence as busy).
   const anyActive = useMemo(
@@ -249,13 +286,19 @@ export function SessionHistoryList() {
                 scroll under it cleanly (no bleed-through). Wrapper owns
                 sticky + solid fill; button only handles interaction. */}
             <div
-              className="sticky top-0 z-20 border-b border-gn-prompt-border bg-gn-bg-base"
+              className="sticky top-0 z-20 flex items-center border-b border-gn-prompt-border bg-gn-bg-base"
               style={{ backgroundColor: 'var(--color-gn-bg-base)' }}
             >
               <button
                 type="button"
                 onClick={() => toggleGroup(g.cwd)}
-                className="flex w-full cursor-pointer items-center gap-2 px-3 py-1 text-left hover:bg-gn-bg-highlight"
+                onContextMenu={(e) => {
+                  // Right-click a workspace group → "新建会话在此目录".
+                  e.preventDefault()
+                  e.stopPropagation()
+                  openMenu({ kind: 'group', cwd: g.cwd }, e.clientX, e.clientY)
+                }}
+                className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 px-3 py-1 text-left hover:bg-gn-bg-highlight"
                 title={g.cwd}
               >
                 <span className="shrink-0 text-gn-gutter" aria-hidden>
@@ -267,6 +310,21 @@ export function SessionHistoryList() {
                 <span className="shrink-0 text-[10px] tabular-nums text-gn-gutter">
                   {g.sessions.length}
                 </span>
+              </button>
+              {/* Mobile/touch group actions — ⋮ opens the same menu desktop
+                  right-click shows (lg+ relies on onContextMenu; no long-press). */}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  const r = e.currentTarget.getBoundingClientRect()
+                  openMenu({ kind: 'group', cwd: g.cwd }, r.right - ROW_MENU_W, r.bottom + 4)
+                }}
+                className="mr-3 shrink-0 px-1.5 py-1 text-[13px] leading-none text-gn-muted hover:text-gn-fg lg:hidden"
+                title="更多操作"
+                aria-label="更多操作"
+              >
+                ⋮
               </button>
             </div>
             {!isCollapsed && (
@@ -280,10 +338,6 @@ export function SessionHistoryList() {
                   const pending = key === 'awaiting'
                   const subtitle = sessionSubtitle(s)
                   const renaming = renamingId === s.sessionId
-                  // TUI RowState::allows_delete — only settled rows may be
-                  // deleted; Working / NeedsInput (处理中 bucket) and
-                  // still-running bg tasks are locked.
-                  const canDelete = key !== 'active' && (s.bgRunning ?? 0) <= 0
                   const contextPct = sessionContextPct(s)
                   return (
                     <div
@@ -293,6 +347,11 @@ export function SessionHistoryList() {
                       aria-disabled={historyLoading}
                       onClick={() => {
                         if (!historyLoading) void continueSession(s.sessionId, s.cwd || '')
+                      }}
+                      onContextMenu={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        openMenu({ kind: 'row', row: s }, e.clientX, e.clientY)
                       }}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' || e.key === ' ') {
@@ -405,34 +464,22 @@ export function SessionHistoryList() {
                           />
                         </span>
                       )}
-                      {/* Row-hover delete (x.ai/session/delete — TUI /delete):
-                          two-stage confirm inside CONFIRM_WINDOW (2s). */}
-                      {canDelete ? (
-                        <button
-                          type="button"
-                          onClick={(e) => onDeleteClick(e, s)}
-                          className={`shrink-0 rounded px-1 text-[11px] leading-none ${
-                            deleteArmed(s.sessionId)
-                              ? 'bg-gn-diff-del-bg text-gn-red opacity-100'
-                              : 'text-gn-red opacity-40 hover:bg-gn-diff-del-bg hover:opacity-100'
-                          }`}
-                          title={
-                            deleteArmed(s.sessionId)
-                              ? '再点一次确认删除（2 秒内）'
-                              : '删除会话（/delete）'
-                          }
-                          aria-label={deleteArmed(s.sessionId) ? '确认删除会话' : '删除会话'}
-                        >
-                          {deleteArmed(s.sessionId) ? '确认？' : '✕'}
-                        </button>
-                      ) : (
-                        <span
-                          className="shrink-0 rounded px-1 text-[11px] leading-none text-gn-gutter opacity-30"
-                          title="运行中会话不可删除"
-                        >
-                          ✕
-                        </span>
-                      )}
+                      {/* Row action trigger — mobile/touch: ⋮ opens the same
+                          menu desktop right-click shows (lg+ rows rely on
+                          onContextMenu, so the trigger hides there). */}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          const r = e.currentTarget.getBoundingClientRect()
+                          openMenu({ kind: 'row', row: s }, r.right - ROW_MENU_W, r.bottom + 4)
+                        }}
+                        className="shrink-0 rounded px-1 text-[13px] leading-none text-gn-muted hover:text-gn-fg lg:hidden"
+                        title="更多操作"
+                        aria-label="更多操作"
+                      >
+                        ⋮
+                      </button>
                     </div>
                   )
                 })}
@@ -454,6 +501,161 @@ export function SessionHistoryList() {
       {workspaceLoading && (
         <div className="px-3 py-2 text-[11px] text-gn-muted">加载中…</div>
       )}
+
+      {/* ── row action menu (portaled; desktop right-click / mobile ⋮) ── */}
+      {/* ── row / group action menu (portaled; right-click / mobile ⋮) ── */}
+      {menu &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-50"
+            onMouseDown={(e) => {
+              e.stopPropagation()
+              closeMenu()
+            }}
+          >
+            <div
+              className="absolute w-[176px] overflow-hidden rounded border border-gn-prompt-border bg-gn-bg-dark py-0.5 shadow-xl"
+              style={{ left: menu.x, top: menu.y }}
+              onMouseDown={(e) => e.stopPropagation()}
+              role="menu"
+              aria-label="会话操作"
+            >
+              {menu.kind === 'row' ? (
+                <>
+                  <MenuItem
+                    disabled={menu.row.sessionId === sessionId}
+                    disabledTitle="当前会话"
+                    onClick={() => {
+                      void continueSession(menu.row.sessionId, menu.row.cwd || '')
+                      closeMenu()
+                    }}
+                  >
+                    <span aria-hidden className="inline-block w-4 shrink-0 text-center">›</span> 打开会话
+                  </MenuItem>
+                  <MenuItem
+                    disabled={menu.row.sessionId !== sessionId}
+                    disabledTitle="重命名仅支持当前会话"
+                    onClick={() => {
+                      startRename(menu.row)
+                      closeMenu()
+                    }}
+                  >
+                    <span aria-hidden className="inline-block w-4 shrink-0 text-center">✎</span> 重命名
+                  </MenuItem>
+                  <div className="my-0.5 border-t border-gn-prompt-border/60" />
+                  <MenuItem
+                    danger
+                    disabled={
+                      sessionGroupKey(menu.row, sessionId) === 'active' ||
+                      (menu.row.bgRunning ?? 0) > 0
+                    }
+                    disabledTitle="运行中会话不可删除"
+                    onClick={() => {
+                      setDeleteTarget(menu.row)
+                      closeMenu()
+                    }}
+                  >
+                    <span aria-hidden className="inline-block w-4 shrink-0 text-center">✕</span> 删除
+                  </MenuItem>
+                </>
+              ) : (
+                <MenuItem
+                  onClick={() => {
+                    void newSession(menu.cwd)
+                    closeMenu()
+                  }}
+                >
+                  <span aria-hidden className="inline-block w-4 shrink-0 text-center">＋</span> 在此目录新建会话
+                </MenuItem>
+              )}
+            </div>
+          </div>,
+          document.body,
+        )}
+
+      {/* ── delete confirmation dialog ─────────────────────────────── */}
+      {deleteTarget &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[60] flex items-center justify-center bg-black/55 p-4"
+            onMouseDown={(e) => {
+              if (e.target === e.currentTarget) setDeleteTarget(null)
+            }}
+          >
+            <div
+              className="w-full max-w-[360px] rounded border border-gn-prompt-border-active bg-gn-bg-base shadow-2xl"
+              role="dialog"
+              aria-modal="true"
+              aria-label="删除会话"
+            >
+              <header className="flex items-center gap-2 rounded-t border-b border-gn-prompt-border bg-gn-bg-dark px-4 py-2.5">
+                <span className="text-gn-red" aria-hidden>
+                  ✕
+                </span>
+                <span className="text-[13px] font-bold text-gn-fg">删除会话</span>
+                <span className="ml-auto text-[11px] text-gn-muted">esc 关闭</span>
+              </header>
+              <div className="px-4 py-3 text-[12.5px] leading-relaxed text-gn-fg2">
+                确定删除会话
+                <span className="mx-1 font-semibold text-gn-fg">
+                  「{deleteTarget.title || deleteTarget.sessionId.slice(0, 12)}」
+                </span>
+                ？删除后不可恢复。
+              </div>
+              <footer className="flex justify-end gap-2 rounded-b border-t border-gn-prompt-border px-4 py-2.5">
+                <button
+                  type="button"
+                  onClick={() => setDeleteTarget(null)}
+                  className="min-h-8 rounded border border-gn-prompt-border bg-gn-bg-base px-3 py-1 text-[12px] text-gn-fg2 hover:bg-gn-bg-highlight"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmDelete}
+                  className="min-h-8 rounded border border-gn-red/50 bg-gn-diff-del-bg px-3 py-1 text-[12px] font-semibold text-gn-red hover:bg-gn-red/15"
+                >
+                  删除
+                </button>
+              </footer>
+            </div>
+          </div>,
+          document.body,
+        )}
     </>
   )
 }
+
+/** 行操作菜单的单个菜单项（禁用态灰色 + tooltip，danger 红色）。 */
+function MenuItem({
+  onClick,
+  disabled,
+  disabledTitle,
+  danger,
+  children,
+}: {
+  onClick: () => void
+  disabled?: boolean
+  disabledTitle?: string
+  danger?: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      title={disabled ? disabledTitle : undefined}
+      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] ${
+        disabled
+          ? 'cursor-not-allowed text-gn-gutter opacity-50'
+          : danger
+            ? 'text-gn-red hover:bg-gn-diff-del-bg'
+            : 'text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg'
+      }`}
+    >
+      {children}
+    </button>
+  )
+}
+

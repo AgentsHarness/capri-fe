@@ -1450,8 +1450,59 @@ function displayRowToEntry(row: DisplayRow): ScrollEntry {
   }
 }
 
+/** 空状态：无活动会话时的引导卡片 + 工作目录输入（可手动输入，
+ *  datalist 给出已有工作区建议；留空 = 宿主默认目录）。没有"开始"
+ *  按钮——用户发送消息即等于开始新对话（store send 先创建会话再
+ *  发送）。 */
+function EmptyStatePicker() {
+  const workspaces = useChatStore((s) => s.workspaces)
+  const emptyCwd = useChatStore((s) => s.emptyCwd)
+  const setEmptyCwd = useChatStore((s) => s.setEmptyCwd)
+  const cwds = useMemo(
+    () => [...new Set(workspaces.map((g) => g.cwd).filter((c): c is string => !!c))],
+    [workspaces],
+  )
+  return (
+    <div className="flex h-full min-h-32 items-center justify-center px-4">
+      <div className="w-full max-w-[380px] text-center">
+        <div className="text-[12.5px] text-gn-muted">没有活动会话</div>
+        <div className="mt-2.5 flex items-center gap-2">
+          <label
+            htmlFor="empty-state-cwd"
+            className="shrink-0 text-[11px] text-gn-gutter"
+          >
+            工作目录
+          </label>
+          <input
+            id="empty-state-cwd"
+            type="text"
+            list="empty-state-cwd-list"
+            value={emptyCwd ?? ''}
+            onChange={(e) => setEmptyCwd(e.target.value)}
+            placeholder="默认目录（留空）"
+            className="min-w-0 flex-1 rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1.5 text-[12px] text-gn-fg outline-none placeholder:text-gn-gutter/70 focus:border-gn-cyan/50"
+            title="输入或选择工作目录；留空用宿主默认目录"
+            spellCheck={false}
+          />
+          <datalist id="empty-state-cwd-list">
+            {cwds.map((c) => (
+              <option key={c} value={c} />
+            ))}
+          </datalist>
+        </div>
+        <div className="mt-1.5 text-[11px] text-gn-gutter">
+          输入消息即开始新对话 · 目录留空用默认
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function Scrollback() {
   const entries = useChatStore((s) => s.entries)
+  // No active session (deleted the current one / fresh boot): show the
+  // empty-state hint instead of a blank scrollback.
+  const sessionId = useChatStore((s) => s.sessionId)
   // liveStream is NOT selected here — text growth must not re-render the
   // whole tree. Streaming EntryView rows subscribe themselves; auto-follow
   // uses useChatStore.subscribe (see effect below).
@@ -1932,6 +1983,12 @@ export function Scrollback() {
           >
             已截断 {truncatedCount} 条更早内容 · 向上滑动或点击加载
           </button>
+        )}
+        {entries.length === 0 && !sessionId && !historyLoading && (
+          // Empty state — current session was deleted (or nothing active):
+          // a plain blank scrollback reads as a hang, so show the workspace
+          // picker instead.
+          <EmptyStatePicker />
         )}
         {displayRows.map((row, i) => {
           const dense = isDensePackableRow(row)

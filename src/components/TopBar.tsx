@@ -168,7 +168,7 @@ export function TopBar({
   const conn = useChatStore((s) => s.conn)
   const hostError = useChatStore((s) => s.error)
   const hostNotice = useChatStore((s) => s.statusWarning)
-  const newSession = useChatStore((s) => s.newSession)
+  const resetToEmpty = useChatStore((s) => s.resetToEmpty)
   const historyOpen = useChatStore((s) => s.historyOpen)
   const openHistory = useChatStore((s) => s.openHistory)
   const closeHistory = useChatStore((s) => s.closeHistory)
@@ -331,8 +331,19 @@ export function TopBar({
           </button>
           <button
             type="button"
-            onClick={() => void newSession()}
+            onClick={() => resetToEmpty()}
             className="rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+          >
+            new
+          </button>
+        </div>
+        {/* Mobile-only new — sits left of history (no ⋮ dive needed). */}
+        <div className="lg:hidden">
+          <button
+            type="button"
+            onClick={() => resetToEmpty()}
+            className="rounded border border-transparent px-2 py-0.5 min-h-8 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg"
+            title="新建会话（先进入空状态选择工作目录）"
           >
             new
           </button>
@@ -383,7 +394,7 @@ export function TopBar({
             onClick={() => setMoreOpen((v) => !v)}
             aria-expanded={moreOpen}
             aria-label="更多操作"
-            title="更多操作：theme / mcp / git / term / ext / settings / new"
+            title="更多操作：theme / mcp / git / term / ext / settings"
             className={`rounded border px-2 py-0.5 min-h-8 ${
               moreOpen
                 ? 'border-gn-prompt-border bg-gn-bg-highlight text-gn-fg'
@@ -486,17 +497,6 @@ export function TopBar({
                   title="设置（F2 · config.toml 只读展示）"
                 >
                   settings
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMoreOpen(false)
-                    void newSession()
-                  }}
-                  className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-                  title="新会话"
-                >
-                  new
                 </button>
               </div>
             </>
