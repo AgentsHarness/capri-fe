@@ -1187,13 +1187,18 @@ type ChatState = {
   openAssistantId?: string
   openThoughtId?: string
   /**
-   * Live streaming text, kept OUT of `entries`. Chunk events only mutate
-   * this single field instead of re-creating the entries array, so the
-   * scrollback grouping (scanGroups / projectDisplayRows) and every
-   * memoized row skip their per-chunk recompute — the only re-render per
-   * chunk is the one streaming entry. Flushed into its entry (entry.text
-   * += liveStream.text) at seal / turn end; consumers that render entry
-   * text (Scrollback, BlockViewer) merge it while the entry is streaming.
+   * Live streaming text, kept OUT of `entries`.
+   *
+   * Pipeline: SSE → streamBuf (rAF) → liveStream → flushLiveStream → entry.text
+   *
+   * Invariant (thought + assistant): during streaming, sealed base text
+   * in the entry is empty (or only previously sealed content if resuming).
+   * ALL in-flight stream text lives here. First chunk creates the entry
+   * with `text: ''` + `streaming: true` and seeds liveStream; later chunks
+   * append via rAF into liveStream only. Flushed into the entry
+   * (entry.text += liveStream.text) at seal / turn end; consumers that
+   * render entry text (Scrollback, BlockViewer) use `liveText ?? e.text`
+   * while the entry is streaming.
    */
   liveStream: { entryId: string; text: string; elapsedMs?: number } | null
   /**
@@ -2880,19 +2885,42 @@ export const useChatStore = create<ChatState>((set, get) => ({
         let openThoughtId = s.openThoughtId
         let entries = s.entries
         // Stream switch (assistant → thought, or a stale live stream):
-        // flush the previous stream into its entry before the new one
-        // starts, so no text is lost when the pointer moves.
+        // seal the previous stream into ITS entry before the new one
+        // starts, so no text is lost when the pointer moves. After the
+        // map, liveStream must not keep pointing at the old entry — the
+        // first-chunk path reassigns it; the continue path clears it.
         const prevLs = s.liveStream
+        let sealedForeignLive = false
         if (prevLs && prevLs.entryId !== openThoughtId) {
-          entries = entries.map((e) =>
-            e.id === prevLs.entryId && 'text' in e
-              ? { ...e, text: e.text + prevLs.text }
-              : e,
-          )
+          entries = entries.map((e) => {
+            if (e.id !== prevLs.entryId || !('text' in e)) return e
+            const nextText = e.text + prevLs.text
+            if (e.kind === 'assistant') {
+              // Mid-turn seal of the interrupted assistant stream.
+              return {
+                ...e,
+                text: nextText,
+                streaming: false,
+                ...(prevLs.elapsedMs != null
+                  ? { elapsedMs: prevLs.elapsedMs }
+                  : {}),
+              }
+            }
+            return {
+              ...e,
+              text: nextText,
+              ...(prevLs.elapsedMs != null
+                ? { elapsedMs: prevLs.elapsedMs }
+                : {}),
+            }
+          })
+          sealedForeignLive = true
         }
 
-        // If placeholder missing (reconnect mid-turn), create one — with
-        // THIS chunk inline so the Thinking… block never shows empty.
+        // If placeholder missing (reconnect mid-turn / first thought
+        // chunk), create one. Invariant: entry.text stays empty during
+        // streaming; ALL in-flight text lives in liveStream (same as
+        // assistant first chunk). UI reads liveText ?? e.text.
         if (!openThoughtId || !entries.some((e) => e.id === openThoughtId && e.kind === 'thought')) {
           // 重放门控（genRateReplayChunk）：重放 dump 的块不开始段、
           // 不显示速率；窗口内出现 ≥ QUIET_MS 的间隔即恢复——同一思考
@@ -2908,7 +2936,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             {
               id,
               kind: 'thought',
-              text,
+              text: '',
               displayMode: 'expanded',
               streaming: true,
               startedAt: Date.now(),
@@ -2925,13 +2953,31 @@ export const useChatStore = create<ChatState>((set, get) => ({
             openThoughtId,
             openAssistantId: undefined,
             entries,
+            // Seed liveStream with the first chunk (do NOT put first
+            // chunk only into entry.text — later deltas go to liveStream
+            // alone, and liveText ?? e.text would drop the sealed base).
+            liveStream: {
+              entryId: id,
+              text,
+              ...(ev.elapsedMs != null ? { elapsedMs: ev.elapsedMs } : {}),
+            },
           })
+          assertStreamInvariants(get(), 'thought:first')
           break
         }
         // 已有进行中的思考块：思考段继续计时（重放窗口内无段，此处
         // 空操作；窗口内到达间隔 ≥ QUIET_MS 时恢复实时并开始段），
         // 文本进合并缓冲，rAF 统一落库（每帧至多一次 set()——移动端思考
         // 流渲染卡顿的主因）。
+        if (sealedForeignLive) {
+          // Apply the sealed foreign stream + drop the stale liveStream
+          // pointer so UI does not double-render (entry already has text).
+          set({
+            entries,
+            openAssistantId: undefined,
+            liveStream: null,
+          })
+        }
         if (genRateReplayChunk()) {
           beginGenSegment(set, get)
           accumulateGenSegmentChars(text)
@@ -2943,10 +2989,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // 工具调用 = 生成段收口：回应的连续输出到此为止，工具执行
         // 时间不计入速率。
         sealGenSegment(set, get)
-        // 回答流文本先并入条目（liveStream → entry，工具执行期间回答
-        // 条目展示完整文本），再收口思考段。
-        const flushed = flushLiveStream(get())
-        const sealed = sealThought(flushed)
+        // Seal assistant stream (liveStream → entry + streaming:false) so
+        // data-streaming / content-visibility drop immediately; then seal
+        // any open thought. Do not leave assistant streaming:true until
+        // turn-end settleTurnEntries.
+        const sealedAsst = sealAssistantStream(get())
+        const sealed = sealThought(sealedAsst)
         const tc = ev.toolCall || {}
         const toolCallId = toolCallIdOf(tc)
         // TUI: bg-task plumbing / background execute / task-spawn / todo /
@@ -3094,11 +3142,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // scrollback — the TopBar TodoChip is the single display surface.
         const { items, counts } = planTodos(ev.entries)
         const planFlag = (ev as unknown as { planMode?: unknown }).planMode
+        // Plan can arrive mid-stream: seal assistant (merge live text +
+        // streaming:false) before the openAssistantId pointer drops.
+        const sealedAsst = sealAssistantStream(get())
         set({
-          openAssistantId: undefined,
-          // Plan updates can arrive mid-stream (a plan-driven run): merge
-          // any live text before the assistant pointer drops.
-          ...flushLiveStream(get()),
+          ...sealedAsst,
           todoCounts: counts,
           todos: items,
           // Some hosts piggyback the plan-mode flag on the plan event —
@@ -3302,6 +3350,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
             liveStream: null,
             entries: [
               ...flushed.entries.map((e) => {
+              if (e.kind === 'assistant' && e.streaming) {
+                return { ...e, streaming: false }
+              }
               if (e.kind === 'thought' && e.streaming) {
                 return {
                   ...e,
@@ -4545,9 +4596,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // 2nd row). NO pre-created Thinking… shell: TUI pre-creates the
     // thinking block at stream_start (first chunk), so between send and
     // the first token the status line reads "Waiting for response…".
-    // A new turn closes any stale stream — flush before the pointers drop.
-    const flushed = flushLiveStream(get())
-    const sealed = sealThought(flushed)
+    // A new turn closes any stale stream — seal assistant (text +
+    // streaming:false) and thought before the pointers drop.
+    const sealedAsst = sealAssistantStream(get())
+    const sealed = sealThought(sealedAsst)
     const userId = nid()
     // Shell-mode submissions (Composer `!` mode → prompt path) mark the
     // user row so the scrollback renders it with the TUI `$ ` prefix.
@@ -5922,11 +5974,13 @@ function isTurnEndLine(e: ScrollEntry): boolean {
 }
 
 // ── 流式文本合并缓冲（rAF flush）────────────────────────────
+// Pipeline: SSE → streamBuf (rAF) → liveStream → flushLiveStream → entry.text
+//
 // 移动端思考/回答流渲染卡顿主因：每个 SSE chunk 一次 set() + 一次完整
 // 渲染 + 两次强制布局。chunk 文本先落进模块级缓冲，requestAnimationFrame
 // 统一落库（每帧至多一次 set()）。顺序保证：handleEvent 入口对"非同类
 // 流式事件"强制先 flush——tool_call/chunk/回合终态等收口类事件处理前，
-// 缓冲的思考文本必已写入条目。
+// 缓冲的思考文本必已写入 liveStream（再由边界路径 flushLiveStream 入条目）。
 type StreamBufKind = 'thought' | 'assistant'
 
 let streamBufText = ''
@@ -5934,6 +5988,8 @@ let streamBufKind: StreamBufKind | null = null
 let streamBufRaf: number | null = null
 /** 缓冲内 chunk 携带的 elapsedMs（replay），flush 时"最后一个 chunk 生效"。 */
 let streamBufElapsedMs: number | undefined
+/** DEV: chunks coalesced into the current streamBuf frame (perf.mark detail). */
+let streamBufChunkCount = 0
 
 /** 尚未落库的思考段字符统计（与文本一起在 flush 时发布实时速率）。 */
 let genSegPendingChars = 0
@@ -5952,6 +6008,7 @@ function appendStreamBuf(
   if (streamBufKind != null && streamBufKind !== kind) flushStreamBuf(set, get)
   streamBufText += text
   streamBufKind = kind
+  streamBufChunkCount++
   if (elapsedMs != null) streamBufElapsedMs = elapsedMs
   if (streamBufRaf == null) {
     streamBufRaf = requestAnimationFrame(() => {
@@ -5964,20 +6021,50 @@ function appendStreamBuf(
 /**
  * 把缓冲的流式文本一次性落库（每帧至多一次）。目标条目已被收口/清除时
  * 丢弃缓冲（stop/会话切换后的残留文本不应再入 scrollback）。
+ * 落库目标 = liveStream（不直接写 entry.text）。
  */
 function flushStreamBuf(set: SetState, get: () => ChatState): void {
   const text = streamBufText
   const kind = streamBufKind
   if (!text || !kind) return
   const bufElapsedMs = streamBufElapsedMs
+  const chunkCount = streamBufChunkCount
   streamBufText = ''
   streamBufKind = null
   streamBufElapsedMs = undefined
+  streamBufChunkCount = 0
   if (streamBufRaf != null) {
     cancelAnimationFrame(streamBufRaf)
     streamBufRaf = null
   }
+  const dev = import.meta.env.DEV
+  if (
+    dev &&
+    typeof performance !== 'undefined' &&
+    typeof performance.mark === 'function'
+  ) {
+    try {
+      performance.mark('acp:stream-flush', {
+        detail: { textLen: text.length, kind, chunks: chunkCount },
+      })
+    } catch {
+      // Older engines may reject mark options; ignore.
+    }
+  }
   const s = get()
+  // Kind mismatch: buffer targeted thought/assistant but liveStream still
+  // points at the other — warn when about to overwrite (DEV).
+  if (
+    dev &&
+    s.liveStream &&
+    ((kind === 'thought' && s.openAssistantId === s.liveStream.entryId) ||
+      (kind === 'assistant' && s.openThoughtId === s.liveStream.entryId))
+  ) {
+    console.warn(
+      '[acp stream] flushStreamBuf kind/liveStream target mismatch',
+      { kind, liveStream: s.liveStream, openThoughtId: s.openThoughtId, openAssistantId: s.openAssistantId },
+    )
+  }
   if (kind === 'thought') {
     const openThoughtId = s.openThoughtId
     if (
@@ -6027,6 +6114,7 @@ function flushStreamBuf(set: SetState, get: () => ChatState): void {
         ...(bufElapsedMs != null ? { elapsedMs: bufElapsedMs } : {}),
       },
     })
+    assertStreamInvariants(get(), 'flushStreamBuf:thought')
     return
   }
   // assistant
@@ -6049,6 +6137,7 @@ function flushStreamBuf(set: SetState, get: () => ChatState): void {
         text,
     },
   })
+  assertStreamInvariants(get(), 'flushStreamBuf:assistant')
 }
 
 /** 会话/历史切换：丢弃未落库的流式文本与字符统计。 */
@@ -6056,6 +6145,7 @@ function clearStreamBuf(): void {
   streamBufText = ''
   streamBufKind = null
   streamBufElapsedMs = undefined
+  streamBufChunkCount = 0
   genSegPendingChars = 0
   genSegPendingCjk = 0
   if (streamBufRaf != null) {
@@ -7369,14 +7459,30 @@ function extractModelFromAgentInfo(info: unknown): string | undefined {
  * Merge the live stream into its entry (once, idempotent): writes
  * liveStream.text into the entry (entry.text += text) and clears the
  * stream. Callers run this BEFORE any seal/settle path that must see the
- * final text — sealThought, the turn-end settles, user_message (closes
- * the assistant stream), tool_call (closes the assistant stream). O(n)
- * but only ever runs at low-frequency boundaries, never per chunk.
+ * final text — sealThought, sealAssistantStream, the turn-end settles,
+ * user_message (closes the assistant stream), tool_call (closes the
+ * assistant stream). O(n) but only ever runs at low-frequency boundaries,
+ * never per chunk.
+ *
+ * Pipeline stage: liveStream → entry.text (terminal flush of the stream).
  */
 function flushLiveStream(s: ChatState): ChatState {
   const ls = s.liveStream
   if (!ls) return s
-  return {
+  if (
+    import.meta.env.DEV &&
+    typeof performance !== 'undefined' &&
+    typeof performance.mark === 'function'
+  ) {
+    try {
+      performance.mark('acp:stream-seal', {
+        detail: { textLen: ls.text.length, entryId: ls.entryId },
+      })
+    } catch {
+      // ignore mark option failures
+    }
+  }
+  const next: ChatState = {
     ...s,
     liveStream: null,
     entries: s.entries.map((e) =>
@@ -7390,6 +7496,78 @@ function flushLiveStream(s: ChatState): ChatState {
         : e,
     ),
   }
+  return next
+}
+
+/**
+ * Seal an open assistant stream mid-turn (tool_call / plan / send interrupt).
+ * Merges liveStream text into its entry via flushLiveStream (once — no
+ * double-append), clears openAssistantId, and sets streaming:false on the
+ * assistant entry so data-streaming / content-visibility exemptions drop
+ * immediately. Idempotent when no assistant is open. Does NOT seal
+ * thoughts — callers chain sealThought when needed.
+ * settleTurnEntries remains the turn-end path (also sets streaming:false;
+ * safe / idempotent).
+ */
+function sealAssistantStream(s: ChatState): ChatState {
+  s = flushLiveStream(s)
+  if (!s.openAssistantId) {
+    return s.openAssistantId === undefined
+      ? s
+      : { ...s, openAssistantId: undefined }
+  }
+  const id = s.openAssistantId
+  const next: ChatState = {
+    ...s,
+    openAssistantId: undefined,
+    // liveStream already cleared by flushLiveStream; if a foreign stream
+    // somehow remained (should not), drop only if it still targets us.
+    liveStream:
+      s.liveStream?.entryId === id ? null : s.liveStream,
+    entries: s.entries.map((e) =>
+      e.id === id && e.kind === 'assistant'
+        ? { ...e, streaming: false }
+        : e,
+    ),
+  }
+  assertStreamInvariants(next, 'sealAssistantStream')
+  return next
+}
+
+/**
+ * DEV-only stream invariant checks. No-op in production. Never throws —
+ * console.warn only so a bad state is visible without breaking the turn.
+ */
+function assertStreamInvariants(s: ChatState, where?: string): void {
+  if (!import.meta.env.DEV) return
+  const tag = where ?? '?'
+  const ls = s.liveStream
+  if (!ls) return
+  const entry = s.entries.find((e) => e.id === ls.entryId)
+  if (!entry) {
+    console.warn(
+      `[acp stream] liveStream.entryId missing entry (${tag})`,
+      ls.entryId,
+    )
+    return
+  }
+  if (entry.kind !== 'thought' && entry.kind !== 'assistant') {
+    console.warn(
+      `[acp stream] liveStream targets non-stream kind (${tag})`,
+      entry.kind,
+      ls.entryId,
+    )
+    return
+  }
+  // Prefer warn over hard fail for brief seal/race windows.
+  if ('streaming' in entry && entry.streaming !== true) {
+    console.warn(
+      `[acp stream] liveStream targets non-streaming entry (${tag})`,
+      ls.entryId,
+    )
+  }
+  // streamBuf still holding a different kind while liveStream is set is
+  // checked at flushStreamBuf time (module state not visible here).
 }
 
 /**
@@ -7415,6 +7593,7 @@ function sealThought(
   const tid = s.openThoughtId
   const existing = s.entries.find((e) => e.id === tid)
   // Drop empty Thinking… placeholder if agent never sent thought chunks
+  // (after flush, sealed text is on the entry — empty means no chunks).
   if (existing?.kind === 'thought' && !existing.text.trim()) {
     return {
       openAssistantId: s.openAssistantId,
