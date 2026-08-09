@@ -37,6 +37,7 @@ import { SelectionBox } from './SelectionBox'
 import { Markdown } from './Markdown'
 import { ToolDetail } from './ToolDetail'
 import { extractToolDetail } from '../scrollback/toolDetail'
+import { mergeLiveText } from '../scrollback/liveText'
 
 /**
  * Scrollback — Grok Build TUI block model:
@@ -163,12 +164,12 @@ const TOP_PAGE_COOLDOWN_MS = 400
 const TOUCH_UP_SWIPE_PX = 8
 
 /**
- * Live scrollback render window: entries beyond this many are not rendered
- * (DOM bound — a long live session would otherwise grow the list
- * unboundedly and drag streaming perf down). Older entries stay in the
- * store (replay/reconnect semantics untouched); history browsing
- * (loadHistory pages) renders everything loaded, since paging is
- * user-driven.
+ * Scrollback render window: entries beyond this many are not mounted
+ * (DOM bound — long live sessions and large history loads would otherwise
+ * grow the list unboundedly). Older entries stay in the store; scrolling
+ * up expands the window one page at a time (and host history paging when
+ * the local window is fully expanded). Applies in both live and history
+ * modes.
  */
 const MAX_RENDER_ENTRIES = 100
 
@@ -663,12 +664,6 @@ type EntryViewProps = {
   selected: boolean
   pendingFreeze: boolean
   now: number
-  /**
-   * Live-stream text for this entry (from the store's liveStream when the
-   * entry is the one currently streaming). Merged with e.text at render;
-   * changes drive this row's re-render without touching the entries array.
-   */
-  liveText?: string
   dense?: boolean
   denseNext?: boolean
   densePrev?: boolean
@@ -747,7 +742,6 @@ function entryViewEqual(prev: EntryViewProps, next: EntryViewProps): boolean {
     prev.e === next.e &&
     prev.selected === next.selected &&
     prev.pendingFreeze === next.pendingFreeze &&
-    prev.liveText === next.liveText &&
     prev.dense === next.dense &&
     prev.denseNext === next.denseNext &&
     prev.densePrev === next.densePrev &&
@@ -767,7 +761,6 @@ export const EntryView = memo(function EntryView({
   selected,
   pendingFreeze,
   now,
-  liveText,
   dense = false,
   denseNext = false,
   densePrev = false,
@@ -778,6 +771,16 @@ export const EntryView = memo(function EntryView({
 }: EntryViewProps) {
   // 迷你 scrollback 折叠覆盖：patch 合并进渲染条目（不写回 store）。
   const e = patch ? ({ ...eProp, ...patch } as ScrollEntry) : eProp
+  // Live-stream delta/suffix for THIS entry only. Parent Scrollback does
+  // not select liveStream — each row subscribes itself so chunk growth
+  // re-renders only the streaming EntryView (selector returns undefined
+  // for every other row → Object.is skip). Mini timelines without a
+  // matching liveStream id also get undefined.
+  // liveText is the store buffer only (not including e.text); display
+  // always uses mergeLiveText(e.text, liveText) — additive.
+  const liveText = useChatStore((s) =>
+    s.liveStream?.entryId === eProp.id ? s.liveStream.text : undefined,
+  )
   // 迷你 scrollback 局部动作覆盖（缺省主 store 动作——行为不变）。
   const storeToggleTool = useChatStore((s) => s.toggleTool)
   const storeToggleThought = useChatStore((s) => s.toggleThought)
@@ -825,8 +828,9 @@ export const EntryView = memo(function EntryView({
   const localBodyRef = useRef<HTMLDivElement>(null)
   const bodyRef = streamBodyRef ?? localBodyRef
   const thoughtStreaming = e.kind === 'thought' ? e.streaming : false
+  // Additive: base entry text + liveStream delta (see mergeLiveText).
   const thoughtText =
-    e.kind === 'thought' ? (liveText ?? e.text) : undefined
+    e.kind === 'thought' ? mergeLiveText(e.text, liveText) : undefined
   useEffect(() => {
     // 主 scrollback：固定由父组件统一做（合并的流式滚动 effect，每帧
     // 一次布局读写）；迷你 scrollback 没有 streamBodyRef，条目自己固定。
@@ -956,19 +960,20 @@ export const EntryView = memo(function EntryView({
   }
 
   if (e.kind === 'assistant') {
+    // liveText = liveStream delta/suffix for this entry only (not a full
+    // replacement). Additive merge works for both store shapes:
+    // entry.text '' + live full stream, or base + later chunks in liveStream.
+    const displayText = mergeLiveText(e.text, liveText)
+    // Prefer liveText presence for settle-on-flush; also keep plain-text
+    // path while e.streaming (e.g. mid-tool after live cleared into entry).
+    const streamActive = liveText != null || !!e.streaming
     return (
       <EntryShell {...shell}>
         {/* Reserve the short-form time's width (TUI ts_reserved=10 cols; sm:
             only — the time itself is hidden on mobile) so text never runs
             under it; the hover expansion still overlays content by design. */}
         <div className="group relative min-w-0 sm:pr-9">
-          {/* liveText carries the in-flight stream; entry.text is the sealed
-              part. streaming 在 liveText 存在期间恒真 → Markdown 走纯文本
-              直出,收口后一次性分块渐进格式化。 */}
-          <Markdown
-            source={liveText ?? e.text}
-            streaming={liveText != null}
-          />
+          <Markdown source={displayText} streaming={streamActive} />
           {/* Agent-embedded images render below the text. */}
           {e.images?.length ? (
             <div className="mt-1.5">
@@ -1068,8 +1073,7 @@ export const EntryView = memo(function EntryView({
           >
             {thoughtText ? (
               <div className="italic text-gn-muted whitespace-pre-wrap break-words">
-                {/* thoughtText = liveText ?? e.text：流式期间用 liveStream
-                    文本（有界尾部渲染），收口后回退 entry.text。 */}
+                {/* thoughtText = e.text + liveStream delta（additive merge）。 */}
                 {e.streaming
                   ? streamThoughtBody(thoughtText)
                   : truncated
@@ -1498,7 +1502,9 @@ function displayRowToEntry(row: DisplayRow): ScrollEntry {
 
 export function Scrollback() {
   const entries = useChatStore((s) => s.entries)
-  const liveStream = useChatStore((s) => s.liveStream)
+  // liveStream is NOT selected here — text growth must not re-render the
+  // whole tree. Streaming EntryView rows subscribe themselves; auto-follow
+  // uses useChatStore.subscribe (see effect below).
   const selectedId = useChatStore((s) => s.selectedId)
   const focusMode = useChatStore((s) => s.focusMode)
   const pending = useChatStore((s) => s.pending)
@@ -1557,11 +1563,11 @@ export function Scrollback() {
   // pinned as a sticky header; it switches as you scroll. Tracked via
   // scroll position against the user entries' container-space tops.
   // Uses the render window (entries outside it have no DOM elements).
-  // ── Live-mode render window ──────────────────────────────────────
-  // Bounded at MAX_RENDER_ENTRIES so streaming flushes keep the DOM flat
-  // (the store keeps every entry). Scrolling to the top grows the window
-  // one page at a time via maybeLoadOlderHistory — 已截断内容不用切历史
-  // 就能继续向上翻。History mode renders everything (host paging instead).
+  // ── Render window (live + history) ───────────────────────────────
+  // Bounded at MAX_RENDER_ENTRIES so large sessions / history pages keep
+  // the DOM flat (the store keeps every entry). Scrolling to the top grows
+  // the window one page at a time via maybeLoadOlderHistory; once the
+  // local window covers the store, host history paging continues.
   const [renderLimit, setRenderLimit] = useState(MAX_RENDER_ENTRIES)
   // Anchor for the local-prepend scroll restore (mirrors historyPrependedAt).
   const [expandAnchorId, setExpandAnchorId] = useState<string | null>(null)
@@ -1572,10 +1578,10 @@ export function Scrollback() {
   }, [historyLoadedAt])
   const renderEntries = useMemo(
     () =>
-      historyLoadedAt != null || entries.length <= renderLimit
+      entries.length <= renderLimit
         ? entries
         : entries.slice(-renderLimit),
-    [historyLoadedAt, entries, renderLimit],
+    [entries, renderLimit],
   )
   const truncatedCount = entries.length - renderEntries.length
   const userById = useMemo(() => {
@@ -1719,15 +1725,26 @@ export function Scrollback() {
   // (their heights are placeholders) — scrollIntoView resolves real
   // layout, so the follow is exact. `auto` behavior keeps it instant
   // (no smooth animation restart per flush, same as before).
-  // 与流式思考 body 的内部固定合并成一个 passive effect：liveStream 文本
-  // 变化驱动（entries 流式期间不变），每帧至多一次布局读写。
-  useEffect(() => {
+  //
+  // Entries / row-count changes re-run via React effect. liveStream text
+  // growth must NOT re-render Scrollback — subscribe outside React and
+  // pin the bottom / thought body from refs only.
+  const pinStreamScroll = useCallback(() => {
     if (followRef.current) {
       bottomRef.current?.scrollIntoView({ block: 'end', behavior: 'auto' })
     }
     const bodyEl = streamBodyRef.current
     if (bodyEl) bodyEl.scrollTop = bodyEl.scrollHeight
-  }, [entries, displayRows.length, liveStream?.text])
+  }, [])
+  useEffect(() => {
+    pinStreamScroll()
+  }, [entries, displayRows.length, pinStreamScroll])
+  useEffect(() => {
+    return useChatStore.subscribe((s, prev) => {
+      if (s.liveStream?.text === prev.liveStream?.text) return
+      pinStreamScroll()
+    })
+  }, [pinStreamScroll])
 
   // History load: always re-follow the bottom (scrollback was reset)
   useEffect(() => {
@@ -1993,11 +2010,6 @@ export function Scrollback() {
               selected={row.entry.id === selectedId && focusMode === 'scrollback'}
               pendingFreeze={pendingFreeze}
               now={now}
-              liveText={
-                liveStream?.entryId === row.entry.id
-                  ? liveStream.text
-                  : undefined
-              }
               inGroup={spanContaining(spans, row.index) != null}
               dense={dense}
               densePrev={densePrev}

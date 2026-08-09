@@ -312,6 +312,25 @@ type Props = {
 const MARKDOWN_SETTLE_DELAY_MS = 60
 /** 渐进格式化的单块最大字符数(每帧只渲染一块,单帧成本有界)。 */
 const SETTLE_CHUNK_MAX_CHARS = 2048
+/** requestIdleCallback 单次最长等待(保证忙碌主线程上仍能推进 settle)。 */
+const SETTLE_IDLE_TIMEOUT_MS = 200
+
+/**
+ * Schedule work on an idle frame when available; fall back to rAF.
+ * Returns a cancel function (idle id / raf id).
+ */
+function scheduleIdle(cb: () => void, timeout = SETTLE_IDLE_TIMEOUT_MS): () => void {
+  const w = window as Window & {
+    requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number
+    cancelIdleCallback?: (id: number) => void
+  }
+  if (typeof w.requestIdleCallback === 'function') {
+    const id = w.requestIdleCallback(cb, { timeout })
+    return () => w.cancelIdleCallback?.(id)
+  }
+  const raf = requestAnimationFrame(cb)
+  return () => cancelAnimationFrame(raf)
+}
 
 /**
  * 把 settle 后的全文按结构完整的位置切成 ≤SETTLE_CHUNK_MAX_CHARS 的
@@ -452,10 +471,11 @@ function SettleBody({
   const [batch, setBatch] = useState(1)
   useEffect(() => {
     if (batch >= chunks.length) return
-    const raf = requestAnimationFrame(() =>
-      setBatch((b) => Math.min(b + 1, chunks.length)),
-    )
-    return () => cancelAnimationFrame(raf)
+    // Prefer idle slots so settle formatting yields to input/scroll;
+    // rAF fallback keeps per-chunk ~2KB progression on browsers without ric.
+    return scheduleIdle(() => {
+      setBatch((b) => Math.min(b + 1, chunks.length))
+    })
   }, [batch, chunks.length])
 
   return (
@@ -490,9 +510,9 @@ function SettleBody({
  * several frames instead of one multi-second main-thread stall.
  */
 export const Markdown = memo(function Markdown({ source, className = '', streaming = false }: Props) {
-  // 收口延迟一拍再开始格式化:流式期间零解析;流结束后 60ms 起分块
+  // 收口延迟一拍再开始格式化:流式期间零解析;流结束后 60ms + idle 起分块
   // 渐进格式化。静态实例(查看器/弹窗,从未 streaming)不经过 settle——
-  // 直接全文格式化。
+  // 直接全文格式化。不在 settle 期间滚动(由 Scrollback 收口时 pin)。
   const wasStreaming = useRef(false)
   const [settledSource, setSettledSource] = useState<string | null>(null)
   useEffect(() => {
@@ -501,11 +521,16 @@ export const Markdown = memo(function Markdown({ source, className = '', streami
       return
     }
     if (!wasStreaming.current) return
-    const t = window.setTimeout(
-      () => setSettledSource(source),
-      MARKDOWN_SETTLE_DELAY_MS,
-    )
-    return () => window.clearTimeout(t)
+    let cancelIdle: (() => void) | undefined
+    const t = window.setTimeout(() => {
+      // Kick settle on an idle frame after the short delay so "complete"
+      // paints first; cancel both timeout and idle on unmount / re-stream.
+      cancelIdle = scheduleIdle(() => setSettledSource(source))
+    }, MARKDOWN_SETTLE_DELAY_MS)
+    return () => {
+      window.clearTimeout(t)
+      cancelIdle?.()
+    }
   }, [streaming, source])
 
   // 流式期间(以及收口后的 settle 等待期):纯文本直出——每帧只有一个

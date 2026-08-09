@@ -19,6 +19,7 @@ import { IconGlyph } from './IconGlyph'
 import { TodoMark } from './todoMark'
 import { fmtBytes, fmtTok } from '../format'
 import { extractToolDetail } from '../scrollback/toolDetail'
+import { mergeLiveText } from '../scrollback/liveText'
 import {
   EntryView,
   GroupHeaderView,
@@ -64,11 +65,14 @@ export function BlockViewer() {
   const entry = viewerId
     ? entries.find((e) => e.id === viewerId) ?? null
     : null
-  // Live-streamed text lives OUT of entries — merge it in for the viewer
-  // (an open viewer on the streaming entry shows the in-flight text).
+  // Live-streamed text lives OUT of entries as a delta/suffix buffer —
+  // merge additively for the viewer (same formula as EntryView /
+  // mergeLiveText). Never replace entry.text with liveStream.text alone.
+  const liveDelta =
+    entry && liveStream?.entryId === entry.id ? liveStream.text : undefined
   const liveEntry =
-    entry && liveStream?.entryId === entry.id && 'text' in entry
-      ? { ...entry, text: entry.text + liveStream.text }
+    entry && liveDelta != null && 'text' in entry
+      ? { ...entry, text: mergeLiveText(entry.text, liveDelta) }
       : entry
   // Task-only view (top strip / history replay): the log lives in
   // viewerTask, fetched session-scoped — one code path with bg_task rows.

@@ -2920,7 +2920,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // If placeholder missing (reconnect mid-turn / first thought
         // chunk), create one. Invariant: entry.text stays empty during
         // streaming; ALL in-flight text lives in liveStream (same as
-        // assistant first chunk). UI reads liveText ?? e.text.
+        // assistant first chunk). UI merges with mergeLiveText(e.text, live).
         if (!openThoughtId || !entries.some((e) => e.id === openThoughtId && e.kind === 'thought')) {
           // 重放门控（genRateReplayChunk）：重放 dump 的块不开始段、
           // 不显示速率；窗口内出现 ≥ QUIET_MS 的间隔即恢复——同一思考
@@ -2954,8 +2954,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
             openAssistantId: undefined,
             entries,
             // Seed liveStream with the first chunk (do NOT put first
-            // chunk only into entry.text — later deltas go to liveStream
-            // alone, and liveText ?? e.text would drop the sealed base).
+            // chunk only into entry.text — later deltas append to
+            // liveStream; seal does entry.text += liveStream.text).
             liveStream: {
               entryId: id,
               text,
