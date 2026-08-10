@@ -1098,6 +1098,8 @@ type ChatState = {
   hostId?: string
   hostName?: string
   hosts: HostInfo[]
+  /** 连接模式：local（本机 acp-host，锁定本机，无 host 切换）/ hub（跨源 hub，可切换 host）。 */
+  mode: 'local' | 'hub'
   /** Selected host (hub mode): API calls + event filtering target. */
   selectedHostId?: string
   /** Historical sessions for the history picker (from session/list). */
@@ -1548,10 +1550,10 @@ type ChatState = {
    * can miss still-running tasks (page boundary / SSE drop during load).
    */
   syncLiveTasks: () => Promise<void>
-  /** x.ai/sessions/changed — refresh the history list. */
-  refreshSessions: () => Promise<void>
-  /** 按工作区拉取会话摘要（workspace-list）；失败降级为 sessions 按 cwd 分组。 */
-  refreshWorkspaces: () => Promise<void>
+  /** x.ai/sessions/changed — refresh the history list. retry: 启动窗口容错（agent 预热 boot 超时）重试次数。 */
+  refreshSessions: (retry?: number) => Promise<void>
+  /** 按工作区拉取会话摘要（workspace-list）；失败降级为 sessions 按 cwd 分组。retry 同 refreshSessions。 */
+  refreshWorkspaces: (retry?: number) => Promise<void>
   /** Fetch git branch/worktree state for the active session (x.ai/git/info). */
   refreshGitInfo: () => Promise<void>
   /**
@@ -1755,6 +1757,7 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
   statusText: '连接中…',
   awaitingNext: false,
   hosts: [],
+  mode: 'local',
   sessions: [],
   workspaces: [],
   workspaceLoading: false,
@@ -2086,7 +2089,22 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
       }
     })
     transport.connect()
-    void get().refreshHosts()
+    // 模式由 App 探测阶段（transport.detectMode）决定并 setConnectionMode：
+    // - hub：拉 host 列表并自动选中（现状）；local 模式不调，锁定本机。
+    const mode = transport.getConnectionMode()
+    set({ mode })
+    if (mode === 'hub') {
+      void get().refreshHosts()
+    } else {
+      // 本地模式：清掉任何残留的 host 选择状态（hub 痕迹 / 旧版
+      // acp-fe.host 残留），左上角固定显示 Localhost。
+      set({
+        hosts: [],
+        selectedHostId: undefined,
+        hostId: undefined,
+        hostName: 'Localhost',
+      })
+    }
     // Prefetch the client-global default permission mode (config.toml
     // ui.permission_mode) so hello/ready misses can show it immediately.
     // Once loaded, apply it to the announced session when nothing
@@ -2139,6 +2157,9 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
   },
 
   switchHost: async (hostId) => {
+    // 本地模式锁定本机：host 切换只在 hub 模式有效（也不写
+    // localStorage acp-fe.host，避免残留状态）。
+    if (transport.getConnectionMode() !== 'hub') return
     if (hostId === get().selectedHostId) return
     // Invalidate every in-flight async result from the previous host.
     sessionSwitchGen += 1
@@ -5899,7 +5920,7 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
     }
   },
 
-  refreshSessions: async () => {
+  refreshSessions: async (retry = 1) => {
     try {
       const { sessions } = await transport.listSessions()
       set({ sessions })
@@ -5918,16 +5939,28 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
       if (Object.keys(next).length > 100) next = {}
       lastBusySnapshot = next
     } catch {
-      /* ignore */
+      // 启动窗口容错：host 刚重启时 agent 预热 boot（initialize +
+      // authenticate）可能超过 fetch 超时，重试一次再放弃，避免首屏
+      // 会话列表为空。
+      if (retry > 0) {
+        await new Promise((r) => setTimeout(r, 4000))
+        return get().refreshSessions(retry - 1)
+      }
     }
   },
 
-  refreshWorkspaces: async () => {
+  refreshWorkspaces: async (retry = 1) => {
     set({ workspaceLoading: true })
     try {
       const workspaces = await transport.workspaceList()
       set({ workspaces, workspaceLoading: false })
     } catch {
+      // 启动窗口容错：host 刚重启时 agent 预热 boot 可能超过 fetch
+      // 超时（502），重试一次再降级，避免首屏侧边栏空白。
+      if (retry > 0) {
+        await new Promise((r) => setTimeout(r, 4000))
+        return get().refreshWorkspaces(retry - 1)
+      }
       // 降级：workspace-list 不可用时按现有 sessions 的 cwd 分组，
       // 保证侧边栏永不白屏。
       const byCwd = new Map<string, WorkspaceSummary[]>()

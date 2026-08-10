@@ -46,11 +46,18 @@ export default function App() {
 
   useEffect(() => initTheme(), [initTheme])
 
-  // Probe hub access before mounting the main shell. Local mode (no
-  // FE_TOKEN) returns ok immediately; hub with FE_TOKEN shows the gate.
+  // Probe hub access before mounting the main shell. Mode detection first:
+  // base 指向 acp-host 直连 → 模式由 host 配置决定（HUB_URL → hub）；否则
+  // 视为 hub（部署版前端连 hub 的场景）。Local mode returns ok immediately;
+  // hub with FE_TOKEN shows the gate.
   useEffect(() => {
     let cancelled = false
     void (async () => {
+      const { mode, hubUrl, localHostId } = await transport.detectMode()
+      transport.setConnectionMode(mode, hubUrl)
+      // 内嵌前端直连 acp-host 时记录本机 hostId：hub 模式下选中本机，
+      // API 请求直连本地，不绕 hub 中继。
+      transport.setLocalHostId(localHostId ?? null)
       const r = await transport.probeAccess()
       if (cancelled) return
       if (r === 'need_token') {
