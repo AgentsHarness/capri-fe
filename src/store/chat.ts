@@ -43,6 +43,13 @@ import {
 let entrySeq = 0
 const nid = () => `e_${++entrySeq}_${Date.now()}`
 
+/**
+ * 本地 scrollback 保留上限：超过时丢弃最旧条目（滚动窗口的
+ * MAX_RENDER_ENTRIES 只限制 DOM 挂载行数，不限制 store 内存；长会话
+ * tool raw / thought 全文都持有在这里，必须截断防数百 MB）。
+ */
+const MAX_ENTRIES = 2000
+
 /** 会话完成提醒去重窗口：同一会话在此窗口内只通知一次。 */
 const NOTICE_DEDUP_WINDOW_MS = 30_000
 
@@ -61,6 +68,28 @@ let lastBusySnapshot: Record<string, boolean> = {}
  * 同一份列表，没有这层去重 scrollback 会被同样的公告行刷屏。
  */
 const displayedAnnouncementFingerprints = new Map<string, string>()
+
+/**
+ * continueSession 的宽限窗口定时器（模块级，非响应式）：切换会话后
+ * 500ms 内 SSE recap 事件仍在路上，需要继续丢弃；但该窗口到期回写
+ * 快照的 setTimeout 必须可取消——否则在窗口内切 host/删会话/开新会话
+ * 时，旧会话的快照会无条件回锚（把 UI 钉死在已离开的会话上）。
+ * switchHost / newSession / resetToEmpty 等切换点负责 clearTimeout。
+ */
+let continueSessionTimer: ReturnType<typeof setTimeout> | null = null
+function clearContinueSessionTimer() {
+  if (continueSessionTimer != null) {
+    clearTimeout(continueSessionTimer)
+    continueSessionTimer = null
+  }
+}
+
+/**
+ * 会话/宿主切换代数（模块级）：每次 switchHost / newSession / resetToEmpty
+ * 递增。在途的 loadHistory / continueSession 异步结果落库前校验代数，
+ * 不匹配即丢弃——旧 host 的历史数据绝不写进新 host 的视图。
+ */
+let sessionSwitchGen = 0
 
 // ── cancel-turn preference (TUI cancel_subagents_on_turn_cancel) ────
 // Saved by the cancel panel's "Always stop" / "Always continue" options.
@@ -217,6 +246,12 @@ function resetSessionState(
     openThoughtId: undefined,
     pendingOptimisticUserId: undefined,
     awaitingNext: false,
+    // 复位必须同步重置 conn：旧会话的回合还在 host 跑（本端不再显示它），
+    // 若沿用 busy，状态栏会渲染成"就绪 + 旧回合残留计时器"，且旧回合
+    // done 走"不同会话"分支不会把 conn 收回，conn 会永久卡在 busy，
+    // 新会话的消息也会被 turnIsLive 误判而错误排队。置 ready = 本端
+    // 没有活跃回合，诚实的空闲状态；新会话的 ready 事件会再锚定。
+    conn: 'ready',
     statusText: '就绪',
     toolIndex: {},
     pending: [],
@@ -1046,6 +1081,13 @@ export type WorkflowRun = {
 
 type ChatState = {
   entries: ScrollEntry[]
+  /**
+   * 本地截断计数（"已截断 N 条"标记）：entries 超出 MAX_ENTRIES 时被
+   * 丢弃的最旧条目累计数。Scrollback.tsx 的 truncatedCount 只统计 DOM
+   * 渲染窗口（store 里还有、没挂 DOM），这里是 store 层真正的丢弃标记。
+   * 清空 entries 的切换点（switchHost / loadHistory / openHistory）归零。
+   */
+  truncatedEntryCount: number
   conn: ConnState
   statusText: string
   sessionId?: string
@@ -1434,7 +1476,11 @@ type ChatState = {
   memoryFlush: () => Promise<void>
 
   init: () => () => void
-  send: (text: string, blocks?: ContentBlock[]) => Promise<void>
+  send: (
+    text: string,
+    blocks?: ContentBlock[],
+    opts?: { fromShell?: boolean; promptId?: string },
+  ) => Promise<void>
   cancel: () => Promise<void>
   /**
    * Append a LOCAL-ONLY scrollback entry (shell mode output, etc.) —
@@ -1681,8 +1727,29 @@ function sendControlPrompt(
   set({ statusText: feedback })
 }
 
-export const useChatStore = create<ChatState>((set, get) => ({
-  entries: [],
+export const useChatStore = create<ChatState>((setRaw, get) => {
+  // ── entries 截断收口（所有 set({ entries }) 的公共位置）──────────
+  // 超过 MAX_ENTRIES 时丢弃最旧条目并累计 truncatedEntryCount。历史
+  // 分页期间不截断：loadHistory / loadMoreHistory 用 entries.length
+  // 做新旧页 split 定位，截断会把新页条目错缝进旧页（分页游标本身是
+  // historyLoadedCount，与 entries 长度无关，不受影响）。
+  const set: SetState = (partial) => {
+    setRaw((s) => {
+      const patch = typeof partial === 'function' ? partial(s) : partial
+      if (patch.entries != null) {
+        const trimmed = trimEntriesForScrollback(s, patch.entries)
+        const dropped = patch.entries.length - trimmed.length
+        if (dropped > 0) {
+          patch.entries = trimmed
+          patch.truncatedEntryCount = (s.truncatedEntryCount ?? 0) + dropped
+        }
+      }
+      return patch
+    })
+  }
+  return {
+    entries: [],
+    truncatedEntryCount: 0,
   liveStream: null,
   conn: 'connecting',
   statusText: '连接中…',
@@ -1937,7 +2004,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // re-streams the whole conversation as part of session/load (recap).
       // Drop those SSE events — loadHistory rebuilds the scrollback from
       // paginated updates instead. Status events still pass through.
-      if (s.historyLoading && ev.type !== 'hello' && ev.type !== 'ready') return
+      if (s.historyLoading && ev.type !== 'hello' && ev.type !== 'ready') {
+        // ...but NEVER swallow the active session's turn-terminal events:
+        // switching to a busy session and having its `done` land inside
+        // the historyLoading window would leave the composer stuck on
+        // "Waiting for host…" forever (finalizeTurn never runs).
+        const evSid = (ev as { sessionId?: string }).sessionId
+        const isTurnEnd =
+          ev.type === 'done' ||
+          ev.type === 'turn_completed' ||
+          ev.type === 'cancelled'
+        if (!isTurnEnd) return
+        if (evSid && evSid !== s.sessionId) return
+        // Fall through: deliver this session's own turn-terminal event.
+      }
       // Multi-session host: every session-scoped event carries sessionId.
       // Keep only events for the active session (hello/ready always pass —
       // they announce the session we are switching to; when sessionId is
@@ -2026,6 +2106,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     return () => {
       unsub()
       unsubMode()
+      clearContinueSessionTimer()
+      get().stopTopTaskPolling()
       transport.disconnect()
     }
   },
@@ -2058,6 +2140,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   switchHost: async (hostId) => {
     if (hostId === get().selectedHostId) return
+    // Invalidate every in-flight async result from the previous host.
+    sessionSwitchGen += 1
+    clearContinueSessionTimer()
     get().stopTopTaskPolling()
     transport.setHost(hostId)
     try {
@@ -2076,6 +2161,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       cwd: undefined,
       homeDir: undefined,
       entries: [],
+      truncatedEntryCount: 0,
       liveStream: null,
       sessions: [],
       workspaces: [],
@@ -2133,6 +2219,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ...(snapError ? { error: snapError } : {}),
       })
     } catch {
+      // Host 不可达：丢弃未落库的流式缓冲并取消 rAF，避免残留 flush
+      // 在错误态之后把 conn 重新顶回 busy。
+      clearStreamBuf()
       set({ conn: 'error', statusText: 'Host 不可达' })
       return
     }
@@ -2248,6 +2337,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       historyPrependedAt: undefined,
       historyAnchorId: undefined,
       entries: [],
+      truncatedEntryCount: 0,
       liveStream: null,
       openAssistantId: undefined,
       openThoughtId: undefined,
@@ -2440,7 +2530,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (!sessionId || sessionId === s.sessionId) return
     const now = Date.now()
     const last = s.completedNotices[sessionId]
-    set({ completedNotices: { ...s.completedNotices, [sessionId]: now } })
+    const next = { ...s.completedNotices, [sessionId]: now }
+    // 上限：超 100 个会话时清最旧 50（字符串对象键按插入序迭代），
+    // 防止长时间运行后 completedNotices 无上限增长。
+    const keys = Object.keys(next)
+    if (keys.length > 100) {
+      for (const k of keys.slice(0, 50)) delete next[k]
+    }
+    set({ completedNotices: next })
     if (last && now - last < NOTICE_DEDUP_WINDOW_MS) return
     const live = s.sessions.find((x) => x.sessionId === sessionId)
     const title = live?.title || sessionId.slice(0, 12)
@@ -2477,6 +2574,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   continueSession: async (sessionId: string, cwd: string) => {
     if (get().historyLoading || get().historyLoadingMore) return
+    // A previous session's grace-window callback must never fire after we
+    // start switching again (it would re-anchor the OLD session's snapshot).
+    clearContinueSessionTimer()
+    // Invalidate in-flight async results from a previous switch.
+    const myGen = ++sessionSwitchGen
     // The prompt queue is per-session: swap the active queue to the
     // target session's NOW (stash the current session's queue under its
     // id, restore the target's) — before any async work, so neither the
@@ -2489,7 +2591,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Clear the previous session's timeline NOW so the loading indicator
     // (historyLoading && entries.length === 0) shows immediately; the new
     // timeline replaces it once loadHistory returns.
-    set({ historyOpen: false, historyLoading: true, entries: [] })
+    set({ historyOpen: false, historyLoading: true, entries: [], truncatedEntryCount: 0 })
     try {
       // 1) Make this session the active one (session/load or focus-if-busy);
       // 2) load its tail. Models come from the HTTP response — more reliable
@@ -2506,6 +2608,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const modeFlags = sessionModeFlags(savedFlags, defaultFlags)
       const modeMeta = permissionSeedMeta(modeFlags)
       const loaded = await transport.loadSession(sessionId, cwd, modeMeta)
+      // The user may have switched host / opened another session while we
+      // were loading — never write this session's data into that view.
+      if (myGen !== sessionSwitchGen) return
       if (loaded.models != null || loaded.modes != null) {
         const modelSnap = applySessionModelState(loaded.models, undefined)
         set({
@@ -2532,6 +2637,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // otherwise render a dangling started row with no completion.
       await get().replayRunningTasks(sessionId, cwd)
       await get().loadHistory(sessionId, cwd)
+      if (myGen !== sessionSwitchGen) return
       // The agent never persists permission mode (yolo_mode_changed is a
       // fire-and-forget notification), so the replayed timeline cannot
       // restore ask/auto/always-approve — re-apply the flags this client
@@ -2545,7 +2651,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // be in flight (SSE and fetch are separate channels) — keep dropping
       // them briefly before reopening the live pipeline.
       set({ historyLoading: true })
-      window.setTimeout(() => {
+      continueSessionTimer = window.setTimeout(() => {
+        continueSessionTimer = null
+        // Another switch happened inside the grace window: do NOT re-anchor
+        // this (now stale) session's snapshot.
+        if (myGen !== sessionSwitchGen) return
         // Re-apply the load response's SessionModelState — a stale hello
         // (EventSource reconnect) or the load's own ready may have raced
         // in with process-global models while historyLoading; the HTTP
@@ -2583,8 +2693,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
           // queued prompts. Their turn ended while another session was
           // active — the `done` was session-filtered, so `awaitingNext`
           // never flipped here; setting it now lets the composer's
-          // auto-send effect deliver the queue head, honoring "queued
-          // follow-ups run after the current turn ends".
+          // auto-send effect deliver FE-owned (409-degraded) rows,
+          // honoring "queued follow-ups run after the current turn
+          // ends". Agent-owned rows are drained by the agent itself
+          // (server-authoritative); awaitingNext only gates the effect.
           const queued = usePromptQueue.getState().queue.length > 0
           set({
             historyLoading: false,
@@ -2601,6 +2713,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         void get().syncLiveTasks()
       }, 500)
     } catch (e) {
+      if (myGen !== sessionSwitchGen) return
       const msg = e instanceof Error ? e.message : String(e)
       set({
         historyLoading: false,
@@ -2615,19 +2728,30 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // ended; the active session's queue drains through the normal path.
     const st = get()
     if (!targetId || targetId === st.sessionId || st.historyLoading) return
-    const head = usePromptQueue.getState().dequeueFrom(targetId)
+    // Server-authoritative：agent 在目标会话回合结束时自己 pop 队首——
+    // 任何 agent-owned 行（in-flight 乐观行、已确认带 version 的行）FE
+    // 再发都会重复。只有降级行（旧 host 409，FE-owned）需要这里投递。
+    // 先看再取：agent-owned 行绝不能 dequeue（dequeueFrom 会向 agent 发
+    // queue/remove，误删 agent 队列里的行）。
+    const qs = usePromptQueue.getState()
+    const stash = qs.queues[targetId] ?? []
+    const head = stash[0]
     if (!head) return
+    if (!head.degraded) return
+    const popped = usePromptQueue.getState().dequeueFrom(targetId)
+    if (!popped) return
     try {
       // session/prompt with the target sessionId runs the turn there —
       // the agent is multi-session, so it proceeds in parallel while the
       // user keeps working in the current session. Not awaited past the
       // fetch: the RPC resolves when THAT turn completes, and its done
-      // re-triggers this path for the next queued item.
-      await transport.prompt(head.blocks, { sessionId: targetId })
+      // re-triggers this path for the next queued item. promptId keeps
+      // the row identity consistent with the agent's queue_meta.
+      await transport.prompt(popped.blocks, { sessionId: targetId, promptId: popped.id })
     } catch {
       // 409 (target turn restarted in the same tick) / transport failure:
       // put the item back at the front; the session's next done retries.
-      usePromptQueue.getState().requeueFront(targetId, head)
+      usePromptQueue.getState().requeueFront(targetId, popped)
     }
   },
 
@@ -2679,14 +2803,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // stuck on a historical page boundary. Skipped while a live turn
       // is in flight (turnStartedAt set).
       const merged = [...newEntries, ...oldEntries]
+      // 分页期间本地回合仍在流式（turnStartedAt / 流式指针 / liveStream
+      // 任一存在）：收口收尾必须整段跳过——settleTurnEntries 会把流式中
+      // 的条目打成 streaming:false；清空 openAssistantId/openThoughtId/
+      // liveStream 则丢掉 liveStream 里尚未合并的文本，后续 chunk 还会
+      // 再开一条新行（原条目挂着 streaming:true 却失去指针）。
+      // 非流式（历史浏览场景）保持原收口行为。
+      const streaming =
+        get().turnStartedAt != null ||
+        get().openAssistantId != null ||
+        get().openThoughtId != null ||
+        get().liveStream != null
       set({
-        entries: get().turnStartedAt == null ? settleTurnEntries(merged) : merged,
-        openAssistantId: undefined,
-        openThoughtId: undefined,
-        liveStream: null,
-        // Replay of stored thought chunks drives conn to 'busy' — paging
-        // history is not a live turn.
-        conn: 'ready',
+        entries: streaming ? merged : settleTurnEntries(merged),
+        ...(streaming
+          ? {}
+          : {
+              openAssistantId: undefined,
+              openThoughtId: undefined,
+              liveStream: null,
+              // Replay of stored thought chunks drives conn to 'busy' — paging
+              // history is not a live turn.
+              conn: 'ready',
+            }),
         historyLoadingMore: false,
         historyTotalCount: total,
         historyLoadedCount: loadedNew,
@@ -2783,11 +2922,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
         const modelSnap = applySessionModelState(ev.models, ev.agentInfo)
         const reqs = ev.pendingRequests || []
+        // 迟到的旧会话 hello：resetSessionState 清锚之后、newSession 响应
+        // 回填之前（本地 pendingOptimisticUserId 非空 = 空状态发消息正触
+        // 发建会话），旧会话的 hello 若照常回锚 sessionId/cwd，会把旧会话
+        // 重新钉进视图并触发下方 loadHistory 把旧历史灌入新会话的空白
+        // 时间线。此窗口内 hello 只贡献 models/模式快照，不碰会话锚
+        // （switchHost 的 hello 不受影响——彼时 pendingOptimisticUserId
+        // 为空，照常锚定宿主当前会话）。
+        const suppressAnchor =
+          get().sessionId == null &&
+          ev.sessionId != null &&
+          get().pendingOptimisticUserId != null
         set({
           conn: ev.ready ? 'ready' : ev.error ? 'error' : 'connecting',
           statusText: ev.error || (ev.ready ? '就绪' : '启动中…'),
-          sessionId: ev.sessionId,
-          cwd: ev.cwd,
+          ...(suppressAnchor
+            ? {}
+            : { sessionId: ev.sessionId, cwd: ev.cwd }),
           homeDir: ev.homeDir,
           hostId: ev.hostId,
           hostName: ev.hostName,
@@ -2830,7 +2981,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
         // Agent hello announces the active session — fetch git state now
         // (git_head_changed is fire-and-forget; a fresh page would miss it).
-        if (ev.cwd) {
+        if (ev.cwd && !suppressAnchor) {
           set({ sessionId: ev.sessionId, cwd: ev.cwd })
           // The user is looking at this session now — clear its notice.
           if (ev.sessionId) get().clearCompletedNotice(ev.sessionId)
@@ -2841,7 +2992,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // (the host never replays it on connect), so replay it here. Guard
         // on empty entries so a mid-session reconnect (timeline already
         // live) never reloads, and skip while history is being loaded.
-        if (ev.sessionId && get().entries.length === 0 && !get().historyLoading) {
+        if (
+          !suppressAnchor &&
+          ev.sessionId &&
+          get().entries.length === 0 &&
+          !get().historyLoading
+        ) {
           void get().loadHistory(ev.sessionId, ev.cwd || '')
         }
         // Agent restart (host respawned the agent → in-memory permission
@@ -2853,6 +3009,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
         break
       }
       case 'ready': {
+        // 多会话广播（host withSid 约定）：非当前会话的 ready 直接忽略。
+        // 别的客户端新建/加载会话会广播 ready(sessionId)，若无守卫会把
+        // 本页强制切到那个会话（conn/sessionId 无条件覆盖），当前会话的
+        // 回合流事件随之全部被丢弃——视觉上就是"对话被 cancel 了"。
+        // 本端主动的 newSession / continueSession 都会先锚定 sessionId
+        // （POST /api/session 响应 / loadSession 返回），ready 到达时守卫
+        // 通过，幂等覆盖 models 等字段，不受影响。
+        if (ev.sessionId && ev.sessionId !== get().sessionId) break
         // Prefer `ev.models` (session/new|load SessionModelState) — agentInfo
         // alone is the process-global initialize snapshot and is stale after
         // session/load restores a different session model.
@@ -3068,13 +3232,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const sealed = sealThought(get())
         const { openAssistantId, entries } = sealed
         if (openAssistantId) {
-          // 已有回答条目：文本进合并缓冲（rAF 统一落库，见 appendStreamBuf）。
-          set({
-            ...sealed,
-            conn: 'busy',
-            statusText: 'Responding…',
-            awaitingNext: false,
-          })
+          // 已有回答条目：文本只进合并缓冲（rAF 统一落库，见
+          // appendStreamBuf）。状态字段（conn/statusText/awaitingNext）
+          // 由 flushStreamBuf 落库时每帧至多刷新一次——每个 chunk 都
+          // set()（~30ms 一次）会让全部 zustand 订阅者跟着空转，正是
+          // rAF 缓冲要消灭的通知风暴。首个 chunk 的 sealed 状态与条目
+          // 创建在下方 else 分支（openAssistantId 从无到有）一次性落库；
+          // 若流式指针已存在（openThoughtId 同开属异常交错），sealThought
+          // 的结果也在该分支的 set 里生效，此处无状态可丢。
           appendStreamBuf(set, get, 'assistant', text)
         } else {
           const id = nid()
@@ -3617,6 +3782,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
           })
           break
         }
+        // Host 级错误（host 崩溃/重启）：丢弃未落库的流式缓冲并取消 rAF
+        // （clearStreamBuf 同时 cancelAnimationFrame），避免残留 flush 在
+        // 错误态之后把 conn 重新顶回 busy。
+        clearStreamBuf()
         set({
           conn: 'error',
           statusText: ev.message,
@@ -3627,7 +3796,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         })
         break
       }
-      case 'status':
+      case 'status': {
         // 多会话广播（host withSid 约定）：非当前会话的 status 直接忽略。
         if (ev.sessionId && ev.sessionId !== get().sessionId) break
         // Host status (connection warnings) is surfaced in the top-left
@@ -3638,6 +3807,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           statusWarning: ev.text,
         })
         break
+      }
       case 'task_lifecycle': {
         // History replay renders stored task lifecycle events with the
         // SAME look as live bg_task rows — but the entry is NOT captured
@@ -4658,7 +4828,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (ev.method === 'x.ai/queue/changed') {
           const sid = (ev as { sessionId?: string }).sessionId
           if (!sid || sid === get().sessionId) {
-            applyQueueChanged(ev.params)
+            const adopted = applyQueueChanged(ev.params)
+            if (adopted) adoptTurn(set, get, adopted)
           }
           break
         }
@@ -4791,6 +4962,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
           const fingerprint = `${sev}\u{1f}${text}`
           if (displayedAnnouncementFingerprints.get(key) === fingerprint) continue
           displayedAnnouncementFingerprints.set(key, fingerprint)
+          // 上限：超 200 条时清最旧 50 条（Map 迭代序即插入序），防止
+          // 公告 id 持续变化（如时间戳类内容键）时 Map 无上限增长。
+          if (displayedAnnouncementFingerprints.size > 200) {
+            let dropped = 0
+            for (const k of displayedAnnouncementFingerprints.keys()) {
+              displayedAnnouncementFingerprints.delete(k)
+              if (++dropped >= 50) break
+            }
+          }
           appendEntry(set, {
             kind: 'session_event',
             text,
@@ -4807,9 +4987,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // applied here). Guard on session id: withSid attaches the
         // emitting session — a stale broadcast from another session must
         // not clobber our queue. The emitting sessionId also tags the
-        // queue so drains stay session-scoped.
+        // queue so drains stay session-scoped. When the broadcast carries
+        // a running_prompt_id that matches a local queue row, the agent
+        // has auto-drained it into the running slot — adopt it: render
+        // the user row (server-authoritative turn start, no prompt RPC).
         if (!ev.sessionId || ev.sessionId === get().sessionId) {
-          applyQueueChanged(ev.params, ev.sessionId)
+          const adopted = applyQueueChanged(ev.params, ev.sessionId)
+          if (adopted) adoptTurn(set, get, adopted)
         }
         break
       }
@@ -4818,7 +5002,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  send: async (text: string, blocks?: ContentBlock[], opts?: { fromShell?: boolean }) => {
+  send: async (
+    text: string,
+    blocks?: ContentBlock[],
+    opts?: { fromShell?: boolean; promptId?: string },
+  ) => {
     const t = text.trim()
     if (!t) return
     // 空状态（无活动会话）：发送消息即开始新对话 — 先用空状态选择的
@@ -4838,6 +5026,36 @@ export const useChatStore = create<ChatState>((set, get) => ({
         })
         return
       }
+    }
+    // 忙时守卫：当前会话已有活动回合（流式中 / 回合未收口，含恢复的
+    // 在飞会话 turnStartedAt 未清）时走 server-authoritative 入队——
+    // enqueue 立即 fire-and-forget 发 session/prompt（带 `_meta.promptId`，
+    // agent 把它插进权威队列），本地插乐观回显行；旧 host 409 时降级
+    // 为本地排队行、回合收口后自动发送。sendFollowUp / slash 命令 /
+    // sendQueuedHead 竞态下忙时调用 send 也走这里，不再产生 409 错误行。
+    const live = get()
+    if (live.sessionId && turnIsLive(live)) {
+      usePromptQueue.getState().enqueue(
+        {
+          text: t,
+          blocks:
+            blocks && blocks.length > 0 ? blocks : [{ type: 'text', text: t }],
+        },
+        live.sessionId,
+        {
+          // 非 409 错误（网络失败 / agent 拒绝）→ 渲染回合错误行（409
+          // 降级静默，无行；行保留在队列、回合结束自动重试）。
+          onError: (e) => {
+            const msg = e instanceof Error ? e.message : String(e)
+            // 与下方 catch 同款去重：host 的 SSE error 事件通常先到。
+            const cur = get()
+            const last = cur.entries[cur.entries.length - 1]
+            const dup = last && last.kind === 'error' && last.text === msg
+            if (!dup) appendEntry(set, { kind: 'error', text: msg })
+          },
+        },
+      )
+      return
     }
     // 流式缓冲先落库：上一回合的思考文本完整后再收口/追加用户行。
     flushStreamBuf(set, get)
@@ -4881,8 +5099,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       // Optional image blocks (Composer image chips): the caller passes
       // the full block list; default is the plain text prompt.
+      // promptId（可选）：降级行重发时保持与镜像行同 id（agent 侧
+      // queue_meta 一致）；普通发送不带。
       await transport.prompt(
         blocks && blocks.length > 0 ? blocks : [{ type: 'text', text: t }],
+        { promptId: opts?.promptId },
       )
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -4895,6 +5116,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // 拒绝 = host 不可达，即 AgentTurnError 之外的异常）才进 host 错误
       // 处理（conn: 'error' + 横幅）。
       if (!(e instanceof AgentTurnError)) {
+        // 网络级失败（host 不可达）：丢弃未落库的流式缓冲并取消 rAF，
+        // 避免残留 flush 在错误态之后把 conn 重新顶回 busy。
+        clearStreamBuf()
         set({
           ...after,
           pendingOptimisticUserId: undefined,
@@ -4940,8 +5164,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
     appendEntry(set, entry as EntryWithoutId)
   },
 
+  /**
+   * Cancel the running turn WITHOUT stopping subagents — the send-now
+   * paths (Composer [发送现在] / double-Enter / Ctrl+Enter) cancel first
+   * so the host accepts the next prompt, but a dispatched subagent must
+   * keep working (TUI plain CancelTurn → cancelSubagents: false).
+   */
   cancel: async () => {
-    await transport.cancel()
+    await transport.cancel({ cancelSubagents: false })
   },
 
   /**
@@ -4958,7 +5188,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // / `cancelled` event seals the turn.
     set({ statusText: 'Cancelling…' })
     try {
-      await transport.cancel()
+      // Always send the flag explicitly: absent ⇒ agent default TRUE
+      // (stops every running subagent), which would contradict the
+      // "subagents keep running" semantics of the plain cancel path
+      // (Ctrl+C / "Always continue" preference / send-now).
+      await transport.cancel({ cancelSubagents: opts?.cancelSubagents === true })
     } catch (e) {
       appendEntry(set, {
         kind: 'error',
@@ -5671,7 +5905,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({ sessions })
       // Busy 转变检测（完成提醒兜底）：某会话从 busy → idle 且不是
       // 当前会话 → 通知 + ✓。第一次拉取只建基线，不误报。
-      const next: Record<string, boolean> = {}
+      let next: Record<string, boolean> = {}
       for (const s of sessions) next[s.sessionId] = s.status?.busy === true
       const cur = get()
       for (const [sid, wasBusy] of Object.entries(lastBusySnapshot)) {
@@ -5679,6 +5913,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
           cur.noteSessionCompleted(sid)
         }
       }
+      // 上限：会话数过多时放弃本轮对比、重置为空基线（下轮重新建基线），
+      // 防止模块级快照无上限增长。
+      if (Object.keys(next).length > 100) next = {}
       lastBusySnapshot = next
     } catch {
       /* ignore */
@@ -5738,6 +5975,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   newSession: async (cwd?: string) => {
+    // Any in-flight session switch (grace-window callback / async loads)
+    // must not re-anchor after a fresh session starts.
+    sessionSwitchGen += 1
+    clearContinueSessionTimer()
     get().stopTopTaskPolling()
     clearSuppressedTools()
     clearStreamBuf()
@@ -6227,7 +6468,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return false
     }
   },
-}))
+}})
 
 // ── prompt-queue session tracking ──────────────────────────────────
 // The prompt queue is per-session widget state: every sessionId change
@@ -6536,6 +6777,48 @@ function finalizeTurn(
         ...(marker ? [marker] : []),
       ],
     }
+  })
+}
+
+// ── 收养回合开始（server-authoritative drain）───────────────────────
+// agent 在回合结束时自动 pop 队首并开下一回合，广播 queue_changed 带
+// running_prompt_id；applyQueueChanged 命中本地镜像行后，这里渲染该
+// prompt 的用户行（与 send() 的用户行渲染同款：seal 旧流、append user
+// entry、conn busy、pendingOptimisticUserId 供 user_chunk echo 吸收）。
+// 绝不调 transport.prompt —— 回合已经在 agent 侧运行，本端只收养显示。
+// turnIsLive 守卫：若广播晚于第一批 chunk 到达（回合已在本端流式），
+// 跳过渲染，避免双锚定 / 用户行顺序错乱。
+function adoptTurn(
+  set: SetState,
+  get: () => ChatState,
+  adopted: { text: string; blocks?: ContentBlock[] },
+): void {
+  if (turnIsLive(get())) return
+  flushStreamBuf(set, get)
+  // Seal any leftover thought from prior turn, then append the user row.
+  const sealedAsst = sealAssistantStream(get())
+  const sealed = sealThought(sealedAsst)
+  const userId = nid()
+  const userEntry = {
+    id: userId,
+    kind: 'user' as const,
+    text: adopted.text,
+    ts: Date.now(),
+  }
+  set({
+    ...sealed,
+    entries: [...sealed.entries, userEntry],
+    openAssistantId: undefined,
+    openThoughtId: undefined,
+    pendingOptimisticUserId: userId,
+    conn: 'busy',
+    statusText: 'Waiting for response…',
+    awaitingNext: false,
+    turnStartedAt: Date.now(),
+    // 新回合开始：上一回合的 suggestion chips 退役（与 send 同款）。
+    followUps: undefined,
+    followUpsResponseId: undefined,
+    genRate: undefined,
   })
 }
 
@@ -7932,6 +8215,24 @@ function appendEntry(set: SetState, entry: EntryWithoutId): void {
   set((s) => ({
     entries: [...s.entries, { id: nid(), ...entry } as ScrollEntry],
   }))
+}
+
+/**
+ * entries 保留上限收口：超出 MAX_ENTRIES 时丢弃最旧的头部条目，返回
+ * 截断后的数组（未超限返回原引用）。调用方（store 的 set 包装）负责把
+ * 丢弃数累计进 truncatedEntryCount。
+ *
+ * 历史分页（loadHistory / loadMoreHistory，historyLoading* 置位）期间
+ * 跳过：分页用 entries.length 做新旧页 split 定位并做跨页缝合，截断会
+ * 把新页条目错缝进旧页；分页是用户主动、量级受 totalCount 约束，而
+ * 无上限增长只发生在直播会话（流式落库），那里截断是安全的。截断只丢
+ * 头部（最旧），绝不碰尾部——流式指针（openAssistantId / openThoughtId /
+ * liveStream）永远指向尾部的新条目。
+ */
+function trimEntriesForScrollback(s: ChatState, entries: ScrollEntry[]): ScrollEntry[] {
+  if (s.historyLoading || s.historyLoadingMore) return entries
+  if (entries.length <= MAX_ENTRIES) return entries
+  return entries.slice(entries.length - MAX_ENTRIES)
 }
 
 /**
