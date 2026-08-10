@@ -40,10 +40,13 @@ export class AgentTurnError extends Error {
    * host 正在重启 agent）。
    */
   kind: AgentTurnKind
-  constructor(kind: AgentTurnKind, message: string) {
+  /** HTTP 状态码（有则带上）——409 用于 mid-turn prompt 的降级检测。 */
+  status?: number
+  constructor(kind: AgentTurnKind, message: string, status?: number) {
     super(message)
     this.name = 'AgentTurnError'
     this.kind = kind
+    if (status != null) this.status = status
   }
 }
 
@@ -86,6 +89,33 @@ type HubWsFrame =
   | { type: 'ping'; ts?: number }
   | { type: string; [k: string]: unknown }
 
+/**
+ * Default hard timeout for transport fetches. Host-side endpoints are
+ * quick operations; 30s covers slow hubs while bounding half-open TCP
+ * connections that would otherwise hang the fetch (and, for gap pulls,
+ * wedge the per-host `pulling` slot) forever.
+ */
+const DEFAULT_FETCH_TIMEOUT_MS = 30_000
+
+/**
+ * POST /api/prompt resolves when the agent TURN completes — the host
+ * relays it and only answers then. The host's own turn budget is 30
+ * minutes (acp-host internal/acp/bridge.go promptTimeout; the hub relay
+ * allows 50 min), so the FE bound matches it: a legitimate long turn is
+ * never cut short, while a host that never answers (dead relay / half-open
+ * TCP) still fails bounded instead of hanging the send forever. Callers
+ * may override per call via prompt({ timeoutMs }).
+ */
+const PROMPT_TIMEOUT_MS = 30 * 60_000
+
+/** 无 DecompressionStream 环境（旧浏览器）压缩帧会被丢弃——只告警一次。 */
+let warnedNoDecompression = false
+function warnNoDecompressionOnce(): void {
+  if (warnedNoDecompression) return
+  warnedNoDecompression = true
+  console.warn('deflate 解压不可用，丢弃压缩帧')
+}
+
 export class LocalTransport {
   private es: EventSource | null = null
   private ws: WebSocket | null = null
@@ -105,6 +135,13 @@ export class LocalTransport {
   /** In-flight gap pulls per host (dedupe). */
   private pulling = new Set<string>()
   /**
+   * Abort controllers of every in-flight fetch (gap pulls included), so
+   * disconnect()/setHost()/setAccessToken() can settle them all — a
+   * gapPull's finally then releases its per-host slot instead of wedging
+   * it for as long as the request hangs.
+   */
+  private inflight = new Set<AbortController>()
+  /**
    * Connection generation: bumped on every connect()/disconnect(). Async
    * callbacks (onopen/onclose/reconnect timer/gap-pull) capture the gen at
    * creation and bail when a newer generation owns the transport, so stale
@@ -120,6 +157,10 @@ export class LocalTransport {
 
   /** Select the target host for API calls + event filtering (null = none). */
   setHost(hostId: string | null) {
+    // Requests already in flight were routed to the previous host — abort
+    // them so their promises settle (gapPull releases its per-host slot;
+    // stale results never land under the new host).
+    this.abortInflight()
     this.selectedHostId = hostId
   }
 
@@ -141,6 +182,9 @@ export class LocalTransport {
     } catch {
       /* ignore */
     }
+    // Requests issued under the old token are settled now (re-fetches pick
+    // up the new token).
+    this.abortInflight()
     // Token change: re-try WS in case we are talking to a hub.
     this.preferWS = true
     this.sawHubHello = false
@@ -196,13 +240,60 @@ export class LocalTransport {
    * fetch wrapper that attaches Authorization: Bearer when a hub FE
    * token is configured. All API calls go through this so token handling
    * stays in one place.
+   *
+   * Every request gets a hard timeout (default DEFAULT_FETCH_TIMEOUT_MS;
+   * `opts.timeoutMs` overrides, 0 disables) plus an optional caller
+   * `opts.signal`. Both sources are forwarded onto an owned
+   * AbortController tracked in `inflight`, so disconnect()/
+   * setHost()/setAccessToken() can abort everything in flight — a
+   * gapPull's finally then releases its per-host pulling slot instead of
+   * wedging it forever. Sources are composed by forwarding rather than
+   * AbortSignal.any (newer than this build's baseline browsers), which is
+   * equivalent here since every source funnels into one controller.
    */
-  private fetch(input: string, init: RequestInit = {}): Promise<Response> {
+  private async fetch(
+    input: string,
+    init: RequestInit = {},
+    opts: { timeoutMs?: number; signal?: AbortSignal } = {},
+  ): Promise<Response> {
     const headers = new Headers(init.headers)
     if (this.accessToken && !headers.has('Authorization')) {
       headers.set('Authorization', `Bearer ${this.accessToken}`)
     }
-    return fetch(input, { ...init, headers })
+    const ac = new AbortController()
+    this.inflight.add(ac)
+    const sources: AbortSignal[] = []
+    const timeoutMs = opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS
+    if (timeoutMs > 0) sources.push(AbortSignal.timeout(timeoutMs))
+    const extSignal = opts.signal ?? init.signal ?? undefined
+    if (extSignal) sources.push(extSignal)
+    const wired = sources.map((s) => ({ s, fn: () => ac.abort(s.reason) }))
+    for (const { s, fn } of wired) {
+      if (s.aborted) {
+        ac.abort(s.reason)
+        break
+      }
+      s.addEventListener('abort', fn, { once: true })
+    }
+    try {
+      // `await` matters: with a bare `return`, the finally would run the
+      // moment fetch() returns its pending promise — un-wiring the abort
+      // listeners and untracking the controller before the request ends.
+      return await fetch(input, { ...init, signal: ac.signal, headers })
+    } finally {
+      for (const { s, fn } of wired) s.removeEventListener('abort', fn)
+      this.inflight.delete(ac)
+    }
+  }
+
+  /**
+   * Abort every in-flight fetch (gap pulls included) so their promises
+   * settle and their finally blocks run — gapPull's finally releases the
+   * per-host pulling slot. Safe on already-aborted controllers.
+   */
+  private abortInflight() {
+    for (const ac of this.inflight) ac.abort()
+    this.inflight.clear()
   }
 
   /** Build the hub live WebSocket URL (relative base → current page host). */
@@ -248,6 +339,8 @@ export class LocalTransport {
     } catch {
       /* offline; the next hello/events re-triggers the pull */
     } finally {
+      // Timeout and abort (disconnect/setHost/setAccessToken) both reject
+      // the fetch and land here too — the per-host slot never wedges.
       this.pulling.delete(hostId)
     }
   }
@@ -278,17 +371,24 @@ export class LocalTransport {
     if (hubSeq > mine) void this.gapPull(this.selectedHostId, mine)
   }
 
-  private async onWsMessage(msg: MessageEvent) {
+  private async onWsMessage(msg: MessageEvent, gen: number) {
     let text: string
     if (typeof msg.data === 'string') {
       text = msg.data
     } else if (msg.data instanceof Blob) {
       // Compressed binary frame (flate/deflate-raw).
       const buf = await msg.data.arrayBuffer()
-      if (typeof DecompressionStream === 'undefined') return
+      if (gen !== this.gen || this.ws?.readyState !== WebSocket.OPEN) return
+      if (typeof DecompressionStream === 'undefined') {
+        warnNoDecompressionOnce()
+        return
+      }
       const ds = new DecompressionStream('deflate-raw')
       const stream = new Blob([buf]).stream().pipeThrough(ds)
       text = await new Response(stream).text()
+      // The connection may have been replaced while decompressing — a
+      // stale socket's events must not leak into the new generation.
+      if (gen !== this.gen) return
     } else {
       return
     }
@@ -347,7 +447,7 @@ export class LocalTransport {
 
     ws.onmessage = (msg) => {
       if (gen !== this.gen || this.ws !== ws) return
-      void this.onWsMessage(msg)
+      void this.onWsMessage(msg, gen)
     }
 
     ws.onclose = () => {
@@ -409,6 +509,9 @@ export class LocalTransport {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
+    // Settle every in-flight fetch (gap pulls included) so their finally
+    // blocks run — gapPull releases its per-host pulling slot.
+    this.abortInflight()
     this.ws?.close()
     this.ws = null
     this.es?.close()
@@ -424,6 +527,16 @@ export class LocalTransport {
    * host bridge 是多会话的——带着目标 sessionId 的 prompt 会在那个会话
    * 里跑（可与当前 active 会话的回合并行），用于后台队列投递。
    *
+   * `promptId`（可选，server-authoritative 队列）：有则作为 HTTP body
+   * 的 `meta.promptId` 发出（host `promptBody.Meta` json:"meta"；host 再
+   * 把它写成 agent 侧 session/prompt 的 `_meta.promptId`）。agent 从
+   * promptId 提取 queue_meta 插进权威队列（busy 排队、回合结束自动 pop；
+   * idle 直接运行），经 x.ai/queue/changed 广播回显。TUI pager 同款
+   * wire（prompt_request_meta）。注意：HTTP 层键名是 `meta`（不是
+   * `_meta`）——错写成 `_meta` 会被 host 静默丢弃，agent 自造 id，本地
+   * 乐观行与广播行对不上就会在队列里显示成两条。旧 host 忽略该字段；
+   * busy 时仍可能 409——调用方（promptQueue.enqueue）据此降级回本地排队。
+   *
    * 失败分类：host 是 agent 的透传层——HTTP 错误响应（!res.ok 或
    * ok:false）说明 host 活着、错误来自 agent（如模型 API 400
    * "Internal Error"），抛 AgentTurnError 由 store 渲染成回合错误行；
@@ -431,15 +544,25 @@ export class LocalTransport {
    */
   async prompt(
     blocks: ContentBlock[],
-    opts: { sessionId?: string } = {},
+    opts: { sessionId?: string; timeoutMs?: number; promptId?: string } = {},
   ): Promise<{ stopReason?: string; meta?: Record<string, unknown> }> {
     const body: Record<string, unknown> = { blocks }
     if (opts.sessionId) body.sessionId = opts.sessionId
-    const res = await this.fetch(this.url('/api/prompt'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
+    // Host JSON 键是 `meta`（http.go promptBody），再转发为 agent `_meta`。
+    if (opts.promptId) body.meta = { promptId: opts.promptId }
+    const res = await this.fetch(
+      this.url('/api/prompt'),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      // The POST answers when the TURN completes — match the host's own
+      // 30-min turn budget (bridge.go promptTimeout) so long turns are
+      // never cut short; a dead host still fails bounded instead of
+      // hanging the send forever. Callers may override per call.
+      { timeoutMs: opts.timeoutMs ?? PROMPT_TIMEOUT_MS },
+    )
     const data = (await res.json().catch(() => ({}))) as Record<string, unknown>
     if (!res.ok || data.ok === false) {
       // 三档 wire 约定（host writeAgentError）：
@@ -452,6 +575,7 @@ export class LocalTransport {
         typeof data.error === 'string' && data.error
           ? data.error
           : `prompt failed (${res.status})`,
+        res.status,
       )
     }
     const out: { stopReason?: string; meta?: Record<string, unknown> } = {}
@@ -467,8 +591,21 @@ export class LocalTransport {
     return out
   }
 
-  async cancel(): Promise<void> {
-    await this.fetch(this.url('/api/cancel'), { method: 'POST' })
+  /**
+   * Cancel the running turn (POST /api/cancel). The agent defaults
+   * `_meta.cancelSubagents` to TRUE when the flag is absent — a bare
+   * cancel would silently stop every running subagent. Like the TUI
+   * (xai-grok-pager always serializes the flag on session/cancel), the
+   * FE sends it explicitly: `true` stops subagents too (cancel panel
+   * "Stop running" / rewind), `false` keeps them running (send-now,
+   * Ctrl+C, "Always continue" preference).
+   */
+  async cancel(opts: { cancelSubagents?: boolean } = {}): Promise<void> {
+    await this.fetch(this.url('/api/cancel'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cancelSubagents: opts.cancelSubagents ?? false }),
+    })
   }
 
   async respondPermission(
@@ -2288,10 +2425,15 @@ export class LocalTransport {
     await this.xaiCall('/api/queue/clear', body)
   }
 
-  /** POST /api/queue/reorder {ids, sessionId?} → x.ai/queue/reorder（wire 键 orderedIds）。 */
+  /**
+   * POST /api/queue/reorder {ids, sessionId?} → host 再转成 agent 的
+   * `orderedIds`（http_ext.go handleQueueReorder）。HTTP 体必须用 `ids`，
+   * 不是 `orderedIds`——错写成后者会被 host 解析成空列表，agent 收到
+   * 无序通知（重排静默失败；本地先改序，queue_changed 一到又弹回）。
+   */
   async queueReorder(opts: { ids: string[] }, sessionId?: string): Promise<void> {
     const body: Record<string, unknown> = {}
-    if (opts.ids.length > 0) body.orderedIds = opts.ids
+    if (opts.ids.length > 0) body.ids = opts.ids
     if (sessionId) body.sessionId = sessionId
     await this.xaiCall('/api/queue/reorder', body)
   }

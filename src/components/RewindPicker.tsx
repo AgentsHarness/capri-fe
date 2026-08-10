@@ -192,7 +192,10 @@ export function RewindPicker() {
   /** Cancel-offer "y": cancel the running turn, then proceed to rewind. */
   const cancelTurnThenProceed = useCallback(async () => {
     setPhase('loading')
-    await cancelTurn()
+    // TUI rewind dispatch cancels with cancel_subagents: true — a running
+    // subagent belongs to the timeline being rewound, so it must stop too
+    // (a plain cancel now defaults to keeping subagents running).
+    await cancelTurn({ cancelSubagents: true })
     void fetchPoints()
   }, [cancelTurn, fetchPoints])
 

@@ -581,16 +581,20 @@ export function Composer() {
 
   /**
    * TUI double-Enter / [发送现在]: drain the queue head immediately.
-   * The head may only be sent while the session is IDLE — the host rejects
-   * prompts mid-turn (409 "上一条消息还在处理中"), so a running turn is
-   * cancelled first, exactly like Ctrl+Enter sendNow (TUI send-now is
-   * cancel-and-send). `sending` is the mutex shared with the auto-send
-   * effect and is armed BEFORE the cancel, so the cancelled turn's
-   * ready+awaitingNext state can never race into a second auto-send.
-   * The lock only spans the cancel→dequeue→send-start window: send() flips
-   * conn to 'busy' synchronously, which already blocks the auto-send
-   * effect — holding the lock until the turn ends (send() resolves at
-   * turn completion) would silently swallow every Enter in the meantime.
+   * Server-authoritative semantics (TUI 对齐):
+   * - 队首行已确认（有 version，来自 queue_changed 广播）→
+   *   x.ai/queue/interject {id, expectedVersion}：agent 版本校验后把该行
+   *   提升为下一个运行（send_now=true，插到 front），不取消当前回合
+   *   （已知行 send_now_cancels_running_turn=false）。行保留在本地镜像
+   *   （广播是校正通道）；版本不符/未知 id → agent no-op 并重广播，
+   *   行原样保留。收养广播（running_prompt_id）到达时移除并渲染用户行。
+   * - 队首行未确认（乐观回显 / 409 降级，无 version）→ 保留
+   *   cancel-then-send 兜底（旧 host 流程）：取消运行中回合（后台任务
+   *   继续），再发送队首。409 降级行重发时带同一 promptId 保持身份。
+   * `sending` 是互斥锁，与自动发送 effect 共享；锁只覆盖
+   * cancel→dequeue→send-start 窗口：send() 同步置 conn=busy 后立即释放，
+   * 否则整回合（send 在回合完成时才 resolve）期间 onSubmit 的 sending
+   * 守卫会把 Enter 静默吞掉。
    */
   const sendQueuedHead = async () => {
     const q = usePromptQueue.getState()
@@ -605,10 +609,25 @@ export function Composer() {
       q.switchSession(activeSession || undefined)
       return
     }
+    const head = q.queue[0]
+    if (!head) return
     q.setSending(true)
     try {
-      // TUI send-now: cancel the running turn (background tasks keep
-      // running), then send the head as the next prompt.
+      if (head.version != null) {
+        // 已确认行 → send-now via interject（agent 提升，不取消回合）。
+        // 错误忽略：广播是校正通道，行保留在镜像，显示可能短暂陈旧。
+        try {
+          await transport.queueInterject(
+            { id: head.id, expectedVersion: head.version },
+            activeSession,
+          )
+        } catch {
+          /* fire-and-forget 语义：agent no-op 或传输失败都靠重广播校正 */
+        }
+        return
+      }
+      // 未确认行（乐观回显 / 409 降级）→ cancel-then-send 兜底：取消
+      // 运行中回合（后台任务继续），然后发送队首作为下一回合。
       if (useChatStore.getState().conn === 'busy') {
         await useChatStore.getState().cancel()
         // Let the cancelled SSE land first so it can't clobber the new
@@ -621,23 +640,31 @@ export function Composer() {
           await new Promise((r) => setTimeout(r, 10))
         }
       }
-      const head = q.dequeue()
-      if (!head) return
+      // 取消等待窗口内收养广播可能已把当初按下的队首移除（乐观行被
+      // agent 收养、新回合已开始）——队首已不是该行时放弃手动发送，
+      // 交给广播收养流程，绝不把别的行误发出去。
+      if (usePromptQueue.getState().queue[0]?.id !== head.id) return
+      const popped = q.dequeue()
+      if (!popped) return
       try {
-        const sendPromise = useChatStore.getState().send(head.text, head.blocks)
+        const sendPromise = useChatStore.getState().send(popped.text, popped.blocks, {
+          // 降级行重发保持同一 promptId（agent queue_meta 身份一致）；
+          // 乐观回显行竞态重发不带 id（避免与在飞原 prompt 的
+          // queue_meta id 冲突）。
+          promptId: popped.degraded ? popped.id : undefined,
+        })
         // 竞态窗口已过：send() 同步置 conn=busy，自动发送 effect 不会再
-        // 触发——立即释放锁，否则整回合（send 在回合完成时才 resolve）
-        // 期间 onSubmit 的 sending 守卫会把 Enter 静默吞掉。
+        // 触发——立即释放锁（见函数头注释）。
         q.setSending(false)
         await sendPromise
-        if (useChatStore.getState().conn !== 'error') pushHistory(head.text)
+        if (useChatStore.getState().conn !== 'error') pushHistory(popped.text)
       } catch {
         // 发送被拒（host 409「上一条消息还在处理中」——cancel 尚未落到
         // host 侧 / 传输失败）：队首已出队，必须放回当前会话队首，否则
         // 该条永久丢失（与 chat.ts sendQueuedToSession 的 requeue-on-error
         // 同款）。错误已由 send() 渲染成 scrollback 行，不重复处理。
         const active = useChatStore.getState().sessionId
-        if (active) usePromptQueue.getState().requeueFront(active, head)
+        if (active) usePromptQueue.getState().requeueFront(active, popped)
       } finally {
         q.setSending(false)
       }
@@ -735,12 +762,29 @@ export function Composer() {
     }
     const st = useChatStore.getState()
     if (st.conn === 'busy') {
-      // TUI: Enter during a running turn queues instead of sending.
+      // TUI: Enter during a running turn → server-authoritative enqueue：
+      // 立即 fire-and-forget 发 prompt RPC（`_meta.promptId`，agent 把它
+      // 插进权威队列），本地插乐观回显行；旧 host 409 时降级为本地排队
+      // 行（回合结束自动发送，旧流程仍工作）。
       const { expandedText, blocks } = buildBlocks(text, chips)
       setText('')
       setChips([])
       // Tag the queue with the active session so drains stay session-scoped.
-      q.enqueue({ text: expandedText, blocks }, st.sessionId ?? '')
+      q.enqueue(
+        { text: expandedText, blocks },
+        st.sessionId ?? '',
+        {
+          // 非 409 错误（网络失败 / agent 拒绝）→ 渲染错误行；409 降级
+          // 静默（行保留，回合结束自动重试）。
+          onError: (e) => {
+            const msg = e instanceof Error ? e.message : String(e)
+            const cur = useChatStore.getState()
+            const last = cur.entries[cur.entries.length - 1]
+            const dup = last && last.kind === 'error' && last.text === msg
+            if (!dup) cur.appendLocalEntry({ kind: 'error', text: msg })
+          },
+        },
+      )
       taRef.current?.focus()
       return
     }
@@ -937,16 +981,25 @@ export function Composer() {
     return () => window.removeEventListener('keydown', onKey, true)
   }, [queuePanelOpen, queueEditIndex, queueSel, queue.length])
 
-  // TUI queue: auto-send the head when the turn ends (conn busy → ready
-  // && awaitingNext). The `sending` mutex guards against Enter races.
+  // TUI queue: server-authoritative drain — the AGENT pops the queue head
+  // at turn end (auto-drain) and broadcasts running_prompt_id for
+  // adoption; the FE no longer sends agent-owned rows itself. This effect
+  // ONLY delivers FE-owned rows: a 409-degraded head (old-host fallback)
+  // when the turn ends (conn ready && awaitingNext). Optimistic
+  // (in-flight) and confirmed rows are agent-owned — skipped here; their
+  // adoption broadcast removes them from the mirror and starts the turn.
+  // The `sending` mutex guards against Enter races.
+  const headDegraded = queue[0]?.degraded === true
   useEffect(() => {
     if (queueSending) return
-    if (queue.length === 0) return
+    const q = usePromptQueue.getState()
+    const head = q.queue[0]
+    if (!head || !head.degraded) return
     const st = useChatStore.getState()
     if (st.conn === 'ready' && st.awaitingNext) {
       void sendQueuedHead()
     }
-  }, [conn, awaitingNext, queue.length, queueSending])
+  }, [conn, awaitingNext, queue.length, headDegraded, queueSending])
 
   // TUI rewind draft custody: the /rewind picker stashes the prompt while
   // open and restores it on close. The store value doubles as the guard —
