@@ -116,17 +116,26 @@ function warnNoDecompressionOnce(): void {
   console.warn('deflate 解压不可用，丢弃压缩帧')
 }
 
+/** 连接模式：local = 同源 acp-host（SSE /events，无 ?host=，锁定本机）；hub = 跨源直连 hub（WS /ws/fe + ?host= + token）。 */
+export type TransportMode = 'local' | 'hub'
+
 export class LocalTransport {
   private es: EventSource | null = null
   private ws: WebSocket | null = null
   private handlers = new Set<TransportHandler>()
   private base: string
   private selectedHostId: string | null = null
+  /** 显式连接模式：由 detectMode() 判定（host 配置 HUB_URL → hub）。 */
+  private mode: TransportMode = 'local'
+  /** hub 模式的 hub 浏览器侧地址（跨源直连用；空则退回 base）。 */
+  private hubUrl = ''
+  /**
+   * 本机 host 的 hostId（内嵌前端直连 acp-host 时从 /api/status 拿到）。
+   * hub 模式下选中该 host 时，API 请求直连本机（base），不绕 hub 中继。
+   */
+  private localHostId: string | null = null
   /** Shared secret for hub FE_TOKEN (Authorization / WS ?token=). */
   private accessToken: string
-  /** Prefer WS (hub). Flips to false after a failed first WS attempt so local host uses SSE. */
-  private preferWS = true
-  private sawHubHello = false
   private intentionalClose = false
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private reconnectAttempt = 0
@@ -162,6 +171,8 @@ export class LocalTransport {
     // stale results never land under the new host).
     this.abortInflight()
     this.selectedHostId = hostId
+    // 双连接开关：切到本机 → 开本地 SSE 近路；切远程 → 关（hub WS 单路）。
+    this.syncLocalSSE()
   }
 
   getHost(): string | null {
@@ -186,9 +197,109 @@ export class LocalTransport {
     // up the new token).
     this.abortInflight()
     // Token change: re-try WS in case we are talking to a hub.
-    this.preferWS = true
-    this.sawHubHello = false
     if (this.es || this.ws) this.connect()
+  }
+
+  /** API base 按模式选择：hub → hubUrl（空则退回 base）；local → base。 */
+  private apiBase(): string {
+    if (this.mode === 'hub' && this.hubUrl) return this.hubUrl
+    return this.base
+  }
+
+  /**
+   * 显式切换连接模式（local = 同源 acp-host；hub = 跨源直连 hub）。
+   * 已连接时重建 live stream；API base 随模式切换。
+   * 注意与 setMode(modeId)（agent 权限模式）区分。
+   */
+  setConnectionMode(mode: TransportMode, hubUrl = '') {
+    const next = hubUrl.replace(/\/$/, '')
+    if (this.mode === mode && this.hubUrl === next) return
+    this.mode = mode
+    this.hubUrl = next
+    this.abortInflight()
+    if (this.es || this.ws) this.connect()
+  }
+
+  getConnectionMode(): TransportMode {
+    return this.mode
+  }
+
+  getHubUrl(): string {
+    return this.hubUrl
+  }
+
+  /**
+   * 记录本机 host 的 hostId（仅内嵌前端直连 acp-host 时有值）。
+   * hub 模式下选中该 host 时 API 走本地直连，其余 host 仍走 hub 中继。
+   */
+  setLocalHostId(hostId: string | null) {
+    this.localHostId = hostId
+  }
+
+  /** 页面是否托管在本机（localhost / 127.x / ::1）—— 本地直连近路的前提。 */
+  private isLocalPage(): boolean {
+    try {
+      const hostname = new URL(this.base || location.href).hostname
+      return (
+        hostname === 'localhost' ||
+        hostname === '::1' ||
+        hostname.startsWith('127.')
+      )
+    } catch {
+      return false
+    }
+  }
+
+  /** 当前是否应直连本机（hub 模式 + 页面在本机 + 选中了本机 host）。 */
+  private isLocalDirect(): boolean {
+    return (
+      this.mode === 'hub' &&
+      this.isLocalPage() &&
+      this.localHostId != null &&
+      this.selectedHostId === this.localHostId
+    )
+  }
+
+  /**
+   * 判定当前 base 指向 acp-host 直连还是 hub，并带回 hub 地址。
+   * - /api/hosts 单 host 且 local:true（无 defaultHostId）→ acp-host 直连：
+   *   模式以 /api/status 的 mode 为准（host 配了 HUB_URL → hub，否则 local）。
+   * - 多 host / 带 defaultHostId → hub（部署版前端 / VITE_PROXY_TARGET=hub）。
+   * - 401 → hub（需要 FE_TOKEN，gate 会接管）。
+   * - 网络失败 → local（ErrorBanner 兜底）。
+   */
+  async detectMode(): Promise<{
+    mode: TransportMode
+    hubUrl: string
+    localHostId?: string
+  }> {
+    let res: Response
+    try {
+      res = await this.fetch(`${this.base}/api/hosts`)
+    } catch {
+      return { mode: 'local', hubUrl: '' }
+    }
+    if (res.status === 401) return { mode: 'hub', hubUrl: this.base }
+    if (!res.ok) return { mode: 'local', hubUrl: '' }
+    const data = (await res.json().catch(() => ({}))) as {
+      hosts?: Array<{ local?: boolean }>
+      defaultHostId?: string
+    }
+    const direct =
+      !data.defaultHostId && data.hosts?.length === 1 && data.hosts[0]?.local === true
+    if (!direct) return { mode: 'hub', hubUrl: this.base }
+    // acp-host 直连：模式由 host 配置决定（HUB_URL 环境变量）；
+    // 顺带记录本机 hostId，供 hub 模式下选中本机时 API 直连本地。
+    try {
+      const st = (await (
+        await this.fetch(`${this.base}/api/status`)
+      ).json()) as { mode?: string; hubUrl?: string; hostId?: string }
+      if (st.mode === 'hub')
+        return { mode: 'hub', hubUrl: st.hubUrl || this.base, localHostId: st.hostId }
+    } catch {
+      /* fall through to local */
+    }
+    return { mode: 'local', hubUrl: '' }
   }
 
   getAccessToken(): string {
@@ -203,7 +314,7 @@ export class LocalTransport {
    */
   async probeAccess(): Promise<'ok' | 'need_token' | 'error'> {
     try {
-      const res = await this.fetch(`${this.base}/api/hosts`)
+      const res = await this.fetch(`${this.apiBase()}/api/hosts`)
       if (res.status === 401) return 'need_token'
       if (!res.ok) return 'error'
       return 'ok'
@@ -218,11 +329,11 @@ export class LocalTransport {
   }
 
   private emit(ev: AcpEvent) {
-    // Events without hostId are hub/host-level (hello, hosts_changed,
-    // or local-mode events) — always pass. Host-tagged events pass only
-    // when they belong to the selected host.
+    // hub 模式：host 级事件必须属于选中 host；未选 host 时丢弃所有
+    // host 事件（只放行 hello/hosts_changed 等 hub 级事件），避免多个
+    // host 的 live 事件混入视图。local 模式：本机事件全放行。
     const host = (ev as { hostId?: string }).hostId
-    if (host && this.selectedHostId && host !== this.selectedHostId) return
+    if (this.mode === 'hub' && host && host !== this.selectedHostId) return
     for (const h of this.handlers) h(ev)
   }
 
@@ -232,8 +343,16 @@ export class LocalTransport {
   }
 
   private url(path: string): string {
-    const qs = this.selectedHostId ? `?host=${encodeURIComponent(this.selectedHostId)}` : ''
-    return `${this.base}${path}${qs}`
+    // hub 模式：base 指向 hub，带 ?host= 由 hub 中转到目标 host；
+    // 但选中本机 host 时直连本地（不绕 hub 中继，省一跳网络往返）。
+    // local 模式：同源本机，绝不带 ?host=（避免 hostId=local 混淆）。
+    const local = this.isLocalDirect()
+    const base = local ? this.base : this.apiBase()
+    const qs =
+      !local && this.mode === 'hub' && this.selectedHostId
+        ? `?host=${encodeURIComponent(this.selectedHostId)}`
+        : ''
+    return `${base}${path}${qs}`
   }
 
   /**
@@ -298,7 +417,7 @@ export class LocalTransport {
 
   /** Build the hub live WebSocket URL (relative base → current page host). */
   private liveWsURL(): string {
-    const httpBase = this.base || `${location.protocol}//${location.host}`
+    const httpBase = this.apiBase() || `${location.protocol}//${location.host}`
     const u = new URL(httpBase, location.href)
     u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:'
     u.pathname = '/ws/fe'
@@ -323,7 +442,7 @@ export class LocalTransport {
     this.pulling.add(hostId)
     try {
       const qs = `?host=${encodeURIComponent(hostId)}&after=${after}`
-      const res = await this.fetch(`${this.base}/api/events${qs}`)
+      const res = await this.fetch(`${this.apiBase()}/api/events${qs}`)
       if (!res.ok) return
       const body = (await res.json()) as { events?: Array<AcpEvent & { seq?: number }> }
       const evs = body.events || []
@@ -365,6 +484,9 @@ export class LocalTransport {
    */
   private reconcileSeq(seqs?: Record<string, number>) {
     if (!seqs || !this.selectedHostId) return
+    // 双连接：选中本机时本机事件以本地 SSE 为权威（hub 路丢弃），
+    // 缺口由本地 SSE 重连后的 gapPull 负责，不在此按 hub 补拉。
+    if (this.isLocalDirect() && this.selectedHostId === this.localHostId) return
     const hubSeq = seqs[this.selectedHostId]
     if (typeof hubSeq !== 'number') return
     const mine = this.lastSeq.get(this.selectedHostId) ?? 0
@@ -401,7 +523,6 @@ export class LocalTransport {
     if (!data || typeof data !== 'object' || !('type' in data)) return
     if (data.type === 'ping') return
     if (data.type === 'hello' && (data as { service?: string }).service === 'hub') {
-      this.sawHubHello = true
       this.emit(data as unknown as AcpEvent)
       this.reconcileSeq((data as { seqs?: Record<string, number> }).seqs)
       return
@@ -409,6 +530,12 @@ export class LocalTransport {
     if (data.type === 'events' && Array.isArray((data as { events?: unknown }).events)) {
       for (const ev of (data as { events: AcpEvent[] }).events) {
         if (ev && typeof ev === 'object' && 'type' in ev) {
+          // 双连接：选中本机 host 时，本机事件以本地 SSE 为唯一来源
+          // （近路）；hub WS 推回的本机事件丢弃，避免与本地 SSE 重复
+          // （hub 侧做 chunk 合并，两条路事件边界不一致，无法按 seq
+          // 对齐去重）。远程 host 事件不受影响。
+          const evHost = (ev as { hostId?: string }).hostId
+          if (this.isLocalDirect() && evHost === this.localHostId) continue
           this.trackSeq(ev)
           this.emit(ev)
         }
@@ -424,8 +551,29 @@ export class LocalTransport {
     const gen = ++this.gen
     this.intentionalClose = false
     this.reconnectAttempt = 0
-    if (this.preferWS) this.connectWS(gen)
-    else this.connectSSE(gen)
+    // 模式显式决定 live stream：hub → WS /ws/fe；local → SSE /events。
+    // 不再"先试 WS 再降级"——local 模式永远不发起 WS。
+    if (this.mode === 'hub') {
+      this.connectWS(gen)
+      // 双连接：选中本机 host 时附加本地 SSE 近路（本机事件唯一来源）。
+      this.syncLocalSSE()
+    } else {
+      this.connectSSE(gen)
+    }
+  }
+
+  /**
+   * 双连接开关：hub 模式下选中本机 host → 开本地 SSE（近路）；
+   * 切到远程 host / local 模式 → 关本地 SSE（hub WS 单路）。
+   */
+  private syncLocalSSE() {
+    const want = this.mode === 'hub' && this.isLocalDirect()
+    if (want && !this.es) {
+      this.connectSSE(this.gen, true)
+    } else if (!want && this.es) {
+      this.es.close()
+      this.es = null
+    }
   }
 
   private connectWS(gen: number) {
@@ -433,9 +581,15 @@ export class LocalTransport {
     try {
       ws = new WebSocket(this.liveWsURL())
     } catch {
+      // 构造失败（非法 URL 等）：hub 模式没有 SSE 兜底，定时重试 WS。
       if (gen !== this.gen) return
-      this.preferWS = false
-      this.connectSSE(gen)
+      const delay = Math.min(30_000, 1000 * 2 ** Math.min(this.reconnectAttempt, 5))
+      this.reconnectAttempt += 1
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null
+        if (gen !== this.gen || this.intentionalClose) return
+        this.connectWS(gen)
+      }, delay)
       return
     }
     this.ws = ws
@@ -452,16 +606,11 @@ export class LocalTransport {
 
     ws.onclose = () => {
       // Stale socket (superseded by a newer connect()/disconnect()) must
-      // not fall back to SSE or schedule reconnects.
+      // not schedule reconnects.
       if (gen !== this.gen || this.ws !== ws) return
       this.ws = null
       if (this.intentionalClose) return
-      // First attempt failed without a hub hello → local host path (SSE).
-      if (!this.sawHubHello) {
-        this.preferWS = false
-        this.connectSSE(gen)
-        return
-      }
+      // Hub 模式没有 SSE 兜底（hub 只提供 /ws/fe）：指数退避重连 WS。
       const delay = Math.min(30_000, 1000 * 2 ** Math.min(this.reconnectAttempt, 5))
       this.reconnectAttempt += 1
       this.reconnectTimer = setTimeout(() => {
@@ -476,7 +625,15 @@ export class LocalTransport {
     }
   }
 
-  private connectSSE(gen: number) {
+  /**
+   * 本地 SSE 流。trackSeq=true 时（hub 模式双连接的本地近路）：
+   * - 事件带 bridge 全局 seq + hostId（host 的 handleSSE 附加），按
+   *   (hostId, seq) 记录，供与 hub 缓冲（gap 补拉）对齐；
+   * - EventSource 断线自动重连，onopen 时从 hub 补拉缺口
+   *   （?host=<本机>&after=<lastSeq>），断线期间的事件不丢。
+   * local 模式（trackSeq=false）保持原样：事件直接 emit。
+   */
+  private connectSSE(gen: number, trackSeq = false) {
     if (gen !== this.gen) return
     if (this.es) return // already on the SSE path; never double-connect
     // Local acp-host: EventSource cannot set Authorization headers — token
@@ -486,11 +643,20 @@ export class LocalTransport {
       : `${this.base}/events`
     const es = new EventSource(eventsURL)
     this.es = es
+    es.onopen = () => {
+      if (gen !== this.gen || this.es !== es) return
+      if (!trackSeq) return
+      // 重连（含首次）：从 hub 缓冲补拉本机缺口（本地 SSE 断线期间
+      // 的事件 hub 已缓冲）。lastSeq 为 0 时补全量最近事件。
+      const after = this.lastSeq.get(this.localHostId ?? '') ?? 0
+      if (after > 0) void this.gapPull(this.localHostId ?? '', after, gen)
+    }
     es.onmessage = (msg) => {
       if (gen !== this.gen || this.es !== es) return
       try {
         const data = JSON.parse(msg.data) as AcpEvent
         if (data && typeof data === 'object' && 'type' in data) {
+          if (trackSeq) this.trackSeq(data)
           this.emit(data)
         }
       } catch {
@@ -671,7 +837,7 @@ export class LocalTransport {
 
   /** Host registry + hub default selection (hub-level endpoint, no relay). */
   async listHosts(): Promise<{ hosts: HostInfo[]; defaultHostId?: string }> {
-    const res = await this.fetch(`${this.base}/api/hosts`)
+    const res = await this.fetch(`${this.apiBase()}/api/hosts`)
     const data = (await res.json().catch(() => ({}))) as {
       hosts?: HostInfo[]
       defaultHostId?: string

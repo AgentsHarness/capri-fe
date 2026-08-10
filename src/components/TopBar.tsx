@@ -177,6 +177,7 @@ export function TopBar({
   const hostName = useChatStore((s) => s.hostName)
   const hostId = useChatStore((s) => s.hostId)
   const hosts = useChatStore((s) => s.hosts)
+  const mode = useChatStore((s) => s.mode)
   const selectedHostId = useChatStore((s) => s.selectedHostId)
   const switchHost = useChatStore((s) => s.switchHost)
   const conn = useChatStore((s) => s.conn)
@@ -252,21 +253,31 @@ export function TopBar({
           </svg>
         </button>
         <div className="relative min-w-0">
-          <button
-            type="button"
-            onClick={() => setOpenHosts((v) => !v)}
-            className={`flex max-w-[40vw] sm:max-w-xs items-center gap-1 truncate rounded px-1.5 py-0.5 hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8 ${hostLabelColor}`}
-            title={
-              notice
-                ? `${notice}${hostName ? ` · ${hostName}` : ''}`
-                : conn === 'connecting' || conn === 'error' || conn === 'offline'
-                  ? `连接状态: ${conn}${hostName ? ` · ${hostName}` : ''}`
-                  : hostName || 'Local Host'
-            }
-          >
-            <span className="truncate">{hostLabel}</span>
-            <span className="text-gn-gutter">▾</span>
-          </button>
+          {mode === 'local' ? (
+            // 本地模式：锁定本机 —— 静态 Localhost 标签，不可点击、无下拉。
+            <div
+              className="flex min-h-8 max-w-[40vw] items-center gap-1 truncate rounded px-1.5 py-0.5 sm:max-w-xs"
+              title="本地模式（仅本机 acp-host，无 host 切换）"
+            >
+              <span className="truncate text-gn-fg">Localhost</span>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setOpenHosts((v) => !v)}
+              className={`flex max-w-[40vw] sm:max-w-xs items-center gap-1 truncate rounded px-1.5 py-0.5 hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8 ${hostLabelColor}`}
+              title={
+                notice
+                  ? `${notice}${hostName ? ` · ${hostName}` : ''}`
+                  : conn === 'connecting' || conn === 'error' || conn === 'offline'
+                    ? `连接状态: ${conn}${hostName ? ` · ${hostName}` : ''}`
+                    : hostName || 'Local Host'
+              }
+            >
+              <span className="truncate">{hostLabel}</span>
+              <span className="text-gn-gutter">▾</span>
+            </button>
+          )}
           {openHosts && (
             <>
               <button
