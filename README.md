@@ -90,3 +90,7 @@ Hub 设置了 `FE_TOKEN` 时：
 - Vite + React + TypeScript
 - Tailwind CSS v4（`@tailwindcss/vite`）
 - Zustand
+
+## 友情链接
+
+- [Linux.do](https://linux.do)
