@@ -299,6 +299,11 @@ export const slashCommands: SlashCommand[] = [
     run: () => void useChatStore.getState().showSessionInfo(),
   },
   {
+    name: 'context',
+    description: '查看上下文明细（占比/分类/估算）',
+    run: () => void useChatStore.getState().openContext(),
+  },
+  {
     name: 'loop',
     description: '创建定时任务',
     argHint: '[interval] [prompt...]',

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useChatStore } from '../store/chat'
 import { transport, type SettingsPayload } from '../api/localTransport'
+import { CustomModelsPanel } from './CustomModelsPanel'
 
 const GROUPS = [
   { key: 'ui', label: 'UI' },
@@ -158,6 +159,8 @@ export function SettingsModal() {
               )
             })
           )}
+          {/* 自定义模型（[model.*]）可视化编辑 — 独立于 /api/settings。 */}
+          <CustomModelsPanel />
         </div>
       </div>
     </div>

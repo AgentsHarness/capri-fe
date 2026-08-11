@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import type { ContentBlock } from '../api/types'
-import { transport, AgentTurnError } from '../api/localTransport'
+import { transport } from '../api/localTransport'
 
 /**
  * ── Server-authoritative prompt queue (TUI 对齐：agent 是权威) ───────
@@ -18,11 +18,12 @@ import { transport, AgentTurnError } from '../api/localTransport'
  * 3. 队列行 send-now（[发送现在]/双 Enter）→ x.ai/queue/interject
  *    {id, expectedVersion}（version 取自广播副本）→ agent 版本校验后
  *    提升为下一个运行（不取消回合；版本不符是 no-op 并重广播）。
- *    仅当本地行没有 version（乐观回显未确认 / 409 降级）时保留
+ *    仅当本地行没有 version（乐观回显未确认 / RPC 失败）时保留
  *    cancel-then-send 兜底（Composer.sendQueuedHead）。
- * 4. 降级（旧 host / 竞态 409）：mid-turn prompt 被 409 拒绝 → 行标记
- *    degraded（FE-owned），回合结束时由 FE 自动发送（旧流程兜底），
- *    新 host 下仍正常工作。
+ * 4. RPC 失败（网络 / agent 拒绝 / 竞态 409）：行标记 degraded
+ *    （FE-owned，agent 从未见过），渲染错误行；不再自动重发——由用户
+ *    手动双 Enter / [发送现在] 投递（server-authoritative 下 mid-turn
+ *    prompt 由 agent 排队，失败即异常，不静默兜底）。
  *
  * `sending` 是互斥锁：自动发送 effect 与用户手势（双 Enter / [发送现在]）
  * 共享同一条 drain 路径，Enter 永远不会与自动发送竞态出双 prompt。
@@ -69,8 +70,9 @@ export type QueuedPrompt = {
    */
   optimistic?: boolean
   /**
-   * 409 降级（旧 host 拒绝 mid-turn prompt，或竞态）：agent 侧没有该行，
-   * FE-owned——回合结束时由 FE 自动发送（旧流程兜底）。
+   * RPC 失败（网络 / agent 拒绝 / 竞态 409）：agent 侧没有该行，
+   * FE-owned——保留显示供手动重发（双 Enter / [发送现在]），不再自动
+   * 投递（legacy 409 自动重发已移除）。
    */
   degraded?: boolean
 }
@@ -92,31 +94,18 @@ function syncQueue(fn: () => Promise<unknown>): void {
 }
 
 /**
- * 409 判定（降级触发条件）：AgentTurnError 的 status 字段（新代码）
- * 或错误文本兜底（老 host 的 409 文案 "上一条消息还在处理中"）。
- */
-function isConflictError(e: unknown): boolean {
-  return (
-    e instanceof AgentTurnError &&
-    (e.status === 409 ||
-      (typeof e.message === 'string' &&
-        (e.message.includes('409') || e.message.includes('上一条消息还在处理中'))))
-  )
-}
-
-/**
  * 结算一条在途 prompt 的 RPC 结果（enqueue 的 fire-and-forget 链）：
  * - `ran`：RPC 在回合完成时 resolve = 该 prompt 已经作为回合跑完——
  *   从显示镜像移除（正常流程收养广播先移除；这里是漏广播兜底），并记
  *   入 drainedIds 防 stale 广播复活。
- * - `degraded`：RPC 被拒（409 = 旧 host；其它错误同样降级保留，避免
- *   静默丢失用户意图）——行标记 degraded，回合结束时由 FE 自动发送。
+ * - `failed`：RPC 被拒（网络失败 / agent 拒绝 / 竞态 409）——行保留为
+ *   degraded（FE-owned），调用方渲染错误行；用户手动重发。
  * 行可能在活跃队列或 stash（RPC 在飞期间会话被切走）。
  */
 function settlePromptRow(
   promptId: string,
   sessionId: string,
-  outcome: 'ran' | 'degraded',
+  outcome: 'ran' | 'failed',
 ): void {
   usePromptQueue.setState((s) => {
     const active = s.sessionId === sessionId
@@ -185,8 +174,8 @@ type PromptQueueState = {
   /**
    * Server-authoritative enqueue: 立即 fire-and-forget 发 session/prompt
    * （`_meta.promptId` = 行 id）→ agent 把它插进权威队列；本地插入乐观
-   * 回显行。409（旧 host）→ 行降级为 FE-owned（回合结束自动发送）；
-   * 其它错误 → 行同样降级保留 + onError 渲染错误行。不再向 host 镜像
+   * 回显行。RPC 失败（网络 / agent 拒绝 / 竞态 409）→ 行标记 degraded
+   * （FE-owned，保留手动重发）+ onError 渲染错误行。不再向 host 镜像
    * queueInterject——prompt RPC 本身就是入队。
    */
   enqueue: (
@@ -196,12 +185,6 @@ type PromptQueueState = {
   ) => void
   /** Remove and return the head; undefined when empty. */
   dequeue: () => QueuedPrompt | undefined
-  /**
-   * Pop the head of a SPECIFIC session's stash queue (background queue
-   * delivery for a non-active session whose turn just ended). Mirrors
-   * dequeue's drainedIds semantics; syncs queue/remove to the host.
-   */
-  dequeueFrom: (sessionId: string) => QueuedPrompt | undefined
   /** Put an item back at the front of a session's stash (send rejected). */
   requeueFront: (sessionId: string, item: QueuedPrompt) => void
   removeAt: (id: string) => void
@@ -257,16 +240,11 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
       .then(
         () => settlePromptRow(promptId, sessionId, 'ran'),
         (e: unknown) => {
-          if (isConflictError(e)) {
-            // 旧 host / 竞态：mid-turn prompt 被拒 → 回退本地排队，
-            // 回合结束时由 FE 自动发送（旧流程仍工作）。
-            settlePromptRow(promptId, sessionId, 'degraded')
-          } else {
-            // 其它错误（网络失败 / agent 拒绝）→ 行降级保留（不丢用户
-            // 意图，回合结束重试）+ 调用方渲染错误行。
-            settlePromptRow(promptId, sessionId, 'degraded')
-            opts?.onError?.(e)
-          }
+          // 任何失败（网络 / agent 拒绝 / 竞态 409）→ 行保留为
+          // degraded（FE-owned，不丢用户意图，手动重发）+ 调用方渲染
+          // 错误行。不再区分旧 host 409 静默降级（legacy 已移除）。
+          settlePromptRow(promptId, sessionId, 'failed')
+          opts?.onError?.(e)
         },
       )
   },
@@ -291,21 +269,6 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
     // 是 no-op）。带会话标签，防止切换竞态下 host 把删除落到新会话。
     const sid = get().sessionId
     syncQueue(() => transport.queueRemove({ id: head.id }, sid))
-    return head
-  },
-  dequeueFrom: (sessionId) => {
-    const s = get()
-    const list = s.queues[sessionId]
-    if (!list || list.length === 0) return undefined
-    const [head, ...rest] = list
-    set({
-      queues: { ...s.queues, [sessionId]: rest },
-      // Defensive: keep the ACTIVE queue in sync if the target session
-      // happens to be active (the background path only targets others).
-      queue: s.sessionId === sessionId ? rest : s.queue,
-      drainedIds: new Set(s.drainedIds).add(head.id),
-    })
-    syncQueue(() => transport.queueRemove({ id: head.id }, sessionId))
     return head
   },
   requeueFront: (sessionId, item) => {
@@ -580,7 +543,7 @@ export type QueueAdoption = {
  * confirmed by the snapshot (optimistic cleared, version kept from the
  * broadcast). Id 未命中时按 text 认领乐观/降级行（host 丢 meta.promptId
  * 时 agent 自造 id 的兜底，避免镜像重复两条）。仍无对上的在途行才
- * re-append（旧 host 409：agent 从没见过）。Edit state survives only while
+ * re-append（RPC 失败降级：agent 从没见过）。Edit state survives only while
  * the edited row still exists. `sessionId` (the broadcast's emitting
  * session — chat.ts only forwards broadcasts of the active session) tags
  * the queue so drains stay session-scoped.
@@ -693,7 +656,7 @@ export function applyQueueChanged(
 
   if (snapshot) {
     // 本地在途行（乐观回显 / 降级，FE 侧尚悬而未决）不在快照里 → 保留
-    // 显示：agent 从没见过它（旧 host 409 降级），或 RPC 结果会结算它。
+    // 显示：agent 从没见过它（RPC 失败降级），或 RPC 结果会结算它。
     // 已被 text 对齐认领 / drained / 收养的行绝不回挂（防重复两条）。
     const snapIds = new Set(snapshot.map((q) => q.id))
     for (const row of prev) {

@@ -2,6 +2,7 @@ import type {
   AcpEvent,
   AgentSkill,
   ContentBlock,
+  CustomModelConfig,
   ExtensionHook,
   ExtensionPlugin,
   ExtensionSkill,
@@ -40,7 +41,7 @@ export class AgentTurnError extends Error {
    * host 正在重启 agent）。
    */
   kind: AgentTurnKind
-  /** HTTP 状态码（有则带上）——409 用于 mid-turn prompt 的降级检测。 */
+  /** HTTP 状态码（有则带上）——409 = mid-turn 竞态（渲染错误行）。 */
   status?: number
   constructor(kind: AgentTurnKind, message: string, status?: number) {
     super(message)
@@ -353,6 +354,29 @@ export class LocalTransport {
         ? `?host=${encodeURIComponent(this.selectedHostId)}`
         : ''
     return `${base}${path}${qs}`
+  }
+
+  /**
+   * Mode-aware URL for an API path (hub → 带 ?host= 指向选中 host；
+   * 选中本机 → 直连本地；local → 同源本机)。独立 API 客户端
+   * （如 shell.ts）必须用它拼 URL，不能裸 fetch 相对路径——
+   * 否则 hub 模式下请求会打到页面所在机器而不是选中的 host。
+   */
+  apiUrl(path: string): string {
+    return this.url(path)
+  }
+
+  /**
+   * Mode-aware fetch：apiUrl 拼 URL + Authorization bearer + 超时 +
+   * 在途请求跟踪（setHost/disconnect 时统一 abort）。所有 API 调用
+   * 都应走这里而不是裸 fetch。
+   */
+  apiFetch(
+    path: string,
+    init: RequestInit = {},
+    opts: { timeoutMs?: number; signal?: AbortSignal } = {},
+  ): Promise<Response> {
+    return this.fetch(this.url(path), init, opts)
   }
 
   /**
@@ -701,7 +725,8 @@ export class LocalTransport {
    * wire（prompt_request_meta）。注意：HTTP 层键名是 `meta`（不是
    * `_meta`）——错写成 `_meta` 会被 host 静默丢弃，agent 自造 id，本地
    * 乐观行与广播行对不上就会在队列里显示成两条。旧 host 忽略该字段；
-   * busy 时仍可能 409——调用方（promptQueue.enqueue）据此降级回本地排队。
+   * busy 时仍可能 409（竞态）——调用方（promptQueue.enqueue）渲染错误
+   * 行、行保留手动重发（legacy 降级自动重发已移除）。
    *
    * 失败分类：host 是 agent 的透传层——HTTP 错误响应（!res.ok 或
    * ok:false）说明 host 活着、错误来自 agent（如模型 API 400
@@ -939,6 +964,13 @@ export class LocalTransport {
             ? { currentModelId: o.current_model_id }
             : typeof o.currentModelId === 'string' && o.currentModelId
               ? { currentModelId: o.currentModelId }
+              : {}),
+          // 持久化的 reasoning_effort（agent summary）—— load 响应
+          // models 缺 effort 时用它恢复用户原选档位。
+          ...(typeof o.reasoning_effort === 'string' && o.reasoning_effort.trim()
+            ? { reasoningEffort: o.reasoning_effort.trim() }
+            : typeof o.reasoningEffort === 'string' && o.reasoningEffort.trim()
+              ? { reasoningEffort: o.reasoningEffort.trim() }
               : {}),
           ...(typeof o.num_messages === 'number' && Number.isFinite(o.num_messages)
             ? { numMessages: o.num_messages }
@@ -1267,6 +1299,60 @@ export class LocalTransport {
     })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'set model failed')
+    return data
+  }
+
+  /**
+   * Persist `[models].default` (+ optional `default_reasoning_effort`) in
+   * config.toml AND switch the current session — the TUI `/model` double
+   * action. The agent hot-reloads config.toml, so this also affects next
+   * sessions without a restart.
+   */
+  async setDefaultModel(modelId: string, reasoningEffort?: string) {
+    const res = await this.fetch(this.url('/api/set-default-model'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modelId, ...(reasoningEffort ? { reasoningEffort } : {}) }),
+    })
+    const data = await res.json()
+    if (!res.ok || data.ok === false) throw new Error(data.error || 'set default model failed')
+    return data
+  }
+
+  /** List `[model.<id>]` custom model entries from config.toml. */
+  async listCustomModels(): Promise<CustomModelConfig[]> {
+    const res = await this.fetch(this.url('/api/custom-models'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+    const data = await res.json()
+    if (!res.ok || data.ok === false) throw new Error(data.error || 'list custom models failed')
+    return Array.isArray(data.models) ? (data.models as CustomModelConfig[]) : []
+  }
+
+  /** Create or fully replace `[model.<id>]` in config.toml. */
+  async upsertCustomModel(cfg: CustomModelConfig) {
+    const { id, ...values } = cfg
+    const res = await this.fetch(this.url('/api/custom-model'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, values }),
+    })
+    const data = await res.json()
+    if (!res.ok || data.ok === false) throw new Error(data.error || 'save custom model failed')
+    return data
+  }
+
+  /** Remove `[model.<id>]` from config.toml. */
+  async deleteCustomModel(id: string) {
+    const res = await this.fetch(this.url('/api/custom-model-delete'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    })
+    const data = await res.json()
+    if (!res.ok || data.ok === false) throw new Error(data.error || 'delete custom model failed')
     return data
   }
 

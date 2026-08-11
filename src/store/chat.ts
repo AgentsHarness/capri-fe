@@ -85,6 +85,19 @@ function clearContinueSessionTimer() {
 }
 
 /**
+ * Multi-tab peer session/load: another client called session/load for
+ * the session we are viewing. Agent replays the full conversation on the
+ * shared SSE bus — without this gate we APPEND the replay onto our
+ * existing entries (doubled timeline). Armed on session_load_started
+ * when we are NOT already historyLoading (initiator path); cleared when
+ * we rebuild from HTTP on session_load_finished.
+ */
+let peerSessionLoadSid: string | null = null
+function clearPeerSessionLoad() {
+  peerSessionLoadSid = null
+}
+
+/**
  * 会话/宿主切换代数（模块级）：每次 switchHost / newSession / resetToEmpty
  * 递增。在途的 loadHistory / continueSession 异步结果落库前校验代数，
  * 不匹配即丢弃——旧 host 的历史数据绝不写进新 host 的视图。
@@ -106,6 +119,105 @@ function loadCancelSubagentsPref(): boolean | null {
   }
 }
 
+// ── pending client requests (permission / x.ai questions) ───────────
+// Interactive x.ai/* methods that get a UI card. Everything else is
+// auto-rejected so the agent never hangs on an unsupported method.
+const SUPPORTED_XAI_REQUESTS = new Set([
+  'x.ai/ask_user_question',
+  'x.ai/exit_plan_mode',
+  'x.ai/diff_review',
+])
+
+/** Owning session of a pending request (top-level wire, or params fallback). */
+function pendingReqSessionId(r: PendingReq): string | undefined {
+  if (typeof r.sessionId === 'string' && r.sessionId) return r.sessionId
+  const p = r.params
+  if (!p || typeof p !== 'object') return undefined
+  const sid = p.sessionId ?? p.session_id
+  return typeof sid === 'string' && sid ? sid : undefined
+}
+
+/**
+ * Split host pending into permission strip vs x.ai cards, optionally
+ * scoped to one session. Untagged rows (old host / no params id) are
+ * kept only when `includeUntagged` is true — used for hello of the
+ * host's active session, where legacy snapshots had no per-row id.
+ * When `sessionId` is undefined (mid-switch / empty state) rows tagged
+ * with a KNOWN session are still dropped — they belong to a specific
+ * session we are not looking at; only untagged rows pass.
+ */
+function partitionPendingRequests(
+  reqs: PendingReq[] | undefined,
+  sessionId: string | undefined,
+  opts: { includeUntagged?: boolean } = {},
+): { pending: PendingReq[]; xaiRequests: PendingReq[] } {
+  const pending: PendingReq[] = []
+  const xaiRequests: PendingReq[] = []
+  if (!reqs?.length) return { pending, xaiRequests }
+  for (const r of reqs) {
+    const sid = pendingReqSessionId(r)
+    if (sessionId) {
+      if (sid && sid !== sessionId) continue
+      if (!sid && !opts.includeUntagged) continue
+    } else {
+      // 无已知会话（切换中 / 空状态）：带已知会话标签的行绝不能画到
+      // 当前视图——只放行无标签（legacy）行，它们无法归属到别处。
+      if (sid) continue
+    }
+    const tagged: PendingReq = sid ? { ...r, sessionId: sid } : r
+    if (tagged.method.startsWith('x.ai/')) {
+      if (SUPPORTED_XAI_REQUESTS.has(tagged.method)) xaiRequests.push(tagged)
+    } else {
+      pending.push(tagged)
+    }
+  }
+  return { pending, xaiRequests }
+}
+
+/**
+ * Rehydrate the active session's pending permission / question cards
+ * from GET /api/status (authoritative host clientReqs). Used after
+ * continueSession — live client_request SSE for a non-active session
+ * is filtered out, so switching back would otherwise leave the agent
+ * waiting with an empty UI until the 15min approval timeout.
+ *
+ * Unsupported x.ai/* methods are auto-rejected (same as live path).
+ */
+async function syncPendingForSession(
+  sessionId: string,
+  get: () => ChatState,
+  set: (partial: Partial<ChatState>) => void,
+  myGen: number,
+): Promise<void> {
+  try {
+    const st = await transport.status()
+    if (myGen !== sessionSwitchGen) return
+    if (get().sessionId !== sessionId) return
+    const reqs = st.pendingRequests ?? []
+    // Auto-reject unsupported x.ai methods for THIS session so they
+    // don't sit until approvalTimeout with no UI.
+    for (const r of reqs) {
+      const sid = pendingReqSessionId(r)
+      if (sid && sid !== sessionId) continue
+      if (!sid && st.sessionId !== sessionId) continue
+      if (
+        r.method.startsWith('x.ai/') &&
+        !SUPPORTED_XAI_REQUESTS.has(r.method)
+      ) {
+        void get().respondXai(r.requestId, undefined, `前端不支持方法 ${r.method}`)
+      }
+    }
+    // After loadSession the host active session is `sessionId`; untagged
+    // rows (old host) are attributed to that active session only.
+    const includeUntagged = !st.sessionId || st.sessionId === sessionId
+    const next = partitionPendingRequests(reqs, sessionId, { includeUntagged })
+    if (myGen !== sessionSwitchGen || get().sessionId !== sessionId) return
+    set({ pending: next.pending, xaiRequests: next.xaiRequests })
+  } catch {
+    /* offline / status failed — leave pending empty until next live event */
+  }
+}
+
 // ── per-session mode-flag persistence ───────────────────────────────
 // The agent persists ONLY the session-mode dimension into the timeline:
 // current_mode_update {currentModeId: plan|default|…} lands in
@@ -121,6 +233,26 @@ const MODE_FLAGS_KEY = 'acpfe.modeFlags'
 /** Keep the map bounded (newest sessions win; UUID-ish keys keep insertion order). */
 const MODE_FLAGS_MAX = 50
 
+/**
+ * Normalize mode flags for persistence: default-y permission values need
+ * no record. A saved permissionMode 'ask'/'default'/'normal' would sit in
+ * the record shadowing nothing itself (the composer filters those) but a
+ * stale 'ask' written over optimistic flags would suppress the composer
+ * badge after a resume even when the agent is actually always-approve.
+ * Also applied on read so old records written before this rule clean up.
+ */
+function normalizeModeFlags(flags: ModeFlags): ModeFlags {
+  const out: ModeFlags = { ...flags }
+  if (
+    out.permissionMode === 'ask' ||
+    out.permissionMode === 'default' ||
+    out.permissionMode === 'normal'
+  ) {
+    out.permissionMode = undefined
+  }
+  return out
+}
+
 function loadModeFlagsMap(): Record<string, ModeFlags> {
   try {
     const raw = window.localStorage.getItem(MODE_FLAGS_KEY)
@@ -135,7 +267,7 @@ function loadModeFlagsMap(): Record<string, ModeFlags> {
 function saveModeFlags(sessionId: string, flags: ModeFlags): void {
   try {
     const map = loadModeFlagsMap()
-    map[sessionId] = flags
+    map[sessionId] = normalizeModeFlags(flags)
     const ids = Object.keys(map)
     if (ids.length > MODE_FLAGS_MAX) {
       for (const id of ids.slice(0, ids.length - MODE_FLAGS_MAX)) delete map[id]
@@ -149,7 +281,22 @@ function saveModeFlags(sessionId: string, flags: ModeFlags): void {
 /** The flags this client last knew for a session ({} when unknown). */
 function restoreModeFlags(sessionId?: string): ModeFlags {
   if (!sessionId) return {}
-  return loadModeFlagsMap()[sessionId] ?? {}
+  return normalizeModeFlags(loadModeFlagsMap()[sessionId] ?? {})
+}
+
+// ── exit_plan_mode approval grace window ────────────────────────────
+// After the FE approves/abandons a plan it clears planMode locally (the
+// agent does not reliably re-broadcast afterwards). SSE events and the
+// approval HTTP round-trip travel on separate channels, so a 'plan'
+// broadcast queued BEFORE the approval can still land AFTER the local
+// clear and wrongly resurrect the flag. For a short window after the
+// approval, plan-ON signals are ignored — the approval response is
+// causally later than any in-flight pre-exit event. After the window a
+// 'plan' signal applies normally (the agent genuinely re-entered plan).
+const PLAN_EXIT_GRACE_MS = 1500
+let planExitApprovedAt = 0
+function planOnWithinGrace(): boolean {
+  return Date.now() - planExitApprovedAt < PLAN_EXIT_GRACE_MS
 }
 
 // ── client-global default permission mode (config.toml ui.permission_mode) ──
@@ -242,6 +389,7 @@ function resetSessionState(
     sessionId: undefined,
     cwd: undefined,
     emptyCwd: undefined,
+    emptyCwdByHost: {},
     openAssistantId: undefined,
     openThoughtId: undefined,
     pendingOptimisticUserId: undefined,
@@ -456,13 +604,13 @@ export function formatTurnDuration(ms: number): string {
   return `${Math.floor(mins / 60)}h${mins % 60}m`
 }
 
-/** TUI context_bar fmt_tokens: "500", "5.2k", "48.8k", "1.2M". */
+/** TUI context_bar fmt_tokens: "500", "5.2K", "48.8K", "1.2M". */
 function fmtTokens(n: number): string {
   if (n >= 1_000_000) {
     return n >= 10_000_000 ? `${Math.round(n / 1_000_000)}M` : `${(n / 1_000_000).toFixed(1)}M`
   }
   if (n >= 1_000) {
-    return n >= 10_000 ? `${Math.round(n / 1_000)}k` : `${(n / 1_000).toFixed(1)}k`
+    return n >= 10_000 ? `${Math.round(n / 1_000)}K` : `${(n / 1_000).toFixed(1)}K`
   }
   return String(n)
 }
@@ -486,7 +634,9 @@ function formatSessionInfo(info: SessionInfoDetail): string {
   const ctxSize = info.contextSize || info.model?.contextWindow || 0
   if (ctxSize > 0) {
     const used = info.contextUsed ?? 0
-    const pct = Math.round((used / ctxSize) * 100)
+    // TUI usage_percentage_u8 clamps at 100 — never render >100% even
+    // when used transiently exceeds the window (pre-auto-compact).
+    const pct = Math.min(100, Math.round((used / ctxSize) * 100))
     lines.push(`  Context: ${fmtTokens(used)} / ${fmtTokens(ctxSize)} tokens (${pct}%)`)
   }
   if (info.gitBranch) {
@@ -635,6 +785,43 @@ function extractModeFlags(
   const auto = read('autoMode', 'auto_mode')
   if (typeof auto === 'boolean') out.autoMode = auto
   return Object.keys(out).length > 0 ? out : null
+}
+
+/**
+ * Session-mode channel patch (modes_update / current_mode_update /
+ * hello|ready modes / session-load modes) — extractModeFlags plus two
+ * guarantees that keep the composer's plan flag honest:
+ *
+ *  1. plan ON right after an exit_plan_mode approval is dropped: the
+ *     approval response is causally later than any in-flight pre-exit
+ *     broadcast (SSE and the approval HTTP round-trip are separate
+ *     channels, so a queued 'plan' event can land after the local
+ *     clear). See PLAN_EXIT_GRACE_MS.
+ *  2. plan OFF authoritatively clears a lingering permissionMode 'plan'
+ *     (from an earlier permission broadcast or a saved record) so the
+ *     composer's `inPlan` cannot stay true against the session-mode
+ *     truth. A permissionMode the payload itself carries (e.g. the
+ *     currentModeId mirror) is left alone.
+ */
+function sessionModesPatch(
+  get: () => ChatState,
+  modes: unknown,
+): Partial<
+  Pick<ChatState, 'planMode' | 'permissionMode' | 'yoloMode' | 'autoMode'>
+> | null {
+  const flags = extractModeFlags(modes)
+  if (!flags) return null
+  if (flags.planMode === true && planOnWithinGrace()) {
+    delete flags.planMode
+  }
+  if (
+    flags.planMode === false &&
+    flags.permissionMode === undefined &&
+    get().permissionMode === 'plan'
+  ) {
+    return { ...flags, permissionMode: undefined }
+  }
+  return Object.keys(flags).length > 0 ? flags : null
 }
 
 function extractTarget(tc: ToolCall): string {
@@ -1112,6 +1299,12 @@ type ChatState = {
    * 创建新会话（空串 = 宿主默认目录）。resetSessionState 清空。
    */
   emptyCwd?: string
+  /**
+   * 按 host 记忆空状态工作目录：`emptyCwd` 是"当前 host"的取值，
+   * 切换 host 时从这里取该 host 自己的目录，绝不沿用别的 host 的路径
+   * （同一路径在不同 host 上是不同的文件系统）。
+   */
+  emptyCwdByHost?: Record<string, string>
   historyOpen: boolean
   /** Desktop (lg+) persistent sidebar collapsed state — toggled by the TopBar collapse icon. */
   sidebarCollapsed: boolean
@@ -1363,6 +1556,8 @@ type ChatState = {
   viewerTask?: ViewerTask
   /** /session-info modal visibility (TUI session-info command). */
   sessionInfoOpen: boolean
+  /** /context modal visibility (TUI context command — context breakdown). */
+  contextOpen: boolean
   /** /usage modal visibility — 宿主侧 token 用量聚合 + billing credits。 */
   usageOpen: boolean
   openUsage: () => void
@@ -1601,16 +1796,6 @@ type ChatState = {
   stopTopTaskPolling: () => void
   /** Switch the active session to a historical one and load its tail. */
   continueSession: (sessionId: string, cwd: string) => Promise<void>
-  /**
-   * Background queue delivery: send a non-active session's queued prompt
-   * head when ITS turn ended (done while the user views another session).
-   * The agent is multi-session — session/prompt targeted at that
-   * sessionId runs the turn there in parallel; the head is popped from
-   * the session's stash and re-queued on rejection (409 busy race /
-   * transport failure). Each completed turn re-triggers via done, so a
-   * multi-item queue drains turn by turn without leaving the current view.
-   */
-  sendQueuedToSession: (targetId: string) => Promise<void>
   handleEvent: (ev: AcpEvent) => void
   toggleTool: (id: string) => void
   toggleThought: (id: string) => void
@@ -1657,6 +1842,9 @@ type ChatState = {
   /** Open / close the /session-info modal. */
   openSessionInfo: () => void
   closeSessionInfo: () => void
+  /** Open / close the /context detail modal. */
+  openContext: () => void
+  closeContext: () => void
   /**
    * TUI /session-info: fetch session details (POST /api/session-info) and
    * append them to the scrollback as a read-only text block (kind 'status')
@@ -1797,6 +1985,7 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
   viewerEntryId: null,
   viewerTask: undefined,
   sessionInfoOpen: false,
+  contextOpen: false,
   usageOpen: false,
   tasksBarOpen: false,
   setTasksBarOpen: (open) => set({ tasksBarOpen: open }),
@@ -2012,14 +2201,28 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
         // switching to a busy session and having its `done` land inside
         // the historyLoading window would leave the composer stuck on
         // "Waiting for host…" forever (finalizeTurn never runs).
+        // Same for client_request (permission / ask_user_question): a
+        // pending that lands during the load/grace window must paint, or
+        // the agent sits blocked until approvalTimeout with no UI.
+        // session_load_finished: multi-tab peer rebuilds HTTP history
+        // after another tab's session/load replay ends.
         const evSid = (ev as { sessionId?: string }).sessionId
         const isTurnEnd =
           ev.type === 'done' ||
           ev.type === 'turn_completed' ||
           ev.type === 'cancelled'
-        if (!isTurnEnd) return
+        // client_request (+ resolved): permission / ask_user_question cards
+        // that land or clear during the load/grace window must update UI,
+        // or multi-tab answers leave a zombie card / missed prompt.
+        const isClientRequest =
+          ev.type === 'client_request' || ev.type === 'client_request_resolved'
+        const isSessionLoadBoundary =
+          ev.type === 'session_load_started' ||
+          ev.type === 'session_load_finished'
+        if (!isTurnEnd && !isClientRequest && !isSessionLoadBoundary) return
         if (evSid && evSid !== s.sessionId) return
-        // Fall through: deliver this session's own turn-terminal event.
+        // Fall through: deliver this session's own turn-terminal /
+        // client_request / session-load boundary event.
       }
       // Multi-session host: every session-scoped event carries sessionId.
       // Keep only events for the active session (hello/ready always pass —
@@ -2125,6 +2328,7 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
       unsub()
       unsubMode()
       clearContinueSessionTimer()
+      clearPeerSessionLoad()
       get().stopTopTaskPolling()
       transport.disconnect()
     }
@@ -2164,6 +2368,7 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
     // Invalidate every in-flight async result from the previous host.
     sessionSwitchGen += 1
     clearContinueSessionTimer()
+    clearPeerSessionLoad()
     get().stopTopTaskPolling()
     transport.setHost(hostId)
     try {
@@ -2180,6 +2385,10 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
       hostName: host?.hostName,
       sessionId: undefined,
       cwd: undefined,
+      // 空状态工作目录按 host 隔离：切换到哪个 host 就显示哪个 host
+      // 自己选过的目录（没有则 undefined → 宿主默认），绝不沿用别的
+      // host 的路径。
+      emptyCwd: (get().emptyCwdByHost ?? {})[hostId] ?? undefined,
       homeDir: undefined,
       entries: [],
       truncatedEntryCount: 0,
@@ -2311,6 +2520,9 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
 
   openSessionInfo: () => set({ sessionInfoOpen: true }),
   closeSessionInfo: () => set({ sessionInfoOpen: false }),
+
+  openContext: () => set({ contextOpen: true }),
+  closeContext: () => set({ contextOpen: false }),
 
   openUsage: () => set({ usageOpen: true }),
   closeUsage: () => set({ usageOpen: false }),
@@ -2598,6 +2810,9 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
     // A previous session's grace-window callback must never fire after we
     // start switching again (it would re-anchor the OLD session's snapshot).
     clearContinueSessionTimer()
+    // We are the load initiator — never treat our own session_load_* as a
+    // peer rebuild (would double loadHistory).
+    clearPeerSessionLoad()
     // Invalidate in-flight async results from a previous switch.
     const myGen = ++sessionSwitchGen
     // The prompt queue is per-session: swap the active queue to the
@@ -2611,8 +2826,43 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
     get().clearCompletedNotice(sessionId)
     // Clear the previous session's timeline NOW so the loading indicator
     // (historyLoading && entries.length === 0) shows immediately; the new
-    // timeline replaces it once loadHistory returns.
-    set({ historyOpen: false, historyLoading: true, entries: [], truncatedEntryCount: 0 })
+    // timeline replaces it once loadHistory returns. Also drop the previous
+    // session's pending permission / x.ai cards — they rehydrate for the
+    // target session via syncPendingForSession after load.
+    set({
+      historyOpen: false,
+      historyLoading: true,
+      entries: [],
+      truncatedEntryCount: 0,
+      pending: [],
+      xaiRequests: [],
+    })
+    // load 响应 models 的应用 + effort 兜底（立即应用与宽限窗口重放共用）：
+    // agent 的 session/load 会把会话持久化的模型 id 映射到当前 catalog 键
+    // （如 deepseek-v4-flash → deepseek-v4-flash-go），响应 models 通常不带
+    // reasoningEffort —— applySessionModelState 会回落到新模型的默认档（如
+    // low），静默覆盖用户原选的 max。wire 缺 effort 时从 workspace 列表
+    // （agent summary 的 reasoning_effort，持久化的是用户真实选择）恢复。
+    const applyLoadedModels = (models: unknown) => {
+      const raw = models as Record<string, unknown> | undefined
+      const hasWireEffort =
+        (raw?.reasoningEffort != null &&
+          typeof raw.reasoningEffort === 'string' &&
+          raw.reasoningEffort.trim() !== '') ||
+        (raw?.reasoning_effort != null &&
+          typeof raw.reasoning_effort === 'string' &&
+          raw.reasoning_effort.trim() !== '')
+      const snap = applySessionModelState(models, undefined)
+      if (!hasWireEffort) {
+        const row = get()
+          .workspaces.flatMap((g) => g.sessions)
+          .find((x) => x.sessionId === sessionId)
+        if (row?.reasoningEffort && row.reasoningEffort.trim()) {
+          snap.reasoningEffort = row.reasoningEffort.trim()
+        }
+      }
+      return snap
+    }
     try {
       // 1) Make this session the active one (session/load or focus-if-busy);
       // 2) load its tail. Models come from the HTTP response — more reliable
@@ -2633,7 +2883,7 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
       // were loading — never write this session's data into that view.
       if (myGen !== sessionSwitchGen) return
       if (loaded.models != null || loaded.modes != null) {
-        const modelSnap = applySessionModelState(loaded.models, undefined)
+        const modelSnap = applyLoadedModels(loaded.models)
         set({
           ...modelSnap,
           ...(loaded.modes != null ? { modes: loaded.modes } : {}),
@@ -2641,7 +2891,7 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
           // (SessionModeState, currentModeId + availableModes) restores
           // the plan/permission flags — without it a plan-mode session
           // resumes showing Normal until the next mode change.
-          ...(loaded.modes != null ? extractModeFlags(loaded.modes) : {}),
+          ...(loaded.modes != null ? (sessionModesPatch(get, loaded.modes) ?? {}) : {}),
         })
       }
       // Anchor sessionId before history so live events for this session are
@@ -2668,6 +2918,11 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
       // the permission gaps.
       set({ ...modeFlags })
       get().startTopTaskPolling(sessionId, cwd)
+      // Rehydrate pending permission / ask_user_question cards for THIS
+      // session. Live client_request SSE while another session was active
+      // was filtered out at init — without this pull, the agent stays
+      // blocked with an empty UI until the host's 15min approval timeout.
+      void syncPendingForSession(sessionId, get, set, myGen)
       // Grace window: session/load recap events stream over SSE and may still
       // be in flight (SSE and fetch are separate channels) — keep dropping
       // them briefly before reopening the live pipeline.
@@ -2682,7 +2937,7 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
         // in with process-global models while historyLoading; the HTTP
         // response is the authority for the restored session.
         if (loaded.models != null) {
-          const modelSnap = applySessionModelState(loaded.models, undefined)
+          const modelSnap = applyLoadedModels(loaded.models)
           set({ ...modelSnap })
         }
         // Focusing an in-flight session: busy SSE was likely dropped while
@@ -2710,22 +2965,18 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
             turnStartedAt: get().turnStartedAt ?? Date.now(),
           })
         } else {
-          // Idle resume: arm the auto-send when this session still has
-          // queued prompts. Their turn ended while another session was
-          // active — the `done` was session-filtered, so `awaitingNext`
-          // never flipped here; setting it now lets the composer's
-          // auto-send effect deliver FE-owned (409-degraded) rows,
-          // honoring "queued follow-ups run after the current turn
-          // ends". Agent-owned rows are drained by the agent itself
-          // (server-authoritative); awaitingNext only gates the effect.
-          const queued = usePromptQueue.getState().queue.length > 0
+          // Idle resume: queued rows are agent-owned (the agent drains
+          // them itself at turn end) or FE-owned degraded rows that send
+          // manually (双 Enter / [发送现在]) — no auto-send on resume.
+          // The queue count is shown in the status line as a hint only.
+          const queued = usePromptQueue.getState().queue.length
           set({
             historyLoading: false,
-            statusText: queued
-              ? `已切换到会话 ${sessionId.slice(0, 8)}，队列将自动发送`
+            statusText: queued > 0
+              ? `已切换到会话 ${sessionId.slice(0, 8)}，${queued} 条排队消息（双 Enter 发送）`
               : `已切换到会话 ${sessionId.slice(0, 8)}，可继续对话`,
             sessionId,
-            awaitingNext: queued,
+            awaitingNext: false,
           })
         }
         // TUI rebuilds the tasks pane from the live registry after load —
@@ -2741,38 +2992,6 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
         statusText: '切换会话失败',
         entries: [...get().entries, { id: nid(), kind: 'error', text: msg }],
       })
-    }
-  },
-
-  sendQueuedToSession: async (targetId) => {
-    // Background delivery targets a NON-active session whose turn just
-    // ended; the active session's queue drains through the normal path.
-    const st = get()
-    if (!targetId || targetId === st.sessionId || st.historyLoading) return
-    // Server-authoritative：agent 在目标会话回合结束时自己 pop 队首——
-    // 任何 agent-owned 行（in-flight 乐观行、已确认带 version 的行）FE
-    // 再发都会重复。只有降级行（旧 host 409，FE-owned）需要这里投递。
-    // 先看再取：agent-owned 行绝不能 dequeue（dequeueFrom 会向 agent 发
-    // queue/remove，误删 agent 队列里的行）。
-    const qs = usePromptQueue.getState()
-    const stash = qs.queues[targetId] ?? []
-    const head = stash[0]
-    if (!head) return
-    if (!head.degraded) return
-    const popped = usePromptQueue.getState().dequeueFrom(targetId)
-    if (!popped) return
-    try {
-      // session/prompt with the target sessionId runs the turn there —
-      // the agent is multi-session, so it proceeds in parallel while the
-      // user keeps working in the current session. Not awaited past the
-      // fetch: the RPC resolves when THAT turn completes, and its done
-      // re-triggers this path for the next queued item. promptId keeps
-      // the row identity consistent with the agent's queue_meta.
-      await transport.prompt(popped.blocks, { sessionId: targetId, promptId: popped.id })
-    } catch {
-      // 409 (target turn restarted in the same tick) / transport failure:
-      // put the item back at the front; the session's next done retries.
-      usePromptQueue.getState().requeueFront(targetId, popped)
     }
   },
 
@@ -2824,17 +3043,18 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
       // stuck on a historical page boundary. Skipped while a live turn
       // is in flight (turnStartedAt set).
       const merged = [...newEntries, ...oldEntries]
-      // 分页期间本地回合仍在流式（turnStartedAt / 流式指针 / liveStream
-      // 任一存在）：收口收尾必须整段跳过——settleTurnEntries 会把流式中
-      // 的条目打成 streaming:false；清空 openAssistantId/openThoughtId/
-      // liveStream 则丢掉 liveStream 里尚未合并的文本，后续 chunk 还会
-      // 再开一条新行（原条目挂着 streaming:true 却失去指针）。
-      // 非流式（历史浏览场景）保持原收口行为。
-      const streaming =
-        get().turnStartedAt != null ||
-        get().openAssistantId != null ||
-        get().openThoughtId != null ||
-        get().liveStream != null
+      // 分页期间本地回合仍在流式（turnStartedAt 非空）：收口收尾必须整段
+      // 跳过——settleTurnEntries 会把流式中的条目打成 streaming:false；
+      // 清空 openAssistantId/openThoughtId/liveStream 则丢掉 liveStream 里
+      // 尚未合并的文本，后续 chunk 还会再开一条新行（原条目挂着
+      // streaming:true 却失去指针）。
+      // 注意：判流式只能看 turnStartedAt。openAssistantId/liveStream 在
+      // replayUpdates 之后会被「本页以半截 assistant 流收尾」的回放数据
+      // 填上（页边界切断消息）——它们此时不代表真实 live 回合。若一并纳入
+      // 判定，纯历史分页（无 live 回合）会被误判为流式中而跳过 settle，把
+      // 回放出的 streaming:true 条目留在原地，status 永久卡在 Responding…。
+      // 与 loadHistory 的收口守卫（turnStartedAt == null 才 settle）保持一致。
+      const streaming = get().turnStartedAt != null
       set({
         entries: streaming ? merged : settleTurnEntries(merged),
         ...(streaming
@@ -2941,6 +3161,29 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
           void get().refreshHosts()
           break
         }
+        // Stale/foreign hello：快照宣告的会话不是当前视图锚定的会话
+        // （continueSession 在途时上一会话的迟到快照，或别的客户端把
+        // host 的 active 会话切走了）。只应用连接级状态（conn/错误/
+        // host 信息），绝不重新锚定视图、绝不应用其会话级快照
+        // （models/modes/pending 都是会话级的——套用会把当前会话的
+        // 模型/审批卡覆盖成别的会话的）。`ready` 事件有同款守卫；
+        // hello 是唯一无条件重新锚定的入口。
+        const foreign =
+          get().sessionId != null &&
+          ev.sessionId != null &&
+          ev.sessionId !== get().sessionId
+        if (foreign) {
+          set({
+            conn: ev.ready ? 'ready' : ev.error ? 'error' : 'connecting',
+            statusText: ev.error || (ev.ready ? '就绪' : '启动中…'),
+            homeDir: ev.homeDir,
+            hostId: ev.hostId,
+            hostName: ev.hostName,
+            error: ev.error,
+            statusWarning: undefined,
+          })
+          break
+        }
         const modelSnap = applySessionModelState(ev.models, ev.agentInfo)
         const reqs = ev.pendingRequests || []
         // 迟到的旧会话 hello：resetSessionState 清锚之后、newSession 响应
@@ -2954,6 +3197,15 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
           get().sessionId == null &&
           ev.sessionId != null &&
           get().pendingOptimisticUserId != null
+        // Pending is host-global (all sessions' clientReqs). Scope to the
+        // session this hello is announcing so another conversation's
+        // permission / question never paints on the active view. Untagged
+        // rows (old host) are attributed to the announced active session.
+        const pendingSnap = suppressAnchor
+          ? { pending: [] as PendingReq[], xaiRequests: [] as PendingReq[] }
+          : partitionPendingRequests(reqs, ev.sessionId, {
+              includeUntagged: true,
+            })
         set({
           conn: ev.ready ? 'ready' : ev.error ? 'error' : 'connecting',
           statusText: ev.error || (ev.ready ? '就绪' : '启动中…'),
@@ -2963,8 +3215,8 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
           homeDir: ev.homeDir,
           hostId: ev.hostId,
           hostName: ev.hostName,
-          pending: reqs.filter((r) => !r.method.startsWith('x.ai/')),
-          xaiRequests: reqs.filter((r) => r.method.startsWith('x.ai/')),
+          pending: pendingSnap.pending,
+          xaiRequests: pendingSnap.xaiRequests,
           modes: ev.modes,
           error: ev.error,
           statusWarning: undefined,
@@ -2975,7 +3227,7 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
           // falls back to the config.toml default when already loaded.
           ...restoreModeFlags(ev.sessionId),
           ...defaultModeFlagsIfMissed(ev.sessionId),
-          ...extractModeFlags(ev.modes),
+          ...(sessionModesPatch(get, ev.modes) ?? {}),
         })
         if (ev.busy) {
           // Preserve an existing turn timer across mid-turn re-busy/reconnect;
@@ -3059,7 +3311,7 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
           // miss falls back to the config.toml default when already loaded.
           ...restoreModeFlags(ev.sessionId),
           ...defaultModeFlagsIfMissed(ev.sessionId),
-          ...extractModeFlags(ev.modes),
+          ...(sessionModesPatch(get, ev.modes) ?? {}),
         })
         void get().refreshHosts()
         void get().refreshGitInfo()
@@ -3580,13 +3832,6 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
         // another session's done would wrongly finalize the active one).
         if (ev.sessionId && ev.sessionId !== get().sessionId) {
           get().noteSessionCompleted(ev.sessionId)
-          // That session's turn ended while another session is active:
-          // deliver its queued follow-up head in the background (the
-          // agent is multi-session — the prompt runs there in parallel;
-          // the session's own turn-stream events stay filtered out of
-          // this view). Each finished background turn re-enters here, so
-          // a multi-item queue drains turn by turn without switching view.
-          if (ev.sessionId) void get().sendQueuedToSession(ev.sessionId)
           break
         }
         // TUI TurnCompleted marker ("Worked for 2.0s") — the last scrollback
@@ -3850,15 +4095,23 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
       }
       case 'client_request': {
         const method = ev.method || ''
+        // Prefer the broadcast sessionId; fall back to params for hosts
+        // that only put it inside the agent params map.
+        const evSid =
+          (typeof ev.sessionId === 'string' && ev.sessionId) ||
+          (typeof ev.params?.sessionId === 'string' && ev.params.sessionId) ||
+          (typeof ev.params?.session_id === 'string' && ev.params.session_id) ||
+          undefined
+        const row: PendingReq = {
+          requestId: ev.requestId,
+          method,
+          params: ev.params,
+          ...(evSid ? { sessionId: evSid } : {}),
+        }
         if (method.startsWith('x.ai/')) {
           // Only interactive extension requests get UI; everything else is
           // answered immediately so the agent never hangs on a timeout.
-          const SUPPORTED = new Set([
-            'x.ai/ask_user_question',
-            'x.ai/exit_plan_mode',
-            'x.ai/diff_review',
-          ])
-          if (!SUPPORTED.has(method)) {
+          if (!SUPPORTED_XAI_REQUESTS.has(method)) {
             void get().respondXai(
               ev.requestId,
               undefined,
@@ -3869,17 +4122,94 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
           set({
             xaiRequests: [
               ...get().xaiRequests.filter((r) => r.requestId !== ev.requestId),
-              { requestId: ev.requestId, method, params: ev.params },
+              row,
             ],
           })
         } else {
           set({
             pending: [
               ...get().pending.filter((p) => p.requestId !== ev.requestId),
-              { requestId: ev.requestId, method: ev.method, params: ev.params },
+              row,
             ],
           })
         }
+        break
+      }
+      case 'client_request_resolved': {
+        // Multi-tab: another client (or this tab, or host timeout) settled
+        // the request — drop the matching card. Idempotent when we already
+        // cleared locally after respondPermission / respondXai.
+        const rid = ev.requestId
+        if (!rid) break
+        const s = get()
+        if (
+          !s.pending.some((p) => p.requestId === rid) &&
+          !s.xaiRequests.some((r) => r.requestId === rid)
+        ) {
+          break
+        }
+        set({
+          pending: s.pending.filter((p) => p.requestId !== rid),
+          xaiRequests: s.xaiRequests.filter((r) => r.requestId !== rid),
+        })
+        break
+      }
+      case 'session_load_started': {
+        // Multi-tab: another client is calling agent session/load for this
+        // session. Agent will replay the full conversation on the shared
+        // SSE bus. The initiator already has historyLoading (HTTP rebuild);
+        // peers must arm the same gate or replay chunks APPEND onto the
+        // existing scrollback (doubled timeline).
+        const sid = ev.sessionId
+        if (!sid || sid !== get().sessionId) break
+        if (get().historyLoading) {
+          // We are the initiator (continueSession / loadHistory already
+          // running) — leave peerSessionLoad unset so finished is ignored.
+          break
+        }
+        peerSessionLoadSid = sid
+        // Drop gate only — loadHistory on finished clears/rebuilds entries.
+        // statusText so the peer tab shows a brief loading cue.
+        set({
+          historyLoading: true,
+          statusText: '另一窗口正在重放会话，同步中…',
+        })
+        break
+      }
+      case 'session_load_finished': {
+        const sid = ev.sessionId
+        if (!sid) break
+        // Only the peer path rebuilds here. Initiator finishes via its own
+        // continueSession → loadHistory chain and never set peerSessionLoadSid.
+        if (peerSessionLoadSid !== sid) break
+        peerSessionLoadSid = null
+        if (get().sessionId !== sid) {
+          // User navigated away mid-load — drop the gate and leave the
+          // new session alone.
+          if (get().historyLoading) set({ historyLoading: false })
+          break
+        }
+        const cwd = (typeof ev.cwd === 'string' && ev.cwd) || get().cwd || ''
+        if (ev.ok === false) {
+          // Load failed on the other tab — just unstick the gate; keep
+          // whatever scrollback we still have (historyLoading may have
+          // blocked live events but we did not clear entries).
+          set({
+            historyLoading: false,
+            statusText: '会话重放失败，保持当前视图',
+          })
+          break
+        }
+        if (!cwd) {
+          set({ historyLoading: false, statusText: '会话重放完成' })
+          break
+        }
+        // Rebuild from HTTP history (same path as continueSession). loadHistory
+        // sets historyLoading again and replaces entries wholesale.
+        void get().loadHistory(sid, cwd).then(() => {
+          if (get().sessionId !== sid) return
+          void syncPendingForSession(sid, get, set, sessionSwitchGen)
+        })
         break
       }
       // ── x.ai/* extension notifications ────────────────────────────
@@ -3897,10 +4227,15 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
           // current_mode_update (session-mode id, e.g. 'plan') restores the
           // plan/perm flags from the replayed timeline.
           case 'yolo_mode_changed':
+            // 多会话广播守卫（同 standalone yolo_mode_changed）：模式标志
+            // 是会话级状态，跨会话广播不得覆盖当前会话的 flags。
+            if (ev.sessionId && ev.sessionId !== get().sessionId) break
             applyModeFlags(set, fields)
             break
           case 'current_mode_update': {
-            const flags = extractModeFlags(fields)
+            // 多会话广播守卫：非当前会话的 plan 状态快照不应用。
+            if (ev.sessionId && ev.sessionId !== get().sessionId) break
+            const flags = sessionModesPatch(get, fields)
             if (flags) set(flags)
             break
           }
@@ -4232,6 +4567,20 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
             break
           }
           case 'model_changed': {
+            // 多会话广播：非当前会话的 model_changed 忽略（事件可能在
+            // 顶层或 params 携带 sessionId；`model` 事件同款守卫）。
+            const notifSid =
+              (ev as { sessionId?: string }).sessionId ??
+              (typeof ev.params?.sessionId === 'string'
+                ? ev.params.sessionId
+                : undefined)
+            if (notifSid && notifSid !== get().sessionId) break
+            // 会话切换中忽略：agent 的 session/load 会把持久化的模型 id
+            // 映射到当前 catalog 键（如 deepseek-v4-flash →
+            // deepseek-v4-flash-go）并广播新模型的默认 effort（如 low），
+            // 会覆盖 load 响应恢复的用户原档位（如 max）。切换期间模型
+            // 状态以 HTTP load 响应为准（ready 事件同款守卫）。
+            if (get().historyLoading) break
             const id =
               (typeof fields.model_id === 'string' && fields.model_id) ||
               (typeof fields.modelId === 'string' && fields.modelId) ||
@@ -4639,37 +4988,15 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
         break
       }
       case 'yolo_mode_changed':
+        // 多会话广播（host withSid 约定）：模式标志是会话级状态，别的
+        // 会话/别的客户端切换模式不得覆盖当前会话的徽标（ready/model/
+        // error/status 同款守卫）。
+        if (ev.sessionId && ev.sessionId !== get().sessionId) break
         // The agent sends snake_case ({yolo_mode, auto_mode, permission_mode});
         // accept both spellings (camelCase first for host-normalized paths).
-        const p = (ev.params ?? {}) as Record<string, unknown>
-        const yolo =
-          typeof p.yoloMode === 'boolean'
-            ? p.yoloMode
-            : typeof p.yolo_mode === 'boolean'
-              ? p.yolo_mode
-              : undefined
-        const auto =
-          typeof p.autoMode === 'boolean'
-            ? p.autoMode
-            : typeof p.auto_mode === 'boolean'
-              ? p.auto_mode
-              : undefined
-        const perm =
-          typeof p.permissionMode === 'string' && p.permissionMode
-            ? p.permissionMode
-            : typeof p.permission_mode === 'string' && p.permission_mode
-              ? p.permission_mode
-              : undefined
-        // Plan mode rides on the same wire: permissionMode 'plan' means the
-        // agent is in plan mode (Shift+Tab cycle gear + prompt flag).
-        const planMode =
-          perm === 'plan' ? true : perm != null && perm !== '' ? false : undefined
-        set({
-          yoloMode: yolo,
-          autoMode: auto,
-          permissionMode: perm,
-          ...(planMode !== undefined ? { planMode } : {}),
-        })
+        // applyModeFlags merges (absent keys never wipe local flags) and
+        // keeps planMode armed underneath permission broadcasts.
+        applyModeFlags(set, (ev.params ?? {}) as Record<string, unknown>)
         break
       case 'mcp_server_status': {
         const p = ev.params ?? {}
@@ -4715,6 +5042,10 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
       case 'models_update': {
         // 多会话广播（host withSid 约定）：非当前会话的 models_update 直接忽略。
         if (ev.sessionId && ev.sessionId !== get().sessionId) break
+        // 会话切换中忽略：load 时模型映射广播会带新模型的默认 effort
+        // （如 low），覆盖 load 响应恢复的用户原档位（如 max）；切换
+        // 期间模型状态以 HTTP load 响应为准。
+        if (get().historyLoading) break
         const p = (ev.params ?? {}) as Record<string, unknown>
         // Host/agent may push a full SessionModelState ({currentModelId,
         // availableModels}) — apply it as the authoritative session model
@@ -4872,7 +5203,10 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
         break
       }
       case 'modes_update':
-        set({ modes: ev.modes, ...extractModeFlags(ev.modes) })
+        // 多会话广播守卫（同 ready/model）：非当前会话的 modes 快照
+        // 不得覆盖本会话的模式标志。
+        if (ev.sessionId && ev.sessionId !== get().sessionId) break
+        set({ modes: ev.modes, ...(sessionModesPatch(get, ev.modes) ?? {}) })
         break
       case 'session_info':
         if (ev.title != null && String(ev.title).trim()) {
@@ -4882,6 +5216,10 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
       case 'model': {
         // 多会话广播（host withSid 约定）：非当前会话的 model 直接忽略。
         if (ev.sessionId && ev.sessionId !== get().sessionId) break
+        // 会话切换中忽略：load 时模型映射广播（model_changed → model）
+        // 会带新模型的默认 effort（如 low），覆盖 load 响应恢复的用户
+        // 原档位（如 max）；切换期间以 HTTP load 响应为准。
+        if (get().historyLoading) break
         const name =
           (ev.modelName && String(ev.modelName).trim()) ||
           (ev.modelId && String(ev.modelId).trim()) ||
@@ -5051,10 +5389,21 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
     // 忙时守卫：当前会话已有活动回合（流式中 / 回合未收口，含恢复的
     // 在飞会话 turnStartedAt 未清）时走 server-authoritative 入队——
     // enqueue 立即 fire-and-forget 发 session/prompt（带 `_meta.promptId`，
-    // agent 把它插进权威队列），本地插乐观回显行；旧 host 409 时降级
-    // 为本地排队行、回合收口后自动发送。sendFollowUp / slash 命令 /
-    // sendQueuedHead 竞态下忙时调用 send 也走这里，不再产生 409 错误行。
+    // agent 把它插进权威队列），本地插乐观回显行；RPC 失败（含竞态
+    // 409）→ 行保留 degraded + 渲染错误行，手动重发。sendFollowUp /
+    // slash 命令 / sendQueuedHead 竞态下忙时调用 send 也走这里。
     const live = get()
+    // 会话列表选中校验：continueSession（点会话列表切会话）是异步的，
+    // sessionId 要到 loadSession 返回后才重新锚定（见 continueSession 的
+    // set({ sessionId, cwd })）。切换进行中（historyLoading === true）时
+    // get().sessionId 仍指向旧会话——此时绝不能把消息发到旧会话：保留草稿
+    // 不发（与 sendQueuedToSession 的 historyLoading 守卫一致），等切换
+    // 完成、sessionId 落到用户刚选中的会话后由用户重发。空状态 newSession
+    // 不置 historyLoading，不受影响。
+    if (live.sessionId && live.historyLoading) {
+      get().pushToast('正在切换会话，请稍候再发送')
+      return
+    }
     if (live.sessionId && turnIsLive(live)) {
       usePromptQueue.getState().enqueue(
         {
@@ -5064,8 +5413,8 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
         },
         live.sessionId,
         {
-          // 非 409 错误（网络失败 / agent 拒绝）→ 渲染回合错误行（409
-          // 降级静默，无行；行保留在队列、回合结束自动重试）。
+          // 任何失败（网络失败 / agent 拒绝 / 竞态 409）→ 渲染回合
+          // 错误行；行保留在队列（degraded），用户手动重发。
           onError: (e) => {
             const msg = e instanceof Error ? e.message : String(e)
             // 与下方 catch 同款去重：host 的 SSE error 事件通常先到。
@@ -5124,7 +5473,10 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
       // queue_meta 一致）；普通发送不带。
       await transport.prompt(
         blocks && blocks.length > 0 ? blocks : [{ type: 'text', text: t }],
-        { promptId: opts?.promptId },
+        // 显式绑定会话列表选中的会话：请求确定发往 get().sessionId
+        // （与 sendQueuedToSession 一致），而不是依赖 host 的活动会话——
+        // 避免 host 活动会话与 FE 列表选中会话在竞态窗口内不一致时发错会话。
+        { promptId: opts?.promptId, sessionId: get().sessionId },
       )
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -5463,7 +5815,13 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
       // P0: 失败（网络抖动 / ok:false）不得静默——之前无 try/catch，pending
       // 不清理、无 UI 反馈、void 调用产生 unhandled rejection，权限卡停在
       // waiting on you 用户以为没点中。失败时 toast 提示并保留 pending 可重试。
+      // 例外：另一标签页已应答 / 超时（host "不存在或已过期"）——卡已无主，
+      // 清掉以免僵尸 UI（新 host 还会广播 client_request_resolved 兜底）。
       const msg = e instanceof Error ? e.message : String(e)
+      if (/不存在|已过期|not found|expired/i.test(msg)) {
+        set({ pending: get().pending.filter((p) => p.requestId !== requestId) })
+        return
+      }
       get().pushToast(`权限应答失败: ${msg}`)
       return
     }
@@ -5492,6 +5850,11 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
           planMode: false,
           ...(s.permissionMode === 'plan' ? { permissionMode: undefined } : {}),
         })
+        // Arm the grace window: a 'plan' broadcast queued before the
+        // approval can still land after it (SSE and this HTTP response are
+        // separate channels) — planOnWithinGrace() suppresses it, so the
+        // flag we just cleared cannot be resurrected by a stale event.
+        planExitApprovedAt = Date.now()
       }
     }
   },
@@ -6012,6 +6375,7 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
     // must not re-anchor after a fresh session starts.
     sessionSwitchGen += 1
     clearContinueSessionTimer()
+    clearPeerSessionLoad()
     get().stopTopTaskPolling()
     clearSuppressedTools()
     clearStreamBuf()
@@ -6054,7 +6418,13 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
   },
 
   setEmptyCwd: (cwd) => {
-    set({ emptyCwd: cwd })
+    // 目录属于具体某台 host 的文件系统：按当前 hostId 记忆，切换 host
+    // 时互不污染。local 模式 hostId 为空 → 'default' 单键，语义不变。
+    const hostKey = get().hostId ?? 'default'
+    set((st) => ({
+      emptyCwd: cwd,
+      emptyCwdByHost: { ...(st.emptyCwdByHost ?? {}), [hostKey]: cwd },
+    }))
   },
 
   toggleTool: (id) => {
@@ -6897,6 +7267,7 @@ const PARENT_TURN_ACTIVITY_TYPES = new Set([
   'cancelled',
   'prompt_complete',
   'client_request',
+  'client_request_resolved',
   'busy',
   'error',
 ])
@@ -8409,13 +8780,18 @@ function applyFollowUps(
 }
 
 /**
- * Shared plan/permission-flag application — used by the standalone
- * yolo_mode_changed SSE event, the session_notification tag, and history
- * replay. The agent sends snake_case ({yolo_mode, auto_mode,
- * permission_mode}); accept both spellings (camelCase first for
- * host-normalized paths). Plan mode rides the same wire: permissionMode
- * 'plan' means the agent is in plan mode (Shift+Tab cycle gear + prompt
- * flag).
+ * Apply a permission/plan-mode payload (yolo_mode_changed SSE event, the
+ * session_notification tag, and the history-replay carrier) to the mode
+ * flags. MERGE semantics: keys absent from the payload leave the local
+ * value untouched — a partial broadcast must never wipe the optimistic
+ * yoloMode/autoMode set by /auto & friends (the old overwrite-with-
+ * undefined behavior is what made the composer badge flicker). The
+ * permission channel is orthogonal to plan mode: only an explicit
+ * permission_mode 'plan' turns planMode ON; a non-plan permission value
+ * never derives planMode OFF — plan is exited via the session-mode
+ * channel (modes_update/current_mode_update), the local toggle paths, or
+ * the plan-approval flow, matching the TUI's "yolo/auto stay armed
+ * underneath plan mode".
  */
 function applyModeFlags(set: SetState, p: Record<string, unknown>): void {
   const yolo =
@@ -8436,14 +8812,18 @@ function applyModeFlags(set: SetState, p: Record<string, unknown>): void {
       : typeof p.permission_mode === 'string' && p.permission_mode
         ? p.permission_mode
         : undefined
-  const planMode =
-    perm === 'plan' ? true : perm != null && perm !== '' ? false : undefined
-  set({
-    yoloMode: yolo,
-    autoMode: auto,
-    permissionMode: perm,
-    ...(planMode !== undefined ? { planMode } : {}),
-  })
+  // Within the exit_plan_mode grace window a stale pre-exit 'plan' value
+  // (SSE vs. the approval HTTP round-trip are separate channels) must
+  // neither resurrect planMode nor re-write permissionMode to 'plan'.
+  const stalePlan = perm === 'plan' && planOnWithinGrace()
+  const patch: Partial<
+    Pick<ChatState, 'yoloMode' | 'autoMode' | 'permissionMode' | 'planMode'>
+  > = {}
+  if (yolo !== undefined) patch.yoloMode = yolo
+  if (auto !== undefined) patch.autoMode = auto
+  if (perm !== undefined && !stalePlan) patch.permissionMode = perm
+  if (perm === 'plan' && !stalePlan) patch.planMode = true
+  set(patch)
 }
 
 /**

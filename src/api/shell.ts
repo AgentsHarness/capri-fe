@@ -11,8 +11,10 @@ import { transport } from './localTransport'
  * future hosts) and degrade to a friendly error line instead of an
  * unhandled rejection.
  *
- * Deliberately NOT in localTransport.ts (owned by the transport team):
- * this is a standalone client for a dedicated endpoint.
+ * The request goes through the transport (apiFetch): hub 模式下带
+ * ?host= 由 hub 中转到选中的 host，并带上 FE token / 超时 / 在途
+ * abort —— 不能裸 fetch 相对路径，否则会打到页面所在机器而不是
+ * 选中的 host。
  */
 
 export type ShellResult = {
@@ -27,12 +29,6 @@ export type ShellResult = {
   error?: string
 }
 
-/** Hub-mode host param (mirrors LocalTransport.url's ?host=). */
-function hostQuery(): string {
-  const host = transport.getHost()
-  return host ? `?host=${encodeURIComponent(host)}` : ''
-}
-
 export async function runShellCommand(
   command: string,
   cwd?: string,
@@ -40,7 +36,7 @@ export async function runShellCommand(
   timeoutMs?: number,
 ): Promise<ShellResult> {
   try {
-    const res = await fetch(`/api/shell${hostQuery()}`, {
+    const res = await transport.apiFetch('/api/shell', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(

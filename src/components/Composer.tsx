@@ -399,7 +399,10 @@ export function Composer() {
   const turnStartedAt = useChatStore((s) => s.turnStartedAt)
   const models = useChatStore((s) => s.models)
   const setModel = useChatStore((s) => s.setModel)
+  const pushToast = useChatStore((s) => s.pushToast)
   const [modelOpen, setModelOpen] = useState(false)
+  // 模型菜单「设为默认」勾选：切换模型时同时写入 config.toml 默认。
+  const [setAsDefault, setSetAsDefault] = useState(false)
   const modelRef = useRef<HTMLSpanElement>(null)
   const modelBtnRef = useRef<HTMLButtonElement>(null)
   // Fixed-position menu rect so the picker stays inside the viewport on
@@ -455,7 +458,6 @@ export function Composer() {
 
   // ── TUI mid-turn send queue (Enter during a turn → queued) ──
   const queue = usePromptQueue((s) => s.queue)
-  const queueSending = usePromptQueue((s) => s.sending)
   // Queue dropdown visibility lives in the chat store so the global
   // scrollback keys can defer to it (TUI queue pane owns the keyboard).
   const queuePanelOpen = useChatStore((s) => s.queuePanelOpen)
@@ -588,10 +590,10 @@ export function Composer() {
    *   （已知行 send_now_cancels_running_turn=false）。行保留在本地镜像
    *   （广播是校正通道）；版本不符/未知 id → agent no-op 并重广播，
    *   行原样保留。收养广播（running_prompt_id）到达时移除并渲染用户行。
-   * - 队首行未确认（乐观回显 / 409 降级，无 version）→ 保留
-   *   cancel-then-send 兜底（旧 host 流程）：取消运行中回合（后台任务
-   *   继续），再发送队首。409 降级行重发时带同一 promptId 保持身份。
-   * `sending` 是互斥锁，与自动发送 effect 共享；锁只覆盖
+   * - 队首行未确认（乐观回显 / RPC 失败降级，无 version）→ 保留
+   *   cancel-then-send 兜底：取消运行中回合（后台任务继续），再发送
+   *   队首。降级行重发时带同一 promptId 保持身份。
+   * `sending` 是互斥锁，与 Enter 竞态共享；锁只覆盖
    * cancel→dequeue→send-start 窗口：send() 同步置 conn=busy 后立即释放，
    * 否则整回合（send 在回合完成时才 resolve）期间 onSubmit 的 sending
    * 守卫会把 Enter 静默吞掉。
@@ -626,7 +628,7 @@ export function Composer() {
         }
         return
       }
-      // 未确认行（乐观回显 / 409 降级）→ cancel-then-send 兜底：取消
+      // 未确认行（乐观回显 / RPC 失败降级）→ cancel-then-send 兜底：取消
       // 运行中回合（后台任务继续），然后发送队首作为下一回合。
       if (useChatStore.getState().conn === 'busy') {
         await useChatStore.getState().cancel()
@@ -653,16 +655,16 @@ export function Composer() {
           // queue_meta id 冲突）。
           promptId: popped.degraded ? popped.id : undefined,
         })
-        // 竞态窗口已过：send() 同步置 conn=busy，自动发送 effect 不会再
-        // 触发——立即释放锁（见函数头注释）。
+        // 竞态窗口已过：send() 同步置 conn=busy——立即释放锁（见函数头
+        // 注释）。
         q.setSending(false)
         await sendPromise
         if (useChatStore.getState().conn !== 'error') pushHistory(popped.text)
       } catch {
         // 发送被拒（host 409「上一条消息还在处理中」——cancel 尚未落到
         // host 侧 / 传输失败）：队首已出队，必须放回当前会话队首，否则
-        // 该条永久丢失（与 chat.ts sendQueuedToSession 的 requeue-on-error
-        // 同款）。错误已由 send() 渲染成 scrollback 行，不重复处理。
+        // 该条永久丢失。错误已由 send() 渲染成 scrollback 行，不重复
+        // 处理。
         const active = useChatStore.getState().sessionId
         if (active) usePromptQueue.getState().requeueFront(active, popped)
       } finally {
@@ -764,8 +766,8 @@ export function Composer() {
     if (st.conn === 'busy') {
       // TUI: Enter during a running turn → server-authoritative enqueue：
       // 立即 fire-and-forget 发 prompt RPC（`_meta.promptId`，agent 把它
-      // 插进权威队列），本地插乐观回显行；旧 host 409 时降级为本地排队
-      // 行（回合结束自动发送，旧流程仍工作）。
+      // 插进权威队列），本地插乐观回显行；RPC 失败（含竞态 409）→
+      // 行保留 degraded（手动重发）+ 渲染错误行。
       const { expandedText, blocks } = buildBlocks(text, chips)
       setText('')
       setChips([])
@@ -774,8 +776,8 @@ export function Composer() {
         { text: expandedText, blocks },
         st.sessionId ?? '',
         {
-          // 非 409 错误（网络失败 / agent 拒绝）→ 渲染错误行；409 降级
-          // 静默（行保留，回合结束自动重试）。
+          // 任何失败（网络失败 / agent 拒绝 / 竞态 409）→ 渲染错误行；
+          // 行保留在队列（degraded），用户手动重发。
           onError: (e) => {
             const msg = e instanceof Error ? e.message : String(e)
             const cur = useChatStore.getState()
@@ -983,23 +985,11 @@ export function Composer() {
 
   // TUI queue: server-authoritative drain — the AGENT pops the queue head
   // at turn end (auto-drain) and broadcasts running_prompt_id for
-  // adoption; the FE no longer sends agent-owned rows itself. This effect
-  // ONLY delivers FE-owned rows: a 409-degraded head (old-host fallback)
-  // when the turn ends (conn ready && awaitingNext). Optimistic
-  // (in-flight) and confirmed rows are agent-owned — skipped here; their
-  // adoption broadcast removes them from the mirror and starts the turn.
-  // The `sending` mutex guards against Enter races.
-  const headDegraded = queue[0]?.degraded === true
-  useEffect(() => {
-    if (queueSending) return
-    const q = usePromptQueue.getState()
-    const head = q.queue[0]
-    if (!head || !head.degraded) return
-    const st = useChatStore.getState()
-    if (st.conn === 'ready' && st.awaitingNext) {
-      void sendQueuedHead()
-    }
-  }, [conn, awaitingNext, queue.length, headDegraded, queueSending])
+  // adoption; the FE never auto-sends queue rows (legacy 409 auto-retry
+  // removed). Agent-owned rows (optimistic in-flight / confirmed) are
+  // adopted via the broadcast; FE-owned degraded rows (RPC 失败保留) are
+  // sent MANUALLY via 双 Enter / [发送现在] (sendQueuedHead). The
+  // `sending` mutex guards against Enter races.
 
   // TUI rewind draft custody: the /rewind picker stashes the prompt while
   // open and restores it on close. The store value doubles as the guard —
@@ -1070,6 +1060,14 @@ export function Composer() {
   const switchModel = (modelId: string, reasoningEffort?: string) => {
     setModelOpen(false)
     void setModel(modelId, reasoningEffort)
+    // 「设为默认」勾选时：写入 config.toml 的 [models] default（+effort），
+    // 与切换动作一起生效（agent 热加载，TUI /model <name> <effort> 语义）。
+    if (setAsDefault) {
+      void transport
+        .setDefaultModel(modelId, reasoningEffort)
+        .then(() => pushToast(`已设为默认模型`))
+        .catch((e) => pushToast(`设为默认失败: ${e instanceof Error ? e.message : String(e)}`))
+    }
   }
 
   /** Match current caption effort against a menu row (id or wire value). */
@@ -2477,6 +2475,22 @@ export function Composer() {
                       </div>
                     )
                   })}
+                  <div className="sticky bottom-0 flex items-center gap-2 border-t border-gn-prompt-border bg-gn-bg-dark px-3 py-1.5">
+                    <input
+                      id="set-as-default-model"
+                      type="checkbox"
+                      checked={setAsDefault}
+                      onChange={(e) => setSetAsDefault(e.target.checked)}
+                      className="accent-gn-magenta"
+                    />
+                    <label
+                      htmlFor="set-as-default-model"
+                      className="text-[10.5px] text-gn-muted"
+                      title="切换时同时写入 ~/.grok/config.toml 的 [models] default（+effort），新会话默认使用"
+                    >
+                      设为默认模型（写入 config.toml）
+                    </label>
+                  </div>
                 </div>
               )}
             </span>

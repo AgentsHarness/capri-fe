@@ -35,9 +35,19 @@ export function fmtTok(n: number): string {
     return n >= 10_000_000 ? `${Math.round(n / 1_000_000)}M` : `${(n / 1_000_000).toFixed(1)}M`
   }
   if (n >= 1_000) {
-    return n >= 10_000 ? `${Math.round(n / 1_000)}k` : `${(n / 1_000).toFixed(1)}k`
+    return n >= 10_000 ? `${Math.round(n / 1_000)}K` : `${(n / 1_000).toFixed(1)}K`
   }
   return String(n)
+}
+
+/**
+ * TUI /context fmt_tok_big — rolls over to `1.0m` (one decimal) at one
+ * million so a 1M / 2M / 4M context window reads naturally instead of
+ * `1000k` (context_info.rs fmt_tok_big).
+ */
+export function fmtTokBig(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}m`
+  return fmtTok(n)
 }
 
 /**
