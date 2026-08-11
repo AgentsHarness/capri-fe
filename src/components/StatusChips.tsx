@@ -3,6 +3,7 @@ import type { ReactNode, RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { SPINNER_FRAMES } from '../theme/glyphs'
 import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS } from '../theme/layout'
+import { contextUrgencyColor } from '../theme/contextColor'
 import { useChatStore } from '../store/chat'
 import { usePromptQueue } from '../store/promptQueue'
 import type { ScrollEntry, TopTask } from '../api/types'
@@ -28,8 +29,11 @@ export function ContextChip({
 }) {
   const [hovered, setHovered] = useState(false)
   if (used == null || size == null || size <= 0) return null
-  const pct = (used / size) * 100
-  const color = pct >= 90 ? 'text-gn-red' : pct >= 70 ? 'text-gn-yellow' : 'text-gn-muted'
+  // TUI usage_percentage: clamped to 100 (used can transiently exceed the
+  // window before auto-compact; the TUI never renders >100%).
+  const pct = Math.min(100, (used / size) * 100)
+  // TUI default_breakpoints gradient (fg→accent_user→warning→error).
+  const color = contextUrgencyColor(pct)
   // TUI context_bar: the default "used / total" string drives the hover
   // bar width (bar + gap + 5-col percentage keeps the line width stable).
   // Our compact fmtTok strings can be as short as "500/1M" (6 chars), which
@@ -43,7 +47,8 @@ export function ContextChip({
   const pctStr = `${pct.toFixed(1)}%`.padStart(5, ' ')
   return (
     <span
-      className={`shrink-0 whitespace-nowrap rounded px-0 py-0.5 font-mono text-[12px] leading-none tabular-nums ${color}`}
+      className={`shrink-0 whitespace-nowrap rounded px-0 py-0.5 font-mono text-[12px] leading-none tabular-nums`}
+      style={{ color }}
       title={`上下文 ${Math.round(pct)}% (${fmtTok(used)} / ${fmtTok(size)})`}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}

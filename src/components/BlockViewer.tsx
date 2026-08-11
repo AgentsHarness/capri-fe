@@ -26,6 +26,7 @@ import { Glyphs, SPINNER_FRAMES, toolHeader } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
 import { TodoMark } from './todoMark'
 import { fmtBytes, fmtTok } from '../format'
+import { contextUrgencyColor } from '../theme/contextColor'
 import { extractToolDetail } from '../scrollback/toolDetail'
 import { mergeLiveText } from '../scrollback/liveText'
 import { useSessionSpinner } from './sessionState'
@@ -583,20 +584,13 @@ function SubagentView({
       : entry.durationMs
     : entry.durationMs
 
-  // Context mini gauge (TUI dashboard context_pct; urgency breakpoints
-  // match the status-bar ContextChip: ≥90 red, ≥70 yellow, else cyan).
+  // Context mini gauge (TUI dashboard context_pct; urgency color follows
+  // the status-bar ContextChip gradient — contextUrgencyColor).
   const pct = entry.contextUsagePct
   const gaugeW = 20
   const filled =
     pct != null ? Math.min(gaugeW, Math.round((Math.min(100, pct) / 100) * gaugeW)) : 0
-  const gaugeColor =
-    pct == null
-      ? 'text-gn-gutter'
-      : pct >= 90
-        ? 'text-gn-red'
-        : pct >= 70
-          ? 'text-gn-yellow'
-          : 'text-gn-cyan'
+  const gaugeColor = pct == null ? undefined : contextUrgencyColor(Math.min(100, pct))
 
   const stats = [
     entry.subagentType ? `type · ${entry.subagentType}` : undefined,
@@ -621,7 +615,8 @@ function SubagentView({
             {entry.contextWindowTokens != null && entry.contextWindowTokens > 0 && (
               <div className="flex items-center gap-2">
                 <span
-                  className={`inline-flex items-center gap-1 font-mono text-[12px] leading-none ${gaugeColor}`}
+                  className={`inline-flex items-center gap-1 font-mono text-[12px] leading-none ${pct == null ? 'text-gn-gutter' : ''}`}
+                  style={gaugeColor ? { color: gaugeColor } : undefined}
                   title={`上下文 ${Math.round(pct ?? 0)}%`}
                 >
                   <span aria-hidden className="whitespace-nowrap">

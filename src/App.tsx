@@ -20,6 +20,7 @@ import { SettingsModal } from './components/SettingsModal'
 import { GitPanel } from './components/GitPanel'
 import { BlockViewer } from './components/BlockViewer'
 import { SessionInfoModal } from './components/SessionInfoModal'
+import { ContextModal } from './components/ContextModal'
 import { UsageModal } from './components/UsageModal'
 import { RewindPicker } from './components/RewindPicker'
 import { WorkflowPanel } from './components/WorkflowPanel'
@@ -161,6 +162,7 @@ function AppShell() {
       <SettingsModal />
       <GitPanel open={gitOpen} onClose={() => setGitOpen(false)} />
       <SessionInfoModal />
+      <ContextModal />
       <UsageModal />
       <RewindPicker />
       <WorkflowPanel />

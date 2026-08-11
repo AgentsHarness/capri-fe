@@ -3,6 +3,7 @@ import { useChatStore } from '../store/chat'
 import { transport } from '../api/localTransport'
 import type { SessionInfoDetail, SessionUsageData } from '../api/types'
 import { fmtTok, shortCwd } from '../format'
+import { contextUrgencyColor } from '../theme/contextColor'
 
 /**
  * Session info modal — web counterpart of the TUI `/session-info` command.
@@ -120,12 +121,13 @@ export function SessionInfoModal() {
   }
 
   // Context window: host-tracked usage size if reported, else the model's
-  // totalContextTokens — same precedence as the TUI context bar.
+  // totalContextTokens — same precedence as the TUI context bar. pct is
+  // clamped to 100 like the TUI (used can transiently exceed the window);
+  // the color follows the same urgency gradient as the context chip.
   const ctxSize = data?.contextSize || data?.model?.contextWindow || 0
   const ctxUsed = data?.contextUsed ?? 0
-  const pct = ctxSize > 0 ? Math.round((ctxUsed / ctxSize) * 100) : undefined
-  const ctxColor =
-    pct == null ? 'text-gn-muted' : pct >= 90 ? 'text-gn-red' : pct >= 70 ? 'text-gn-yellow' : 'text-gn-fg'
+  const pct =
+    ctxSize > 0 ? Math.min(100, Math.round((ctxUsed / ctxSize) * 100)) : undefined
 
   const rows: Array<{ label: string; value: React.ReactNode; mono?: boolean }> = [
     ...(data?.title ? [{ label: 'title', value: data.title }] : []),
@@ -178,7 +180,7 @@ export function SessionInfoModal() {
           {
             label: 'context',
             value: (
-              <span className={ctxColor}>
+              <span style={pct != null ? { color: contextUrgencyColor(pct) } : undefined}>
                 {fmtTok(ctxUsed)} / {fmtTok(ctxSize)}
                 {pct != null ? ` (${pct}%)` : ''}
               </span>

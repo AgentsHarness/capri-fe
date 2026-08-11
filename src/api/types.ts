@@ -54,6 +54,14 @@ export type WorkspaceSummary = {
   /** ISO timestamp of the last update. */
   updatedAt?: string
   currentModelId?: string
+  /**
+   * Persisted reasoning effort (agent summary `reasoning_effort`). The
+   * load response models usually omit it (agent remaps the model id on
+   * session/load), so this is the fallback that restores the user's
+   * actual effort choice (e.g. max) instead of the mapped model's
+   * default (e.g. low).
+   */
+  reasoningEffort?: string
   numMessages?: number
 }
 
@@ -187,6 +195,58 @@ export type SessionInfoDetail = {
   homeDir?: string
 }
 
+/** One itemized context-usage row (skills listing, MCP server listing). */
+export type ContextUsageCategory = {
+  label: string
+  tokens: number
+  detail?: string
+}
+
+/**
+ * Context usage breakdown — `x.ai/session/info` `data.context`
+ * (ContextInfo, camelCase on the wire). Feeds the `/context` detail view
+ * (TUI ContextInfoBlock): category bar, legend rows and the
+ * auto-compact estimate.
+ */
+export type ContextInfoDetail = {
+  used: number
+  total: number
+  systemPromptTokens: number
+  toolDefinitionsCount: number
+  toolDefinitionsTokens: number
+  compactionCount: number
+  turnCount: number
+  toolCallCount: number
+  messageCount: number
+  /** Bytes/4 estimate of all non-system conversation items. */
+  messageTokens: number
+  freeTokens: number
+  /** Pre-rounded (u8, clamped) usage percent — bar/urgency source. */
+  usagePct: number
+  /** Resolved auto-compact threshold (6-tier; default 85). */
+  autoCompactThresholdPercent: number
+  usageCategories: ContextUsageCategory[]
+}
+
+/**
+ * `x.ai/session/info` response (agent-side SessionInfoResponse, camelCase,
+ * `data` flattened) — the FULL session snapshot the TUI /session-info and
+ * /context are built from. Distinct from the host's thinner
+ * POST /api/session-info (SessionInfoDetail).
+ */
+export type SessionInfoExt = {
+  sessionId?: string
+  cwd?: string
+  model?: string
+  modelDisplayName?: string
+  resolvedModelId?: string
+  apiBackend?: string
+  agentName?: string
+  turns?: number
+  turnIndex?: number
+  context?: ContextInfoDetail
+}
+
 /** One effort row from model `_meta.reasoningEfforts` (or built-in fallback). */
 export type ReasoningEffortOption = {
   /** Menu id (may remap, e.g. "deep" → wire "xhigh"). */
@@ -196,6 +256,63 @@ export type ReasoningEffortOption = {
   /** Canonical wire value sent as `_meta.reasoningEffort`. */
   value: string
   default?: boolean
+}
+
+/**
+ * One `[model.<id>]` entry from config.toml — the custom BYOK model schema
+ * (mirrors the TUI's `ConfigModelOverride` in
+ * xai-grok-shell/src/agent/config.rs). All fields optional except the id
+ * (section key), `model` (routing slug) and `base_url`.
+ */
+export type CustomModelConfig = {
+  /** Section key — `[model.<id>]`. Required; stable identifier. */
+  id: string
+  /** Routing slug sent in API requests. Required. */
+  model?: string
+  /** Endpoint base URL, e.g. "https://api.x.ai/v1". Required. */
+  base_url?: string
+  name?: string
+  description?: string
+  api_key?: string
+  /** Env var name(s) for the provider key — string or array. */
+  env_key?: string | string[]
+  /** Name of a `[auth_provider.<name>]` credential helper. */
+  auth_provider?: string
+  model_provider?: string
+  /** Base URL for API-key auth (session auth uses base_url). */
+  api_base_url?: string
+  max_completion_tokens?: number
+  temperature?: number
+  top_p?: number
+  /** "chat_completions" (default), "responses", "messages". */
+  api_backend?: 'chat_completions' | 'responses' | 'messages'
+  context_window?: number
+  /** Auto-compact threshold percent (0-100). */
+  auto_compact_threshold_percent?: number
+  system_prompt_label?: string
+  use_concise?: boolean
+  /** System-prompt identity, e.g. "grok-build". */
+  agent_type?: string
+  inference_idle_timeout_secs?: number
+  max_retries?: number
+  hidden?: boolean
+  supported_in_api?: boolean
+  /** none | minimal | low | medium | high | xhigh | max */
+  reasoning_effort?: string
+  supports_reasoning_effort?: boolean
+  reasoning_efforts?: (
+    | string
+    | { value: string; id?: string; label?: string; description?: string; default?: boolean }
+  )[]
+  supports_backend_search?: boolean
+  /** true/false dynamic, or fixed N. */
+  compactions_remaining?: boolean | number
+  compaction_at_tokens?: boolean | number
+  show_model_fingerprint?: boolean
+  stream_tool_calls?: boolean
+  extra_headers?: Record<string, string>
+  query_params?: Record<string, string>
+  env_http_headers?: Record<string, string>
 }
 
 /** One entry of agentInfo._meta.modelState.availableModels. */
@@ -234,6 +351,13 @@ export type PendingReq = {
   requestId: string
   method: string
   params?: Record<string, unknown>
+  /**
+   * Owning session (host Snapshot / client_request broadcast). Clients
+   * filter pending on session switch so another conversation's permission
+   * / ask_user_question never lands in the active UI. Optional for old
+   * hosts — FE also peeks params.sessionId / session_id as fallback.
+   */
+  sessionId?: string
 }
 
 /**
@@ -622,8 +746,40 @@ export type AcpEvent =
       requestId: string
       method: string
       params?: Record<string, unknown>
+      /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
+      sessionId?: string
     }
-  | { type: 'modes_update'; modes?: unknown }
+  /**
+   * Host: a pending client_request was settled (answered / cancelled /
+   * timed out). Multi-tab clients drop the matching card by requestId.
+   */
+  | {
+      type: 'client_request_resolved'
+      requestId: string
+      sessionId?: string
+    }
+  /**
+   * Host: agent session/load is about to replay the conversation over SSE
+   * (shared bus). Multi-tab peers viewing this session arm historyLoading
+   * so replay chunks do not append onto the existing scrollback.
+   */
+  | {
+      type: 'session_load_started'
+      sessionId?: string
+      cwd?: string
+    }
+  /**
+   * Host: session/load finished (replay stream done). Multi-tab peers
+   * rebuild the timeline from HTTP history.
+   */
+  | {
+      type: 'session_load_finished'
+      sessionId?: string
+      cwd?: string
+      ok?: boolean
+    }
+  /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
+  | { type: 'modes_update'; modes?: unknown; sessionId?: string }
   | { type: 'config_options_update'; configOptions?: unknown }
   | { type: 'commands_update'; commands?: unknown }
   | { type: 'session_info'; title?: string; updatedAt?: unknown }
@@ -636,11 +792,13 @@ export type AcpEvent =
       reasoningEffort?: string
     }
   // ── x.ai/* extension notifications (agent → client) ────────────────
-  /** Raw x.ai/session_notification / x.ai/session/update envelope. */
+  /** Raw x.ai/session_notification / x.ai/session/update envelope.
+      Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
   | {
       type: 'session_notification'
       method?: string
       params?: Record<string, unknown>
+      sessionId?: string
     }
   | { type: 'task_backgrounded'; params?: Record<string, unknown> }
   | { type: 'task_completed'; params?: Record<string, unknown> }
@@ -651,6 +809,8 @@ export type AcpEvent =
     }
   | {
       type: 'yolo_mode_changed'
+      /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
+      sessionId?: string
       params?: {
         yoloMode?: boolean
         autoMode?: boolean
