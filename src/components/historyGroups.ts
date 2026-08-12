@@ -176,22 +176,30 @@ export function absTime(iso: string): string {
 }
 
 /**
- * 会话行副行（title 下的第二行，有数据才显示）——宿主 /api/sessions 的
- * SessionState 只提供 lastActiveAt（epoch ms，最后一次发 prompt 的时间），
- * 没有"最后工具/最后消息"或待处理预览字段：
+ * 会话行副行（title 下的第二行，有数据才显示）——统一用 workspace 摘要的
+ * last_active_at 时间（workspaceList 已按 TUI session_picker 语义归一化为
+ * updatedAt：last_active_at 优先，缺失回退 updated_at），不依赖宿主
+ * live roster 的 status.lastActiveAt（只有当前进程内加载/对话过的会话才有）：
  * - 待处理会话（awaitingInput / state 'awaiting'）→ 通用 "Pending: …"；
- * - 其他会话 → lastActiveAt 有值时显示 "上次发送 Xm ago"；
+ * - 其他会话 → updatedAt 有值时显示 "上次发送 Xm ago"；
  * - 都没有 → undefined（不显示副行）。
  */
 export function sessionSubtitle(s: SessionInfo): string | undefined {
   if (s.status?.awaitingInput === true || s.status?.state === 'awaiting') {
     return 'Pending: …'
   }
-  const t = s.status?.lastActiveAt
-  if (typeof t === 'number' && Number.isFinite(t) && t > 0) {
-    return `上次发送 ${fmtTime(new Date(t).toISOString())}`
+  if (s.updatedAt) {
+    return `上次发送 ${fmtTime(s.updatedAt)}`
   }
   return undefined
+}
+
+/**
+ * 会话行 hover title（副行的绝对时间）——与副行同源：workspace 摘要的
+ * last_active_at（updatedAt 字段），缺失 → undefined。
+ */
+export function sessionRowTitle(s: SessionInfo): string | undefined {
+  return s.updatedAt ? absTime(s.updatedAt) : undefined
 }
 
 /**

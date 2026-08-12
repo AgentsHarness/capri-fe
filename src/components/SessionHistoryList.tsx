@@ -1,16 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronRight, Pencil, Pin, Plus, Trash2 } from 'lucide-react'
+import { ChevronRight, Circle, CircleCheck, CircleOff, Pencil, Pin, Plus, Trash2 } from 'lucide-react'
 import { useChatStore } from '../store/chat'
 import type { SessionInfo, WorkspaceSummary } from '../api/types'
 import {
-  absTime,
-  fmtTime,
   groupWorkspaces,
   repoNameFromCwd,
   sanitizeTitle,
   sessionContextPct,
   sessionGroupKey,
+  sessionRowTitle,
   sessionSubtitle,
 } from './historyGroups'
 import { Glyphs, SPINNER_FRAMES } from '../theme/glyphs'
@@ -22,13 +21,14 @@ import {
   sortWorkspacesWithPins,
   usePins,
 } from './historyPins'
+import { useHistoryView } from './historyView'
 
 /** 组内默认显示的会话行数（超出折叠为"加载更多"）。 */
 const WORKSPACE_ROWS_LIMIT = 4
 
 /** 行操作菜单（右键 / ⋮）的估算尺寸，用于视口边界 clamp。 */
 const ROW_MENU_W = 176
-const ROW_MENU_H = 128
+const ROW_MENU_H = 240
 
 /** 点击"加载更多"每次追加的行数，循环直到组内会话全部显示；
  *  展开超过 WORKSPACE_ROWS_LIMIT 后出现"收起"，点击回到 WORKSPACE_ROWS_LIMIT。 */
@@ -58,6 +58,20 @@ type MergedGroup = {
   sessions: MergedRow[]
 }
 
+/**
+ * 列表分区（两种展示形态共用渲染）：
+ * - workspace：按 cwd 分组，key = cwd
+ * - marked：按标记类型分组（置顶 / 待办），key = 类型
+ */
+type ListSection = {
+  key: string
+  label: string
+  sessions: MergedRow[]
+  /** 仅 workspace 形态：工作目录全路径（组菜单「新建会话」/ 置顶目录）。 */
+  cwd?: string
+  kind: 'workspace' | 'pinned' | 'todo'
+}
+
 /** 组内排序最终 tiebreak：updatedAt 降序，无 updatedAt 排最后。 */
 function byUpdatedDesc(a: WorkspaceSummary, b: WorkspaceSummary): number {
   if (!a.updatedAt && !b.updatedAt) return a.sessionId.localeCompare(b.sessionId)
@@ -66,17 +80,34 @@ function byUpdatedDesc(a: WorkspaceSummary, b: WorkspaceSummary): number {
   return b.updatedAt.localeCompare(a.updatedAt)
 }
 
+/** live SessionInfo → 摘要行（workspace-list 缺该会话时的兜底）。 */
+function liveToRow(s: SessionInfo, fallbackCwd = ''): MergedRow {
+  const ctx = s as SessionInfo & { contextUsed?: number; contextSize?: number }
+  return {
+    sessionId: s.sessionId,
+    cwd: s.cwd ?? fallbackCwd,
+    title: s.title,
+    updatedAt: s.updatedAt,
+    status: s.status,
+    bgRunning: s.bgRunning,
+    bgCount: s.bgCount,
+    hasTasks: s.hasTasks,
+    contextUsed: ctx.contextUsed,
+    contextSize: ctx.contextSize,
+  }
+}
+
 /**
- * 历史会话列表 — 按工作区（cwd）分组的共享实现，桌面端持久侧边栏
- * （HistorySidebar）与移动端顶栏 history 下拉共用同一份数据与交互：
- * 分组折叠 / "加载更多"（每次 10 个）+"收起"（回到 4 个） / 行内重命名 / 行操作菜单
- * （桌面右键、移动端 ⋮；打开 / 重命名 / 删除，删除走确认弹窗） /
- * 上下文进度条，保证两端永远一致。
+ * 历史会话列表 — 两种展示形态共用：
+ * 1. workspace：按工作区（cwd）分组（桌面侧边栏 / 移动端 history 下拉）
+ * 2. marked：只显示用户标记的会话（置顶 / 待办）
  *
- * 数据由宿主 sessions_changed 通知 + 挂载时的 refresh 保持新鲜；本组件
- * 不负责拉取（HistorySidebar 挂载即全局拉一次）。
+ * 交互：分组折叠 / "加载更多"+"收起" / 行内重命名 / 行操作菜单
+ * （桌面右键、移动端 ⋮）/ 上下文进度条。数据由宿主 sessions_changed
+ * + 挂载 refresh 保持新鲜（本组件不负责拉取）。
  */
-export function SessionHistoryList() {  const sessions = useChatStore((s) => s.sessions)
+export function SessionHistoryList() {
+  const sessions = useChatStore((s) => s.sessions)
   const workspaces = useChatStore((s) => s.workspaces)
   const workspaceLoading = useChatStore((s) => s.workspaceLoading)
   const sessionId = useChatStore((s) => s.sessionId)
@@ -90,18 +121,20 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
   // 浏览器本地置顶偏好（工作目录 / 会话），见 historyPins.ts。
   const pinnedWorkspaces = usePins((s) => s.pinnedWorkspaces)
   const pinnedSessions = usePins((s) => s.pinnedSessions)
+  const todos = usePins((s) => s.todos)
   const toggleWorkspacePin = usePins((s) => s.toggleWorkspacePin)
   const toggleSessionPin = usePins((s) => s.toggleSessionPin)
+  const setTodoStatus = usePins((s) => s.setTodoStatus)
+  // 展示形态：工作区分组 vs 仅标记任务（见 historyView.ts）。
+  const listMode = useHistoryView((s) => s.mode)
 
   /**
-   * 按 sessionId 把 live 状态覆盖到 workspace 摘要行上；当前会话的
-   * cwd 不在列表里时用 sessions 中该 cwd 的会话补一组；最后按
-   * groupWorkspaces 排序（当前工作区 pin 最前）。
+   * 把 live 状态 merge 到摘要行上（workspace-list + sessions 双源）。
    */
-  const groups = useMemo((): MergedGroup[] => {
+  const toRow = useMemo(() => {
     const liveById = new Map<string, SessionInfo>()
     for (const s of sessions) liveById.set(s.sessionId, s)
-    const toRow = (row: WorkspaceSummary): MergedRow => {
+    return (row: WorkspaceSummary): MergedRow => {
       const live = liveById.get(row.sessionId)
       if (!live) return row
       const ctx = live as SessionInfo & { contextUsed?: number; contextSize?: number }
@@ -115,15 +148,25 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
         contextSize: ctx.contextSize,
       }
     }
+  }, [sessions])
+
+  /**
+   * 工作区形态：按 sessionId 把 live 状态覆盖到 workspace 摘要行上；
+   * 当前会话的 cwd 不在列表里时用 sessions 补一组；最后按
+   * groupWorkspaces 排序（置顶工作区最前）。
+   */
+  const workspaceGroups = useMemo((): MergedGroup[] => {
     const merged: MergedGroup[] = workspaces.map((g) => ({
       ...g,
-      // 组内排序：置顶的会话永远最前，其余按状态优先级（待处理 → 对勾 →
-      // 运行中+后台 → 运行中 → 后台运行 → 空闲），同状态再按 updatedAt 降序。
+      // 组内排序：置顶的会话永远最前，随后是待办（未完成），其余按
+      // 状态优先级（待处理 → 对勾 → 运行中+后台 → 运行中 → 后台运行 →
+      // 空闲），同状态再按 updatedAt 降序。
       sessions: sortSessionsWithPins(
         g.sessions.map(toRow),
         pinnedSessions,
         completedNotices,
         byUpdatedDesc,
+        todos,
       ),
     }))
     // 兜底：当前会话的 cwd 不在 workspace-list 里时，用 live sessions
@@ -148,24 +191,98 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
             pinnedSessions,
             completedNotices,
             byUpdatedDesc,
+            todos,
           ),
         })
       }
     }
     // 置顶的工作目录永远在最前（内部仍按 groupWorkspaces 活跃度排序）。
     return sortWorkspacesWithPins(groupWorkspaces(merged), pinnedWorkspaces)
-  }, [workspaces, sessions, cwd, pinnedWorkspaces, pinnedSessions])
+  }, [workspaces, sessions, cwd, pinnedWorkspaces, pinnedSessions, completedNotices, todos, toRow])
 
   /**
-   * 默认收起判定：工作区最新活动（组内 max updatedAt）超过 6 小时 → 收起。
-   * collapsed 为 null 表示用户尚未手动操作过，此时用 defaultCollapsed；
-   * 一旦用户点击过任意组头，collapsed 变成完整快照，之后完全由用户控制
-   * （刷新不重置手动状态）。
+   * 标记形态：扁平索引全部已知会话（workspace 摘要 ∪ live roster），
+   * 只保留置顶 / 待办（不含已完成）；同一会话只出现一次，优先级
+   * 置顶 > 待办（置顶行仍可显示待办徽标）。
+   */
+  const markedSections = useMemo((): ListSection[] => {
+    const byId = new Map<string, MergedRow>()
+    for (const g of workspaces) {
+      for (const row of g.sessions) {
+        byId.set(row.sessionId, toRow(row))
+      }
+    }
+    for (const s of sessions) {
+      if (!byId.has(s.sessionId)) byId.set(s.sessionId, liveToRow(s))
+    }
+
+    const pinned: MergedRow[] = []
+    const todo: MergedRow[] = []
+
+    // 以标记集合为驱动：即使摘要列表尚未返回该会话，只要 live 有也能显示。
+    // 已完成的待办不进标记列表（右键仍可改回待办 / 取消）。
+    const candidateIds = new Set<string>([
+      ...pinnedSessions,
+      ...Object.keys(todos).filter((id) => todos[id] === 'todo'),
+    ])
+    for (const id of candidateIds) {
+      const row = byId.get(id)
+      if (!row) continue
+      if (pinnedSessions.has(id)) {
+        pinned.push(row)
+        continue
+      }
+      if (todos[id] === 'todo') todo.push(row)
+    }
+
+    const sortMarked = (rows: MergedRow[]) =>
+      sortSessionsWithPins(rows, pinnedSessions, completedNotices, byUpdatedDesc, todos)
+
+    const sections: ListSection[] = []
+    if (pinned.length > 0) {
+      sections.push({
+        key: 'marked:pinned',
+        label: '置顶',
+        kind: 'pinned',
+        sessions: sortMarked(pinned),
+      })
+    }
+    if (todo.length > 0) {
+      sections.push({
+        key: 'marked:todo',
+        label: '待办',
+        kind: 'todo',
+        sessions: sortMarked(todo),
+      })
+    }
+    return sections
+  }, [workspaces, sessions, pinnedSessions, todos, completedNotices, toRow])
+
+  /** 当前形态下的分区列表（统一渲染入口）。 */
+  const sections = useMemo((): ListSection[] => {
+    if (listMode === 'marked') return markedSections
+    return workspaceGroups.map((g) => ({
+      key: g.cwd,
+      label: repoNameFromCwd(g.cwd),
+      cwd: g.cwd,
+      kind: 'workspace' as const,
+      sessions: g.sessions,
+    }))
+  }, [listMode, markedSections, workspaceGroups])
+
+  /**
+   * 默认收起判定：
+   * - workspace：组内 max updatedAt 超过 6 小时 → 收起
+   * - marked：各分区默认展开（标记本就少，一屏能看完）
    */
   const defaultCollapsed = useMemo(() => {
     const map = new Map<string, boolean>()
+    if (listMode === 'marked') {
+      for (const s of sections) map.set(s.key, false)
+      return map
+    }
     const now = Date.now()
-    for (const g of groups) {
+    for (const g of sections) {
       let latest = 0
       for (const s of g.sessions) {
         if (!s.updatedAt) continue
@@ -173,16 +290,14 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
         if (Number.isFinite(t) && t > latest) latest = t
       }
       // 无时间戳视为不活跃 → 默认收起。
-      map.set(g.cwd, now - latest > WORKSPACE_ACTIVE_WINDOW_MS)
+      map.set(g.key, now - latest > WORKSPACE_ACTIVE_WINDOW_MS)
     }
     return map
-  }, [groups])
+  }, [sections, listMode])
 
   /**
-   * 手动折叠状态：Map<cwd, 是否收起>，只记录用户明确操作过的组；
-   * 未操作过的组始终回退到 defaultCollapsed（6 小时活跃窗口）。
-   * 不能用"Set 快照 + 取反"（一旦点击任意组，空快照会让所有默认
-   * 收起的组同时展开），必须逐组记录最终状态。
+   * 手动折叠状态：Map<sectionKey, 是否收起>，只记录用户明确操作过的组；
+   * 未操作过的组始终回退到 defaultCollapsed。
    */
   const [collapsed, setCollapsed] = useState<ReadonlyMap<string, boolean> | null>(null)
   const isGroupCollapsed = (key: string) =>
@@ -197,7 +312,7 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
   }
 
   /**
-   * 组内已展开的行数（key = cwd）；初始显示最近 4 个，点击
+   * 组内已展开的行数（key = sectionKey）；初始显示最近 4 个，点击
    * "加载更多"每次追加 LOAD_MORE_STEP（10）个，循环直到全部显示；
    * 一旦展开超过 4 个，"收起"即出现（与"加载更多"并排），
    * 点击回到 WORKSPACE_ROWS_LIMIT，无需等全部加载完。
@@ -316,51 +431,75 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
   // Shared braille spinner for any "active" rows (same cadence as busy).
   const anyActive = useMemo(
     () =>
-      groups.some((g) =>
+      sections.some((g) =>
         g.sessions.some((s) => sessionGroupKey(s, sessionId) === 'active'),
       ),
-    [groups, sessionId],
+    [sections, sessionId],
   )
-  // 列表为空且正在拉取：中央显示与 scrollback 一致的加载态（旧数据仍在
-  // 时列表保留，加载由左上角"会话"旁的字符动画表达，见 HistorySidebar）。
-  const centeredLoading = groups.length === 0 && workspaceLoading
+  // 空列表且正在拉取：中央显示与 scrollback 一致的加载态（唯一加载
+  // 指示；旧数据仍在时列表直接保留，刷新无提示）。标记形态下 sections
+  // 空是正常的空态（置顶/待办本就少），不显示"加载会话…"。
+  const centeredLoading =
+    listMode === 'workspace' && sections.length === 0 && workspaceLoading
   const spinnerFrame = useSessionSpinner(anyActive || centeredLoading)
+
+  // 标记形态空态：未加载中且没有可显示的标记会话。
+  const markedEmpty =
+    listMode === 'marked' && sections.length === 0 && !workspaceLoading
+  // 工作区形态空态。
+  const workspaceEmpty =
+    listMode === 'workspace' && sections.length === 0 && !workspaceLoading
 
   return (
     <div ref={listRootRef} className="relative min-h-full">
-      {groups.length === 0 && !workspaceLoading && (
+      {workspaceEmpty && (
         <div className="px-3 py-2 text-[11px] text-gn-muted">没有历史会话</div>
       )}
-      {groups.map((g) => {
-        const isCollapsed = isGroupCollapsed(g.cwd)
-        const shown = visibleCount.get(g.cwd) ?? WORKSPACE_ROWS_LIMIT
+      {markedEmpty && (
+        <div className="px-3 py-2 text-[11px] leading-relaxed text-gn-muted">
+          没有标记的会话
+          <span className="mt-0.5 block text-[10px] text-gn-gutter">
+            右键会话可置顶或设为待办
+          </span>
+        </div>
+      )}
+      {sections.map((g) => {
+        const isCollapsed = isGroupCollapsed(g.key)
+        const shown = visibleCount.get(g.key) ?? WORKSPACE_ROWS_LIMIT
         const rows = g.sessions.slice(0, shown)
+        const isWorkspace = g.kind === 'workspace'
+        const sectionAccent =
+          g.kind === 'pinned' || g.kind === 'todo' ? 'text-gn-yellow' : 'text-gn-fg'
         return (
-          <div key={g.cwd} className="relative">
-            {/* Workspace group header — sticky opaque bar so list rows
-                scroll under it cleanly (no bleed-through). Wrapper owns
-                sticky + solid fill; button only handles interaction. */}
+          <div key={g.key} className="relative">
+            {/* Group header — sticky opaque bar so list rows scroll under
+                it cleanly (no bleed-through). Wrapper owns sticky + solid
+                fill; button only handles interaction. */}
             <div
               className="sticky top-0 z-20 flex items-center border-b border-gn-prompt-border bg-gn-bg-base"
               style={{ backgroundColor: 'var(--color-gn-bg-base)' }}
             >
               <button
                 type="button"
-                onClick={() => toggleGroup(g.cwd)}
+                onClick={() => toggleGroup(g.key)}
                 onContextMenu={(e) => {
                   // Right-click a workspace group → "新建会话在此目录".
+                  // Marked sections have no group-level actions.
+                  if (!isWorkspace || !g.cwd) return
                   e.preventDefault()
                   e.stopPropagation()
                   openMenu({ kind: 'group', cwd: g.cwd }, e.clientX, e.clientY)
                 }}
                 className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 px-3 py-1 text-left hover:bg-gn-bg-highlight"
-                title={g.cwd}
+                title={isWorkspace ? g.cwd : g.label}
               >
                 <span className="shrink-0 text-gn-gutter" aria-hidden>
                   <IconGlyph glyph={isCollapsed ? Glyphs.chevron : Glyphs.chevronDown} />
                 </span>
-                <span className="min-w-0 truncate text-[10.5px] font-medium tracking-wide text-gn-fg">
-                  {pinnedWorkspaces.has(g.cwd) && (
+                <span
+                  className={`min-w-0 truncate text-[10.5px] font-medium tracking-wide ${sectionAccent}`}
+                >
+                  {isWorkspace && g.cwd && pinnedWorkspaces.has(g.cwd) && (
                     <span
                       className="mr-1 inline-block align-[-0.1em] text-gn-yellow"
                       title="已置顶此工作目录"
@@ -369,27 +508,38 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
                       <Pin size={12} strokeWidth={2.5} />
                     </span>
                   )}
-                  {repoNameFromCwd(g.cwd)}
+                  {g.kind === 'pinned' && (
+                    <span className="mr-1 inline-block align-[-0.1em]" aria-hidden>
+                      <Pin size={11} strokeWidth={2.5} />
+                    </span>
+                  )}
+                  {g.kind === 'todo' && (
+                    <span className="mr-1 inline-block align-[-0.1em]" aria-hidden>
+                      <Circle size={11} strokeWidth={2.5} />
+                    </span>
+                  )}
+                  {g.label}
                 </span>
                 <span className="shrink-0 text-[10px] tabular-nums text-gn-gutter">
                   {g.sessions.length}
                 </span>
               </button>
-              {/* Mobile/touch group actions — ⋮ opens the same menu desktop
-                  right-click shows (lg+ relies on onContextMenu; no long-press). */}
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  const r = e.currentTarget.getBoundingClientRect()
-                  openMenu({ kind: 'group', cwd: g.cwd }, r.right - ROW_MENU_W, r.bottom + 4)
-                }}
-                className="mr-3 shrink-0 px-1.5 py-1 text-[13px] leading-none text-gn-muted hover:text-gn-fg lg:hidden"
-                title="更多操作"
-                aria-label="更多操作"
-              >
-                ⋮
-              </button>
+              {/* Mobile/touch group actions — only for workspace groups. */}
+              {isWorkspace && g.cwd && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    const r = e.currentTarget.getBoundingClientRect()
+                    openMenu({ kind: 'group', cwd: g.cwd! }, r.right - ROW_MENU_W, r.bottom + 4)
+                  }}
+                  className="mr-3 shrink-0 px-1.5 py-1 text-[13px] leading-none text-gn-muted hover:text-gn-fg lg:hidden"
+                  title="更多操作"
+                  aria-label="更多操作"
+                >
+                  ⋮
+                </button>
+              )}
             </div>
             {!isCollapsed && (
               <>
@@ -403,6 +553,11 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
                   const subtitle = sessionSubtitle(s)
                   const renaming = renamingId === s.sessionId
                   const contextPct = sessionContextPct(s)
+                  // 标记形态副行补充工作区名，方便区分不同目录下的同名会话。
+                  const markedSub =
+                    listMode === 'marked' && s.cwd
+                      ? `${repoNameFromCwd(s.cwd)}${subtitle ? ` · ${subtitle}` : ''}`
+                      : subtitle
                   return (
                     <div
                       key={s.sessionId}
@@ -477,6 +632,24 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
                                 <Pin size={12} strokeWidth={2.5} />
                               </span>
                             )}
+                            {todos[s.sessionId] === 'todo' && (
+                              <span
+                                className="shrink-0 text-gn-yellow"
+                                title="待办：还有事没做完"
+                                aria-label="待办"
+                              >
+                                <Circle size={12} strokeWidth={2.5} />
+                              </span>
+                            )}
+                            {todos[s.sessionId] === 'completed' && (
+                              <span
+                                className="shrink-0 text-gn-green"
+                                title="待办已完成"
+                                aria-label="已完成"
+                              >
+                                <CircleCheck size={12} strokeWidth={2.5} />
+                              </span>
+                            )}
                             <span
                               className={`block min-w-0 flex-1 truncate text-[12px] ${s.title ? (active ? 'text-gn-cyan' : 'text-gn-fg') : 'text-gn-muted'}`}
                             >
@@ -486,10 +659,9 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
                         )}
                         <span
                           className="block truncate font-mono text-[10px] text-gn-muted"
-                          title={s.updatedAt ? absTime(s.updatedAt) : undefined}
+                          title={sessionRowTitle(s)}
                         >
-                          {subtitle ? `${subtitle} · ` : ''}
-                          {s.updatedAt ? fmtTime(s.updatedAt) : ''}
+                          {markedSub || ''}
                         </span>
                       </span>
                       {((s.bgRunning ?? 0) > 0) && (
@@ -549,7 +721,7 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
                     {shown > WORKSPACE_ROWS_LIMIT && (
                       <button
                         type="button"
-                        onClick={() => collapseMore(g.cwd)}
+                        onClick={() => collapseMore(g.key)}
                         className="flex flex-1 cursor-pointer items-center justify-center gap-2 px-3 py-1 text-center text-[10.5px] text-gn-muted hover:bg-gn-bg-highlight"
                         title={`收起为最近 ${WORKSPACE_ROWS_LIMIT} 个会话`}
                       >
@@ -559,7 +731,7 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
                     {g.sessions.length > shown && (
                       <button
                         type="button"
-                        onClick={() => expandMore(g.cwd)}
+                        onClick={() => expandMore(g.key)}
                         className="flex flex-1 cursor-pointer items-center justify-center gap-2 px-3 py-1 text-center text-[10.5px] text-gn-cyan hover:bg-gn-bg-highlight"
                         title={`再加载 ${Math.min(LOAD_MORE_STEP, g.sessions.length - shown)} 个会话`}
                       >
@@ -573,9 +745,9 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
           </div>
         )
       })}
-      {/* 空列表 + 拉取中：中央显示与 scrollback 加载态一致的提示
-          （braille 字符动画 + "加载会话…"）。旧数据非空时不覆盖列表，
-          加载由 HistorySidebar 头部"会话"旁的字符动画表达。 */}
+      {/* 空列表 + 拉取中（workspace 形态）：中央显示与 scrollback
+          加载态一致的提示（braille 字符动画 + "加载会话…"），这是
+          会话列表唯一的加载指示。旧数据非空时列表保留、不覆盖。 */}
       {centeredLoading && (
         <div className="pointer-events-none absolute inset-0 z-10 flex min-h-[220px] items-center justify-center gap-2 select-none">
           <span className="text-[15px] leading-none text-gn-muted">
@@ -642,6 +814,94 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
                     </span>{' '}
                     {pinnedSessions.has(menu.row.sessionId) ? '取消置顶' : '置顶此会话'}
                   </MenuItem>
+                  <div className="my-0.5 border-t border-gn-prompt-border/60" />
+                  {/* 待办操作：待办是独立于置顶的追踪状态——设为待办后
+                      该会话升到列表前部，做完可标记已完成（✓ 徽标）。 */}
+                  {(() => {
+                    const st = todos[menu.row.sessionId]
+                    if (st === 'todo') {
+                      return (
+                        <>
+                          <MenuItem
+                            onClick={() => {
+                              setTodoStatus(menu.row.sessionId, 'completed')
+                              closeMenu()
+                            }}
+                          >
+                            <span aria-hidden className="inline-block w-4 shrink-0 text-center text-gn-green">
+                              <CircleCheck size={14} strokeWidth={2.5} />
+                            </span>{' '}
+                            标记已完成
+                          </MenuItem>
+                          <MenuItem
+                            onClick={() => {
+                              setTodoStatus(menu.row.sessionId, null)
+                              closeMenu()
+                            }}
+                          >
+                            <span aria-hidden className="inline-block w-4 shrink-0 text-center">
+                              <CircleOff size={14} strokeWidth={2.5} />
+                            </span>{' '}
+                            取消待办
+                          </MenuItem>
+                        </>
+                      )
+                    }
+                    if (st === 'completed') {
+                      return (
+                        <>
+                          <MenuItem
+                            onClick={() => {
+                              setTodoStatus(menu.row.sessionId, 'todo')
+                              closeMenu()
+                            }}
+                          >
+                            <span aria-hidden className="inline-block w-4 shrink-0 text-center text-gn-yellow">
+                              <Circle size={14} strokeWidth={2.5} />
+                            </span>{' '}
+                            标记为待办
+                          </MenuItem>
+                          <MenuItem
+                            onClick={() => {
+                              setTodoStatus(menu.row.sessionId, null)
+                              closeMenu()
+                            }}
+                          >
+                            <span aria-hidden className="inline-block w-4 shrink-0 text-center">
+                              <CircleOff size={14} strokeWidth={2.5} />
+                            </span>{' '}
+                            取消待办
+                          </MenuItem>
+                        </>
+                      )
+                    }
+                    return (
+                      <>
+                        <MenuItem
+                          onClick={() => {
+                            setTodoStatus(menu.row.sessionId, 'todo')
+                            closeMenu()
+                          }}
+                        >
+                          <span aria-hidden className="inline-block w-4 shrink-0 text-center text-gn-yellow">
+                            <Circle size={14} strokeWidth={2.5} />
+                          </span>{' '}
+                          设为待办
+                        </MenuItem>
+                        <MenuItem
+                          onClick={() => {
+                            setTodoStatus(menu.row.sessionId, 'completed')
+                            closeMenu()
+                          }}
+                        >
+                          <span aria-hidden className="inline-block w-4 shrink-0 text-center text-gn-green">
+                            <CircleCheck size={14} strokeWidth={2.5} />
+                          </span>{' '}
+                          标记已完成
+                        </MenuItem>
+                      </>
+                    )
+                  })()}
                   <div className="my-0.5 border-t border-gn-prompt-border/60" />
                   <MenuItem
                     danger

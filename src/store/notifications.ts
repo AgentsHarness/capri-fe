@@ -1,7 +1,6 @@
 import { useChatStore } from './chat'
 import { ensureUiSettings, notificationsSettings, onUiSettingsReady } from './settings'
 import { shouldNotify, systemNotify } from './notifyConfig'
-import { SPINNER_FRAMES, SPINNER_INTERVAL_MS } from '../theme/glyphs'
 
 /**
  * FE-side replica of the TUI notification + title rails:
@@ -9,9 +8,11 @@ import { SPINNER_FRAMES, SPINNER_INTERVAL_MS } from '../theme/glyphs'
  *  - events approval_required / task_complete fire system notifications
  *    (turn_complete stays in chat.ts noteSessionCompleted, gated by the
  *    same config).
- *  - document.title composition mirrors [ui.notifications.title.*] and
- *    [ui.notifications.progress_bar] (the web analog of the TUI's OSC
- *    tab title / progress bar).
+ *  - document.title is a fixed state badge + "Agents Harness" suffix,
+ *    derived from the session-list states (same buckets as the sidebar):
+ *    [N 待处理] / [N 思考中] / [N 已完成] / [空闲] — highest-priority
+ *    non-empty state only, so the title stays stable instead of
+ *    animating on every turn event.
  *
  * All gated by [ui.notifications] condition/events from config.toml.
  */
@@ -81,38 +82,24 @@ export function initUiNotifications(): void {
   })
 }
 
-// ── document.title (title.* items + progress_bar) ─────────────────────
-// TUI: the tab title reflects agent state (action-required / spinner /
-// activity / session-name / cwd / model / turn-timer / grok), and the
-// progress bar animates while a turn runs. Web analog: compose
-// document.title from the configured items; while busy, prepend a
-// spinner frame (progress_bar).
+// ── document.title（统一状态标题）────────────────────────────────────
+// 固定格式：`[状态] Agents Harness`，状态只取优先级最高的一个：
+//   待处理（会话 awaiting：审批/提问挂起）> 思考中（会话 active +
+//   后台任务运行中 + 本端 busy 兜底）> 已完成（别的会话跑完待查看，
+//   即侧边栏 ✓ 对勾）> 空闲（全零）。
+// 不再有 spinner / statusText / 会话名等逐事件变化的拼接，标题只在
+// 状态档位切换时更新，[ui.notifications.title.enabled=false] 时回退
+// 到页面原始标题。
 
-const DEFAULT_TITLE_ITEMS = [
-  'action-required',
-  'spinner',
-  'activity',
-  'session-name',
-  'grok',
-]
+const TITLE_SUFFIX = 'Agents Harness'
 
 function startTitleManager(): void {
   const base = document.title || 'Grok'
-  let frame = 0
-  let timer: ReturnType<typeof window.setInterval> | null = null
   let last: string | null = null
-
-  const stop = () => {
-    if (timer != null) {
-      window.clearInterval(timer)
-      timer = null
-    }
-  }
 
   const render = () => {
     const st = useChatStore.getState()
     const notif = notificationsSettings()
-    const progressBar = notif.progress_bar !== false
     const titleCfg =
       notif.title && typeof notif.title === 'object'
         ? (notif.title as Record<string, unknown>)
@@ -121,55 +108,47 @@ function startTitleManager(): void {
       if (document.title !== base) document.title = base
       return
     }
-    const items: string[] = Array.isArray(titleCfg.items)
-      ? titleCfg.items.filter((i): i is string => typeof i === 'string')
-      : DEFAULT_TITLE_ITEMS
-    const busy = st.conn === 'busy'
-    const has = (it: string) => items.includes(it)
-    const parts: string[] = []
-    if (has('action-required') && st.pending.length > 0) {
-      parts.push(`⚠ ${st.pending[0]?.method ?? '需要审批'}`)
+    // 与侧边栏 sessionGroupKey 同口径统计会话列表状态。
+    let pending = 0
+    let thinking = 0
+    for (const s of st.sessions) {
+      const stt = s.status
+      if (stt?.state === 'awaiting' || stt?.awaitingInput === true) {
+        pending++
+      } else if (stt?.state === 'active') {
+        thinking++
+      } else if ((s.bgRunning ?? 0) > 0) {
+        // 后台任务运行中的会话也计入"思考中"（侧边栏 bg 组）。
+        thinking++
+      }
     }
-    if (has('spinner') && busy && progressBar) {
-      parts.push(SPINNER_FRAMES[frame % SPINNER_FRAMES.length])
+    // 当前会话的回合在跑但列表尚未同步成 active → 兜底计入思考中。
+    if (st.conn === 'busy') {
+      const selfActive = st.sessions.some(
+        (s) =>
+          s.sessionId === st.sessionId &&
+          (s.status?.state === 'active' || s.status?.busy === true),
+      )
+      if (!selfActive) thinking++
     }
-    if (has('activity') && st.statusText && st.statusText !== '就绪') {
-      parts.push(st.statusText)
-    }
-    if (has('session-name') && st.sessionTitle) {
-      parts.push(st.sessionTitle)
-    }
-    if (has('cwd') && st.cwd) {
-      const name = st.cwd.split('/').filter(Boolean).pop() || st.cwd
-      parts.push(name)
-    }
-    if (has('model') && st.modelName) {
-      parts.push(st.modelName)
-    }
-    if (has('grok')) parts.push('grok')
-    const next = parts.length > 0 ? parts.join(' · ') : base
+    const completed = Object.keys(st.completedNotices).length
+
+    const prefix =
+      pending > 0
+        ? `[${pending} 待处理]`
+        : thinking > 0
+          ? `[${thinking} 思考中]`
+          : completed > 0
+            ? `[${completed} 已完成]`
+            : '[空闲]'
+    const next = `${prefix} ${TITLE_SUFFIX}`
     if (next !== last) {
       document.title = next
       last = next
     }
   }
 
-  useChatStore.subscribe((s, prev) => {
-    const busyNow = s.conn === 'busy'
-    const busyPrev = prev.conn === 'busy'
-    if (busyNow && !busyPrev) {
-      // Animate the spinner frame while a turn runs.
-      if (timer == null) {
-        timer = window.setInterval(() => {
-          frame++
-          render()
-        }, SPINNER_INTERVAL_MS)
-      }
-    } else if (!busyNow && busyPrev) {
-      stop()
-    }
-    render()
-  })
+  useChatStore.subscribe(() => render())
   render()
   onUiSettingsReady(render)
 }

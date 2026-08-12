@@ -25,11 +25,12 @@ import type {
   WorkspaceSummary,
 } from '../api/types'
 import { transport, AgentTurnError, type McpListServer } from '../api/localTransport'
-import { applyQueueChanged, usePromptQueue } from './promptQueue'
+import { applyQueueChanged, qid, usePromptQueue } from './promptQueue'
 import { ensureUiSettings, uiBool, uiSettingsLoaded } from './settings'
 import { shouldNotify } from './notifyConfig'
 import { toolHeader } from '../theme/glyphs'
 import { repoNameFromCwd } from '../components/historyGroups'
+import { usePins } from '../components/historyPins'
 import {
   projectDisplayRows,
   scanGroups,
@@ -230,20 +231,25 @@ async function syncPendingForSession(
   }
 }
 
-// ── per-session mode-flag persistence ───────────────────────────────
+// ── permission-mode persistence (process-global, follows the agent) ──
 // The agent persists ONLY the session-mode dimension into the timeline:
 // current_mode_update {currentModeId: plan|default|…} lands in
 // updates.jsonl and history replay restores it. Permission mode
 // (x.ai/yolo_mode_changed: ask / auto / always-approve) is a fire-and-
-// forget notification the agent NEVER stores, so replay cannot restore
-// it from the timeline. The FE keeps its own per-session copy
+// forget notification the agent NEVER stores, and the yolo_mode_changed
+// channel is CLIENT-scoped: one toggle applies to EVERY resident session
+// of the sending client. The FE therefore keeps ONE global copy
 // (localStorage) — the web analog of the TUI's persisted permission
-// mode — refreshed on every flag change and re-applied on resume/reload.
-type ModeFlags = Partial<Pick<ChatState, 'planMode' | 'permissionMode' | 'yoloMode' | 'autoMode'>>
+// mode — refreshed on every broadcast and re-applied on resume/reload.
+// Plan mode is per-session on the agent side (toggle_plan_mode addresses
+// a sessionId), so its persisted copy stays keyed by session as a
+// best-effort complement to the timeline-derived truth.
+type ModeFlags = Partial<Pick<ChatState, 'permissionMode' | 'yoloMode' | 'autoMode'>>
 
+/** Global permission-mode flags (single object, all sessions share it). */
 const MODE_FLAGS_KEY = 'acpfe.modeFlags'
-/** Keep the map bounded (newest sessions win; UUID-ish keys keep insertion order). */
-const MODE_FLAGS_MAX = 50
+/** Per-session plan-mode copies (replay/current_mode_update is the authority). */
+const PLAN_FLAGS_KEY = 'acpfe.planModes'
 
 /**
  * Normalize mode flags for persistence: default-y permission values need
@@ -265,35 +271,72 @@ function normalizeModeFlags(flags: ModeFlags): ModeFlags {
   return out
 }
 
-function loadModeFlagsMap(): Record<string, ModeFlags> {
+function loadGlobalModeFlags(): ModeFlags {
   try {
     const raw = window.localStorage.getItem(MODE_FLAGS_KEY)
     if (!raw) return {}
-    const parsed = JSON.parse(raw) as Record<string, ModeFlags>
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    // 白名单提取：只认权限三字段，其余一律忽略——旧格式（per-session
+    // map）或未知结构读出来就是 {}，绝不把杂散 key 展开进 store。
+    const o = parsed as Record<string, unknown>
+    return normalizeModeFlags({
+      yoloMode: typeof o.yoloMode === 'boolean' ? o.yoloMode : undefined,
+      autoMode: typeof o.autoMode === 'boolean' ? o.autoMode : undefined,
+      permissionMode: typeof o.permissionMode === 'string' ? o.permissionMode : undefined,
+    })
+  } catch {
+    return {}
+  }
+}
+
+/** Persist the GLOBAL permission-mode flags (shared by every session). */
+function saveModeFlags(flags: ModeFlags): void {
+  try {
+    window.localStorage.setItem(
+      MODE_FLAGS_KEY,
+      JSON.stringify(normalizeModeFlags(flags)),
+    )
+  } catch {
+    /* persistence is best-effort */
+  }
+}
+
+/** The global permission-mode flags this client last knew ({} when unknown). */
+function restoreModeFlags(): ModeFlags {
+  return loadGlobalModeFlags()
+}
+
+function loadPlanModes(): Record<string, boolean> {
+  try {
+    const raw = window.localStorage.getItem(PLAN_FLAGS_KEY)
+    const parsed = raw ? (JSON.parse(raw) as Record<string, boolean>) : {}
     return parsed && typeof parsed === 'object' ? parsed : {}
   } catch {
     return {}
   }
 }
 
-function saveModeFlags(sessionId: string, flags: ModeFlags): void {
+/** Persist one session's plan-mode copy (replay is the authority, this is a hint). */
+function savePlanMode(sessionId: string, planMode: boolean): void {
   try {
-    const map = loadModeFlagsMap()
-    map[sessionId] = normalizeModeFlags(flags)
-    const ids = Object.keys(map)
-    if (ids.length > MODE_FLAGS_MAX) {
-      for (const id of ids.slice(0, ids.length - MODE_FLAGS_MAX)) delete map[id]
-    }
-    window.localStorage.setItem(MODE_FLAGS_KEY, JSON.stringify(map))
+    const map = loadPlanModes()
+    map[sessionId] = planMode
+    window.localStorage.setItem(PLAN_FLAGS_KEY, JSON.stringify(map))
   } catch {
     /* persistence is best-effort */
   }
 }
 
-/** The flags this client last knew for a session ({} when unknown). */
-function restoreModeFlags(sessionId?: string): ModeFlags {
+/** Restore one session's plan-mode copy ({} when unknown). */
+function restorePlanMode(sessionId?: string): Partial<Pick<ChatState, 'planMode'>> {
   if (!sessionId) return {}
-  return normalizeModeFlags(loadModeFlagsMap()[sessionId] ?? {})
+  try {
+    const v = loadPlanModes()[sessionId]
+    return typeof v === 'boolean' ? { planMode: v } : {}
+  } catch {
+    return {}
+  }
 }
 
 // ── exit_plan_mode approval grace window ────────────────────────────
@@ -312,10 +355,13 @@ function planOnWithinGrace(): boolean {
 }
 
 // ── client-global default permission mode (config.toml ui.permission_mode) ──
-// A session with no per-browser record (miss) falls back to the
-// client-global default — the TUI's `[ui] permission_mode`, served
-// read-only by the host's GET /api/settings. Precedence mirrors the TUI's
-// load_permission_mode: permission_mode > legacy approval_mode > yolo=true.
+// Used ONLY as the seed for a NEW session (session/new `_meta`): with no
+// global record yet, a fresh conversation inherits the TUI's `[ui]
+// permission_mode` default, served read-only by the host's GET
+// /api/settings. Live display never consults this — it follows the
+// agent's yolo_mode_changed broadcasts (client-scoped, all sessions).
+// Precedence mirrors the TUI's load_permission_mode: permission_mode >
+// legacy approval_mode > yolo=true.
 
 /** Map a settings `ui` section to permission flags ({} = no default). */
 function permissionFlagsFromUi(ui?: Record<string, unknown>): ModeFlags {
@@ -358,37 +404,31 @@ function ensureDefaultModeFlags(): Promise<ModeFlags> {
 }
 
 /**
- * The client-global default for a session that has no saved record
- * (synchronous; {} until ensureDefaultModeFlags resolves). A session
- * WITH saved yolo/auto flags never falls back.
+ * hello 快照的权威权限模式（host 记录，canonical ask/auto/always-approve）
+ * → store flags。无条件映射：ask 也显式给出（清掉 stale 的 yolo/auto），
+ * 因为 host 的记录就是 agent 的真实状态——agent 内存态、经 host 每次
+ * 变更与回显更新、随 agent 重启复位为 ask。缺字段（老 host / hub 直连）
+ * 返回 {} 不干预。
  */
-function defaultModeFlagsIfMissed(sessionId?: string): ModeFlags {
-  if (!sessionId) return {}
-  const saved = restoreModeFlags(sessionId)
-  if (saved.yoloMode !== undefined || saved.autoMode !== undefined) return {}
-  return cachedDefaultModeFlags ?? {}
-}
-
-/** Session's effective flags: its own record wins, miss → global default. */
-function sessionModeFlags(saved: ModeFlags, defaults: ModeFlags): ModeFlags {
-  return saved.yoloMode !== undefined || saved.autoMode !== undefined ? saved : defaults
+function permissionModeFromSnapshot(mode: unknown): ModeFlags {
+  if (mode === 'always-approve') {
+    return { yoloMode: true, autoMode: false, permissionMode: 'always-approve' }
+  }
+  if (mode === 'auto') {
+    return { yoloMode: false, autoMode: true, permissionMode: 'auto' }
+  }
+  if (typeof mode === 'string') {
+    return { yoloMode: false, autoMode: false, permissionMode: undefined }
+  }
+  return {}
 }
 
 /**
- * Apply the client-global default permission flags to the announced
- * session when it has no per-session record yet and the flags are not
- * already known. Idempotent — safe to call after every hello/ready / at
- * settings-load: it no-ops until BOTH the async default fetch has
- * resolved AND a session anchor exists. This closes the startup race
- * where the hello arrives before /api/settings resolves (the hello's
- * defaultModeFlagsIfMissed spread sees an unloaded cache), or the
- * settings fetch aborts during the host-switch window and never retries.
+ * Effective flags for a NEW session: the current global permission mode
+ * wins; with none known yet, fall back to the config.toml default.
  */
-function applyDefaultModeFlagsWhenIdle(get: () => ChatState, set: SetState): void {
-  const s = get()
-  if (!s.sessionId || s.yoloMode !== undefined || s.autoMode !== undefined) return
-  const flags = defaultModeFlagsIfMissed(s.sessionId)
-  if (flags.yoloMode !== undefined || flags.autoMode !== undefined) set(flags)
+function sessionModeFlags(saved: ModeFlags, defaults: ModeFlags): ModeFlags {
+  return saved.yoloMode !== undefined || saved.autoMode !== undefined ? saved : defaults
 }
 
 /** TUI [ui] collapsed_edit_blocks — read from the shared settings cache. */
@@ -417,13 +457,12 @@ function permissionSeedMeta(
 /**
  * 清空当前会话的全部本地状态，落到"无会话"空状态（sessionId 置空，
  * 直到宿主 ready(newSessionId) 到达前，session 级事件一律丢弃，防止
- * 跨会话串扰）。newSession 与"删除当前会话落到空状态"共用同一份 reset；
- * flags 透传权限模式（newSession 继承旧会话权限；删除场景传空即默认）。
+ * 跨会话串扰）。newSession 与"删除当前会话落到空状态"共用同一份 reset。
+ * 权限模式（yolo/auto/permissionMode）是进程级全局状态，跟随 agent
+ * 广播，**不随会话复位**；planMode 是会话态，随复位清空（由下次
+ * replay/load 恢复）。
  */
-function resetSessionState(
-  set: (partial: Partial<ChatState>) => void,
-  flags: Pick<ModeFlags, 'yoloMode' | 'autoMode'> = {},
-): void {
+function resetSessionState(set: (partial: Partial<ChatState>) => void): void {
   set({
     entries: [],
     liveStream: null,
@@ -463,12 +502,8 @@ function resetSessionState(
     bgTaskIndex: {},
     topTasks: [],
     gitInfo: undefined,
-    // Keep the inherited permission flags in state so the UI matches
-    // the agent's mode (the fresh session's own restoreModeFlags copy
-    // is empty; the agent only announces yolo_mode_changed on change).
-    yoloMode: flags.yoloMode,
-    autoMode: flags.autoMode,
-    permissionMode: undefined,
+    // 权限模式是进程级全局状态（agent 客户端级广播），不随会话复位；
+    // planMode 是会话态，复位清空（replay/current_mode_update 恢复）。
     planMode: false,
     mcpServers: [],
     mcpInit: undefined,
@@ -488,6 +523,7 @@ function resetSessionState(
     historyCwd: undefined,
     historyTotalCount: undefined,
     historyLoadedCount: 0,
+    historyLoadedStart: undefined,
     historyHasMore: false,
     // 复位即弃用一切在途历史加载：不在此清会让旧会话 loadHistory 的
     // 完成回调把历史灌进新会话、或让 historyLoading 卡住新会话的发送
@@ -495,6 +531,8 @@ function resetSessionState(
     // 的 staleLoad 守卫只收口标志，不污染状态。
     historyLoading: false,
     historyLoadingMore: false,
+    historyPromptStarts: undefined,
+    historyTurnIdx: 0,
     historyPrependedAt: undefined,
     historyAnchorId: undefined,
     todoCounts: undefined,
@@ -506,6 +544,7 @@ function resetSessionState(
     // this; newSession was the only path that missed it).
     usage: undefined,
     turnStartedAt: undefined,
+    currentPromptId: undefined,
     genRate: undefined,
     scheduledTasks: [],
   })
@@ -521,33 +560,29 @@ function resetSessionState(
   // the queue returns when the session becomes active again.
 }
 
-// ── agent-restart re-seed ───────────────────────────────────────────
+// ── agent-restart follow ────────────────────────────────────────────
 // The agent's permission mode lives in ITS process memory only — host
-// restart (or agent crash) resets every session to the default ask while
-// this browser's localStorage still remembers the real flags. The host
-// stamps each hello with the agent spawn time; when it changes (including
-// first contact) the browser re-sends its known flags as a
-// yolo_mode_changed notification (the same channel the TUI uses at
-// launch) so the agent's behavior matches what the UI displays again.
+// restart (or agent crash) resets every session to the default ask. The
+// host stamps each hello with the agent spawn time; when it changes
+// (including first contact) the browser's GLOBAL permission-mode copy is
+// stale and must NOT be replayed onto the agent — the UI follows the
+// agent, so the copy is cleared and the badge falls back to ask until
+// the user (or another client) toggles a mode again.
 const LAST_AGENT_STARTED_KEY = 'acpfe.lastAgentStartedAt'
-/** Latest hello `agentStartedAt` seen (for the post-defaults re-seed check). */
-let lastHelloAgentStartedAt: number | undefined
 
 /**
- * Detect an agent restart via the hello `agentStartedAt` stamp and
- * re-seed its in-memory permission mode from the flags this browser
- * knows for the session. Idempotent: fires once per agent instance
- * (recorded in localStorage), so a plain page reload never re-broadcasts
- * and cannot clobber another client's newer choice. No-op for older
- * hosts without the stamp.
+ * Detect an agent restart via the hello `agentStartedAt` stamp and drop
+ * the global permission-mode record so the UI follows the agent's fresh
+ * ask default. Idempotent: fires once per agent instance (recorded in
+ * localStorage), so a plain page reload never clears on its own — the
+ * stamp is unchanged and the reload simply re-reads the (still valid)
+ * global flags. No-op for older hosts without the stamp.
  */
-function maybeReseedPermissionMode(
-  _get: () => ChatState,
-  _set: SetState,
+function clearModeFlagsOnAgentRestart(
+  set: SetState,
   agentStartedAt: number | undefined,
-  sessionId?: string,
 ): void {
-  if (typeof agentStartedAt !== 'number' || agentStartedAt <= 0 || !sessionId) return
+  if (typeof agentStartedAt !== 'number' || agentStartedAt <= 0) return
   let prev: string | null = null
   try {
     prev = window.localStorage.getItem(LAST_AGENT_STARTED_KEY)
@@ -560,16 +595,17 @@ function maybeReseedPermissionMode(
   } catch {
     /* ignore */
   }
-  const flags = {
-    ...restoreModeFlags(sessionId),
-    ...defaultModeFlagsIfMissed(sessionId),
+  try {
+    window.localStorage.removeItem(MODE_FLAGS_KEY)
+  } catch {
+    /* ignore */
   }
-  const seed = permissionSeedMeta(flags)
-  if (!seed) return
-  // Same wire the TUI uses at launch (yolo_mode_changed); the agent
-  // applies it globally to its resident sessions. ask/default need no
-  // seed — that IS the agent's default.
-  void transport.setMode(seed.yoloMode ? 'always-approve' : 'auto')
+  // Plan mode is per-session and timeline-derived — untouched here.
+  set({
+    yoloMode: undefined,
+    autoMode: undefined,
+    permissionMode: undefined,
+  })
 }
 
 /**
@@ -1394,7 +1430,18 @@ type ChatState = {
   historySessionId?: string
   historyCwd?: string
   historyTotalCount?: number
+  /**
+   * 已加载包络条数（展示/兼容）。权威游标是 historyLoadedStart：
+   * 已加载区 = [historyLoadedStart, totalCount)（live 追加不改 start）。
+   */
   historyLoadedCount: number
+  /**
+   * 已加载区在 live timeline 上的最老行号（绝对下标，含）。
+   * 分页一律用绝对 offset，禁止用「从尾部倒数 loaded 条」换算负 offset——
+   * live 追加会抬高 totalCount，负 offset 会整窗前移，与已加载区重叠、
+   * 同一轮条目重复出现。undefined = 尚未成功加载过。
+   */
+  historyLoadedStart?: number
   historyHasMore: boolean
   historyLoadingMore: boolean
   /** 加载更早历史失败的原因（按钮上就地显示；下次分页时清除）。 */
@@ -1403,9 +1450,9 @@ type ChatState = {
   historyPrependedAt?: number
   historyAnchorId?: string
   /**
-   * 按轮次加载：宿主 turnIndex 首页返回的全部 user 轮次起始行号
-   * （updates.jsonl 内行号）。首页只拉最后 1 轮；loadMoreHistory 按
-   * 「轮次窗口」往前一次一轮。缺失（旧宿主）时退化为按条数 offset 分页。
+   * 按轮次加载：宿主返回的全部 user 轮次起始行号（live timeline 绝对下标）。
+   * 首页只拉最后 1 轮；loadMoreHistory 按「轮次窗口」往前一次一轮。
+   * 缺失（旧宿主）时退化为按条数绝对 offset 分页。每次分页响应会刷新。
    */
   historyPromptStarts?: number[]
   /** historyPromptStarts 中「最老已加载轮次」的下标；每往前加载一轮减 1；0 = 无更早轮次。 */
@@ -1430,6 +1477,18 @@ type ChatState = {
   statusWarning?: string
   /** Turn start (epoch ms) for the TUI "Worked for Xs" completion marker. */
   turnStartedAt?: number
+  /**
+   * 当前 live 回合的权威 prompt id（agent 侧 `_meta.promptId`）。send() /
+   * adoptTurn() 锚定时记录（send 顺带 mint 一个走 wire，agent 在
+   * PromptResponse 与每个 SessionNotification 的 `_meta` 上回显）；
+   * 回合收口/取消/错误时随 turnStartedAt 一起清空。终端事件（done /
+   * prompt_complete / live turn_completed）带非空 pid 且与它不符 →
+   * 上一个回合的迟到/错标广播（RPC 与 live 通道乱序、hub 缓冲重放、
+   * 队列收养窗口），必须忽略——否则会把刚锚定的新回合立即收口、
+   * 渲染 "Worked for 0.0s" 之类的假标记（TUI finalize_turn_from_terminal
+   * 的 exact-pid 匹配同款）。无 pid（旧 shell）→ 退回 legacy 行为。
+   */
+  currentPromptId?: string
   /**
    * 生成输出速率（估算 tok/s）——host 流式期间推送 gen_rate 事件实时更新；
    * 工具执行/turn 结束推送冻结终值；新一轮发送清空（host 在
@@ -2048,6 +2107,7 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
   historyLoading: false,
   historyLoadedCount: 0,
+  historyLoadedStart: undefined,
   historyHasMore: false,
   historyLoadingMore: false,
   historyPromptStarts: undefined,
@@ -2374,27 +2434,30 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
       }
       s.handleEvent(ev)
     })
-    // Persist plan/permission flags per session. The agent never stores
-    // permission mode (yolo_mode_changed is fire-and-forget), so this
-    // copy is what restores ask/auto/always-approve after a resume or
-    // reload. Skipped while history is (re)building: loadHistory resets
-    // the flags to defaults and replay re-derives them — persisting
-    // mid-replay would clobber the live-known flags with reset values.
+    // Persist mode flags. Permission mode (yolo/auto/always-approve) is
+    // process-global on the agent side (client-scoped yolo_mode_changed
+    // broadcast), so its copy is ONE global record shared by every
+    // session. Plan mode is per-session (toggle_plan_mode addresses a
+    // sessionId) — its copy stays keyed by session as a best-effort
+    // complement to the timeline-derived truth. Skipped while history is
+    // (re)building: loadHistory resets the flags to defaults and replay
+    // re-derives them — persisting mid-replay would clobber the
+    // live-known flags with reset values.
     const unsubMode = useChatStore.subscribe((s, prev) => {
       if (s.historyLoading || s.historyLoadingMore) return
       if (
-        s.sessionId &&
-        (s.planMode !== prev.planMode ||
-          s.permissionMode !== prev.permissionMode ||
-          s.yoloMode !== prev.yoloMode ||
-          s.autoMode !== prev.autoMode)
+        s.permissionMode !== prev.permissionMode ||
+        s.yoloMode !== prev.yoloMode ||
+        s.autoMode !== prev.autoMode
       ) {
-        saveModeFlags(s.sessionId, {
-          planMode: s.planMode,
+        saveModeFlags({
           permissionMode: s.permissionMode,
           yoloMode: s.yoloMode,
           autoMode: s.autoMode,
         })
+      }
+      if (s.sessionId && s.planMode !== prev.planMode) {
+        savePlanMode(s.sessionId, s.planMode)
       }
     })
     transport.connect()
@@ -2414,18 +2477,13 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
         hostName: 'Localhost',
       })
     }
-    // Prefetch the client-global default permission mode (config.toml
-    // ui.permission_mode) so hello/ready misses can show it immediately.
-    // Once loaded, apply it to the announced session when nothing
-    // session-specific is known yet, and re-check the agent-restart
-    // re-seed — a hello that arrived before the defaults had nothing to
-    // seed from, but now the miss fallback is available.
-    void ensureDefaultModeFlags().then(() => {
-      applyDefaultModeFlagsWhenIdle(get, set)
-      if (lastHelloAgentStartedAt != null) {
-        maybeReseedPermissionMode(get, set, lastHelloAgentStartedAt, get().sessionId)
-      }
-    })
+    // Prefetch the config.toml default permission mode — used only as the
+    // seed for NEW sessions (session/new `_meta`). Live display never
+    // consults it: the UI follows the agent's yolo_mode_changed broadcasts.
+    void ensureDefaultModeFlags()
+    // 置顶/待办偏好从 hub 拉取并合并（localStorage 是离线缓存；hub 为
+    // 持久层，见 historyPins.ts）。hub 模式生效，local 模式内部跳过。
+    void usePins.getState().syncPrefsFromHub()
     return () => {
       unsub()
       unsubMode()
@@ -2515,6 +2573,7 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
       historyOpen: false,
       historyTotalCount: undefined,
       historyLoadedCount: 0,
+      historyLoadedStart: undefined,
       historyHasMore: false,
       historyPromptStarts: undefined,
       historyTurnIdx: 0,
@@ -2754,6 +2813,7 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
       historyCwd: cwd,
       historyTotalCount: undefined,
       historyLoadedCount: 0,
+      historyLoadedStart: undefined,
       historyHasMore: false,
       historyLoadingMore: false,
       historyPromptStarts: undefined,
@@ -2804,6 +2864,7 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
       todoCounts: undefined,
       todos: undefined,
       turnStartedAt: undefined,
+      currentPromptId: undefined,
       genRate: undefined,
       // 换会话复位：旧会话的「待处理」标记绝不能在新会话触发 Composer
       // 自动发送；标题/目标/工作流同理是会话级状态，须一并清空。
@@ -2854,29 +2915,46 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
       // session's FINAL context usage (newest envelope) — the only
       // page allowed to update the context chip.
       replayMeta = replayUpdates(get, updates)
-      const loaded =
-        fetched === 0 ? total || 0 : Math.min(fetched, total || fetched)
-      // Replay is a settled transcript: seal mid-stream leftovers.
-      const settled =
-        get().turnStartedAt == null
-          ? settleTurnEntries(get().entries)
-          : get().entries
-      // 按轮次模式：还有更早轮次 ⟺ 游标 > 0；按条数兜底：totalCount /
-      // 整页判定（旧宿主无 promptStarts）。
+      // 绝对游标：按轮次时最老已加载行 = promptStarts[turnIdx]；
+      // 否则视作从尾部加载了 fetched 条 → start = total - fetched。
+      // 后续 loadMore 一律用绝对 offset，live 追加抬高 total 也不会重叠。
       const turnBased =
         promptStarts != null && promptStarts.length > 0 && total > 0
+      const loadedStart = turnBased
+        ? promptStarts![turnIdx]!
+        : fetched === 0
+          ? total || 0
+          : Math.max(0, (total || fetched) - fetched)
+      const loaded =
+        total > 0 ? Math.max(0, total - loadedStart) : fetched
+      // 先把 liveStream 文本并入条目，再按是否仍 open 收口。
+      // 切勿在未 flush 时 liveStream:null——thought/assistant 流式期间
+      // 正文只在 liveStream，直接清空会留下 text:'' 的空壳；随后
+      // loadMore 的首条 user 触发 sealThought 会删掉空壳，length 收缩，
+      // 新 user 落入「已加载区」被 merge 甩到时间线末尾。
+      const flushed = flushLiveStream(get())
+      const sealed = sealThought(flushed)
+      // 已结束的回合：settle + 清流式指针。仍 open（真·进行中）时保留
+      // open*，但 liveStream 已 flush，文本不会丢。
+      const entries = replayMeta.turnOpen
+        ? sealed.entries
+        : settleTurnEntries(sealed.entries)
+      // 按轮次模式：还有更早轮次 ⟺ 游标 > 0；按条数兜底：loadedStart > 0。
       const hasMore = turnBased
         ? turnIdx > 0
-        : historyHasMorePage(total || undefined, loaded, fetched, INITIAL_TURN_LIMIT)
+        : loadedStart > 0 && historyHasMorePage(total || undefined, loaded, fetched, INITIAL_TURN_LIMIT)
       set({
         historyTotalCount: total || undefined,
         historyLoadedCount: loaded,
+        historyLoadedStart: total > 0 || fetched > 0 ? loadedStart : undefined,
         historyHasMore: hasMore,
         historyPromptStarts: promptStarts,
         historyTurnIdx: turnIdx,
         conn: 'ready',
-        entries: settled,
+        entries,
         liveStream: null,
+        openAssistantId: replayMeta.turnOpen ? sealed.openAssistantId : undefined,
+        openThoughtId: replayMeta.turnOpen ? sealed.openThoughtId : undefined,
       })
       if (staleLoad()) {
         // 会话已切走：只收口 loading 标志，不动 entries / conn /
@@ -2894,9 +2972,13 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
         // reads "已进行 Xs" instead of anchoring at replay time. Live
         // events arriving after the replay keep this start (busy keeps
         // turnStartedAt via ??). Closed turns clear it.
+        // 恢复回合的 pid 无法从回放推导：置空走 legacy 匹配——残留的
+        // 旧 pid 会把该回合自己的 live 终端事件误判成迟到事件（pid
+        // 不符被忽略 → 回合卡死）。
         ...(replayMeta.turnOpen
           ? {
               turnStartedAt: replayMeta.turnStartedAt,
+              currentPromptId: undefined,
               statusText: replayMeta.turnStartedAt
                 ? `回合进行中（已进行 ${formatTurnDuration(
                     Date.now() - replayMeta.turnStartedAt,
@@ -2905,14 +2987,16 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
             }
           : {
               turnStartedAt: undefined,
+              currentPromptId: undefined,
               statusText: `历史已加载 (共 ${get().historyTotalCount ?? '?'} 条更新)`,
             }),
         historyLoadedAt: Date.now(),
-        // 权限模式 agent 不持久化（yolo_mode_changed 是 fire-and-forget，
-        // replay 推导不出 ask/auto/always-approve）——开头复位后在这里按
-        // 会话记录 / config 默认恢复，优先级与 hello 一致（记录 > 默认）。
-        ...restoreModeFlags(sessionId),
-        ...defaultModeFlagsIfMissed(sessionId),
+        // 权限模式是进程级全局状态（跟随 agent 客户端级广播），replay
+        // 推导不出 ask/auto/always-approve——这里恢复全局记录；plan 是
+        // 会话态，从 per-session 副本补充（权威仍是 replay 的
+        // current_mode_update）。
+        ...restoreModeFlags(),
+        ...restorePlanMode(sessionId),
       })
       // 会话级 recap 缓存回填：该会话最近一次摘要（display-only、不
       // 持久化）在跨会话期间到达时只进了 cache——这里在历史重建后
@@ -2954,10 +3038,6 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
           ],
         })
       }
-      // 补应用默认权限 flags：上面的展开在 /api/settings 缓存未就绪时
-      // 看不到默认值（hello 先于 fetch 返回的窗口），这里兜底一次
-      // （幂等——无记录且 yolo/auto 仍未定义才生效）。
-      void ensureDefaultModeFlags().then(() => applyDefaultModeFlagsWhenIdle(get, set))
       // 队列状态不随历史回放（agent 不持久化 pending_inputs、load 不
       // 回放 queue_changed）：主动向 host 拉最近一次广播快照对齐镜像
       // （覆盖断线期间错过的 pop/adoption 广播）。静默失败 —— 拉取只是
@@ -2990,9 +3070,9 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
         conn: 'ready',
         statusText: '历史加载失败',
         historyLoadError: msg,
-        // 复位后同样恢复权限 flags（见成功分支注释）。
-        ...restoreModeFlags(sessionId),
-        ...defaultModeFlagsIfMissed(sessionId),
+        // 权限模式全局恢复（同成功分支注释）；plan 按会话补充。
+        ...restoreModeFlags(),
+        ...restorePlanMode(sessionId),
         // 已加载出内容时保留内容 + 内联错误行（就地重试语义）；完全没
         // 加载出来时保持空列表，由 scrollback 中央"加载失败"覆盖层显示。
         entries:
@@ -3000,8 +3080,6 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
             ? [...get().entries, { id: nid(), kind: 'error', text: msg }]
             : [],
       })
-      // 补应用默认权限 flags（同成功分支：缓存就绪后兜底一次）。
-      void ensureDefaultModeFlags().then(() => applyDefaultModeFlagsWhenIdle(get, set))
     }
   },
 
@@ -3138,18 +3216,12 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
       // 1) Make this session the active one (session/load or focus-if-busy);
       // 2) load its tail. Models come from the HTTP response — more reliable
       // than waiting for the SSE ready event, which can race historyLoading.
-      // Permission mode rides session/load `_meta` (the agent never persists
-      // ask/auto/always-approve — yolo_mode_changed is fire-and-forget), so
-      // seed it from the flags this client saved for the session, TUI-style:
-      // yoloMode/autoMode are mutually exclusive, yolo wins. Only send when
-      // this browser actually knows the session's permission flags.
-      const savedFlags = restoreModeFlags(sessionId)
-      // Miss (no per-browser record for this session) → client-global
-      // default from config.toml ui.permission_mode (TUI parity).
-      const defaultFlags = await ensureDefaultModeFlags()
-      const modeFlags = sessionModeFlags(savedFlags, defaultFlags)
-      const modeMeta = permissionSeedMeta(modeFlags)
-      const loaded = await transport.loadSession(sessionId, cwd, modeMeta)
+      // Permission mode is NOT seeded here: the yolo_mode_changed channel is
+      // client-scoped (a toggle applies to EVERY resident session of this
+      // client), so loading a session must leave the agent's global mode
+      // untouched — sending a per-session seed would rewrite the global
+      // state on every switch. Display follows the agent (global copy).
+      const loaded = await transport.loadSession(sessionId, cwd)
       // The user may have switched host / opened another session while we
       // were loading — never write this session's data into that view.
       if (myGen !== sessionSwitchGen) return
@@ -3180,14 +3252,10 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
       await get().replayRunningTasks(sessionId, cwd)
       await get().loadHistory(sessionId, cwd)
       if (myGen !== sessionSwitchGen) return
-      // The agent never persists permission mode (yolo_mode_changed is a
-      // fire-and-forget notification), so the replayed timeline cannot
-      // restore ask/auto/always-approve — re-apply the flags this client
-      // knows for the session (saved record, or the config.toml default on
-      // a miss). Plan mode is re-derived by the replayed current_mode_update
-      // timeline; the saved copy matches it in the common case and fills
-      // the permission gaps.
-      set({ ...modeFlags })
+      // 权限模式是进程级全局状态（跟随 agent 广播），store 中即最新值，
+      // 无需按会话恢复；plan 按会话从副本补充（权威是 replay 的
+      // current_mode_update）。
+      set({ ...restorePlanMode(sessionId) })
       get().startTopTaskPolling(sessionId, cwd)
       // Rehydrate pending permission / ask_user_question cards for THIS
       // session. Live client_request SSE while another session was active
@@ -3271,6 +3339,7 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
         historyLoadError: msg,
         entries: [],
         turnStartedAt: undefined,
+        currentPromptId: undefined,
         genRate: undefined,
         awaitingNext: false,
         openAssistantId: undefined,
@@ -3295,39 +3364,48 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
     // 即停，绝不把旧会话的页继续灌进新会话。
     const sid = s.historySessionId
     const chained = chainedPages ?? 0
-    // 按轮次加载：一次拉「最老已加载轮次的前一轮」（窗口以 user 开头）。
-    // sticky 在该 user 完全划走后触发本函数；prepend + 锚点恢复后钉
-    // 新轮 user。超长回合 / totalCount 缺失时退化为按条数 offset 分页。
-    const win = previousTurnWindow(s.historyPromptStarts, s.historyTurnIdx, s.historyTotalCount)
+    // 已加载区最老行（绝对下标）。缺失时用 total-loaded 兜底（旧状态）。
+    const loadedStart =
+      s.historyLoadedStart ??
+      (typeof s.historyTotalCount === 'number' && s.historyTotalCount > 0
+        ? Math.max(0, s.historyTotalCount - s.historyLoadedCount)
+        : 0)
+    if (loadedStart <= 0) {
+      set({ historyHasMore: false })
+      return
+    }
+    // 按轮次：一次拉「最老已加载轮次的前一轮」[promptStarts[k-1], promptStarts[k])，
+    // 用**绝对** offset（不是 start-total 负 offset）——live 追加抬高 total
+    // 时负 offset 会整窗前移，与已加载区重叠。窗口 end 钳到 loadedStart，
+    // 杜绝任何与已加载区的交叉。
+    const win = previousTurnWindow(
+      s.historyPromptStarts,
+      s.historyTurnIdx,
+      loadedStart,
+    )
     // 页大小自适应（adaptivePageSize）：按条数兜底分页目标固定为「加载
     // 到上一条 user 消息为止」——新页含 user 即停（下方续翻条件）；中间
     // 隔的长工具流段由翻倍页大小一次覆盖更多，而不是固定 100 条一页地
     // 多次续翻。
     const pageSize = win ? win.limit : adaptivePageSize(chained)
-    const loaded = s.historyLoadedCount
-    // 按条数兜底的分页窗口 = [total-loaded-pageSize, total-loaded)（负
-    // offset 从尾部起算）。首页只拉最后 1 轮时已加载区很短，窗口起点
-    // 可能越过文件头（total-loaded < pageSize）：宿主会把起点 clamp 到
-    // 0 后仍按 limit 取满，返回 [0, pageSize) —— 与已加载区
-    // [total-loaded, total) 重叠，同一轮内容重复显示。此时改为从文件头
-    // 起算、只取到已加载区起点（offset=0, limit=total-loaded），保证
-    // 与已加载区严格相接、不重叠。
-    let reqOffset: number | undefined
+    // 绝对 offset 窗口，与已加载区 [loadedStart, ∞) 严格相接、不重叠。
+    let reqOffset: number
     let reqLimit: number
     if (win) {
       reqOffset = win.offset
       reqLimit = win.limit
     } else {
-      const total = s.historyTotalCount
-      const loadedStart =
-        typeof total === 'number' && total > 0 ? total - loaded : undefined
-      if (loadedStart != null && loadedStart < pageSize) {
+      if (loadedStart <= pageSize) {
         reqOffset = 0
-        reqLimit = Math.max(0, loadedStart)
+        reqLimit = loadedStart
       } else {
-        reqOffset = -(loaded + pageSize)
+        reqOffset = loadedStart - pageSize
         reqLimit = pageSize
       }
+    }
+    if (reqLimit <= 0) {
+      set({ historyHasMore: false })
+      return
     }
     set({ historyLoadingMore: true, historyAnchorId: anchorId, historyLoadError: undefined })
     try {
@@ -3335,18 +3413,50 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
         offset: reqOffset,
         limit: reqLimit,
       })
+      // 会话在 await 期间被切走：丢弃本页，不灌 entries。
+      if (get().historySessionId !== sid) {
+        set({ historyLoadingMore: false })
+        return
+      }
       const fetched = r.updates?.length ?? 0
-      // Replay appends; remember where the previous timeline started so the
-      // new (older) page can be moved in front of it afterwards. Older
-      // pages never update the context chip (applyUsage: false) — only the
-      // newest page (loadHistory) carries the session's current usage.
-      const split = get().entries.length
+      // 真·live 回合：本端发送中 / 已知 promptId / loadHistory 对仍 open
+      // 回合恢复的 turnStartedAt。turnOpen 已收紧（completed 后 stray
+      // thought 不再误开），故 turnStartedAt 可信——不得 settle 掉在流条目。
+      // 在途 live 在回放前采样：回放会改 open*/conn，不能回放后再判。
+      const liveLocal =
+        get().pendingOptimisticUserId != null ||
+        get().currentPromptId != null ||
+        get().turnStartedAt != null
+      // 回放前先把已加载区的 liveStream flush + 空 thought 收口，避免
+      // 回放首条 user 触发 sealThought 删空壳时改写「已加载」集合。
+      // （prepend 已改 id 集合差，删壳不再错位；这里仍清掉脏 open*，
+      // 让回放在干净指针上起步。）
+      if (!liveLocal) {
+        const pre = sealThought(flushLiveStream(get()))
+        set({
+          entries: settleTurnEntries(pre.entries),
+          openAssistantId: undefined,
+          openThoughtId: undefined,
+          liveStream: null,
+          conn: 'ready',
+        })
+      }
+      // Replay appends; split by entry id set（不是 length）。
+      // length split 在回放过程中若删掉已加载区空 thought，新 user 会
+      // 落进 old 段，merge 后甩到时间线末尾。
+      // Older pages never update the context chip (applyUsage: false) —
+      // only the newest page (loadHistory) carries the session's current usage.
+      const priorIds = new Set(get().entries.map((e) => e.id))
       replayUpdates(get, r.updates ?? [], { applyUsage: false })
       const after = get()
-      let oldEntries = after.entries.slice(0, split)
-      const newEntries = after.entries.slice(split).map((e, i, arr) =>
-        i === arr.length - 1 && e.kind === 'assistant' ? { ...e, streaming: false } : e,
-      )
+      let oldEntries = after.entries.filter((e) => priorIds.has(e.id))
+      let newEntries = after.entries
+        .filter((e) => !priorIds.has(e.id))
+        .map((e, i, arr) =>
+          i === arr.length - 1 && e.kind === 'assistant'
+            ? { ...e, streaming: false }
+            : e,
+        )
       // Page boundaries can cut an assistant message in half; stitch the
       // continuation (first old entry) onto the new page's last entry.
       const lastNew = newEntries[newEntries.length - 1]
@@ -3355,53 +3465,82 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
         newEntries[newEntries.length - 1] = { ...lastNew, text: lastNew.text + firstOld.text }
         oldEntries = oldEntries.slice(1)
       }
+      // 刷新 total / promptStarts（agent 每次都回；live 追加后 total 变大，
+      // 旧负 offset 会漂——我们已改绝对 offset，这里只同步元数据）。
       const rawTotal = r.totalCount ?? s.historyTotalCount
-      const total = rawTotal ?? loaded + fetched
-      const loadedNew = fetched === 0 ? total : Math.min(loaded + fetched, total)
+      const total = rawTotal ?? loadedStart + fetched
+      const newLoadedStart = fetched === 0 ? loadedStart : reqOffset
+      const loadedNew =
+        typeof total === 'number' && total > 0
+          ? Math.max(0, total - newLoadedStart)
+          : s.historyLoadedCount + fetched
+      // 同步 promptStarts；win 路径游标 -1，offset 路径按边界行号 remap。
+      const promptStarts =
+        r.promptStarts && r.promptStarts.length > 0
+          ? r.promptStarts
+          : s.historyPromptStarts
+      // win 路径：游标减 1。offset 兜底（超长回合）保持原 turnIdx——
+      // 绝不能用 loadedStart 反查提前跳到更早轮，否则会跳过长回合未加载前缀。
+      // promptStarts 因 live 新回合 append 变长时，旧下标仍指向同一 start 行。
+      const nextTurnIdx = win
+        ? Math.max(0, s.historyTurnIdx - 1)
+        : remapTurnIdx(s.historyPromptStarts, s.historyTurnIdx, promptStarts)
       // Same settled-transcript rule as loadHistory: a tool that is still
       // running here never received its completion in any loaded page
       // (its update was dropped for an unknown id when the newer page
       // replayed first) — close it out instead of leaving "Running …"
-      // stuck on a historical page boundary. Skipped while a live turn
-      // is in flight (turnStartedAt set).
+      // stuck on a historical page boundary. Skipped only for true local
+      // live turns (see liveLocal above).
       const merged = [...newEntries, ...oldEntries]
-      // 分页期间本地回合仍在流式（turnStartedAt 非空）：收口收尾必须整段
-      // 跳过——settleTurnEntries 会把流式中的条目打成 streaming:false；
-      // 清空 openAssistantId/openThoughtId/liveStream 则丢掉 liveStream 里
-      // 尚未合并的文本，后续 chunk 还会再开一条新行（原条目挂着
-      // streaming:true 却失去指针）。
-      // 注意：判流式只能看 turnStartedAt。openAssistantId/liveStream 在
-      // replayUpdates 之后会被「本页以半截 assistant 流收尾」的回放数据
-      // 填上（页边界切断消息）——它们此时不代表真实 live 回合。若一并纳入
-      // 判定，纯历史分页（无 live 回合）会被误判为流式中而跳过 settle，把
-      // 回放出的 streaming:true 条目留在原地，status 永久卡在 Responding…。
-      // 与 loadHistory 的收口守卫（turnStartedAt == null 才 settle）保持一致。
-      const streaming = get().turnStartedAt != null
-      // hasMore：按轮次 → 游标减 1 后还有更早轮次；按条数 → totalCount/
-      // 整页判定。
-      const hasMore = win
-        ? s.historyTurnIdx - 1 > 0
-        : historyHasMorePage(rawTotal, loadedNew, fetched, pageSize)
-      set({
-        entries: streaming ? merged : settleTurnEntries(merged),
-        ...(streaming
-          ? {}
-          : {
-              openAssistantId: undefined,
-              openThoughtId: undefined,
-              liveStream: null,
-              // Replay of stored thought chunks drives conn to 'busy' — paging
-              // history is not a live turn.
-              conn: 'ready',
-            }),
-        historyLoadingMore: false,
-        historyTotalCount: total,
-        historyLoadedCount: loadedNew,
-        historyHasMore: hasMore,
-        historyTurnIdx: win ? Math.max(0, s.historyTurnIdx - 1) : s.historyTurnIdx,
-        historyLoadError: undefined,
-        historyPrependedAt: Date.now(),
-      })
+      // 回放后 openAssistantId/liveStream 常被「本页半截 assistant」填上，
+      // 不代表真 live。历史分页一律 settle + conn ready；本端发送中则
+      // 整段跳过，避免打掉正在流的条目 / 未合并的 liveStream。
+      const streaming =
+        liveLocal ||
+        get().pendingOptimisticUserId != null ||
+        get().currentPromptId != null
+      // hasMore：还有更早行（绝对游标 > 0）且本页非空。空页停翻，避免
+      // 宿主异常时死循环。按轮次时 nextTurnIdx/promptStarts 只影响下一
+      // 次 previousTurnWindow；是否可翻只看游标（含首轮前 preamble）。
+      const hasMore = fetched > 0 && newLoadedStart > 0
+      // 历史页回放可能把 conn/statusText 打成 busy/Responding…——非 live
+      // 时强制收口（先 flush 再 settle，避免清空 liveStream 丢正文）。
+      if (streaming) {
+        set({
+          entries: merged,
+          historyLoadingMore: false,
+          historyTotalCount: total,
+          historyLoadedCount: loadedNew,
+          historyLoadedStart: newLoadedStart,
+          historyHasMore: hasMore,
+          historyPromptStarts: promptStarts,
+          historyTurnIdx: nextTurnIdx,
+          historyLoadError: undefined,
+          historyPrependedAt: Date.now(),
+        })
+      } else {
+        const sealedMerged = sealThought(
+          flushLiveStream({ ...get(), entries: merged }),
+        )
+        set({
+          entries: settleTurnEntries(sealedMerged.entries),
+          openAssistantId: undefined,
+          openThoughtId: undefined,
+          liveStream: null,
+          // Replay of stored thought chunks drives conn to 'busy' — paging
+          // history is not a live turn.
+          conn: 'ready',
+          historyLoadingMore: false,
+          historyTotalCount: total,
+          historyLoadedCount: loadedNew,
+          historyLoadedStart: newLoadedStart,
+          historyHasMore: hasMore,
+          historyPromptStarts: promptStarts,
+          historyTurnIdx: nextTurnIdx,
+          historyLoadError: undefined,
+          historyPrependedAt: Date.now(),
+        })
+      }
       // 自动续翻（仅按条数兜底路径；页大小随 chained 翻倍）：本页无
       // user（纯工具流段）就继续向后翻——分页目标固定为「加载到上一条
       // user 消息为止」。按轮次路径每页必含 user，无需续翻。或翻尽
@@ -3569,18 +3708,16 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
           error: ev.error,
           statusWarning: undefined,
           ...modelSnap,
-          // Permission mode is not in the agent's modes payload — re-apply
-          // the flags this client saved for the session (extractModeFlags
-          // below still wins for whatever the payload DOES carry). A miss
-          // falls back to the config.toml default when already loaded.
-          ...restoreModeFlags(ev.sessionId),
-          ...defaultModeFlagsIfMissed(ev.sessionId),
+          // 权限模式是进程级全局状态：恢复全局记录（页面刷新后徽标不丢），
+          // 权威是 host 在 hello 里携带的 agent 真实模式快照
+          // （permissionMode，host 记录每次变更并随 agent 重启复位）——
+          // 快照置于记录之后，无条件覆盖；extractModeFlags 对 modes 载荷
+          // 里确实携带的字段依然生效。plan 按会话补充。
+          ...restoreModeFlags(),
+          ...restorePlanMode(ev.sessionId),
+          ...permissionModeFromSnapshot(ev.permissionMode),
           ...(sessionModesPatch(get, ev.modes) ?? {}),
         })
-        // 补应用默认权限 flags：hello 早于 /api/settings 返回时上面的
-        // defaultModeFlagsIfMissed 展开看不到缓存，这里等缓存就绪后再
-        // 补一次（幂等——无记录且 yolo/auto 仍未定义才生效）。
-        void ensureDefaultModeFlags().then(() => applyDefaultModeFlagsWhenIdle(get, set))
         // 抑制窗口内的 busy 快照：旧会话的忙态绝不能灌进刚创建的新会话
         // （turnIsLive 误判 → 第一条消息错误排队）。窗口外照常应用
         // （reconnect mid-turn 保留本端流式状态等语义不变）。
@@ -3611,7 +3748,10 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
               statusText: hasLocalStreaming ? get().statusText : 'Waiting for host…',
               awaitingNext: false,
               turnStartedAt: busyTurn,
-              ...(newTurn ? { genRate: undefined } : {}),
+              // 新回合由 busy 锚定（非本端发送/收养）——回合身份未知，
+              // pid 置空走 legacy 匹配；reconnect mid-turn（newTurn=false）
+              // 保留原 pid。
+              ...(newTurn ? { genRate: undefined, currentPromptId: undefined } : {}),
               error: undefined,
               statusWarning: undefined,
             })
@@ -3639,10 +3779,10 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
           void get().loadHistory(ev.sessionId, ev.cwd || '')
         }
         // Agent restart (host respawned the agent → in-memory permission
-        // mode reset): re-seed the browser-known flags once per instance.
+        // mode reset to ask): clear the browser's global copy once per
+        // instance so the UI follows the agent instead of stale flags.
         if (typeof ev.agentStartedAt === 'number' && ev.agentStartedAt > 0) {
-          lastHelloAgentStartedAt = ev.agentStartedAt
-          maybeReseedPermissionMode(get, set, ev.agentStartedAt, ev.sessionId)
+          clearModeFlagsOnAgentRestart(set, ev.agentStartedAt)
         }
         break
       }
@@ -3674,7 +3814,7 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
             ...(s.openThoughtId == null &&
             s.openAssistantId == null &&
             s.pendingOptimisticUserId == null
-              ? { turnStartedAt: undefined }
+              ? { turnStartedAt: undefined, currentPromptId: undefined }
               : {}),
           })
           void get().refreshHosts()
@@ -3698,11 +3838,10 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
           error: undefined,
           statusWarning: undefined,
           ...modelSnap,
-          // Same restore as hello: the load response's modes rarely carries
-          // permission info, so saved per-session flags fill the gap; a
-          // miss falls back to the config.toml default when already loaded.
-          ...restoreModeFlags(ev.sessionId),
-          ...defaultModeFlagsIfMissed(ev.sessionId),
+          // 与 hello 相同的恢复：权限模式全局（刷新后徽标不丢，权威是
+          // yolo_mode_changed 广播）；plan 按会话补充。
+          ...restoreModeFlags(),
+          ...restorePlanMode(ev.sessionId),
           ...(sessionModesPatch(get, ev.modes) ?? {}),
           // ready 宣告会话空闲：清掉残留的 turnStartedAt（窗口期旧 hello /
           // 旧 loadHistory 灌入的脏计时），否则 turnIsLive() 会把空闲会话
@@ -3711,11 +3850,9 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
           ...(s.openThoughtId == null &&
           s.openAssistantId == null &&
           s.pendingOptimisticUserId == null
-            ? { turnStartedAt: undefined }
+            ? { turnStartedAt: undefined, currentPromptId: undefined }
             : {}),
         })
-        // 补应用默认权限 flags（同 hello：缓存就绪后兜底一次，幂等）。
-        void ensureDefaultModeFlags().then(() => applyDefaultModeFlagsWhenIdle(get, set))
         void get().refreshHosts()
         void get().refreshGitInfo()
         break
@@ -3751,7 +3888,9 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
           statusText: hasLocalStreaming ? s.statusText : 'Waiting for response…',
           awaitingNext: false,
           turnStartedAt,
-          ...(newTurn ? { genRate: undefined } : {}),
+          // 新回合由 busy 锚定（非本端发送/收养）——回合身份未知，pid
+          // 置空走 legacy 匹配；mid-turn re-busy 保留原 pid。
+          ...(newTurn ? { genRate: undefined, currentPromptId: undefined } : {}),
           // A turn starting means the system recovered — clear stale
           // error/status banners.
           error: undefined,
@@ -4355,6 +4494,12 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
         // 本视图：本端没有可收的回合，finalize 的副作用（awaitingNext /
         // pending 清空 / statusText 覆盖）都不该落在已完成的会话上。
         if (!ev.sessionId && !turnIsLive(get())) break
+        // 回合身份校验：done 的 `meta` = prompt-result `_meta`（agent 回显
+        // 客户端 mint 的 promptId）。带非空 pid 且与当前回合不符 → 上一
+        // 个回合的迟到 done（RPC 与 live 通道乱序 / hub 缓冲重放）——
+        // 不能收口新回合：finalize 的清锚副作用会打断刚发送的回合。
+        // 无 pid（旧 host 丢弃 / 旧 shell）→ 退回 legacy 行为。
+        if (promptIdMismatch((ev as { meta?: unknown }).meta, get().currentPromptId)) break
         // TUI TurnCompleted marker ("Worked for 2.0s") — the last scrollback
         // line above the composer, mirroring turn_completion.rs. Idempotent:
         // prompt_complete may race ahead and finalize the turn first.
@@ -4414,6 +4559,12 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
           // 盖章的 turnStartMs —— 队列收养的回合若在收养后立即完成
           // （没有 chunk/thought 可修正），在这里修正后再 finalize，
           // marker 才是真实时长而非 "Worked for 0.0s"。
+          // 回合身份校验：live turn_completed 的 `meta` = params._meta
+          // （agent 在每个 SessionNotification 上回显 promptId）。带非空
+          // pid 且与当前回合不符 → 上一个回合的迟到收口（乱序 / hub 缓冲
+          // 重放）——绝不能收养/收口新回合（adoptLiveTurnStart 会把新
+          // 回合的锚错改成旧回合的开始时间，时长虚高）。
+          if (promptIdMismatch((ev as { meta?: unknown }).meta, get().currentPromptId)) break
           adoptLiveTurnStart(set, get, ev)
           const railEndTs = get().turnStartedAt
           finalizeTurn(set, get, stopReason)
@@ -4522,6 +4673,7 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
             openAssistantId: undefined,
             openThoughtId: undefined,
             turnStartedAt: undefined,
+            currentPromptId: undefined,
             xaiRequests: [], // host answered every pending x.ai request already
             pending: [], // …and every pending permission request (turn cancelled)
             // flushLiveStream's liveStream: null rides on the entry merge —
@@ -4582,6 +4734,7 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
             error: undefined,
             statusWarning: undefined,
             turnStartedAt: undefined,
+            currentPromptId: undefined,
             entries: [...s.entries, { id: nid(), kind: 'error', text: ev.message }],
           })
           break
@@ -4596,6 +4749,7 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
           error: ev.message,
           statusWarning: undefined,
           turnStartedAt: undefined,
+          currentPromptId: undefined,
           entries: [...get().entries, { id: nid(), kind: 'error', text: ev.message }],
         })
         break
@@ -4768,9 +4922,10 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
           // current_mode_update (session-mode id, e.g. 'plan') restores the
           // plan/perm flags from the replayed timeline.
           case 'yolo_mode_changed':
-            // 多会话广播守卫（同 standalone yolo_mode_changed）：模式标志
-            // 是会话级状态，跨会话广播不得覆盖当前会话的 flags。
-            if (ev.sessionId && ev.sessionId !== get().sessionId) break
+            // 权限模式是客户端级全局状态：agent 对发送客户端的所有会话
+            // 生效，广播无条件应用——所有会话的显示同步（订阅器落全局
+            // 记录）。current_mode_update（session-mode id，如 'plan'）
+            // 从回放的 timeline 恢复 plan/perm flags。
             applyModeFlags(set, fields)
             break
           case 'current_mode_update': {
@@ -5585,10 +5740,9 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
         break
       }
       case 'yolo_mode_changed':
-        // 多会话广播（host withSid 约定）：模式标志是会话级状态，别的
-        // 会话/别的客户端切换模式不得覆盖当前会话的徽标（ready/model/
-        // error/status 同款守卫）。
-        if (ev.sessionId && ev.sessionId !== get().sessionId) break
+        // 客户端级全局广播（agent 对发送客户端的所有会话生效）：无条件
+        // 应用，所有会话的显示同步（订阅器落全局记录）。sessionId 标记
+        // （host withSid 约定）不代表会话级变更，不做过滤。
         // The agent sends snake_case ({yolo_mode, auto_mode, permission_mode});
         // accept both spellings (camelCase first for host-normalized paths).
         // applyModeFlags merges (absent keys never wipe local flags) and
@@ -5710,28 +5864,57 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
         if (ev.sessionId && ev.sessionId !== get().sessionId) break
         // Agent-side turn end: x.ai/session/prompt_complete fires for EVERY
         // prompt turn — user-sent turns also get a host `done`, but
-        // scheduled injections end with only this. Finalize exactly like
-        // `done`; guarded on conn busy so a stale duplicate after `done`
-        // (or during an idle gap) is a no-op.
-        if (get().conn !== 'busy') break
-        const turnStart = get().turnStartedAt
-        const marker = turnMarker(turnStart != null ? Date.now() - turnStart : undefined)
-        // Turn end: merge live text into its entry before the settle.
-        const flushed = flushLiveStream(get())
-        const sealed = sealThought(flushed)
-        set({
-          ...sealed,
-          conn: 'ready',
-          statusText: '待处理',
-          awaitingNext: true,
-          openAssistantId: undefined,
-          openThoughtId: undefined,
-          turnStartedAt: undefined,
-          // Turn end (scheduled-injection path): outstanding permission
-          // requests were resolved host-side — drop any stale queue entry.
-          pending: [],
-          entries: [...settleTurnEntries(sealed.entries), marker],
-        })
+        // scheduled injections end with only this.
+        //
+        // 回合身份校验（TUI finalize_turn_from_terminal exact-pid 匹配）：
+        // payload 带 promptId（lost-response fix 后的 shell）且与当前回合
+        // 不符 → 上一个回合的迟到广播（RPC 与 live 通道乱序、hub 缓冲
+        // 重放、队列收养窗口）——绝不能收口新回合：新回合刚锚定
+        // （conn=busy、turnStartedAt=现在），被它收口会渲染
+        // "Worked for 0.0s" 假标记并清掉新回合的锚。无 pid（旧 shell）
+        // → 退回 conn busy 守卫的 legacy 行为。
+        const s = get()
+        if (s.conn !== 'busy') break
+        if (promptIdMismatch(ev.params, s.currentPromptId)) break
+        // stop_reason 原样携带（shell PromptCompletePayload）——失败/取消
+        // 回合必须渲染 TurnFailed / TurnCancelled，而不是 "Worked for"。
+        const p = (ev.params ?? {}) as Record<string, unknown>
+        const stopReason =
+          typeof p.stopReason === 'string'
+            ? p.stopReason
+            : typeof p.stop_reason === 'string'
+              ? p.stop_reason
+              : undefined
+        const agentResult =
+          typeof p.agentResult === 'string'
+            ? p.agentResult
+            : typeof p.agent_result === 'string'
+              ? p.agent_result
+              : undefined
+        // 与 `done` 同款收口（finalizeTurn：hasOutput / bashTurn / turnIsLive
+        // 守卫 + 幂等 settle）；失败/取消标记是本 rail 的职责（done 对
+        // error/rate_limit 不追加标记），收口后按 tailAlreadyTurnEnded
+        // 去重补渲染（TUI viewer 的 stop_reason 映射同款）。
+        const railEndTs = s.turnStartedAt
+        finalizeTurn(set, get, stopReason)
+        if (
+          stopReason === 'error' ||
+          stopReason === 'rate_limit' ||
+          stopReason === 'cancelled'
+        ) {
+          if (!tailAlreadyTurnEnded(get().entries)) {
+            const { text, warning } = turnEndMarkerText(
+              stopReason,
+              agentResult,
+              railEndTs != null ? Date.now() - railEndTs : undefined,
+            )
+            appendEntry(set, {
+              kind: 'session_event',
+              text,
+              ...(warning ? { warning } : {}),
+            })
+          }
+        }
         break
       }
       case 'follow_ups': {
@@ -6037,6 +6220,13 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
     const sealedAsst = sealAssistantStream(get())
     const sealed = sealThought(sealedAsst)
     const userId = nid()
+    // 回合身份：mint 一个 promptId 走 wire（TUI 同款——agent 在
+    // PromptResponse / SessionNotification 的 `_meta` 上回显），终端事件
+    // 按它做 exact-pid 匹配，杜绝上一回合的迟到 prompt_complete/done
+    // 收口新回合（"Worked for 0.0s" 假标记）。降级行重发沿用原 id
+    // （agent queue_meta 身份一致）；旧 host 忽略该字段 → 事件无 pid，
+    // 匹配退回 legacy。与队列 promptId 同源（promptQueue 的 qid）。
+    const promptId = opts?.promptId ?? qid()
     // Shell-mode submissions (Composer `!` mode → prompt path) mark the
     // user row so the scrollback renders it with the TUI `$ ` prefix.
     const userEntry = {
@@ -6057,6 +6247,7 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
       statusText: 'Waiting for response…',
       awaitingNext: false,
       turnStartedAt: Date.now(),
+      currentPromptId: promptId,
       // A manual send starts a new turn: the previous turn's suggestion
       // chips are retired (TUI clears follow_ups at turn start).
       followUps: undefined,
@@ -6068,14 +6259,14 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
     try {
       // Optional image blocks (Composer image chips): the caller passes
       // the full block list; default is the plain text prompt.
-      // promptId（可选）：降级行重发时保持与镜像行同 id（agent 侧
-      // queue_meta 一致）；普通发送不带。
+      // promptId：本回合身份（普通发送 mint 新 id；降级行重发保持与
+      // 镜像行同 id，agent 侧 queue_meta 一致）。
       await transport.prompt(
         blocks && blocks.length > 0 ? blocks : [{ type: 'text', text: t }],
         // 显式绑定会话列表选中的会话：请求确定发往 get().sessionId
         // （与 sendQueuedToSession 一致），而不是依赖 host 的活动会话——
         // 避免 host 活动会话与 FE 列表选中会话在竞态窗口内不一致时发错会话。
-        { promptId: opts?.promptId, sessionId: get().sessionId },
+        { promptId, sessionId: get().sessionId },
       )
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -6116,8 +6307,26 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
           statusText: msg,
           awaitingNext: false,
           turnStartedAt: undefined,
+          currentPromptId: undefined,
           entries: [...after.entries, { id: nid(), kind: 'error', text: msg }],
         })
+        return
+      }
+      // 代理超时（524 Cloudflare / 504 nginx / 408）≠ agent 拒绝：这是
+      // 反代等不到源站响应头（Cloudflare ~100s）主动掐断阻塞的 POST。
+      // 新 host 已改为受理即返回，不会再触发；此分支是旧 host（阻塞到
+      // 回合结束）的防御——host 的 handler 早已 detach（ctx.Done()）、
+      // 回合在后台照常跑、输出继续走 live 通道，回合结果由 live 通道
+      // 收口（成功或 SSE 错误事件）。渲染 "prompt failed (524)" 只会
+      // 污染已正常完成的回合。与网络瞬断同构：不渲染错误行，武装看门狗
+      // 兜底——仅当回合卡死且 live 通道断开才补错误态。turnStartedAt
+      // 已清说明 live 通道已收口过（结果已渲染），静默返回。
+      if (
+        e instanceof AgentTurnError &&
+        (e.status === 524 || e.status === 504 || e.status === 408 || e.status === 599)
+      ) {
+        if (s.turnStartedAt == null) return
+        armTurnBlipWatchdog(set, get, msg)
         return
       }
       // host 的 SSE error 事件（同文本）通常先于 HTTP 响应到达、已滚过
@@ -6138,6 +6347,7 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
         statusWarning: undefined,
         awaitingNext: false,
         turnStartedAt: undefined,
+        currentPromptId: undefined,
         entries: dup
           ? after.entries
           : [...after.entries, { id: nid(), kind: 'error', text: msg }],
@@ -7019,11 +7229,12 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
     get().stopTopTaskPolling()
     clearSuppressedTools()
     clearStreamBuf()
-    // A new session inherits the current permission mode (TUI parity:
-    // SessionFlags ride session/new `_meta`; the agent never persists
-    // ask/auto/always-approve). Capture before the reset — yoloMode wins
-    // over autoMode; a miss falls back to the config.toml default. Plan
-    // mode is per-session on the agent side and always starts fresh.
+    // A new session inherits the current GLOBAL permission mode (TUI
+    // parity: SessionFlags ride session/new `_meta`; the agent never
+    // persists ask/auto/always-approve). Capture before the reset —
+    // yoloMode wins over autoMode; with no global record yet, fall back
+    // to the config.toml default. Plan mode is per-session on the agent
+    // side and always starts fresh.
     const cur = get()
     const defaultFlags = await ensureDefaultModeFlags()
     const curFlags = sessionModeFlags(
@@ -7031,7 +7242,9 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
       defaultFlags,
     )
     const inheritMeta = permissionSeedMeta(curFlags)
-    resetSessionState(set, { yoloMode: curFlags.yoloMode, autoMode: curFlags.autoMode })
+    // 权限模式是进程级全局状态：复位不清（删除场景同样保留），store
+    // 现值即继承值，无需经 flags 回灌。
+    resetSessionState(set)
     // New session lands in the CURRENT conversation's workspace: inherit
     // its cwd so "new" starts in the same directory (captured above, before
     // the anchor reset clears it). An explicit cwd (sidebar group
@@ -7067,6 +7280,7 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
         statusText: '就绪',
         awaitingNext: false,
         turnStartedAt: undefined,
+        currentPromptId: undefined,
         genRate: undefined,
         // 全新会话无历史可载：上个会话残留的加载失败提示不适用。
         historyLoadError: undefined,
@@ -7661,6 +7875,45 @@ function adoptLiveTurnStart(
 }
 
 /**
+ * 从终端事件载体提取回合 pid（agent 在 PromptResponse 与每个
+ * SessionNotification 的 `_meta` 上回显客户端 mint 的 promptId）：
+ * - done：顶层 `meta` = prompt-result `_meta`（host 原样透传）
+ * - prompt_complete：params 顶层 `promptId`/`prompt_id`，或 `_meta` 内
+ * - live turn_completed：顶层 `meta` = params._meta
+ * 空 / 缺失 = 旧 shell（lost-response fix 之前），无回合身份信息。
+ */
+function eventPromptId(root: unknown): string | undefined {
+  const read = (o: unknown): string | undefined => {
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return undefined
+    const rec = o as Record<string, unknown>
+    for (const k of ['promptId', 'prompt_id']) {
+      const v = rec[k]
+      if (typeof v === 'string' && v) return v
+    }
+    return undefined
+  }
+  if (!root || typeof root !== 'object') return undefined
+  const o = root as Record<string, unknown>
+  return read(o) ?? read(o._meta) ?? read(o.meta)
+}
+
+/**
+ * 回合身份校验（TUI finalize_turn_from_terminal / arm_driver_turn_end_reconcile
+ * 的 exact-pid 匹配语义）：事件带非空 pid、本端也知道当前回合 pid、
+ * 两者不符 → 上一个回合的迟到/错标终端事件，调用方必须忽略（否则会
+ * 把刚锚定的新回合立即收口——finalize 的清锚副作用 + "Worked for 0.0s"
+ * 假标记）。任一缺失 → 无法判定，放行 legacy 行为。
+ */
+function promptIdMismatch(
+  root: unknown,
+  currentPid: string | undefined,
+): boolean {
+  if (!currentPid) return false
+  const evPid = eventPromptId(root)
+  return evPid != null && evPid !== '' && evPid !== currentPid
+}
+
+/**
  * TUI "Worked for Xs" marker entry. `elapsedMs` undefined → plain
  * "Turn completed." (TUI TurnCompleted with no elapsed).
  */
@@ -7928,6 +8181,7 @@ function finalizeTurn(
       openAssistantId: undefined,
       openThoughtId: undefined,
       turnStartedAt: undefined,
+      currentPromptId: undefined,
       // Turn end: the host resolved every outstanding permission request
       // (approval timeout / completion), so a non-empty pending queue
       // here is stale — drop it (TUI drain_permission_queue).
@@ -7952,7 +8206,7 @@ function finalizeTurn(
 function adoptTurn(
   set: SetState,
   get: () => ChatState,
-  adopted: { text: string; blocks?: ContentBlock[] },
+  adopted: { id: string; text: string; blocks?: ContentBlock[] },
 ): void {
   if (turnIsLive(get())) return
   flushStreamBuf(set, get)
@@ -7976,6 +8230,9 @@ function adoptTurn(
     statusText: 'Waiting for response…',
     awaitingNext: false,
     turnStartedAt: Date.now(),
+    // 收养回合的身份 = 权威队列广播的 running_prompt_id（agent 侧
+    // queue_meta 同 id）——终端事件按它 exact-pid 匹配。
+    currentPromptId: adopted.id,
     // 新回合开始：上一回合的 suggestion chips 退役（与 send 同款）。
     followUps: undefined,
     followUpsResponseId: undefined,
@@ -8144,6 +8401,7 @@ function armTurnBlipWatchdog(
       statusText: msg,
       awaitingNext: false,
       turnStartedAt: undefined,
+      currentPromptId: undefined,
       entries: [...cur.entries, { id: nid(), kind: 'error', text: msg }],
     })
   }, TURN_BLIP_GRACE_MS)
@@ -8341,28 +8599,53 @@ function historyHasMorePage(
 }
 
 /**
- * 按轮次分页：取「最老已加载轮次的前一轮」在 updates.jsonl 里的文件
- * 窗口（[promptStarts[k-1], promptStarts[k])，前后都是轮次边界，天然以
- * user 消息开头）。k <= 0 → 没有更早轮次。
+ * 按轮次分页：取「最老已加载轮次的前一轮」在 live timeline 上的绝对
+ * 窗口 [promptStarts[k-1], min(promptStarts[k], loadedStart)）。
  *
- * 返回 null（调用方退化为按条数 offset 分页）：
- * - promptStarts / totalCount 缺失（旧宿主，无法换算负 offset）；
- * - 窗口超过单请求上限（超长回合，一次拉完太重——按条数分页 + 续翻
- *   条件「新页无 user 继续翻」最终也会走到这条 user，行为等价）。
+ * **必须用绝对 offset**（正数行号），禁止 `start - total` 负 offset：
+ * live 追加会抬高 totalCount，负 offset 换算出的窗口整体前移，与已加载
+ * 区重叠 → 同一轮条目重复 prepend。绝对 offset 在 append-only 下稳定。
+ *
+ * `loadedStart`：当前已加载区最老行（钳制 end，防止与已加载区交叉）。
+ *
+ * 返回 null（调用方退化为按条数绝对 offset 分页）：
+ * - promptStarts 缺失 / k 越界 / 无更早轮次；
+ * - 窗口为空或超过单请求上限（超长回合 → 按条数分页 + 续翻到上一条 user）。
  */
 function previousTurnWindow(
   promptStarts: number[] | undefined,
   k: number,
-  total: number | undefined,
+  loadedStart: number,
 ): { offset: number; limit: number } | null {
   if (!promptStarts || promptStarts.length === 0) return null
   if (k <= 0 || k >= promptStarts.length) return null
-  if (total == null || total <= 0) return null
+  if (loadedStart <= 0) return null
   const start = promptStarts[k - 1]
-  const end = promptStarts[k]
+  // 钳到已加载起点：正常 turn 边界 end === loadedStart；offset 兜底半轮后
+  // loadedStart 落在回合中间时，只取 [start, loadedStart) 尚未加载的前缀。
+  const end = Math.min(promptStarts[k], loadedStart)
   const limit = end - start
   if (limit <= 0 || limit > INITIAL_TURN_LIMIT) return null
-  return { offset: start - total, limit }
+  return { offset: start, limit }
+}
+
+/**
+ * offset 兜底路径上，把旧 promptStarts[oldIdx] 的边界行号映射到刷新后的
+ * promptStarts 下标（live 新回合 append 时数组变长，行号不变）。找不到则
+ * 保留 oldIdx（钳到新数组范围）。
+ */
+function remapTurnIdx(
+  oldStarts: number[] | undefined,
+  oldIdx: number,
+  newStarts: number[] | undefined,
+): number {
+  if (!newStarts || newStarts.length === 0) return oldIdx
+  const boundary = oldStarts?.[oldIdx]
+  if (boundary != null) {
+    const i = newStarts.indexOf(boundary)
+    if (i >= 0) return i
+  }
+  return Math.min(oldIdx, newStarts.length - 1)
 }
 
 /**
@@ -8384,9 +8667,11 @@ function modelLabel(name: string, effort?: string | null): string {
  * Returns the replayed turn's metadata: the current turn's real start
  * time (authoritative `_meta.turnStartMs` from the shell, falling back
  * to the turn's earliest agentTimestampMs) and whether that turn is
- * still OPEN (no turn_completed / response_completed after its start).
- * loadHistory uses this to restore the in-flight turn timer
- * ("回合进行中（已进行 Xs）"). Turn-end markers are rendered per-turn by
+ * still OPEN (no turn_completed after its start, or a new user_message
+ * after the last completion — stray post-completion thought/chunk alone
+ * does not keep the turn open). loadHistory uses this to restore the
+ * in-flight turn timer ("回合进行中（已进行 Xs）"). Turn-end markers are
+ * rendered per-turn by
  * the `turn_completed` handler: this function injects each closing turn's
  * tracked start into the event so the marker carries the true duration
  * (the `done` event is not persisted, so replay derives the duration
@@ -8422,6 +8707,13 @@ function replayUpdates(
   let turnStartIsMeta = false
   let anyEvent = false
   let sawTurnEnd = false
+  /**
+   * After turn_completed, only a new user_message opens the next turn.
+   * Stray agent_thought/chunk after completion still carry the *old*
+   * turnStartMs and must not re-arm turnOpen (that froze Responding…
+   * through loadMoreHistory on closed sessions).
+   */
+  let userAfterEnd = false
   // Model id of the last replayed user_message_chunk (page-local).
   let prevReplayModelId: string | undefined
   // Newest envelope's session-accumulated token count of this page; the
@@ -8484,6 +8776,7 @@ function replayUpdates(
     anyEvent = true
     if (ev.type === 'turn_completed') {
       sawTurnEnd = true
+      userAfterEnd = false
       // Attach this closing turn's real start (tracked from the envelope
       // meta below) so the marker renders "Worked for X" / "Turn failed
       // in X" with the true duration. `endMs` is the completion's own
@@ -8502,7 +8795,10 @@ function replayUpdates(
     // update of the turn. Adopt it whenever it appears — a meta-carrying
     // chunk refines/overrides any agentTs fallback captured earlier in
     // the same turn. The completion envelope itself never re-opens a turn.
-    if (ev.type !== 'turn_completed') {
+    // After turn_completed, ignore turnStartMs on non-user events until a
+    // new user_message arrives (stray post-completion thought/chunk keeps
+    // the old turn's turnStartMs and must not re-open the turn).
+    if (ev.type !== 'turn_completed' && !(sawTurnEnd && !userAfterEnd)) {
       const meta = (env as RawEnvelope).params?._meta as
         | Record<string, unknown>
         | undefined
@@ -8552,6 +8848,7 @@ function replayUpdates(
     if (ev.type === 'user_message') {
       // Aggregate consecutive chunks of one user turn; keep cron if any
       // chunk (or the framed full text) is a scheduled-task inject.
+      if (sawTurnEnd) userAfterEnd = true
       userBuf += ev.text
       if (ev.isCron) userIsCron = true
       if (ev.ts != null) userTs = ev.ts
@@ -8568,12 +8865,14 @@ function replayUpdates(
     getStore().handleEvent({ type: 'usage', used: pageMetaUsed })
   }
   // The LAST turn is open when it never completed (no turn_completed in
-  // the page) or when a new turn started after the page's last completion
-  // (the tracker re-captured a start). turnStartedAt is then that current
-  // turn's real start — loadHistory restores the in-flight timer from it.
+  // the page), or when a *new user prompt* started after the page's last
+  // completion (userAfterEnd). Stray post-completion thought/chunk alone
+  // does not keep the turn open.
   return {
     turnStartedAt: turnStartTs,
-    turnOpen: anyEvent && (sawTurnEnd ? turnStartTs != null : true),
+    turnOpen:
+      anyEvent &&
+      (sawTurnEnd ? userAfterEnd && turnStartTs != null : true),
   }
 }
 

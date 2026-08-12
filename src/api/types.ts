@@ -13,6 +13,23 @@ export type HostInfo = {
   lastSeen?: string
 }
 
+/** Per-session todo status (hub-persisted UI prefs; absence = no record). */
+export type TodoStatus = 'todo' | 'completed'
+
+/**
+ * The FE's durable UI preferences for host conversations: pinned
+ * workspaces (cwd paths), pinned sessions, and per-session todo status.
+ * Persisted by the hub (GET/PUT /api/prefs, one shared doc in
+ * prefs.json); localStorage mirrors it as the offline cache. Keys are
+ * sessionId/cwd only — session ids are host-assigned UUIDs, so a doc is
+ * effectively per host conversation without an explicit hostId scope.
+ */
+export type HubPrefsDoc = {
+  pinnedWorkspaces?: string[]
+  pinnedSessions?: string[]
+  todos?: Record<string, TodoStatus>
+}
+
 export type SessionInfo = {
   sessionId: string
   cwd?: string
@@ -43,15 +60,20 @@ export type SessionInfo = {
 /**
  * One session summary row from POST /api/session-summaries/workspace-list
  * (x.ai/session_summaries/workspace_list). The wire is snake_case
- * (info.id / info.cwd / session_summary / updated_at / num_messages /
- * current_model_id) — normalized to camelCase by LocalTransport.
+ * (info.id / info.cwd / session_summary / last_active_at / updated_at /
+ * num_messages / current_model_id) — normalized to camelCase by LocalTransport.
  */
 export type WorkspaceSummary = {
   sessionId: string
   cwd: string
-  /** Display title (agent-backfilled session_summary; falls back to the id prefix). */
+  /** Display title (agent-backfilled session_summary; absent for untitled
+   *  sessions — the list UI shows "New Chat" + a 12-char id prefix). */
   title?: string
-  /** ISO timestamp of the last update. */
+  /**
+   * ISO activity time for display/sort (TUI: last_active_at ?? updated_at).
+   * Not raw summary.updated_at — load/model metadata writes must not look
+   * like new conversation activity.
+   */
   updatedAt?: string
   currentModelId?: string
   /**
@@ -595,6 +617,12 @@ export type AcpEvent =
        * re-seed its known flags.
        */
       agentStartedAt?: number
+      /**
+       * Host-recorded canonical permission mode (ask / auto /
+       * always-approve) — the agent's real state at snapshot time, used
+       * to restore the permission badge on connect.
+       */
+      permissionMode?: string
     }
   | {
       type: 'ready'
@@ -846,6 +874,13 @@ export type AcpEvent =
   | { type: 'sessions_changed'; params?: Record<string, unknown> }
   /** Hub-level: a host paired / came online / dropped off (acp-hub). */
   | { type: 'hosts_changed'; params?: Record<string, unknown> }
+  /**
+   * Hub-level: the shared browser prefs doc (pins / todos) was replaced
+   * (acp-hub broadcasts this on every PUT /api/prefs). Browsers apply it
+   * live so one end's edit syncs to every end. No hostId — applies
+   * regardless of the selected host.
+   */
+  | { type: 'prefs_changed'; params?: { prefs?: HubPrefsDoc } }
   /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
   | { type: 'models_update'; sessionId?: string; params?: Record<string, unknown> }
   | { type: 'announcements_update'; params?: Record<string, unknown> }
@@ -984,6 +1019,8 @@ export type HostStatus = {
   roster?: unknown
   /** 当前 agent 进程启动时间戳（Unix ms）。 */
   agentStartedAt?: number
+  /** host 记录的 agent 权威权限模式（ask / auto / always-approve）。 */
+  permissionMode?: string
 }
 
 /** One question in an x.ai/ask_user_question request (camelCase wire). */
