@@ -106,6 +106,7 @@ export function SettingsModal() {
       >
         <header className="flex items-center gap-2 rounded-t border-b border-gn-prompt-border bg-gn-bg-dark px-4 py-2.5">
           <span className="text-[13px] font-bold text-gn-fg">settings</span>
+          <span className="font-mono text-[10.5px] text-gn-gutter">v{__APP_VERSION__}</span>
           <button
             type="button"
             onClick={close}

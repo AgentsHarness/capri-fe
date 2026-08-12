@@ -10,6 +10,7 @@ import type {
   GitBranchesData,
   HostInfo,
   HostStatus,
+  HubPrefsDoc,
   PermissionScope,
   RewindMode,
   RewindPoint,
@@ -99,13 +100,12 @@ type HubWsFrame =
 const DEFAULT_FETCH_TIMEOUT_MS = 30_000
 
 /**
- * POST /api/prompt resolves when the agent TURN completes — the host
- * relays it and only answers then. The host's own turn budget is 30
- * minutes (acp-host internal/acp/bridge.go promptTimeout; the hub relay
- * allows 50 min), so the FE bound matches it: a legitimate long turn is
- * never cut short, while a host that never answers (dead relay / half-open
- * TCP) still fails bounded instead of hanging the send forever. Callers
- * may override per call via prompt({ timeoutMs }).
+ * POST /api/prompt 的超时上限。host 侧已改为"受理即返回"（校验通过立即
+ * 回 200 {ok:true}，回合结果全走 live 通道），实际响应是毫秒级的——这个
+ * 30min 上限只作为死 relay 的兜底：host 永不回包（死中继 / half-open
+ * TCP）时请求仍会以失败收场，而不是永远挂着。旧 host（阻塞到回合结束，
+ * 最长 30min）下也不会误杀合法长回合。调用方可按需用 prompt({ timeoutMs })
+ * 覆盖。
  */
 const PROMPT_TIMEOUT_MS = 30 * 60_000
 
@@ -731,9 +731,11 @@ export class LocalTransport {
   }
 
   /**
-   * POST /api/prompt — 200 响应非空时 host 透传 session/prompt 响应的
-   * `_meta`（data.meta）。stopReason 保持原有透传解析；meta 仅 object
-   * 且非空时带上。
+   * POST /api/prompt — host 已改为"受理即返回"：校验通过（含显式会话
+   * 存在性）立即回 200 {ok:true}，不再等到回合结束。回合结果（成功 /
+   * 失败 / 取消 + meta）全部经 live 通道（SSE/WS）的 done / error /
+   * cancelled 事件送达，本响应不再携带 stopReason/meta（旧 host 才会在
+   * 响应里透传 session/prompt 的 `_meta`，这里保留解析兼容）。
    *
    * `sessionId`（可选，缺省 = host 的 active 会话）：按会话发 prompt。
    * host bridge 是多会话的——带着目标 sessionId 的 prompt 会在那个会话
@@ -750,10 +752,13 @@ export class LocalTransport {
    * busy 时仍可能 409（竞态）——调用方（promptQueue.enqueue）渲染错误
    * 行、行保留手动重发（legacy 降级自动重发已移除）。
    *
-   * 失败分类：host 是 agent 的透传层——HTTP 错误响应（!res.ok 或
-   * ok:false）说明 host 活着、错误来自 agent（如模型 API 400
-   * "Internal Error"），抛 AgentTurnError 由 store 渲染成回合错误行；
-   * 只有网络级失败（fetch 拒绝 = host 不可达）才保持普通 Error。
+   * 失败分类：新 host 下本响应只携带"受理前"的错误——参数校验 400、
+   * 显式未知会话 404、网络级失败（fetch 拒绝 = host 不可达，保持普通
+   * Error）。回合级失败（agent 拒绝如模型 API 400、传输中断）不再走
+   * HTTP，由 live 通道的 error 事件（带 sessionId + source）送达。
+   * 例外：旧 host（阻塞到回合结束）仍可能返回反代超时（524 Cloudflare /
+   * 504 nginx / 408）——抛 AgentTurnError，store 依据 status 识别并走
+   * live 通道兜底（不渲染错误行）。
    */
   async prompt(
     blocks: ContentBlock[],
@@ -770,10 +775,8 @@ export class LocalTransport {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       },
-      // The POST answers when the TURN completes — match the host's own
-      // 30-min turn budget (bridge.go promptTimeout) so long turns are
-      // never cut short; a dead host still fails bounded instead of
-      // hanging the send forever. Callers may override per call.
+      // 受理响应毫秒级返回；30min 上限只兜底死 relay（旧 host 阻塞到
+      // 回合结束，最长 30min，也不会被误杀）。调用方可按需覆盖。
       { timeoutMs: opts.timeoutMs ?? PROMPT_TIMEOUT_MS },
     )
     const data = (await res.json().catch(() => ({}))) as Record<string, unknown>
@@ -1008,6 +1011,62 @@ export class LocalTransport {
   }
 
   /**
+   * GET /api/prefs — hub 持久化的浏览器置顶/待办文档（pins + todos，
+   * 全浏览器共享一份，见 types.HubPrefsDoc）。仅 hub 模式可用；走
+   * apiBase() 而非 url()：prefs 存在 HUB 上，绝不能被 local-direct
+   * 近路中转到本机 acp-host。
+   */
+  async getPrefs(): Promise<HubPrefsDoc> {
+    if (this.mode !== 'hub') throw new Error('仅 Hub 模式支持置顶/待办持久化')
+    const res = await this.fetch(`${this.apiBase()}/api/prefs`)
+    const data = (await res.json().catch(() => ({}))) as {
+      prefs?: HubPrefsDoc
+      error?: string
+      ok?: boolean
+    }
+    if (res.status === 401) {
+      throw new AccessTokenError(
+        typeof data.error === 'string' && data.error ? data.error : '需要有效的访问 token',
+      )
+    }
+    if (!res.ok || data.ok === false) {
+      throw new Error(
+        typeof data.error === 'string' && data.error
+          ? data.error
+          : `prefs read failed (${res.status})`,
+      )
+    }
+    return data.prefs ?? {}
+  }
+
+  /**
+   * PUT /api/prefs — 把整个置顶/待办文档写回 hub（store 侧防抖后
+   * 全量替换，幂等）。仅 hub 模式；失败抛错由调用方决定如何降级
+   * （本地 localStorage 仍保留，下次变更重试）。
+   */
+  async putPrefs(prefs: HubPrefsDoc): Promise<void> {
+    if (this.mode !== 'hub') throw new Error('仅 Hub 模式支持置顶/待办持久化')
+    const res = await this.fetch(`${this.apiBase()}/api/prefs`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prefs }),
+    })
+    const data = (await res.json().catch(() => ({}))) as { error?: string; ok?: boolean }
+    if (res.status === 401) {
+      throw new AccessTokenError(
+        typeof data.error === 'string' && data.error ? data.error : '需要有效的访问 token',
+      )
+    }
+    if (!res.ok || data.ok === false) {
+      throw new Error(
+        typeof data.error === 'string' && data.error
+          ? data.error
+          : `prefs write failed (${res.status})`,
+      )
+    }
+  }
+
+  /**
    * POST /api/sessions — 会话列表。host 在响应非空时透传 agent 的分页
    * 游标（data.nextCursor）与元数据（data.meta）；sessions 保持原有
    * 数组语义，游标/meta 仅在有值时带上（行为向后兼容）。
@@ -1035,8 +1094,12 @@ export class LocalTransport {
    * by workspace. Wire shape: all_sessions = { "<cwd>": [summary, ...] },
    * possibly wrapped in an ExtMethodResult envelope ({ ok, result: {...} }
    * or deeper) — dug out via findObjectField. Each summary is snake_case
-   * (info.id / info.cwd / session_summary / updated_at / num_messages /
-   * current_model_id) and normalized to WorkspaceGroup[] here.
+   * (info.id / info.cwd / session_summary / last_active_at / updated_at /
+   * num_messages / current_model_id) and normalized to WorkspaceGroup[] here.
+   *
+   * Display/sort time on each row is TUI-aligned: last_active_at, else
+   * updated_at (session_picker prefers activity over metadata writes such
+   * as model restore on session/load).
    */
   async workspaceList(): Promise<WorkspaceGroup[]> {
     const res = await this.fetch(this.url('/api/session-summaries/workspace-list'), {
@@ -1071,16 +1134,16 @@ export class LocalTransport {
           (typeof o.session_summary === 'string' && o.session_summary.trim()) ||
           (typeof o.sessionSummary === 'string' && o.sessionSummary.trim()) ||
           ''
+        // TUI session_picker: last_active_at.unwrap_or(updated_at).
+        const activityAt = pickSummaryActivityAt(o)
         sessions.push({
           sessionId: id,
           cwd: (typeof info.cwd === 'string' && info.cwd) || cwd,
-          // session_summary 兜底 info.id 前 12 字符。
-          title: summary || id.slice(0, 12),
-          ...(typeof o.updated_at === 'string' && o.updated_at
-            ? { updatedAt: o.updated_at }
-            : typeof o.updatedAt === 'string' && o.updatedAt
-              ? { updatedAt: o.updatedAt }
-              : {}),
+          // 无 session_summary 时不设 title：列表 UI 按无标题渲染
+          // （"New Chat" + 右侧 12 位 id 前缀），而不是把 id 前缀
+          // 冒充成标题塞进左侧。
+          ...(summary ? { title: summary } : {}),
+          ...(activityAt ? { updatedAt: activityAt } : {}),
           ...(typeof o.current_model_id === 'string' && o.current_model_id
             ? { currentModelId: o.current_model_id }
             : typeof o.currentModelId === 'string' && o.currentModelId
@@ -3165,6 +3228,20 @@ function unwrapExtResult<T>(raw: unknown): T {
     }
   }
   return raw as T
+}
+
+/**
+ * TUI session_picker activity time: last_active_at, else updated_at.
+ * Metadata-only summary writes (model restore on load, title, git head)
+ * bump updated_at but leave last_active_at alone — using updated_at alone
+ * makes a mere session/load show as "now". Accepts snake/camel wire keys.
+ */
+function pickSummaryActivityAt(o: Record<string, unknown>): string | undefined {
+  for (const key of ['last_active_at', 'lastActiveAt', 'updated_at', 'updatedAt'] as const) {
+    const v = o[key]
+    if (typeof v === 'string' && v) return v
+  }
+  return undefined
 }
 
 export const transport = new LocalTransport()

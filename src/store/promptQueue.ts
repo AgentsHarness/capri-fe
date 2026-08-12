@@ -91,7 +91,9 @@ export type QueuedPrompt = {
   errorText?: string
 }
 
-function qid(): string {
+/** Mint a prompt id (UUID when available). Shared with chat.ts send() —
+ * 队列行 id 与直接发送的回合 pid 同源（agent 侧 queue_meta 身份）。 */
+export function qid(): string {
   return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
     ? crypto.randomUUID()
     : `q_${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
@@ -263,9 +265,11 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
     set((s) => ({ queue: [...s.queue, entry], sessionId }))
     // Server-authoritative: prompt RPC 本身就是入队（agent 从
     // `_meta.promptId` 提取 queue_meta 插进 pending_inputs；busy 排队、
-    // idle 直接运行）。fire-and-forget：不 await 回合完成——RPC 在回合
-    // 完成时才 resolve，这里只关心 reject（降级）与 resolve（跑完了，
-    // 清理镜像）。广播（queue_changed）负责确认与收养。
+    // idle 直接运行）。fire-and-forget：不 await 回合完成——新 host 下
+    // POST 受理即返回（resolve = 已受理，行标记 ran 表示"已投递"，权威
+    // 状态仍由 queue_changed 广播校正）；旧 host 下 resolve 到回合结束
+    // （行标记 ran 表示"跑完了"）。只关心 reject（降级）与 resolve
+    // （清理镜像），广播（queue_changed）负责确认与收养。
     void transport
       .prompt(item.blocks, { sessionId, promptId })
       .then(

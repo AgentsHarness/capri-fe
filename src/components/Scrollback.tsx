@@ -47,6 +47,11 @@ import { Ansi } from './Ansi'
 import { extractToolDetail } from '../scrollback/toolDetail'
 import { uiBool } from '../store/settings'
 import { mergeLiveText } from '../scrollback/liveText'
+import {
+  UserMessageNav,
+  userMessagePreview,
+  type UserMessageNavItem,
+} from './UserMessageNav'
 
 /**
  * Scrollback — Grok Build TUI block model:
@@ -1821,9 +1826,13 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
   // ── TUI sticky prompt header (scrollback/sticky.rs) ──────────────
   // 钉选 = 最后一条 top < scrollTop 的挂载 user（y_virtual < scroll_offset）。
   // 同 TUI compute_sticky_layout：scrollTop===0 不钉；完全划出后仍钉
-  // 该条（读它下面的 assistant），直到上一条 user 的 top 越过视口顶才切换。
+  // 该条（读它下面的 assistant），直到下一条 user 的 top 越过视口顶才切换。
   // 切勿「完全划出 → 推进上一条」——会在长 assistant 中部把 sticky 钉错成
   // 更早的 prompt，并在上滑时误触发 loadMoreHistory。
+  //
+  // FE 是 absolute 叠层（非 TUI 渐进折叠 + content 偏移），额外两条：
+  // - 下一条 user 顶进 sticky 条区域时立刻改钉为底下那条，避免旧 sticky 盖住它。
+  // - 候选 user 部分划出但仍伸进 bar 下内容区时不钉，避免与 in-flow 正文叠字。
   //
   // 首页只拉最后 1 轮；上滑到顶 / 按钮 loadMoreHistory 加载上一轮。
   // DOM 全量挂载 entries（无渲染窗口上限）。
@@ -1899,7 +1908,23 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
   const userEls = useRef<Map<string, HTMLElement>>(new Map())
   // 当前 sticky 钉选：entry 为渲染内容。
   const [pinned, setPinned] = useState<{ entry: ScrollEntry; store: boolean } | null>(null)
+  // 目录 rail active tick — 独立于 sticky 阈值（可读区顶 = bar 下沿）。
+  const [navActiveId, setNavActiveId] = useState<string | null>(null)
+  /** Rendered sticky band (for push/handoff height). */
+  const stickyBandElRef = useRef<HTMLDivElement | null>(null)
 
+  /**
+   * TUI sticky.rs pin + push handoff, adapted for FE absolute overlay:
+   *
+   * 1. Candidate = last user with top < scrollTop (y_virtual < scroll_offset).
+   * 2. If the next user has entered the sticky visual band, hand off immediately
+   *    — sticky updates to that lower usermessage so the old pin never covers it.
+   * 3. If the candidate is partially scrolled past (top < scrollTop) but its
+   *    body still extends into the content area, clear pin — FE overlays instead
+   *    of TUI gradual-collapse, so partial scroll would double the same prompt.
+   *    Early handoff (top still ≥ scrollTop) is kept: sticky acts as the
+   *    section header for the approaching message.
+   */
   const updatePinned = useCallback(() => {
     const box = boxRef.current
     const els = userEls.current
@@ -1914,19 +1939,86 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
       return
     }
     const boxTop = box.getBoundingClientRect().top
-    // Last user with y_virtual < scroll_offset (document order).
-    let pinnedId: string | null = null
+    const barH =
+      wsBarElRef.current?.getBoundingClientRect().height ?? wsBarH
+    // Collapsed sticky ≈ py-11×2 + 3 lines @ 13.5/1.35. Prefer live measure.
+    const stickyH =
+      stickyBandElRef.current?.offsetHeight ||
+      11 * 2 + Math.ceil(13.5 * 1.35 * USER_COLLAPSED_MAX_LINES)
+
+    type UserPos = { id: string; top: number; bottom: number }
+    const list: UserPos[] = []
     for (const [id, el] of els) {
       const top = el.getBoundingClientRect().top - boxTop + scrollTop
-      if (top < scrollTop) pinnedId = id
+      list.push({ id, top, bottom: top + el.offsetHeight })
+    }
+
+    // 1) Last user with y_virtual < scroll_offset (document order).
+    let idx = -1
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].top < scrollTop) idx = i
       else break
     }
+
+    // 2) Push handoff: while a pin is active, if the next user top enters the
+    //    sticky band → switch pin to that lower message immediately.
+    //    (TUI sticky.rs next_naive_row <= header_with_gap; FE can't clip-push
+    //    so we switch identity rather than paint old sticky over it.)
+    if (idx >= 0 && idx + 1 < list.length) {
+      const nextUser = list[idx + 1]
+      const nextScreenTop = nextUser.top - scrollTop
+      // Sticky paints in box viewport y ∈ [barH, barH + stickyH].
+      if (nextScreenTop < barH + stickyH) {
+        idx = idx + 1
+      }
+    }
+
+    // 3) Self-overlap only when partially past: top already above viewport
+    //    but body still in the content area under the band.
+    if (idx >= 0) {
+      const cur = list[idx]
+      if (cur.top < scrollTop && cur.bottom > scrollTop + barH) {
+        idx = -1
+      }
+    }
+
+    const pinnedId = idx >= 0 ? list[idx].id : null
     const entry = pinnedId != null ? userById.get(pinnedId) : undefined
     const next = entry != null ? { entry, store: false as const } : null
     setPinned((prev) =>
       prev?.entry?.id === next?.entry?.id && prev?.store === next?.store ? prev : next,
     )
-  }, [userById])
+  }, [userById, wsBarH])
+
+  /**
+   * 目录 active：视口可读顶（workspace bar 下沿）附近最近 user。
+   * 与 sticky 分离——sticky 保持 TUI top < scrollTop，这里不改钉选语义。
+   */
+  const updateNavActive = useCallback(() => {
+    const box = boxRef.current
+    const els = userEls.current
+    if (!box || els.size === 0) {
+      setNavActiveId((prev) => (prev == null ? prev : null))
+      return
+    }
+    const scrollTop = box.scrollTop
+    const boxTop = box.getBoundingClientRect().top
+    const barH =
+      wsBarElRef.current?.getBoundingClientRect().height ?? wsBarH
+    const line = scrollTop + barH
+    let lastAtOrAbove: string | null = null
+    let firstId: string | null = null
+    let lastId: string | null = null
+    for (const [id, el] of els) {
+      if (firstId == null) firstId = id
+      lastId = id
+      const top = el.getBoundingClientRect().top - boxTop + scrollTop
+      if (top <= line) lastAtOrAbove = id
+    }
+    const dist = box.scrollHeight - box.scrollTop - box.clientHeight
+    const next = dist < 4 ? lastId : (lastAtOrAbove ?? firstId)
+    setNavActiveId((prev) => (prev === next ? prev : next))
+  }, [wsBarH])
 
   // Cache user entry elements (rebuilt on entry changes; positions shift on
   // history prepend / expand-collapse / resize, so recompute the pin then).
@@ -1990,9 +2082,11 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
     }
     userEls.current = map
     updatePinned()
+    updateNavActive()
   }, [
     userById,
     updatePinned,
+    updateNavActive,
     historyPrependedAt,
     historyAnchorId,
     historyLoadedAt,
@@ -2004,21 +2098,26 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
   ])
 
   useEffect(() => {
-    const onResize = () => updatePinned()
+    const onResize = () => {
+      updatePinned()
+      updateNavActive()
+    }
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
-  }, [updatePinned])
+  }, [updatePinned, updateNavActive])
 
   // rAF-throttled pinned-header recompute: onScroll fires per frame during
   // streaming, and getBoundingClientRect per user entry forces layout.
+  // Directory active reuses the same rAF; sticky threshold stays in updatePinned.
   const pinnedRaf = useRef<number | null>(null)
   const scheduleUpdatePinned = useCallback(() => {
     if (pinnedRaf.current != null) return
     pinnedRaf.current = requestAnimationFrame(() => {
       pinnedRaf.current = null
       updatePinned()
+      updateNavActive()
     })
-  }, [updatePinned])
+  }, [updatePinned, updateNavActive])
 
   useEffect(
     () => () => {
@@ -2034,8 +2133,11 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
   /**
    * 点击 sticky 钉住的 user：滚到该条消息开头（顶对齐 workspace bar 下沿），
    * 从这条 prompt 起重新阅读。未挂载时先扩 render 窗口再滚。
+   * 目录 rail 跳转复用同一路径；jump 已对齐时跳过 selectedId→scrollIntoView。
    */
   const [scrollToEntryId, setScrollToEntryId] = useState<string | null>(null)
+  /** 目录 jump 已对齐过视口：跳过随后的 selectedId→scrollIntoView。 */
+  const skipSelectScrollRef = useRef(false)
   const jumpToUserEntry = useCallback(
     (id: string) => {
       const box = boxRef.current
@@ -2074,7 +2176,8 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
     }
     setScrollToEntryId(null)
     updatePinned()
-  }, [scrollToEntryId, updatePinned, wsBarH])
+    updateNavActive()
+  }, [scrollToEntryId, updatePinned, updateNavActive, wsBarH])
 
   // ── 分组缓存（groupingSignature）────────────────────────────
   // 流式 flush 只改文本、不改分组相关字段：签名命中时跳过全量 scanGroups，
@@ -2317,20 +2420,55 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
     captureScrollSnapshot,
   ])
 
-  // Scroll selected into view
+  // Scroll selected into view — only when selection / focus changes.
+  // Do NOT depend on displayRows: prepend would re-yank to a stale
+  // selectedId while the user is paging older turns.
   useEffect(() => {
     if (!selectedId || focusMode !== 'scrollback') return
+    if (skipSelectScrollRef.current) {
+      skipSelectScrollRef.current = false
+      return
+    }
     const el = boxRef.current?.querySelector(`[data-entry-id="${selectedId}"]`)
     el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
-  }, [selectedId, focusMode, displayRows])
+  }, [selectedId, focusMode])
+
+  // User-message directory rail (TUI timeline). Active tick is independent
+  // of sticky pin (updateNavActive); sticky keeps HEAD top < scrollTop.
+  const userNavItems = useMemo((): UserMessageNavItem[] => {
+    const out: UserMessageNavItem[] = []
+    let turnIdx = 0
+    for (const e of entries) {
+      if (e.kind !== 'user') continue
+      out.push({
+        id: e.id,
+        preview: userMessagePreview(e.text),
+        turnIdx: turnIdx++,
+      })
+    }
+    return out
+  }, [entries])
+  const selectEntry = useChatStore((s) => s.selectEntry)
+  const onUserNavJump = useCallback(
+    (id: string) => {
+      // jump already aligns under the bar; skip the selection scroll effect.
+      skipSelectScrollRef.current = true
+      selectEntry(id)
+      jumpToUserEntry(id)
+    },
+    [selectEntry, jumpToUserEntry],
+  )
 
   return (
-    // Reserve the scrollbar gutter even when nothing overflows, so the
-    // centered content column stays pixel-aligned with the fixed bottom
-    // prompt area (App reserves the same gutter there).
+    // Outer relative shell so the user-message rail can float on the right
+    // without scrolling with content. Inner box keeps HEAD sticky / paging.
+    <div className="relative flex min-h-0 flex-1 flex-col">
+    {/* Reserve the scrollbar gutter even when nothing overflows, so the
+        centered content column stays pixel-aligned with the fixed bottom
+        prompt area (App reserves the same gutter there). */}
     <div
       ref={boxRef}
-      className="gn-scroll relative flex-1 overflow-y-auto overscroll-contain outline-none"
+      className="gn-scroll relative min-h-0 flex-1 overflow-y-auto overscroll-contain outline-none"
       data-scrollback-box=""
       // overflow-anchor: none — browser scroll anchoring fights our manual
       // height-delta restore on prepend (double-apply → viewport jump).
@@ -2497,6 +2635,8 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
         >
           {(pinnedUser?.kind === 'user' || historyLoadingMore) && (
             <div
+              ref={stickyBandElRef}
+              data-sticky-prompt=""
               className="pointer-events-auto absolute inset-x-0 top-0 font-ui text-[13.5px] leading-[1.35] text-gn-fg select-none"
               style={{
                 backgroundColor: 'var(--color-gn-bg-highlight)',
@@ -2543,13 +2683,11 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
                   <PromptTime ts={pinnedUser.ts} className="top-[14.5px]" />
                 </button>
               )}
-              {/* 上滑加载上一轮：就地显示加载中（不依赖顶部按钮是否在视口内）。 */}
-              {historyLoadingMore && (
-                <div
-                  className={`flex items-center gap-1.5 px-2.5 text-[11.5px] text-gn-muted ${
-                    pinnedUser?.kind === 'user' ? 'pb-[9px] pt-0' : 'py-[11px]'
-                  }`}
-                >
+              {/* 上滑加载上一轮：就地显示加载中（不依赖顶部按钮是否在视口内）。
+                  仅在无钉选用户消息时显示——sticky 钉着用户消息时不得把
+                  消息显示成「正在加载上一轮」（加载态由顶部按钮承担）。 */}
+              {historyLoadingMore && pinnedUser?.kind !== 'user' && (
+                <div className="flex items-center gap-1.5 px-2.5 py-[11px] text-[11.5px] text-gn-muted">
                   <span className="text-[13px] leading-none">
                     {SPINNER_FRAMES[spinnerFrame]}
                   </span>
@@ -2607,6 +2745,13 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
         </div>
       </div>
       <div ref={bottomRef} />
+    </div>
+    <UserMessageNav
+      items={userNavItems}
+      activeId={navActiveId}
+      onJump={onUserNavJump}
+      scrollParentRef={boxRef}
+    />
     </div>
   )
 }
