@@ -35,6 +35,7 @@ import {
   GroupHeaderView,
   type EntryViewActions,
 } from './Scrollback'
+import { fallbackStickyBandH, pickStickyPin } from '../scrollback/stickyPin'
 import {
   USER_COLLAPSED_MAX_LINES,
   collapseUserText,
@@ -759,35 +760,44 @@ function SubagentTimeline({
   const miniStreamBodyRef = useRef<HTMLDivElement | null>(null)
 
   // ── TUI sticky prompt header（主 scrollback sticky.rs 同款）────────
-  // 上滑浏览历史时，把「顶部已滚出视口的最后一条 user 消息」钉在滚动
-  // 区顶部（随滚动切换），滚回顶部（scrollTop 0）不钉。
+  // Overlay-safe：钉最后一条完全越过顶的 user；下一条顶进 sticky 带则让路。
+  // scrollTop === 0 不钉。
   const userById = useMemo(() => {
     const m = new Map<string, ScrollEntry>()
     for (const e of renderItems) if (e.kind === 'user') m.set(e.id, e)
     return m
   }, [renderItems])
   const userEls = useRef<Map<string, HTMLElement>>(new Map())
+  const stickyBandElRef = useRef<HTMLDivElement | null>(null)
+  const lastPushYRef = useRef(0)
   const [pinnedId, setPinnedId] = useState<string | null>(null)
   const updatePinned = useCallback(() => {
     const box = scrollRef.current
     const els = userEls.current
-    if (!box || els.size === 0) {
+    if (!box || els.size === 0 || box.scrollTop <= 0) {
+      lastPushYRef.current = 0
+      if (stickyBandElRef.current) stickyBandElRef.current.style.transform = ''
       setPinnedId((prev) => (prev == null ? prev : null))
       return
     }
-    let pinned: string | null = null
-    // 钉选语义同 sticky.rs；视觉条用零高度 sticky + absolute，吸附时不
-    // 改变文档流高度，避免 pin 开关抖动。
-    if (box.scrollTop > 0) {
-      const boxTop = box.getBoundingClientRect().top
-      for (const [id, el] of els) {
-        // 条目顶部在容器坐标系（滚动无关）；最后一条 top < scrollTop 的被钉。
-        const top = el.getBoundingClientRect().top - boxTop + box.scrollTop
-        if (top < box.scrollTop) pinned = id
-        else break // 条目按文档序排列
-      }
+    const scrollTop = box.scrollTop
+    const boxTop = box.getBoundingClientRect().top
+    const stickyH =
+      stickyBandElRef.current?.offsetHeight ||
+      fallbackStickyBandH(7, 12.5)
+    const list: { id: string; top: number; bottom: number }[] = []
+    for (const [id, el] of els) {
+      const top = el.getBoundingClientRect().top - boxTop + scrollTop
+      list.push({ id, top, bottom: top + el.offsetHeight })
     }
-    setPinnedId((prev) => (prev === pinned ? prev : pinned))
+    const pick = pickStickyPin(list, scrollTop, stickyH)
+    lastPushYRef.current = pick.pushY
+    if (stickyBandElRef.current) {
+      stickyBandElRef.current.style.transform = pick.pushY
+        ? `translateY(${pick.pushY}px)`
+        : ''
+    }
+    setPinnedId((prev) => (prev === pick.id ? prev : pick.id))
   }, [])
   // 缓存 user 条目 DOM 元素；条目/折叠布局变化时重算钉选。
   useEffect(() => {
@@ -958,6 +968,12 @@ function SubagentTimeline({
             >
               {pinnedUser?.kind === 'user' && (
                 <div
+                  ref={(el) => {
+                    stickyBandElRef.current = el
+                    if (el && lastPushYRef.current) {
+                      el.style.transform = `translateY(${lastPushYRef.current}px)`
+                    }
+                  }}
                   className="pointer-events-auto absolute inset-x-0 top-0 border-b border-gn-prompt-border/40 font-ui text-[12.5px] leading-[1.35] text-gn-fg select-none"
                   style={{ backgroundColor: 'var(--color-gn-bg-highlight)' }}
                 >

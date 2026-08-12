@@ -377,9 +377,11 @@ export function Composer() {
   const [caretPos, setCaretPos] = useState(0)
   const send = useChatStore((s) => s.send)
   const conn = useChatStore((s) => s.conn)
-  // 会话切换加载中：turn status 整行隐藏，加载完毕再显示（与
-  // WorkspaceBar 同进退，见 Scrollback）。historyLoading 覆盖
-  // loadHistory 全程 + 宽限窗口，直至新会话数据就绪。
+  // 会话切换加载中：turn status 整行显示「回放中…」，加载完毕再按
+  // 真实状态渲染（busy 臂 / 已切换文案，见 Scrollback 的加载覆盖层）。
+  // historyLoading 覆盖 loadHistory 全程 + 宽限窗口，直至新会话数据
+  // 就绪——目标会话 busy/ready 由 host 的 /api/sessions roster 提前
+  // 可知（refreshSessions），回放期间状态行保持可见。
   const historyLoading = useChatStore((s) => s.historyLoading)
   const usage = useChatStore((s) => s.usage)
   const genRate = useChatStore((s) => s.genRate)
@@ -1162,10 +1164,10 @@ export function Composer() {
     }
     return null
   }, [busy, entries])
-  // 会话切换加载中整体淡出（旧会话的 busy/状态不属于新会话，避免
-  // 加载期间显示误导性的活动标签）：渲染处用 historyLoading 驱动
-  // opacity 过渡（见下方状态行），statusVisible 只决定「加载结束
-  // 后」该不该显示，加载期间内容保持挂载以播放淡出。
+  // 会话切换加载中（historyLoading）状态行固定显示「回放中…」而不是
+  // 旧会话的 busy/状态（避免加载期间显示误导性的活动标签）：见下方
+  // 状态行渲染。statusVisible 只决定「加载结束后」该不该显示——加载
+  // 期间内容就是回放臂，加载完毕立即切换真实状态。
   const statusVisible =
     !historyLoading &&
     (busy ||
@@ -1179,14 +1181,16 @@ export function Composer() {
   const genRateLabel =
     genRate != null && genRate > 0 ? Math.round(genRate) : undefined
   const [spinnerFrame, setSpinnerFrame] = useState(0)
+  // 回放中（historyLoading）也要转 spinner：会话切换加载期间状态行
+  // 显示「回放中…」，与 busy 臂共用同一旋转动画。
   useEffect(() => {
-    if (!statusVisible) return
+    if (!statusVisible && !historyLoading) return
     const t = window.setInterval(
       () => setSpinnerFrame((v) => (v + 1) % SPINNER_FRAMES.length),
       SPINNER_INTERVAL_MS,
     )
     return () => window.clearInterval(t)
-  }, [statusVisible])
+  }, [statusVisible, historyLoading])
   // TUI MONITOR_PULSE_DIVISOR = 2 × SPINNER_DIVISOR: the idle cue's
   // `○ ◎ ◉ ◎` breath runs at half the active spinner's cadence.
   const pulseFrame =
@@ -1546,24 +1550,28 @@ export function Composer() {
             phase timer, falling back to the status text. Idle with
             watchers: `○ 2 commands still running` — a persistent status,
             never a scrollback line. Hidden when truly idle.
-            会话切换加载中（historyLoading）整行淡出而非卸载，与
-            WorkspaceBar 同节奏（加载开始一起淡出、加载完毕一起淡入，
-            同 scrollback 加载覆盖层的 300ms opacity 过渡）。内容在
-            加载期间保持挂载以播放淡出；空态（真正空闲）时外层容器
-            零高度，不占布局。 */}
-        <div
-          className={`transition-opacity duration-300 ${
-            historyLoading ? 'pointer-events-none opacity-0' : 'opacity-100'
-          }`}
-          aria-hidden={historyLoading || undefined}
-          inert={historyLoading || undefined}
-        >
+            会话切换加载中（historyLoading，含 continueSession 的宽限
+            窗口）显示「回放中…」——目标会话 busy/ready 由 host 的
+            /api/sessions roster 提前可知，回放期间状态行保持可见，
+            加载完毕立即按真实状态渲染（busy 臂 / 已切换文案），不再
+            整行淡出。空态（真正空闲）时外层容器零高度，不占布局。 */}
+        <div>
           {(statusVisible || historyLoading) && (
           <div
             className="flex min-h-5 items-center gap-1.5 pb-2 pr-0.5 font-ui text-[13.5px] leading-[1.4] select-none"
             style={{ paddingLeft: COMPOSER_BODY_PAD_LEFT_PX }}
           >
-            {idleCueVisible ? (
+            {historyLoading ? (
+              // 回放中：session/load 重放历史期间（loadHistory + 宽限
+              // 窗口）的状态行内容，加载完毕立即切换真实状态。
+              <>
+                <span className="inline-flex w-[1.25em] shrink-0 items-center justify-center leading-none text-gn-muted">
+                  {SPINNER_FRAMES[spinnerFrame]}
+                </span>
+                <span className="truncate text-gn-gray-dim">回放中…</span>
+                <span className="flex-1" />
+              </>
+            ) : idleCueVisible ? (
               // TUI idle watcher cue (turn_status.rs idle arm): pulsing
               // monitor icon + counts label. Click toggles the sticky
               // task bar (the TUI opens the tasks pane on click).
