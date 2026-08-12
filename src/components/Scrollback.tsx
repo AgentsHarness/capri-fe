@@ -9,6 +9,7 @@ import {
   collapseUserText,
   userIsFoldable,
 } from '../scrollback/userText'
+import { fallbackStickyBandH, pickStickyPin } from '../scrollback/stickyPin'
 import { TodoMark } from './todoMark'
 import { WorkspaceBar } from './TopBar'
 import { DirectoryPickerModal } from './DirectoryPickerModal'
@@ -1824,23 +1825,24 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
   }, [historyLoadedAt])
 
   // ── TUI sticky prompt header (scrollback/sticky.rs) ──────────────
-  // 钉选 = 最后一条 top < scrollTop 的挂载 user（y_virtual < scroll_offset）。
-  // 同 TUI compute_sticky_layout：scrollTop===0 不钉；完全划出后仍钉
-  // 该条（读它下面的 assistant），直到下一条 user 的 top 越过视口顶才切换。
-  // 切勿「完全划出 → 推进上一条」——会在长 assistant 中部把 sticky 钉错成
-  // 更早的 prompt，并在上滑时误触发 loadMoreHistory。
-  //
-  // FE 是 absolute 叠层（非 TUI 渐进折叠 + content 偏移），额外两条：
-  // - 下一条 user 顶进 sticky 条区域时立刻改钉为底下那条，避免旧 sticky 盖住它。
-  // - 候选 user 部分划出但仍伸进 bar 下内容区时不钉，避免与 in-flow 正文叠字。
+  // Overlay-safe TUI: pin last fully-past user; next user entering the
+  // sticky band pushes it off, then yield (in-flow is the title).
+  // Jump force only when scroll clamps (target sits mid-viewport).
+  // pinLine = scrollTop + barBottom；user top 扣 margin-top（mt-2）。
   //
   // 首页只拉最后 1 轮；上滑到顶 / 按钮 loadMoreHistory 加载上一轮。
   // DOM 全量挂载 entries（无渲染窗口上限）。
   //
   // Anchor for height-delta restore when host prepends tool-only pages.
   const [expandAnchorId, setExpandAnchorId] = useState<string | null>(null)
+  /**
+   * Jump target. Honored only while the target sits fully below the sticky
+   * band (last-turn clamp). Align-to-bar clears this and yields.
+   */
+  const forcePinnedIdRef = useRef<string | null>(null)
   useEffect(() => {
     setExpandAnchorId(null)
+    forcePinnedIdRef.current = null
   }, [historyLoadedAt])
   const renderEntries = entries
   /**
@@ -1910,80 +1912,123 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
   const [pinned, setPinned] = useState<{ entry: ScrollEntry; store: boolean } | null>(null)
   // 目录 rail active tick — 独立于 sticky 阈值（可读区顶 = bar 下沿）。
   const [navActiveId, setNavActiveId] = useState<string | null>(null)
-  /** Rendered sticky band (for push/handoff height). */
+  /** Rendered sticky band (live height + push translate). */
   const stickyBandElRef = useRef<HTMLDivElement | null>(null)
+  const lastPushYRef = useRef(0)
+  /** Near the top of the list — loading-more banner may occupy the sticky slot. */
+  const [stickyNearTop, setStickyNearTop] = useState(true)
+
+  const applyStickyPushY = (y: number) => {
+    if (lastPushYRef.current === y) {
+      const el = stickyBandElRef.current
+      if (el && y !== 0 && !el.style.transform) {
+        el.style.transform = `translateY(${y}px)`
+      }
+      return
+    }
+    lastPushYRef.current = y
+    const el = stickyBandElRef.current
+    if (el) el.style.transform = y ? `translateY(${y}px)` : ''
+  }
 
   /**
-   * TUI sticky.rs pin + push handoff, adapted for FE absolute overlay:
+   * Sticky pin — overlay adaptation of TUI sticky.rs.
    *
-   * 1. Candidate = last user with top < scrollTop (y_virtual < scroll_offset).
-   * 2. If the next user has entered the sticky visual band, hand off immediately
-   *    — sticky updates to that lower usermessage so the old pin never covers it.
-   * 3. If the candidate is partially scrolled past (top < scrollTop) but its
-   *    body still extends into the content area, clear pin — FE overlays instead
-   *    of TUI gradual-collapse, so partial scroll would double the same prompt.
-   *    Early handoff (top still ≥ scrollTop) is kept: sticky acts as the
-   *    section header for the approaching message.
+   * Geometry (box viewport Y):
+   *   workspace bar  [0, barBottom)
+   *   sticky band    [barBottom, barBottom + stickyH)
+   *
+   * pinLine (document Y) = scrollTop + barBottom.
+   *
+   * Scroll rule (`pickStickyPin`):
+   * - Pin the last user whose bottom ≤ pinLine (fully under the bar).
+   * - Next user entering the band pushes that pin up, then yield — do not
+   *   switch identity onto the in-flow prompt.
+   *
+   * Jump force (`forcePinnedIdRef`):
+   * - Align-to-bar: target top is in the band → drop force, yield.
+   * - Last-turn clamp: target sits fully below the band → pin the target
+   *   until it reaches the band, fully passes, or leaves the viewport.
    */
   const updatePinned = useCallback(() => {
     const box = boxRef.current
     const els = userEls.current
     if (!box || els.size === 0) {
+      applyStickyPushY(0)
+      setStickyNearTop(true)
       setPinned((prev) => (prev == null ? prev : null))
       return
     }
-    // TUI: scroll_offset == 0 → no pin.
     const scrollTop = box.scrollTop
+    setStickyNearTop((prev) => {
+      const near = scrollTop < 80
+      return prev === near ? prev : near
+    })
+    // TUI: scroll_offset == 0 → no pin (also drop jump force).
     if (scrollTop <= 0) {
+      forcePinnedIdRef.current = null
+      applyStickyPushY(0)
       setPinned((prev) => (prev == null ? prev : null))
       return
     }
     const boxTop = box.getBoundingClientRect().top
-    const barH =
-      wsBarElRef.current?.getBoundingClientRect().height ?? wsBarH
-    // Collapsed sticky ≈ py-11×2 + 3 lines @ 13.5/1.35. Prefer live measure.
+    // Live bar bottom in box viewport Y (includes tasks-bar growth).
+    const barBottom = wsBarElRef.current
+      ? wsBarElRef.current.getBoundingClientRect().bottom - boxTop
+      : wsBarH
+    const pinLine = scrollTop + barBottom
     const stickyH =
-      stickyBandElRef.current?.offsetHeight ||
-      11 * 2 + Math.ceil(13.5 * 1.35 * USER_COLLAPSED_MAX_LINES)
+      stickyBandElRef.current?.offsetHeight || fallbackStickyBandH()
 
     type UserPos = { id: string; top: number; bottom: number }
+    const measure = (id: string, el: HTMLElement): UserPos => {
+      const rect = el.getBoundingClientRect()
+      // margin-top is outside the border box but is part of the visual
+      // section start (user rows use mt-2).
+      const mt = parseFloat(getComputedStyle(el).marginTop) || 0
+      const top = rect.top - boxTop + scrollTop - mt
+      return { id, top, bottom: top + mt + el.offsetHeight }
+    }
+
     const list: UserPos[] = []
     for (const [id, el] of els) {
-      const top = el.getBoundingClientRect().top - boxTop + scrollTop
-      list.push({ id, top, bottom: top + el.offsetHeight })
+      list.push(measure(id, el))
     }
 
-    // 1) Last user with y_virtual < scroll_offset (document order).
-    let idx = -1
-    for (let i = 0; i < list.length; i++) {
-      if (list[i].top < scrollTop) idx = i
-      else break
-    }
-
-    // 2) Push handoff: while a pin is active, if the next user top enters the
-    //    sticky band → switch pin to that lower message immediately.
-    //    (TUI sticky.rs next_naive_row <= header_with_gap; FE can't clip-push
-    //    so we switch identity rather than paint old sticky over it.)
-    if (idx >= 0 && idx + 1 < list.length) {
-      const nextUser = list[idx + 1]
-      const nextScreenTop = nextUser.top - scrollTop
-      // Sticky paints in box viewport y ∈ [barH, barH + stickyH].
-      if (nextScreenTop < barH + stickyH) {
-        idx = idx + 1
+    // ── Jump force: clamp only (target fully below the sticky band) ──
+    const forcedId = forcePinnedIdRef.current
+    if (forcedId != null) {
+      const forcedEl = els.get(forcedId)
+      const forcedEntry = userById.get(forcedId)
+      if (!forcedEl || !forcedEntry) {
+        forcePinnedIdRef.current = null
+      } else {
+        const f = measure(forcedId, forcedEl)
+        const viewBottom = scrollTop + box.clientHeight
+        if (f.bottom <= pinLine) {
+          // Fully under bar → natural rule pins the same id.
+          forcePinnedIdRef.current = null
+        } else if (f.bottom <= scrollTop || f.top >= viewBottom) {
+          forcePinnedIdRef.current = null
+        } else if (f.top < pinLine + stickyH) {
+          // Aligned or entering the band → yield to in-flow.
+          forcePinnedIdRef.current = null
+        } else {
+          applyStickyPushY(0)
+          const next = { entry: forcedEntry, store: false as const }
+          setPinned((prev) =>
+            prev?.entry?.id === next.entry.id && prev?.store === next.store
+              ? prev
+              : next,
+          )
+          return
+        }
       }
     }
 
-    // 3) Self-overlap only when partially past: top already above viewport
-    //    but body still in the content area under the band.
-    if (idx >= 0) {
-      const cur = list[idx]
-      if (cur.top < scrollTop && cur.bottom > scrollTop + barH) {
-        idx = -1
-      }
-    }
-
-    const pinnedId = idx >= 0 ? list[idx].id : null
-    const entry = pinnedId != null ? userById.get(pinnedId) : undefined
+    const pick = pickStickyPin(list, pinLine, stickyH)
+    applyStickyPushY(pick.pushY)
+    const entry = pick.id != null ? userById.get(pick.id) : undefined
     const next = entry != null ? { entry, store: false as const } : null
     setPinned((prev) =>
       prev?.entry?.id === next?.entry?.id && prev?.store === next?.store ? prev : next,
@@ -1992,7 +2037,7 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
 
   /**
    * 目录 active：视口可读顶（workspace bar 下沿）附近最近 user。
-   * 与 sticky 分离——sticky 保持 TUI top < scrollTop，这里不改钉选语义。
+   * 与 sticky 同用 bar 下沿作参考线，但 active 语义是「附近最近」而非钉选。
    */
   const updateNavActive = useCallback(() => {
     const box = boxRef.current
@@ -2121,7 +2166,10 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
 
   useEffect(
     () => () => {
-      if (pinnedRaf.current != null) cancelAnimationFrame(pinnedRaf.current)
+      if (pinnedRaf.current != null) {
+        cancelAnimationFrame(pinnedRaf.current)
+        pinnedRaf.current = null
+      }
     },
     [],
   )
@@ -2143,6 +2191,9 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
       const box = boxRef.current
       if (!box) return
       followRef.current = false
+      // Mark jump target. updatePinned only honors this on last-turn clamp
+      // (target fully below the band); a successful align yields to in-flow.
+      forcePinnedIdRef.current = id
       const align = (el: HTMLElement) => {
         const boxTop = box.getBoundingClientRect().top
         const barH =
@@ -2154,13 +2205,14 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
       const el = box.querySelector(`[data-entry-id="${id}"]`)
       if (el instanceof HTMLElement) {
         align(el)
-        scheduleUpdatePinned()
+        updatePinned()
+        updateNavActive()
         return
       }
       // 全量 DOM 后仍找不到则等下一帧（刚 prepend 的极短窗口）。
       setScrollToEntryId(id)
     },
-    [wsBarH, scheduleUpdatePinned],
+    [wsBarH, updatePinned, updateNavActive],
   )
   useLayoutEffect(() => {
     if (!scrollToEntryId) return
@@ -2173,6 +2225,7 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
       box.scrollTop +=
         el.getBoundingClientRect().top - boxTop - barH
       lastScrollTopRef.current = box.scrollTop
+      forcePinnedIdRef.current = scrollToEntryId
     }
     setScrollToEntryId(null)
     updatePinned()
@@ -2434,7 +2487,7 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
   }, [selectedId, focusMode])
 
   // User-message directory rail (TUI timeline). Active tick is independent
-  // of sticky pin (updateNavActive); sticky keeps HEAD top < scrollTop.
+  // of sticky pin (updateNavActive): nearest user at the readable top.
   const userNavItems = useMemo((): UserMessageNavItem[] => {
     const out: UserMessageNavItem[] = []
     let turnIdx = 0
@@ -2622,11 +2675,10 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
         )}
       </div>
       <div className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} py-3`}>
-        {/* TUI sticky prompt header (sticky.rs): last user prompt scrolled
-            past the top, collapsed to 3 lines; switches as you scroll.
-            Zero-height sticky shell + absolute band = no layout shift when
-            the pin mounts/unmounts (in-flow clone used to push all rows and
-            jitter against pin-threshold / scroll-follow).
+        {/* TUI sticky prompt header (sticky.rs): last fully-past user
+            prompt, collapsed to 3 lines. Next user pushes it off, then
+            yield. Zero-height sticky shell + absolute band = no layout
+            shift when the pin mounts/unmounts.
             */}
         <div
           className="pointer-events-none sticky z-10 h-0 overflow-visible"
@@ -2635,7 +2687,12 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
         >
           {(pinnedUser?.kind === 'user' || historyLoadingMore) && (
             <div
-              ref={stickyBandElRef}
+              ref={(el) => {
+                stickyBandElRef.current = el
+                if (el && lastPushYRef.current) {
+                  el.style.transform = `translateY(${lastPushYRef.current}px)`
+                }
+              }}
               data-sticky-prompt=""
               className="pointer-events-auto absolute inset-x-0 top-0 font-ui text-[13.5px] leading-[1.35] text-gn-fg select-none"
               style={{
@@ -2686,7 +2743,7 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
               {/* 上滑加载上一轮：就地显示加载中（不依赖顶部按钮是否在视口内）。
                   仅在无钉选用户消息时显示——sticky 钉着用户消息时不得把
                   消息显示成「正在加载上一轮」（加载态由顶部按钮承担）。 */}
-              {historyLoadingMore && pinnedUser?.kind !== 'user' && (
+              {historyLoadingMore && pinnedUser?.kind !== 'user' && stickyNearTop && (
                 <div className="flex items-center gap-1.5 px-2.5 py-[11px] text-[11.5px] text-gn-muted">
                   <span className="text-[13px] leading-none">
                     {SPINNER_FRAMES[spinnerFrame]}

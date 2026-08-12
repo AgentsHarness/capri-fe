@@ -8716,6 +8716,14 @@ function replayUpdates(
   let userAfterEnd = false
   // Model id of the last replayed user_message_chunk (page-local).
   let prevReplayModelId: string | undefined
+  // promptIndex of the last replayed user_message_chunk (page-local) —
+  // the agent's authoritative user-message boundary stamp. Storage can
+  // persist a short-lived (e.g. cancelled) turn's user echo AFTER its own
+  // turn_completed, so two independent user messages can end up adjacent
+  // in a history page. Replay must split on the promptIndex change (the
+  // agent's own replay rule: a change, including unmarked ↔ marked,
+  // opens a new run) instead of blindly concatenating them into one row.
+  let prevReplayPromptIdx: number | undefined
   // Newest envelope's session-accumulated token count of this page; the
   // usage event is fired once after the loop (last envelope wins).
   let pageMetaUsed: number | undefined
@@ -8752,6 +8760,21 @@ function replayUpdates(
     const rawUp = (env as RawEnvelope).params?.update
     if (rawUp?.sessionUpdate === 'user_message_chunk') {
       const chunkMeta = rawUp._meta as Record<string, unknown> | undefined
+      // User-message boundary: flush the buffered previous message when
+      // this chunk's promptIndex differs. Both-undefined (old logs
+      // without the stamp) keeps the legacy single-run aggregation —
+      // backward compatible.
+      const pidx =
+        typeof chunkMeta?.promptIndex === 'number' &&
+        Number.isFinite(chunkMeta.promptIndex)
+          ? chunkMeta.promptIndex
+          : undefined
+      if (prevReplayPromptIdx !== pidx) {
+        // Flush BEFORE the model-switch line below so the switch note
+        // renders above the NEW message's row, below the flushed one.
+        flushUser()
+        prevReplayPromptIdx = pidx
+      }
       const mid =
         typeof chunkMeta?.modelId === 'string' && chunkMeta.modelId
           ? chunkMeta.modelId
