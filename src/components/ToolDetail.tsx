@@ -4,7 +4,7 @@
  */
 
 import type { ToolCall } from '../api/types'
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import {
   EXEC_FIRST,
   EXEC_LAST,
@@ -53,16 +53,35 @@ type Props = {
   kindName?: string
   /** When true, show full content (TUI Expanded); else Truncated windows. */
   full?: boolean
+  /**
+   * Additional same-file edits merged into this row (TUI
+   * collapsed_edit_blocks=true). Rendered after the main raw with a gap.
+   */
+  mergedRaws?: ToolCall[]
   className?: string
 }
 
-export function ToolDetail({ raw, kindName, full = false, className }: Props) {
+export function ToolDetail({
+  raw,
+  kindName,
+  full = false,
+  mergedRaws,
+  className,
+}: Props) {
   const d = extractToolDetail(raw, kindName)
+  // Only edit rows merge (store-side rule); guard kind anyway.
+  const extras = (mergedRaws ?? [])
+    .map((r) => extractToolDetail(r, kindName))
+    .filter((x): x is Extract<Detail, { kind: 'edit' }> => x.kind === 'edit')
   return (
     <div
       className={`min-w-0 font-ui text-[12.5px] leading-[1.45] ${className ?? 'mt-1'}`}
     >
-      <DetailBody d={d} full={full} />
+      {d.kind === 'edit' ? (
+        <EditBody d={d} full={full} extra={extras} />
+      ) : (
+        <DetailBody d={d} full={full} />
+      )}
     </div>
   )
 }
@@ -351,6 +370,45 @@ function ExecuteBody({
 function EditBody({
   d,
   full,
+  extra = [],
+}: {
+  d: Extract<Detail, { kind: 'edit' }>
+  full: boolean
+  /** Additional merged same-file edits (collapsed_edit_blocks row). */
+  extra?: Array<Extract<Detail, { kind: 'edit' }>>
+}) {
+  if (d.error) return <ErrorLine text={d.error} />
+  // Combined diffstat across every merged hunk (TUI merged row sums
+  // insertions/deletions); each hunk renders its own diff panel.
+  const all = [d, ...extra]
+  const ins = all.reduce((s, x) => s + x.insertions, 0)
+  const del = all.reduce((s, x) => s + x.deletions, 0)
+  return (
+    <div className="space-y-0.5">
+      {(ins > 0 || del > 0) && (
+        <MetaLine>
+          <span style={{ color: 'var(--color-gn-diff-ins-fg)' }}>+{ins}</span>
+          {' '}
+          <span style={{ color: 'var(--color-gn-diff-del-fg)' }}>−{del}</span>
+        </MetaLine>
+      )}
+      {all.map((x, i) => (
+        <Fragment key={i}>
+          {i > 0 && (
+            <div className="py-0.5 text-center font-mono text-[11px] text-gn-gutter">
+              …
+            </div>
+          )}
+          <EditHunkPanel d={x} full={full} />
+        </Fragment>
+      ))}
+    </div>
+  )
+}
+
+function EditHunkPanel({
+  d,
+  full,
 }: {
   d: Extract<Detail, { kind: 'edit' }>
   full: boolean
@@ -358,7 +416,6 @@ function EditBody({
   // Full view (viewer) with a huge diff: page the rows instead of mounting
   // all of them at once. Unconditional hook (early return below).
   const [visible, setVisible] = useState(VIEWER_PAGE_LINES)
-  if (d.error) return <ErrorLine text={d.error} />
   if (!d.lines.length) return <MetaLine>(no diff)</MetaLine>
 
   let lines = d.lines
@@ -372,8 +429,6 @@ function EditBody({
       ...tail,
     ]
   }
-  // Full view (viewer) with a huge diff: page the rows instead of mounting
-  // all of them at once.
   const showMore = visible < lines.length
   const shown = showMore ? lines.slice(0, visible) : lines
 
@@ -383,14 +438,7 @@ function EditBody({
   )
 
   return (
-    <div className="space-y-0.5">
-      {(d.insertions > 0 || d.deletions > 0) && (
-        <MetaLine>
-          <span style={{ color: 'var(--color-gn-diff-ins-fg)' }}>+{d.insertions}</span>
-          {' '}
-          <span style={{ color: 'var(--color-gn-diff-del-fg)' }}>−{d.deletions}</span>
-        </MetaLine>
-      )}
+    <>
       <Panel full={full}>
         {shown.map((l, i) => (
           <DiffRow key={i} line={l} gutterW={gutterW} />
@@ -405,7 +453,7 @@ function EditBody({
           />
         )}
       </Panel>
-    </div>
+    </>
   )
 }
 

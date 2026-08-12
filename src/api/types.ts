@@ -648,6 +648,8 @@ export type AcpEvent =
       failed?: boolean
       /** Completion snapshot output (block viewer). */
       output?: string
+      /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
+      sessionId?: string
     }
   /**
    * Aggregated user message (history replay or live user_chunk).
@@ -782,7 +784,8 @@ export type AcpEvent =
   | { type: 'modes_update'; modes?: unknown; sessionId?: string }
   | { type: 'config_options_update'; configOptions?: unknown }
   | { type: 'commands_update'; commands?: unknown }
-  | { type: 'session_info'; title?: string; updatedAt?: unknown }
+  /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
+  | { type: 'session_info'; title?: string; updatedAt?: unknown; sessionId?: string }
   /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
   | {
       type: 'model'
@@ -1108,6 +1111,12 @@ export type ScrollEntry =
       detail?: string
       expanded?: boolean
       raw?: ToolCall
+      /**
+       * Additional EditFile calls merged into this row (TUI
+       * collapsed_edit_blocks=true merges back-to-back same-file edits).
+       * The renderer shows the combined diffstat and each diff body.
+       */
+      mergedRaws?: ToolCall[]
       /** Activity start (epoch ms) — stamped on live running tools for
        *  the turn status line's phase timer (TUI tracker started_at);
        *  replay/completed snapshots omit it. */

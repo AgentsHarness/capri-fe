@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { Plus } from 'lucide-react'
 import { useChatStore } from '../store/chat'
 import { SessionHistoryList } from './SessionHistoryList'
+import { SessionListHeader } from './SessionListHeader'
 
 /**
  * Desktop (lg+) history sidebar — persistent, grouped by workspace
@@ -39,9 +40,7 @@ export function HistorySidebar() {
           the borderless WorkspaceBar. py-2 + compact button matches the
           (taller) WorkspaceBar row height so the "会话 new" header lines up. */}
       <div className="flex min-h-[37px] items-center gap-2 border-b border-gn-prompt-border px-3 py-2">
-        <span className="text-[10.5px] font-medium uppercase tracking-wide text-gn-gutter">
-          会话
-        </span>
+        <SessionListHeader />
         <button
           type="button"
           onClick={() => resetToEmpty()}

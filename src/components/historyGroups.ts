@@ -29,6 +29,30 @@ export function byRecency(a: SessionInfo, b: SessionInfo): number {
 }
 
 /**
+ * 会话行排序优先级（组内排序主键，越小越靠前）：
+ *   0 待处理（host 真·等待输入：权限/提问挂起，需要用户处理）
+ *   1 完成对勾（✓ 待查看，completedNotices 命中）
+ *   2 运行中且有后台任务（active + bgRunning > 0）
+ *   3 运行中（active，无后台任务）
+ *   4 空闲但后台任务仍在运行（bgRunning > 0）
+ *   5 空闲
+ * 同优先级内置顶的会话优先、再按最新活动降序
+ * （见 historyPins.sortSessionsWithPins）。
+ */
+export function sessionSortRank(
+  s: SessionInfo,
+  completedNotices?: Record<string, number> | null,
+): number {
+  // 待处理是用户必须回应的信号（权限/提问挂起），永远最前。
+  if (s.status?.state === 'awaiting' || s.status?.awaitingInput === true) return 0
+  // 完成对勾：别的会话跑完待查看，排在运行中之前。
+  if (completedNotices?.[s.sessionId] != null) return 1
+  if (s.status?.state === 'active') return (s.bgRunning ?? 0) > 0 ? 2 : 3
+  if ((s.bgRunning ?? 0) > 0) return 4
+  return 5
+}
+
+/**
  * Effective dashboard bucket for a session. 待处理 is driven by the
  * host's authentic awaiting-input signal (pending permission / x.ai
  * question) — no local read/unread timestamps.
@@ -156,7 +180,7 @@ export function absTime(iso: string): string {
  * SessionState 只提供 lastActiveAt（epoch ms，最后一次发 prompt 的时间），
  * 没有"最后工具/最后消息"或待处理预览字段：
  * - 待处理会话（awaitingInput / state 'awaiting'）→ 通用 "Pending: …"；
- * - 其他会话 → lastActiveAt 有值时显示 "最后活动 Xm ago"；
+ * - 其他会话 → lastActiveAt 有值时显示 "上次发送 Xm ago"；
  * - 都没有 → undefined（不显示副行）。
  */
 export function sessionSubtitle(s: SessionInfo): string | undefined {
@@ -165,7 +189,7 @@ export function sessionSubtitle(s: SessionInfo): string | undefined {
   }
   const t = s.status?.lastActiveAt
   if (typeof t === 'number' && Number.isFinite(t) && t > 0) {
-    return `最后活动 ${fmtTime(new Date(t).toISOString())}`
+    return `上次发送 ${fmtTime(new Date(t).toISOString())}`
   }
   return undefined
 }

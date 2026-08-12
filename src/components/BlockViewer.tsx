@@ -382,6 +382,7 @@ function ViewerBody({
         raw={entry.raw}
         kindName={entry.kindName}
         full
+        mergedRaws={entry.mergedRaws}
         className="mt-0"
       />
     )
@@ -684,10 +685,6 @@ function SubagentView({
  * 局部化），不接主 store 的 selectEntry/openViewer——mini 条目不在主
  * entries 里，openViewer 会找不到目标。
  */
-/** 迷你子代理时间线的渲染窗口：store 全量保留 items，DOM 只挂最新 N 条，
- *  上滑到顶逐页展开（与主 scrollback MAX_RENDER_ENTRIES 同款）。 */
-const MINI_MAX_RENDER_ENTRIES = 100
-
 function SubagentTimeline({
   childSid,
   items,
@@ -717,20 +714,8 @@ function SubagentTimeline({
   )
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
-  // ── Render window（与主 scrollback MAX_RENDER_ENTRIES 同款）──────────
-  // store 全量保留 items；DOM 只挂最新 N 条（slice 取尾部，live 流永远在
-  // 窗口内）。truncatedCount>0 表示还有更早条目在 store 但未挂 DOM——上滑
-  // 到顶逐页展开窗口露出，盖满 store 后再走宿主分页（loadMoreSubagentView）。
-  const [renderLimit, setRenderLimit] = useState(MINI_MAX_RENDER_ENTRIES)
-  const renderItems = useMemo(
-    () => (items.length <= renderLimit ? items : items.slice(-renderLimit)),
-    [items, renderLimit],
-  )
-  const truncatedCount = items.length - renderItems.length
-  // 切换子代理 → 窗口回到默认。
-  useEffect(() => {
-    setRenderLimit(MINI_MAX_RENDER_ENTRIES)
-  }, [childSid])
+  // DOM 全量挂载 items（与主 scrollback 一致，无渲染窗口上限）。
+  const renderItems = items
 
   // 打开时若尚未回放过（idle），按 child_session_id 拉取该子代理会话的更新
   // 回放（TUI replay_inherited_updates 同款）。不看 items 是否为空——即使
@@ -749,10 +734,7 @@ function SubagentTimeline({
     (view?.totalCount != null ? loadedCount < view.totalCount : false)
   const loadingMore = view?.fetchState === 'loading' && items.length > 0
 
-  // 内容不满视口（无滚动条）时自动补内容——否则 onScroll 永远不触发。
-  // 优先展开渲染窗口（truncatedCount>0，还有更早在 store）；窗口盖满后
-  // 再走宿主分页。成功继续补（直到出现滚动条或拉尽），失败停止。纯 live
-  // 视图 hasMore=false 不受影响。
+  // 内容不满视口（无滚动条）时自动补宿主历史——否则 onScroll 永远不触发。
   const autoFillStopped = useRef(false)
   useEffect(() => {
     autoFillStopped.current = false
@@ -762,15 +744,11 @@ function SubagentTimeline({
     if (loadingMore) return
     const el = scrollRef.current
     if (!el || el.scrollHeight > el.clientHeight + 1) return
-    if (truncatedCount > 0) {
-      setRenderLimit((v) => v + MINI_MAX_RENDER_ENTRIES)
-      return
-    }
     if (!hasMore) return
     void loadMoreSubagentView(childSid).then((ok) => {
       autoFillStopped.current = !ok
     })
-  }, [hasMore, loadingMore, renderItems, truncatedCount, childSid, loadMoreSubagentView])
+  }, [hasMore, loadingMore, renderItems, childSid, loadMoreSubagentView])
 
   // 用户主动上滑 → 暂停自动滚底（标准 stick-to-bottom 语义）；滚回
   // 底部附近自动恢复。流式输出期间上滑浏览历史不再被拉回。
@@ -836,16 +814,6 @@ function SubagentTimeline({
     else if (!nearBottom && !userScrolledUp) setUserScrolledUp(true)
     updatePinned()
     if (el.scrollTop > 8 || loadingMore) return
-    // 渲染窗口还没盖满 store：先展开窗口露出更早条目（不触达宿主）。
-    if (truncatedCount > 0) {
-      const distFromBottom = el.scrollHeight - el.scrollTop
-      setRenderLimit((v) => v + MINI_MAX_RENDER_ENTRIES)
-      requestAnimationFrame(() => {
-        const el2 = scrollRef.current
-        if (el2) el2.scrollTop = el2.scrollHeight - distFromBottom
-      })
-      return
-    }
     if (!hasMore) return
     const distFromBottom = el.scrollHeight - el.scrollTop
     void loadMoreSubagentView(childSid).then(() => {

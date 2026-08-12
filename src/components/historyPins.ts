@@ -1,5 +1,6 @@
 import { create } from 'zustand'
-import type { WorkspaceGroup } from '../api/types'
+import type { SessionInfo, WorkspaceGroup } from '../api/types'
+import { sessionSortRank } from './historyGroups'
 
 /**
  * 浏览器本地"置顶"偏好（localStorage，不写回宿主）：
@@ -106,16 +107,24 @@ export function sortWorkspacesWithPins<T extends WorkspaceGroup>(
 }
 
 /**
- * 会话排序：置顶的会话永远在最前（内部按原活跃度顺序），非置顶保持
- * 原顺序。`cmp` 是组内默认排序（byUpdatedDesc），只作为同组内稳定
- * 二级排序，不影响置顶分组。
+ * 会话排序：置顶的会话永远最前（内部按状态优先级 → 最新活动降序），
+ * 非置顶保持状态优先级 → 最新活动降序。状态优先级见
+ * historyGroups.sessionSortRank：待处理 → 完成对勾 → 运行中+后台任务 →
+ * 运行中 → 后台任务运行中 → 空闲。
  */
-export function sortSessionsWithPins<T extends { sessionId: string }>(
+export function sortSessionsWithPins<T extends SessionInfo>(
   sessions: T[],
   pinned: Set<string>,
+  completedNotices: Record<string, number> | null,
   cmp: (a: T, b: T) => number,
 ): T[] {
-  const pinnedList = sessions.filter((s) => pinned.has(s.sessionId)).sort(cmp)
-  const rest = sessions.filter((s) => !pinned.has(s.sessionId)).sort(cmp)
+  const byPriority = (a: T, b: T): number => {
+    const ra = sessionSortRank(a, completedNotices)
+    const rb = sessionSortRank(b, completedNotices)
+    if (ra !== rb) return ra - rb
+    return cmp(a, b)
+  }
+  const pinnedList = sessions.filter((s) => pinned.has(s.sessionId)).sort(byPriority)
+  const rest = sessions.filter((s) => !pinned.has(s.sessionId)).sort(byPriority)
   return [...pinnedList, ...rest]
 }

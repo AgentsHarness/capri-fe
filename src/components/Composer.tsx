@@ -377,9 +377,18 @@ export function Composer() {
   const [caretPos, setCaretPos] = useState(0)
   const send = useChatStore((s) => s.send)
   const conn = useChatStore((s) => s.conn)
+  // 会话切换加载中：turn status 整行隐藏，加载完毕再显示（与
+  // WorkspaceBar 同进退，见 Scrollback）。historyLoading 覆盖
+  // loadHistory 全程 + 宽限窗口，直至新会话数据就绪。
+  const historyLoading = useChatStore((s) => s.historyLoading)
   const usage = useChatStore((s) => s.usage)
   const genRate = useChatStore((s) => s.genRate)
   const statusText = useChatStore((s) => s.statusText)
+  /** /recap 等待指示：仅当发起会话仍是当前活动会话时显示（切换会话
+   *  不残留——recapPendingFor 绑定发起会话 id）。 */
+  const recapPending = useChatStore(
+    (s) => s.recapPendingFor != null && s.recapPendingFor === s.sessionId,
+  )
   const modeBanner = useChatStore((s) => s.modeBanner)
   const clearModeBanner = useChatStore((s) => s.clearModeBanner)
   const awaitingNext = useChatStore((s) => s.awaitingNext)
@@ -590,9 +599,13 @@ export function Composer() {
    *   （已知行 send_now_cancels_running_turn=false）。行保留在本地镜像
    *   （广播是校正通道）；版本不符/未知 id → agent no-op 并重广播，
    *   行原样保留。收养广播（running_prompt_id）到达时移除并渲染用户行。
-   * - 队首行未确认（乐观回显 / RPC 失败降级，无 version）→ 保留
-   *   cancel-then-send 兜底：取消运行中回合（后台任务继续），再发送
-   *   队首。降级行重发时带同一 promptId 保持身份。
+   * - 队首行非降级（乐观回显 / 已确认但广播无 version）→ agent-owned：
+   *   agent 已在跑/已排队，FE 绝不 cancel-then-send（那会
+   *   把同一条消息再发一遍），等收养广播即可（TUI
+   *   send_now_awaiting_confirm 语义）。
+   * - 队首行是 RPC 失败降级（degraded，无 version，agent 从没见过）→
+   *   保留 cancel-then-send 兜底：取消运行中回合（后台任务继续），再
+   *   发送队首。降级行重发时带同一 promptId 保持身份。
    * `sending` 是互斥锁，与 Enter 竞态共享；锁只覆盖
    * cancel→dequeue→send-start 窗口：send() 同步置 conn=busy 后立即释放，
    * 否则整回合（send 在回合完成时才 resolve）期间 onSubmit 的 sending
@@ -628,8 +641,21 @@ export function Composer() {
         }
         return
       }
-      // 未确认行（乐观回显 / RPC 失败降级）→ cancel-then-send 兜底：取消
-      // 运行中回合（后台任务继续），然后发送队首作为下一回合。
+      if (!head.degraded) {
+        // 非降级行都是 agent-owned：
+        // - 乐观回显（prompt RPC 已发出且被接受）：agent 正在跑或已排进
+        //   权威队列，收养广播（running_prompt_id）会移除镜像行并渲染
+        //   用户行；
+        // - 已确认但广播没带 version 的旧行：同样在 agent 权威队列里，
+        //   回合结束由 agent 自动 pop。
+        // FE 若在此 cancel-then-send 会把同一条消息再发一遍——agent 先
+        // 跑完在飞的那条、再跑这条，视觉上就是「第一条消息被当作
+        // queued 再次发送」。这里只等广播/收养（TUI
+        // send_now_awaiting_confirm 语义）。
+        return
+      }
+      // RPC 失败降级行（FE-owned，agent 从没见过）→ cancel-then-send
+      // 兜底：取消运行中回合（后台任务继续），然后发送队首作为下一回合。
       if (useChatStore.getState().conn === 'busy') {
         await useChatStore.getState().cancel()
         // Let the cancelled SSE land first so it can't clobber the new
@@ -650,9 +676,7 @@ export function Composer() {
       if (!popped) return
       try {
         const sendPromise = useChatStore.getState().send(popped.text, popped.blocks, {
-          // 降级行重发保持同一 promptId（agent queue_meta 身份一致）；
-          // 乐观回显行竞态重发不带 id（避免与在飞原 prompt 的
-          // queue_meta id 冲突）。
+          // 降级行重发保持同一 promptId（agent queue_meta 身份一致）。
           promptId: popped.degraded ? popped.id : undefined,
         })
         // 竞态窗口已过：send() 同步置 conn=busy——立即释放锁（见函数头
@@ -772,21 +796,9 @@ export function Composer() {
       setText('')
       setChips([])
       // Tag the queue with the active session so drains stay session-scoped.
-      q.enqueue(
-        { text: expandedText, blocks },
-        st.sessionId ?? '',
-        {
-          // 任何失败（网络失败 / agent 拒绝 / 竞态 409）→ 渲染错误行；
-          // 行保留在队列（degraded），用户手动重发。
-          onError: (e) => {
-            const msg = e instanceof Error ? e.message : String(e)
-            const cur = useChatStore.getState()
-            const last = cur.entries[cur.entries.length - 1]
-            const dup = last && last.kind === 'error' && last.text === msg
-            if (!dup) cur.appendLocalEntry({ kind: 'error', text: msg })
-          },
-        },
-      )
+      // 失败不滚 scrollback 错误行：行标记 degraded 后由队列面板的红色
+      // 徽标提示（失败原因作 tooltip），主回合输出不被打断。
+      q.enqueue({ text: expandedText, blocks }, st.sessionId ?? '')
       taRef.current?.focus()
       return
     }
@@ -1064,7 +1076,7 @@ export function Composer() {
     // 与切换动作一起生效（agent 热加载，TUI /model <name> <effort> 语义）。
     if (setAsDefault) {
       void transport
-        .setDefaultModel(modelId, reasoningEffort)
+        .setDefaultModel(modelId, reasoningEffort, useChatStore.getState().sessionId)
         .then(() => pushToast(`已设为默认模型`))
         .catch((e) => pushToast(`设为默认失败: ${e instanceof Error ? e.message : String(e)}`))
     }
@@ -1119,7 +1131,9 @@ export function Composer() {
       ? `a:${activity.label}:${activity.startedAt ?? ''}`
       : busy
         ? `w:${statusText}`
-        : ''
+        : recapPending
+          ? 'r:recap'
+          : ''
   const lastPhaseKey = useRef('')
   const phaseAnchor = useRef<number | undefined>(undefined)
   if (phaseKey !== lastPhaseKey.current) {
@@ -1127,7 +1141,8 @@ export function Composer() {
     phaseAnchor.current = phaseKey !== '' ? Date.now() : undefined
   }
   const phaseStart =
-    activity?.startedAt ?? (busy ? (phaseAnchor.current ?? turnStartedAt) : undefined)
+    activity?.startedAt ??
+    (busy || recapPending ? (phaseAnchor.current ?? turnStartedAt) : undefined)
   // [↓] send-to-background (TUI DemoteToBackground): shown while a
   // running execute tool exists — demotes that command to a background
   // task via x.ai/terminal/background (the agent then reports it through
@@ -1147,12 +1162,18 @@ export function Composer() {
     }
     return null
   }, [busy, entries])
+  // 会话切换加载中整体淡出（旧会话的 busy/状态不属于新会话，避免
+  // 加载期间显示误导性的活动标签）：渲染处用 historyLoading 驱动
+  // opacity 过渡（见下方状态行），statusVisible 只决定「加载结束
+  // 后」该不该显示，加载期间内容保持挂载以播放淡出。
   const statusVisible =
-    busy ||
-    conn === 'connecting' ||
-    conn === 'error' ||
-    conn === 'offline' ||
-    idleCueVisible
+    !historyLoading &&
+    (busy ||
+      conn === 'connecting' ||
+      conn === 'error' ||
+      conn === 'offline' ||
+      recapPending ||
+      idleCueVisible)
   // 生成速度（状态行总时间右侧）：host 推送的 gen_rate（估算 tok/s），
   // 流式期间实时更新，工具阶段/回合结束冻结终值。
   const genRateLabel =
@@ -1474,6 +1495,13 @@ export function Composer() {
           className="inline-flex min-h-5 items-center rounded px-1 tabular-nums text-gn-gray transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg sm:min-h-0"
           title="点击查看发送队列（发送现在 / 删除 / 编辑）"
         >
+          {/* 有降级（发送失败）行：红点提示，面板打开后行上徽标说明。 */}
+          {queue.some((q) => q.degraded) && (
+            <span
+              className="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-gn-red"
+              title="有消息发送失败，点击查看并重发"
+            />
+          )}
           · {queue.length} queued
         </button>
       </div>
@@ -1517,8 +1545,20 @@ export function Composer() {
             the dynamic activity (newest running tool / thinking) with its
             phase timer, falling back to the status text. Idle with
             watchers: `○ 2 commands still running` — a persistent status,
-            never a scrollback line. Hidden when truly idle. */}
-        {statusVisible && (
+            never a scrollback line. Hidden when truly idle.
+            会话切换加载中（historyLoading）整行淡出而非卸载，与
+            WorkspaceBar 同节奏（加载开始一起淡出、加载完毕一起淡入，
+            同 scrollback 加载覆盖层的 300ms opacity 过渡）。内容在
+            加载期间保持挂载以播放淡出；空态（真正空闲）时外层容器
+            零高度，不占布局。 */}
+        <div
+          className={`transition-opacity duration-300 ${
+            historyLoading ? 'pointer-events-none opacity-0' : 'opacity-100'
+          }`}
+          aria-hidden={historyLoading || undefined}
+          inert={historyLoading || undefined}
+        >
+          {(statusVisible || historyLoading) && (
           <div
             className="flex min-h-5 items-center gap-1.5 pb-2 pr-0.5 font-ui text-[13.5px] leading-[1.4] select-none"
             style={{ paddingLeft: COMPOSER_BODY_PAD_LEFT_PX }}
@@ -1548,7 +1588,7 @@ export function Composer() {
             ) : (
               <>
                 <span className="inline-flex w-[1.25em] shrink-0 items-center justify-center leading-none text-gn-muted">
-                  {busy || conn === 'connecting' ? (
+                  {busy || conn === 'connecting' || recapPending ? (
                     SPINNER_FRAMES[spinnerFrame]
                   ) : (
                     <span className="h-[7px] w-[7px] rounded-full bg-gn-red" />
@@ -1571,6 +1611,20 @@ export function Composer() {
                       }}
                     >
                       {activity?.label ?? statusText}
+                    </span>
+                    {phaseStart != null && (
+                      <span className="shrink-0 tabular-nums text-gn-gray">
+                        {formatTurnDuration(Date.now() - phaseStart)}
+                      </span>
+                    )}
+                  </>
+                ) : recapPending ? (
+                  // /recap 等待臂：请求已发出（fire-and-forget），等
+                  // session_recap / session_recap_unavailable 返回后
+                  // 清除（chat.ts 事件处理置 false）。
+                  <>
+                    <span className="truncate text-gn-gray-dim">
+                      正在生成摘要…
                     </span>
                     {phaseStart != null && (
                       <span className="shrink-0 tabular-nums text-gn-gray">
@@ -1641,7 +1695,8 @@ export function Composer() {
               </>
             )}
           </div>
-        )}
+          )}
+        </div>
         {/* TUI queue hint 独立一行（不挤状态行）：排队中/空闲有剩余条目时
             都显示，点击展开队列面板。 */}
         {queueRow}
@@ -1756,6 +1811,20 @@ export function Composer() {
                       )}
                       {!editing && (
                         <>
+                          {/* RPC 失败降级行：红色徽标提示手动重发（失败
+                              原因作 tooltip）；不再滚 scrollback 错误行。 */}
+                          {q.degraded && (
+                            <span
+                              className="shrink-0 rounded border border-gn-red/40 bg-gn-diff-del-bg/60 px-1 py-[1px] text-[10px] leading-none font-semibold text-gn-red"
+                              title={
+                                q.errorText
+                                  ? `${q.errorText}\n双 Enter / [发送现在] 重发`
+                                  : '发送失败：双 Enter / [发送现在] 重发'
+                              }
+                            >
+                              发送失败
+                            </span>
+                          )}
                           <button
                             type="button"
                             onClick={() => {

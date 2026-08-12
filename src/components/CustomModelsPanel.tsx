@@ -2,18 +2,43 @@ import { useCallback, useEffect, useState } from 'react'
 import { transport } from '../api/localTransport'
 import type { CustomModelConfig } from '../api/types'
 import { useChatStore } from '../store/chat'
+import { Glyphs } from '../theme/glyphs'
+import { IconGlyph } from './IconGlyph'
 
 /**
- * 自定义模型面板（settings 内）—— `[model.<id>]` 全字段可视化编辑。
- * 字段集合对齐 grok 源码的 `ConfigModelOverride`
- * （xai-grok-shell/src/agent/config.rs）；保存写入 ~/.grok/config.toml，
- * agent 的 config watcher 热加载后出现在模型列表（无需重启）。
+ * 自定义模型面板（settings 内）—— `[model.<id>]` 可视化编辑。
+ * 表单分「常用」（对齐实际配置最常见的字段，直接展示）与
+ * 「高级设置」（折叠区，其余全部字段）；字段集合对齐 grok 源码的
+ * `ConfigModelOverride`（xai-grok-shell/src/agent/config.rs）；
+ * 保存写入 ~/.grok/config.toml，agent 的 config watcher 热加载后
+ * 出现在模型列表（无需重启）。
  */
 
 const EFFORT_LEVELS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 const API_BACKENDS = ['chat_completions', 'responses', 'messages'] as const
 
 type BoolishMode = 'unset' | 'true' | 'false' | 'fixed'
+
+/** 高级折叠区包含的字段（其余字段为常用字段，直接展示）。 */
+const ADVANCED_KEYS: (keyof CustomModelConfig)[] = [
+  'agent_type', 'system_prompt_label', 'description',
+  'env_key', 'auth_provider', 'model_provider', 'api_base_url',
+  'extra_headers', 'env_http_headers', 'query_params',
+  'temperature', 'top_p', 'max_completion_tokens', 'max_retries',
+  'inference_idle_timeout_secs', 'stream_tool_calls',
+  'reasoning_effort', 'supports_reasoning_effort',
+  'hidden', 'supported_in_api', 'use_concise', 'supports_backend_search',
+  'show_model_fingerprint', 'auto_compact_threshold_percent',
+  'compactions_remaining', 'compaction_at_tokens',
+]
+
+/** 字段是否“已设置”（非 undefined / 空串 / 空数组 / 空对象）。 */
+const isSet = (v: unknown): boolean => {
+  if (v === undefined || v === null || v === '') return false
+  if (Array.isArray(v)) return v.length > 0
+  if (typeof v === 'object') return Object.keys(v as object).length > 0
+  return true
+}
 
 export function CustomModelsPanel() {
   const pushToast = useChatStore((s) => s.pushToast)
@@ -194,6 +219,11 @@ function ModelForm({
   onSave: (cfg: CustomModelConfig) => void
 }) {
   const [d, setD] = useState<CustomModelConfig>(initial)
+  // 高级区默认收起；编辑已含高级字段的模型时自动展开，避免"看不见已配置项"。
+  const [advancedOpen, setAdvancedOpen] = useState(() =>
+    ADVANCED_KEYS.some((k) => isSet(initial[k])),
+  )
+  const advancedCount = ADVANCED_KEYS.filter((k) => isSet(d[k])).length
   const isNew = !initial.id
   // 相同 id 只能配置一个（grok 目录按 key 合并，重复 id 后者覆盖前者）；
   // 相同 routing slug 也只能配置一个（默认模型按 slug 匹配取第一个）。
@@ -214,6 +244,7 @@ function ModelForm({
 
   return (
     <div className="border-t border-gn-prompt-border/40 px-4 py-2">
+      {/* 常用字段 —— 对齐实际配置里最常见的用法；其余进「高级设置」。 */}
       <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
         <Field label="id（配置节键，必填）">
           <input
@@ -248,14 +279,6 @@ function ModelForm({
             placeholder="My Model"
           />
         </Field>
-        <Field label="agent_type（系统提示身份）">
-          <input
-            className={inputCls}
-            value={d.agent_type ?? ''}
-            onChange={(e) => set('agent_type', e.target.value)}
-            placeholder="grok-build"
-          />
-        </Field>
         <Field label="api_backend">
           <select
             className={inputCls}
@@ -270,33 +293,6 @@ function ModelForm({
             ))}
           </select>
         </Field>
-        <Field label="context_window（token）">
-          <input
-            className={inputCls}
-            type="number"
-            value={d.context_window ?? ''}
-            onChange={num('context_window')}
-            placeholder="200000"
-          />
-        </Field>
-        <Field label="system_prompt_label">
-          <input
-            className={inputCls}
-            value={d.system_prompt_label ?? ''}
-            onChange={(e) => set('system_prompt_label', e.target.value)}
-          />
-        </Field>
-        <Field label="description" wide>
-          <input
-            className={inputCls}
-            value={d.description ?? ''}
-            onChange={(e) => set('description', e.target.value)}
-          />
-        </Field>
-      </div>
-
-      <div className="mt-2 text-[10px] uppercase tracking-wider text-gn-gutter">鉴权</div>
-      <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
         <Field label="api_key">
           <input
             className={inputCls}
@@ -306,116 +302,15 @@ function ModelForm({
             placeholder="sk-…"
           />
         </Field>
-        <Field label="env_key（逗号分隔可多个）">
-          <input
-            className={inputCls}
-            value={Array.isArray(d.env_key) ? d.env_key.join(', ') : (d.env_key ?? '')}
-            onChange={(e) => {
-              const parts = e.target.value
-                .split(',')
-                .map((s) => s.trim())
-                .filter(Boolean)
-              set('env_key', parts.length > 1 ? parts : (parts[0] ?? undefined))
-            }}
-            placeholder="MY_API_KEY"
-          />
-        </Field>
-        <Field label="auth_provider">
-          <input
-            className={inputCls}
-            value={d.auth_provider ?? ''}
-            onChange={(e) => set('auth_provider', e.target.value)}
-          />
-        </Field>
-        <Field label="model_provider">
-          <input
-            className={inputCls}
-            value={d.model_provider ?? ''}
-            onChange={(e) => set('model_provider', e.target.value)}
-          />
-        </Field>
-        <Field label="api_base_url" wide>
-          <input
-            className={inputCls}
-            value={d.api_base_url ?? ''}
-            onChange={(e) => set('api_base_url', e.target.value)}
-          />
-        </Field>
-        <Field label="extra_headers" wide>
-          <KVEditor value={d.extra_headers} onChange={(v) => set('extra_headers', v)} />
-        </Field>
-        <Field label="env_http_headers" wide>
-          <KVEditor value={d.env_http_headers} onChange={(v) => set('env_http_headers', v)} />
-        </Field>
-        <Field label="query_params" wide>
-          <KVEditor value={d.query_params} onChange={(v) => set('query_params', v)} />
-        </Field>
-      </div>
-
-      <div className="mt-2 text-[10px] uppercase tracking-wider text-gn-gutter">采样参数</div>
-      <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
-        <Field label="temperature">
+        <Field label="context_window（token）">
           <input
             className={inputCls}
             type="number"
-            step="0.1"
-            value={d.temperature ?? ''}
-            onChange={num('temperature')}
+            value={d.context_window ?? ''}
+            onChange={num('context_window')}
+            placeholder="200000"
           />
         </Field>
-        <Field label="top_p">
-          <input
-            className={inputCls}
-            type="number"
-            step="0.1"
-            value={d.top_p ?? ''}
-            onChange={num('top_p')}
-          />
-        </Field>
-        <Field label="max_completion_tokens">
-          <input
-            className={inputCls}
-            type="number"
-            value={d.max_completion_tokens ?? ''}
-            onChange={num('max_completion_tokens')}
-          />
-        </Field>
-        <Field label="max_retries">
-          <input
-            className={inputCls}
-            type="number"
-            value={d.max_retries ?? ''}
-            onChange={num('max_retries')}
-          />
-        </Field>
-        <Field label="inference_idle_timeout_secs">
-          <input
-            className={inputCls}
-            type="number"
-            value={d.inference_idle_timeout_secs ?? ''}
-            onChange={num('inference_idle_timeout_secs')}
-          />
-        </Field>
-        <BoolField label="stream_tool_calls" value={d.stream_tool_calls} onChange={(v) => set('stream_tool_calls', v)} />
-      </div>
-
-      <div className="mt-2 text-[10px] uppercase tracking-wider text-gn-gutter">推理档位</div>
-      <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
-        <Field label="reasoning_effort（默认档）">
-          <select
-            className={inputCls}
-            value={d.reasoning_effort ?? ''}
-            onChange={(e) => set('reasoning_effort', e.target.value || undefined)}
-          >
-            <option value="">（未设置）</option>
-            {EFFORT_LEVELS.map((l) => (
-              <option key={l} value={l}>
-                {l}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <BoolField label="supports_reasoning_effort" value={d.supports_reasoning_effort} onChange={(v) => set('supports_reasoning_effort', v)} />
         <Field label="reasoning_efforts（档位菜单）" wide>
           <EffortListEditor
             value={d.reasoning_efforts}
@@ -424,35 +319,195 @@ function ModelForm({
         </Field>
       </div>
 
-      <div className="mt-2 text-[10px] uppercase tracking-wider text-gn-gutter">目录与显示</div>
-      <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
-        <BoolField label="hidden" value={d.hidden} onChange={(v) => set('hidden', v)} />
-        <BoolField label="supported_in_api" value={d.supported_in_api} onChange={(v) => set('supported_in_api', v)} />
-        <BoolField label="use_concise" value={d.use_concise} onChange={(v) => set('use_concise', v)} />
-        <BoolField label="supports_backend_search" value={d.supports_backend_search} onChange={(v) => set('supports_backend_search', v)} />
-        <BoolField label="show_model_fingerprint" value={d.show_model_fingerprint} onChange={(v) => set('show_model_fingerprint', v)} />
-        <Field label="auto_compact_threshold_percent">
-          <input
-            className={inputCls}
-            type="number"
-            min={0}
-            max={100}
-            value={d.auto_compact_threshold_percent ?? ''}
-            onChange={num('auto_compact_threshold_percent')}
-          />
-        </Field>
-        <Field label="compactions_remaining">
-          <BoolishSelect
-            value={d.compactions_remaining}
-            onChange={(v) => set('compactions_remaining', v)}
-          />
-        </Field>
-        <Field label="compaction_at_tokens">
-          <BoolishSelect
-            value={d.compaction_at_tokens}
-            onChange={(v) => set('compaction_at_tokens', v)}
-          />
-        </Field>
+      {/* 高级设置 —— 折叠区（其余全部字段）；编辑已含高级字段的模型时自动展开。 */}
+      <div className="mt-2 border-t border-gn-prompt-border/40">
+        <button
+          type="button"
+          onClick={() => setAdvancedOpen((o) => !o)}
+          className="mt-1 flex w-full cursor-pointer items-center gap-1.5 rounded px-1 py-1 text-left text-[10px] uppercase tracking-wider text-gn-gutter hover:bg-gn-bg-highlight hover:text-gn-fg"
+        >
+          <IconGlyph glyph={advancedOpen ? Glyphs.chevronDown : Glyphs.chevron} />
+          <span>高级设置</span>
+          {advancedCount > 0 && (
+            <span className="rounded bg-gn-bg-highlight px-1 py-px text-[9px] normal-case tracking-normal text-gn-fg2">
+              {advancedCount} 项已设置
+            </span>
+          )}
+        </button>
+        {advancedOpen && (
+          <>
+            <div className="mt-1 text-[10px] uppercase tracking-wider text-gn-gutter">元信息</div>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+              <Field label="agent_type（系统提示身份）">
+                <input
+                  className={inputCls}
+                  value={d.agent_type ?? ''}
+                  onChange={(e) => set('agent_type', e.target.value)}
+                  placeholder="grok-build"
+                />
+              </Field>
+              <Field label="system_prompt_label">
+                <input
+                  className={inputCls}
+                  value={d.system_prompt_label ?? ''}
+                  onChange={(e) => set('system_prompt_label', e.target.value)}
+                />
+              </Field>
+              <Field label="description" wide>
+                <input
+                  className={inputCls}
+                  value={d.description ?? ''}
+                  onChange={(e) => set('description', e.target.value)}
+                />
+              </Field>
+            </div>
+
+            <div className="mt-2 text-[10px] uppercase tracking-wider text-gn-gutter">鉴权</div>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+              <Field label="env_key（逗号分隔可多个）">
+                <input
+                  className={inputCls}
+                  value={Array.isArray(d.env_key) ? d.env_key.join(', ') : (d.env_key ?? '')}
+                  onChange={(e) => {
+                    const parts = e.target.value
+                      .split(',')
+                      .map((s) => s.trim())
+                      .filter(Boolean)
+                    set('env_key', parts.length > 1 ? parts : (parts[0] ?? undefined))
+                  }}
+                  placeholder="MY_API_KEY"
+                />
+              </Field>
+              <Field label="auth_provider">
+                <input
+                  className={inputCls}
+                  value={d.auth_provider ?? ''}
+                  onChange={(e) => set('auth_provider', e.target.value)}
+                />
+              </Field>
+              <Field label="model_provider">
+                <input
+                  className={inputCls}
+                  value={d.model_provider ?? ''}
+                  onChange={(e) => set('model_provider', e.target.value)}
+                />
+              </Field>
+              <Field label="api_base_url" wide>
+                <input
+                  className={inputCls}
+                  value={d.api_base_url ?? ''}
+                  onChange={(e) => set('api_base_url', e.target.value)}
+                />
+              </Field>
+              <Field label="extra_headers" wide>
+                <KVEditor value={d.extra_headers} onChange={(v) => set('extra_headers', v)} />
+              </Field>
+              <Field label="env_http_headers" wide>
+                <KVEditor value={d.env_http_headers} onChange={(v) => set('env_http_headers', v)} />
+              </Field>
+              <Field label="query_params" wide>
+                <KVEditor value={d.query_params} onChange={(v) => set('query_params', v)} />
+              </Field>
+            </div>
+
+            <div className="mt-2 text-[10px] uppercase tracking-wider text-gn-gutter">采样参数</div>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+              <Field label="temperature">
+                <input
+                  className={inputCls}
+                  type="number"
+                  step="0.1"
+                  value={d.temperature ?? ''}
+                  onChange={num('temperature')}
+                />
+              </Field>
+              <Field label="top_p">
+                <input
+                  className={inputCls}
+                  type="number"
+                  step="0.1"
+                  value={d.top_p ?? ''}
+                  onChange={num('top_p')}
+                />
+              </Field>
+              <Field label="max_completion_tokens">
+                <input
+                  className={inputCls}
+                  type="number"
+                  value={d.max_completion_tokens ?? ''}
+                  onChange={num('max_completion_tokens')}
+                />
+              </Field>
+              <Field label="max_retries">
+                <input
+                  className={inputCls}
+                  type="number"
+                  value={d.max_retries ?? ''}
+                  onChange={num('max_retries')}
+                />
+              </Field>
+              <Field label="inference_idle_timeout_secs">
+                <input
+                  className={inputCls}
+                  type="number"
+                  value={d.inference_idle_timeout_secs ?? ''}
+                  onChange={num('inference_idle_timeout_secs')}
+                />
+              </Field>
+              <BoolField label="stream_tool_calls" value={d.stream_tool_calls} onChange={(v) => set('stream_tool_calls', v)} />
+            </div>
+
+            <div className="mt-2 text-[10px] uppercase tracking-wider text-gn-gutter">推理档位</div>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+              <Field label="reasoning_effort（默认档）">
+                <select
+                  className={inputCls}
+                  value={d.reasoning_effort ?? ''}
+                  onChange={(e) => set('reasoning_effort', e.target.value || undefined)}
+                >
+                  <option value="">（未设置）</option>
+                  {EFFORT_LEVELS.map((l) => (
+                    <option key={l} value={l}>
+                      {l}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <BoolField label="supports_reasoning_effort" value={d.supports_reasoning_effort} onChange={(v) => set('supports_reasoning_effort', v)} />
+            </div>
+
+            <div className="mt-2 text-[10px] uppercase tracking-wider text-gn-gutter">目录与显示</div>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+              <BoolField label="hidden" value={d.hidden} onChange={(v) => set('hidden', v)} />
+              <BoolField label="supported_in_api" value={d.supported_in_api} onChange={(v) => set('supported_in_api', v)} />
+              <BoolField label="use_concise" value={d.use_concise} onChange={(v) => set('use_concise', v)} />
+              <BoolField label="supports_backend_search" value={d.supports_backend_search} onChange={(v) => set('supports_backend_search', v)} />
+              <BoolField label="show_model_fingerprint" value={d.show_model_fingerprint} onChange={(v) => set('show_model_fingerprint', v)} />
+              <Field label="auto_compact_threshold_percent">
+                <input
+                  className={inputCls}
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={d.auto_compact_threshold_percent ?? ''}
+                  onChange={num('auto_compact_threshold_percent')}
+                />
+              </Field>
+              <Field label="compactions_remaining">
+                <BoolishSelect
+                  value={d.compactions_remaining}
+                  onChange={(v) => set('compactions_remaining', v)}
+                />
+              </Field>
+              <Field label="compaction_at_tokens">
+                <BoolishSelect
+                  value={d.compaction_at_tokens}
+                  onChange={(v) => set('compaction_at_tokens', v)}
+                />
+              </Field>
+            </div>
+          </>
+        )}
       </div>
 
       <div className="mt-3 flex items-center gap-2">

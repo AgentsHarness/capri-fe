@@ -33,7 +33,8 @@ export function SessionInfoModal() {
     setLoading(true)
     setError(undefined)
     try {
-      const info = await transport.sessionInfo()
+      // 锁定打开弹窗时的会话（缺省 = host active，多 tab 下可能漂移）。
+      const info = await transport.sessionInfo(useChatStore.getState().sessionId)
       // A newer open superseded this one (or the modal closed mid-flight).
       if (seq === reqSeq.current) setData(info)
     } catch (e) {

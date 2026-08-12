@@ -13,7 +13,7 @@ import {
   sessionGroupKey,
   sessionSubtitle,
 } from './historyGroups'
-import { Glyphs } from '../theme/glyphs'
+import { Glyphs, SPINNER_FRAMES } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
 import { SessionStateIcon } from './SessionStateIcon'
 import { stateLabel, useSessionSpinner } from './sessionState'
@@ -58,7 +58,7 @@ type MergedGroup = {
   sessions: MergedRow[]
 }
 
-/** 组内排序：updatedAt 降序，无 updatedAt 排最后。 */
+/** 组内排序最终 tiebreak：updatedAt 降序，无 updatedAt 排最后。 */
 function byUpdatedDesc(a: WorkspaceSummary, b: WorkspaceSummary): number {
   if (!a.updatedAt && !b.updatedAt) return a.sessionId.localeCompare(b.sessionId)
   if (!a.updatedAt) return 1
@@ -117,8 +117,14 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
     }
     const merged: MergedGroup[] = workspaces.map((g) => ({
       ...g,
-      // 置顶的会话排在本工作区最前（内部仍按 updatedAt 降序）。
-      sessions: sortSessionsWithPins(g.sessions.map(toRow), pinnedSessions, byUpdatedDesc),
+      // 组内排序：置顶的会话永远最前，其余按状态优先级（待处理 → 对勾 →
+      // 运行中+后台 → 运行中 → 后台运行 → 空闲），同状态再按 updatedAt 降序。
+      sessions: sortSessionsWithPins(
+        g.sessions.map(toRow),
+        pinnedSessions,
+        completedNotices,
+        byUpdatedDesc,
+      ),
     }))
     // 兜底：当前会话的 cwd 不在 workspace-list 里时，用 live sessions
     // 中该 cwd 的会话补一个组（groupWorkspaces 会把它 pin 到最前）。
@@ -137,7 +143,12 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
         merged.push({
           cwd,
           label: repoNameFromCwd(cwd),
-          sessions: sortSessionsWithPins(rows, pinnedSessions, byUpdatedDesc),
+          sessions: sortSessionsWithPins(
+            rows,
+            pinnedSessions,
+            completedNotices,
+            byUpdatedDesc,
+          ),
         })
       }
     }
@@ -259,17 +270,31 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
     )
   }
   // Esc closes the menu; scrolling the list while the menu floats over a
-  // row would strand it on the wrong row, so any scroll dismisses it too.
+  // row would strand it on the wrong row, so the list scrolling dismisses
+  // it too. Scoped to the LIST only: the main scrollback auto-scrolls
+  // during streaming output (scrollTop writes as content grows), and that
+  // must not close the menu — the scroll container is an ancestor of the
+  // list root, inner scrollables are descendants; anything else is ignored.
+  const listRootRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!menu) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') closeMenu()
     }
+    const onScroll = (e: Event) => {
+      const list = listRootRef.current
+      if (list && e.target instanceof Node) {
+        const t = e.target
+        const related = t === list || list.contains(t) || t.contains(list)
+        if (!related) return
+      }
+      closeMenu()
+    }
     window.addEventListener('keydown', onKey)
-    window.addEventListener('scroll', closeMenu, true)
+    window.addEventListener('scroll', onScroll, true)
     return () => {
       window.removeEventListener('keydown', onKey)
-      window.removeEventListener('scroll', closeMenu, true)
+      window.removeEventListener('scroll', onScroll, true)
     }
   }, [menu])
   // Esc also closes the delete-confirm dialog.
@@ -296,10 +321,13 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
       ),
     [groups, sessionId],
   )
-  const spinnerFrame = useSessionSpinner(anyActive)
+  // 列表为空且正在拉取：中央显示与 scrollback 一致的加载态（旧数据仍在
+  // 时列表保留，加载由左上角"会话"旁的字符动画表达，见 HistorySidebar）。
+  const centeredLoading = groups.length === 0 && workspaceLoading
+  const spinnerFrame = useSessionSpinner(anyActive || centeredLoading)
 
   return (
-    <>
+    <div ref={listRootRef} className="relative min-h-full">
       {groups.length === 0 && !workspaceLoading && (
         <div className="px-3 py-2 text-[11px] text-gn-muted">没有历史会话</div>
       )}
@@ -396,7 +424,7 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
                         }
                       }}
                       className={`group flex w-full cursor-pointer select-none items-center gap-2 px-3 py-2 text-left hover:bg-gn-bg-highlight ${active ? 'bg-gn-bg-highlight' : ''}`}
-                      title={`${s.title || s.sessionId.slice(0, 12)} · ${stateLabel(key)}${s.cwd ? ` · ${s.cwd}` : ''}`}
+                      title={`${s.title || 'New Chat'} · ${stateLabel(key)}${s.cwd ? ` · ${s.cwd}` : ''}`}
                     >
                       {completedNotices[s.sessionId] != null ? (
                         // 完成提醒替换状态图标：✓ 取代菱形/spinner
@@ -450,30 +478,10 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
                               </span>
                             )}
                             <span
-                              className={`block min-w-0 flex-1 truncate text-[12px] ${active ? 'text-gn-cyan' : 'text-gn-fg'}`}
-                              onDoubleClick={(e) => {
-                                e.stopPropagation()
-                                // Wire rename targets only the current session.
-                                if (active && !historyLoading) startRename(s)
-                              }}
-                              title={active ? '双击重命名（Enter 保存，Esc 取消）' : undefined}
+                              className={`block min-w-0 flex-1 truncate text-[12px] ${s.title ? (active ? 'text-gn-cyan' : 'text-gn-fg') : 'text-gn-muted'}`}
                             >
-                              {s.title || s.sessionId.slice(0, 12)}
+                              {s.title || 'New Chat'}
                             </span>
-                            {active && (
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  startRename(s)
-                                }}
-                                className="shrink-0 rounded px-0.5 text-[10px] leading-none text-gn-gutter opacity-0 hover:text-gn-cyan group-hover:opacity-100"
-                                title="重命名当前会话（Enter 保存，Esc 取消）"
-                                aria-label="重命名当前会话"
-                              >
-                                ✎
-                              </button>
-                            )}
                           </span>
                         )}
                         <span
@@ -490,6 +498,14 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
                           title={`该会话有 ${s.bgRunning} 个仍在运行的后台任务（历史共 ${s.bgCount ?? 0} 个）`}
                         >
                           bg
+                        </span>
+                      )}
+                      {!s.title && (
+                        <span
+                          className="shrink-0 font-mono text-[10px] leading-none text-gn-muted"
+                          title={`会话 ID 前缀：${s.sessionId}`}
+                        >
+                          {s.sessionId.slice(0, 12)}
                         </span>
                       )}
                       {active && (
@@ -557,8 +573,16 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
           </div>
         )
       })}
-      {workspaceLoading && (
-        <div className="px-3 py-2 text-[11px] text-gn-muted">加载中…</div>
+      {/* 空列表 + 拉取中：中央显示与 scrollback 加载态一致的提示
+          （braille 字符动画 + "加载会话…"）。旧数据非空时不覆盖列表，
+          加载由 HistorySidebar 头部"会话"旁的字符动画表达。 */}
+      {centeredLoading && (
+        <div className="pointer-events-none absolute inset-0 z-10 flex min-h-[220px] items-center justify-center gap-2 select-none">
+          <span className="text-[15px] leading-none text-gn-muted">
+            {SPINNER_FRAMES[spinnerFrame]}
+          </span>
+          <span className="text-[12.5px] text-gn-muted">加载会话…</span>
+        </div>
       )}
 
       {/* ── row action menu (portaled; desktop right-click / mobile ⋮) ── */}
@@ -717,7 +741,7 @@ export function SessionHistoryList() {  const sessions = useChatStore((s) => s.s
           </div>,
           document.body,
         )}
-    </>
+    </div>
   )
 }
 
