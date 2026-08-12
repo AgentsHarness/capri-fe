@@ -45,6 +45,7 @@ import { Markdown } from './Markdown'
 import { ToolDetail } from './ToolDetail'
 import { Ansi } from './Ansi'
 import { extractToolDetail } from '../scrollback/toolDetail'
+import { uiBool } from '../store/settings'
 import { mergeLiveText } from '../scrollback/liveText'
 
 /**
@@ -58,6 +59,7 @@ function toolHeaderExtra(
   raw: import('../api/types').ToolCall,
   kindName: string | undefined,
   failed: boolean,
+  mergedRaws?: import('../api/types').ToolCall[],
 ): { target: string; suffix?: string } | null {
   try {
     const d = extractToolDetail(raw, kindName)
@@ -82,9 +84,19 @@ function toolHeaderExtra(
           suffix: d.error && failed ? ` (${d.error})` : undefined,
         }
       case 'edit': {
+        // Merged same-file edits (collapsed_edit_blocks): sum the stats.
+        let ins = d.insertions
+        let del = d.deletions
+        for (const r of mergedRaws ?? []) {
+          const x = extractToolDetail(r, kindName)
+          if (x.kind === 'edit') {
+            ins += x.insertions
+            del += x.deletions
+          }
+        }
         const parts: string[] = []
-        if (d.insertions || d.deletions) {
-          parts.push(`+${d.insertions}/−${d.deletions}`)
+        if (ins || del) {
+          parts.push(`+${ins}/−${del}`)
         }
         return {
           target: d.path,
@@ -166,17 +178,6 @@ const THOUGHT_TRUNCATED_TAIL_LINES = 3
 const TOP_PAGE_COOLDOWN_MS = 400
 /** Touch swipe distance (px) that counts as a scroll-up gesture. */
 const TOUCH_UP_SWIPE_PX = 8
-
-/**
- * Scrollback render window: entries beyond this many are not mounted
- * (DOM bound — long live sessions and large history loads would otherwise
- * grow the list unboundedly). Older entries stay in the store; scrolling
- * up expands the window one page at a time (and host history paging when
- * the local window is fully expanded). Applies in both live and history
- * modes.
- */
-const MAX_RENDER_ENTRIES = 100
-
 /**
  * ThinkingBlock truncated preview (TUI render_truncated): the first
  * THOUGHT_TRUNCATED_HEAD_LINES lines, "…", then the last
@@ -1079,7 +1080,7 @@ export const EntryView = memo(function EntryView({
 
     // TUI header suffixes: range / match count / entry count / exit etc.
     const headerExtra = e.raw
-      ? toolHeaderExtra(e.raw, e.kindName, failed)
+      ? toolHeaderExtra(e.raw, e.kindName, failed, e.mergedRaws)
       : null
 
     return (
@@ -1140,7 +1141,12 @@ export const EntryView = memo(function EntryView({
             }}
             title="double-click or enter for full view"
           >
-            <ToolDetail raw={e.raw} kindName={e.kindName} full={false} />
+            <ToolDetail
+              raw={e.raw}
+              kindName={e.kindName}
+              full={false}
+              mergedRaws={e.mergedRaws}
+            />
           </div>
         ) : null}
       </EntryShell>
@@ -1530,10 +1536,10 @@ const AGENTS_ART = buildBlock([
   '       |___/                     ',
 ])
 const HERNESS_ART = buildBlock([
-  '  /\\  /\\___ _ __ _ __   ___  ___ ___ ',
-  ' / /_/ / _ \\ \'__| \'_ \\ / _ \\/ __/ __|',
-  '/ __  /  __/ |  | | | |  __/\\__ \\__ \\',
-  '\\/ /_/ \\___|_|  |_| |_|\\___||___/___/',
+  '  /\\  /\\__ _ _ __ _ __   ___  ___ ___ ',
+  ' / /_/ / _` | \'__| \'_ \\ / _ \\/ __/ __|',
+  '/ __  / (_| | |  | | | |  __/\\__ \\__ \\',
+  '\\/ /_/ \\__,_|_|  |_| |_|\\___||___/___/',
   '                                     ',
 ])
 
@@ -1633,6 +1639,113 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
   // how small the distance — a sub-80px scroll must not keep following)
   // from "scrolled to the bottom" (re-follow).
   const lastScrollTopRef = useRef(0)
+  /**
+   * Prepend / 扩窗前的滚动快照。先 height-delta 稳住视口，再按新一轮
+   * 是否装得进视口决定要不要对齐到新 user（见 settleFitOrKeep）。
+   */
+  const scrollSnapshotRef = useRef<{
+    scrollHeight: number
+    scrollTop: number
+  } | null>(null)
+  // Workspace bar 高度：ref 须在 align/settle 回调之前声明（避免 TDZ）。
+  // state 仍用于 sticky top 样式；量高优先读 DOM。
+  const [wsBarH, setWsBarH] = useState(37)
+  const wsBarElRef = useRef<HTMLDivElement | null>(null)
+  const wsBarRoRef = useRef<ResizeObserver | null>(null)
+  /** 拍摄 prepend 前快照，并关掉 stick-to-bottom（避免 pinStreamScroll /
+   *  ResizeObserver 在 entries 增长后把视口拽回底部）。 */
+  const captureScrollSnapshot = useCallback(() => {
+    const box = boxRef.current
+    if (!box) return
+    followRef.current = false
+    scrollSnapshotRef.current = {
+      scrollHeight: box.scrollHeight,
+      scrollTop: box.scrollTop,
+    }
+  }, [])
+  /** 把条目顶对齐到 workspace bar 下沿（阅读起点）。 */
+  const alignEntryUnderBar = useCallback((box: HTMLElement, el: HTMLElement) => {
+    const boxTop = box.getBoundingClientRect().top
+    const barH = wsBarElRef.current?.getBoundingClientRect().height ?? 0
+    box.scrollTop += el.getBoundingClientRect().top - boxTop - barH
+    lastScrollTopRef.current = box.scrollTop
+  }, [])
+  /**
+   * 扩窗后待处理的「新一轮」user。anchorId = 旧内容起点（新一轮终点），
+   * 用于量高判断是否装进视口。
+   */
+  const pendingRevealRef = useRef<{
+    targetId: string
+    anchorId?: string | null
+  } | null>(null)
+  /**
+   * height-delta 保持视口（新内容在上方时不跳）。快照缺失时尝试
+   * anchor 顶对齐。
+   */
+  const restoreScrollAfterPrepend = useCallback((anchorId?: string | null) => {
+    const box = boxRef.current
+    if (!box) return false
+    followRef.current = false
+    const snap = scrollSnapshotRef.current
+    scrollSnapshotRef.current = null
+    if (snap) {
+      box.scrollTop = snap.scrollTop + (box.scrollHeight - snap.scrollHeight)
+      lastScrollTopRef.current = box.scrollTop
+      return true
+    }
+    if (anchorId) {
+      const anchor = box.querySelector(`[data-entry-id="${anchorId}"]`)
+      if (anchor instanceof HTMLElement) {
+        const boxTop = box.getBoundingClientRect().top
+        box.scrollTop += anchor.getBoundingClientRect().top - boxTop
+        lastScrollTopRef.current = box.scrollTop
+        return true
+      }
+    }
+    return false
+  }, [])
+  /**
+   * 新一轮装进视口 → 顶对齐完整展示；超出视口 → 只 height-delta，不滚动不跳。
+   * 必须在目标 DOM 已挂载后调用。
+   */
+  const settleFitOrKeep = useCallback(
+    (
+      box: HTMLElement,
+      targetEl: HTMLElement,
+      anchorId?: string | null,
+    ): 'revealed' | 'kept' => {
+      followRef.current = false
+      // 先 height-delta 到「无跳跃」基线，再量高（量高依赖稳定后的布局）。
+      const snap = scrollSnapshotRef.current
+      scrollSnapshotRef.current = null
+      if (snap) {
+        box.scrollTop = snap.scrollTop + (box.scrollHeight - snap.scrollHeight)
+        lastScrollTopRef.current = box.scrollTop
+      }
+
+      const barH =
+        wsBarElRef.current?.getBoundingClientRect().height ?? wsBarH
+      const available = Math.max(0, box.clientHeight - barH)
+      const boxTop = box.getBoundingClientRect().top
+      const yOf = (el: HTMLElement) =>
+        el.getBoundingClientRect().top - boxTop + box.scrollTop
+      const startY = yOf(targetEl)
+      let endY = startY + targetEl.getBoundingClientRect().height
+      if (anchorId) {
+        const endEl = box.querySelector(`[data-entry-id="${anchorId}"]`)
+        if (endEl instanceof HTMLElement) endY = yOf(endEl)
+      }
+      const turnHeight = Math.max(0, endY - startY)
+      // 1px 容差：亚像素/边框不致误判为溢出。
+      if (turnHeight <= available + 1) {
+        alignEntryUnderBar(box, targetEl)
+        return 'revealed'
+      }
+      // 超出：保持 height-delta 后的位置，视口不跳。
+      return 'kept'
+    },
+    [alignEntryUnderBar, wsBarH],
+  )
   // ── Scroll-up paging gates (see maybeLoadOlderHistory) ──────────
   const topPageArmedRef = useRef(true)
   const topPageCooldownRef = useRef(0)
@@ -1640,15 +1753,12 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
   const touchStartYRef = useRef<number | null>(null)
   const touchYRef = useRef<number | null>(null)
   const [now, setNow] = useState(() => Date.now())
-  // ── Sticky workspace-bar height ────────────────────────────────
+  // ── Sticky workspace-bar height (state/ref declared above) ─────
   // The WorkspaceBar (sticky top-0 inside this scroll container) is 37px
   // when idle but grows when the tasks bar is open / rows wrap on mobile.
   // The pinned user-prompt header sticks at `top: wsBarH` so it always
   // lands flush below the bar (a hardcoded 37px left it sliding under the
   // taller bar, covered by its z-30 background).
-  const [wsBarH, setWsBarH] = useState(37)
-  const wsBarElRef = useRef<HTMLDivElement | null>(null)
-  const wsBarRoRef = useRef<ResizeObserver | null>(null)
   // Callback ref: attaches the observer on mount (and re-attaches if the
   // element is ever remounted), disconnects on unmount — no effect-timing
   // dependency.
@@ -1678,15 +1788,22 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
   // its starting opacity before the first frame, so the fade would
   // be skipped.
   const loadingVisible = historyLoading && entries.length === 0
+  // 加载失败：historyLoading 归 false 但未载入任何内容（continueSession
+  // / loadHistory 失败且 timeline 为空）→ 同一覆盖层从"加载会话…"转为
+  // "加载失败 + 原因"，点击列表中的会话行即重试（行保持选中态）。
+  const loadFailedVisible =
+    !historyLoading && historyLoadError != null && entries.length === 0
   const [spinnerFrame, setSpinnerFrame] = useState(0)
+  // Spin for initial session load overlay and for "加载上一轮…" on sticky.
+  const spinnerActive = loadingVisible || historyLoadingMore
   useEffect(() => {
-    if (!loadingVisible) return
+    if (!spinnerActive) return
     const t = window.setInterval(
       () => setSpinnerFrame((v) => (v + 1) % SPINNER_FRAMES.length),
       SPINNER_INTERVAL_MS,
     )
     return () => window.clearInterval(t)
-  }, [loadingVisible])
+  }, [spinnerActive])
   // Content fade-in after a history switch: the new entries render in
   // the same commit that bumps historyLoadedAt. A useLayoutEffect drops
   // the column to opacity 0 BEFORE the browser paints (full-opacity
@@ -1702,89 +1819,167 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
   }, [historyLoadedAt])
 
   // ── TUI sticky prompt header (scrollback/sticky.rs) ──────────────
-  // The last user prompt whose top has scrolled past the viewport top is
-  // pinned as a sticky header; it switches as you scroll. Tracked via
-  // scroll position against the user entries' container-space tops.
-  // Uses the render window (entries outside it have no DOM elements).
-  // ── Render window (live + history) ───────────────────────────────
-  // Bounded at MAX_RENDER_ENTRIES so large sessions / history pages keep
-  // the DOM flat (the store keeps every entry). Scrolling to the top grows
-  // the window one page at a time via maybeLoadOlderHistory; once the
-  // local window covers the store, host history paging continues.
+  // 钉选 = 最后一条 top < scrollTop 的挂载 user（y_virtual < scroll_offset）。
+  // 同 TUI compute_sticky_layout：scrollTop===0 不钉；完全划出后仍钉
+  // 该条（读它下面的 assistant），直到上一条 user 的 top 越过视口顶才切换。
+  // 切勿「完全划出 → 推进上一条」——会在长 assistant 中部把 sticky 钉错成
+  // 更早的 prompt，并在上滑时误触发 loadMoreHistory。
   //
-  // Floor: always keep the most recent user prompt mounted. loadHistory
-  // auto-pages until the store has a user (tool-stream tails often fill
-  // the newest page alone), and live turns can grow past 100 entries
-  // after a prompt — without this floor the user row sits outside
-  // renderEntries, sticky never finds a pin target, and resume looks
-  // like "paged in the prompt but no sticky header".
-  const [renderLimit, setRenderLimit] = useState(MAX_RENDER_ENTRIES)
-  // Anchor for the local-prepend scroll restore (mirrors historyPrependedAt).
+  // 首页只拉最后 1 轮；上滑到顶 / 按钮 loadMoreHistory 加载上一轮。
+  // DOM 全量挂载 entries（无渲染窗口上限）。
+  //
+  // Anchor for height-delta restore when host prepends tool-only pages.
   const [expandAnchorId, setExpandAnchorId] = useState<string | null>(null)
-  // New session / history switch → window back to the default cap.
-  // The last-user floor (below) still applies on the same commit.
   useEffect(() => {
-    setRenderLimit(MAX_RENDER_ENTRIES)
     setExpandAnchorId(null)
   }, [historyLoadedAt])
-  const lastUserRenderFloor = useMemo(() => {
-    let lastUserIdx = -1
-    for (let i = entries.length - 1; i >= 0; i--) {
-      if (entries[i].kind === 'user') {
-        lastUserIdx = i
-        break
+  const renderEntries = entries
+  /**
+   * 宿主加载上一轮：新内容 prepend 到 anchor 之前。
+   *
+   * - 目标 = prepend 段**第一条** user（新一轮开头；勿用 last-before-anchor）
+   * - 新一轮高度 ≤ 视口 → 顶对齐完整展示
+   * - 超出视口 → 只 height-delta，不滚动不跳
+   * - 纯工具续翻页（无 user）→ 只 height-delta
+   */
+  const revealPrependedTurn = useCallback(
+    (anchorId?: string | null): 'revealed' | 'pending' | 'kept' | 'noop' => {
+      const box = boxRef.current
+      if (!box) return 'noop'
+      followRef.current = false
+
+      // prepend 段 = entries[0, anchorIdx)；新一轮 user = 该段第一条 user。
+      let targetId: string | null = null
+      if (anchorId) {
+        const anchorIdx = entries.findIndex((e) => e.id === anchorId)
+        const end = anchorIdx >= 0 ? anchorIdx : entries.length
+        for (let i = 0; i < end; i++) {
+          if (entries[i].kind === 'user') {
+            targetId = entries[i].id
+            break
+          }
+        }
+        // 本页无 user（工具流续翻）：只 height-delta。
+        if (!targetId) {
+          restoreScrollAfterPrepend(anchorId)
+          pendingRevealRef.current = null
+          return 'kept'
+        }
+      } else {
+        for (let i = 0; i < entries.length; i++) {
+          if (entries[i].kind === 'user') {
+            targetId = entries[i].id
+            break
+          }
+        }
+        targetId = targetId ?? entries[0]?.id ?? null
       }
-    }
-    if (lastUserIdx < 0) return MAX_RENDER_ENTRIES
-    return Math.max(MAX_RENDER_ENTRIES, entries.length - lastUserIdx)
-  }, [entries])
-  const effectiveRenderLimit = Math.max(renderLimit, lastUserRenderFloor)
-  const renderEntries = useMemo(
-    () =>
-      entries.length <= effectiveRenderLimit
-        ? entries
-        : entries.slice(-effectiveRenderLimit),
-    [entries, effectiveRenderLimit],
+
+      if (!targetId) {
+        restoreScrollAfterPrepend(anchorId)
+        return 'kept'
+      }
+
+      const el = box.querySelector(`[data-entry-id="${targetId}"]`)
+      if (el instanceof HTMLElement) {
+        pendingRevealRef.current = null
+        return settleFitOrKeep(box, el, anchorId)
+      }
+      // DOM 未齐：保留 snap，下一帧再 settle。
+      pendingRevealRef.current = { targetId, anchorId }
+      return 'pending'
+    },
+    [entries, restoreScrollAfterPrepend, settleFitOrKeep],
   )
-  const truncatedCount = entries.length - renderEntries.length
   const userById = useMemo(() => {
     const m = new Map<string, ScrollEntry>()
     for (const e of renderEntries) if (e.kind === 'user') m.set(e.id, e)
     return m
   }, [renderEntries])
   const userEls = useRef<Map<string, HTMLElement>>(new Map())
-  const [pinnedId, setPinnedId] = useState<string | null>(null)
+  // 当前 sticky 钉选：entry 为渲染内容。
+  const [pinned, setPinned] = useState<{ entry: ScrollEntry; store: boolean } | null>(null)
 
   const updatePinned = useCallback(() => {
     const box = boxRef.current
     const els = userEls.current
     if (!box || els.size === 0) {
-      setPinnedId((prev) => (prev == null ? prev : null))
+      setPinned((prev) => (prev == null ? prev : null))
       return
     }
-    let pinned: string | null = null
-    // sticky.rs: pin the last prompt with y_virtual < scroll_offset; at the
-    // very top (scrollTop 0) nothing is pinned.
-    //
-    // The visual sticky is an out-of-flow overlay (zero-height sticky shell +
-    // absolute band) so mount/unmount never changes document height — an
-    // in-flow sticky clone used to shift every row, which raced ResizeObserver
-    // pin-bottom and flipped pin at the threshold (visible jitter).
-    if (box.scrollTop > 0) {
-      const boxTop = box.getBoundingClientRect().top
-      for (const [id, el] of els) {
-        // Entry top in the container's coordinate space (scroll-independent).
-        const top = el.getBoundingClientRect().top - boxTop + box.scrollTop
-        if (top < box.scrollTop) pinned = id
-        else break // entries are in document order
-      }
+    // TUI: scroll_offset == 0 → no pin.
+    const scrollTop = box.scrollTop
+    if (scrollTop <= 0) {
+      setPinned((prev) => (prev == null ? prev : null))
+      return
     }
-    setPinnedId((prev) => (prev === pinned ? prev : pinned))
-  }, [])
+    const boxTop = box.getBoundingClientRect().top
+    // Last user with y_virtual < scroll_offset (document order).
+    let pinnedId: string | null = null
+    for (const [id, el] of els) {
+      const top = el.getBoundingClientRect().top - boxTop + scrollTop
+      if (top < scrollTop) pinnedId = id
+      else break
+    }
+    const entry = pinnedId != null ? userById.get(pinnedId) : undefined
+    const next = entry != null ? { entry, store: false as const } : null
+    setPinned((prev) =>
+      prev?.entry?.id === next?.entry?.id && prev?.store === next?.store ? prev : next,
+    )
+  }, [userById])
 
   // Cache user entry elements (rebuilt on entry changes; positions shift on
   // history prepend / expand-collapse / resize, so recompute the pin then).
-  useEffect(() => {
+  // useLayoutEffect: settle scroll FIRST so pin measurement sees the final
+  // viewport.
+  //
+  // Host path (historyPrependedAt): 扩窗 + fit-or-keep（短轮展示 / 长轮不跳）。
+  // Local path (expandAnchorId): 强制 height-delta（本地溢出分支）。
+  // pendingRevealRef: 扩窗后 DOM 齐了再 settleFitOrKeep。
+  // historyLoadedAt: 贴底后立刻量钉选（与 scroll 同帧，避免 rAF 读到旧 scrollTop）。
+  const handledPrependedAtRef = useRef(0)
+  const handledLoadedAtRef = useRef(0)
+  useLayoutEffect(() => {
+    let settled = false
+    if (
+      historyPrependedAt &&
+      handledPrependedAtRef.current !== historyPrependedAt
+    ) {
+      handledPrependedAtRef.current = historyPrependedAt
+      settled = true
+      revealPrependedTurn(historyAnchorId)
+    } else if (expandAnchorId) {
+      settled = true
+      restoreScrollAfterPrepend(expandAnchorId)
+      setExpandAnchorId(null)
+    } else if (pendingRevealRef.current) {
+      const box = boxRef.current
+      const pending = pendingRevealRef.current
+      const el = box?.querySelector(`[data-entry-id="${pending.targetId}"]`)
+      if (box && el instanceof HTMLElement) {
+        pendingRevealRef.current = null
+        settleFitOrKeep(box, el, pending.anchorId)
+        settled = true
+      }
+    }
+    // Session/history switch: pin to bottom BEFORE measuring sticky so the
+    // first paint already has the correct pin (long last-turn markdown).
+    if (historyLoadedAt && handledLoadedAtRef.current !== historyLoadedAt) {
+      handledLoadedAtRef.current = historyLoadedAt
+      followRef.current = true
+      const box = boxRef.current
+      if (box) {
+        box.scrollTop = box.scrollHeight
+        lastScrollTopRef.current = box.scrollTop
+      }
+    }
+    if (settled) {
+      // Gate paging before updatePinned: reveal lands near the top and
+      // would otherwise immediately re-fire maybeLoadOlderHistory.
+      const coolUntil = Date.now() + TOP_PAGE_COOLDOWN_MS
+      topPageCooldownRef.current = coolUntil
+      topPageArmedRef.current = false
+    }
     const box = boxRef.current
     const map = new Map<string, HTMLElement>()
     if (box) {
@@ -1795,7 +1990,18 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
     }
     userEls.current = map
     updatePinned()
-  }, [userById, updatePinned, historyPrependedAt])
+  }, [
+    userById,
+    updatePinned,
+    historyPrependedAt,
+    historyAnchorId,
+    historyLoadedAt,
+    expandAnchorId,
+    restoreScrollAfterPrepend,
+    revealPrependedTurn,
+    settleFitOrKeep,
+    alignEntryUnderBar,
+  ])
 
   useEffect(() => {
     const onResize = () => updatePinned()
@@ -1821,7 +2027,54 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
     [],
   )
 
-  const pinnedUser = pinnedId ? (userById.get(pinnedId) ?? null) : null
+  // store 为 true：未挂载，文案来自 store（工具空隙回退）；false：已挂载行。
+  const pinnedUser = pinned?.entry ?? null
+  const pinnedStore = pinned?.store ?? false
+
+  /**
+   * 点击 sticky 钉住的 user：滚到该条消息开头（顶对齐 workspace bar 下沿），
+   * 从这条 prompt 起重新阅读。未挂载时先扩 render 窗口再滚。
+   */
+  const [scrollToEntryId, setScrollToEntryId] = useState<string | null>(null)
+  const jumpToUserEntry = useCallback(
+    (id: string) => {
+      const box = boxRef.current
+      if (!box) return
+      followRef.current = false
+      const align = (el: HTMLElement) => {
+        const boxTop = box.getBoundingClientRect().top
+        const barH =
+          wsBarElRef.current?.getBoundingClientRect().height ?? wsBarH
+        box.scrollTop +=
+          el.getBoundingClientRect().top - boxTop - barH
+        lastScrollTopRef.current = box.scrollTop
+      }
+      const el = box.querySelector(`[data-entry-id="${id}"]`)
+      if (el instanceof HTMLElement) {
+        align(el)
+        scheduleUpdatePinned()
+        return
+      }
+      // 全量 DOM 后仍找不到则等下一帧（刚 prepend 的极短窗口）。
+      setScrollToEntryId(id)
+    },
+    [wsBarH, scheduleUpdatePinned],
+  )
+  useLayoutEffect(() => {
+    if (!scrollToEntryId) return
+    const box = boxRef.current
+    const el = box?.querySelector(`[data-entry-id="${scrollToEntryId}"]`)
+    if (box && el instanceof HTMLElement) {
+      const boxTop = box.getBoundingClientRect().top
+      const barH =
+        wsBarElRef.current?.getBoundingClientRect().height ?? wsBarH
+      box.scrollTop +=
+        el.getBoundingClientRect().top - boxTop - barH
+      lastScrollTopRef.current = box.scrollTop
+    }
+    setScrollToEntryId(null)
+    updatePinned()
+  }, [scrollToEntryId, updatePinned, wsBarH])
 
   // ── 分组缓存（groupingSignature）────────────────────────────
   // 流式 flush 只改文本、不改分组相关字段：签名命中时跳过全量 scanGroups，
@@ -1889,7 +2142,7 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
   }, [entries])
 
   // Auto-follow only when near bottom (every mounted row is at real
-  // height — MAX_RENDER_ENTRIES caps the DOM, no content-visibility
+  // height — full entry list mounted, no content-visibility
   // placeholders — so a direct scrollTop write lands exactly at the tail).
   //
   // Prefer `box.scrollTop = scrollHeight` over scrollIntoView: the latter
@@ -1900,37 +2153,54 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
   // Entries / row-count changes re-run via React effect. liveStream text
   // growth must NOT re-render Scrollback — subscribe outside React and
   // pin the bottom / thought body from refs only. Async height growth
-  // (sticky pin mount, mermaid, images) is covered by the content
-  // ResizeObserver below while follow is armed.
-  const scrollToBottom = useCallback((force = false) => {
-    const box = boxRef.current
-    if (!box) return
-    if (!force && !followRef.current) return
-    box.scrollTop = box.scrollHeight
-    lastScrollTopRef.current = box.scrollTop
-  }, [])
+  // (sticky pin mount, mermaid, images, long markdown layout) is covered
+  // by the content ResizeObserver below while follow is armed.
+  //
+  // Always schedule sticky recompute after programmatic scroll: browsers
+  // often suppress the `scroll` event when scrollTop is written from a
+  // ResizeObserver / layout-effect path. After history replay the last
+  // assistant can grow for several frames (markdown / images / mermaid);
+  // stick-to-bottom would re-pin the tail while sticky still thought the
+  // user prompt was on-screen (first-frame short height → no pin).
+  const scrollToBottom = useCallback(
+    (force = false) => {
+      const box = boxRef.current
+      if (!box) return
+      if (!force && !followRef.current) return
+      box.scrollTop = box.scrollHeight
+      lastScrollTopRef.current = box.scrollTop
+      scheduleUpdatePinned()
+    },
+    [scheduleUpdatePinned],
+  )
   const pinStreamScroll = useCallback(() => {
     scrollToBottom(false)
     const bodyEl = streamBodyRef.current
     if (bodyEl) bodyEl.scrollTop = bodyEl.scrollHeight
   }, [scrollToBottom])
-  // Content height changes while following → re-pin bottom. Covers
-  // session-switch after historyLoadedAt (markdown/mermaid paint) and
-  // other late layout without store entry churn. Sticky overlay is
-  // out-of-flow so it does not feed this observer (no pin↔height loop).
+  // Content height changes:
+  // - while following → re-pin bottom (session-switch after historyLoadedAt,
+  //   late markdown/mermaid/image paint, streaming growth without entry churn)
+  // - always → recompute sticky pin (RO scrollTop writes may not fire onScroll;
+  //   late growth past the user row must flip pinned without a user gesture)
+  // Sticky overlay is out-of-flow so it does not feed this observer
+  // (no pin↔height loop).
   useEffect(() => {
     const content = contentRef.current
     if (!content || typeof ResizeObserver === 'undefined') return
     const ro = new ResizeObserver(() => {
-      if (!followRef.current) return
-      scrollToBottom(true)
+      if (followRef.current) scrollToBottom(true)
+      else scheduleUpdatePinned()
     })
     ro.observe(content)
     return () => ro.disconnect()
-  }, [scrollToBottom])
-  // 发送消息（新的 user 行落到末尾，含 `!` 直执行）→ 强制回到底部跟随。
-  // 用户可能之前向上滚动过（哪怕 1px 也会暂停跟随），发送时视口必须跳
-  // 回最新位置看结果；只看 id 变化，历史 prepend / 流式 flush 不触发。
+  }, [scrollToBottom, scheduleUpdatePinned])
+  // 发送消息（新的 user 行落到末尾，含 `!` 直执行）→ 视口跳回最新位置。
+  // TUI [ui] page_flip_on_send（默认 true）：把刚发的 prompt 钉到视口
+  // 顶部，响应从新的一页开始；false 时直接回到底部。只看 id 变化，历史
+  // prepend / 流式 flush 不触发；回放追加的 user 行（id ≠ lastSentPromptId）
+  // 走普通回底。
+  const lastSentPromptId = useChatStore((s) => s.lastSentPromptId)
   const lastUserEntryIdRef = useRef<string | null>(null)
   useEffect(() => {
     const last = entries[entries.length - 1]
@@ -1938,8 +2208,22 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
     if (lastUserEntryIdRef.current === last.id) return
     lastUserEntryIdRef.current = last.id
     followRef.current = true
+    if (last.id === lastSentPromptId && uiBool('page_flip_on_send', true)) {
+      const box = boxRef.current
+      const el = box?.querySelector(
+        `[data-entry-id="${last.id}"]`,
+      ) as HTMLElement | null
+      if (box && el) {
+        // Prompt top aligns with the viewport top; follow stays armed so
+        // streaming re-pins the bottom as content grows past the page.
+        box.scrollTop +=
+          el.getBoundingClientRect().top - box.getBoundingClientRect().top
+        lastScrollTopRef.current = box.scrollTop
+        return
+      }
+    }
     scrollToBottom(true)
-  }, [entries, scrollToBottom])
+  }, [entries, scrollToBottom, lastSentPromptId])
   useEffect(() => {
     pinStreamScroll()
   }, [entries, displayRows.length, pinStreamScroll])
@@ -1950,42 +2234,24 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
     })
   }, [pinStreamScroll])
 
-  // History load: always re-follow the bottom (scrollback was reset).
-  // useLayoutEffect so the first paint of the new session is already at
-  // the tail — a post-paint useEffect left a visible flash mid-scroll and
-  // raced with onScroll clamp (content shrink → scrollTop drop → false
-  // unfollow) on some switches. ResizeObserver then holds the pin while
-  // sticky/mermaid/images finish laying out.
+  // History load scroll-to-bottom + sticky measure lives in the userEls
+  // layout effect above (must settle scroll BEFORE pin measurement; also
+  // consumes historyLoadedAt so prepend/flush cannot re-yank to tail).
+
+  // 宿主分页开始（含自动续翻中间页）：DOM 仍是旧内容时再拍一次快照。
+  // 覆盖 sticky / 按钮 / 滚轮 漏拍，以及 loadMoreHistory 链式续翻
+  // （中间页没有 maybeLoadOlderHistory 入口）。
+  const prevLoadingMoreForSnapRef = useRef(historyLoadingMore)
   useLayoutEffect(() => {
-    if (!historyLoadedAt) return
-    followRef.current = true
-    scrollToBottom(true)
-    scheduleUpdatePinned()
-  }, [historyLoadedAt, scrollToBottom, scheduleUpdatePinned])
-
-  // Older page prepended: restore the scroll anchor (previously first row).
-  // Cooldown: the anchor restore itself fires a scroll event at the top,
-  // which must not instantly chain the next page — the user gets one page
-  // per gesture, with the next scroll-up re-triggering after the cooldown.
-  useEffect(() => {
-    if (!historyPrependedAt || !historyAnchorId) return
-    topPageCooldownRef.current = Date.now() + TOP_PAGE_COOLDOWN_MS
-    boxRef.current
-      ?.querySelector(`[data-entry-id="${historyAnchorId}"]`)
-      ?.scrollIntoView({ block: 'start', behavior: 'auto' })
-  }, [historyPrependedAt, historyAnchorId])
-
-  // Local truncation page prepended: restore the scroll anchor exactly
-  // like the host-history path above (same cooldown, one page per visit
-  // to the top region).
-  useEffect(() => {
-    if (!expandAnchorId) return
-    topPageCooldownRef.current = Date.now() + TOP_PAGE_COOLDOWN_MS
-    boxRef.current
-      ?.querySelector(`[data-entry-id="${expandAnchorId}"]`)
-      ?.scrollIntoView({ block: 'start', behavior: 'auto' })
-    setExpandAnchorId(null)
-  }, [expandAnchorId])
+    const was = prevLoadingMoreForSnapRef.current
+    prevLoadingMoreForSnapRef.current = historyLoadingMore
+    if (!was && historyLoadingMore) {
+      // Only capture when we don't already have a gesture-time snapshot
+      // (prefer the earlier, pre-any-loading-UI measurement).
+      if (!scrollSnapshotRef.current) captureScrollSnapshot()
+      else followRef.current = false
+    }
+  }, [historyLoadingMore, captureScrollSnapshot])
 
   // Re-arm after ANY paging attempt finishes (success or failure): a
   // failed fetch can be retried with the next gesture; a successful one
@@ -2000,52 +2266,55 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
 
   /**
    * Scroll-up paging gate: one page per visit to the top region.
-   * Disarmed on trigger; re-armed when the user scrolls away from the top
-   * (onScroll) or when a paging attempt finishes (effect above), so a
-   * single gesture can never chain pages.
    *
-   * `bypassCooldown` is for EXPLICIT clicks on the load-older button: the
-   * 400ms cooldown exists to stop the anchor-restore scroll event (fired
-   * right after a prepend) from chaining the next page — it must not
-   * swallow a deliberate user click (a double-click on the button within
-   * the window would otherwise silently do nothing).
+   * Gesture path (`explicit=false`): armed once per visit to the top;
+   * re-armed when the user scrolls away (scrollTop≥80) or a host fetch
+   * finishes. Cooldown blocks the post-prepend restore scroll from
+   * chaining pages.
+   *
+   * Explicit path (`explicit=true`, button / sticky click): bypasses both
+   * armed + cooldown. Critical when many tools are verb-collapsed and the
+   * list barely (or doesn't) overflow — a prior gesture can leave
+   * topPageArmed=false with no way to re-arm via scrollTop≥80, so click
+   * and further wheel-up would silently no-op.
+   *
+   * Only disarm while a real host fetch is in flight. No-op returns
+   * (nothing to load / already loading) keep or restore armed so the
+   * next gesture still works.
    */
-  const maybeLoadOlderHistory = useCallback((bypassCooldown = false) => {
+  const maybeLoadOlderHistory = useCallback((explicit = false) => {
     const box = boxRef.current
     if (!box) return
-    if (!topPageArmedRef.current) return
-    if (!bypassCooldown && Date.now() < topPageCooldownRef.current) return
-    topPageArmedRef.current = false
-    // Live-mode truncation first: the older entries are still in the
-    // store — grow the render window one page and restore the anchor so
-    // the view doesn't jump (new rows land above the previously first
-    // row). Re-armed immediately like the host-path loading-finish
-    // re-arm; the cooldown keeps repeated top visits to one page each.
-    if (truncatedCount > 0) {
-      const anchorId = renderEntries[0]?.id
-      followRef.current = false
-      // Grow from the *effective* window (may already be > renderLimit due
-      // to the last-user floor), otherwise one "page" click can be a no-op
-      // when floor already covers renderLimit + N.
-      setRenderLimit(effectiveRenderLimit + MAX_RENDER_ENTRIES)
-      setExpandAnchorId(anchorId ?? null)
+    if (!explicit) {
+      if (!topPageArmedRef.current) return
+      if (Date.now() < topPageCooldownRef.current) return
+    }
+    // 仅宿主历史分页（DOM 已全量挂载，无本地扩窗）。
+    if (!historyHasMore || historyLoadingMore) {
+      // Nothing started — do not leave the gate latched shut (especially
+      // when content fits the viewport and scrollTop never reaches 80).
       topPageArmedRef.current = true
       return
     }
-    if (!historyHasMore || historyLoadingMore) return
-    // Browsing older history: never yank the view back to the bottom on
-    // prepend, even if the follow flag was left armed (e.g. wheel-up at
-    // the very top with no prior scroll event).
-    followRef.current = false
-    const firstEl = box.querySelector('[data-entry-id]')
-    void loadMoreHistory(firstEl?.getAttribute('data-entry-id') ?? undefined)
+    // Host fetch: disarm only while a real request is in flight.
+    // loadMoreHistory sets historyLoadingMore synchronously before its
+    // first await; if it early-returns (race / missing session meta),
+    // re-arm immediately — otherwise collapsed short lists (scrollTop
+    // never reaches 80) stay permanently unable to page.
+    topPageArmedRef.current = false
+    captureScrollSnapshot()
+    // Anchor = store head before prepend（见 sticky 触发器同款注释）。
+    const storeHeadId = entries[0]?.id
+    void loadMoreHistory(storeHeadId)
+    if (!useChatStore.getState().historyLoadingMore) {
+      topPageArmedRef.current = true
+    }
   }, [
     historyHasMore,
     historyLoadingMore,
     loadMoreHistory,
-    renderEntries,
-    truncatedCount,
-    effectiveRenderLimit,
+    entries,
+    captureScrollSnapshot,
   ])
 
   // Scroll selected into view
@@ -2063,7 +2332,9 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
       ref={boxRef}
       className="gn-scroll relative flex-1 overflow-y-auto overscroll-contain outline-none"
       data-scrollback-box=""
-      style={{ scrollbarGutter: 'stable' }}
+      // overflow-anchor: none — browser scroll anchoring fights our manual
+      // height-delta restore on prepend (double-apply → viewport jump).
+      style={{ scrollbarGutter: 'stable', overflowAnchor: 'none' }}
       tabIndex={0}
       role="listbox"
       aria-label="Scrollback"
@@ -2094,11 +2365,14 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
         }
       }}
       onWheel={(e) => {
-        // Wheel-up fallback for content that does not overflow: at
-        // scrollTop 0 no scroll events fire, so catch the gesture here
-        // (trackpad two-finger up / mouse wheel up = older history).
-        if (e.deltaY < 0 && boxRef.current && boxRef.current.scrollTop <= 0) {
-          maybeLoadOlderHistory()
+        // Wheel-up near top: page older history. Also when scrollTop===0
+        // (no overflow → no scroll events) so a trackpad flick still loads.
+        // Use the same 80px top band as onScroll — collapsed tool runs
+        // often leave only a few px of headroom; requiring scrollTop<=0
+        // missed those.
+        if (e.deltaY < 0) {
+          const top = boxRef.current?.scrollTop ?? 0
+          if (top < 80) maybeLoadOlderHistory()
         }
       }}
       onTouchStart={(e) => {
@@ -2130,8 +2404,17 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
     >
       {/* Workspace + git status bar — sticky header of the scrollback. Sits
           outside the fade-in wrapper so it's always present while history
-          content cross-fades in; the scrollback body scrolls under it. */}
-      <WorkspaceBar onOpenMcp={onOpenMcp} topRef={workspaceRef} />
+          content cross-fades in; the scrollback body scrolls under it.
+          会话切换加载中（historyLoading）只有栏内内容（branch/cwd/状态
+          芯片）淡出，栏本身保持常驻可见：旧会话数据不属于新会话，但
+          背景条不消失（与加载覆盖层同节奏：加载开始内容同步淡出、
+          加载完毕与内容区一起淡入）。栏常驻还让 ResizeObserver 全程
+          连续测量 wsBarH，钉住的用户提示头始终与栏底齐平。 */}
+      <WorkspaceBar
+        onOpenMcp={onOpenMcp}
+        topRef={workspaceRef}
+        fadeHidden={historyLoading}
+      />
       {/* Fade-in wrapper for freshly loaded history content — see the
           contentVisible layout effect above. transition-opacity is applied
           ONLY in the visible state: dropping to opacity-0 must be instant
@@ -2143,15 +2426,10 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
           contentVisible ? 'transition-opacity duration-300 opacity-100' : 'opacity-0'
         }`}
       >
-      {(historyHasMore || historyLoadingMore || truncatedCount > 0) &&
-        entries.length > 0 && (
+      {(historyHasMore || historyLoadingMore) && entries.length > 0 && (
         // Clickable fallback: when content doesn't overflow there is no
         // scrollbar, so scroll-to-top never fires. Tapping the hint loads
-        // the next older page the same way the near-top scroll path does.
-        // Also shown while the render window is truncated (live session
-        // with more store entries than MAX_RENDER_ENTRIES) — that state
-        // has no host paging (historyHasMore=false) but still pages
-        // locally, so it needs the same affordance.
+        // the next older host page the same way the near-top scroll path does.
         <button
           type="button"
           disabled={historyLoadingMore}
@@ -2170,92 +2448,117 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
           }
         >
           {historyLoadingMore ? (
-            '加载更早历史…'
+            '加载上一轮…'
           ) : historyLoadError ? (
             <span className="text-gn-red">{historyLoadError} · 点击重试</span>
-          ) : truncatedCount > 0 && !historyHasMore ? (
-            '↑ 点击或向上滚动查看更早消息'
           ) : (
-            '↑ 点击或向上滚动加载更早历史'
+            '↑ 点击或向上滚动加载上一轮'
           )}
         </button>
       )}
       <div
-        aria-hidden={!loadingVisible}
+        aria-hidden={!loadingVisible && !loadFailedVisible}
         className={`pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2 select-none transition-opacity duration-300 ${
-          loadingVisible ? 'opacity-100' : 'opacity-0'
+          loadingVisible || loadFailedVisible ? 'opacity-100' : 'opacity-0'
         }`}
       >
-        <span className="text-[15px] leading-none text-gn-muted">
-          {SPINNER_FRAMES[spinnerFrame]}
-        </span>
-        <span className="text-[12.5px] text-gn-muted">加载会话…</span>
+        {loadFailedVisible ? (
+          <>
+            <span className="shrink-0 text-[12.5px] font-semibold text-gn-red">
+              加载失败
+            </span>
+            <span
+              className="min-w-0 max-w-[65%] truncate text-[12.5px] text-gn-muted"
+              title={historyLoadError}
+            >
+              {historyLoadError}
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="text-[15px] leading-none text-gn-muted">
+              {SPINNER_FRAMES[spinnerFrame]}
+            </span>
+            <span className="text-[12.5px] text-gn-muted">加载会话…</span>
+          </>
+        )}
       </div>
       <div className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} py-3`}>
         {/* TUI sticky prompt header (sticky.rs): last user prompt scrolled
             past the top, collapsed to 3 lines; switches as you scroll.
             Zero-height sticky shell + absolute band = no layout shift when
             the pin mounts/unmounts (in-flow clone used to push all rows and
-            jitter against pin-threshold / scroll-follow). */}
+            jitter against pin-threshold / scroll-follow).
+            */}
         <div
           className="pointer-events-none sticky z-10 h-0 overflow-visible"
           style={{ top: wsBarH }}
-          aria-hidden={pinnedUser?.kind !== 'user'}
+          aria-hidden={pinnedUser?.kind !== 'user' && !historyLoadingMore}
         >
-          {pinnedUser?.kind === 'user' && (
+          {(pinnedUser?.kind === 'user' || historyLoadingMore) && (
             <div
               className="pointer-events-auto absolute inset-x-0 top-0 font-ui text-[13.5px] leading-[1.35] text-gn-fg select-none"
               style={{
                 backgroundColor: 'var(--color-gn-bg-highlight)',
               }}
             >
-              <div className="flex items-start gap-1.5 px-2.5 py-[11px]">
-                <span
-                  className="mt-[1.5px] shrink-0"
-                  style={{
-                    color: (pinnedUser as { isShell?: boolean }).isShell
-                      ? 'var(--color-gn-cyan)'
-                      : 'var(--color-gn-accent-user)',
+              {pinnedUser?.kind === 'user' && (
+                <button
+                  type="button"
+                  onClick={(ev) => {
+                    ev.stopPropagation()
+                    jumpToUserEntry(pinnedUser.id)
                   }}
+                  className="group relative flex w-full min-w-0 cursor-pointer items-start gap-1.5 px-2.5 py-[11px] text-left transition-colors hover:brightness-110"
+                  title="点击跳转到此消息开头"
                 >
-                  <IconGlyph
-                    glyph={
-                      (pinnedUser as { isShell?: boolean }).isShell
-                        ? '$'
-                        : pinnedUser.isCron
-                          ? Glyphs.cronPrompt
-                          : Glyphs.promptArrow
-                    }
-                    color={
-                      (pinnedUser as { isShell?: boolean }).isShell
+                  <span
+                    className="mt-[1.5px] shrink-0"
+                    style={{
+                      color: (pinnedUser as { isShell?: boolean }).isShell
                         ? 'var(--color-gn-cyan)'
-                        : 'var(--color-gn-accent-user)'
-                    }
-                  />
-                </span>
-                <div className="min-w-0 flex-1 whitespace-pre-wrap break-words">
-                  {collapseUserText(pinnedUser.text, USER_COLLAPSED_MAX_LINES).text}
+                        : 'var(--color-gn-accent-user)',
+                    }}
+                  >
+                    <IconGlyph
+                      glyph={
+                        (pinnedUser as { isShell?: boolean }).isShell
+                          ? '$'
+                          : pinnedUser.isCron
+                            ? Glyphs.cronPrompt
+                            : Glyphs.promptArrow
+                      }
+                      color={
+                        (pinnedUser as { isShell?: boolean }).isShell
+                          ? 'var(--color-gn-cyan)'
+                          : 'var(--color-gn-accent-user)'
+                      }
+                    />
+                  </span>
+                  <div className="min-w-0 flex-1 whitespace-pre-wrap break-words">
+                    {/* store 回退：提示这条 prompt 在可见列表上方。 */}
+                    {pinnedStore ? `${Glyphs.ellipsis} ` : ''}
+                    {collapseUserText(pinnedUser.text, USER_COLLAPSED_MAX_LINES).text}
+                  </div>
+                  <PromptTime ts={pinnedUser.ts} className="top-[14.5px]" />
+                </button>
+              )}
+              {/* 上滑加载上一轮：就地显示加载中（不依赖顶部按钮是否在视口内）。 */}
+              {historyLoadingMore && (
+                <div
+                  className={`flex items-center gap-1.5 px-2.5 text-[11.5px] text-gn-muted ${
+                    pinnedUser?.kind === 'user' ? 'pb-[9px] pt-0' : 'py-[11px]'
+                  }`}
+                >
+                  <span className="text-[13px] leading-none">
+                    {SPINNER_FRAMES[spinnerFrame]}
+                  </span>
+                  <span>加载上一轮…</span>
                 </div>
-                <PromptTime ts={pinnedUser.ts} className="top-[14.5px]" />
-              </div>
+              )}
             </div>
           )}
         </div>
-        {truncatedCount > 0 && (
-          // Clickable like the host-history hint: same page-expansion path
-          // as scrolling up at the top (maybeLoadOlderHistory).
-          <button
-            type="button"
-            onClick={(ev) => {
-              ev.stopPropagation()
-              maybeLoadOlderHistory()
-            }}
-            className="mx-auto block w-full py-1.5 text-center text-[11px] text-gn-gutter select-none transition-colors hover:text-gn-muted"
-            title="更早内容仍保留在会话中 · 向上滑动或点击加载更多"
-          >
-            已截断 {truncatedCount} 条更早内容 · 向上滑动或点击加载
-          </button>
-        )}
         {entries.length === 0 && !sessionId && !historyLoading && (
           // Empty state — current session was deleted (or nothing active):
           // a plain blank scrollback reads as a hang, so show the workspace

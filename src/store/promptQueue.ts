@@ -1,6 +1,9 @@
 import { create } from 'zustand'
 import type { ContentBlock } from '../api/types'
 import { transport } from '../api/localTransport'
+// 延迟使用（仅在 syncQueue 失败回调里取 pushToast），与 chat.ts 的
+// promptQueue 导入构成循环引用——ESM 下模块体不触碰该绑定即安全。
+import { useChatStore } from './chat'
 
 /**
  * ── Server-authoritative prompt queue (TUI 对齐：agent 是权威) ───────
@@ -18,12 +21,14 @@ import { transport } from '../api/localTransport'
  * 3. 队列行 send-now（[发送现在]/双 Enter）→ x.ai/queue/interject
  *    {id, expectedVersion}（version 取自广播副本）→ agent 版本校验后
  *    提升为下一个运行（不取消回合；版本不符是 no-op 并重广播）。
- *    仅当本地行没有 version（乐观回显未确认 / RPC 失败）时保留
- *    cancel-then-send 兜底（Composer.sendQueuedHead）。
+ *    乐观回显行（无 version）是 agent-owned——FE 只等收养广播，绝不
+ *    cancel-then-send（重发会双跑）；仅 RPC 失败降级行（degraded，
+ *    agent 从没见过）保留 cancel-then-send 兜底（Composer.sendQueuedHead）。
  * 4. RPC 失败（网络 / agent 拒绝 / 竞态 409）：行标记 degraded
- *    （FE-owned，agent 从未见过），渲染错误行；不再自动重发——由用户
- *    手动双 Enter / [发送现在] 投递（server-authoritative 下 mid-turn
- *    prompt 由 agent 排队，失败即异常，不静默兜底）。
+ *    （FE-owned，agent 从未见过），行上渲染红色失败徽标（失败原因作
+ *    tooltip）；不再自动重发——由用户手动双 Enter / [发送现在] 投递
+ *    （server-authoritative 下 mid-turn prompt 由 agent 排队，失败即
+ *    异常，不静默兜底；也不向 scrollback 渲染错误行，主输出流不被打断）。
  *
  * `sending` 是互斥锁：自动发送 effect 与用户手势（双 Enter / [发送现在]）
  * 共享同一条 drain 路径，Enter 永远不会与自动发送竞态出双 prompt。
@@ -42,7 +47,9 @@ import { transport } from '../api/localTransport'
  * 在每次 sessionId 变化时调 switchSession()（当前会话队列入 stash、
  * 目标会话队列恢复）。drain 路径在会话标签不匹配活跃会话时拒绝发送——
  * 排队的 prompt 绝不会被投递进别的会话；切走再切回后它仍可见
- * （广播只应用到活跃会话，stash 靠 switchSession 存取）。
+ * （切走期间的 queue_changed 广播以 stash 模式喂给该会话的镜像——
+ * applyQueueChanged 的 toStash 分支——切回时 stash 即权威快照，
+ * agent 已收养开跑的行绝不会仍显示 queued）。
  *
  * ── 广播 rails（chat.ts 路由）──────────────────────────────────────
  * x.ai/queue/changed 以 typed `queue_changed` 事件或 ext_notification
@@ -72,9 +79,16 @@ export type QueuedPrompt = {
   /**
    * RPC 失败（网络 / agent 拒绝 / 竞态 409）：agent 侧没有该行，
    * FE-owned——保留显示供手动重发（双 Enter / [发送现在]），不再自动
-   * 投递（legacy 409 自动重发已移除）。
+   * 投递（legacy 409 自动重发已移除）。行上渲染红色失败徽标（错误原因
+   * 见 errorText，作 tooltip），不再向 scrollback 渲染错误行。
    */
   degraded?: boolean
+  /**
+   * 失败原因（fetch 拒绝文本 / agent 错误 / 409 竞态）——仅 degraded 行
+   * 有值，供徽标 tooltip 展示（用户想知道为什么没发出去时可见，主
+   * 输出流不被裸错误文本打断）。
+   */
+  errorText?: string
 }
 
 function qid(): string {
@@ -86,11 +100,25 @@ function qid(): string {
 /** Max sessions kept in the per-session queue stash (oldest dropped). */
 const QUEUE_SESSIONS_MAX = 50
 
-/** Best-effort host sync: failures never surface (fire-and-forget). */
-function syncQueue(fn: () => Promise<unknown>): void {
-  void fn().catch(() => {
-    /* 本地队列保持显示 —— host 同步失败不影响本地行为（广播会校正） */
+/**
+ * Best-effort host sync: failures surface via `onError` when the caller
+ * cares. 默认静默（显示类操作失败会被下一次广播校正）；破坏性操作
+ * （删除/清空）必须传 onError —— 静默失败意味着 agent 侧队列里那条
+ * 消息照常执行，用户以为删了实际会发出去。
+ */
+function syncQueue(
+  fn: () => Promise<unknown>,
+  opts?: { onError?: (e: unknown) => void },
+): void {
+  void fn().catch((e) => {
+    if (opts?.onError) opts.onError(e)
   })
+}
+
+/** 破坏性队列操作同步失败的用户提醒（toast）。 */
+function queueSyncToast(prefix: string, e: unknown): void {
+  const msg = e instanceof Error ? e.message : String(e)
+  useChatStore.getState().pushToast(`${prefix}: ${msg}`)
 }
 
 /**
@@ -99,13 +127,14 @@ function syncQueue(fn: () => Promise<unknown>): void {
  *   从显示镜像移除（正常流程收养广播先移除；这里是漏广播兜底），并记
  *   入 drainedIds 防 stale 广播复活。
  * - `failed`：RPC 被拒（网络失败 / agent 拒绝 / 竞态 409）——行保留为
- *   degraded（FE-owned），调用方渲染错误行；用户手动重发。
- * 行可能在活跃队列或 stash（RPC 在飞期间会话被切走）。
+ *   degraded（FE-owned，附带失败原因 errorText），用户手动重发；不再
+ *   渲染 scrollback 错误行（队列行徽标即提示，主输出流不被打断）。
  */
 function settlePromptRow(
   promptId: string,
   sessionId: string,
   outcome: 'ran' | 'failed',
+  errorText?: string,
 ): void {
   usePromptQueue.setState((s) => {
     const active = s.sessionId === sessionId
@@ -114,16 +143,17 @@ function settlePromptRow(
     const idx = list.findIndex((q) => q.id === promptId)
     if (idx === -1) return s
     if (outcome === 'ran') {
-      const nextList = list.filter((q) => q.id !== promptId)
       return {
         ...(active
-          ? { queue: nextList }
-          : { queues: { ...s.queues, [sessionId]: nextList } }),
+          ? { queue: list.filter((q) => q.id !== promptId) }
+          : { queues: { ...s.queues, [sessionId]: list.filter((q) => q.id !== promptId) } }),
         drainedIds: new Set(s.drainedIds).add(promptId),
       }
     }
     const nextList = list.map((q) =>
-      q.id === promptId ? { ...q, optimistic: false, degraded: true } : q,
+      q.id === promptId
+        ? { ...q, optimistic: false, degraded: true, ...(errorText ? { errorText } : {}) }
+        : q,
     )
     return {
       ...(active
@@ -175,13 +205,14 @@ type PromptQueueState = {
    * Server-authoritative enqueue: 立即 fire-and-forget 发 session/prompt
    * （`_meta.promptId` = 行 id）→ agent 把它插进权威队列；本地插入乐观
    * 回显行。RPC 失败（网络 / agent 拒绝 / 竞态 409）→ 行标记 degraded
-   * （FE-owned，保留手动重发）+ onError 渲染错误行。不再向 host 镜像
-   * queueInterject——prompt RPC 本身就是入队。
+   * （FE-owned，保留手动重发）并记录失败原因 errorText（队列行红色
+   * 徽标展示）。不再向 scrollback 渲染错误行：主回合输出不因排队消息
+   * 的 RPC 失败而被打断。不再向 host 镜像 queueInterject——prompt RPC
+   * 本身就是入队。
    */
   enqueue: (
-    item: Omit<QueuedPrompt, 'id' | 'ts' | 'version' | 'optimistic' | 'degraded'>,
+    item: Omit<QueuedPrompt, 'id' | 'ts' | 'version' | 'optimistic' | 'degraded' | 'errorText'>,
     sessionId: string,
-    opts?: { onError?: (e: unknown) => void },
   ) => void
   /** Remove and return the head; undefined when empty. */
   dequeue: () => QueuedPrompt | undefined
@@ -221,7 +252,7 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
   drainedIds: new Set(),
   editIndex: null,
   editDraft: '',
-  enqueue: (item, sessionId, opts) => {
+  enqueue: (item, sessionId) => {
     const promptId = qid()
     const entry: QueuedPrompt = {
       ...item,
@@ -240,11 +271,11 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
       .then(
         () => settlePromptRow(promptId, sessionId, 'ran'),
         (e: unknown) => {
-          // 任何失败（网络 / agent 拒绝 / 竞态 409）→ 行保留为
-          // degraded（FE-owned，不丢用户意图，手动重发）+ 调用方渲染
-          // 错误行。不再区分旧 host 409 静默降级（legacy 已移除）。
-          settlePromptRow(promptId, sessionId, 'failed')
-          opts?.onError?.(e)
+          // 任何失败（网络 / agent 拒绝 / 竞态 409）→ 行标记 degraded
+          // （FE-owned，不丢用户意图，手动重发）并记录失败原因（队列
+          // 行红色徽标 + tooltip）。不再向 scrollback 渲染错误行。
+          const msg = e instanceof Error ? e.message : String(e)
+          settlePromptRow(promptId, sessionId, 'failed', msg)
         },
       )
   },
@@ -313,7 +344,11 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
     if (editedId) {
       syncQueue(() => transport.queueReleaseEdit({ id: editedId }, s.sessionId))
     }
-    syncQueue(() => transport.queueRemove({ id }, s.sessionId))
+    // 删除失败必须提醒：行已从本地镜像移除（drainedIds），但 agent 侧
+    // 队列里仍在——回合结束会照常执行，用户以为删了实际会发出去。
+    syncQueue(() => transport.queueRemove({ id }, s.sessionId), {
+      onError: (e) => queueSyncToast('删除队列消息失败（消息仍会发送）', e),
+    })
   },
   clear: () => {
     const s = get()
@@ -333,7 +368,11 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
     if (editedId) {
       syncQueue(() => transport.queueReleaseEdit({ id: editedId }, s.sessionId))
     }
-    syncQueue(() => transport.queueClear(s.sessionId))
+    // 清空失败必须提醒：本地镜像已空，但 agent 侧队列原样保留，
+    // 所有消息仍会按序执行。
+    syncQueue(() => transport.queueClear(s.sessionId), {
+      onError: (e) => queueSyncToast('清空队列失败（消息仍会发送）', e),
+    })
   },
   switchSession: (next) => {
     const s = get()
@@ -544,9 +583,12 @@ export type QueueAdoption = {
  * broadcast). Id 未命中时按 text 认领乐观/降级行（host 丢 meta.promptId
  * 时 agent 自造 id 的兜底，避免镜像重复两条）。仍无对上的在途行才
  * re-append（RPC 失败降级：agent 从没见过）。Edit state survives only while
- * the edited row still exists. `sessionId` (the broadcast's emitting
- * session — chat.ts only forwards broadcasts of the active session) tags
- * the queue so drains stay session-scoped.
+ * the edited row still exists.
+ *
+ * `sessionId` (the broadcast's emitting session) 标签队列使 drain 保持
+ * 会话作用域。非活跃会话的广播（切走期间收到）走 stash 模式：快照写
+ * 进该会话的 stash（queues[sid]）保持切回时镜像权威，不渲染收养（用户
+ * 行由切回时的历史回放渲染）、不动活跃队列的编辑锁——返回 null。
  *
  * Returns a QueueAdoption when the broadcast carries a `running_prompt_id`
  * that matched a local queue row (the row is removed from the mirror) —
@@ -556,7 +598,13 @@ export function applyQueueChanged(
   params: unknown,
   sessionId?: string,
 ): QueueAdoption | null {
-  const { queue: prev, drainedIds } = usePromptQueue.getState()
+  const st = usePromptQueue.getState()
+  // 非活跃会话的广播（切走期间 agent 已 pop 队首开跑）：快照仍要喂给
+  // 该会话的 stash——否则切回时镜像陈旧，已被收养的行还显示 queued。
+  // stash 模式只更新镜像、不渲染收养（切回时用户行由历史回放渲染）。
+  const toStash = sessionId != null && st.sessionId !== sessionId
+  const prev = toStash ? st.queues[sessionId ?? ''] ?? [] : st.queue
+  const { drainedIds } = st
   const runningId = findRunningPromptId(params)
   const list = findQueueArray(params)
   // 既没有可识别的快照数组、也没有 running 标记 → 不是我们的形状。
@@ -673,6 +721,15 @@ export function applyQueueChanged(
   }
 
   usePromptQueue.setState((s) => {
+    if (toStash) {
+      // 非活跃会话：只更新 stash 镜像。快照整体替换（running 行已在
+      // 构建时排除、在途行按原逻辑回挂）；仅 running 标记的广播按
+      // 收养 id 兜底移除。编辑锁/收养渲染属于活跃队列，这里不碰。
+      let list = s.queues[sessionId ?? ''] ?? []
+      if (snapshot) list = snapshot
+      else if (adoption) list = list.filter((q) => q.id !== adoption.id)
+      return { queues: { ...s.queues, [sessionId ?? '']: list } }
+    }
     const tagged = sessionId ? { sessionId } : {}
     if (snapshot) {
       // 编辑中的行按 id 在快照里重定位（快照可能重排行）；行没了 →
@@ -710,5 +767,5 @@ export function applyQueueChanged(
     }
     return s
   })
-  return adoption
+  return toStash ? null : adoption
 }

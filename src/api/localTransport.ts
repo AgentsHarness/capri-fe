@@ -159,6 +159,13 @@ export class LocalTransport {
    * (the React StrictMode double-mount race).
    */
   private gen = 0
+  /**
+   * Last live-stream event arrival (epoch ms; null = never). The live
+   * channel (SSE /events, hub WS) and the HTTP prompt RPC are independent
+   * connections — chat.ts uses this to tell a mid-turn HTTP-channel blip
+   * (turn still streaming) from a turn that never started (host dead).
+   */
+  private lastLiveAt: number | null = null
 
   constructor(base = '', accessToken = resolveAccessToken()) {
     this.base = base.replace(/\/$/, '')
@@ -335,12 +342,27 @@ export class LocalTransport {
     // host 的 live 事件混入视图。local 模式：本机事件全放行。
     const host = (ev as { hostId?: string }).hostId
     if (this.mode === 'hub' && host && host !== this.selectedHostId) return
+    // 通道活着：任何事件（含被过滤的）都证明 live 连接在送达数据。
+    this.lastLiveAt = Date.now()
     for (const h of this.handlers) h(ev)
   }
 
   /** Emit a synthetic event (used to apply a host snapshot on switch). */
   emitLocal(ev: AcpEvent) {
     this.emit(ev)
+  }
+
+  /** 最近一次 live 事件到达时间（epoch ms；从未收到事件为 null）。 */
+  lastLiveEventAt(): number | null {
+    return this.lastLiveAt
+  }
+
+  /** live 通道（本地 SSE / hub WS，任一）当前是否处于 OPEN。 */
+  isLiveOpen(): boolean {
+    return (
+      (this.es?.readyState ?? 0) === EventSource.OPEN ||
+      (this.ws?.readyState ?? 0) === WebSocket.OPEN
+    )
   }
 
   private url(path: string): string {
@@ -791,11 +813,15 @@ export class LocalTransport {
    * "Stop running" / rewind), `false` keeps them running (send-now,
    * Ctrl+C, "Always continue" preference).
    */
-  async cancel(opts: { cancelSubagents?: boolean } = {}): Promise<void> {
+  async cancel(opts: { cancelSubagents?: boolean } = {}, sessionId?: string): Promise<void> {
     await this.fetch(this.url('/api/cancel'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cancelSubagents: opts.cancelSubagents ?? false }),
+      body: JSON.stringify({
+        cancelSubagents: opts.cancelSubagents ?? false,
+        // 可选：指定目标会话（缺省 = host active 会话）。
+        ...(sessionId ? { sessionId } : {}),
+      }),
     })
   }
 
@@ -884,6 +910,101 @@ export class LocalTransport {
       )
     }
     return { hosts: data.hosts ?? [], defaultHostId: data.defaultHostId }
+  }
+
+  /** 当前配对码（hub 管理端点，不中继、不带 ?host=）。 */
+  async pairingCode(): Promise<{ code: string; expiresAt?: string; ttl?: number }> {
+    if (this.mode !== 'hub') throw new Error('仅 Hub 模式支持查看配对码')
+    const res = await this.fetch(`${this.apiBase()}/api/pairing`)
+    const data = (await res.json().catch(() => ({}))) as {
+      code?: string
+      expiresAt?: string
+      ttl?: number
+      error?: string
+      ok?: boolean
+    }
+    if (res.status === 401) {
+      throw new AccessTokenError(
+        typeof data.error === 'string' && data.error ? data.error : '需要有效的访问 token',
+      )
+    }
+    if (!res.ok || !data.code) {
+      throw new Error(
+        typeof data.error === 'string' && data.error
+          ? data.error
+          : `pairing failed (${res.status})`,
+      )
+    }
+    return { code: data.code, expiresAt: data.expiresAt, ttl: data.ttl }
+  }
+
+  /** 轮换配对码（旧码立即失效）→ 返回新码。hub 管理端点，不中继。 */
+  async rotatePairingCode(): Promise<{ code: string; expiresAt?: string }> {
+    if (this.mode !== 'hub') throw new Error('仅 Hub 模式支持轮换配对码')
+    const res = await this.fetch(`${this.apiBase()}/api/pairing/rotate`, { method: 'POST' })
+    const data = (await res.json().catch(() => ({}))) as {
+      code?: string
+      expiresAt?: string
+      error?: string
+      ok?: boolean
+    }
+    if (res.status === 401) {
+      throw new AccessTokenError(
+        typeof data.error === 'string' && data.error ? data.error : '需要有效的访问 token',
+      )
+    }
+    if (!res.ok || !data.code) {
+      throw new Error(
+        typeof data.error === 'string' && data.error
+          ? data.error
+          : `rotate failed (${res.status})`,
+      )
+    }
+    return { code: data.code, expiresAt: data.expiresAt }
+  }
+
+  /** 修改已配对 host 的展示名（仅改名，不断开连接、不吊销 token）。 */
+  async renameHost(hostId: string, hostName: string): Promise<void> {
+    if (this.mode !== 'hub') throw new Error('仅 Hub 模式支持修改 Host')
+    const res = await this.fetch(`${this.apiBase()}/api/hosts/${encodeURIComponent(hostId)}/rename`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hostName }),
+    })
+    const data = (await res.json().catch(() => ({}))) as { error?: string; ok?: boolean }
+    if (res.status === 401) {
+      throw new AccessTokenError(
+        typeof data.error === 'string' && data.error ? data.error : '需要有效的访问 token',
+      )
+    }
+    if (!res.ok || data.ok === false) {
+      throw new Error(
+        typeof data.error === 'string' && data.error
+          ? data.error
+          : `rename failed (${res.status})`,
+      )
+    }
+  }
+
+  /** 从 hub 注册表移除（解除配对）一个 host：吊销其 token、断开中继。 */
+  async unpairHost(hostId: string): Promise<void> {
+    if (this.mode !== 'hub') throw new Error('仅 Hub 模式支持删除 Host')
+    const res = await this.fetch(`${this.apiBase()}/api/hosts/${encodeURIComponent(hostId)}`, {
+      method: 'DELETE',
+    })
+    const data = (await res.json().catch(() => ({}))) as { error?: string; ok?: boolean }
+    if (res.status === 401) {
+      throw new AccessTokenError(
+        typeof data.error === 'string' && data.error ? data.error : '需要有效的访问 token',
+      )
+    }
+    if (!res.ok || data.ok === false) {
+      throw new Error(
+        typeof data.error === 'string' && data.error
+          ? data.error
+          : `unpair failed (${res.status})`,
+      )
+    }
   }
 
   /**
@@ -1027,11 +1148,13 @@ export class LocalTransport {
   async loadSessionHistory(
     sessionId: string,
     cwd: string,
-    opts: { offset?: number; limit?: number } = {},
+    opts: { offset?: number; limit?: number; turnIndex?: number } = {},
   ): Promise<{
     totalCount?: number
     hasMore?: boolean
     updates?: unknown[]
+    /** 所有 user 回合的起始行号索引（turnIndex 模式返回；导航/定位用）。 */
+    promptStarts?: number[]
   }> {
     const res = await this.fetch(this.url('/api/session-updates'), {
       method: 'POST',
@@ -1242,8 +1365,13 @@ export class LocalTransport {
   }
 
   /** x.ai/session-info — authoritative session details at open time. */
-  async sessionInfo(): Promise<SessionInfoDetail> {
-    const res = await this.fetch(this.url('/api/session-info'), { method: 'POST' })
+  async sessionInfo(sessionId?: string): Promise<SessionInfoDetail> {
+    const res = await this.fetch(this.url('/api/session-info'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      // 可选：目标会话（缺省 = host active 会话）。
+      body: JSON.stringify(sessionId ? { sessionId } : {}),
+    })
     const data = await res.json()
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || `session info failed (${res.status})`)
@@ -1254,36 +1382,46 @@ export class LocalTransport {
     return (data.session ?? data) as SessionInfoDetail
   }
 
-  /** x.ai/session/fork — fork the current session (TUI /fork). */
-  async forkSession(params: Record<string, unknown> = {}) {
+  /** x.ai/session/fork — fork the given session (TUI /fork). */
+  async forkSession(params: Record<string, unknown> = {}, sessionId?: string) {
     const res = await this.fetch(this.url('/api/session-fork'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
+      body: JSON.stringify({
+        ...params,
+        // 可选：源会话（缺省 = host active 会话）。
+        ...(sessionId ? { sessionId } : {}),
+      }),
     })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'fork failed')
     return data
   }
 
-  /** x.ai/session/rename. */
-  async renameSession(title: string) {
+  /** x.ai/session/rename — rename the given session (缺省 = active). */
+  async renameSession(title: string, sessionId?: string) {
     const res = await this.fetch(this.url('/api/session-rename'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title }),
+      body: JSON.stringify({
+        title,
+        ...(sessionId ? { sessionId } : {}),
+      }),
     })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'rename failed')
     return data
   }
 
-  /** x.ai/recap — fire-and-forget "where was I" summary. */
-  async recap(auto = false) {
+  /** x.ai/recap — fire-and-forget "where was I" summary (缺省 = active). */
+  async recap(auto = false, sessionId?: string) {
     const res = await this.fetch(this.url('/api/recap'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ auto }),
+      body: JSON.stringify({
+        auto,
+        ...(sessionId ? { sessionId } : {}),
+      }),
     })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'recap failed')
@@ -1291,11 +1429,15 @@ export class LocalTransport {
   }
 
   /** session/setModel — switch the session's model (grok /model). */
-  async setModel(modelId: string, reasoningEffort?: string) {
+  async setModel(modelId: string, reasoningEffort?: string, sessionId?: string) {
     const res = await this.fetch(this.url('/api/set-model'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ modelId, ...(reasoningEffort ? { reasoningEffort } : {}) }),
+      body: JSON.stringify({
+        modelId,
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...(sessionId ? { sessionId } : {}),
+      }),
     })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'set model failed')
@@ -1308,11 +1450,15 @@ export class LocalTransport {
    * action. The agent hot-reloads config.toml, so this also affects next
    * sessions without a restart.
    */
-  async setDefaultModel(modelId: string, reasoningEffort?: string) {
+  async setDefaultModel(modelId: string, reasoningEffort?: string, sessionId?: string) {
     const res = await this.fetch(this.url('/api/set-default-model'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ modelId, ...(reasoningEffort ? { reasoningEffort } : {}) }),
+      body: JSON.stringify({
+        modelId,
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...(sessionId ? { sessionId } : {}),
+      }),
     })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'set default model failed')
@@ -1357,11 +1503,16 @@ export class LocalTransport {
   }
 
   /** x.ai/set-mode (host /api/set-mode) — switch permission mode (TUI /plan, /normal). */
-  async setMode(modeId: string) {
+  async setMode(modeId: string, sessionId?: string) {
     const res = await this.fetch(this.url('/api/set-mode'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ modeId }),
+      body: JSON.stringify({
+        modeId,
+        // 可选：目标会话（缺省 = host active 会话；permission 模式分支
+        // 在 host 侧仍是全局 yolo_mode_changed 语义）。
+        ...(sessionId ? { sessionId } : {}),
+      }),
     })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'set mode failed')
@@ -1410,14 +1561,15 @@ export class LocalTransport {
   // goal_updated payload (null when no goal is set). The host also
   // broadcasts goal_updated events as state changes.
 
-  /** Set an autonomous goal on the active session (starts the goal loop). */
-  async goalSet(objective: string, tokenBudget?: number) {
+  /** Set an autonomous goal on the given session (缺省 = active; starts the goal loop). */
+  async goalSet(objective: string, tokenBudget?: number, sessionId?: string) {
     const res = await this.fetch(this.url('/api/goal/set'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         objective,
         ...(tokenBudget && tokenBudget > 0 ? { tokenBudget } : {}),
+        ...(sessionId ? { sessionId } : {}),
       }),
     })
     const data = await res.json()
@@ -1426,71 +1578,77 @@ export class LocalTransport {
   }
 
   /** Current goal state snapshot (no agent round-trip). */
-  async goalStatus() {
+  async goalStatus(sessionId?: string) {
     const res = await this.fetch(this.url('/api/goal/status'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
+      body: JSON.stringify(sessionId ? { sessionId } : {}),
     })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'goal status failed')
     return data
   }
 
-  /** Pause the active goal (user_paused). */
-  async goalPause() {
+  /** Pause the goal bound to the given session (缺省 = active; user_paused). */
+  async goalPause(sessionId?: string) {
     const res = await this.fetch(this.url('/api/goal/pause'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
+      body: JSON.stringify(sessionId ? { sessionId } : {}),
     })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'goal pause failed')
     return data
   }
 
-  /** Resume a paused goal. */
-  async goalResume() {
+  /** Resume a paused goal (缺省 = active). */
+  async goalResume(sessionId?: string) {
     const res = await this.fetch(this.url('/api/goal/resume'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
+      body: JSON.stringify(sessionId ? { sessionId } : {}),
     })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'goal resume failed')
     return data
   }
 
-  /** Clear the goal (cleared). */
-  async goalClear() {
+  /** Clear the goal bound to the given session (缺省 = active; cleared). */
+  async goalClear(sessionId?: string) {
     const res = await this.fetch(this.url('/api/goal/clear'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
+      body: JSON.stringify(sessionId ? { sessionId } : {}),
     })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'goal clear failed')
     return data
   }
 
-  /** x.ai/subagent/cancel. */
-  async cancelSubagent(subagentId: string) {
+  /** x.ai/subagent/cancel — cancel a subagent of the given session (缺省 = active). */
+  async cancelSubagent(subagentId: string, sessionId?: string) {
     const res = await this.fetch(this.url('/api/subagent-cancel'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ subagentId }),
+      body: JSON.stringify({
+        subagentId,
+        ...(sessionId ? { sessionId } : {}),
+      }),
     })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'subagent cancel failed')
     return data
   }
 
-  /** x.ai/task/kill — kill a background task. */
-  async killTask(taskId: string) {
+  /** x.ai/task/kill — kill a background task of the given session (缺省 = active). */
+  async killTask(taskId: string, sessionId?: string) {
     const res = await this.fetch(this.url('/api/task-kill'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ taskId }),
+      body: JSON.stringify({
+        taskId,
+        ...(sessionId ? { sessionId } : {}),
+      }),
     })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'task kill failed')
@@ -2731,6 +2889,29 @@ export class LocalTransport {
     const body: Record<string, unknown> = { id: opts.id }
     if (sessionId) body.sessionId = sessionId
     await this.xaiCall('/api/queue/release-edit', body)
+  }
+
+  /**
+   * POST /api/queue/status {sessionId, cwd} → 该会话最近一次
+   * x.ai/queue/changed 快照（host 内存缓存；`queue` 为 null 表示本进程
+   * 存活期间未见该会话的队列广播，如 agent 重启后）。读端点：不问
+   * agent、不发通知。用于 load 会话后对齐本地队列镜像 —— 队列状态
+   * 不随 session/load 回放（agent 不持久化 pending_inputs）。
+   */
+  async queueStatus(
+    sessionId: string,
+    cwd: string,
+  ): Promise<{ queue?: Record<string, unknown> | null }> {
+    const res = await this.fetch(this.url('/api/queue/status'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, cwd }),
+    })
+    const data = await res.json()
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `queue status failed (${res.status})`)
+    }
+    return data
   }
 
   // ── 终端扩展 ────────────────────────────────────────────────────────

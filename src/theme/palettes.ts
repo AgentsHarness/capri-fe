@@ -52,20 +52,22 @@ const groknight: ThemeTokens = {
 }
 
 const grokday: ThemeTokens = {
-  // grokday.rs — light counterpart
-  bg: hex(245, 245, 245),
-  bgBase: hex(238, 238, 238),
-  bgDark: hex(240, 240, 240),
-  bgHighlight: hex(222, 222, 222),
-  bgCode: hex(228, 228, 228),
-  bgHover: hex(208, 208, 208),
-  bgVisual: hex(198, 198, 198),
+  // grokday.rs — light counterpart (pure-white bg, grays shifted +10 to match)
+  bg: hex(255, 255, 255),
+  // bgBase 是页面可见主背景（body / 主框架），同样纯白
+  bgBase: hex(255, 255, 255),
+  // 其余灰色背景层统一 #F5F5F5（扁平两层色调：纯白底 + 浅灰面）
+  bgDark: hex(245, 245, 245),
+  bgHighlight: hex(245, 245, 245),
+  bgCode: hex(245, 245, 245),
+  bgHover: hex(245, 245, 245),
+  bgVisual: hex(245, 245, 245),
   fg: hex(38, 38, 38),
   fg2: hex(68, 68, 68),
-  muted: hex(118, 118, 118),
-  gray: hex(98, 98, 98),
-  grayDim: hex(165, 165, 165),
-  gutter: hex(178, 178, 178),
+  muted: hex(128, 128, 128),
+  gray: hex(108, 108, 108),
+  grayDim: hex(175, 175, 175),
+  gutter: hex(188, 188, 188),
   magenta: hex(125, 75, 198),
   blue: hex(47, 100, 210),
   cyan: hex(0, 130, 170),
@@ -77,10 +79,10 @@ const grokday: ThemeTokens = {
   teal: hex(10, 142, 112),
   purple: hex(108, 62, 178),
   plan: hex(168, 120, 10),
-  promptBorder: hex(200, 200, 205),
-  promptBorderActive: hex(165, 165, 175),
-  selection: hex(185, 185, 190),
-  hoverBorder: hex(212, 212, 216), // grokday hover_border
+  promptBorder: hex(210, 210, 215),
+  promptBorderActive: hex(175, 175, 185),
+  selection: hex(195, 195, 200),
+  hoverBorder: hex(222, 222, 226), // grokday hover_border
   diffDelBg: hex(245, 218, 222),
   diffDelFg: hex(205, 48, 72),
   diffInsBg: hex(218, 242, 220),

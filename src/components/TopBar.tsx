@@ -12,6 +12,7 @@ import { useChatStore } from '../store/chat'
 import { ThemeOptions, ThemePicker } from './ThemePicker'
 import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS } from '../theme/layout'
 import { SessionHistoryList } from './SessionHistoryList'
+import { SessionListHeader } from './SessionListHeader'
 import {
   ContextChip,
   GoalChip,
@@ -22,6 +23,21 @@ import {
   TodoChip,
 } from './StatusChips'
 import { filterRunningEntries, shortCwd } from '../format'
+import type { HostInfo } from '../api/types'
+import {
+  AddHostModal,
+  DeleteHostModal,
+  HostActionsMenu,
+  RenameHostModal,
+} from './HostActions'
+
+/** 菜单打开位置边缘夹取：菜单宽 ~184px、高 ~80px，贴着视口边缘。 */
+function clampMenuPos(x: number, y: number): { x: number; y: number } {
+  return {
+    x: Math.max(4, Math.min(x, window.innerWidth - 188)),
+    y: Math.max(4, Math.min(y, window.innerHeight - 136)),
+  }
+}
 
 /**
  * Workspace + git + status chips — the whole TUI status-bar row (branch +
@@ -32,11 +48,17 @@ import { filterRunningEntries, shortCwd } from '../format'
 export function WorkspaceBar({
   onOpenMcp,
   topRef,
+  fadeHidden,
 }: {
   onOpenMcp?: () => void
   /** Scrollback measures this sticky bar's rendered height to offset the
    *  pinned user-prompt header below it (grows with the tasks bar). */
   topRef?: Ref<HTMLDivElement>
+  /** 会话切换加载中（historyLoading）栏内内容淡出：git branch / cwd /
+   *  状态芯片等旧会话数据不属于新会话，加载完毕再淡入。栏本身（背景
+   *  条）保持常驻可见、高度不变。隐藏期间不可交互、不可聚焦、不进
+   *  无障碍树。 */
+  fadeHidden?: boolean
 }) {
   const gitInfo = useChatStore((s) => s.gitInfo)
   const cwd = useChatStore((s) => s.cwd)
@@ -81,9 +103,16 @@ export function WorkspaceBar({
       {/* Content column matches scrollback/composer (mx-auto max-w-[960px]).
           Mobile: the row wraps — left (branch/cwd) stays on the first line,
           the chip cluster is one unit that wraps to a right-aligned second
-          line instead of overflowing/clipping past the viewport edge. */}
+          line instead of overflowing/clipping past the viewport edge.
+          会话切换加载中（historyLoading）只有栏内内容淡出：栏本身保持
+          常驻可见，高度不变（min-h 仍在布局里），wsBarH 连续测量，
+          钉住的用户提示头始终与栏底齐平。 */}
       <div
-        className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} flex min-h-[37px] min-w-0 flex-wrap items-center gap-x-2 gap-y-1 py-2 text-[14px] select-none`}
+        className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} flex min-h-[37px] min-w-0 flex-wrap items-center gap-x-2 gap-y-1 py-2 text-[14px] select-none transition-opacity duration-300 ${
+          fadeHidden ? 'pointer-events-none opacity-0' : 'opacity-100'
+        }`}
+        aria-hidden={fadeHidden || undefined}
+        inert={fadeHidden || undefined}
       >
         {/* Git head (x.ai/git_head_changed) — TUI status-bar branch.
             Detached HEAD renders as "⎇ detached" (TUI render.rs: empty
@@ -156,8 +185,17 @@ export function WorkspaceBar({
           <TodoChip todos={todos} goalState={goalState} />
         </div>
       </div>
-      {/* Sticky task rows under the bar (not a floating popup). */}
-      <RunningTasksBar entries={entries} topTasks={topTasks} open={tasksOpen} />
+      {/* Sticky task rows under the bar (not a floating popup).
+          会话切换加载中随栏内内容一起淡出（旧会话任务不属于新会话）。 */}
+      <div
+        className={`transition-opacity duration-300 ${
+          fadeHidden ? 'pointer-events-none opacity-0' : 'opacity-100'
+        }`}
+        aria-hidden={fadeHidden || undefined}
+        inert={fadeHidden || undefined}
+      >
+        <RunningTasksBar entries={entries} topTasks={topTasks} open={tasksOpen} />
+      </div>
     </div>
   )
 }
@@ -199,6 +237,17 @@ export function TopBar({
   const [moreOpen, setMoreOpen] = useState(false)
   // The theme row expands inline (accordion) inside the 更多 menu.
   const [themeExpanded, setThemeExpanded] = useState(false)
+  // 单个 host 的操作菜单（右键 / 行内 ⋮ 打开，fixed 坐标）。
+  const [menuHost, setMenuHost] = useState<{ host: HostInfo; pos: { x: number; y: number } } | null>(null)
+  // 添加 Host（配对码）模态框。
+  const [addHostOpen, setAddHostOpen] = useState(false)
+  // 修改名称 / 删除确认的目标 host。
+  const [renameTarget, setRenameTarget] = useState<HostInfo | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<HostInfo | null>(null)
+  // 当前选中的 host（右键左上角开关直接对当前 host 弹菜单）。
+  const currentHost =
+    hosts.find((h) => h.hostId === selectedHostId) ??
+    (hosts.length ? hosts[0] : null)
 
   // Host label reflects connection health: abnormal → "connecting" / "error".
   // An active host status message (error / connection warning) replaces the
@@ -265,13 +314,22 @@ export function TopBar({
             <button
               type="button"
               onClick={() => setOpenHosts((v) => !v)}
+              onContextMenu={(e) => {
+                // 网页端：右键当前 host 直接弹操作菜单（修改 / 删除）。
+                e.preventDefault()
+                if (currentHost) {
+                  setMenuHost({ host: currentHost, pos: clampMenuPos(e.clientX, e.clientY) })
+                } else {
+                  setOpenHosts(true)
+                }
+              }}
               className={`flex max-w-[40vw] sm:max-w-xs items-center gap-1 truncate rounded px-1.5 py-0.5 hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8 ${hostLabelColor}`}
               title={
                 notice
                   ? `${notice}${hostName ? ` · ${hostName}` : ''}`
                   : conn === 'connecting' || conn === 'error' || conn === 'offline'
                     ? `连接状态: ${conn}${hostName ? ` · ${hostName}` : ''}`
-                    : hostName || 'Local Host'
+                    : `${hostName || 'Local Host'}（右键可管理 Host）`
               }
             >
               <span className="truncate">{hostLabel}</span>
@@ -284,7 +342,10 @@ export function TopBar({
                 type="button"
                 className="fixed inset-0 z-30 cursor-default"
                 aria-label="close"
-                onClick={() => setOpenHosts(false)}
+                onClick={() => {
+                  setOpenHosts(false)
+                  setMenuHost(null)
+                }}
               />
               <div className="absolute left-0 top-full z-40 mt-1 w-64 max-w-[90vw] rounded border border-gn-prompt-border bg-gn-bg-base shadow-xl py-1">
                 <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-gn-gutter">
@@ -296,37 +357,111 @@ export function TopBar({
                 ).map((h) => {
                   const current = h.hostId === selectedHostId
                   return (
-                    <button
+                    <div
                       key={h.hostId}
-                      type="button"
-                      onClick={() => {
-                        setOpenHosts(false)
-                        void switchHost(h.hostId)
+                      className="group/host relative"
+                      onContextMenu={(e) => {
+                        // 网页端：右键任意 host 行弹操作菜单。
+                        e.preventDefault()
+                        setMenuHost({ host: h, pos: clampMenuPos(e.clientX, e.clientY) })
                       }}
-                      className={`flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] hover:bg-gn-bg-highlight ${current ? 'bg-gn-bg-highlight' : ''}`}
-                      title={h.online ? `切换到 ${h.hostName}` : `${h.hostName}（离线）`}
                     >
-                      <span
-                        className={`h-1.5 w-1.5 shrink-0 rounded-full ${h.online ? 'bg-gn-green' : 'bg-gn-muted'}`}
-                      />
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-gn-fg">
-                          {h.hostName}
-                          {current && <span className="ml-1.5 text-[10px] text-gn-cyan">当前</span>}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMenuHost(null)
+                          setOpenHosts(false)
+                          void switchHost(h.hostId)
+                        }}
+                        className={`flex w-full items-center gap-2 px-3 py-2 pr-9 text-left text-[12px] hover:bg-gn-bg-highlight ${current ? 'bg-gn-bg-highlight' : ''}`}
+                        title={
+                          h.online
+                            ? `切换到 ${h.hostName}（右键可管理）`
+                            : `${h.hostName}（离线）`
+                        }
+                      >
+                        <span
+                          className={`h-1.5 w-1.5 shrink-0 rounded-full ${h.online ? 'bg-gn-green' : 'bg-gn-muted'}`}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-gn-fg">
+                            {h.hostName}
+                            {current && <span className="ml-1.5 text-[10px] text-gn-cyan">当前</span>}
+                          </div>
+                          <div className="truncate font-mono text-[10px] text-gn-muted">{h.hostId}</div>
                         </div>
-                        <div className="truncate font-mono text-[10px] text-gn-muted">{h.hostId}</div>
-                      </div>
-                    </button>
+                      </button>
+                      {/* 行内 ⋮ 菜单图标：移动端（无右键）的主要入口，桌面端悬停可见。 */}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          const r = e.currentTarget.getBoundingClientRect()
+                          setMenuHost(
+                            menuHost?.host.hostId === h.hostId
+                              ? null
+                              : { host: h, pos: clampMenuPos(r.right - 176, r.bottom + 2) },
+                          )
+                        }}
+                        aria-label={`${h.hostName} 操作`}
+                        title="修改 / 删除"
+                        className={`absolute right-1 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded text-gn-gutter hover:bg-gn-bg-highlight hover:text-gn-fg lg:opacity-0 lg:group-hover/host:opacity-100 ${menuHost?.host.hostId === h.hostId ? 'lg:opacity-100' : ''}`}
+                      >
+                        <svg
+                          width="13"
+                          height="13"
+                          viewBox="0 0 16 16"
+                          fill="currentColor"
+                          aria-hidden
+                        >
+                          <circle cx="3.2" cy="8" r="1.4" />
+                          <circle cx="8" cy="8" r="1.4" />
+                          <circle cx="12.8" cy="8" r="1.4" />
+                        </svg>
+                      </button>
+                    </div>
                   )
                 })}
-                <div className="border-t border-gn-prompt-border px-3 py-2 text-[11px] text-gn-muted leading-snug">
-                  {hosts.length > 1 || (hosts.length === 1 && !hosts[0].local)
-                    ? '经 acp-hub 中转 · 点击切换 Host'
-                    : '本地模式 · 直连 acp-host'}
+                <div className="border-t border-gn-prompt-border py-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOpenHosts(false)
+                      setAddHostOpen(true)
+                    }}
+                    className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                    title="获取新配对码，在另一台机器上接入 hub"
+                  >
+                    <Plus size={13} strokeWidth={2} aria-hidden />
+                    添加 Host
+                  </button>
                 </div>
               </div>
             </>
           )}
+          {/* 单个 host 的操作菜单：右键（网页）/ ⋮ 图标（移动端）打开。 */}
+          {menuHost && (
+            <HostActionsMenu
+              host={menuHost.host}
+              pos={menuHost.pos}
+              onClose={() => setMenuHost(null)}
+              onRename={(h) => {
+                setMenuHost(null)
+                setRenameTarget(h)
+              }}
+              onDelete={(h) => {
+                setMenuHost(null)
+                setDeleteTarget(h)
+              }}
+            />
+          )}
+          {renameTarget && (
+            <RenameHostModal host={renameTarget} onClose={() => setRenameTarget(null)} />
+          )}
+          {deleteTarget && (
+            <DeleteHostModal host={deleteTarget} onClose={() => setDeleteTarget(null)} />
+          )}
+          {addHostOpen && <AddHostModal onClose={() => setAddHostOpen(false)} />}
         </div>
 
         <div className="flex-1" />
@@ -422,15 +557,23 @@ export function TopBar({
               />
               {/* Mobile dropdown — renders the SAME workspace-grouped list as
                   the desktop sidebar (SessionHistoryList), so the two ends
-                  stay in sync (分组 / 折叠 / 加载更多 / 重命名 / 删除).
+                  stay in sync (分组 / 折叠 / 加载更多 / 重命名 / 删除)，
+                  plus the same「会话 + 刷新」header (SessionListHeader).
                   Width is viewport-capped: right-anchored to the history
                   button, a fixed w-80 would poke past the LEFT edge on
-                  narrow phones (320px). */}
+                  narrow phones (320px). Header is outside the scroll area
+                  (flex-col) so the list's sticky group headers stick below
+                  it instead of sliding underneath. */}
               <div
-                className="absolute right-0 top-full z-40 mt-1 max-h-[70vh] w-[min(84vw,20rem)] overflow-y-auto rounded border border-gn-prompt-border bg-gn-bg-base shadow-xl isolate"
+                className="absolute right-0 top-full z-40 mt-1 flex max-h-[70vh] w-[min(84vw,20rem)] flex-col overflow-hidden rounded border border-gn-prompt-border bg-gn-bg-base shadow-xl isolate"
                 style={{ backgroundColor: 'var(--color-gn-bg-base)' }}
               >
-                <SessionHistoryList />
+                <div className="flex min-h-[37px] shrink-0 items-center gap-2 border-b border-gn-prompt-border px-3 py-2">
+                  <SessionListHeader alignRight />
+                </div>
+                <div className="gn-no-scrollbar min-h-0 overflow-y-auto">
+                  <SessionHistoryList />
+                </div>
               </div>
             </>
           )}

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useChatStore } from './store/chat'
+import { initUiNotifications } from './store/notifications'
 import { useThemeStore } from './store/theme'
 import { transport } from './api/localTransport'
 import { AccessTokenGate } from './components/AccessTokenGate'
@@ -126,6 +127,11 @@ function AppShell() {
   useScrollbackKeys()
 
   useEffect(() => init(), [init])
+  // [ui.notifications] rails: approval_required / task_complete events +
+  // document.title composition (title.*, progress_bar).
+  useEffect(() => {
+    initUiNotifications()
+  }, [])
   // /mcps opens the MCP panel — the opener lives in App (local state).
   useEffect(() => {
     registerMcpPanelOpener(() => setMcpOpen(true))

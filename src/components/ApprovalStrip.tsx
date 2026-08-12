@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useReducer, useState } from 'react'
 import { useChatStore } from '../store/chat'
 import { Glyphs } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
 import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS } from '../theme/layout'
+import { onUiSettingsReady, uiBool } from '../store/settings'
 import type { PendingReq, PermissionScope, ScrollEntry } from '../api/types'
 
 /** One permission option from the request params. `meta` is the ACP
@@ -64,7 +65,18 @@ export function ApprovalStrip() {
   const [patternEdit, setPatternEdit] = useState<string | null>(null)
 
   const req = pending[0]
-  const options = (req?.params?.options as Option[] | undefined) || []
+  const rawOptions = (req?.params?.options as Option[] | undefined) || []
+  // TUI [ui] remember_tool_approvals (default false): per-command
+  // "Always allow" rows only appear on prompts when enabled. Filtering is
+  // display-side only — host-side grants are untouched.
+  const [, forceRender] = useReducer((x: number) => x + 1, 0)
+  useEffect(() => {
+    onUiSettingsReady(() => forceRender())
+  }, [])
+  const rememberApprovals = uiBool('remember_tool_approvals', false)
+  const options = rememberApprovals
+    ? rawOptions
+    : visiblePermissionOptions(rawOptions)
   const toolCall = req?.params?.toolCall as
     | { title?: string; kind?: string; rawInput?: unknown; raw_input?: unknown }
     | undefined
@@ -219,7 +231,11 @@ export function ApprovalStrip() {
       // The request was resolved while this listener was live.
       if (st.pending.length === 0 || st.pending[0].requestId !== req.requestId) return
       // Fresh options straight from the store (never stale closures).
-      const opts = (st.pending[0].params?.options as Option[] | undefined) || []
+      const rawOpts =
+        (st.pending[0].params?.options as Option[] | undefined) || []
+      const opts = rememberApprovals
+        ? rawOpts
+        : visiblePermissionOptions(rawOpts)
       const hasAlwaysOpt = opts.some(isAlwaysOption)
       // Fresh MCP facts (allow-always-mcp option meta / toolCall variant).
       const tc = st.pending[0].params?.toolCall as
@@ -481,7 +497,7 @@ export function ApprovalStrip() {
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [req, respond, sel, parked, scopeIdx, followupOpen, followupText, rejectOption, patternEdit, expanded, collapsible, scopeForPreset])
+  }, [req, respond, sel, parked, scopeIdx, followupOpen, followupText, rejectOption, patternEdit, expanded, collapsible, scopeForPreset, rememberApprovals])
 
   if (pending.length === 0) return null
 
@@ -855,6 +871,13 @@ function deriveMcp(
 const PERMISSION_COLLAPSED_ROWS = 5
 
 const ALWAYS_RE = /always|always_allow|alwaysAllow|始终|总是/i
+
+/** remember_tool_approvals=false: drop always-allow rows from display,
+ *  unless that would leave no options at all (never show an empty card). */
+function visiblePermissionOptions(raw: Option[]): Option[] {
+  const kept = raw.filter((o) => !isAlwaysOption(o))
+  return kept.length > 0 ? kept : raw
+}
 
 /** An option carrying "always allow" semantics (optionId or label). */
 function isAlwaysOption(opt: Option | undefined): boolean {
