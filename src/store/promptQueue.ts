@@ -125,9 +125,12 @@ function queueSyncToast(prefix: string, e: unknown): void {
 
 /**
  * 结算一条在途 prompt 的 RPC 结果（enqueue 的 fire-and-forget 链）：
- * - `ran`：RPC 在回合完成时 resolve = 该 prompt 已经作为回合跑完——
- *   从显示镜像移除（正常流程收养广播先移除；这里是漏广播兜底），并记
- *   入 drainedIds 防 stale 广播复活。
+ * - `ran`：旧 host 下 RPC 在回合完成时 resolve（响应带 stopReason）=
+ *   该 prompt 已经作为回合跑完——从显示镜像移除（正常流程收养广播先
+ *   移除；这里是漏广播兜底），并记入 drainedIds 防 stale 广播复活。
+ *   新 host 受理即返回（无 stopReason）不得走这条：行仍在权威队列里，
+ *   过早 drained 会让后续 queue_changed 快照把该行滤掉，queued 闪一下
+ *   就再也回不来。
  * - `failed`：RPC 被拒（网络失败 / agent 拒绝 / 竞态 409）——行保留为
  *   degraded（FE-owned，附带失败原因 errorText），用户手动重发；不再
  *   渲染 scrollback 错误行（队列行徽标即提示，主输出流不被打断）。
@@ -265,15 +268,25 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
     set((s) => ({ queue: [...s.queue, entry], sessionId }))
     // Server-authoritative: prompt RPC 本身就是入队（agent 从
     // `_meta.promptId` 提取 queue_meta 插进 pending_inputs；busy 排队、
-    // idle 直接运行）。fire-and-forget：不 await 回合完成——新 host 下
-    // POST 受理即返回（resolve = 已受理，行标记 ran 表示"已投递"，权威
-    // 状态仍由 queue_changed 广播校正）；旧 host 下 resolve 到回合结束
-    // （行标记 ran 表示"跑完了"）。只关心 reject（降级）与 resolve
-    // （清理镜像），广播（queue_changed）负责确认与收养。
+    // idle 直接运行）。fire-and-forget：不 await 回合完成。
+    //
+    // 新 host：POST 受理即返回 {ok:true}，无 stopReason。行保持乐观回显，
+    // 等 queue_changed 确认（清 optimistic + 补 version）或收养
+    // （running_prompt_id）。绝不能在此处按 'ran' 移除并写入 drainedIds
+    // ——否则权威快照会被 drainedIds 滤掉，UI 上 queued 闪一下就消失，
+    // 但 agent 侧已经入队。
+    //
+    // 旧 host：POST 阻塞到该 prompt 作为回合跑完，响应带 stopReason，
+    // 才走漏广播兜底（收养广播通常已先移除该行，settle 是 no-op）。
+    // reject（网络 / agent 拒绝 / 409）→ 行标记 degraded，手动重发。
     void transport
       .prompt(item.blocks, { sessionId, promptId })
       .then(
-        () => settlePromptRow(promptId, sessionId, 'ran'),
+        (result) => {
+          if (result?.stopReason) {
+            settlePromptRow(promptId, sessionId, 'ran')
+          }
+        },
         (e: unknown) => {
           // 任何失败（网络 / agent 拒绝 / 竞态 409）→ 行标记 degraded
           // （FE-owned，不丢用户意图，手动重发）并记录失败原因（队列

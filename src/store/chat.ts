@@ -355,11 +355,11 @@ function planOnWithinGrace(): boolean {
 }
 
 // ── client-global default permission mode (config.toml ui.permission_mode) ──
-// Used ONLY as the seed for a NEW session (session/new `_meta`): with no
-// global record yet, a fresh conversation inherits the TUI's `[ui]
-// permission_mode` default, served read-only by the host's GET
-// /api/settings. Live display never consults this — it follows the
-// agent's yolo_mode_changed broadcasts (client-scoped, all sessions).
+// Seeds NEW sessions (session/new `_meta`) AND the composer badge when
+// the host hello snapshot is still the spawn default `ask`. Host records
+// permMode only on set-mode / yolo_mode_changed — it resets to ask on
+// agent spawn and never copies `[ui] permission_mode`, so treating hello
+// `ask` as authority would hide a config default of always-approve.
 // Precedence mirrors the TUI's load_permission_mode: permission_mode >
 // legacy approval_mode > yolo=true.
 
@@ -367,14 +367,24 @@ function planOnWithinGrace(): boolean {
 function permissionFlagsFromUi(ui?: Record<string, unknown>): ModeFlags {
   if (!ui) return {}
   const perm = typeof ui.permission_mode === 'string' ? ui.permission_mode : undefined
-  if (perm === 'always-approve') return { yoloMode: true, autoMode: false }
-  if (perm === 'auto') return { yoloMode: false, autoMode: true }
+  if (perm === 'always-approve') {
+    return { yoloMode: true, autoMode: false, permissionMode: 'always-approve' }
+  }
+  if (perm === 'auto') {
+    return { yoloMode: false, autoMode: true, permissionMode: 'auto' }
+  }
   // 'default' / 'ask' / unknown → no client default (agent's own default).
   if (perm === undefined) {
     const legacy = typeof ui.approval_mode === 'string' ? ui.approval_mode : undefined
-    if (legacy === 'always-approve') return { yoloMode: true, autoMode: false }
-    if (legacy === 'auto') return { yoloMode: false, autoMode: true }
-    if (ui.yolo === true) return { yoloMode: true, autoMode: false }
+    if (legacy === 'always-approve') {
+      return { yoloMode: true, autoMode: false, permissionMode: 'always-approve' }
+    }
+    if (legacy === 'auto') {
+      return { yoloMode: false, autoMode: true, permissionMode: 'auto' }
+    }
+    if (ui.yolo === true) {
+      return { yoloMode: true, autoMode: false, permissionMode: 'always-approve' }
+    }
   }
   return {}
 }
@@ -424,11 +434,34 @@ function permissionModeFromSnapshot(mode: unknown): ModeFlags {
 }
 
 /**
- * Effective flags for a NEW session: the current global permission mode
- * wins; with none known yet, fall back to the config.toml default.
+ * Effective flags for a NEW session / badge: the current global
+ * permission mode wins; with none known yet, fall back to config.toml.
  */
 function sessionModeFlags(saved: ModeFlags, defaults: ModeFlags): ModeFlags {
   return saved.yoloMode !== undefined || saved.autoMode !== undefined ? saved : defaults
+}
+
+/**
+ * Composer / store flags after a hello snapshot. Host non-ask is
+ * authority. Snapshot `ask` is the unseeded spawn default — keep last
+ * known non-ask (or the config.toml default) so the badge matches TUI
+ * launch (`[ui] permission_mode = always-approve` shows immediately).
+ */
+function resolveDisplayModeFlags(
+  saved: ModeFlags,
+  defaults: ModeFlags,
+  snap: ModeFlags,
+): ModeFlags {
+  if (snap.yoloMode === true || snap.autoMode === true) return snap
+  const known = sessionModeFlags(saved, defaults)
+  if (known.yoloMode === true || known.autoMode === true) {
+    return {
+      yoloMode: known.yoloMode === true,
+      autoMode: known.autoMode === true && known.yoloMode !== true,
+      permissionMode: known.yoloMode === true ? 'always-approve' : 'auto',
+    }
+  }
+  return snap
 }
 
 /** TUI [ui] collapsed_edit_blocks — read from the shared settings cache. */
@@ -562,34 +595,34 @@ function resetSessionState(set: (partial: Partial<ChatState>) => void): void {
 
 // ── agent-restart follow ────────────────────────────────────────────
 // The agent's permission mode lives in ITS process memory only — host
-// restart (or agent crash) resets every session to the default ask. The
-// host stamps each hello with the agent spawn time; when it changes
-// (including first contact) the browser's GLOBAL permission-mode copy is
-// stale and must NOT be replayed onto the agent — the UI follows the
-// agent, so the copy is cleared and the badge falls back to ask until
-// the user (or another client) toggles a mode again.
+// restart resets the host mirror to ask (it does not read config.toml).
+// TUI re-applies `[ui] permission_mode` at launch and shows the chip
+// immediately. FE mirrors that: a new `agentStartedAt` (including first
+// contact) drops the stale localStorage copy, then maybeReseed pushes
+// last-known non-ask flags or the config.toml default back onto the
+// agent AND the composer badge. A hello snapshot of auto / always-approve
+// stays authoritative (another client already seeded). Snapshot `ask` is
+// the unseeded spawn default — it must NOT wipe a config default of
+// always-approve (host never records session/new `_meta` seeds).
 const LAST_AGENT_STARTED_KEY = 'acpfe.lastAgentStartedAt'
 
-/**
- * Detect an agent restart via the hello `agentStartedAt` stamp and drop
- * the global permission-mode record so the UI follows the agent's fresh
- * ask default. Idempotent: fires once per agent instance (recorded in
- * localStorage), so a plain page reload never clears on its own — the
- * stamp is unchanged and the reload simply re-reads the (still valid)
- * global flags. No-op for older hosts without the stamp.
- */
-function clearModeFlagsOnAgentRestart(
-  set: SetState,
-  agentStartedAt: number | undefined,
-): void {
-  if (typeof agentStartedAt !== 'number' || agentStartedAt <= 0) return
+function consumeAgentInstance(agentStartedAt: number | undefined): {
+  restarted: boolean
+  saved: ModeFlags
+} {
+  const saved = restoreModeFlags()
+  if (typeof agentStartedAt !== 'number' || agentStartedAt <= 0) {
+    return { restarted: false, saved }
+  }
   let prev: string | null = null
   try {
     prev = window.localStorage.getItem(LAST_AGENT_STARTED_KEY)
   } catch {
     /* ignore */
   }
-  if (prev === String(agentStartedAt)) return
+  if (prev === String(agentStartedAt)) {
+    return { restarted: false, saved }
+  }
   try {
     window.localStorage.setItem(LAST_AGENT_STARTED_KEY, String(agentStartedAt))
   } catch {
@@ -600,12 +633,92 @@ function clearModeFlagsOnAgentRestart(
   } catch {
     /* ignore */
   }
-  // Plan mode is per-session and timeline-derived — untouched here.
-  set({
-    yoloMode: undefined,
-    autoMode: undefined,
-    permissionMode: undefined,
-  })
+  return { restarted: true, saved }
+}
+
+let reseedGen = 0
+/** Agent stamp we already pushed a config/last-known seed for. Shared
+ *  across reloads so a refresh does not fire another setMode (that RPC
+ *  was serializing with Shift+Tab and making cycleMode feel lagged). */
+const RESEED_STAMP_KEY = 'acpfe.permissionReseededFor'
+
+function currentAgentStamp(): string | null {
+  try {
+    return window.localStorage.getItem(LAST_AGENT_STARTED_KEY)
+  } catch {
+    return null
+  }
+}
+
+function alreadyReseeded(stamp: string | null): boolean {
+  if (!stamp) return false
+  try {
+    return window.localStorage.getItem(RESEED_STAMP_KEY) === stamp
+  } catch {
+    return false
+  }
+}
+
+function markReseeded(stamp: string | null): void {
+  if (!stamp) return
+  try {
+    window.localStorage.setItem(RESEED_STAMP_KEY, stamp)
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * After hello: if the painted mode is last-known / config.toml non-ask
+ * while the host snapshot is still ask (fresh spawn, or host never
+ * recorded a session/new `_meta` seed), push it to the agent so the
+ * host mirror and the composer badge stay in sync. TUI-parity re-seed.
+ *
+ * setMode runs at most once per agent instance. Shift+Tab bumps
+ * `reseedGen` so an in-flight re-seed cannot overwrite a user cycle.
+ */
+async function maybeReseedPermissionMode(
+  set: SetState,
+  get: () => ChatState,
+  opts: { saved: ModeFlags; snapshotMode: unknown },
+): Promise<void> {
+  const gen = ++reseedGen
+  const defaults = await ensureDefaultModeFlags()
+  if (gen !== reseedGen) return
+  const snap = permissionModeFromSnapshot(opts.snapshotMode)
+  if (snap.yoloMode === true || snap.autoMode === true) {
+    markReseeded(currentAgentStamp())
+    return
+  }
+  const display = resolveDisplayModeFlags(opts.saved, defaults, snap)
+  if (display.yoloMode !== true && display.autoMode !== true) return
+  const cur = get()
+  if (cur.yoloMode !== display.yoloMode || cur.autoMode !== display.autoMode) {
+    set(display)
+  }
+  const seed = permissionSeedMeta(display)
+  if (!seed) return
+  const stamp = currentAgentStamp()
+  if (alreadyReseeded(stamp)) return
+  if (gen !== reseedGen) return
+  try {
+    if (seed.yoloMode) {
+      for (const modeId of ['always-approve', 'always_approve', 'yolo']) {
+        try {
+          await transport.setMode(modeId, get().sessionId)
+          if (gen === reseedGen) markReseeded(stamp)
+          return
+        } catch {
+          /* try next host-build id */
+        }
+      }
+    } else {
+      await transport.setMode('auto', get().sessionId)
+      if (gen === reseedGen) markReseeded(stamp)
+    }
+  } catch {
+    /* display already applied; seed is best-effort */
+  }
 }
 
 /**
@@ -2477,10 +2590,22 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
         hostName: 'Localhost',
       })
     }
-    // Prefetch the config.toml default permission mode — used only as the
-    // seed for NEW sessions (session/new `_meta`). Live display never
-    // consults it: the UI follows the agent's yolo_mode_changed broadcasts.
-    void ensureDefaultModeFlags()
+    // Prefetch config.toml `[ui] permission_mode` and paint the composer
+    // badge immediately when no live flags are known yet (hello may
+    // arrive later and overlay a host snapshot / re-seed).
+    void ensureDefaultModeFlags().then((defaults) => {
+      const seed = permissionSeedMeta(defaults)
+      if (!seed) return
+      const s = get()
+      if (s.yoloMode === true || s.autoMode === true) return
+      // Explicit ask (hello already applied yolo/auto = false) — leave it.
+      if (s.yoloMode === false || s.autoMode === false) return
+      set({
+        yoloMode: seed.yoloMode,
+        autoMode: seed.autoMode,
+        permissionMode: seed.yoloMode ? 'always-approve' : 'auto',
+      })
+    })
     // 置顶/待办偏好从 hub 拉取并合并（localStorage 是离线缓存；hub 为
     // 持久层，见 historyPins.ts）。hub 模式生效，local 模式内部跳过。
     void usePins.getState().syncPrefsFromHub()
@@ -2845,9 +2970,11 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
       // strip contents wholesale (alive filter + additions), so stale
       // entries from a previous session cannot linger.
       gitInfo: undefined,
-      yoloMode: undefined,
-      autoMode: undefined,
-      permissionMode: undefined,
+      // Permission mode is process-global (follows the agent) — do NOT
+      // reset it when swapping sessions. loadHistory used to blank the
+      // composer badge for the duration of replay, then only restore
+      // localStorage (empty after an agent-restart clear, so a config
+      // default of always-approve never came back).
       planMode: false,
       mcpServers: [],
       mcpInit: undefined,
@@ -2992,10 +3119,14 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
             }),
         historyLoadedAt: Date.now(),
         // 权限模式是进程级全局状态（跟随 agent 客户端级广播），replay
-        // 推导不出 ask/auto/always-approve——这里恢复全局记录；plan 是
-        // 会话态，从 per-session 副本补充（权威仍是 replay 的
-        // current_mode_update）。
-        ...restoreModeFlags(),
+        // 推导不出 ask/auto/always-approve——这里恢复全局记录，空记录
+        // 回落到 config.toml 默认（设置里 always-approve 要继续显示）；
+        // plan 是会话态，从 per-session 副本补充。
+        ...resolveDisplayModeFlags(
+          restoreModeFlags(),
+          cachedDefaultModeFlags ?? {},
+          {},
+        ),
         ...restorePlanMode(sessionId),
       })
       // 会话级 recap 缓存回填：该会话最近一次摘要（display-only、不
@@ -3693,6 +3824,8 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
           : partitionPendingRequests(reqs, ev.sessionId, {
               includeUntagged: true,
             })
+        const { saved: permSaved } = consumeAgentInstance(ev.agentStartedAt)
+        const permSnap = permissionModeFromSnapshot(ev.permissionMode)
         set({
           conn: ev.ready ? 'ready' : ev.error ? 'error' : 'connecting',
           statusText: ev.error || (ev.ready ? '就绪' : '启动中…'),
@@ -3708,15 +3841,22 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
           error: ev.error,
           statusWarning: undefined,
           ...modelSnap,
-          // 权限模式是进程级全局状态：恢复全局记录（页面刷新后徽标不丢），
-          // 权威是 host 在 hello 里携带的 agent 真实模式快照
-          // （permissionMode，host 记录每次变更并随 agent 重启复位）——
-          // 快照置于记录之后，无条件覆盖；extractModeFlags 对 modes 载荷
-          // 里确实携带的字段依然生效。plan 按会话补充。
-          ...restoreModeFlags(),
+          // 权限模式是进程级全局状态：hello 快照的非 ask（auto /
+          // always-approve）是权威；快照 ask 是 agent 刚启动的未播种
+          // 默认——保留上次非 ask 记录或 config.toml 默认，这样设置里
+          // `[ui] permission_mode = always-approve` 会立刻画上徽标。
+          // plan 按会话补充。
+          ...resolveDisplayModeFlags(
+            permSaved,
+            cachedDefaultModeFlags ?? {},
+            permSnap,
+          ),
           ...restorePlanMode(ev.sessionId),
-          ...permissionModeFromSnapshot(ev.permissionMode),
           ...(sessionModesPatch(get, ev.modes) ?? {}),
+        })
+        void maybeReseedPermissionMode(set, get, {
+          saved: permSaved,
+          snapshotMode: ev.permissionMode,
         })
         // 抑制窗口内的 busy 快照：旧会话的忙态绝不能灌进刚创建的新会话
         // （turnIsLive 误判 → 第一条消息错误排队）。窗口外照常应用
@@ -3777,12 +3917,6 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
           !get().historyLoading
         ) {
           void get().loadHistory(ev.sessionId, ev.cwd || '')
-        }
-        // Agent restart (host respawned the agent → in-memory permission
-        // mode reset to ask): clear the browser's global copy once per
-        // instance so the UI follows the agent instead of stale flags.
-        if (typeof ev.agentStartedAt === 'number' && ev.agentStartedAt > 0) {
-          clearModeFlagsOnAgentRestart(set, ev.agentStartedAt)
         }
         break
       }
@@ -6429,14 +6563,24 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
    * {ask,auto,always}: plan lives ONLY in the second slot; the plan·auto /
    * plan·always overlays exist only via /auto & /always while in plan mode
    * (Shift+Tab from an overlay leaves plan and advances the permission).
-   * Each arm shows the "Switched to mode: X" banner (TUI notices.rs)
-   * optimistically, like the TUI's show_mode_switch_banner.
+   * Each arm paints the banner AND the composer chip immediately
+   * (TUI notices.rs + local flags), then persists to the host. Waiting
+   * for setMode before set() made Shift+Tab feel lagged once the
+   * always-approve chip was visible — the banner flipped, the chip didn't.
    */
   cycleMode: async () => {
+    const cycle = ++reseedGen
     const s = get()
     // 会话级 RPC：请求锁定发起时的会话（缺省 = host active，多 tab /
     // 在飞切换时会打错会话）。
     const sid = s.sessionId
+    const prev = {
+      planMode: s.planMode,
+      permissionMode: s.permissionMode,
+      yoloMode: s.yoloMode,
+      autoMode: s.autoMode,
+      statusText: s.statusText,
+    }
     const inPlan = s.planMode === true || s.permissionMode === 'plan'
     const perm = (s.permissionMode || '').toLowerCase()
     const inAlways =
@@ -6445,74 +6589,90 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
       perm === 'always_approve' ||
       perm === 'yolo'
     const inAuto = s.autoMode === true || perm === 'auto'
-    try {
-      if (!inPlan && !inAuto && !inAlways) {
-        // normal → plan
-        get().showModeBanner('Switched to mode: Plan')
-        await transport.setMode('plan', sid)
-        set({ planMode: true, permissionMode: undefined, statusText: '已切换到 plan 模式' })
-      } else if (inPlan && !inAuto && !inAlways) {
-        // plan → auto (leave plan)
-        get().showModeBanner('Switched to mode: Auto')
-        await transport.setMode('default', sid)
-        await transport.setMode('auto', sid)
-        set({
-          planMode: false,
-          autoMode: true,
-          yoloMode: false,
-          permissionMode: undefined,
-          statusText: '已切换到 auto 模式',
-        })
-      } else if (inPlan && inAuto) {
-        // plan·auto → always (leave plan)
-        get().showModeBanner('Switched to mode: Always-Approve')
-        await transport.setMode('default', sid)
-        await transport.setMode('always-approve', sid)
-        set({
-          planMode: false,
-          yoloMode: true,
-          autoMode: false,
-          permissionMode: undefined,
-          statusText: '已切换到 always-approve 模式',
-        })
-      } else if (inPlan) {
-        // plan·always → normal (leave plan)
-        get().showModeBanner('Switched to mode: Normal')
-        await transport.setMode('default', sid)
-        await transport.setMode('normal', sid)
-        set({
-          planMode: false,
-          autoMode: false,
-          yoloMode: false,
-          permissionMode: undefined,
-          statusText: '已切换到 normal 模式',
-        })
-      } else if (inAuto) {
-        // auto → always
-        get().showModeBanner('Switched to mode: Always-Approve')
-        await transport.setMode('always-approve', sid)
-        set({
-          yoloMode: true,
-          autoMode: false,
-          permissionMode: undefined,
-          statusText: '已切换到 always-approve 模式',
-        })
-      } else {
-        // always → normal
-        get().showModeBanner('Switched to mode: Normal')
-        await transport.setMode('normal', sid)
-        set({
-          autoMode: false,
-          yoloMode: false,
-          permissionMode: undefined,
-          statusText: '已切换到 normal 模式',
+    const paint = (banner: string, patch: typeof prev) => {
+      get().showModeBanner(banner)
+      set(patch)
+    }
+    const persist = async (run: () => Promise<void>) => {
+      try {
+        await run()
+      } catch (e) {
+        if (cycle !== reseedGen) return
+        set(prev)
+        appendEntry(set, {
+          kind: 'error',
+          text: `切换模式失败: ${e instanceof Error ? e.message : String(e)}`,
         })
       }
-    } catch (e) {
-      appendEntry(set, {
-        kind: 'error',
-        text: `切换模式失败: ${e instanceof Error ? e.message : String(e)}`,
+    }
+    if (!inPlan && !inAuto && !inAlways) {
+      // normal → plan
+      paint('Switched to mode: Plan', {
+        ...prev,
+        planMode: true,
+        permissionMode: undefined,
+        statusText: '已切换到 plan 模式',
       })
+      await persist(() => transport.setMode('plan', sid))
+    } else if (inPlan && !inAuto && !inAlways) {
+      // plan → auto (leave plan)
+      paint('Switched to mode: Auto', {
+        planMode: false,
+        autoMode: true,
+        yoloMode: false,
+        permissionMode: undefined,
+        statusText: '已切换到 auto 模式',
+      })
+      await persist(async () => {
+        await transport.setMode('default', sid)
+        await transport.setMode('auto', sid)
+      })
+    } else if (inPlan && inAuto) {
+      // plan·auto → always (leave plan)
+      paint('Switched to mode: Always-Approve', {
+        planMode: false,
+        yoloMode: true,
+        autoMode: false,
+        permissionMode: undefined,
+        statusText: '已切换到 always-approve 模式',
+      })
+      await persist(async () => {
+        await transport.setMode('default', sid)
+        await transport.setMode('always-approve', sid)
+      })
+    } else if (inPlan) {
+      // plan·always → normal (leave plan)
+      paint('Switched to mode: Normal', {
+        planMode: false,
+        autoMode: false,
+        yoloMode: false,
+        permissionMode: undefined,
+        statusText: '已切换到 normal 模式',
+      })
+      await persist(async () => {
+        await transport.setMode('default', sid)
+        await transport.setMode('normal', sid)
+      })
+    } else if (inAuto) {
+      // auto → always
+      paint('Switched to mode: Always-Approve', {
+        ...prev,
+        yoloMode: true,
+        autoMode: false,
+        permissionMode: undefined,
+        statusText: '已切换到 always-approve 模式',
+      })
+      await persist(() => transport.setMode('always-approve', sid))
+    } else {
+      // always → normal
+      paint('Switched to mode: Normal', {
+        ...prev,
+        autoMode: false,
+        yoloMode: false,
+        permissionMode: undefined,
+        statusText: '已切换到 normal 模式',
+      })
+      await persist(() => transport.setMode('normal', sid))
     }
   },
 
@@ -6527,10 +6687,12 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
       set({ statusText: '已在 plan 模式（Shift+Tab 退出）' })
       return
     }
+    const prev = { planMode: s.planMode, permissionMode: s.permissionMode }
+    set({ planMode: true, permissionMode: undefined, statusText: '已切换到 plan 模式' })
     try {
       await transport.setMode('plan', s.sessionId)
-      set({ planMode: true, permissionMode: undefined, statusText: '已切换到 plan 模式' })
     } catch (e) {
+      set(prev)
       appendEntry(set, {
         kind: 'error',
         text: `切换 plan 模式失败: ${e instanceof Error ? e.message : String(e)}`,
@@ -6548,25 +6710,31 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
     const inPlan = s.planMode === true || s.permissionMode === 'plan'
     const perm = (s.permissionMode || '').toLowerCase()
     const inAuto = s.autoMode === true || perm === 'auto'
+    const prev = {
+      autoMode: s.autoMode,
+      yoloMode: s.yoloMode,
+      permissionMode: s.permissionMode,
+    }
     try {
       if (inAuto) {
-        await transport.setMode('normal', s.sessionId)
         set({
           autoMode: false,
           yoloMode: false,
           permissionMode: undefined,
           statusText: inPlan ? '已退出 auto（plan 保持）' : '已切换到 normal 模式',
         })
+        await transport.setMode('normal', s.sessionId)
       } else {
-        await transport.setMode('auto', s.sessionId)
         set({
           autoMode: true,
           yoloMode: false,
           permissionMode: undefined,
           statusText: inPlan ? '已切换到 plan·auto 模式' : '已切换到 auto 模式',
         })
+        await transport.setMode('auto', s.sessionId)
       }
     } catch (e) {
+      set(prev)
       appendEntry(set, {
         kind: 'error',
         text: `切换 auto 模式失败: ${e instanceof Error ? e.message : String(e)}`,
@@ -6588,25 +6756,32 @@ export const useChatStore = create<ChatState>((setRaw, get) => {
       perm === 'always-approve' ||
       perm === 'always_approve' ||
       perm === 'yolo'
+    const prev = {
+      yoloMode: s.yoloMode,
+      autoMode: s.autoMode,
+      permissionMode: s.permissionMode,
+    }
     try {
       if (inAlways) {
-        await transport.setMode('normal', s.sessionId)
         set({
           yoloMode: false,
           autoMode: false,
           permissionMode: undefined,
           statusText: inPlan ? '已退出 always-approve（plan 保持）' : '已切换到 normal 模式',
         })
+        await transport.setMode('normal', s.sessionId)
         return
       }
       const ok = await turnOnAlwaysApprove(set, inPlan, s.sessionId)
       if (!ok) {
+        set(prev)
         appendEntry(set, {
           kind: 'error',
           text: 'host 暂不支持运行时切换 always-approve',
         })
       }
     } catch (e) {
+      set(prev)
       appendEntry(set, {
         kind: 'error',
         text: `切换 always-approve 模式失败: ${e instanceof Error ? e.message : String(e)}`,
@@ -10041,15 +10216,15 @@ async function turnOnAlwaysApprove(
   inPlan: boolean,
   sessionId?: string,
 ): Promise<boolean> {
-  for (const modeId of ['always_approve', 'yolo', 'always-approve']) {
+  set({
+    yoloMode: true,
+    autoMode: false,
+    permissionMode: undefined,
+    statusText: inPlan ? '已切换到 plan·always-approve 模式' : '已切换到 always-approve 模式',
+  })
+  for (const modeId of ['always-approve', 'always_approve', 'yolo']) {
     try {
       await transport.setMode(modeId, sessionId)
-      set({
-        yoloMode: true,
-        autoMode: false,
-        permissionMode: undefined,
-        statusText: inPlan ? '已切换到 plan·always-approve 模式' : '已切换到 always-approve 模式',
-      })
       return true
     } catch {
       // try the next candidate id
