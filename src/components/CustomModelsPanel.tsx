@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { transport } from '../api/localTransport'
+import { transport } from '../api/client'
 import type { CustomModelConfig } from '../api/types'
 import { pushToast } from '../store/toast'
 import { Glyphs } from '../theme/glyphs'

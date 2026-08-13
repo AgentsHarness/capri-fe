@@ -1,5 +1,5 @@
 import type { ContentBlock, ScrollEntry } from '../../api/types'
-import { transport } from '../../api/localTransport'
+import { transport } from '../../api/client'
 import type { ChatState, SetState } from './types'
 import { nid } from './ids'
 import { formatElapsed, toolVerb } from './format'

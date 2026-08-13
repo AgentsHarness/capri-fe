@@ -18,7 +18,7 @@ import type {
   TopTask,
   WorkspaceGroup,
 } from '../../api/types'
-import type { McpListServer } from '../../api/localTransport'
+import type { McpListServer } from '../../api/client'
 
 import type {
   ConnState,

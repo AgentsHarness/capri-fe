@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useChatStore } from '../store/chat'
-import { transport } from '../api/localTransport'
+import { transport } from '../api/client'
 import type { SessionInfoExt } from '../api/types'
 import { fmtTok, fmtTokBig } from '../format'
 import { contextUrgencyColor } from '../theme/contextColor'

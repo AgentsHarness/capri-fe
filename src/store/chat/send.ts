@@ -1,5 +1,5 @@
 import type { ContentBlock } from '../../api/types'
-import { transport, AgentTurnError } from '../../api/localTransport'
+import { transport, AgentTurnError } from '../../api/client'
 import { qid, usePromptQueue } from '../promptQueue'
 import type { ChatState, SetState } from './types'
 import { nid } from './ids'

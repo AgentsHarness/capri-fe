@@ -1,4 +1,4 @@
-import { transport } from '../../../api/localTransport'
+import { transport } from '../../../api/client'
 import type { ChatState, SetState } from '../types'
 
 export function liveTaskActions(set: SetState, get: () => ChatState) {

@@ -9,7 +9,7 @@ import {
 import { useChatStore, formatTurnDuration, stillRunningCue } from '../store/chat'
 import { pushToast } from '../store/toast'
 import { usePromptQueue } from '../store/promptQueue'
-import { transport } from '../api/localTransport'
+import { transport } from '../api/client'
 import type { ContentBlock, ScrollEntry } from '../api/types'
 import {
   Glyphs,

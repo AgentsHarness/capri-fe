@@ -1,4 +1,4 @@
-import { transport } from './localTransport'
+import { transport } from './client'
 
 /**
  * ── TUI shell mode bridge ────────────────────────────────────────────

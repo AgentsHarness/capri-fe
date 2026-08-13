@@ -6,7 +6,7 @@ import {
   type ExtensionHook,
   type ExtensionPlugin,
   type ExtensionSkill,
-} from '../api/localTransport'
+} from '../api/client'
 import type { AgentSkill } from '../api/types'
 import { Glyphs } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'

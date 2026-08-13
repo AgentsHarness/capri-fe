@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useChatStore } from '../store/chat'
-import { transport } from '../api/localTransport'
+import { transport } from '../api/client'
 import type { BillingConfigResponse, UsageReportData } from '../api/types'
 import { fmtTok } from '../format'
 

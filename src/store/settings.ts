@@ -1,4 +1,4 @@
-import { transport } from '../api/localTransport'
+import { transport } from '../api/client'
 
 /**
  * `[ui]` section of GET /api/settings — cached module-wide and shared by

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useChatStore } from '../store/chat'
-import { transport } from '../api/localTransport'
+import { transport } from '../api/client'
 import type { GitBranch, GitFileChange, GitStatusData } from '../api/types'
 
 /**

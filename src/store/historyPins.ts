@@ -2,7 +2,7 @@ import { loadJSON, saveJSON } from '../lib/storage'
 import { create } from 'zustand'
 import type { HubPrefsDoc, SessionInfo, TodoStatus, WorkspaceGroup } from '../api/types'
 import { sessionSortRank } from './historyGroups'
-import { transport } from '../api/localTransport'
+import { transport } from '../api/client'
 
 /**
  * 浏览器「置顶 + 待办」偏好（对 host 会话）：

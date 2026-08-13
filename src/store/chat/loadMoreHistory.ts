@@ -1,4 +1,4 @@
-import { transport } from '../../api/localTransport'
+import { transport } from '../../api/client'
 import type { ChatState, SetState } from './types'
 import { flushLiveStream, sealThought } from './stream'
 import { settleTurnEntries } from './turn'

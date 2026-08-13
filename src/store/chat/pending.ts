@@ -1,5 +1,5 @@
 import type { PendingReq } from '../../api/types'
-import { transport } from '../../api/localTransport'
+import { transport } from '../../api/client'
 import type { ChatState } from './types'
 import { runtime } from './globals'
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useChatStore } from '../store/chat'
-import { transport, type SettingsPayload } from '../api/localTransport'
+import { transport, type SettingsPayload } from '../api/client'
 import { CustomModelsPanel } from './CustomModelsPanel'
 
 const GROUPS = [
