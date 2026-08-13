@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { transport } from '../api/localTransport'
 import type { CustomModelConfig } from '../api/types'
-import { useChatStore } from '../store/chat'
+import { pushToast } from '../store/toast'
 import { Glyphs } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
 
@@ -41,7 +41,7 @@ const isSet = (v: unknown): boolean => {
 }
 
 export function CustomModelsPanel() {
-  const pushToast = useChatStore((s) => s.pushToast)
+
   const [models, setModels] = useState<CustomModelConfig[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()

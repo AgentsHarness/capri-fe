@@ -4,6 +4,7 @@ import { Copy, Pencil, RefreshCw, Trash2 } from 'lucide-react'
 import type { HostInfo } from '../api/types'
 import { transport } from '../api/localTransport'
 import { useChatStore } from '../store/chat'
+import { pushToast } from '../store/toast'
 
 /**
  * Hub 多 Host 管理面板（TopBar 左上角 host 选择器配套）：
@@ -247,7 +248,7 @@ export function DeleteHostModal({
 export function AddHostModal({ onClose }: { onClose: () => void }) {
   const fetchPairingCode = useChatStore((s) => s.fetchPairingCode)
   const rotatePairingCode = useChatStore((s) => s.rotatePairingCode)
-  const pushToast = useChatStore((s) => s.pushToast)
+
 
   const [code, setCode] = useState<string | null>(null)
   const [expiresAt, setExpiresAt] = useState<string | undefined>()

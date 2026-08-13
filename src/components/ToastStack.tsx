@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { useChatStore } from '../store/chat'
+import { useToastStore } from '../store/toast'
 
 /** In-page toast auto-dismiss window. */
 const TOAST_TTL_MS = 6000
@@ -11,8 +11,8 @@ const TOAST_TTL_MS = 6000
  * a manual ✕.
  */
 export function ToastStack() {
-  const toasts = useChatStore((s) => s.toasts)
-  const dismissToast = useChatStore((s) => s.dismissToast)
+  const toasts = useToastStore((s) => s.toasts)
+  const dismissToast = useToastStore((s) => s.dismissToast)
 
   // One auto-dismiss timer per toast id, armed on first appearance only.
   // Re-arming from the whole `toasts` array on every change would let a

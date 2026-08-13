@@ -1,9 +1,7 @@
 import { create } from 'zustand'
 import type { ContentBlock } from '../api/types'
 import { transport } from '../api/localTransport'
-// 延迟使用（仅在 syncQueue 失败回调里取 pushToast），与 chat.ts 的
-// promptQueue 导入构成循环引用——ESM 下模块体不触碰该绑定即安全。
-import { useChatStore } from './chat'
+import { pushToast } from './toast'
 
 /**
  * ── Server-authoritative prompt queue (TUI 对齐：agent 是权威) ───────
@@ -120,7 +118,7 @@ function syncQueue(
 /** 破坏性队列操作同步失败的用户提醒（toast）。 */
 function queueSyncToast(prefix: string, e: unknown): void {
   const msg = e instanceof Error ? e.message : String(e)
-  useChatStore.getState().pushToast(`${prefix}: ${msg}`)
+  pushToast(`${prefix}: ${msg}`)
 }
 
 /**

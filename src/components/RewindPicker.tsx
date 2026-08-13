@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useChatStore } from '../store/chat'
+import { pushToast } from '../store/toast'
 import type { RewindConflict, RewindExecuteResult, RewindMode, RewindPoint } from '../api/types'
 
 /**
@@ -71,7 +72,6 @@ export function RewindPicker() {
   const [executing, setExecuting] = useState(false)
   // Last successful rewind outcome (warning phase / toast payload).
   const [outcome, setOutcome] = useState<RewindExecuteResult>()
-  const pushToast = useChatStore((s) => s.pushToast)
   const panelRef = useRef<HTMLDivElement>(null)
   const reqSeq = useRef(0)
   // One-shot open flow (busy check + initial fetch) per open.
@@ -168,7 +168,7 @@ export function RewindPicker() {
         setError(e instanceof Error ? e.message : String(e))
       }
     },
-    [rewindExecute, closeRewind, rewindMode, pushToast],
+    [rewindExecute, closeRewind, rewindMode],
   )
 
   /** Row click / Enter in the picker: confirm layer or direct execute. */
