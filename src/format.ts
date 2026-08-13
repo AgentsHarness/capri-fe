@@ -118,3 +118,17 @@ export function filterRunningEntries(entries: ScrollEntry[]): RunningEntry[] {
       !!e.running,
   )
 }
+
+/** Stored preview char cap (TUI PREVIEW_MAX_CHARS). */
+const PREVIEW_MAX_CHARS = 80
+
+/** First non-empty line, char-capped with … (TUI prompt_preview). */
+export function userMessagePreview(text: string): string {
+  const line =
+    text
+      .split('\n')
+      .map((l) => l.trim())
+      .find((l) => l.length > 0) ?? ''
+  if (line.length <= PREVIEW_MAX_CHARS) return line
+  return line.slice(0, PREVIEW_MAX_CHARS - 1) + '…'
+}

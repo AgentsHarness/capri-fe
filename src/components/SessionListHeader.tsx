@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { Check, FolderTree, ListChecks, RefreshCw } from 'lucide-react'
 import { useChatStore } from '../store/chat'
 import { SPINNER_FRAMES } from '../theme/glyphs'
-import { useSessionSpinner } from './sessionState'
-import { useHistoryView, type HistoryListMode } from './historyView'
+import { useSessionSpinner } from '../hooks/sessionState'
+import { useHistoryView, type HistoryListMode } from '../store/historyView'
 
 /**
  * 会话列表头部：「会话」标题 + 展示形态切换 + 刷新按钮。

@@ -11,17 +11,17 @@ import {
   sessionGroupKey,
   sessionRowTitle,
   sessionSubtitle,
-} from './historyGroups'
+} from '../store/historyGroups'
 import { Glyphs, SPINNER_FRAMES } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
 import { SessionStateIcon } from './SessionStateIcon'
-import { stateLabel, useSessionSpinner } from './sessionState'
+import { stateLabel, useSessionSpinner } from '../hooks/sessionState'
 import {
   sortSessionsWithPins,
   sortWorkspacesWithPins,
   usePins,
-} from './historyPins'
-import { useHistoryView } from './historyView'
+} from '../store/historyPins'
+import { useHistoryView } from '../store/historyView'
 
 /** 组内默认显示的会话行数（超出折叠为"加载更多"）。 */
 const WORKSPACE_ROWS_LIMIT = 4

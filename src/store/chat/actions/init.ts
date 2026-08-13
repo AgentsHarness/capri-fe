@@ -1,7 +1,7 @@
 import type { StoreApi } from 'zustand'
 import { transport } from '../../../api/localTransport'
 import { applyQueueChanged } from '../../promptQueue'
-import { usePins } from '../../../components/historyPins'
+import { usePins } from '../../historyPins'
 import type { ChatState, SetState } from '../types'
 import {
   clearContinueSessionTimer,
