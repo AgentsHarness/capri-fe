@@ -9,12 +9,38 @@ import type { ContentBlock, HostInfo, HubPrefsDoc, PermissionScope } from '../ty
  */
 const PROMPT_TIMEOUT_MS = 30 * 60_000
 
-/**
- * misc — RPC 命令发送（api/rpc/，经 Object.assign 挂到
- * LocalTransport.prototype；方法内 `this` 即 TransportCore）。
- */
 export const miscRpc = {
-  async prompt(this: TransportCore, 
+  /**
+   * POST /api/prompt — host 已改为"受理即返回"：校验通过（含显式会话
+   * 存在性）立即回 200 {ok:true}，不再等到回合结束。回合结果（成功 /
+   * 失败 / 取消 + meta）全部经 live 通道（SSE/WS）的 done / error /
+   * cancelled 事件送达，本响应不再携带 stopReason/meta（旧 host 才会在
+   * 响应里透传 session/prompt 的 `_meta`，这里保留解析兼容）。
+   *
+   * `sessionId`（可选，缺省 = host 的 active 会话）：按会话发 prompt。
+   * host bridge 是多会话的——带着目标 sessionId 的 prompt 会在那个会话
+   * 里跑（可与当前 active 会话的回合并行），用于后台队列投递。
+   *
+   * `promptId`（可选，server-authoritative 队列）：有则作为 HTTP body
+   * 的 `meta.promptId` 发出（host `promptBody.Meta` json:"meta"；host 再
+   * 把它写成 agent 侧 session/prompt 的 `_meta.promptId`）。agent 从
+   * promptId 提取 queue_meta 插进权威队列（busy 排队、回合结束自动 pop；
+   * idle 直接运行），经 x.ai/queue/changed 广播回显。TUI pager 同款
+   * wire（prompt_request_meta）。注意：HTTP 层键名是 `meta`（不是
+   * `_meta`）——错写成 `_meta` 会被 host 静默丢弃，agent 自造 id，本地
+   * 乐观行与广播行对不上就会在队列里显示成两条。旧 host 忽略该字段；
+   * busy 时仍可能 409（竞态）——调用方（promptQueue.enqueue）渲染错误
+   * 行、行保留手动重发（legacy 降级自动重发已移除）。
+   *
+   * 失败分类：新 host 下本响应只携带"受理前"的错误——参数校验 400、
+   * 显式未知会话 404、网络级失败（fetch 拒绝 = host 不可达，保持普通
+   * Error）。回合级失败（agent 拒绝如模型 API 400、传输中断）不再走
+   * HTTP，由 live 通道的 error 事件（带 sessionId + source）送达。
+   * 例外：旧 host（阻塞到回合结束）仍可能返回反代超时（524 Cloudflare /
+   * 504 nginx / 408）——抛 AgentTurnError，store 依据 status 识别并走
+   * live 通道兜底（不渲染错误行）。
+   */
+  async prompt(this: TransportCore,
     blocks: ContentBlock[],
     opts: { sessionId?: string; timeoutMs?: number; promptId?: string } = {},
   ): Promise<{ stopReason?: string; meta?: Record<string, unknown> }> {
@@ -61,6 +87,15 @@ export const miscRpc = {
     return out
   },
 
+  /**
+   * Cancel the running turn (POST /api/cancel). The agent defaults
+   * `_meta.cancelSubagents` to TRUE when the flag is absent — a bare
+   * cancel would silently stop every running subagent. Like the TUI
+   * (xai-grok-pager always serializes the flag on session/cancel), the
+   * FE sends it explicitly: `true` stops subagents too (cancel panel
+   * "Stop running" / rewind), `false` keeps them running (send-now,
+   * Ctrl+C, "Always continue" preference).
+   */
   async cancel(this: TransportCore, opts: { cancelSubagents?: boolean } = {}, sessionId?: string): Promise<void> {
     await this.fetch(this.url('/api/cancel'), {
       method: 'POST',

@@ -2,10 +2,6 @@ import type { TransportCore } from '../transport'
 import { findArrayField, unwrapExtResult, xaiCall } from './core'
 import type { GitBranch, GitBranchesData } from '../types'
 
-/**
- * git — RPC 命令发送（api/rpc/，经 Object.assign 挂到
- * LocalTransport.prototype；方法内 `this` 即 TransportCore）。
- */
 export const gitRpc = {
   async gitInfo(this: TransportCore, 
     sessionId: string,
