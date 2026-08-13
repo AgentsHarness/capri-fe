@@ -1,6 +1,6 @@
 import { saveBool } from '../../lib/storage'
 import { create } from 'zustand'
-import { transport } from '../../api/localTransport'
+import { transport } from '../../api/client'
 import { usePromptQueue } from '../promptQueue'
 import type { ChatState, SetState } from './types'
 import { CANCEL_SUBAGENTS_PREF_KEY, loadCancelSubagentsPref } from './cancelPref'

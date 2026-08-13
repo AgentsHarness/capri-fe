@@ -1,5 +1,5 @@
 import type { ScrollEntry } from '../../api/types'
-import { transport } from '../../api/localTransport'
+import { transport } from '../../api/client'
 import { applyQueueChanged } from '../promptQueue'
 import type { ChatState, SetState } from './types'
 import { nid } from './ids'

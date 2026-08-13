@@ -1,5 +1,5 @@
 import { loadStr, removeKey, saveStr } from '../../../lib/storage'
-import { transport } from '../../../api/localTransport'
+import { transport } from '../../../api/client'
 import type { ChatState, SetState } from '../types'
 import { clearStreamBuf } from '../stream'
 import {

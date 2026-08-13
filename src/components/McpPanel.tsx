@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useChatStore, type McpServerInfo } from '../store/chat'
-import { transport, type McpListServer, type McpToolInfo } from '../api/localTransport'
+import { transport, type McpListServer, type McpToolInfo } from '../api/client'
 
 /**
  * MCP server panel (x.ai/mcp/server_status + host /api/mcp/*) — web

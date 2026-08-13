@@ -5,7 +5,7 @@ import {
   saveJSON,
   saveStr,
 } from '../../lib/storage'
-import { transport } from '../../api/localTransport'
+import { transport } from '../../api/client'
 import { ensureUiSettings, uiBool, uiSettingsLoaded } from '../settings'
 import type { ChatState, ModeFlags, SetState } from './types'
 

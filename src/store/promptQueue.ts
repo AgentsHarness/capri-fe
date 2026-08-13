@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import type { ContentBlock } from '../api/types'
-import { transport } from '../api/localTransport'
+import { transport } from '../api/client'
 import { pushToast } from './toast'
 
 /**

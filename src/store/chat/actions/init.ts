@@ -1,5 +1,5 @@
 import type { StoreApi } from 'zustand'
-import { transport } from '../../../api/localTransport'
+import { transport } from '../../../api/client'
 import { applyQueueChanged } from '../../promptQueue'
 import { usePins } from '../../historyPins'
 import type { ChatState, SetState } from '../types'

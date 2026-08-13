@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Copy, Pencil, RefreshCw, Trash2 } from 'lucide-react'
 import type { HostInfo } from '../api/types'
-import { transport } from '../api/localTransport'
+import { transport } from '../api/client'
 import { useChatStore } from '../store/chat'
 import { pushToast } from '../store/toast'
 
