@@ -1,0 +1,314 @@
+import type { AcpEvent, ScrollEntry, ToolCall } from '../../../api/types'
+import type { ChatState, SetState } from '../types'
+import { nid } from '../ids'
+import {
+  collapsedEditBlocks,
+} from '../modeFlags'
+import { planTodos, toolVerb } from '../format'
+import {
+  absorbBashOutputIntoBgTask,
+  absorbTaskOutputIntoBgTask,
+  extractTarget,
+  isOrphanBashStreamUpdate,
+  shouldSuppressToolFromScrollback,
+  suppressedToolIds,
+  toolCallIdOf,
+} from '../tools'
+import {
+  sealAssistantStream,
+  sealThought,
+} from '../stream'
+import {
+  busyPlausibleForView,
+} from '../turn'
+export function handleToolEvent(
+  set: SetState,
+  get: () => ChatState,
+  ev: AcpEvent,
+): boolean {
+  switch (ev.type) {
+      case 'tool_call': {
+        // 多会话广播（host withSid 约定）：非当前会话忽略。
+        if (ev.sessionId && ev.sessionId !== get().sessionId) break
+        // Seal assistant stream (liveStream → entry + streaming:false) so
+        // the streaming flag drops immediately; then seal
+        // any open thought. Do not leave assistant streaming:true until
+        // turn-end settleTurnEntries.
+        const sealedAsst = sealAssistantStream(get())
+        const sealed = sealThought(sealedAsst)
+        const tc = ev.toolCall || {}
+        const toolCallId = toolCallIdOf(tc)
+        // TUI: bg-task plumbing / background execute / task-spawn / todo /
+        // goal / scheduler / workflow never become tool rows — their UI
+        // lives on BgTask / Subagent / chips. Otherwise get_*_output dumps
+        // appear as "Ran other" with the full task log in scrollback.
+        if (toolCallId && suppressedToolIds.has(toolCallId)) {
+          absorbTaskOutputIntoBgTask(get, set, tc)
+          break
+        }
+        if (shouldSuppressToolFromScrollback(tc)) {
+          if (toolCallId) suppressedToolIds.add(toolCallId)
+          absorbTaskOutputIntoBgTask(get, set, tc)
+          // Still seal thought so the next real row doesn't sit under an
+          // open Thinking… shell (TUI finish_thinking on tool start).
+          set({
+            ...sealed,
+            openAssistantId: undefined,
+            openThoughtId: undefined,
+          })
+          break
+        }
+        const status = (tc.status as string) || 'pending'
+        const kindName = (tc.kind as string) || 'other'
+        const running = status === 'pending' || status === 'in_progress'
+        const title = extractTarget(tc) || (tc.title as string) || kindName
+        const id = nid()
+
+        // TUI [ui] collapsed_edit_blocks=true: edits render as one-line
+        // +N/-M diffstats (collapsed) and back-to-back same-file edits
+        // merge into one row (default false = diffs expanded, no merge).
+        if (kindName === 'edit' && collapsedEditBlocks()) {
+          const prev = sealed.entries[sealed.entries.length - 1]
+          if (
+            prev &&
+            prev.kind === 'tool' &&
+            prev.kindName === 'edit' &&
+            prev.title === title
+          ) {
+            const toolIndex = { ...get().toolIndex }
+            // Route the new call's updates into the merged row.
+            if (toolCallId) toolIndex[toolCallId] = prev.id
+            set({
+              ...sealed,
+              conn: 'busy',
+              awaitingNext: false,
+              openAssistantId: undefined,
+              openThoughtId: undefined,
+              toolIndex,
+              entries: [
+                ...sealed.entries.slice(0, -1),
+                {
+                  ...prev,
+                  mergedRaws: [...(prev.mergedRaws ?? []), tc],
+                  status,
+                  verb: toolVerb(kindName, running),
+                },
+              ],
+            })
+            break
+          }
+        }
+
+        const entry: ScrollEntry = {
+          id,
+          kind: 'tool',
+          toolCallId,
+          title,
+          verb: toolVerb(kindName, running),
+          status,
+          kindName,
+          detail: tc.title as string | undefined,
+          // collapsed_edit_blocks=false (default): edit diffs expanded.
+          expanded: kindName === 'edit' && !collapsedEditBlocks(),
+          raw: tc,
+          // Activity start for the turn status line's phase timer (TUI
+          // tracker started_at); replay/completed snapshots omit it.
+          ...(running ? { startedAt: Date.now() } : {}),
+        }
+        const toolIndex = { ...get().toolIndex }
+        if (toolCallId) toolIndex[toolCallId] = id
+        set({
+          ...sealed,
+          // 回合确实在跑（envelope 归属的 tool_call 可信）：busy 事件可能
+          // 被 host 错标/缺省而没点亮状态行——工具先行回合（无 thought/
+          // chunk 前置）在这里补上 busy，turn-status 行才能显示工具活动。
+          // 回放路径同样适用（回放 chunk 本就驱动 conn busy，load 页末
+          // 统一复位 ready）。
+          conn: 'busy',
+          awaitingNext: false,
+          openAssistantId: undefined,
+          openThoughtId: undefined,
+          toolIndex,
+          entries: [...sealed.entries, entry],
+        })
+        break
+      }
+      case 'tool_call_update': {
+        // 多会话广播（host withSid 约定）：非当前会话忽略。
+        if (ev.sessionId && ev.sessionId !== get().sessionId) break
+        const tc = ev.toolCallUpdate || {}
+        const toolCallId = toolCallIdOf(tc)
+        if (!toolCallId) break
+        if (suppressedToolIds.has(toolCallId)) {
+          // Final TaskOutput / Bash stream — fold log into bg_task.
+          absorbTaskOutputIntoBgTask(get, set, tc)
+          absorbBashOutputIntoBgTask(get, set, tc)
+          break
+        }
+        const entryId = get().toolIndex[toolCallId]
+        // Late classification: raw_input arrives on update (is_background,
+        // variant=TaskOutput, …). Demote any flash row and suppress further
+        // updates — stdout belongs on the bg_task block (dblclick viewer).
+        if (entryId) {
+          const existing = get().entries.find((e) => e.id === entryId)
+          const merged: ToolCall =
+            existing?.kind === 'tool'
+              ? { ...(existing.raw || {}), ...tc }
+              : tc
+          if (
+            shouldSuppressToolFromScrollback(merged) ||
+            isOrphanBashStreamUpdate(merged)
+          ) {
+            suppressedToolIds.add(toolCallId)
+            const { [toolCallId]: _drop, ...toolIndex } = get().toolIndex
+            set({
+              toolIndex,
+              entries: get().entries.filter((e) => e.id !== entryId),
+            })
+            absorbTaskOutputIntoBgTask(get, set, merged)
+            absorbBashOutputIntoBgTask(get, set, merged)
+            break
+          }
+        } else if (
+          shouldSuppressToolFromScrollback(tc) ||
+          isOrphanBashStreamUpdate(tc)
+        ) {
+          // Page-boundary orphan: history tail is pure Bash stream deltas
+          // for a backgrounded execute whose tool_call lived on an earlier
+          // page ("start acpfe" last-100 = vite/host logs as "Ran other").
+          suppressedToolIds.add(toolCallId)
+          absorbTaskOutputIntoBgTask(get, set, tc)
+          absorbBashOutputIntoBgTask(get, set, tc)
+          break
+        }
+        if (!entryId) {
+          // treat as new
+          get().handleEvent({ type: 'tool_call', toolCall: tc })
+          break
+        }
+        // A running tool settling is a wait-for-next-token window (TUI
+        // Waiting(Model) between tool completion and the next inference
+        // stream) — the status line reads "Waiting for response…" until
+        // the next streamed event.
+        const existing = get().entries.find((e) => e.id === entryId)
+        const wasRunningBefore =
+          existing?.kind === 'tool' &&
+          (existing.status === 'pending' || existing.status === 'in_progress')
+        const settledNow =
+          wasRunningBefore &&
+          (tc.status === 'completed' || tc.status === 'failed')
+        set({
+          ...(settledNow ? { statusText: 'Waiting for response…' } : {}),
+          entries: get().entries.map((e) => {
+            if (e.id !== entryId || e.kind !== 'tool') return e
+            // TUI collapsed_edit_blocks merged row: an update for a
+            // merged sub-call patches that slot — raw stays the row's own
+            // first call, mergedRaws keep the others (display order).
+            const mergedIdx =
+              e.mergedRaws?.findIndex((m) => toolCallIdOf(m) === toolCallId) ??
+              -1
+            if (mergedIdx >= 0) {
+              const mergedRaws = [...(e.mergedRaws ?? [])]
+              mergedRaws[mergedIdx] = { ...mergedRaws[mergedIdx], ...tc }
+              const status = (tc.status as string) || e.status
+              const kindName = (tc.kind as string) || e.kindName || 'other'
+              const running = status === 'pending' || status === 'in_progress'
+              const finishedAt =
+                wasRunningBefore && !running ? Date.now() : e.finishedAt
+              return {
+                ...e,
+                status,
+                kindName,
+                verb: toolVerb(kindName, running),
+                mergedRaws,
+                finishedAt,
+              }
+            }
+            const merged: ToolCall = { ...(e.raw || {}), ...tc }
+            const status = (merged.status as string) || e.status
+            const kindName = (merged.kind as string) || e.kindName || 'other'
+            const running = status === 'pending' || status === 'in_progress'
+            const wasRunning =
+              e.status === 'pending' || e.status === 'in_progress'
+            // Finish flash: stamp finishedAt when a running tool settles
+            const finishedAt =
+              wasRunning && !running ? Date.now() : e.finishedAt
+            return {
+              ...e,
+              status,
+              kindName,
+              verb: toolVerb(kindName, running),
+              title: extractTarget(merged) || e.title,
+              raw: merged,
+              finishedAt,
+            }
+          }),
+        })
+        break
+      }
+      case 'plan': {
+        // 多会话广播（host withSid 约定）：非当前会话忽略（后台回合的
+        // plan 不能覆盖当前会话的 todo 面板）。
+        if (ev.sessionId && ev.sessionId !== get().sessionId) break
+        // Plan updates are the todo source (TUI todo pane + status-bar
+        // badge). Matches the TUI: plan entries never land in the
+        // scrollback — the TopBar TodoChip is the single display surface.
+        const { items, counts } = planTodos(ev.entries)
+        const planFlag = (ev as unknown as { planMode?: unknown }).planMode
+        // Plan can arrive mid-stream: seal assistant (merge live text +
+        // streaming:false) before the openAssistantId pointer drops.
+        const sealedAsst = sealAssistantStream(get())
+        set({
+          ...sealedAsst,
+          todoCounts: counts,
+          todos: items,
+          // Some hosts piggyback the plan-mode flag on the plan event —
+          // apply it when present, otherwise keep the local value.
+          ...(typeof planFlag === 'boolean' ? { planMode: planFlag } : {}),
+        })
+        break
+      }
+      case 'gen_rate': {
+        // 多会话广播（host withSid 约定）：非当前会话的 gen_rate 直接忽略。
+        if (ev.sessionId && ev.sessionId !== get().sessionId) break
+        // 同 busy 防线：gen_rate 由 host 合成，sid 可能错标或缺省（见
+        // 模块头 sessionIdFrom 注释）——别的会话的生成速率不能显示在
+        // 本会话的状态行上。只有当前视图确实在跑回合才接受；回放不
+        // 派发 gen_rate，无需豁免。
+        if (!busyPlausibleForView(get())) break
+        // 生成输出速率（估算 tok/s）由 host 推送：流式期间 ≥250ms 一条
+        // live 值，工具执行/turn 结束发冻结值；user_message_chunk 时
+        // host 静默复位不发事件（FE 在 send 时清空）。
+        if (ev.rate == null) break
+        set({ genRate: ev.rate })
+        break
+      }
+      case 'usage':
+        // 多会话广播（host withSid 约定）：非当前会话的 usage 直接忽略。
+        if (ev.sessionId && ev.sessionId !== get().sessionId) break
+        // 同 busy 防线（错标/缺省 sid 的 usage 会把别的会话的 token 数
+        // 画在已完成会话的 context chip 上）：当前视图没有 live 回合时
+        // 不接受。回放（loadHistory / loadMoreHistory）的 usage 无 sid 且
+        // 属于正在加载的会话本身，照常应用（历史页只在新页应用 usage）。
+        if (
+          !get().historyLoading &&
+          !get().historyLoadingMore &&
+          !busyPlausibleForView(get())
+        ) {
+          break
+        }
+        // Merge, don't overwrite: streamed session/update usage events
+        // carry only `used`/`size` (no usage object) and must not clobber
+        // the context-window `used`.
+        set((s) => ({
+          usage: {
+            used: ev.used ?? s.usage?.used,
+            size: ev.size ?? s.usage?.size,
+          },
+        }))
+        break
+    default:
+      return false
+  }
+  return true
+}
