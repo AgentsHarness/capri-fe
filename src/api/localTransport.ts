@@ -1,3 +1,4 @@
+import { loadStr, removeKey, saveStr } from '../lib/storage'
 import type {
   AcpEvent,
   AgentSkill,
@@ -70,11 +71,7 @@ export class AgentTurnError extends Error {
  * Hub enforces FE_TOKEN server-side; local acp-host ignores the header.
  */
 function resolveAccessToken(): string {
-  try {
-    return localStorage.getItem('acp-fe-token')?.trim() || ''
-  } catch {
-    return ''
-  }
+  return loadStr('acp-fe-token')?.trim() || ''
 }
 
 /** Thrown when the hub rejects the browser token (or none was sent). */
@@ -195,12 +192,8 @@ export class LocalTransport {
   setAccessToken(token: string | null) {
     const next = (token ?? '').trim()
     this.accessToken = next
-    try {
-      if (next) localStorage.setItem('acp-fe-token', next)
-      else localStorage.removeItem('acp-fe-token')
-    } catch {
-      /* ignore */
-    }
+    if (next) saveStr('acp-fe-token', next)
+    else removeKey('acp-fe-token')
     // Requests issued under the old token are settled now (re-fetches pick
     // up the new token).
     this.abortInflight()

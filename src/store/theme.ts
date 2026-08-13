@@ -1,3 +1,4 @@
+import { loadStr, saveStr } from '../lib/storage'
 import { create } from 'zustand'
 import type { ThemeId } from '../theme/tokens'
 import { applyTokens } from '../theme/tokens'
@@ -17,20 +18,16 @@ type ThemeState = {
 }
 
 function loadPreference(): ThemeId {
-  try {
-    const v = localStorage.getItem(STORAGE_KEY)
-    if (
-      v === 'groknight' ||
-      v === 'grokday' ||
-      v === 'tokyonight' ||
-      v === 'rosepine-moon' ||
-      v === 'oscura-midnight' ||
-      v === 'auto'
-    ) {
-      return v
-    }
-  } catch {
-    /* ignore */
+  const v = loadStr(STORAGE_KEY)
+  if (
+    v === 'groknight' ||
+    v === 'grokday' ||
+    v === 'tokyonight' ||
+    v === 'rosepine-moon' ||
+    v === 'oscura-midnight' ||
+    v === 'auto'
+  ) {
+    return v
   }
   return 'groknight'
 }
@@ -49,11 +46,7 @@ export const useThemeStore = create<ThemeState>((set, get) => ({
   resolved: 'groknight',
 
   setTheme: (id) => {
-    try {
-      localStorage.setItem(STORAGE_KEY, id)
-    } catch {
-      /* ignore */
-    }
+    saveStr(STORAGE_KEY, id)
     const resolved = apply(id)
     set({ preference: id, resolved })
   },

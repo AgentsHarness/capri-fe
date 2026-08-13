@@ -1,3 +1,4 @@
+import { saveBool } from '../../lib/storage'
 import { create } from 'zustand'
 import { transport } from '../../api/localTransport'
 import { usePromptQueue } from '../promptQueue'
@@ -104,11 +105,7 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
   closeCancelPanel: () => set({ cancelPanelOpen: false }),
   cancelSubagentsPref: loadCancelSubagentsPref(),
   setCancelSubagentsPref: (stop) => {
-    try {
-      window.localStorage.setItem(CANCEL_SUBAGENTS_PREF_KEY, stop ? 'true' : 'false')
-    } catch {
-      /* storage unavailable — the preference stays in-memory */
-    }
+    saveBool(CANCEL_SUBAGENTS_PREF_KEY, stop)
     set({ cancelSubagentsPref: stop })
   },
   hasRunningSubagent: () =>
