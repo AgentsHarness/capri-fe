@@ -6,6 +6,7 @@ import {
   type ClipboardEvent as ReactClipboardEvent,
 } from 'react'
 import { useChatStore, formatTurnDuration, stillRunningCue } from '../store/chat'
+import { pushToast } from '../store/toast'
 import { usePromptQueue } from '../store/promptQueue'
 import { transport } from '../api/localTransport'
 import type { ContentBlock, ScrollEntry } from '../api/types'
@@ -410,7 +411,7 @@ export function Composer() {
   const turnStartedAt = useChatStore((s) => s.turnStartedAt)
   const models = useChatStore((s) => s.models)
   const setModel = useChatStore((s) => s.setModel)
-  const pushToast = useChatStore((s) => s.pushToast)
+
   const [modelOpen, setModelOpen] = useState(false)
   // 模型菜单「设为默认」勾选：切换模型时同时写入 config.toml 默认。
   const [setAsDefault, setSetAsDefault] = useState(false)

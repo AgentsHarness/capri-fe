@@ -1,4 +1,5 @@
 import { useChatStore } from './chat'
+import { pushToast } from './toast'
 import { ensureUiSettings, notificationsSettings, onUiSettingsReady } from './settings'
 import { shouldNotify, systemNotify } from './notifyConfig'
 
@@ -48,9 +49,8 @@ export function initUiNotifications(): void {
         .join(' / ') || method
     // Defer the set: we're inside the store's own subscribe dispatch.
     queueMicrotask(() => {
-      const st = useChatStore.getState()
       if (!systemNotify('Grok 需要审批', body)) {
-        st.pushToast(`🔔 需要审批：${method}`)
+        pushToast(`🔔 需要审批：${method}`)
       }
     })
   })
@@ -72,9 +72,8 @@ export function initUiNotifications(): void {
       const failed = entry.status === 'failed'
       const title = entry.title || entry.command || `Task ${id.slice(0, 8)}`
       queueMicrotask(() => {
-        const st = useChatStore.getState()
         if (!systemNotify(failed ? '后台任务失败' : '后台任务完成', title)) {
-          st.pushToast(`🔔 后台任务${failed ? '失败' : '完成'}：${title}`)
+          pushToast(`🔔 后台任务${failed ? '失败' : '完成'}：${title}`)
         }
       })
     }
