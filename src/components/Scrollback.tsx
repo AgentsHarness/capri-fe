@@ -48,9 +48,9 @@ import { Ansi } from './Ansi'
 import { extractToolDetail } from '../scrollback/toolDetail'
 import { uiBool } from '../store/settings'
 import { mergeLiveText } from '../scrollback/liveText'
+import { userMessagePreview } from '../format'
 import {
   UserMessageNav,
-  userMessagePreview,
   type UserMessageNavItem,
 } from './UserMessageNav'
 

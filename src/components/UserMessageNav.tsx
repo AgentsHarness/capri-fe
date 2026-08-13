@@ -20,8 +20,6 @@ import {
 
 /** Minimum user messages before the rail appears (TUI MIN_TURNS). */
 const MIN_TURNS = 2
-/** Stored preview char cap (TUI PREVIEW_MAX_CHARS). */
-const PREVIEW_MAX_CHARS = 80
 /** Max visible ticks when collapsed (overflow windows around active). */
 const MAX_COLLAPSED_TICKS = 28
 /** After scroll stops, keep the rail visible this long then fade out. */
@@ -46,17 +44,6 @@ export type UserMessageNavProps = {
    * (e.g. history load crosses MIN_TURNS).
    */
   scrollParentRef?: RefObject<HTMLElement | null>
-}
-
-/** First non-empty line, char-capped with … (TUI prompt_preview). */
-export function userMessagePreview(text: string): string {
-  const line =
-    text
-      .split('\n')
-      .map((l) => l.trim())
-      .find((l) => l.length > 0) ?? ''
-  if (line.length <= PREVIEW_MAX_CHARS) return line
-  return line.slice(0, PREVIEW_MAX_CHARS - 1) + '…'
 }
 
 /** Coarse pointer / no-hover — treat as mobile touch UI. */

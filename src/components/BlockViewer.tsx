@@ -29,7 +29,7 @@ import { fmtBytes, fmtTok } from '../format'
 import { contextUrgencyColor } from '../theme/contextColor'
 import { extractToolDetail } from '../scrollback/toolDetail'
 import { mergeLiveText } from '../scrollback/liveText'
-import { useSessionSpinner } from './sessionState'
+import { useSessionSpinner } from '../hooks/sessionState'
 import {
   EntryView,
   GroupHeaderView,

@@ -1,5 +1,5 @@
 import { transport } from '../../../api/localTransport'
-import { repoNameFromCwd } from '../../../components/historyGroups'
+import { repoNameFromCwd } from '../../historyGroups'
 import type { WorkspaceGroup, WorkspaceSummary } from '../../../api/types'
 import type { ChatState, SetState } from '../types'
 import {
