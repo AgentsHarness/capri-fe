@@ -1,11 +1,7 @@
 import type { AcpEvent } from './types'
 import { loadStr, removeKey, saveStr } from '../lib/storage'
-import type { TransportCore } from './transport'
 import type { TransportHandler, TransportMode } from './transport'
-import { sessionsRpc } from './rpc/sessions'
-import { gitRpc } from './rpc/git'
-import { toolsRpc } from './rpc/tools'
-import { miscRpc } from './rpc/misc'
+import { rpcMixins } from './rpc/mixins'
 
 
 function resolveAccessToken(): string {
@@ -119,7 +115,7 @@ export class LocalTransport {
     return this.base
   }
 
-  setConnectionMode(mode: TransportMode, hubUrl = '') {
+  setConnectionMode(mode: TransportMode, hubUrl: string = '') {
     const next = hubUrl.replace(/\/$/, '')
     if (this.mode === mode && this.hubUrl === next) return
     this.mode = mode
@@ -162,6 +158,14 @@ export class LocalTransport {
     )
   }
 
+  /**
+   * 判定当前 base 指向 acp-host 直连还是 hub，并带回 hub 地址。
+   * - /api/hosts 单 host 且 local:true（无 defaultHostId）→ acp-host 直连：
+   *   模式以 /api/status 的 mode 为准（host 配了 HUB_URL → hub，否则 local）。
+   * - 多 host / 带 defaultHostId → hub（部署版前端 / VITE_PROXY_TARGET=hub）。
+   * - 401 → hub（需要 FE_TOKEN，gate 会接管）。
+   * - 网络失败 → local（ErrorBanner 兜底）。
+   */
   async detectMode(): Promise<{
     mode: TransportMode
     hubUrl: string
@@ -255,10 +259,21 @@ export class LocalTransport {
     return `${base}${path}${qs}`
   }
 
+  /**
+   * Mode-aware URL for an API path (hub → 带 ?host= 指向选中 host；
+   * 选中本机 → 直连本地；local → 同源本机)。独立 API 客户端
+   * （如 shell.ts）必须用它拼 URL，不能裸 fetch 相对路径——
+   * 否则 hub 模式下请求会打到页面所在机器而不是选中的 host。
+   */
   apiUrl(path: string): string {
     return this.url(path)
   }
 
+  /**
+   * Mode-aware fetch：apiUrl 拼 URL + Authorization bearer + 超时 +
+   * 在途请求跟踪（setHost/disconnect 时统一 abort）。所有 API 调用
+   * 都应走这里而不是裸 fetch。
+   */
   apiFetch(
     path: string,
     init: RequestInit = {},
@@ -267,6 +282,21 @@ export class LocalTransport {
     return this.fetch(this.url(path), init, opts)
   }
 
+  /**
+   * fetch wrapper that attaches Authorization: Bearer when a hub FE
+   * token is configured. All API calls go through this so token handling
+   * stays in one place.
+   *
+   * Every request gets a hard timeout (default DEFAULT_FETCH_TIMEOUT_MS;
+   * `opts.timeoutMs` overrides, 0 disables) plus an optional caller
+   * `opts.signal`. Both sources are forwarded onto an owned
+   * AbortController tracked in `inflight`, so disconnect()/
+   * setHost()/setAccessToken() can abort everything in flight — a
+   * gapPull's finally then releases its per-host pulling slot instead of
+   * wedging it forever. Sources are composed by forwarding rather than
+   * AbortSignal.any (newer than this build's baseline browsers), which is
+   * equivalent here since every source funnels into one controller.
+   */
   private async fetch(
     input: string,
     init: RequestInit = {},
@@ -555,8 +585,5 @@ export class LocalTransport {
 
 }
 
-// ── RPC mixin：按领域拆出的命令发送方法（api/rpc/*），挂到原型 ──
-Object.assign(LocalTransport.prototype, sessionsRpc, gitRpc, toolsRpc, miscRpc)
-
-export type { TransportCore }
+Object.assign(LocalTransport.prototype, rpcMixins)
 

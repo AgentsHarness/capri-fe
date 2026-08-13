@@ -12,10 +12,6 @@ import type {
   WorkspaceSummary,
 } from '../types'
 
-/**
- * sessions — RPC 命令发送（api/rpc/，经 Object.assign 挂到
- * LocalTransport.prototype；方法内 `this` 即 TransportCore）。
- */
 export const sessionsRpc = {
   async listSessions(this: TransportCore): Promise<{ sessions: SessionInfo[]; nextCursor?: string; meta?: Record<string, unknown> }> {
     const res = await this.fetch(this.url('/api/sessions'), {

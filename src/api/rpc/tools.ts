@@ -3,10 +3,6 @@ import { findArrayField, findField, findObjectField, unwrapExtResult, xaiCall } 
 import type { AgentSkill, CustomModelConfig } from '../types'
 import type { ExtensionsPayload, McpListServer, McpToolInfo, SettingsPayload, TerminalOutput } from '../transport'
 
-/**
- * tools — RPC 命令发送（api/rpc/，经 Object.assign 挂到
- * LocalTransport.prototype；方法内 `this` 即 TransportCore）。
- */
 export const toolsRpc = {
   async mcpList(this: TransportCore): Promise<{ servers: McpListServer[] }> {
     const res = await this.fetch(this.url('/api/mcp/list'))
