@@ -60,18 +60,28 @@ function toTodoMap(v: unknown): Record<string, TodoStatus> {
  */
 function load(): HistoryPins {
   const parsed = loadJSON<Record<string, unknown>>(PIN_KEY, {})
-  if (parsed && typeof parsed === 'object' && 'todos' in parsed) {
-    // v2：{ pinnedWorkspaces, pinnedSessions, todos }
+  // loadJSON 只兜 JSON 语法损坏;值若是合法 JSON 的原始类型
+  // （如字面 "null"）会原样穿透,先挡一道,脏数据一律按空偏好
+  // 处理——否则 v1 分支的 `parsed.workspaces` 会抛 TypeError。
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    if ('todos' in parsed) {
+      // v2：{ pinnedWorkspaces, pinnedSessions, todos }
+      return {
+        pinnedWorkspaces: toStringSet(parsed.pinnedWorkspaces),
+        pinnedSessions: toStringSet(parsed.pinnedSessions),
+        todos: toTodoMap(parsed.todos),
+      }
+    }
+    // v1：{ workspaces, sessions } → 迁移成 v2。
     return {
-      pinnedWorkspaces: toStringSet(parsed.pinnedWorkspaces),
-      pinnedSessions: toStringSet(parsed.pinnedSessions),
-      todos: toTodoMap(parsed.todos),
+      pinnedWorkspaces: toStringSet(parsed.workspaces),
+      pinnedSessions: toStringSet(parsed.sessions),
+      todos: {},
     }
   }
-  // v1：{ workspaces, sessions } → 迁移成 v2。
   return {
-    pinnedWorkspaces: toStringSet(parsed.workspaces),
-    pinnedSessions: toStringSet(parsed.sessions),
+    pinnedWorkspaces: new Set(),
+    pinnedSessions: new Set(),
     todos: {},
   }
 }

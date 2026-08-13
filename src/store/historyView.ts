@@ -17,8 +17,13 @@ export type HistoryViewPrefs = {
 
 function load(): HistoryViewPrefs {
   const parsed = loadJSON<Record<string, unknown>>(VIEW_KEY, {})
+  // loadJSON 只兜 JSON 语法损坏;值若是合法 JSON 的原始类型
+  // （如字面 "null"）会原样穿透,这里补一道类型闸,脏数据一律
+  // 回退默认形态,不能让它把 `parsed.mode` 访问变成 TypeError。
   const mode: HistoryListMode =
-    parsed.mode === 'marked' ? 'marked' : 'workspace'
+    parsed && typeof parsed === 'object' && parsed.mode === 'marked'
+      ? 'marked'
+      : 'workspace'
   return { mode }
 }
 
