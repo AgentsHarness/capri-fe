@@ -1,3 +1,4 @@
+import { loadJSON, saveJSON } from '../lib/storage'
 import { create } from 'zustand'
 import type { HubPrefsDoc, SessionInfo, TodoStatus, WorkspaceGroup } from '../api/types'
 import { sessionSortRank } from './historyGroups'
@@ -39,10 +40,6 @@ export type HistoryPins = {
   todos: Record<string, TodoStatus>
 }
 
-function empty(): HistoryPins {
-  return { pinnedWorkspaces: new Set(), pinnedSessions: new Set(), todos: {} }
-}
-
 function toStringSet(v: unknown): Set<string> {
   return new Set(Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
 }
@@ -62,42 +59,29 @@ function toTodoMap(v: unknown): Record<string, TodoStatus> {
  * 旧版置顶本来就是全 host 共享的，迁移后语义不变。
  */
 function load(): HistoryPins {
-  try {
-    const raw = window.localStorage.getItem(PIN_KEY)
-    if (!raw) return empty()
-    const parsed = JSON.parse(raw) as Record<string, unknown>
-    if (parsed && typeof parsed === 'object' && 'todos' in parsed) {
-      // v2：{ pinnedWorkspaces, pinnedSessions, todos }
-      return {
-        pinnedWorkspaces: toStringSet(parsed.pinnedWorkspaces),
-        pinnedSessions: toStringSet(parsed.pinnedSessions),
-        todos: toTodoMap(parsed.todos),
-      }
-    }
-    // v1：{ workspaces, sessions } → 迁移成 v2。
+  const parsed = loadJSON<Record<string, unknown>>(PIN_KEY, {})
+  if (parsed && typeof parsed === 'object' && 'todos' in parsed) {
+    // v2：{ pinnedWorkspaces, pinnedSessions, todos }
     return {
-      pinnedWorkspaces: toStringSet(parsed.workspaces),
-      pinnedSessions: toStringSet(parsed.sessions),
-      todos: {},
+      pinnedWorkspaces: toStringSet(parsed.pinnedWorkspaces),
+      pinnedSessions: toStringSet(parsed.pinnedSessions),
+      todos: toTodoMap(parsed.todos),
     }
-  } catch {
-    return empty()
+  }
+  // v1：{ workspaces, sessions } → 迁移成 v2。
+  return {
+    pinnedWorkspaces: toStringSet(parsed.workspaces),
+    pinnedSessions: toStringSet(parsed.sessions),
+    todos: {},
   }
 }
 
 function persist(pins: HistoryPins): void {
-  try {
-    window.localStorage.setItem(
-      PIN_KEY,
-      JSON.stringify({
-        pinnedWorkspaces: [...pins.pinnedWorkspaces],
-        pinnedSessions: [...pins.pinnedSessions],
-        todos: pins.todos,
-      }),
-    )
-  } catch {
-    /* persistence is best-effort */
-  }
+  saveJSON(PIN_KEY, {
+    pinnedWorkspaces: [...pins.pinnedWorkspaces],
+    pinnedSessions: [...pins.pinnedSessions],
+    todos: pins.todos,
+  })
 }
 
 // ── hub 同步 ──────────────────────────────────────────────────────────

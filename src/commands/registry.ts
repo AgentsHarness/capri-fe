@@ -6,6 +6,7 @@
  * capabilities — an unknown command appends an error row and is NEVER
  * sent to the agent (TUI semantics).
  */
+import { loadBool, saveBool } from '../lib/storage'
 import { useChatStore, type ExtensionsTab } from '../store/chat'
 import { usePromptQueue } from '../store/promptQueue'
 import { THEMES, useThemeStore } from '../store/theme'
@@ -47,19 +48,11 @@ function status(text: string) {
 const MULTILINE_KEY = 'acpfe.multiline'
 
 export function isMultilineEnabled(): boolean {
-  try {
-    return window.localStorage.getItem(MULTILINE_KEY) === 'true'
-  } catch {
-    return false
-  }
+  return loadBool(MULTILINE_KEY, false)
 }
 
 function setMultilineEnabled(on: boolean): void {
-  try {
-    window.localStorage.setItem(MULTILINE_KEY, on ? 'true' : 'false')
-  } catch {
-    /* storage unavailable — session-only */
-  }
+  saveBool(MULTILINE_KEY, on)
 }
 
 /** /hooks /plugins /skills /marketplace — extensions modal on its tab. */

@@ -1,3 +1,4 @@
+import { loadBool, saveBool } from '../lib/storage'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useChatStore } from '../store/chat'
 import { pushToast } from '../store/toast'
@@ -30,19 +31,11 @@ import type { RewindConflict, RewindExecuteResult, RewindMode, RewindPoint } fro
 const CONFIRM_KEY = 'acpfe.confirmBeforeRewind'
 
 function confirmBeforeRewind(): boolean {
-  try {
-    return localStorage.getItem(CONFIRM_KEY) !== 'false'
-  } catch {
-    return true
-  }
+  return loadBool(CONFIRM_KEY, true)
 }
 
 function disableConfirmBeforeRewind(): void {
-  try {
-    localStorage.setItem(CONFIRM_KEY, 'false')
-  } catch {
-    /* private mode / quota — session-only */
-  }
+  saveBool(CONFIRM_KEY, false)
 }
 
 type Phase = 'cancel-offer' | 'loading' | 'picker' | 'confirm' | 'executing' | 'error' | 'warning'

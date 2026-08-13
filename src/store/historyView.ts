@@ -1,3 +1,4 @@
+import { loadJSON, saveJSON } from '../lib/storage'
 import { create } from 'zustand'
 
 /**
@@ -15,24 +16,14 @@ export type HistoryViewPrefs = {
 }
 
 function load(): HistoryViewPrefs {
-  try {
-    const raw = window.localStorage.getItem(VIEW_KEY)
-    if (!raw) return { mode: 'workspace' }
-    const parsed = JSON.parse(raw) as Record<string, unknown>
-    const mode: HistoryListMode =
-      parsed.mode === 'marked' ? 'marked' : 'workspace'
-    return { mode }
-  } catch {
-    return { mode: 'workspace' }
-  }
+  const parsed = loadJSON<Record<string, unknown>>(VIEW_KEY, {})
+  const mode: HistoryListMode =
+    parsed.mode === 'marked' ? 'marked' : 'workspace'
+  return { mode }
 }
 
 function persist(prefs: HistoryViewPrefs): void {
-  try {
-    window.localStorage.setItem(VIEW_KEY, JSON.stringify(prefs))
-  } catch {
-    /* persistence is best-effort */
-  }
+  saveJSON(VIEW_KEY, prefs)
 }
 
 export const useHistoryView = create<

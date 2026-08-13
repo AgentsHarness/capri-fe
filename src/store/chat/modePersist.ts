@@ -1,3 +1,10 @@
+import {
+  loadJSON,
+  loadStr,
+  removeKey,
+  saveJSON,
+  saveStr,
+} from '../../lib/storage'
 import { transport } from '../../api/localTransport'
 import { ensureUiSettings, uiBool, uiSettingsLoaded } from '../settings'
 import type { ChatState, ModeFlags, SetState } from './types'
@@ -28,34 +35,21 @@ export function normalizeModeFlags(flags: ModeFlags): ModeFlags {
 }
 
 export function loadGlobalModeFlags(): ModeFlags {
-  try {
-    const raw = window.localStorage.getItem(MODE_FLAGS_KEY)
-    if (!raw) return {}
-    const parsed = JSON.parse(raw) as unknown
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
-    // 白名单提取：只认权限三字段，其余一律忽略——旧格式（per-session
-    // map）或未知结构读出来就是 {}，绝不把杂散 key 展开进 store。
-    const o = parsed as Record<string, unknown>
-    return normalizeModeFlags({
-      yoloMode: typeof o.yoloMode === 'boolean' ? o.yoloMode : undefined,
-      autoMode: typeof o.autoMode === 'boolean' ? o.autoMode : undefined,
-      permissionMode: typeof o.permissionMode === 'string' ? o.permissionMode : undefined,
-    })
-  } catch {
-    return {}
-  }
+  const parsed = loadJSON<unknown>(MODE_FLAGS_KEY, {})
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+  // 白名单提取：只认权限三字段，其余一律忽略——旧格式（per-session
+  // map）或未知结构读出来就是 {}，绝不把杂散 key 展开进 store。
+  const o = parsed as Record<string, unknown>
+  return normalizeModeFlags({
+    yoloMode: typeof o.yoloMode === 'boolean' ? o.yoloMode : undefined,
+    autoMode: typeof o.autoMode === 'boolean' ? o.autoMode : undefined,
+    permissionMode: typeof o.permissionMode === 'string' ? o.permissionMode : undefined,
+  })
 }
 
 /** Persist the GLOBAL permission-mode flags (shared by every session). */
 export function saveModeFlags(flags: ModeFlags): void {
-  try {
-    window.localStorage.setItem(
-      MODE_FLAGS_KEY,
-      JSON.stringify(normalizeModeFlags(flags)),
-    )
-  } catch {
-    /* persistence is best-effort */
-  }
+  saveJSON(MODE_FLAGS_KEY, normalizeModeFlags(flags))
 }
 
 /** The global permission-mode flags this client last knew ({} when unknown). */
@@ -64,24 +58,15 @@ export function restoreModeFlags(): ModeFlags {
 }
 
 export function loadPlanModes(): Record<string, boolean> {
-  try {
-    const raw = window.localStorage.getItem(PLAN_FLAGS_KEY)
-    const parsed = raw ? (JSON.parse(raw) as Record<string, boolean>) : {}
-    return parsed && typeof parsed === 'object' ? parsed : {}
-  } catch {
-    return {}
-  }
+  const parsed = loadJSON<Record<string, boolean>>(PLAN_FLAGS_KEY, {})
+  return parsed && typeof parsed === 'object' ? parsed : {}
 }
 
 /** Persist one session's plan-mode copy (replay is the authority, this is a hint). */
 export function savePlanMode(sessionId: string, planMode: boolean): void {
-  try {
-    const map = loadPlanModes()
-    map[sessionId] = planMode
-    window.localStorage.setItem(PLAN_FLAGS_KEY, JSON.stringify(map))
-  } catch {
-    /* persistence is best-effort */
-  }
+  const map = loadPlanModes()
+  map[sessionId] = planMode
+  saveJSON(PLAN_FLAGS_KEY, map)
 }
 
 /** Restore one session's plan-mode copy ({} when unknown). */
@@ -264,25 +249,12 @@ export function consumeAgentInstance(agentStartedAt: number | undefined): {
   if (typeof agentStartedAt !== 'number' || agentStartedAt <= 0) {
     return { restarted: false, saved }
   }
-  let prev: string | null = null
-  try {
-    prev = window.localStorage.getItem(LAST_AGENT_STARTED_KEY)
-  } catch {
-    /* ignore */
-  }
+  let prev: string | null = loadStr(LAST_AGENT_STARTED_KEY)
   if (prev === String(agentStartedAt)) {
     return { restarted: false, saved }
   }
-  try {
-    window.localStorage.setItem(LAST_AGENT_STARTED_KEY, String(agentStartedAt))
-  } catch {
-    /* ignore */
-  }
-  try {
-    window.localStorage.removeItem(MODE_FLAGS_KEY)
-  } catch {
-    /* ignore */
-  }
+  saveStr(LAST_AGENT_STARTED_KEY, String(agentStartedAt))
+  removeKey(MODE_FLAGS_KEY)
   return { restarted: true, saved }
 }
 
@@ -293,29 +265,17 @@ export let reseedGen = 0
 export const RESEED_STAMP_KEY = 'acpfe.permissionReseededFor'
 
 export function currentAgentStamp(): string | null {
-  try {
-    return window.localStorage.getItem(LAST_AGENT_STARTED_KEY)
-  } catch {
-    return null
-  }
+  return loadStr(LAST_AGENT_STARTED_KEY)
 }
 
 export function alreadyReseeded(stamp: string | null): boolean {
   if (!stamp) return false
-  try {
-    return window.localStorage.getItem(RESEED_STAMP_KEY) === stamp
-  } catch {
-    return false
-  }
+  return loadStr(RESEED_STAMP_KEY) === stamp
 }
 
 export function markReseeded(stamp: string | null): void {
   if (!stamp) return
-  try {
-    window.localStorage.setItem(RESEED_STAMP_KEY, stamp)
-  } catch {
-    /* ignore */
-  }
+  saveStr(RESEED_STAMP_KEY, stamp)
 }
 
 /**

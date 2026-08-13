@@ -1,3 +1,4 @@
+import { loadJSON, saveJSON } from '../lib/storage'
 import {
   useEffect,
   useMemo,
@@ -184,37 +185,24 @@ const HISTORY_MAX = 50
 type HistoryItem = { text: string; ts: number; shell?: boolean }
 
 function loadPromptHistory(): HistoryItem[] {
-  try {
-    const raw = window.localStorage.getItem(HISTORY_KEY)
-    if (!raw) return []
-    const arr = JSON.parse(raw)
-    if (!Array.isArray(arr)) return []
-    const out: HistoryItem[] = []
-    for (const x of arr) {
-      if (x && typeof x.text === 'string' && x.text.trim()) {
-        out.push({
-          text: x.text,
-          ts: typeof x.ts === 'number' ? x.ts : Date.now(),
-          shell: x.shell === true,
-        })
-        if (out.length >= HISTORY_MAX) break
-      }
+  const arr = loadJSON<unknown>(HISTORY_KEY, [])
+  if (!Array.isArray(arr)) return []
+  const out: HistoryItem[] = []
+  for (const x of arr) {
+    if (x && typeof x.text === 'string' && x.text.trim()) {
+      out.push({
+        text: x.text,
+        ts: typeof x.ts === 'number' ? x.ts : Date.now(),
+        shell: x.shell === true,
+      })
+      if (out.length >= HISTORY_MAX) break
     }
-    return out
-  } catch {
-    return []
   }
+  return out
 }
 
 function savePromptHistory(items: HistoryItem[]): void {
-  try {
-    window.localStorage.setItem(
-      HISTORY_KEY,
-      JSON.stringify(items.slice(0, HISTORY_MAX)),
-    )
-  } catch {
-    /* storage full / unavailable — history is best-effort */
-  }
+  saveJSON(HISTORY_KEY, items.slice(0, HISTORY_MAX))
 }
 
 /** ── Image chips (paste / drop) ────────────────────────────────────── */
