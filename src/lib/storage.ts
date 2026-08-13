@@ -11,7 +11,14 @@
 
 const store = window.localStorage
 
-/** 读取并解析 JSON；缺失或损坏时返回 fallback（不抛异常）。 */
+/**
+ * 读取并解析 JSON；缺失或损坏时返回 fallback（不抛异常）。
+ *
+ * 注意：只兜 JSON「语法」损坏。若存储值是语法合法但类型非法的
+ * 原始值（如字面 "null" / "123"），会原样穿透返回——需要对象/
+ * 数组结构的调用方必须在拿到结果后自己补类型闸（见 historyPins/
+ * historyView 的 load()）。
+ */
 export function loadJSON<T>(key: string, fallback: T): T {
   try {
     const raw = store.getItem(key)
