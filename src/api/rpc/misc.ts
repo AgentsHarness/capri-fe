@@ -280,6 +280,40 @@ export const miscRpc = {
     }
   },
 
+  /**
+   * POST /api/agent-restart — 用户显式重启当前选中 host 的 agent
+   * 进程：杀旧进程、清 host 状态、重新 boot、恢复上次会话。host 从不
+   * 自动重启 agent（假设 agent 可靠，传输/扫描失败只报错）——这是
+   * 唯一的重启通道。mode-aware：local 模式同源本机；hub 模式经
+   * ?host= 中继到选中 host。
+   * 杀进程 + boot（host 侧 2min 上限）+ 恢复会话可能超过默认 30s
+   * fetch 超时，这里给足 120s。在飞回合会被中断且不重试。
+   */
+  async restartAgent(this: TransportCore): Promise<void> {
+    const res = await this.fetch(
+      this.url('/api/agent-restart'),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      },
+      { timeoutMs: 120_000 },
+    )
+    const data = (await res.json().catch(() => ({}))) as { error?: string; ok?: boolean }
+    if (res.status === 401) {
+      throw new AccessTokenError(
+        typeof data.error === 'string' && data.error ? data.error : '需要有效的访问 token',
+      )
+    }
+    if (!res.ok || data.ok === false) {
+      throw new Error(
+        typeof data.error === 'string' && data.error
+          ? data.error
+          : `agent restart failed (${res.status})`,
+      )
+    }
+  },
+
   async getPrefs(this: TransportCore): Promise<HubPrefsDoc> {
     if (this.mode !== 'hub') throw new Error('仅 Hub 模式支持置顶/待办持久化')
     const res = await this.fetch(`${this.apiBase()}/api/prefs`)

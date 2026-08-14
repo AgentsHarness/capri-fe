@@ -260,52 +260,70 @@ export function handleTurnEndEvent(
         // Host withSid 约定：带 sessionId 的 error 是 agent 回合失败——
         // host 只是透传 agent 的错误（如模型 API 400 "Internal Error"），
         // host 本身没坏。渲染成 scrollback 错误行即可，不翻转连接状态、
-        // 不亮红色 Host 横幅。不带 sessionId 的 error 才是 host 级错误
-        // （boot 失败：agent 进程起不来 / initialize / authenticate 失败），
-        // 保留原硬错误处理。
+        // 不进横幅。不带 sessionId 的 error 才是 host 级错误（boot 失败：
+        // agent 进程起不来 / initialize / authenticate 失败），进横幅。
         if (ev.sessionId) {
           const s = get()
           set({
             conn: s.conn === 'busy' ? 'ready' : s.conn,
-            // source='transport'：host↔agent 传输断了（agent 可能正被
-            // host 重启）——给恢复提示；'agent'/缺省：agent 报错，直接
-            // 显示错误文本。
+            // source='transport'：host↔agent 传输断了（agent 可能已
+            // 不可用）——host 不再自动重启，错误行带「重启」动作按钮；
+            // 'agent'/缺省：agent 报错，直接显示错误文本。
             statusText:
               ev.source === 'transport'
-                ? 'agent 连接异常，正在重启…'
+                ? 'agent 连接异常，可重启 agent'
                 : ev.message,
-            error: undefined,
-            statusWarning: undefined,
             turnStartedAt: undefined,
             currentPromptId: undefined,
-            entries: [...s.entries, { id: nid(), kind: 'error', text: ev.message }],
+            entries: [
+              ...s.entries,
+              {
+                id: nid(),
+                kind: 'error',
+                text: ev.message,
+                // 传输级失败的唯一恢复动作是重启 agent，行内可直接触发。
+                ...(ev.source === 'transport' ? { action: 'restart-agent' as const } : {}),
+              },
+            ],
           })
           break
         }
-        // Host 级错误（host 崩溃/重启）：丢弃未落库的流式缓冲并取消 rAF
-        // （clearStreamBuf 同时 cancelAnimationFrame），避免残留 flush 在
-        // 错误态之后把 conn 重新顶回 busy。
+        // Host 级错误（boot 失败等）：横幅是唯一权威位置，时间线不再
+        // 追加（全局状态不属于会话历史）。丢弃未落库的流式缓冲并取消
+        // rAF（clearStreamBuf 同时 cancelAnimationFrame），避免残留
+        // flush 在错误态之后把 conn 重新顶回 busy。
         clearStreamBuf()
+        get().setLayerError('host', {
+          level: 'error',
+          message: ev.message,
+          at: Date.now(),
+        })
         set({
           conn: 'error',
           statusText: ev.message,
-          error: ev.message,
-          statusWarning: undefined,
           turnStartedAt: undefined,
           currentPromptId: undefined,
-          entries: [...get().entries, { id: nid(), kind: 'error', text: ev.message }],
         })
         break
       }
       case 'status': {
         // 多会话广播（host withSid 约定）：非当前会话的 status 直接忽略。
         if (ev.sessionId && ev.sessionId !== get().sessionId) break
-        // Host status (connection warnings) is surfaced in the top-left
-        // host button and the composer status line — deliberately NOT in
-        // the scrollback.
-        set({
-          statusText: ev.text,
-          statusWarning: ev.text,
+        if (ev.sessionId) {
+          // 回合级提示（如"连接已断开，本次回复已取消"）：只进 composer
+          // 状态行，不进横幅。
+          set({ statusText: ev.text })
+          break
+        }
+        // Host 连接级 status（如"连接HOST异常"）：composer 状态行 +
+        // 横幅 warning。host 侧可带 action（如 restart-agent）——该条
+        // 状态的唯一恢复动作。
+        set({ statusText: ev.text })
+        get().setLayerError('host', {
+          level: 'warning',
+          message: ev.text,
+          ...(ev.action === 'restart-agent' ? { action: 'restart-agent' as const } : {}),
+          at: Date.now(),
         })
         break
       }

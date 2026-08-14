@@ -29,6 +29,7 @@ import {
   DeleteHostModal,
   HostActionsMenu,
   RenameHostModal,
+  RestartAgentModal,
 } from './HostActions'
 
 /** 菜单打开位置边缘夹取：菜单宽 ~184px、高 ~80px，贴着视口边缘。 */
@@ -219,8 +220,7 @@ export function TopBar({
   const selectedHostId = useChatStore((s) => s.selectedHostId)
   const switchHost = useChatStore((s) => s.switchHost)
   const conn = useChatStore((s) => s.conn)
-  const hostError = useChatStore((s) => s.error)
-  const hostNotice = useChatStore((s) => s.statusWarning)
+  const layerErrors = useChatStore((s) => s.layerErrors)
   const resetToEmpty = useChatStore((s) => s.resetToEmpty)
   const historyOpen = useChatStore((s) => s.historyOpen)
   const openHistory = useChatStore((s) => s.openHistory)
@@ -241,27 +241,28 @@ export function TopBar({
   const [menuHost, setMenuHost] = useState<{ host: HostInfo; pos: { x: number; y: number } } | null>(null)
   // 添加 Host（配对码）模态框。
   const [addHostOpen, setAddHostOpen] = useState(false)
-  // 修改名称 / 删除确认的目标 host。
+  // 修改名称 / 删除 / 重启确认的目标 host。
   const [renameTarget, setRenameTarget] = useState<HostInfo | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<HostInfo | null>(null)
+  const [restartTarget, setRestartTarget] = useState<HostInfo | null>(null)
   // 当前选中的 host（右键左上角开关直接对当前 host 弹菜单）。
   const currentHost =
     hosts.find((h) => h.hostId === selectedHostId) ??
     (hosts.length ? hosts[0] : null)
 
   // Host label reflects connection health: abnormal → "connecting" / "error".
-  // An active host status message (error / connection warning) replaces the
-  // label so it is always visible right where the host is named.
-  const notice = hostError || hostNotice
-  const hostLabel = notice
-    ? `⚠ ${notice}`
+  // 分层横幅（hub/host 层错误）存在时，label 只显示简短 ⚠ 状态——完整
+  // 消息在顶部横幅（ErrorBanner），避免长文本截断与多入口重复。
+  const layerErr = layerErrors.host ?? layerErrors.hub
+  const hostLabel = layerErr
+    ? `⚠ ${layerErr.level === 'error' ? '异常' : '警告'}`
     : conn === 'connecting'
       ? 'connecting'
       : conn === 'error' || conn === 'offline'
         ? 'error'
         : hostName || 'Local Host'
-  const hostLabelColor = notice
-    ? hostError
+  const hostLabelColor = layerErr
+    ? layerErr.level === 'error'
       ? 'text-gn-red'
       : 'text-gn-warning'
     : conn === 'connecting'
@@ -325,8 +326,8 @@ export function TopBar({
               }}
               className={`flex max-w-[40vw] sm:max-w-xs items-center gap-1 truncate rounded px-1.5 py-0.5 hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8 ${hostLabelColor}`}
               title={
-                notice
-                  ? `${notice}${hostName ? ` · ${hostName}` : ''}`
+                layerErr
+                  ? `${layerErr.message}${hostName ? ` · ${hostName}` : ''}`
                   : conn === 'connecting' || conn === 'error' || conn === 'offline'
                     ? `连接状态: ${conn}${hostName ? ` · ${hostName}` : ''}`
                     : `${hostName || 'Local Host'}（右键可管理 Host）`
@@ -453,6 +454,13 @@ export function TopBar({
                 setMenuHost(null)
                 setDeleteTarget(h)
               }}
+              onRestart={(h) => {
+                setMenuHost(null)
+                setRestartTarget(h)
+              }}
+              // 重启作用于当前选中 host 的 agent（transport 按选中
+              // host 路由）；非当前 host 行不显示重启项，避免误解。
+              canRestart={menuHost.host.hostId === selectedHostId}
             />
           )}
           {renameTarget && (
@@ -460,6 +468,9 @@ export function TopBar({
           )}
           {deleteTarget && (
             <DeleteHostModal host={deleteTarget} onClose={() => setDeleteTarget(null)} />
+          )}
+          {restartTarget && (
+            <RestartAgentModal host={restartTarget} onClose={() => setRestartTarget(null)} />
           )}
           {addHostOpen && <AddHostModal onClose={() => setAddHostOpen(false)} />}
         </div>

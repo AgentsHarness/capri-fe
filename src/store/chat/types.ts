@@ -44,6 +44,19 @@ export type {
   WorkflowRun,
 } from './typesPublic'
 
+/**
+ * 一条分层错误（hub / host 层横幅数据源）。
+ * - id：恢复事件精确清除用（如 hub-ws 重连成功只清该条）；缺省按层整体覆盖。
+ * - action：横幅可执行的恢复动作（当前仅重启 agent）。
+ */
+export type LayerErr = {
+  id?: string
+  level: 'error' | 'warning'
+  message: string
+  action?: 'restart-agent'
+  at: number
+}
+
 export type ChatState = {
   entries: ScrollEntry[]
   conn: ConnState
@@ -138,14 +151,16 @@ export type ChatState = {
    * `/name args` line as a user message (TUI PassThrough semantics).
    */
   agentCommands: AgentCommand[]
-  error?: string
   /**
-   * Latest connection warning from the host (`status` events — e.g.
-   * "连接HOST异常" / "连接已断开，本次回复已取消"). Shown in the top
-   * error banner in amber; superseded by `error`, cleared on recovery
-   * (ready/busy) or dismissed manually.
+   * 分层错误栈：hub（中继/配对/token/离线）与 host（进程/boot/通道）
+   * 各最多一条，同层新错误覆盖旧的；agent 回合级错误不进这里（它是
+   * 会话时间线的一部分，由 scrollback 错误行承担）。横幅（ErrorBanner）
+   * 从两层中选一条展示；恢复事件（ready/busy/新回合/重连成功）按层
+   * 清除。error > warning，同级取 at 较新。
    */
-  statusWarning?: string
+  layerErrors: { hub?: LayerErr; host?: LayerErr }
+  /** 写入/清除某一层的错误（undefined = 清除该层）。 */
+  setLayerError: (layer: 'hub' | 'host', err: LayerErr | undefined) => void
   /** Turn start (epoch ms) for the TUI "Worked for Xs" completion marker. */
   turnStartedAt?: number
   /**
@@ -161,9 +176,10 @@ export type ChatState = {
    */
   currentPromptId?: string
   /**
-   * 生成输出速率（估算 tok/s）——host 流式期间推送 gen_rate 事件实时更新；
-   * 工具执行/turn 结束推送冻结终值；新一轮发送清空（host 在
-   * user_message_chunk 时静默复位，不发事件）。
+   * 生成输出速率（字符/秒）——host 流式期间推送 gen_rate 事件实时更新；
+   * 输出结束（工具执行/turn 结束）推送 active:false 清除（只在输出过程
+   * 中显示，无回合末冻结值）；新一轮发送清空（host 在 user_message_chunk
+   * 时静默复位，不发事件）。
    */
   genRate?: number
   /**
@@ -589,6 +605,8 @@ export type ChatState = {
   renameHost: (hostId: string, hostName: string) => Promise<boolean>
   /** 删除（解除配对）一个 host；若删的是当前选中 host 则自动切到剩余 host。返回是否成功。 */
   deleteHost: (hostId: string) => Promise<boolean>
+  /** 用户显式重启当前 host 的 agent 进程（杀进程 + 重新 boot + 恢复上次会话）。返回是否成功。 */
+  restartAgent: () => Promise<boolean>
   /** 当前配对码（添加新 host 用；仅 hub 模式）。 */
   fetchPairingCode: () => Promise<{ code: string; expiresAt?: string; ttl?: number }>
   /** 轮换配对码（旧码立即失效）→ 新码。 */

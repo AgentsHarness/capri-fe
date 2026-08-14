@@ -416,9 +416,10 @@ export function GoalChip({
   // chip's rect and clamps the panel inside the screen).
   const wrapRef = useRef<HTMLDivElement>(null)
   // Action feedback: the status line carries the last instruction's
-  // confirmation; the error line surfaces host-level failures.
+  // confirmation; the error line surfaces hub/host-level failures
+  // (分层横幅的统一数据源,这里只回显最相关的一条)。
   const statusText = useChatStore((s) => s.statusText)
-  const error = useChatStore((s) => s.error)
+  const layerErr = useChatStore((s) => s.layerErrors.host ?? s.layerErrors.hub)
   // Hooks must run unconditionally — derive the Active flag before the
   // early returns so the elapsed tick + spinner keep their stable order.
   const status = typeof goalState?.status === 'string' ? goalState.status : ''
@@ -634,9 +635,9 @@ export function GoalChip({
               status · {statusText}
             </div>
           )}
-          {error && (
-            <div className="truncate text-gn-red" title={error}>
-              error · {error}
+          {layerErr && (
+            <div className="truncate text-gn-red" title={layerErr.message}>
+              error · {layerErr.message}
             </div>
           )}
         </div>

@@ -195,14 +195,14 @@ export async function sendPrompt(
         ...after,
         pendingOptimisticUserId: undefined,
         conn: s.conn === 'busy' ? 'ready' : s.conn,
-        // unreachable（502/传输断）：agent 正被 host 重启——给恢复提示；
-        // rejected：agent 报错，直接显示错误文本。
+        // unreachable（502/传输断）：agent 可能不可达——host 不再自动
+        // 重启，给恢复提示；rejected：agent 报错，直接显示错误文本。
         statusText:
           e instanceof AgentTurnError && e.kind === 'unreachable'
-            ? 'agent 连接异常，正在重启…'
+            ? 'agent 连接异常，可重启 agent'
             : msg,
-        error: undefined,
-        statusWarning: undefined,
+        // 新回合开始：清空分层横幅。
+        layerErrors: {},
         awaitingNext: false,
         turnStartedAt: undefined,
         currentPromptId: undefined,

@@ -504,6 +504,8 @@ export class LocalTransport {
     ws.onopen = () => {
       if (gen !== this.gen || this.ws !== ws) return
       this.reconnectAttempt = 0
+      // hub 恢复在线：让 store 清掉"与 hub 连接断开"提示。
+      this.emitLocal({ type: 'hub_conn', online: true })
     }
 
     ws.onmessage = (msg) => {
@@ -517,6 +519,9 @@ export class LocalTransport {
       if (gen !== this.gen || this.ws !== ws) return
       this.ws = null
       if (this.intentionalClose) return
+      // 非主动断线：提示"与 hub 断开"，重连成功由 onopen 清除。
+      // 仅 hub 模式（connectWS 只在 hub 模式被调用）。
+      this.emitLocal({ type: 'hub_conn', online: false })
       // Hub 模式没有 SSE 兜底（hub 只提供 /ws/fe）：指数退避重连 WS。
       const delay = Math.min(30_000, 1000 * 2 ** Math.min(this.reconnectAttempt, 5))
       this.reconnectAttempt += 1
