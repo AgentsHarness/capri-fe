@@ -46,8 +46,6 @@ export function useStickyPin(
   /** Rendered sticky band (live height + push translate). */
   const stickyBandElRef = useRef<HTMLDivElement | null>(null)
   const lastPushYRef = useRef(0)
-  /** Near the top of the list — loading-more banner may occupy the sticky slot. */
-  const [stickyNearTop, setStickyNearTop] = useState(true)
   /**
    * Jump target. Honored only while the target sits fully below the sticky
    * band (last-turn clamp). Align-to-bar clears this and yields.
@@ -76,15 +74,10 @@ export function useStickyPin(
     const els = userEls.current
     if (!box || els.size === 0) {
       applyStickyPushY(0)
-      setStickyNearTop(true)
       setPinned((prev) => (prev == null ? prev : null))
       return
     }
     const scrollTop = box.scrollTop
-    setStickyNearTop((prev) => {
-      const near = scrollTop < 80
-      return prev === near ? prev : near
-    })
     // TUI: scroll_offset == 0 → no pin (also drop jump force).
     if (scrollTop <= 0) {
       forcePinnedIdRef.current = null
@@ -277,7 +270,6 @@ export function useStickyPin(
     navActiveId,
     stickyBandElRef,
     lastPushYRef,
-    stickyNearTop,
     updatePinned,
     updateNavActive,
     scheduleUpdatePinned,

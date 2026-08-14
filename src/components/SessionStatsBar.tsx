@@ -9,7 +9,7 @@ import { COLUMN_PAD_X_CLASS, CONTENT_COLUMN_CLASS } from '../theme/layout'
  *   `3 轮 3 步 | LLM 3m3s 工具调用 2m1s | 首 token 平均 3 s · 5711 tok/s
  *    | 缓存命中 98 % | 输入 1.7M tok · 输出 24K tok`
  *
- * 数据源：POST /api/session-stats（acp-host bridge_ext_stats.go 扫描
+ * 数据源：POST /api/session-stats（capri-host bridge_ext_stats.go 扫描
  * 该会话 updates.jsonl 聚合）。哪个指标有数据就显示哪个段，缺省段
  * 隐藏（老数据无 _meta 毫秒时间戳时耗时类指标缺失）。会话无任何
  * 活动历史（0 轮 0 步 0 token）时整条隐藏。刷新时机：会话切换 /

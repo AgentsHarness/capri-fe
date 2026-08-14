@@ -307,7 +307,7 @@ export function TopBar({
             // 本地模式：锁定本机 —— 静态 Localhost 标签，不可点击、无下拉。
             <div
               className="flex min-h-8 max-w-[40vw] items-center gap-1 truncate rounded px-1.5 py-0.5 sm:max-w-xs"
-              title="本地模式（仅本机 acp-host，无 host 切换）"
+              title="本地模式（仅本机 capri-host，无 host 切换）"
             >
               <span className="truncate text-gn-fg">Localhost</span>
             </div>

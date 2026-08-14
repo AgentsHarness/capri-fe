@@ -1156,13 +1156,13 @@ export function Composer() {
   // 会话切换加载中（historyLoading）状态行固定显示「回放中…」而不是
   // 旧会话的 busy/状态（避免加载期间显示误导性的活动标签）：见下方
   // 状态行渲染。statusVisible 只决定「加载结束后」该不该显示——加载
-  // 期间内容就是回放臂，加载完毕立即切换真实状态。
+  // 期间内容就是回放臂，加载完毕立即切换真实状态。error/offline 不在
+  // 其中：host/hub 错误只进顶部横幅（ErrorBanner），composer 状态行
+  // 不参与，避免与横幅重复。
   const statusVisible =
     !historyLoading &&
     (busy ||
       conn === 'connecting' ||
-      conn === 'error' ||
-      conn === 'offline' ||
       recapPending ||
       idleCueVisible)
   // 生成速度（状态行总时间右侧）：host 推送的 gen_rate（字符/秒），
@@ -1464,12 +1464,13 @@ export function Composer() {
     if (isMultilineEnabled()) {
       out.push({ text: 'multiline', color: 'var(--color-gn-cyan)' })
     }
-    // busy / 待处理 live in the history sidebar state icons — not the prompt flags.
-    if (conn === 'error' || conn === 'offline') {
-      out.push({ text: statusText || 'offline', color: 'var(--color-gn-red)' })
-    }
+    // error/offline 不在这里回显：host/hub 错误只进顶部横幅
+    // （ErrorBanner），model 槽的 disconnected 已表达连接态。
     return out
-  }, [usage, conn, statusText, permissionMode, yoloMode, autoMode, planMode])
+    // statusText 是 /multiline 命令的变更信号（命令只写 localStorage +
+    // statusText，多行 chip 靠这个 dep 重算）——非多余依赖。
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [usage, statusText, permissionMode, yoloMode, autoMode, planMode])
 
   // ── TUI queue hint (turn_status.rs: `· N queued`) ──
   // 队列状态不进状态行（右侧簇在窄屏会挤）——独立一行，字号与 busy
@@ -1535,7 +1536,7 @@ export function Composer() {
         )}
         {/* x.ai/ask_user_question card mounts here: QuestionModal portals
             its inline card into this anchor so it sits above the input. */}
-        <div id="acp-xai-question-anchor" />
+        <div id="capri-xai-question-anchor" />
         {/* ── TUI turn status line (turn_status.rs) ──
             Busy: `⠧ Run command 0.2s  1m20s ⇣12k [stop]` — the label is
             the dynamic activity (newest running tool / thinking) with its
@@ -1588,11 +1589,7 @@ export function Composer() {
             ) : (
               <>
                 <span className="inline-flex w-[1.25em] shrink-0 items-center justify-center leading-none text-gn-muted">
-                  {busy || conn === 'connecting' || recapPending ? (
-                    SPINNER_FRAMES[spinnerFrame]
-                  ) : (
-                    <span className="h-[7px] w-[7px] rounded-full bg-gn-red" />
-                  )}
+                  {SPINNER_FRAMES[spinnerFrame]}
                 </span>
                 {busy ? (
                   // Busy arm: activity label (colored per activity type) +
@@ -1633,13 +1630,10 @@ export function Composer() {
                     )}
                   </>
                 ) : (
-                  <span
-                    className={`truncate ${
-                      conn === 'error' || conn === 'offline'
-                        ? 'text-gn-red'
-                        : 'text-gn-muted'
-                    }`}
-                  >
+                  // 空闲臂：静态 statusText（连接中 / 会话操作反馈）。
+                  // error/offline 不在此渲染（错误只进顶部横幅）——此
+                  // 分支可达时 conn 必为 connecting。
+                  <span className="truncate text-gn-muted">
                     {statusText}
                   </span>
                 )}

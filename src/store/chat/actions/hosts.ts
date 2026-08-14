@@ -38,7 +38,7 @@ export function hostActions(set: SetState, get: () => ChatState) {
       if (s.selectedHostId) return
       // First selection: persisted choice → hub default → first online →
       // first local host (local mode).
-      let saved: string | null = loadStr('acp-fe.host')
+      let saved: string | null = loadStr('capri-fe.host')
       const pick =
         (saved ? hosts.find((h) => h.hostId === saved) : undefined) ??
         hosts.find((h) => h.hostId === defaultHostId) ??
@@ -53,7 +53,7 @@ export function hostActions(set: SetState, get: () => ChatState) {
 
   switchHost: async (hostId) => {
     // 本地模式锁定本机：host 切换只在 hub 模式有效（也不写
-    // localStorage acp-fe.host，避免残留状态）。
+    // localStorage capri-fe.host，避免残留状态）。
     if (transport.getConnectionMode() !== 'hub') return
     if (hostId === get().selectedHostId) return
     // Invalidate every in-flight async result from the previous host.
@@ -62,7 +62,7 @@ export function hostActions(set: SetState, get: () => ChatState) {
     clearPeerSessionLoad()
     get().stopTopTaskPolling()
     transport.setHost(hostId)
-    saveStr('acp-fe.host', hostId)
+    saveStr('capri-fe.host', hostId)
     const host = get().hosts.find((h) => h.hostId === hostId)
     clearSuppressedTools()
     clearStreamBuf()
@@ -185,7 +185,7 @@ export function hostActions(set: SetState, get: () => ChatState) {
       // 删掉的是当前选中 host：清掉选择，让 refreshHosts 重新挑选
       // （持久化选择一并清除，避免下次进页面选中一个已删除的 host）。
       if (get().selectedHostId === hostId) {
-        removeKey('acp-fe.host')
+        removeKey('capri-fe.host')
         set({ selectedHostId: undefined })
       }
       // refreshHosts 直接以新注册表为准（不依赖 hosts_changed 广播）。

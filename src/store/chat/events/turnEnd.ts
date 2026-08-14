@@ -292,9 +292,12 @@ export function handleTurnEndEvent(
           break
         }
         // Host 级错误（boot 失败等）：横幅是唯一权威位置，时间线不再
-        // 追加（全局状态不属于会话历史）。丢弃未落库的流式缓冲并取消
-        // rAF（clearStreamBuf 同时 cancelAnimationFrame），避免残留
-        // flush 在错误态之后把 conn 重新顶回 busy。
+        // 追加（全局状态不属于会话历史），statusText 也不写错误文本
+        // （stat/composer 不参与，避免三处重复；conn: 'error' 已足以
+        // 禁用发送）。statusText 清空是防止 stat 的 status 行在错误态
+        // 残留陈旧的连接文案（如"连接中…"）。丢弃未落库的流式缓冲并
+        // 取消 rAF（clearStreamBuf 同时 cancelAnimationFrame），避免
+        // 残留 flush 在错误态之后把 conn 重新顶回 busy。
         clearStreamBuf()
         get().setLayerError('host', {
           level: 'error',
@@ -303,7 +306,7 @@ export function handleTurnEndEvent(
         })
         set({
           conn: 'error',
-          statusText: ev.message,
+          statusText: '',
           turnStartedAt: undefined,
           currentPromptId: undefined,
         })
@@ -318,10 +321,9 @@ export function handleTurnEndEvent(
           set({ statusText: ev.text })
           break
         }
-        // Host 连接级 status（如"连接HOST异常"）：composer 状态行 +
-        // 横幅 warning。host 侧可带 action（如 restart-agent）——该条
-        // 状态的唯一恢复动作。
-        set({ statusText: ev.text })
+        // Host 连接级 status（如"连接HOST异常"）：只进横幅 warning，
+        // stat/composer 不参与（与 host 错误同政策）。host 侧可带
+        // action（如 restart-agent）——该条状态的唯一恢复动作。
         get().setLayerError('host', {
           level: 'warning',
           message: ev.text,

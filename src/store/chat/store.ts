@@ -142,7 +142,7 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
   planMode: false,
 
   // ── goal mode — HOST-ENGINE control (TUI /goal parity) ─────────────
-  // The host owns the goal tracker (acp-host goal.go): these actions call
+  // The host owns the goal tracker (capri-host goal.go): these actions call
   // /api/goal/* directly instead of the old prompt path (the wire has no
   // goal control methods, and the prompt path only worked when the agent
   // happened to have an update_goal tool). Responses carry the current

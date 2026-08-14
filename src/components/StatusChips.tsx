@@ -416,10 +416,9 @@ export function GoalChip({
   // chip's rect and clamps the panel inside the screen).
   const wrapRef = useRef<HTMLDivElement>(null)
   // Action feedback: the status line carries the last instruction's
-  // confirmation; the error line surfaces hub/host-level failures
-  // (分层横幅的统一数据源,这里只回显最相关的一条)。
+  // confirmation. Hub/host-level failures live ONLY in the top banner
+  // (ErrorBanner) — stat stays session/action-scoped, no error echo.
   const statusText = useChatStore((s) => s.statusText)
-  const layerErr = useChatStore((s) => s.layerErrors.host ?? s.layerErrors.hub)
   // Hooks must run unconditionally — derive the Active flag before the
   // early returns so the elapsed tick + spinner keep their stable order.
   const status = typeof goalState?.status === 'string' ? goalState.status : ''
@@ -579,7 +578,7 @@ export function GoalChip({
             </div>
           )}
         </div>
-        {/* ── goal controls — HOST ENGINE (acp-host goal.go /api/goal/*,
+        {/* ── goal controls — HOST ENGINE (capri-host goal.go /api/goal/*,
             TUI /goal parity; see chat.ts goalSet docs). */}
         <div className="flex flex-wrap items-center gap-1 border-t border-gn-prompt-border px-3 py-2">
           <button
@@ -628,16 +627,11 @@ export function GoalChip({
             工作流 ↗
           </button>
         </div>
-        {/* ── action feedback: live status line + error line ─────────── */}
+        {/* ── action feedback: live status line（hub/host 错误只在顶部横幅）── */}
         <div className="border-t border-gn-prompt-border px-3 py-1.5 font-mono text-[10.5px]">
           {statusText && (
             <div className="truncate text-gn-muted" title={statusText}>
               status · {statusText}
-            </div>
-          )}
-          {layerErr && (
-            <div className="truncate text-gn-red" title={layerErr.message}>
-              error · {layerErr.message}
             </div>
           )}
         </div>

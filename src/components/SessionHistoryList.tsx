@@ -21,7 +21,7 @@ import {
 } from '../store/historyPins'
 import { useHistoryView } from '../store/historyView'
 
-/** 组内默认显示的会话行数（超出折叠为"加载更多"）。 */
+/** 组内默认显示的普通会话行数（置顶/待办不占名额，超出折叠为"加载更多"）。 */
 const WORKSPACE_ROWS_LIMIT = 4
 
 /** 行操作菜单（右键 / ⋮）的估算尺寸，用于视口边界 clamp。 */
@@ -29,7 +29,8 @@ const ROW_MENU_W = 176
 const ROW_MENU_H = 240
 
 /** 点击"加载更多"每次追加的行数，循环直到组内会话全部显示；
- *  展开超过 WORKSPACE_ROWS_LIMIT 后出现"收起"，点击回到 WORKSPACE_ROWS_LIMIT。 */
+ *  展开超过默认基准（WORKSPACE_ROWS_LIMIT + 置顶/待办数）后出现
+ *  "收起"，点击回到默认基准。 */
 const LOAD_MORE_STEP = 10
 
 /** 工作区活跃窗口：最新活动在 6 小时内的默认展开，超过默认收起。 */
@@ -310,23 +311,45 @@ export function SessionHistoryList() {
   }
 
   /**
-   * 组内已展开的行数（key = sectionKey）；初始显示最近 4 个，点击
+   * 组内默认展开的行数：置顶 / 待办（未完成）会话不占普通名额——
+   * 被标记的会话始终全部可见，普通会话仍默认展示 WORKSPACE_ROWS_LIMIT
+   * 个。标记形态（marked）的分组本身就只含被标记的会话，直接全展示。
+   */
+  const defaultShownCount = (g: ListSection): number => {
+    if (g.kind !== 'workspace') return g.sessions.length
+    const pinnedOrTodo = g.sessions.filter(
+      (s) => pinnedSessions.has(s.sessionId) || todos[s.sessionId] === 'todo',
+    ).length
+    return WORKSPACE_ROWS_LIMIT + pinnedOrTodo
+  }
+  const sectionByKey = (key: string): ListSection | undefined =>
+    sections.find((s) => s.key === key)
+
+  /**
+   * 组内已展开的行数（key = sectionKey）；初始显示最近
+   * WORKSPACE_ROWS_LIMIT 个普通会话（置顶/待办额外全显），点击
    * "加载更多"每次追加 LOAD_MORE_STEP（10）个，循环直到全部显示；
-   * 一旦展开超过 4 个，"收起"即出现（与"加载更多"并排），
-   * 点击回到 WORKSPACE_ROWS_LIMIT，无需等全部加载完。
+   * 一旦超过默认基准，"收起"即出现（与"加载更多"并排），
+   * 点击回到 defaultShownCount，无需等全部加载完。
    */
   const [visibleCount, setVisibleCount] = useState<ReadonlyMap<string, number>>(new Map())
   const expandMore = (key: string) => {
+    const base = sectionByKey(key)
+      ? defaultShownCount(sectionByKey(key)!)
+      : WORKSPACE_ROWS_LIMIT
     setVisibleCount((prev) => {
       const next = new Map(prev)
-      next.set(key, (prev.get(key) ?? WORKSPACE_ROWS_LIMIT) + LOAD_MORE_STEP)
+      next.set(key, (prev.get(key) ?? base) + LOAD_MORE_STEP)
       return next
     })
   }
   const collapseMore = (key: string) => {
+    const base = sectionByKey(key)
+      ? defaultShownCount(sectionByKey(key)!)
+      : WORKSPACE_ROWS_LIMIT
     setVisibleCount((prev) => {
       const next = new Map(prev)
-      next.set(key, WORKSPACE_ROWS_LIMIT)
+      next.set(key, base)
       return next
     })
   }
@@ -463,7 +486,8 @@ export function SessionHistoryList() {
       )}
       {sections.map((g) => {
         const isCollapsed = isGroupCollapsed(g.key)
-        const shown = visibleCount.get(g.key) ?? WORKSPACE_ROWS_LIMIT
+        const defaultShown = defaultShownCount(g)
+        const shown = visibleCount.get(g.key) ?? defaultShown
         const rows = g.sessions.slice(0, shown)
         const isWorkspace = g.kind === 'workspace'
         const sectionAccent =
@@ -713,14 +737,14 @@ export function SessionHistoryList() {
                     </div>
                   )
                 })}
-                {g.sessions.length > WORKSPACE_ROWS_LIMIT && (
+                {g.sessions.length > defaultShown && (
                   <div className="flex">
-                    {shown > WORKSPACE_ROWS_LIMIT && (
+                    {shown > defaultShown && (
                       <button
                         type="button"
                         onClick={() => collapseMore(g.key)}
                         className="flex flex-1 cursor-pointer items-center justify-center gap-2 px-3 py-1 text-center text-[10.5px] text-gn-muted hover:bg-gn-bg-highlight"
-                        title={`收起为最近 ${WORKSPACE_ROWS_LIMIT} 个会话`}
+                        title={`收起为最近 ${defaultShown} 个会话`}
                       >
                         收起
                       </button>

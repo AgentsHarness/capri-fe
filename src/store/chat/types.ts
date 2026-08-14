@@ -83,7 +83,7 @@ export type ChatState = {
   hostId?: string
   hostName?: string
   hosts: HostInfo[]
-  /** 连接模式：local（本机 acp-host，锁定本机，无 host 切换）/ hub（跨源 hub，可切换 host）。 */
+  /** 连接模式：local（本机 capri-host，锁定本机，无 host 切换）/ hub（跨源 hub，可切换 host）。 */
   mode: 'local' | 'hub'
   /** Selected host (hub mode): API calls + event filtering target. */
   selectedHostId?: string

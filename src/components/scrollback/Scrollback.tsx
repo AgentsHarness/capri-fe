@@ -107,7 +107,6 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
     navActiveId,
     stickyBandElRef,
     lastPushYRef,
-    stickyNearTop,
     updatePinned,
     updateNavActive,
     scheduleUpdatePinned,
@@ -404,7 +403,12 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
           }
         >
           {historyLoadingMore ? (
-            '加载上一轮…'
+            <span className="inline-flex items-center justify-center gap-1">
+              <span className="leading-none">
+                {SPINNER_FRAMES[spinnerFrame]}
+              </span>
+              <span>正在回放…</span>
+            </span>
           ) : historyLoadError ? (
             <span className="text-gn-red">{historyLoadError} · 点击重试</span>
           ) : (
@@ -448,10 +452,7 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
         <StickyPrompt
           pinnedUser={pinnedUser}
           pinnedStore={pinnedStore}
-          historyLoadingMore={historyLoadingMore}
-          stickyNearTop={stickyNearTop}
           wsBarH={wsBarH}
-          spinnerFrame={spinnerFrame}
           stickyBandElRef={stickyBandElRef}
           lastPushYRef={lastPushYRef}
           onJump={jumpToUserEntry}

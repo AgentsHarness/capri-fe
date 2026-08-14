@@ -156,17 +156,25 @@ export async function sendPrompt(
           return
         }
         // 网络级失败（host 不可达）：丢弃未落库的流式缓冲并取消 rAF，
-        // 避免残留 flush 在错误态之后把 conn 重新顶回 busy。
+        // 避免残留 flush 在错误态之后把 conn 重新顶回 busy。host 级
+        // 失败（会话无关）不滚时间线错误行——横幅就地设置，不依赖
+        // live error 事件（SSE 与 POST 是两条独立连接，事件可能迟到
+        // 甚至缺失）。statusText 不写错误（stat/composer 不参与），
+        // 清空以防 stat 残留陈旧连接文案。
         clearStreamBuf()
+        get().setLayerError('host', {
+          level: 'error',
+          message: msg,
+          at: Date.now(),
+        })
         set({
           ...after,
           pendingOptimisticUserId: undefined,
           conn: 'error',
-          statusText: msg,
+          statusText: '',
           awaitingNext: false,
           turnStartedAt: undefined,
           currentPromptId: undefined,
-          entries: [...after.entries, { id: nid(), kind: 'error', text: msg }],
         })
         return
       }

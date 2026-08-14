@@ -44,7 +44,7 @@ export class AccessTokenError extends Error {
 }
 
 
-/** 连接模式：local = 同源 acp-host（SSE /events，无 ?host=，锁定本机）；hub = 跨源直连 hub（WS /ws/fe + ?host= + token）。 */
+/** 连接模式：local = 同源 capri-host（SSE /events，无 ?host=，锁定本机）；hub = 跨源直连 hub（WS /ws/fe + ?host= + token）。 */
 export type TransportMode = 'local' | 'hub'
 
 

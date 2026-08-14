@@ -3,7 +3,7 @@ import { KeyRound } from 'lucide-react'
 
 /**
  * Full-screen gate: user must enter the hub FE_TOKEN before the app
- * connects. Token is stored only in localStorage (`acp-fe-token`) — never
+ * connects. Token is stored only in localStorage (`capri-fe-token`) — never
  * baked into the static build.
  */
 export function AccessTokenGate({
@@ -40,11 +40,11 @@ export function AccessTokenGate({
           <code className="text-gn-fg2">FE_TOKEN</code>
           ）。密钥只保存在本机浏览器，不会写入服务器静态文件。
         </p>
-        <label className="mb-1 block text-[12px] text-gn-gray" htmlFor="acp-access-token">
+        <label className="mb-1 block text-[12px] text-gn-gray" htmlFor="capri-access-token">
           访问密钥
         </label>
         <input
-          id="acp-access-token"
+          id="capri-access-token"
           ref={inputRef}
           type="password"
           autoComplete="current-password"

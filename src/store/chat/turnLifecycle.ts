@@ -274,15 +274,21 @@ export function armTurnBlipWatchdog(
     // 通道仍开：回合还在正常推进（长工具调用、静默期都可能）——不动。
     if (transport.isLiveOpen()) return
     clearStreamBuf()
+    // 看门狗触发时 live 通道已断——live error 事件不会再来，横幅必须
+    // 就地设置（host 级失败，会话无关，不进时间线、不写 statusText）。
+    get().setLayerError('host', {
+      level: 'error',
+      message: msg,
+      at: Date.now(),
+    })
     set({
       ...sealThought(cur),
       pendingOptimisticUserId: undefined,
       conn: 'error',
-      statusText: msg,
+      statusText: '',
       awaitingNext: false,
       turnStartedAt: undefined,
       currentPromptId: undefined,
-      entries: [...cur.entries, { id: nid(), kind: 'error', text: msg }],
     })
   }, TURN_BLIP_GRACE_MS)
 }

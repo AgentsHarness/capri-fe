@@ -374,7 +374,7 @@ export function handleNotifApps(
             // agent_result is the best error text and "rate limited"
             // stands in for a rate_limit without a payload. The `done`
             // event skips its "Worked for" marker for these reasons.
-            // Fallback rail: typed turn_completed events (acp-host)
+            // Fallback rail: typed turn_completed events (capri-host)
             // already render the failed marker — dedupe via the tail.
             if (reason === 'error' || reason === 'rate_limit') {
               if (tailAlreadyTurnEnded(get().entries)) break

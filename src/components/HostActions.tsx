@@ -238,7 +238,7 @@ export function DeleteHostModal({
           」吗？
         </p>
         <p className="mt-1 text-[11px] text-gn-muted leading-snug">
-          删除后其 token 立即失效、中继连接被断开，该机器上的 acp-host 需重新配对才能恢复接入。
+          删除后其 token 立即失效、中继连接被断开，该机器上的 capri-host 需重新配对才能恢复接入。
         </p>
         <div className="mt-4 flex justify-end gap-2">
           <button
@@ -327,7 +327,7 @@ export function AddHostModal({ onClose }: { onClose: () => void }) {
     <ModalShell title="添加 Host" onClose={onClose}>
       <div className="p-4">
         <p className="mb-2 text-[12px] text-gn-muted leading-snug">
-          在要接入 hub 的新机器上启动 acp-host，填入以下配对码（每台机器一个码）：
+          在要接入 hub 的新机器上启动 capri-host，填入以下配对码（每台机器一个码）：
         </p>
         {loading ? (
           <div className="mb-3 rounded-md border border-gn-prompt-border bg-gn-bg-dark px-3 py-3 text-center text-[12px] text-gn-muted">
@@ -380,9 +380,9 @@ export function AddHostModal({ onClose }: { onClose: () => void }) {
 
         <div className="rounded-md border border-gn-prompt-border bg-gn-bg-dark p-3">
           <div className="mb-1.5 text-[12px] text-gn-fg">新机器启动示例</div>
-          <pre className="whitespace-pre-wrap break-all font-mono text-[11px] text-gn-cyan leading-relaxed">{`HUB_URL=${hubUrl} HUB_PAIR_CODE=${code ?? '<配对码>'} go run ./cmd/acp-host`}</pre>
+          <pre className="whitespace-pre-wrap break-all font-mono text-[11px] text-gn-cyan leading-relaxed">{`HUB_URL=${hubUrl} HUB_PAIR_CODE=${code ?? '<配对码>'} go run ./cmd/capri-host`}</pre>
           <div className="mt-1.5 text-[11px] text-gn-muted leading-snug">
-            已配对过的机器会自动复用 ~/.acp-host/hub.json 中的 token，无需重复配对；
+            已配对过的机器会自动复用 ~/.capri-host/hub.json 中的 token，无需重复配对；
             HOST_TOKEN 优先级最高。
           </div>
         </div>
