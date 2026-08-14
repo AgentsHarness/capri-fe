@@ -1,13 +1,13 @@
-# acp-fe
+# capri-fe
 
-Vite + React + Tailwind 前端：连接本机 `acp-host`（Local 模式）或 `acp-hub`（Hub 多 Host 模式），展示 ACP 流式对话与工具卡片。
+Vite + React + Tailwind 前端：连接本机 `capri-host`（Local 模式）或 `capri-hub`（Hub 多 Host 模式），展示 ACP 流式对话与工具卡片。
 
 ## 设计要点
 
 - **不执行** fs/terminal —— 工具由 Host 上的 Agent 自行执行
 - UI 只渲染 `session/update`（消息 / 思考 / tool_call）与可选权限审批
 - **Host 选择器**（TopBar 左上）：Hub 模式下列出所有已配对 Host，点击切换；选择持久化在 `localStorage`，首次自动选 Hub 默认 Host（或本地 Host）
-- Hub 模式下 API 调用带 `?host=<hostId>`（acp-host 忽略该参数，Local 模式不受影响）；`/events` 事件按 `hostId` 过滤，hub 级事件（`hello`、`hosts_changed`）始终透传
+- Hub 模式下 API 调用带 `?host=<hostId>`（capri-host 忽略该参数，Local 模式不受影响）；`/events` 事件按 `hostId` 过滤，hub 级事件（`hello`、`hosts_changed`）始终透传
 
 ## x.ai 扩展（对齐 Grok Build TUI）
 
@@ -40,7 +40,7 @@ Vite + React + Tailwind 前端：连接本机 `acp-host`（Local 模式）或 `a
 - **扩展与设置**：`/hooks` `/plugins` `/skills` `/marketplace` 打开扩展模态（`GET /api/extensions` 读 `~/.grok`，hooks 启停为只读提示）；F2 / `/settings` 打开设置模态（`GET /api/settings` config.toml 只读展示）。
 - **计费**：`/billing` 查看额度/账单（`_x.ai/billing`）。
 
-Host 侧对应实现见 `acp-host/internal/acp/bridge.go`（通知转发、请求转发、`initialize` 能力声明 `x.ai/gitHeadChanged` 等）与 `internal/server/http.go`（`/api/client-response`、`/api/session-fork`、`/api/session-rename`、`/api/recap`、`/api/subagent-cancel`、`/api/task-kill`，以及 TUI 移植新增的 `/api/session-delete`、`/api/compact`、`/api/rewind-points`、`/api/rewind-execute`、`/api/scheduler-delete`、`/api/billing`、`/api/memory-flush`、`/api/memory-rewrite`、`/api/toggle-plan-mode`、`/api/permissions-reset`、`/api/mcp/list`、`/api/mcp-toggle`、`/api/mcp-add`、`/api/mcp-remove`、`/api/mcp-auth-trigger`、`/api/extensions`、`/api/settings`）。
+Host 侧对应实现见 `capri-host/internal/acp/bridge.go`（通知转发、请求转发、`initialize` 能力声明 `x.ai/gitHeadChanged` 等）与 `internal/server/http.go`（`/api/client-response`、`/api/session-fork`、`/api/session-rename`、`/api/recap`、`/api/subagent-cancel`、`/api/task-kill`，以及 TUI 移植新增的 `/api/session-delete`、`/api/compact`、`/api/rewind-points`、`/api/rewind-execute`、`/api/scheduler-delete`、`/api/billing`、`/api/memory-flush`、`/api/memory-rewrite`、`/api/toggle-plan-mode`、`/api/permissions-reset`、`/api/mcp/list`、`/api/mcp-toggle`、`/api/mcp-add`、`/api/mcp-remove`、`/api/mcp-auth-trigger`、`/api/extensions`、`/api/settings`）。
 
 ## 开发
 
