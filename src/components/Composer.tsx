@@ -1165,8 +1165,9 @@ export function Composer() {
       conn === 'offline' ||
       recapPending ||
       idleCueVisible)
-  // 生成速度（状态行总时间右侧）：host 推送的 gen_rate（估算 tok/s），
-  // 流式期间实时更新，工具阶段/回合结束冻结终值。
+  // 生成速度（状态行总时间右侧）：host 推送的 gen_rate（字符/秒），
+  // 只在输出过程中显示——流式期间实时更新，输出结束（工具阶段/回合
+  // 结束）host 广播 active:false 清除。
   const genRateLabel =
     genRate != null && genRate > 0 ? Math.round(genRate) : undefined
   const [spinnerFrame, setSpinnerFrame] = useState(0)
@@ -1648,13 +1649,13 @@ export function Composer() {
                     {formatTurnDuration(Date.now() - turnStartedAt)}
                   </span>
                 )}
-                {/* 生成速度（估算 tok/s）：host 推送的 gen_rate（流式实时，工具/回合结束冻结）。 */}
+                {/* 生成速度（字符/秒）：host 推送的 gen_rate（流式实时，输出结束清除）。 */}
                 {busy && genRateLabel != null && (
                   <span
                     className="tabular-nums text-gn-gray"
-                    title={`生成速度 ≈${genRateLabel} tok/s（host 推送的 gen_rate 估算；流式期间实时更新，工具执行/回合结束冻结）`}
+                    title={`生成速度 ≈${genRateLabel} 字符/s（host 推送的 gen_rate 字符吞吐；只在输出过程中显示，输出结束清除）`}
                   >
-                    ⇣{genRateLabel}t
+                    ⇣{genRateLabel}c
                   </span>
                 )}
                 {/* [↓] send-to-background (TUI DemoteToBackground) — hover
