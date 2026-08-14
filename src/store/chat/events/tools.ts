@@ -276,9 +276,16 @@ export function handleToolEvent(
         // 本会话的状态行上。只有当前视图确实在跑回合才接受；回放不
         // 派发 gen_rate，无需豁免。
         if (!busyPlausibleForView(get())) break
-        // 生成输出速率（估算 tok/s）由 host 推送：流式期间 ≥250ms 一条
-        // live 值，工具执行/turn 结束发冻结值；user_message_chunk 时
-        // host 静默复位不发事件（FE 在 send 时清空）。
+        // 生成输出速率（字符/秒）由 host 推送：只在输出过程中显示。
+        // 流式期间 ≥250ms 一条 live 值（active:true + rate）；输出结束
+        // （工具执行 / 回合终态）host 广播 active:false 且不带 rate——
+        // 清除显示，不做回合末冻结（冻结值在数学上系统性高估，见
+        // host genrate.go 顶部注释）；user_message_chunk 时 host 静默
+        // 复位不发事件（FE 在 send 时清空）。
+        if (ev.active === false) {
+          set({ genRate: undefined })
+          break
+        }
         if (ev.rate == null) break
         set({ genRate: ev.rate })
         break
