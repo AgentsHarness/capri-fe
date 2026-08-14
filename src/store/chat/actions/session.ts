@@ -84,6 +84,24 @@ export function sessionActions(set: SetState, get: () => ChatState) {
     }
   },
 
+  refreshSessionStats: async () => {
+    const s = get()
+    // 无会话锚点 → 无统计可拉（newSession 后 resetSessionState 已清空）。
+    if (!s.sessionId || !s.cwd) {
+      if (s.sessionStats) set({ sessionStats: undefined })
+      return
+    }
+    try {
+      const stats = await transport.sessionStats(s.sessionId, s.cwd)
+      // 拉取期间可能已切换会话（async 竞态）：结果只对发起时的会话有效。
+      if (get().sessionId === s.sessionId && get().cwd === s.cwd) {
+        set({ sessionStats: stats })
+      }
+    } catch {
+      // 旧 host 无此端点 / 瞬断：保留旧值，状态条自然退化为上次快照。
+    }
+  },
+
   refreshGitInfo: async () => {
     const s = get()
     if (!s.sessionId || !s.cwd) return

@@ -154,6 +154,9 @@ export function hostActions(set: SetState, get: () => ChatState) {
     }
     void get().refreshSessions()
     void get().refreshWorkspaces()
+    // 切换 host：会话锚点将随 hello 更新，统计条先按新 host 预拉一次
+    //（refreshSessionStats 内部按当前 sessionId/cwd 校验，不会串数据）。
+    void get().refreshSessionStats()
   },
 
   renameHost: async (hostId, hostName) => {

@@ -23,6 +23,7 @@ export type {
   SessionInfoDetail,
   SessionInfoExt,
   SessionState,
+  SessionStats,
   SessionUsageData,
   TaskTimelineEvent,
   TopTask,

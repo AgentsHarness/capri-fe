@@ -167,61 +167,6 @@ export function groupWorkspaces<T extends WorkspaceGroup>(workspaces: T[]): T[] 
 }
 
 /**
- * Absolute timestamp (local) — hover title for the relative row time.
- */
-export function absTime(iso: string): string {
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return iso
-  return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
-}
-
-/**
- * 会话行副行（title 下的第二行，有数据才显示）——统一用 workspace 摘要的
- * last_active_at 时间（workspaceList 已按 TUI session_picker 语义归一化为
- * updatedAt：last_active_at 优先，缺失回退 updated_at），不依赖宿主
- * live roster 的 status.lastActiveAt（只有当前进程内加载/对话过的会话才有）：
- * - 待处理会话（awaitingInput / state 'awaiting'）→ 通用 "Pending: …"；
- * - 其他会话 → updatedAt 有值时显示 "上次发送 Xm ago"；
- * - 都没有 → undefined（不显示副行）。
- */
-export function sessionSubtitle(s: SessionInfo): string | undefined {
-  if (s.status?.awaitingInput === true || s.status?.state === 'awaiting') {
-    return 'Pending: …'
-  }
-  if (s.updatedAt) {
-    return `上次发送 ${fmtTime(s.updatedAt)}`
-  }
-  return undefined
-}
-
-/**
- * 会话行 hover title（副行的绝对时间）——与副行同源：workspace 摘要的
- * last_active_at（updatedAt 字段），缺失 → undefined。
- */
-export function sessionRowTitle(s: SessionInfo): string | undefined {
-  return s.updatedAt ? absTime(s.updatedAt) : undefined
-}
-
-/**
- * Relative time — TUI format_time_ago (session_picker.rs):
- * now / Xm ago / Xh ago / Xd ago / Xmo ago. Rows hover to the absolute
- * timestamp (absTime) via the title attribute.
- */
-export function fmtTime(iso: string): string {
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return iso
-  const diffMs = Date.now() - d.getTime()
-  if (diffMs < 60_000) return 'now'
-  const mins = Math.floor(diffMs / 60_000)
-  if (mins < 60) return `${mins}m ago`
-  const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours}h ago`
-  const days = Math.floor(hours / 24)
-  if (days < 30) return `${days}d ago`
-  return `${Math.floor(days / 30)}mo ago`
-}
-
-/**
  * Unsafe display characters — TUI is_unsafe_display_char
  * (xai-grok-pager-render/line_utils.rs): C0/C1 control characters plus
  * the bidi-override / zero-width format set (mirror-image spoofing).

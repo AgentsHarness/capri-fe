@@ -164,9 +164,10 @@ body {
 }
 
 /* Composer bottom: caption sits on the border (-bottom-[5px]); leave room so
-   the chip + home-indicator stay on-screen. */
+   the chip + home-indicator stay on-screen. 会话统计条已移出 composer 成为
+   独立组件（App 布局层），底部不再承载内容——padding 收窄到安全区即可。 */
 .safe-pb {
-  padding-bottom: calc(1.5rem + env(safe-area-inset-bottom, 0px));
+  padding-bottom: calc(0.75rem + env(safe-area-inset-bottom, 0px));
 }
 
 /* Screen-reader only (user prompt collapse affordance). */

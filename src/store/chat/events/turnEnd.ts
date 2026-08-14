@@ -252,6 +252,9 @@ export function handleTurnEndEvent(
           ],
           }
         })
+        // 取消也是回合终态：刷新 composer 状态条统计（usage 已随
+        // turn_completed 落盘，取消回合照常计入——host 全量扫描）。
+        void get().refreshSessionStats()
         break
       }
       case 'error': {
