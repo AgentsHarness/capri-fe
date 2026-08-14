@@ -51,9 +51,13 @@ export function handleConnEvent(
             homeDir: ev.homeDir,
             hostId: ev.hostId,
             hostName: ev.hostName,
-            error: ev.error,
-            statusWarning: undefined,
           })
+          get().setLayerError(
+            'host',
+            ev.error
+              ? { level: 'error', message: ev.error, at: Date.now() }
+              : undefined,
+          )
           break
         }
         const modelSnap = applySessionModelState(ev.models, ev.agentInfo)
@@ -95,8 +99,6 @@ export function handleConnEvent(
           pending: pendingSnap.pending,
           xaiRequests: pendingSnap.xaiRequests,
           modes: ev.modes,
-          error: ev.error,
-          statusWarning: undefined,
           ...modelSnap,
           // 权限模式是进程级全局状态：hello 快照的非 ask（auto /
           // always-approve）是权威；快照 ask 是 agent 刚启动的未播种
@@ -111,6 +113,12 @@ export function handleConnEvent(
           ...restorePlanMode(ev.sessionId),
           ...(sessionModesPatch(get, ev.modes) ?? {}),
         })
+        get().setLayerError(
+          'host',
+          ev.error
+            ? { level: 'error', message: ev.error, at: Date.now() }
+            : undefined,
+        )
         void maybeReseedPermissionMode(set, get, {
           saved: permSaved,
           snapshotMode: ev.permissionMode,
@@ -149,8 +157,8 @@ export function handleConnEvent(
               // pid 置空走 legacy 匹配；reconnect mid-turn（newTurn=false）
               // 保留原 pid。
               ...(newTurn ? { genRate: undefined, currentPromptId: undefined } : {}),
-              error: undefined,
-              statusWarning: undefined,
+              // 系统恢复（busy/ready/新回合）：清空分层横幅。
+              layerErrors: {},
             })
           }
         }
@@ -200,8 +208,8 @@ export function handleConnEvent(
             statusText: s.awaitingNext ? '待处理' : '就绪',
             hostId: ev.hostId,
             hostName: ev.hostName,
-            error: undefined,
-            statusWarning: undefined,
+            // 系统恢复（busy/ready/新回合）：清空分层横幅。
+            layerErrors: {},
             ...(s.openThoughtId == null &&
             s.openAssistantId == null &&
             s.pendingOptimisticUserId == null
@@ -226,8 +234,8 @@ export function handleConnEvent(
           hostId: ev.hostId,
           hostName: ev.hostName,
           modes: ev.modes,
-          error: undefined,
-          statusWarning: undefined,
+          // 系统恢复（busy/ready/新回合）：清空分层横幅。
+          layerErrors: {},
           ...modelSnap,
           // 与 hello 相同的恢复：权限模式全局（刷新后徽标不丢，权威是
           // yolo_mode_changed 广播）；plan 按会话补充。
@@ -283,10 +291,26 @@ export function handleConnEvent(
           // 置空走 legacy 匹配；mid-turn re-busy 保留原 pid。
           ...(newTurn ? { genRate: undefined, currentPromptId: undefined } : {}),
           // A turn starting means the system recovered — clear stale
-          // error/status banners.
-          error: undefined,
-          statusWarning: undefined,
+          // layer banners.
+          layerErrors: {},
         })
+        break
+      }
+      case 'hub_conn': {
+        // 与 hub 的 WS 连接状态（仅 hub 模式，localTransport 本地发出）。
+        // 断线 → hub 层 warning；重连成功只清这条（id='hub-ws'），
+        // 不影响 host 离线等其他 hub 层错误。
+        if (ev.online) {
+          const cur = get().layerErrors.hub
+          if (cur?.id === 'hub-ws') get().setLayerError('hub', undefined)
+        } else if (!get().layerErrors.hub) {
+          get().setLayerError('hub', {
+            id: 'hub-ws',
+            level: 'warning',
+            message: '与 hub 的连接已断开，重连中…',
+            at: Date.now(),
+          })
+        }
         break
       }
     default:

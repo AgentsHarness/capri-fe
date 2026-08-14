@@ -95,7 +95,13 @@ export type ScrollEntry =
       startedAt?: number
       finishedAt?: number
     }
-  | { id: string; kind: 'error'; text: string }
+  | {
+      id: string
+      kind: 'error'
+      text: string
+      /** 可执行的恢复动作（当前：传输级错误 → 重启 agent）。 */
+      action?: 'restart-agent'
+    }
   | { id: string; kind: 'status'; text: string }
   | { id: string; kind: 'plan'; entries: unknown }
   | {

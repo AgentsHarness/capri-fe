@@ -58,6 +58,7 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
   historyTurnIdx: 0,
   pending: [],
   agentCommands: [],
+  layerErrors: {},
   xaiRequests: [],
   subagentIndex: {},
   pendingSubagentFinishes: {},
@@ -210,8 +211,11 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
     }
   },
 
+  /** 写入/清除某一层的错误（undefined = 清除该层）。 */
+  setLayerError: (layer, err) =>
+    set((s) => ({ layerErrors: { ...s.layerErrors, [layer]: err } })),
   /** Dismiss the top error/status banner (user acknowledged the message). */
-  dismissNotice: () => set({ error: undefined, statusWarning: undefined }),
+  dismissNotice: () => set({ layerErrors: {} }),
 
   loadHistory: (sessionId, cwd) => loadSessionHistory(set, get, sessionId, cwd),
 

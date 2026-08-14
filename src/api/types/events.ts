@@ -148,9 +148,9 @@ export type AcpEvent =
   | {
       type: 'gen_rate'
       sessionId?: string
-      /** 生成输出速率（估算 tok/s）。 */
+      /** 生成输出速率（字符/秒）。 */
       rate?: number
-      /** true = 流式期间实时值；false = 工具执行/turn 结束的冻结值。 */
+      /** true = 流式期间实时值（带 rate）；false = 输出结束（不带 rate，清除显示）。 */
       active?: boolean
     }
   /**
@@ -191,9 +191,19 @@ export type AcpEvent =
        * 老版本 host（按 'agent' 处理）。
        */
       source?: 'agent' | 'transport'
+      /** 该错误的恢复动作（当前：传输级失败 → 重启 agent）。 */
+      action?: 'restart-agent'
     }
   /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
-  | { type: 'status'; text: string; sessionId?: string }
+  | {
+      type: 'status'
+      text: string
+      sessionId?: string
+      /** 该状态的恢复动作（host 侧标注；如进程退出/通道损坏 → 重启 agent）。 */
+      action?: 'restart-agent'
+    }
+  /** hub WS 连接状态（仅 hub 模式，localTransport 本地发出）。 */
+  | { type: 'hub_conn'; online: boolean }
   /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
   | { type: 'log'; text: string; sessionId?: string }
   | {

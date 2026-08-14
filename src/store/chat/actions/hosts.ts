@@ -19,6 +19,22 @@ export function hostActions(set: SetState, get: () => ChatState) {
       const { hosts, defaultHostId } = await transport.listHosts()
       set({ hosts })
       const s = get()
+      // 选中 host 掉线/恢复：hub 层横幅提示（id 精确清除，不影响
+      // hub-ws 等其他 hub 层错误）。
+      if (s.selectedHostId) {
+        const sel = hosts.find((h) => h.hostId === s.selectedHostId)
+        const cur = s.layerErrors.hub
+        if (sel && !sel.online && cur?.id !== 'host-offline') {
+          get().setLayerError('hub', {
+            id: 'host-offline',
+            level: 'error',
+            message: `Host「${sel.hostName}」已离线`,
+            at: Date.now(),
+          })
+        } else if (sel && sel.online && cur?.id === 'host-offline') {
+          get().setLayerError('hub', undefined)
+        }
+      }
       if (s.selectedHostId) return
       // First selection: persisted choice → hub default → first online →
       // first local host (local mode).
@@ -77,8 +93,9 @@ export function hostActions(set: SetState, get: () => ChatState) {
       pendingOptimisticUserId: undefined,
       modes: undefined,
       agentCommands: [],
-      error: undefined,
-      statusWarning: undefined,
+      // 换 host 即换连接：清空分层横幅，新 host 的状态由 hello 快照
+      // 重新驱动。
+      layerErrors: {},
       conn: 'connecting',
       statusText: host ? '连接中…' : 'Host 未配对',
       historyOpen: false,
@@ -128,6 +145,11 @@ export function hostActions(set: SetState, get: () => ChatState) {
       // 在错误态之后把 conn 重新顶回 busy。
       clearStreamBuf()
       set({ conn: 'error', statusText: 'Host 不可达' })
+      get().setLayerError('hub', {
+        level: 'error',
+        message: `Host「${host?.hostName ?? hostId}」不可达`,
+        at: Date.now(),
+      })
       return
     }
     void get().refreshSessions()
@@ -177,6 +199,20 @@ export function hostActions(set: SetState, get: () => ChatState) {
       return true
     } catch (e) {
       pushToast(`删除 Host 失败: ${e instanceof Error ? e.message : String(e)}`)
+      return false
+    }
+  },
+
+  // 用户显式重启当前 host 的 agent（host 从不自动重启——只报错）。
+  // 重启期间在飞回合被中断且不重试；成功/失败都走 toast，状态变化
+  // 由 host 的 live 事件（error / ready）自然驱动。
+  restartAgent: async () => {
+    try {
+      await transport.restartAgent()
+      pushToast('Agent 已重启')
+      return true
+    } catch (e) {
+      pushToast(`重启 Agent 失败: ${e instanceof Error ? e.message : String(e)}`)
       return false
     }
   },

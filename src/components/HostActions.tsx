@@ -27,12 +27,17 @@ export function HostActionsMenu({
   onClose,
   onRename,
   onDelete,
+  onRestart,
+  canRestart,
 }: {
   host: HostInfo
   pos: HostMenuPos
   onClose: () => void
   onRename: (h: HostInfo) => void
   onDelete: (h: HostInfo) => void
+  onRestart: (h: HostInfo) => void
+  /** 仅当前选中的 host 可重启（重启作用于选中 host 的 agent 进程）。 */
+  canRestart: boolean
 }) {
   // 菜单弹出即捕获焦点，Esc 关闭（与 TUI 菜单一致）。
   const ref = useRef<HTMLDivElement>(null)
@@ -72,6 +77,18 @@ export function HostActionsMenu({
           <Pencil size={13} strokeWidth={2} aria-hidden />
           修改名称
         </button>
+        {canRestart && (
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => onRestart(host)}
+            className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+            title="杀掉当前 agent 进程并重新启动（恢复上次会话；在飞回合会被中断）"
+          >
+            <RefreshCw size={13} strokeWidth={2} aria-hidden />
+            重启 Agent
+          </button>
+        )}
         {!host.local && (
           <button
             type="button"
@@ -368,6 +385,58 @@ export function AddHostModal({ onClose }: { onClose: () => void }) {
             已配对过的机器会自动复用 ~/.acp-host/hub.json 中的 token，无需重复配对；
             HOST_TOKEN 优先级最高。
           </div>
+        </div>
+      </div>
+    </ModalShell>
+  )
+}
+
+/** 重启 Agent 确认框：杀进程会中断所有会话的在飞回合（不重试），需确认。 */
+export function RestartAgentModal({
+  host,
+  onClose,
+}: {
+  host: HostInfo
+  onClose: () => void
+}) {
+  const restartAgent = useChatStore((s) => s.restartAgent)
+  const [submitting, setSubmitting] = useState(false)
+
+  const submit = async () => {
+    if (submitting) return
+    setSubmitting(true)
+    const ok = await restartAgent()
+    setSubmitting(false)
+    if (ok) onClose()
+  }
+
+  return (
+    <ModalShell title="重启 Agent" onClose={onClose}>
+      <div className="p-4">
+        <p className="text-[12px] text-gn-fg leading-snug">
+          确定要重启「<span className="text-gn-cyan">{host.hostName}</span>
+          」的 agent 进程吗？
+        </p>
+        <p className="mt-1 text-[11px] text-gn-muted leading-snug">
+          会中断所有会话的在飞回合（不自动重试），随后重新启动并恢复上次会话。
+          通常用于 agent 卡死 / 输出通道异常等需要手动恢复的情况。
+        </p>
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md border border-gn-prompt-border px-3 py-1.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            disabled={submitting}
+            onClick={submit}
+            className="rounded-md bg-gn-blue px-3 py-1.5 text-[12px] font-medium text-gn-bg-base transition-opacity enabled:hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {submitting ? '重启中…' : '重启'}
+          </button>
         </div>
       </div>
     </ModalShell>
