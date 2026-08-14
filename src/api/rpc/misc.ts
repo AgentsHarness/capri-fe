@@ -316,7 +316,10 @@ export const miscRpc = {
 
   async getPrefs(this: TransportCore): Promise<HubPrefsDoc> {
     if (this.mode !== 'hub') throw new Error('仅 Hub 模式支持置顶/待办持久化')
-    const res = await this.fetch(`${this.apiBase()}/api/prefs`)
+    // hubLevel：hub 级请求，不参与 host 切换的 abortInflight 风暴——
+    // 否则启动时与 refreshHosts（自动选中 host → setHost → abort）并发
+    // 的 prefs 拉取每次都被中止，置顶/待办永远同步不过来。
+    const res = await this.fetch(`${this.apiBase()}/api/prefs`, {}, { hubLevel: true })
     const data = (await res.json().catch(() => ({}))) as {
       prefs?: HubPrefsDoc
       error?: string
@@ -339,11 +342,16 @@ export const miscRpc = {
 
   async putPrefs(this: TransportCore, prefs: HubPrefsDoc): Promise<void> {
     if (this.mode !== 'hub') throw new Error('仅 Hub 模式支持置顶/待办持久化')
-    const res = await this.fetch(`${this.apiBase()}/api/prefs`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prefs }),
-    })
+    const res = await this.fetch(
+      `${this.apiBase()}/api/prefs`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prefs }),
+      },
+      // hubLevel：同上，回写不被 host 切换的 abort 风暴打断。
+      { hubLevel: true },
+    )
     const data = (await res.json().catch(() => ({}))) as { error?: string; ok?: boolean }
     if (res.status === 401) {
       throw new AccessTokenError(

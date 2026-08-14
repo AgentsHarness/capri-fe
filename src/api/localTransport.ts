@@ -62,6 +62,15 @@ export class LocalTransport {
    */
   private inflight = new Set<AbortController>()
   /**
+   * Hub 级请求（不带 ?host=、与选中 host 无关，如 /api/prefs）的在途
+   * 控制器。与 inflight 分开跟踪：setHost 切换 host 时的 abortInflight
+   * 只作废「上一个 host 的在途请求」——hub 级请求若一并被 abort，
+   * 启动时与 refreshHosts 并发的 syncPrefsFromHub 会每次加载都失败
+   * （refreshHosts 自动选中 host → setHost → abortInflight 的竞态）。
+   * disconnect() 仍会中止它们，清理语义不变。
+   */
+  private hubInflight = new Set<AbortController>()
+  /**
    * Connection generation: bumped on every connect()/disconnect(). Async
    * callbacks (onopen/onclose/reconnect timer/gap-pull) capture the gen at
    * creation and bail when a newer generation owns the transport, so stale
@@ -300,14 +309,17 @@ export class LocalTransport {
   private async fetch(
     input: string,
     init: RequestInit = {},
-    opts: { timeoutMs?: number; signal?: AbortSignal } = {},
+    opts: { timeoutMs?: number; signal?: AbortSignal; hubLevel?: boolean } = {},
   ): Promise<Response> {
     const headers = new Headers(init.headers)
     if (this.accessToken && !headers.has('Authorization')) {
       headers.set('Authorization', `Bearer ${this.accessToken}`)
     }
     const ac = new AbortController()
-    this.inflight.add(ac)
+    // hub 级请求（opts.hubLevel）单独跟踪：host 切换的 abort 风暴
+    // （abortInflight）不影响它；disconnect() 时两者都中止。
+    const tracked = opts.hubLevel ? this.hubInflight : this.inflight
+    tracked.add(ac)
     const sources: AbortSignal[] = []
     const timeoutMs = opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS
     if (timeoutMs > 0) sources.push(AbortSignal.timeout(timeoutMs))
@@ -328,11 +340,14 @@ export class LocalTransport {
       return await fetch(input, { ...init, signal: ac.signal, headers })
     } finally {
       for (const { s, fn } of wired) s.removeEventListener('abort', fn)
-      this.inflight.delete(ac)
+      tracked.delete(ac)
     }
   }
 
   private abortInflight() {
+    // 只作废 host 级在途请求（gap pulls 等）；hub 级请求（hubInflight）
+    // 与选中 host 无关，host 切换不能杀掉它们（见 syncPrefsFromHub 的
+    // 启动竞态，prefs 读写均标记 hubLevel）。
     for (const ac of this.inflight) ac.abort()
     this.inflight.clear()
   }
@@ -580,8 +595,11 @@ export class LocalTransport {
       this.reconnectTimer = null
     }
     // Settle every in-flight fetch (gap pulls included) so their finally
-    // blocks run — gapPull releases its per-host pulling slot.
+    // blocks run — gapPull releases its per-host pulling slot. Hub-level
+    // requests (prefs) are settled here too, never by host switches.
     this.abortInflight()
+    for (const ac of this.hubInflight) ac.abort()
+    this.hubInflight.clear()
     this.ws?.close()
     this.ws = null
     this.es?.close()
