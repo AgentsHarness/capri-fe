@@ -152,7 +152,7 @@ export function initChat(
       void get().refreshHosts()
     } else {
       // 本地模式：清掉任何残留的 host 选择状态（hub 痕迹 / 旧版
-      // acp-fe.host 残留），左上角固定显示 Localhost。
+      // capri-fe.host 残留），左上角固定显示 Localhost。
       set({
         hosts: [],
         selectedHostId: undefined,

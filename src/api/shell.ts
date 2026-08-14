@@ -3,7 +3,7 @@ import { transport } from './client'
 /**
  * ── TUI shell mode bridge ────────────────────────────────────────────
  * POST /api/shell { command, cwd?, timeoutMs? } runs a local command in
- * the session workspace (host contract — acp-host handleShell): cwd
+ * the session workspace (host contract — capri-host handleShell): cwd
  * defaults to the active session's cwd, timeout defaults to 10s and is
  * capped at 60s. The host answers HTTP 200 with the run's outcome
  * ({ok: true, exitCode, stdout, stderr, timedOut}) — there is no

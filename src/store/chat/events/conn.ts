@@ -25,7 +25,7 @@ export function handleConnEvent(
 ): boolean {
   switch (ev.type) {
       case 'hello': {
-        // Hub-level hello (acp-hub): registry info, no session state —
+        // Hub-level hello (capri-hub): registry info, no session state —
         // the selected host's snapshot is applied by switchHost.
         if (ev.service === 'hub') {
           set({ conn: 'ready', statusText: '就绪' })
@@ -47,7 +47,9 @@ export function handleConnEvent(
         if (foreign) {
           set({
             conn: ev.ready ? 'ready' : ev.error ? 'error' : 'connecting',
-            statusText: ev.error || (ev.ready ? '就绪' : '启动中…'),
+            // boot 错误只进横幅（下方 setLayerError），statusText 不写
+            // 错误文本（stat/composer 不参与）——清空防残留旧文案。
+            statusText: ev.error ? '' : ev.ready ? '就绪' : '启动中…',
             homeDir: ev.homeDir,
             hostId: ev.hostId,
             hostName: ev.hostName,
@@ -89,7 +91,9 @@ export function handleConnEvent(
         const permSnap = permissionModeFromSnapshot(ev.permissionMode)
         set({
           conn: ev.ready ? 'ready' : ev.error ? 'error' : 'connecting',
-          statusText: ev.error || (ev.ready ? '就绪' : '启动中…'),
+          // boot 错误只进横幅（下方 setLayerError），statusText 不写
+          // 错误文本（stat/composer 不参与）——清空防残留旧文案。
+          statusText: ev.error ? '' : ev.ready ? '就绪' : '启动中…',
           ...(suppressAnchor
             ? {}
             : { sessionId: ev.sessionId, cwd: ev.cwd }),

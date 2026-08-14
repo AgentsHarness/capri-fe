@@ -19,7 +19,7 @@ export type SessionInfo = {
   updatedAt?: string
   meta?: unknown
   /**
-   * Host-side live state (multi-session dashboard): derived by acp-host
+   * Host-side live state (multi-session dashboard): derived by capri-host
    * from in-flight turns (active) + pending client requests (awaiting).
    */
   status?: {
@@ -275,7 +275,7 @@ export type SessionInfoDetail = {
 
 /**
  * POST /api/session-stats response `stats` — 单会话聚合统计（composer
- * 状态条数据源；host 侧扫描 updates.jsonl，见 acp-host
+ * 状态条数据源；host 侧扫描 updates.jsonl，见 capri-host
  * bridge_ext_stats.go）。耗时类字段（toolDurationMs / firstTokenAvgMs /
  * tokensPerSec）在老数据（无 _meta 毫秒时间戳）时省略，UI 显示 '—'；
  * 会话无历史时为全零。

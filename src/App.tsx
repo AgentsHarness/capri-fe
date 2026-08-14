@@ -50,7 +50,7 @@ export default function App() {
   useEffect(() => initTheme(), [initTheme])
 
   // Probe hub access before mounting the main shell. Mode detection first:
-  // base 指向 acp-host 直连 → 模式由 host 配置决定（HUB_URL → hub）；否则
+  // base 指向 capri-host 直连 → 模式由 host 配置决定（HUB_URL → hub）；否则
   // 视为 hub（部署版前端连 hub 的场景）。Local mode returns ok immediately;
   // hub with FE_TOKEN shows the gate.
   useEffect(() => {
@@ -58,7 +58,7 @@ export default function App() {
     void (async () => {
       const { mode, hubUrl, localHostId } = await transport.detectMode()
       transport.setConnectionMode(mode, hubUrl)
-      // 内嵌前端直连 acp-host 时记录本机 hostId：hub 模式下选中本机，
+      // 内嵌前端直连 capri-host 时记录本机 hostId：hub 模式下选中本机，
       // API 请求直连本地，不绕 hub 中继。
       transport.setLocalHostId(localHostId ?? null)
       const r = await transport.probeAccess()
@@ -85,6 +85,12 @@ export default function App() {
     setGateError(undefined)
     try {
       transport.setAccessToken(token)
+      // Token 就绪后重新判定连接模式：首次（无 token）探测时
+      // /api/status 会被 host 的鉴权挡下（401），配了 HUB_URL 的 host
+      // 会被盲判成 local 模式——重跑一次 detectMode 拿回正确模式。
+      const { mode, hubUrl, localHostId } = await transport.detectMode()
+      transport.setConnectionMode(mode, hubUrl)
+      transport.setLocalHostId(localHostId ?? null)
       const r = await transport.probeAccess()
       if (r === 'ok') {
         setPhase('ready')

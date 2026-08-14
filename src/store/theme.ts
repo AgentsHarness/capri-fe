@@ -4,7 +4,7 @@ import type { ThemeId } from '../theme/tokens'
 import { applyTokens } from '../theme/tokens'
 import { THEMES, getTheme, resolveThemeId } from '../theme/palettes'
 
-const STORAGE_KEY = 'acp-fe.theme'
+const STORAGE_KEY = 'capri-fe.theme'
 
 type ThemeState = {
   /** User preference (may be "auto") */

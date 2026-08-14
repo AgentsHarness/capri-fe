@@ -5,7 +5,7 @@ import { rpcMixins } from './rpc/mixins'
 
 
 function resolveAccessToken(): string {
-  return loadStr('acp-fe-token')?.trim() || ''
+  return loadStr('capri-fe-token')?.trim() || ''
 }
 
 type HubWsFrame =
@@ -41,7 +41,7 @@ export class LocalTransport {
   /** hub 模式的 hub 浏览器侧地址（跨源直连用；空则退回 base）。 */
   private hubUrl = ''
   /**
-   * 本机 host 的 hostId（内嵌前端直连 acp-host 时从 /api/status 拿到）。
+   * 本机 host 的 hostId（内嵌前端直连 capri-host 时从 /api/status 拿到）。
    * hub 模式下选中该 host 时，API 请求直连本机（base），不绕 hub 中继。
    */
   private localHostId: string | null = null
@@ -110,8 +110,8 @@ export class LocalTransport {
   setAccessToken(token: string | null) {
     const next = (token ?? '').trim()
     this.accessToken = next
-    if (next) saveStr('acp-fe-token', next)
-    else removeKey('acp-fe-token')
+    if (next) saveStr('capri-fe-token', next)
+    else removeKey('capri-fe-token')
     // Requests issued under the old token are settled now (re-fetches pick
     // up the new token).
     this.abortInflight()
@@ -168,8 +168,8 @@ export class LocalTransport {
   }
 
   /**
-   * 判定当前 base 指向 acp-host 直连还是 hub，并带回 hub 地址。
-   * - /api/hosts 单 host 且 local:true（无 defaultHostId）→ acp-host 直连：
+   * 判定当前 base 指向 capri-host 直连还是 hub，并带回 hub 地址。
+   * - /api/hosts 单 host 且 local:true（无 defaultHostId）→ capri-host 直连：
    *   模式以 /api/status 的 mode 为准（host 配了 HUB_URL → hub，否则 local）。
    * - 多 host / 带 defaultHostId → hub（部署版前端 / VITE_PROXY_TARGET=hub）。
    * - 401 → hub（需要 FE_TOKEN，gate 会接管）。
@@ -195,7 +195,7 @@ export class LocalTransport {
     const direct =
       !data.defaultHostId && data.hosts?.length === 1 && data.hosts[0]?.local === true
     if (!direct) return { mode: 'hub', hubUrl: this.base }
-    // acp-host 直连：模式由 host 配置决定（HUB_URL 环境变量）；
+    // capri-host 直连：模式由 host 配置决定（HUB_URL 环境变量）；
     // 顺带记录本机 hostId，供 hub 模式下选中本机时 API 直连本地。
     try {
       const st = (await (
@@ -218,6 +218,13 @@ export class LocalTransport {
       const res = await this.fetch(`${this.apiBase()}/api/hosts`)
       if (res.status === 401) return 'need_token'
       if (!res.ok) return 'error'
+      // capri-host 配置了 FE_TOKEN 时 /api/hosts 保持开放（启动探测端点），
+      // 但响应声明 authRequired —— 浏览器本地没有 token 就直接进门禁，
+      // 避免无 token 裸请求打到所有接口上才暴露。
+      const data = (await res.json().catch(() => ({}))) as {
+        authRequired?: boolean
+      }
+      if (data.authRequired && !this.accessToken) return 'need_token'
       return 'ok'
     } catch {
       return 'error'
@@ -555,7 +562,7 @@ export class LocalTransport {
   private connectSSE(gen: number, trackSeq = false) {
     if (gen !== this.gen) return
     if (this.es) return // already on the SSE path; never double-connect
-    // Local acp-host: EventSource cannot set Authorization headers — token
+    // Local capri-host: EventSource cannot set Authorization headers — token
     // query is unused locally but kept for symmetry if a proxy gates it.
     const eventsURL = this.accessToken
       ? `${this.base}/events?token=${encodeURIComponent(this.accessToken)}`

@@ -23,7 +23,7 @@ export function useLoadChrome(
   const loadFailedVisible =
     !historyLoading && historyLoadError != null && entryCount === 0
   const [spinnerFrame, setSpinnerFrame] = useState(0)
-  // Spin for initial session load overlay and for "加载上一轮…" on sticky.
+  // Spin for the session-load overlay and the top "正在回放…" hint.
   const spinnerActive = loadingVisible || historyLoadingMore
   useEffect(() => {
     if (!spinnerActive) return

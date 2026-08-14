@@ -179,7 +179,7 @@ export type GitBranchesData = {
 /**
  * One agent-advertised slash command — ACP `AvailableCommand`
  * (agent-client-protocol-schema, `rename_all = "camelCase"`), forwarded
- * verbatim by acp-host as the `commands_update` SSE event's `commands`
+ * verbatim by capri-host as the `commands_update` SSE event's `commands`
  * array. Wire fields: `name`, `description`, `input: { hint }`, `_meta`.
  * The store normalizes it defensively (name required; the rest optional).
  */

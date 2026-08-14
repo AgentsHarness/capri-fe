@@ -14,7 +14,7 @@ export type AcpEvent =
       error?: string
       hostId?: string
       hostName?: string
-      /** Hub-level hello (acp-hub): carries the registry instead of a host snapshot. */
+      /** Hub-level hello (capri-hub): carries the registry instead of a host snapshot. */
       service?: 'hub'
       hosts?: HostInfo[]
       defaultHostId?: string
@@ -307,11 +307,11 @@ export type AcpEvent =
       params?: { total?: number; connected?: number; sessionId?: string }
     }
   | { type: 'sessions_changed'; params?: Record<string, unknown> }
-  /** Hub-level: a host paired / came online / dropped off (acp-hub). */
+  /** Hub-level: a host paired / came online / dropped off (capri-hub). */
   | { type: 'hosts_changed'; params?: Record<string, unknown> }
   /**
    * Hub-level: the shared browser prefs doc (pins / todos) was replaced
-   * (acp-hub broadcasts this on every PUT /api/prefs). Browsers apply it
+   * (capri-hub broadcasts this on every PUT /api/prefs). Browsers apply it
    * live so one end's edit syncs to every end. No hostId — applies
    * regardless of the selected host.
    */
@@ -414,7 +414,7 @@ export type AcpEvent =
   | { type: 'ext_notification'; method?: string; params?: Record<string, unknown> }
 
 /**
- * GET /api/status 响应（acp-host Status struct 镜像）。字段全 optional：
+ * GET /api/status 响应（capri-host Status struct 镜像）。字段全 optional：
  * ready/busy/booting/sessionId/cwd/hostId/hostName/homeDir/agentInfo/
  * agentCapabilities/authMeta/modes/configOptions/sessionMeta/models/
  * bootError/text/pendingRequests/capabilities/roster/agentStartedAt。
@@ -424,7 +424,7 @@ export type AcpEvent =
 
 
 /**
- * GET /api/status 响应（acp-host Status struct 镜像）。字段全 optional：
+ * GET /api/status 响应（capri-host Status struct 镜像）。字段全 optional：
  * ready/busy/booting/sessionId/cwd/hostId/hostName/homeDir/agentInfo/
  * agentCapabilities/authMeta/modes/configOptions/sessionMeta/models/
  * bootError/text/pendingRequests/capabilities/roster/agentStartedAt。

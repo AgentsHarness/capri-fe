@@ -28,7 +28,7 @@ import { Markdown } from './Markdown'
  *   skip_interview    { outcome:"skip_interview", partial_answers:{qText:label} }   (plan mode)
  *   cancelled         { outcome:"cancelled" }
  */
-const ANCHOR_ID = 'acp-xai-question-anchor'
+const ANCHOR_ID = 'capri-xai-question-anchor'
 
 export function QuestionModal() {
   const xaiRequests = useChatStore((s) => s.xaiRequests)

@@ -17,7 +17,7 @@ import Convert from 'ansi-to-html'
  * ansi-to-html only knows CSI (`ESC[…`) sequences — it does NOT handle OSC
  * (`ESC]…BEL|ESC\` — window title / icon name / cwd / hyperlinks, emitted
  * by shells like zsh/oh-my-zsh on every prompt). Its catch-all eats the
- * ESC byte and leaks the payload as literal text (`]2;~/ccwork/acp-fe` …).
+ * ESC byte and leaks the payload as literal text (`]2;~/ccwork/capri-fe` …).
  * We pre-strip everything it cannot render (OSC/DCS/APC/PM, charset
  * designations, single-char ESC commands, and CSI that does NOT end in `m`
  * — cursor moves / erases / private modes carry no color info), while
