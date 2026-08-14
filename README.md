@@ -3,12 +3,8 @@
 </p>
 
 <h1 align="center">Capri FE</h1>
-<p align="center">
-  <strong>Grok Build Web UI</strong>
-</p>
 
----
-
+  <strong>Grok Build Web UI</strong><br />
 <p align="center">
   <em>Capricorn · AgentsHarness 的第一颗星座</em>
 </p>
@@ -67,7 +63,7 @@ VITE_PROXY_TARGET=http://<hub>:8787 npm run dev
 
 ## 项目生态
 
-|                                                           |                                 |
+|                             项目                              |             介绍                    |
 | --------------------------------------------------------- | ------------------------------- |
 | [AgentsHarness](https://github.com/AgentsHarness)         | 总项目                          |
 | [capri-host](https://github.com/AgentsHarness/capri-host) | Agent 节点，内嵌 Capri FE       |
