@@ -108,6 +108,6 @@ export interface TransportCore {
   fetch(
     path: string,
     init?: RequestInit,
-    opts?: { timeoutMs?: number; signal?: AbortSignal },
+    opts?: { timeoutMs?: number; signal?: AbortSignal; hubLevel?: boolean },
   ): Promise<Response>
 }
