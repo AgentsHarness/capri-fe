@@ -9,8 +9,6 @@ import {
   sanitizeTitle,
   sessionContextPct,
   sessionGroupKey,
-  sessionRowTitle,
-  sessionSubtitle,
 } from '../store/historyGroups'
 import { Glyphs, SPINNER_FRAMES } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
@@ -550,14 +548,8 @@ export function SessionHistoryList() {
                   const key = sessionGroupKey(s, sessionId)
                   const state = key === 'active' ? 'active' : 'idle'
                   const pending = key === 'awaiting'
-                  const subtitle = sessionSubtitle(s)
                   const renaming = renamingId === s.sessionId
                   const contextPct = sessionContextPct(s)
-                  // 标记形态副行补充工作区名，方便区分不同目录下的同名会话。
-                  const markedSub =
-                    listMode === 'marked' && s.cwd
-                      ? `${repoNameFromCwd(s.cwd)}${subtitle ? ` · ${subtitle}` : ''}`
-                      : subtitle
                   return (
                     <div
                       key={s.sessionId}
@@ -657,12 +649,17 @@ export function SessionHistoryList() {
                             </span>
                           </span>
                         )}
-                        <span
-                          className="block truncate font-mono text-[10px] text-gn-muted"
-                          title={sessionRowTitle(s)}
-                        >
-                          {markedSub || ''}
-                        </span>
+                        {/* 副行：最后一轮动作摘要（workspace-list 的
+                            last_turn_summary，agent 生成）——比标题具体，
+                            一眼看出上次干了什么；缺失时不显示。 */}
+                        {s.lastTurnSummary && (
+                          <span
+                            className="block truncate font-mono text-[10px] text-gn-muted"
+                            title={s.lastTurnSummary}
+                          >
+                            {s.lastTurnSummary}
+                          </span>
+                        )}
                       </span>
                       {((s.bgRunning ?? 0) > 0) && (
                         <span

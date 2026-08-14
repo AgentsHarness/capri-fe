@@ -70,6 +70,9 @@ export function finalizeTurn(
       ],
     }
   })
+  // 回合终态：刷新 composer 状态条的会话统计（host 侧已把本回合的
+  // usage / 耗时落盘，/api/session-stats 重新扫描即可拿到最新值）。
+  void get().refreshSessionStats()
 }
 
 // ── 收养回合开始（server-authoritative drain）───────────────────────

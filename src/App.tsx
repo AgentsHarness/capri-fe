@@ -9,6 +9,7 @@ import { ErrorBanner } from './components/ErrorBanner'
 import { HistorySidebar } from './components/HistorySidebar'
 import { Scrollback } from './components/Scrollback'
 import { Composer } from './components/Composer'
+import { SessionStatsBar } from './components/SessionStatsBar'
 import { ApprovalStrip } from './components/ApprovalStrip'
 import { PlanApproval } from './components/PlanApproval'
 import { CancelPanel } from './components/CancelPanel'
@@ -157,6 +158,9 @@ function AppShell() {
           <PlanApproval />
           <CancelPanel />
           <Composer />
+          {/* 会话统计条：独立组件，位于 composer 下方（host 聚合数据，
+              仅展示；空会话时零高度不占布局）。 */}
+          <SessionStatsBar />
         </main>
       </div>
       <BlockViewer />

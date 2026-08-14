@@ -60,6 +60,12 @@ export type WorkspaceSummary = {
    *  sessions — the list UI shows "New Chat" + a 12-char id prefix). */
   title?: string
   /**
+   * 最后一轮动作摘要（agent 生成，wire `last_turn_summary`）——副行
+   * 显示用：比整场会话标题（title）具体，是"上次干了什么"的即时代
+   * 摘要。agent 未生成时缺失（副行不显示，不降级为时间）。
+   */
+  lastTurnSummary?: string
+  /**
    * ISO activity time for display/sort (TUI: last_active_at ?? updated_at).
    * Not raw summary.updated_at — load/model metadata writes must not look
    * like new conversation activity.
@@ -266,6 +272,39 @@ export type SessionInfoDetail = {
 
 /** One itemized context-usage row (skills listing, MCP server listing). */
 
+
+/**
+ * POST /api/session-stats response `stats` — 单会话聚合统计（composer
+ * 状态条数据源；host 侧扫描 updates.jsonl，见 acp-host
+ * bridge_ext_stats.go）。耗时类字段（toolDurationMs / firstTokenAvgMs /
+ * tokensPerSec）在老数据（无 _meta 毫秒时间戳）时省略，UI 显示 '—'；
+ * 会话无历史时为全零。
+ */
+export type SessionStats = {
+  /** 回合数（user_message_chunk 去重计数）。 */
+  turns: number
+  /** 步数（tool_call 事件数）。 */
+  steps: number
+  /** LLM API 总耗时（ms，Σ usage.apiDurationMs，agent 权威值）。 */
+  llmDurationMs: number
+  /** 工具调用总耗时（ms，completed result − call 的 agentTimestampMs）。 */
+  toolDurationMs?: number
+  /** 首 token 平均延迟（ms，streamStartMs − 回合起点/上个工具完成）。 */
+  firstTokenAvgMs?: number
+  /**
+   * 吞吐（tok/s = outputTokens / llmDurationMs × 1000，输出生成速率
+   * 视角——prefill 并行处理速率远高于生成，混合平均会拉高数字，
+   * 输出口径才是用户感知的生成快慢）。
+   */
+  tokensPerSec?: number
+  /** 缓存命中率 0–1（cachedReadTokens / inputTokens）。 */
+  cacheHitRate: number
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  cachedReadTokens: number
+  modelCalls: number
+}
 
 /** One itemized context-usage row (skills listing, MCP server listing). */
 export type ContextUsageCategory = {

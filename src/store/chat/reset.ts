@@ -37,6 +37,7 @@ export function resetSessionState(set: (partial: Partial<ChatState>) => void): v
     recapCache: {},
     toolIndex: {},
     pending: [],
+    sessionStats: undefined,
     xaiRequests: [],
     diffReview: undefined,
     diffReviewOpen: false,

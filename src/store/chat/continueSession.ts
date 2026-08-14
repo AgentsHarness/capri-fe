@@ -109,6 +109,8 @@ export async function continueSession(
       // Restored sessions may live in a different workspace — refresh the
       // git branch/worktree state instead of waiting on the ready event.
       void get().refreshGitInfo()
+      // 会话切换：拉取新会话的聚合统计（composer 状态条）。
+      void get().refreshSessionStats()
       // Probe the still-running set BEFORE history replay: replayUpdates
       // skips the "Task started" row of any task that is still running
       // (that state lives in the top task strip only — see replayUpdates).

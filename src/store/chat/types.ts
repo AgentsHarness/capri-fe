@@ -142,6 +142,11 @@ export type ChatState = {
   /** historyPromptStarts 中「最老已加载轮次」的下标；每往前加载一轮减 1；0 = 无更早轮次。 */
   historyTurnIdx: number
   usage?: { used?: number; size?: number }
+  /**
+   * 当前会话的聚合统计（POST /api/session-stats 响应；composer 状态条
+   * 数据源）。会话切换/回合终态后刷新；无会话或失败为 undefined。
+   */
+  sessionStats?: import('../../api/types').SessionStats
   pending: PendingReq[]
   modes?: unknown
   /**
@@ -583,6 +588,8 @@ export type ChatState = {
   refreshSessions: (retry?: number) => Promise<void>
   /** 按工作区拉取会话摘要（workspace-list）；失败降级为 sessions 按 cwd 分组。retry 同 refreshSessions。 */
   refreshWorkspaces: (retry?: number) => Promise<void>
+  /** 拉取当前会话的聚合统计（POST /api/session-stats，composer 状态条数据源）。 */
+  refreshSessionStats: () => Promise<void>
   /** Fetch git branch/worktree state for the active session (x.ai/git/info). */
   refreshGitInfo: () => Promise<void>
   /**

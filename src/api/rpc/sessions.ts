@@ -7,6 +7,7 @@ import type {
   SessionInfo,
   SessionInfoDetail,
   SessionState,
+  SessionStats,
   SessionUsageData,
   WorkspaceGroup,
   WorkspaceSummary,
@@ -73,6 +74,11 @@ export const sessionsRpc = {
           // （"New Chat" + 右侧 12 位 id 前缀），而不是把 id 前缀
           // 冒充成标题塞进左侧。
           ...(summary ? { title: summary } : {}),
+          ...(typeof o.last_turn_summary === 'string' && o.last_turn_summary.trim()
+            ? { lastTurnSummary: o.last_turn_summary.trim() }
+            : typeof o.lastTurnSummary === 'string' && o.lastTurnSummary.trim()
+              ? { lastTurnSummary: o.lastTurnSummary.trim() }
+              : {}),
           ...(activityAt ? { updatedAt: activityAt } : {}),
           ...(typeof o.current_model_id === 'string' && o.current_model_id
             ? { currentModelId: o.current_model_id }
@@ -462,6 +468,39 @@ export const sessionsRpc = {
     return raw && typeof raw === 'object' && !Array.isArray(raw)
       ? (raw as SessionUsageData)
       : {}
+  },
+
+  async sessionStats(this: TransportCore, sessionId: string, cwd: string): Promise<SessionStats> {
+    const res = await this.fetch(this.url('/api/session-stats'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, cwd }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `session stats failed (${res.status})`)
+    }
+    const s = data.stats
+    if (!s || typeof s !== 'object' || Array.isArray(s)) {
+      throw new Error('session stats: 响应缺少 stats')
+    }
+    const o = s as Record<string, unknown>
+    const num = (v: unknown): number | undefined =>
+      typeof v === 'number' && Number.isFinite(v) ? v : undefined
+    return {
+      turns: num(o.turns) ?? 0,
+      steps: num(o.steps) ?? 0,
+      llmDurationMs: num(o.llmDurationMs) ?? 0,
+      ...(num(o.toolDurationMs) != null ? { toolDurationMs: num(o.toolDurationMs) } : {}),
+      ...(num(o.firstTokenAvgMs) != null ? { firstTokenAvgMs: num(o.firstTokenAvgMs) } : {}),
+      ...(num(o.tokensPerSec) != null ? { tokensPerSec: num(o.tokensPerSec) } : {}),
+      cacheHitRate: num(o.cacheHitRate) ?? 0,
+      inputTokens: num(o.inputTokens) ?? 0,
+      outputTokens: num(o.outputTokens) ?? 0,
+      totalTokens: num(o.totalTokens) ?? 0,
+      cachedReadTokens: num(o.cachedReadTokens) ?? 0,
+      modelCalls: num(o.modelCalls) ?? 0,
+    }
   },
 
   async sessionSearch(this: TransportCore, opts: {
