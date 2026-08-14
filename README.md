@@ -4,7 +4,10 @@
 
 <h1 align="center">Capri FE</h1>
 
-  <strong>Grok Build Web UI</strong><br />
+<p align="center">
+  <strong>Grok Build Web UI</strong>
+</p>
+
 <p align="center">
   <em>Capricorn · AgentsHarness 的第一颗星座</em>
 </p>
