@@ -289,12 +289,11 @@ export type SessionStats = {
   llmDurationMs: number
   /** 工具调用总耗时（ms，completed result − call 的 agentTimestampMs）。 */
   toolDurationMs?: number
-  /** 首 token 平均延迟（ms，streamStartMs − 回合起点/上个工具完成）。 */
+  /** 首 token 平均延迟（ms，本回合第一条流的 streamStartMs − 用户发出）。 */
   firstTokenAvgMs?: number
   /**
-   * 吞吐（tok/s = outputTokens / llmDurationMs × 1000，输出生成速率
-   * 视角——prefill 并行处理速率远高于生成，混合平均会拉高数字，
-   * 输出口径才是用户感知的生成快慢）。
+   * 吞吐（tok/s = outputTokens / Σ(末包 − streamStart) × 1000）。
+   * 无生成窗口时回退 llmDurationMs。
    */
   tokensPerSec?: number
   /** 缓存命中率 0–1（cachedReadTokens / inputTokens）。 */
