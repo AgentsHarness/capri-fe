@@ -10,6 +10,8 @@ import { applyFollowUps } from '../followUps'
 import {
   parseScheduledTask,
   removeScheduledTask,
+  scheduledTaskDeleteReason,
+  scheduledTaskDeletedText,
   updateScheduledTaskFire,
   upsertScheduledTask,
 } from '../tasks'
@@ -323,7 +325,8 @@ export function handleNotifApps(
           // ── scheduled tasks (TUI tasks pane only — not scrollback) ───
           // TUI updates agent.session.scheduled_tasks; the fire itself is
           // rendered later as UserPromptBlock::cron from the inject's
-          // UserMessageChunk. No session_event rows for create/fire/delete.
+          // UserMessageChunk. No session_event rows for create/fire;
+          // delete 除外——每个删除原因都要有可见反馈（见下）。
           // The same updates can ALSO arrive as standalone SSE events
           // (scheduled_task_created/deleted/fired) — both paths land in
           // the shared upsert/remove helpers keyed by taskId, so a task
@@ -332,9 +335,24 @@ export function handleNotifApps(
             upsertScheduledTask(set, parseScheduledTask(fields))
             break
           case 'scheduled_task_deleted': {
+            // 多会话广播守卫（同 model_changed）：别的会话的删除事件
+            // 不得动本会话任务列表 / 滚动区。
+            const notifSid =
+              (ev as { sessionId?: string }).sessionId ??
+              (typeof ev.params?.sessionId === 'string'
+                ? ev.params.sessionId
+                : undefined)
+            if (notifSid && notifSid !== get().sessionId) break
             const inner = fields.task as Record<string, unknown> | undefined
             const id = wireTaskId(fields.task_id, fields.taskId, inner?.taskId)
             if (id) removeScheduledTask(set, id)
+            // 原因回退链：update 顶层 → params → task 内（宿主归一化
+            // update.reason → params.reason → task.reason 同款）。
+            const reason = scheduledTaskDeleteReason(fields.reason, ev.params, inner)
+            appendEntry(set, {
+              kind: 'session_event',
+              text: scheduledTaskDeletedText(reason),
+            })
             break
           }
           case 'scheduled_task_fired': {

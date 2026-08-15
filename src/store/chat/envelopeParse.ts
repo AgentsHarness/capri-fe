@@ -301,8 +301,18 @@ export function envelopeToEvent(env: unknown): AcpEvent | null {
     }
     case 'config_option_update':
       return { type: 'config_options_update', configOptions: up.configOptions }
-    case 'session_info_update':
-      return { type: 'session_info', title: up.title as string | undefined }
+    case 'session_info_update': {
+      // 存储包络的 _meta 带 x.ai/titleIsManual（true=手动改名，false=
+      // /rename --auto 结果，缺省=自动标题）——随事件带给消费端
+      // （extMisc session_info case 据此阻止自动标题覆盖手动改名）。
+      const meta = (e.params?._meta ?? {}) as Record<string, unknown>
+      const titleIsManual = meta['x.ai/titleIsManual']
+      return {
+        type: 'session_info',
+        title: up.title as string | undefined,
+        ...(typeof titleIsManual === 'boolean' ? { titleIsManual } : {}),
+      }
+    }
     // Stored task lifecycle events render as display-only bg_task rows
     // in history (same look as live, never captured into the task
     // system): the live running set is established once at resume via

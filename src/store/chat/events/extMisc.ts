@@ -18,6 +18,8 @@ import { wireTaskId } from '../util'
 import {
   parseScheduledTask,
   removeScheduledTask,
+  scheduledTaskDeleteReason,
+  scheduledTaskDeletedText,
   updateScheduledTaskFire,
   upsertScheduledTask,
 } from '../tasks'
@@ -77,9 +79,21 @@ export function handleExtMiscEvent(
         upsertScheduledTask(set, parseScheduledTask(ev))
         break
       case 'scheduled_task_deleted': {
+        // 多会话广播（host withSid 约定）：非当前会话的删除事件不得
+        // 移除本会话任务，也不得在本会话滚动区留提示行。
+        if (ev.sessionId && ev.sessionId !== get().sessionId) break
         const p = (ev.params ?? {}) as Record<string, unknown>
         const id = wireTaskId(ev.taskId, p.taskId, p.task_id)
         if (id) removeScheduledTask(set, id)
+        // 每个删除原因都要有可见反馈（session_event 行，announcements /
+        // workflow 同款形态）：expired / completed / deleted / shutdown
+        // 各有文案，unknown 或缺失回退「定时任务已移除」。
+        const rawParams = (ev.rawParams ?? {}) as Record<string, unknown>
+        const reason = scheduledTaskDeleteReason(ev.reason, p, rawParams)
+        appendEntry(set, {
+          kind: 'session_event',
+          text: scheduledTaskDeletedText(reason),
+        })
         break
       }
       case 'scheduled_task_fired': {
@@ -241,6 +255,10 @@ export function handleExtMiscEvent(
         // 多会话广播（host withSid 约定）：非当前会话的会话信息忽略
         // （别的会话的 session_info_update 不能改写本会话的标题）。
         if (ev.sessionId && ev.sessionId !== get().sessionId) break
+        // titleIsManual=true：本会话标题是手动改名的——自动标题（本
+        // 事件的 title）不得覆盖；false / 缺省保持原有覆盖行为
+        // （/rename --auto 的结果照样应用）。
+        if (ev.titleIsManual === true) break
         if (ev.title != null && String(ev.title).trim()) {
           set({ sessionTitle: String(ev.title).trim() })
         }
