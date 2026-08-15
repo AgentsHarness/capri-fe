@@ -7,11 +7,7 @@ import {
   clearPeerSessionLoad,
   runtime,
 } from '../globals'
-import {
-  ensureDefaultModeFlags,
-  permissionSeedMeta,
-  sessionModeFlags,
-} from '../modeFlags'
+import { permissionSeedMeta } from '../modeFlags'
 import { clearSuppressedTools } from '../tools'
 import { resetSessionState } from '../reset'
 import { clearStreamBuf } from '../stream'
@@ -132,19 +128,15 @@ export function sessionActions(set: SetState, get: () => ChatState) {
     get().stopTopTaskPolling()
     clearSuppressedTools()
     clearStreamBuf()
-    // A new session inherits the current GLOBAL permission mode (TUI
-    // parity: SessionFlags ride session/new `_meta`; the agent never
-    // persists ask/auto/always-approve). Capture before the reset —
-    // yoloMode wins over autoMode; with no global record yet, fall back
-    // to the config.toml default. Plan mode is per-session on the agent
-    // side and always starts fresh.
+    // A new session inherits the LIVE global permission mode (what the
+    // agent is actually running — badge / yolo_mode_changed), not the
+    // unread config.toml default. Capture before the reset. Plan mode
+    // is per-session on the agent side and always starts fresh.
     const cur = get()
-    const defaultFlags = await ensureDefaultModeFlags()
-    const curFlags = sessionModeFlags(
-      { yoloMode: cur.yoloMode, autoMode: cur.autoMode },
-      defaultFlags,
-    )
-    const inheritMeta = permissionSeedMeta(curFlags)
+    const inheritMeta = permissionSeedMeta({
+      yoloMode: cur.yoloMode,
+      autoMode: cur.autoMode,
+    })
     // 权限模式是进程级全局状态：复位不清（删除场景同样保留），store
     // 现值即继承值，无需经 flags 回灌。
     resetSessionState(set)

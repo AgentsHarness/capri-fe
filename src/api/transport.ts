@@ -84,12 +84,20 @@ export type ExtensionsPayload = {
 }
 
 
-/** GET /api/settings — safe config.toml subset (read-only). */
+/** GET / POST /api/settings — safe config.toml subset. */
 export type SettingsPayload = {
   ui?: Record<string, unknown>
   session?: Record<string, unknown>
   models?: Record<string, unknown>
   cli?: Record<string, unknown>
+}
+
+/** POST /api/settings body — only the four FE-consumed [ui] scalars. */
+export type SettingsPatch = {
+  collapsed_edit_blocks?: boolean
+  page_flip_on_send?: boolean
+  remember_tool_approvals?: boolean
+  permission_mode?: 'ask' | 'auto' | 'always-approve'
 }
 
 

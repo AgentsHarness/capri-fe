@@ -528,7 +528,7 @@ export const slashCommands: SlashCommand[] = [
   {
     name: 'settings',
     aliases: ['config', 'preferences', 'prefs'],
-    description: '打开设置（config.toml 只读展示）',
+    description: '打开设置',
     run: () => useChatStore.getState().openSettings(),
   },
 ]

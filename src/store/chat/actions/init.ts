@@ -10,7 +10,6 @@ import {
 } from '../globals'
 import {
   ensureDefaultModeFlags,
-  permissionSeedMeta,
   saveModeFlags,
   savePlanMode,
 } from '../modeFlags'
@@ -133,12 +132,9 @@ export function initChat(
     // Persist mode flags. Permission mode (yolo/auto/always-approve) is
     // process-global on the agent side (client-scoped yolo_mode_changed
     // broadcast), so its copy is ONE global record shared by every
-    // session. Plan mode is per-session (toggle_plan_mode addresses a
-    // sessionId) — its copy stays keyed by session as a best-effort
-    // complement to the timeline-derived truth. Skipped while history is
-    // (re)building: loadHistory resets the flags to defaults and replay
-    // re-derives them — persisting mid-replay would clobber the
-    // live-known flags with reset values.
+    // session — a hint for maybeReseed, not the live badge source.
+    // Plan mode is per-session. Skipped while history is (re)building
+    // so a mid-replay persist cannot clobber live-known flags.
     const unsubMode = api.subscribe((s, prev) => {
       if (s.historyLoading || s.historyLoadingMore) return
       if (
@@ -173,22 +169,9 @@ export function initChat(
         hostName: 'Localhost',
       })
     }
-    // Prefetch config.toml `[ui] permission_mode` and paint the composer
-    // badge immediately when no live flags are known yet (hello may
-    // arrive later and overlay a host snapshot / re-seed).
-    void ensureDefaultModeFlags().then((defaults) => {
-      const seed = permissionSeedMeta(defaults)
-      if (!seed) return
-      const s = get()
-      if (s.yoloMode === true || s.autoMode === true) return
-      // Explicit ask (hello already applied yolo/auto = false) — leave it.
-      if (s.yoloMode === false || s.autoMode === false) return
-      set({
-        yoloMode: seed.yoloMode,
-        autoMode: seed.autoMode,
-        permissionMode: seed.yoloMode ? 'always-approve' : 'auto',
-      })
-    })
+    // Prefetch `[ui]` permission default for maybeReseed / session/new.
+    // Do not paint the composer badge from config — wait for the agent echo.
+    void ensureDefaultModeFlags()
     // 置顶/待办偏好从 hub 拉取并合并（localStorage 是离线缓存；hub 为
     // 持久层，见 historyPins.ts）。hub 模式生效，local 模式内部跳过。
     void usePins.getState().syncPrefsFromHub()

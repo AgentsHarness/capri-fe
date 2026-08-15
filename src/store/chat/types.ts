@@ -336,7 +336,7 @@ export type ChatState = {
   extensionsTab: ExtensionsTab
   openExtensions: (tab: ExtensionsTab) => void
   closeExtensions: () => void
-  /** Settings modal (TUI F2 / /settings) — read-only config.toml view. */
+  /** Settings modal (TUI F2 / /settings) — read-only config.toml view + effective permission default. */
   settingsOpen: boolean
   openSettings: () => void
   closeSettings: () => void

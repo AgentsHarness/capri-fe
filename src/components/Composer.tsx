@@ -1432,11 +1432,11 @@ export function Composer() {
     // render as compound chips, like the TUI's stacked mode flags.
     const inPlan = planMode === true || permissionMode === 'plan'
     // Permission mode (TUI prompt flag: ask / auto / always-approve).
-    // Store already overlays config.toml `[ui] permission_mode` when the
-    // host hello is still the spawn default `ask` — so a settings default
-    // of always-approve shows here. Only non-ask modes are surfaced.
-    // A stale default permissionMode ('ask'/'default') must NOT shadow the
-    // optimistic local yoloMode/autoMode flags set by /auto & friends.
+    // Store is the agent-confirmed live mode (hello / yolo_mode_changed /
+    // a setMode that already succeeded) — config.toml is not painted here.
+    // Only non-ask modes are surfaced. A stale permissionMode
+    // ('ask'/'default') must NOT shadow the optimistic local
+    // yoloMode/autoMode flags set by /auto & friends.
     const permMode =
       permissionMode && !['ask', 'default', 'plan'].includes(permissionMode)
         ? permissionMode
