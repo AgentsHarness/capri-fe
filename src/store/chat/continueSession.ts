@@ -3,10 +3,12 @@ import { usePromptQueue } from '../promptQueue'
 import type { ChatState, SetState } from './types'
 import {
   clearContinueSessionTimer,
+  clearHistoryWindowBuffer,
   clearPeerSessionLoad,
   runtime,
 } from './globals'
 import { syncPendingForSession } from './pending'
+import { replayHistoryWindowBuffer } from './loadHistory'
 import {
   restorePlanMode,
   sessionModesPatch,
@@ -25,6 +27,9 @@ export async function continueSession(
     // We are the load initiator — never treat our own session_load_* as a
     // peer rebuild (would double loadHistory).
     clearPeerSessionLoad()
+    // 换会话：丢弃上一会话窗口期的缓冲残留（旧会话的事件绝不能在新
+    // 会话的快照回放里误渲染；loadHistory 会重建，无需保留）。
+    clearHistoryWindowBuffer()
     // Invalidate in-flight async results from a previous switch.
     const myGen = ++runtime.sessionSwitchGen
     // The prompt queue is per-session: swap the active queue to the
@@ -86,7 +91,22 @@ export async function continueSession(
       // client), so loading a session must leave the agent's global mode
       // untouched — sending a per-session seed would rewrite the global
       // state on every switch. Display follows the agent (global copy).
-      const loaded = await transport.loadSession(sessionId, cwd)
+      // 方案 A：切会话优先走 session/resume——agent 不重放历史（load
+      // 会经 SSE 全量重放整段会话，而重放本就被 historyLoading 丢弃，
+      // 纯浪费：带宽、Broadcast 缓冲 drop、hub 上行）。resume 失败
+      // （旧 agent 不支持 / 方法不存在等）回退 session/load，行为与
+      // 旧版完全一致（含重放 + 多 tab peer 门控）。
+      let loaded: {
+        models?: unknown
+        modes?: unknown
+        configOptions?: unknown
+        busy?: boolean
+      }
+      try {
+        loaded = await transport.sessionResume({ sessionId, cwd })
+      } catch {
+        loaded = await transport.loadSession(sessionId, cwd)
+      }
       // The user may have switched host / opened another session while we
       // were loading — never write this session's data into that view.
       if (myGen !== runtime.sessionSwitchGen) return
@@ -189,6 +209,10 @@ export async function continueSession(
         // history page + the historyLoading SSE drop can miss a still-
         // running task. Align bg_task rows with x.ai/task/list.
         void get().syncLiveTasks()
+        // 方案 A：grace window 期间（快照后 500ms）缓冲的 live 内容
+        // 事件在此回放——loadHistory 已回放过快照重建前的事件，这里
+        // 补上窗口尾巴（resume 无重放，缓冲里只有真实 live 事件）。
+        replayHistoryWindowBuffer(get)
       }, 500)
     } catch (e) {
       if (myGen !== runtime.sessionSwitchGen) return
