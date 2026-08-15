@@ -10,7 +10,6 @@ export type AcpEvent =
       sessionId?: string
       /** Active session workspace (host snapshot; empty pre-session). */
       cwd?: string
-      text?: string
       error?: string
       hostId?: string
       hostName?: string
@@ -429,17 +428,7 @@ export type AcpEvent =
  * GET /api/status 响应（capri-host Status struct 镜像）。字段全 optional：
  * ready/busy/booting/sessionId/cwd/hostId/hostName/homeDir/agentInfo/
  * agentCapabilities/authMeta/modes/configOptions/sessionMeta/models/
- * bootError/text/pendingRequests/capabilities/roster/agentStartedAt。
- * pendingRequests 复用 PendingReq[]，其余以 unknown 兜底（host 结构随
- * 版本演进，前端按需收紧）。
- */
-
-
-/**
- * GET /api/status 响应（capri-host Status struct 镜像）。字段全 optional：
- * ready/busy/booting/sessionId/cwd/hostId/hostName/homeDir/agentInfo/
- * agentCapabilities/authMeta/modes/configOptions/sessionMeta/models/
- * bootError/text/pendingRequests/capabilities/roster/agentStartedAt。
+ * bootError/pendingRequests/capabilities/roster/agentStartedAt。
  * pendingRequests 复用 PendingReq[]，其余以 unknown 兜底（host 结构随
  * 版本演进，前端按需收紧）。
  */
@@ -468,7 +457,6 @@ export type HostStatus = {
    * hello 快照归一化路径同时读 bootError/error）。
    */
   error?: string
-  text?: string
   /** 挂起的客户端请求（x.ai/* 与权限请求）。 */
   pendingRequests?: PendingReq[]
   capabilities?: unknown
