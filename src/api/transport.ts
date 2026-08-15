@@ -112,6 +112,12 @@ export type TerminalOutput = {
 export interface TransportCore {
   url(path: string): string
   apiBase(): string
+  /**
+   * 置顶/待办文档的 origin。host 报过 HUB_URL 时即使用该地址
+   * （即使当前连接模式是 local / 选中本机近路），避免 prefs
+   * 被写到没有 /api/prefs 的 capri-host。
+   */
+  prefsOrigin(): string
   mode: TransportMode
   fetch(
     path: string,

@@ -13,6 +13,60 @@ import type {
   WorkspaceSummary,
 } from '../types'
 
+/**
+ * 解析一条 session summary 的 wire 对象（workspace-list 与
+ * workspace-list-recent 共用）。无有效 id 返回 null（跳过该行）。
+ * 无 session_summary 时不设 title：列表 UI 按无标题渲染
+ * （"New Chat" + 右侧 12 位 id 前缀），而不是把 id 前缀冒充成标题
+ * 塞进左侧。
+ */
+function parseSummaryRow(o: Record<string, unknown>, fallbackCwd: string): WorkspaceSummary | null {
+  const info =
+    o.info && typeof o.info === 'object' && !Array.isArray(o.info)
+      ? (o.info as Record<string, unknown>)
+      : {}
+  const id =
+    (typeof info.id === 'string' && info.id) ||
+    (typeof o.session_id === 'string' && o.session_id) ||
+    (typeof o.sessionId === 'string' && o.sessionId) ||
+    ''
+  if (!id) return null
+  const summary =
+    (typeof o.session_summary === 'string' && o.session_summary.trim()) ||
+    (typeof o.sessionSummary === 'string' && o.sessionSummary.trim()) ||
+    ''
+  // TUI session_picker: last_active_at.unwrap_or(updated_at).
+  const activityAt = pickSummaryActivityAt(o)
+  return {
+    sessionId: id,
+    cwd: (typeof info.cwd === 'string' && info.cwd) || fallbackCwd,
+    ...(summary ? { title: summary } : {}),
+    ...(typeof o.last_turn_summary === 'string' && o.last_turn_summary.trim()
+      ? { lastTurnSummary: o.last_turn_summary.trim() }
+      : typeof o.lastTurnSummary === 'string' && o.lastTurnSummary.trim()
+        ? { lastTurnSummary: o.lastTurnSummary.trim() }
+        : {}),
+    ...(activityAt ? { updatedAt: activityAt } : {}),
+    ...(typeof o.current_model_id === 'string' && o.current_model_id
+      ? { currentModelId: o.current_model_id }
+      : typeof o.currentModelId === 'string' && o.currentModelId
+        ? { currentModelId: o.currentModelId }
+        : {}),
+    // 持久化的 reasoning_effort（agent summary）—— load 响应
+    // models 缺 effort 时用它恢复用户原选档位。
+    ...(typeof o.reasoning_effort === 'string' && o.reasoning_effort.trim()
+      ? { reasoningEffort: o.reasoning_effort.trim() }
+      : typeof o.reasoningEffort === 'string' && o.reasoningEffort.trim()
+        ? { reasoningEffort: o.reasoningEffort.trim() }
+        : {}),
+    ...(typeof o.num_messages === 'number' && Number.isFinite(o.num_messages)
+      ? { numMessages: o.num_messages }
+      : typeof o.numMessages === 'number' && Number.isFinite(o.numMessages)
+        ? { numMessages: o.numMessages }
+        : {}),
+  }
+}
+
 export const sessionsRpc = {
   async listSessions(this: TransportCore): Promise<{ sessions: SessionInfo[]; nextCursor?: string; meta?: Record<string, unknown> }> {
     const res = await this.fetch(this.url('/api/sessions'), {
@@ -50,58 +104,53 @@ export const sessionsRpc = {
       const sessions: WorkspaceSummary[] = []
       for (const s of raw) {
         if (!s || typeof s !== 'object') continue
-        const o = s as Record<string, unknown>
-        const info =
-          o.info && typeof o.info === 'object' && !Array.isArray(o.info)
-            ? (o.info as Record<string, unknown>)
-            : {}
-        const id =
-          (typeof info.id === 'string' && info.id) ||
-          (typeof o.session_id === 'string' && o.session_id) ||
-          (typeof o.sessionId === 'string' && o.sessionId) ||
-          ''
-        if (!id) continue
-        const summary =
-          (typeof o.session_summary === 'string' && o.session_summary.trim()) ||
-          (typeof o.sessionSummary === 'string' && o.sessionSummary.trim()) ||
-          ''
-        // TUI session_picker: last_active_at.unwrap_or(updated_at).
-        const activityAt = pickSummaryActivityAt(o)
-        sessions.push({
-          sessionId: id,
-          cwd: (typeof info.cwd === 'string' && info.cwd) || cwd,
-          // 无 session_summary 时不设 title：列表 UI 按无标题渲染
-          // （"New Chat" + 右侧 12 位 id 前缀），而不是把 id 前缀
-          // 冒充成标题塞进左侧。
-          ...(summary ? { title: summary } : {}),
-          ...(typeof o.last_turn_summary === 'string' && o.last_turn_summary.trim()
-            ? { lastTurnSummary: o.last_turn_summary.trim() }
-            : typeof o.lastTurnSummary === 'string' && o.lastTurnSummary.trim()
-              ? { lastTurnSummary: o.lastTurnSummary.trim() }
-              : {}),
-          ...(activityAt ? { updatedAt: activityAt } : {}),
-          ...(typeof o.current_model_id === 'string' && o.current_model_id
-            ? { currentModelId: o.current_model_id }
-            : typeof o.currentModelId === 'string' && o.currentModelId
-              ? { currentModelId: o.currentModelId }
-              : {}),
-          // 持久化的 reasoning_effort（agent summary）—— load 响应
-          // models 缺 effort 时用它恢复用户原选档位。
-          ...(typeof o.reasoning_effort === 'string' && o.reasoning_effort.trim()
-            ? { reasoningEffort: o.reasoning_effort.trim() }
-            : typeof o.reasoningEffort === 'string' && o.reasoningEffort.trim()
-              ? { reasoningEffort: o.reasoningEffort.trim() }
-              : {}),
-          ...(typeof o.num_messages === 'number' && Number.isFinite(o.num_messages)
-            ? { numMessages: o.num_messages }
-            : typeof o.numMessages === 'number' && Number.isFinite(o.numMessages)
-              ? { numMessages: o.numMessages }
-              : {}),
-        })
+        const row = parseSummaryRow(s as Record<string, unknown>, cwd)
+        if (row) sessions.push(row)
       }
       if (sessions.length > 0) groups.push({ cwd, label: cwd, sessions })
     }
     return groups
+  },
+
+  /**
+   * POST /api/session-summaries/workspace-list-recent {limit} — 全部
+   * workspace 中最近修改的 limit 个会话摘要（agent 按 last_active_at /
+   * updated_at 排序；顶层是扁平数组，与 workspace-list 的按 cwd 分组
+   * 结构不同，这里按 cwd 重新分组并保持 recent 顺序）。返回
+   * { groups, count }：count = 实际返回条数（< limit 即没有更多）。
+   */
+  async workspaceListRecent(
+    this: TransportCore,
+    limit: number,
+  ): Promise<{ groups: WorkspaceGroup[]; count: number }> {
+    const raw = unwrapExtResult(
+      await xaiCall(this, '/api/session-summaries/workspace-list-recent', { limit }),
+    )
+    // 防御：老 agent 没有该 ext 方法时返回空对象而非数组——按失败处理，
+    // 让调用方走降级路径（全量 workspace-list），避免把现有列表清空。
+    if (!Array.isArray(raw)) {
+      throw new Error('workspace list recent: result is not an array')
+    }
+    const rows: WorkspaceSummary[] = []
+    if (Array.isArray(raw)) {
+      for (const s of raw) {
+        if (!s || typeof s !== 'object') continue
+        const row = parseSummaryRow(s as Record<string, unknown>, '')
+        if (row) rows.push(row)
+      }
+    }
+    const groups: WorkspaceGroup[] = []
+    const byCwd = new Map<string, WorkspaceGroup>()
+    for (const row of rows) {
+      let g = byCwd.get(row.cwd)
+      if (!g) {
+        g = { cwd: row.cwd, label: row.cwd, sessions: [] }
+        byCwd.set(row.cwd, g)
+        groups.push(g)
+      }
+      g.sessions.push(row)
+    }
+    return { groups, count: rows.length }
   },
 
   async loadSession(this: TransportCore, 
@@ -542,10 +591,6 @@ export const sessionsRpc = {
 
   async sessionSummariesSessionList(this: TransportCore, opts: { workspaceDirectory: string }): Promise<unknown> {
     return unwrapExtResult(await xaiCall(this, '/api/session-summaries/session-list', opts))
-  },
-
-  async sessionSummariesWorkspaceListRecent(this: TransportCore, opts: { limit: number }): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/session-summaries/workspace-list-recent', opts))
   },
 
   async subagentListRunning(this: TransportCore, opts: { sessionId?: string } = {}): Promise<unknown> {

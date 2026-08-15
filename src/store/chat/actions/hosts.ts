@@ -36,10 +36,15 @@ export function hostActions(set: SetState, get: () => ChatState) {
         }
       }
       if (s.selectedHostId) return
-      // First selection: persisted choice → hub default → first online →
-      // first local host (local mode).
+      // First selection. 本机页面直连 capri-host 时 localHostId 有值：
+      // 优先选本机（API 走 isLocalDirect 近路），不要被上次调试留下的
+      // 远程 host（capri-fe.host）拐走——localhost 开发会表现为
+      //「连不上本地」。部署版前端没有 localHostId，仍按
+      // 记忆 → hub default → 在线 → 本机。
+      const localId = transport.getLocalHostId()
       let saved: string | null = loadStr('capri-fe.host')
       const pick =
+        (localId ? hosts.find((h) => h.hostId === localId) : undefined) ??
         (saved ? hosts.find((h) => h.hostId === saved) : undefined) ??
         hosts.find((h) => h.hostId === defaultHostId) ??
         hosts.find((h) => h.online) ??

@@ -89,9 +89,23 @@ export type ChatState = {
   selectedHostId?: string
   /** Historical sessions for the history picker (from session/list). */
   sessions: SessionInfo[]
-  /** Session summaries bucketed by workspace (workspace-list). */
+  /** Session summaries bucketed by workspace（workspace-list-recent，按需分页加载）。 */
   workspaces: WorkspaceGroup[]
   workspaceLoading: boolean
+  /** recent 分页：当前已请求的 limit（初始 50，「加载更多」每次 +50）。 */
+  workspaceRecentLimit: number
+  /** 会话列表底部「加载更多」请求中（按钮转圈）。 */
+  workspaceRecentLoadingMore: boolean
+  /** 是否还有更早的会话：首屏/切回按 count>0 乐观置位，「加载更多」按翻页后总数是否增长终止（count 受隐藏会话过滤，不能当判定依据）。 */
+  workspaceRecentHasMore: boolean
+  /**
+   * 会话列表展示模式：recent = workspace-list-recent 分页（底部
+   * 「已加载最近 N 条 + 加载更多」）；full = 全量 workspace-list
+   * （底部「已加载全部」）。用户切换会持久化到 localStorage
+   * （capri-fe-workspace-mode），下次启动按记忆的偏好加载；recent
+   * 端点不可用时的降级展示也是 full（但不改写偏好）。
+   */
+  workspaceListMode: 'recent' | 'full'
   /**
    * 空状态（无活动会话）时用户选/输入的工作目录；发送消息时用它
    * 创建新会话（空串 = 宿主默认目录）。resetSessionState 清空。
@@ -586,8 +600,22 @@ export type ChatState = {
   syncLiveTasks: () => Promise<void>
   /** x.ai/sessions/changed — refresh the history list. retry: 启动窗口容错（agent 预热 boot 超时）重试次数。 */
   refreshSessions: (retry?: number) => Promise<void>
-  /** 按工作区拉取会话摘要（workspace-list）；失败降级为 sessions 按 cwd 分组。retry 同 refreshSessions。 */
+  /**
+   * 拉取最近会话摘要（workspace-list-recent，limit = workspaceRecentLimit）；
+   * 失败降级为全量 workspace-list，再降级为 sessions 按 cwd 分组。
+   * retry 同 refreshSessions。
+   */
   refreshWorkspaces: (retry?: number) => Promise<void>
+  /**
+   * 会话列表分页「加载更多」：limit +50 重拉 workspace-list-recent 并
+   * 增量合并（已有行原位更新，新行 append 到对应分组末尾）。
+   */
+  workspaceLoadMore: () => Promise<void>
+  /**
+   * 切换会话列表展示模式（recent 分页 ⇄ 全量），并持久化偏好到
+   * localStorage。切换中 workspaceLoading=true。
+   */
+  switchWorkspaceListMode: (mode: 'recent' | 'full') => Promise<void>
   /** 拉取当前会话的聚合统计（POST /api/session-stats，composer 状态条数据源）。 */
   refreshSessionStats: () => Promise<void>
   /** Fetch git branch/worktree state for the active session (x.ai/git/info). */

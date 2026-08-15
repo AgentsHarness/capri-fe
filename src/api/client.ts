@@ -10,7 +10,9 @@ export type Transport = {
   setConnectionMode(mode: TransportMode, hubUrl?: string): void
   getConnectionMode(): TransportMode
   getHubUrl(): string
+  prefsOrigin(): string
   setLocalHostId(hostId: string | null): void
+  getLocalHostId(): string | null
   detectMode(): Promise<{
     mode: TransportMode
     hubUrl: string
