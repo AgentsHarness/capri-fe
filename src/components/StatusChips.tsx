@@ -9,7 +9,7 @@ import { usePromptQueue } from '../store/promptQueue'
 import type { ScrollEntry, TopTask } from '../api/types'
 import { useSessionSpinner } from '../hooks/sessionState'
 import { TodoMark, CheckMarkIcon } from './todoMark'
-import { fmtTok, fmtElapsedCompact, filterRunningEntries, type RunningEntry } from '../format'
+import { fmtTok, fmtElapsedCompact, filterRunningEntries, subagentMeta, type RunningEntry } from '../format'
 import type { TodoItem } from '../store/chat'
 
 /**
@@ -804,6 +804,11 @@ export function RunningTasksBar({
                 <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-gn-fg">
                   {e.title}
                 </span>
+                {e.kind === 'subagent' && (e.persona || e.role || e.model) && (
+                  <span className="shrink-0 font-mono text-[10px] text-gn-gutter">
+                    {subagentMeta(e.persona, e.role, e.model)}
+                  </span>
+                )}
                 {e.detail && (
                   <span
                     className="hidden max-w-[28vw] truncate font-mono text-[10px] text-gn-muted sm:inline"
