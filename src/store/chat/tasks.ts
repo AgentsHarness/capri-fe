@@ -80,6 +80,39 @@ export function updateScheduledTaskFire(set: SetState, taskId: string, nextFireA
   }))
 }
 
+/**
+ * scheduled_task_deleted 的删除原因取值：事件顶层 → params → rawParams
+ * （都没有时 "unknown"）。宿主已把 reason 归一化到顶层，回退链用于
+ * 旧宿主 / 其他生产者的载荷。
+ */
+export function scheduledTaskDeleteReason(
+  top: unknown,
+  params?: Record<string, unknown>,
+  rawParams?: Record<string, unknown>,
+): string {
+  const r =
+    (typeof top === 'string' && top.trim()) ||
+    (typeof params?.reason === 'string' && params.reason.trim()) ||
+    (typeof rawParams?.reason === 'string' && rawParams.reason.trim())
+  return r || 'unknown'
+}
+
+/** 删除原因 → 可见提示文案；unknown/缺失 → 定时任务已移除。 */
+export function scheduledTaskDeletedText(reason: string): string {
+  switch (reason) {
+    case 'expired':
+      return '定时任务已过期'
+    case 'completed':
+      return '定时任务已完成'
+    case 'deleted':
+      return '定时任务已删除'
+    case 'shutdown':
+      return '定时任务已暂停（会话关闭时清理，任务仍在，恢复会话后重新生效）'
+    default:
+      return '定时任务已移除'
+  }
+}
+
 export function handleTaskBackgrounded(
   get: () => ChatState,
   set: SetState,

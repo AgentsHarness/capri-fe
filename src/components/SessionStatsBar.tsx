@@ -33,7 +33,9 @@ export function SessionStatsBar() {
     }
   }, [sessionId, cwd, refreshSessionStats])
 
-  // 无数据 / 无任何活动历史（空会话）→ 零高度，不占布局。
+  // 无数据 / 无任何活动历史（空会话）→ 不渲染内容。但保留底部间距
+  // 占位（与 stats 显示时 pb-4 等量）：composer 直接贴底会显得局促。
+  const bottomSpacer = <div className="pb-4" aria-hidden="true" />
   if (
     !stats ||
     (stats.turns === 0 &&
@@ -42,7 +44,7 @@ export function SessionStatsBar() {
       stats.inputTokens === 0 &&
       stats.outputTokens === 0)
   ) {
-    return null
+    return bottomSpacer
   }
 
   const dur = (ms: number | undefined): string | null =>
@@ -80,7 +82,7 @@ export function SessionStatsBar() {
     })(),
   ].filter((s): s is string => !!s)
 
-  if (segments.length === 0) return null
+  if (segments.length === 0) return bottomSpacer
 
   return (
     <div

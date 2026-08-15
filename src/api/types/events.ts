@@ -247,8 +247,15 @@ export type AcpEvent =
   | { type: 'modes_update'; modes?: unknown; sessionId?: string }
   | { type: 'config_options_update'; configOptions?: unknown }
   | { type: 'commands_update'; commands?: unknown }
-  /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
-  | { type: 'session_info'; title?: string; updatedAt?: unknown; sessionId?: string }
+  | {
+      type: 'session_info'
+      title?: string
+      updatedAt?: unknown
+      sessionId?: string
+      /** x.ai/titleIsManual：true=手动改名，false=/rename --auto 结果，
+       *  缺省=自动标题——消费端据此阻止自动标题覆盖手动改名。 */
+      titleIsManual?: boolean
+    }
   /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
   | {
       type: 'model'
@@ -341,6 +348,11 @@ export type AcpEvent =
       type: 'scheduled_task_deleted'
       sessionId?: string
       taskId?: string
+      /**
+       * 删除原因：expired / completed / deleted / shutdown（宿主已归一化
+       * 到顶层，缺省 "unknown"）。消费端回退链：顶层 → params → rawParams。
+       */
+      reason?: string
       params?: Record<string, unknown>
       /**
        * 原始 wire 字段保全：params 原样（humanSchedule/status/enabled/

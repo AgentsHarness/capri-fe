@@ -2,6 +2,7 @@ import { transport } from '../../../api/client'
 import type { ChatState, SetState } from '../types'
 import { nid } from '../ids'
 import { appendEntry } from '../entries'
+import { scheduledTaskDeletedText } from '../tasks'
 
 export function xaiActions(set: SetState, get: () => ChatState) {
   return {
@@ -210,8 +211,10 @@ export function xaiActions(set: SetState, get: () => ChatState) {
       await transport.schedulerDelete(s.sessionId, taskId)
       // Optimistic local removal — the host's scheduled_task_deleted SSE
       // (either carrier) arrives later and is idempotent on a missing id.
+      // 用户主动删除 → reason=deleted 的提示文案（reason 回退链的
+      // 迟到 SSE 会再补一条 session_event 行）。
       set({
-        statusText: '已删除调度任务',
+        statusText: scheduledTaskDeletedText('deleted'),
         scheduledTasks: get().scheduledTasks.filter((t) => t.taskId !== taskId),
       })
     } catch (e) {
