@@ -17,6 +17,7 @@
   <a href="https://github.com/AgentsHarness/capri-host"><img src="https://img.shields.io/badge/sibling-capri--host-002255?style=flat-square" alt="capri-host" /></a>
   <a href="https://github.com/AgentsHarness/capri-hub"><img src="https://img.shields.io/badge/sibling-capri--hub-002255?style=flat-square" alt="capri-hub" /></a>
   <img src="https://img.shields.io/badge/for-Grok%20Build-0c0c0e?style=flat-square" alt="Grok Build" />
+  <a href="https://github.com/AgentsHarness/capri-fe/releases"><img src="https://img.shields.io/github/v/tag/AgentsHarness/capri-fe?style=flat-square&color=002255" alt="版本号" /></a>
 </p>
 
 ---
