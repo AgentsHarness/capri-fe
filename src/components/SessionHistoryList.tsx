@@ -109,6 +109,11 @@ export function SessionHistoryList() {
   const sessions = useChatStore((s) => s.sessions)
   const workspaces = useChatStore((s) => s.workspaces)
   const workspaceLoading = useChatStore((s) => s.workspaceLoading)
+  const workspaceRecentLoadingMore = useChatStore((s) => s.workspaceRecentLoadingMore)
+  const workspaceRecentHasMore = useChatStore((s) => s.workspaceRecentHasMore)
+  const workspaceListMode = useChatStore((s) => s.workspaceListMode)
+  const workspaceLoadMore = useChatStore((s) => s.workspaceLoadMore)
+  const switchWorkspaceListMode = useChatStore((s) => s.switchWorkspaceListMode)
   const sessionId = useChatStore((s) => s.sessionId)
   const cwd = useChatStore((s) => s.cwd)
   const historyLoading = useChatStore((s) => s.historyLoading)
@@ -462,7 +467,9 @@ export function SessionHistoryList() {
   // 空是正常的空态（置顶/待办本就少），不显示"加载会话…"。
   const centeredLoading =
     listMode === 'workspace' && sections.length === 0 && workspaceLoading
-  const spinnerFrame = useSessionSpinner(anyActive || centeredLoading)
+  const spinnerFrame = useSessionSpinner(
+    anyActive || centeredLoading || workspaceRecentLoadingMore,
+  )
 
   // 标记形态空态：未加载中且没有可显示的标记会话。
   const markedEmpty =
@@ -754,9 +761,9 @@ export function SessionHistoryList() {
                         type="button"
                         onClick={() => expandMore(g.key)}
                         className="flex flex-1 cursor-pointer items-center justify-center gap-2 px-3 py-1 text-center text-[10.5px] text-gn-cyan hover:bg-gn-bg-highlight"
-                        title={`再加载 ${Math.min(LOAD_MORE_STEP, g.sessions.length - shown)} 个会话`}
+                        title={`显示更多 ${Math.min(LOAD_MORE_STEP, g.sessions.length - shown)} 个会话`}
                       >
-                        加载更多 {Math.min(LOAD_MORE_STEP, g.sessions.length - shown)} 个
+                        显示更多 {Math.min(LOAD_MORE_STEP, g.sessions.length - shown)} 个
                       </button>
                     )}
                   </div>
@@ -766,6 +773,65 @@ export function SessionHistoryList() {
           </div>
         )
       })}
+      {/* 底部展示模式条（两行）：第一行「已加载最近/全部 N 条会话」
+          （真实条数）；第二行「加载更多」+「切换全量 / 切换最近」tab
+          （当前模式高亮）。切换偏好持久化到 localStorage。仅 workspace
+          形态且有数据时显示。 */}
+      {listMode === 'workspace' && sections.length > 0 && (
+        <div className="py-1.5">
+          <div className="flex items-center justify-center">
+            <span className="text-[10.5px] tabular-nums text-gn-gutter">
+              {workspaceListMode === 'recent'
+                ? `已加载最近 ${sections.reduce((n, g) => n + g.sessions.length, 0)} 条会话`
+                : `已加载全部 ${sections.reduce((n, g) => n + g.sessions.length, 0)} 条会话`}
+            </span>
+          </div>
+          <div className="mt-1 flex gap-1">
+            <button
+              type="button"
+              onClick={() => void switchWorkspaceListMode('full')}
+              disabled={workspaceLoading}
+              className={`flex flex-1 cursor-pointer items-center justify-center px-1 py-0.5 text-[10.5px] disabled:cursor-default disabled:opacity-60 ${
+                workspaceListMode === 'full'
+                  ? 'bg-gn-bg-highlight text-gn-cyan'
+                  : 'text-gn-muted hover:text-gn-fg'
+              }`}
+              title="显示全部历史会话（更早的也会出现）"
+            >
+              切换全量
+            </button>
+            {workspaceListMode === 'recent' && workspaceRecentHasMore && (
+              <button
+                type="button"
+                onClick={() => void workspaceLoadMore()}
+                disabled={workspaceRecentLoadingMore || workspaceLoading}
+                className="flex flex-1 cursor-pointer items-center justify-center gap-1.5 px-1 py-0.5 text-[10.5px] text-gn-cyan hover:bg-gn-bg-highlight disabled:cursor-default disabled:opacity-60"
+                title="再加载 50 条更早的会话"
+              >
+                {workspaceRecentLoadingMore && (
+                  <span className="text-[11px] leading-none text-gn-muted">
+                    {SPINNER_FRAMES[spinnerFrame]}
+                  </span>
+                )}
+                加载更多
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => void switchWorkspaceListMode('recent')}
+              disabled={workspaceLoading}
+              className={`flex flex-1 cursor-pointer items-center justify-center px-1 py-0.5 text-[10.5px] disabled:cursor-default disabled:opacity-60 ${
+                workspaceListMode === 'recent'
+                  ? 'bg-gn-bg-highlight text-gn-cyan'
+                  : 'text-gn-muted hover:text-gn-fg'
+              }`}
+              title="只显示最近加载的会话，可逐页加载更多"
+            >
+              切换最近
+            </button>
+          </div>
+        </div>
+      )}
       {/* 空列表 + 拉取中（workspace 形态）：中央显示与 scrollback
           加载态一致的提示（braille 字符动画 + "加载会话…"），这是
           会话列表唯一的加载指示。旧数据非空时列表保留、不覆盖。 */}

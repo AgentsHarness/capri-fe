@@ -1,4 +1,4 @@
-import { loadJSON, saveJSON } from '../lib/storage'
+import { loadJSON, loadStr, removeKey, saveJSON, saveStr } from '../lib/storage'
 import { create } from 'zustand'
 import type { HubPrefsDoc, SessionInfo, TodoStatus, WorkspaceGroup } from '../api/types'
 import { sessionSortRank } from './historyGroups'
@@ -20,7 +20,8 @@ import { transport } from '../api/client'
  *   为准整体替换**本地（含删除）；之后每次变更防抖 500ms 全量 PUT 回写，
  *   hub 随即广播 prefs_changed——所有在线浏览器实时应用同一份文档，
  *   一端的置顶/待办（含取消）改动直接同步到另一端，无需刷新。
- *   local 模式无 hub，只走 localStorage。
+ *   本机 host 配了 HUB_URL 时，即使当前连接是 local / 本机近路，
+ *   也回写该 hub（prefsOrigin）；完全没有 hub 地址才只走 localStorage。
  *
  * 并发语义：同一时刻只有一端在写（单用户多浏览器、低频操作），后写
  * 覆盖收敛一致；毫秒级竞态窗口内本地未推送的变更以「合并（本地优先）」
@@ -30,6 +31,10 @@ import { transport } from '../api/client'
  */
 
 const PIN_KEY = 'acpfe.historyPins'
+/** 上次成功与 hub 对齐的文档快照（判断「本地有未推送改动」）。 */
+const SYNC_KEY = 'acpfe.historyPins.synced'
+/** 本地有尚未 PUT 成功的变更（跨刷新保留，避免启动时被 hub 覆盖）。 */
+const DIRTY_KEY = 'acpfe.historyPins.dirty'
 /** 变更后延迟多久统一回写 hub（合并连续点击）。 */
 const HUB_PUSH_DEBOUNCE_MS = 500
 
@@ -122,17 +127,65 @@ function isEmptyPrefs(p: HistoryPins): boolean {
   )
 }
 
+function snapshot(p: HistoryPins): string {
+  return JSON.stringify({
+    pinnedWorkspaces: [...p.pinnedWorkspaces].sort(),
+    pinnedSessions: [...p.pinnedSessions].sort(),
+    todos: p.todos,
+  })
+}
+
+function markSynced(p: HistoryPins): void {
+  saveStr(SYNC_KEY, snapshot(p))
+}
+
+function localUnsynced(p: HistoryPins): boolean {
+  const last = loadStr(SYNC_KEY)
+  return last != null && last !== snapshot(p)
+}
+
+/** 本地有 hub 没有的置顶/待办（或待办状态不同）——未推送的新增。 */
+function hasLocalExtras(local: HistoryPins, hub: HistoryPins): boolean {
+  for (const w of local.pinnedWorkspaces) if (!hub.pinnedWorkspaces.has(w)) return true
+  for (const s of local.pinnedSessions) if (!hub.pinnedSessions.has(s)) return true
+  for (const [id, st] of Object.entries(local.todos)) {
+    if (hub.todos[id] !== st) return true
+  }
+  return false
+}
+
+function mergeLocalOverHub(hub: HistoryPins, local: HistoryPins): HistoryPins {
+  return {
+    pinnedWorkspaces: new Set([...hub.pinnedWorkspaces, ...local.pinnedWorkspaces]),
+    pinnedSessions: new Set([...hub.pinnedSessions, ...local.pinnedSessions]),
+    todos: { ...hub.todos, ...local.todos },
+  }
+}
+
 let hubPushTimer: ReturnType<typeof setTimeout> | null = null
 /**
  * 本地有尚未推送成功的变更（防抖等待中 / 上次 PUT 失败）。收到他人
  * 广播时据此决定「合并保留本地」还是「以 hub 为准替换」——只有毫秒级
  * 竞态窗口内会合并，正常流一律替换（删除才能同步）。
+ * 跨刷新持久化到 DIRTY_KEY，避免 local 模式跳过推送后重启被 hub 覆盖。
  */
-let hubDirty = false
+let hubDirty = loadStr(DIRTY_KEY) === '1'
 
-/** 防抖回写 hub；local 模式 / 失败都静默降级（本地状态不丢）。 */
+function setDirty(v: boolean): void {
+  hubDirty = v
+  if (v) saveStr(DIRTY_KEY, '1')
+  else removeKey(DIRTY_KEY)
+}
+
+/**
+ * 进行中的 syncPrefsFromHub（去重）：StrictMode 双挂载 + init 延迟
+ * 可能让两次调用相邻触发，共享同一次拉取避免重复请求。
+ */
+let syncInFlight: Promise<void> | null = null
+
+/** 防抖回写 hub；尚无 hub 地址 / 失败都静默降级（本地状态不丢，dirty 保留）。 */
 function scheduleHubPush(): void {
-  hubDirty = true
+  setDirty(true)
   if (hubPushTimer != null) clearTimeout(hubPushTimer)
   hubPushTimer = setTimeout(() => {
     hubPushTimer = null
@@ -141,15 +194,13 @@ function scheduleHubPush(): void {
 }
 
 async function pushToHub(): Promise<void> {
-  if (transport.getConnectionMode() !== 'hub') {
-    hubDirty = false
-    return
-  }
   try {
-    await transport.putPrefs(toWire(usePins.getState()))
-    hubDirty = false
+    const s = usePins.getState()
+    await transport.putPrefs(toWire(s))
+    setDirty(false)
+    markSynced(s)
   } catch (err) {
-    // 写失败：保留本地状态与 dirty 标记，下次变更会再次尝试。
+    // 写失败（无 hub 地址 / 网络）：保留本地状态与 dirty，下次变更或启动再推。
     console.warn('[pins] hub 持久化失败（已保留本地）', err)
   }
 }
@@ -225,24 +276,41 @@ export const usePins = create<
         return { todos }
       }),
     syncPrefsFromHub: async () => {
-      if (transport.getConnectionMode() !== 'hub') return
-      try {
-        const hub = fromWire(await transport.getPrefs())
-        const s = usePins.getState()
-        if (isEmptyPrefs(hub) && !isEmptyPrefs(s)) {
-          // 首次部署 / hub 数据被清：hub 还没有任何记录，把本地上推
-          // （唯一一次「本地优先」，避免已有置顶/待办凭空消失）。
-          applyPrefs(s)
-          await transport.putPrefs(toWire(s))
-        } else {
-          // hub 是权威：以 hub 为准整体替换本地（含删除）——删除因此
-          // 能跨端同步，不再被并集合并复活。
-          applyPrefs(hub)
+      if (!transport.prefsOrigin()) return
+      // 去重：进行中的拉取复用同一 promise（StrictMode 双挂载 / init
+      // 延迟后的相邻调用只发一次请求）。
+      if (syncInFlight) return syncInFlight
+      syncInFlight = (async () => {
+        try {
+          const hub = fromWire(await transport.getPrefs())
+          const s = usePins.getState()
+          // 本地有未推送的改动：不能以 hub 覆盖（否则 local 模式改的
+          // 置顶/待办会在下次进 hub 时被抹掉）。dirty / 快照不一致
+          // → 整份本地上推（含删除）；仅 extras（首次补齐）→ 合并后上推。
+          if (hubDirty || localUnsynced(s) || hasLocalExtras(s, hub)) {
+            const next = hubDirty || localUnsynced(s) ? s : mergeLocalOverHub(hub, s)
+            applyPrefs(next)
+            await transport.putPrefs(toWire(next))
+            setDirty(false)
+            markSynced(next)
+          } else if (isEmptyPrefs(hub) && !isEmptyPrefs(s)) {
+            // 首次部署 / hub 数据被清：hub 还没有任何记录，把本地上推。
+            applyPrefs(s)
+            await transport.putPrefs(toWire(s))
+            markSynced(s)
+          } else {
+            // 本地干净：以 hub 为准整体替换（含删除）。
+            applyPrefs(hub)
+            markSynced(hub)
+          }
+        } catch (err) {
+          // 拉取失败（hub 未升级 / 网络）：保留本地状态，功能照常。
+          console.warn('[pins] hub 同步失败（保留本地）', err)
+        } finally {
+          syncInFlight = null
         }
-      } catch (err) {
-        // 拉取失败（hub 未升级 / 网络）：保留本地状态，功能照常。
-        console.warn('[pins] hub 同步失败（保留本地）', err)
-      }
+      })()
+      return syncInFlight
     },
   }
 })

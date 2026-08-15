@@ -172,9 +172,14 @@ export function initChat(
     // Prefetch `[ui]` permission default for maybeReseed / session/new.
     // Do not paint the composer badge from config — wait for the agent echo.
     void ensureDefaultModeFlags()
-    // 置顶/待办偏好从 hub 拉取并合并（localStorage 是离线缓存；hub 为
-    // 持久层，见 historyPins.ts）。hub 模式生效，local 模式内部跳过。
-    void usePins.getState().syncPrefsFromHub()
+    // 置顶/待办偏好从 hub 拉取并合并（localStorage 是离线缓存；host
+    // 报过的 HUB_URL 是持久层，见 historyPins.ts）。无 hub 地址时跳过。
+    // 延迟到宏任务：StrictMode 的 effect 双调用（setup → cleanup →
+    // setup）会在同步阶段立刻 disconnect 一次，直接调用会被它 abort
+    // （"[pins] hub 同步失败 AbortError"），延迟后只有最终的连接在飞。
+    setTimeout(() => {
+      void usePins.getState().syncPrefsFromHub()
+    }, 0)
     return () => {
       unsub()
       unsubMode()

@@ -41,6 +41,12 @@ export class LocalTransport {
   /** hub 模式的 hub 浏览器侧地址（跨源直连用；空则退回 base）。 */
   private hubUrl = ''
   /**
+   * 最近一次探测到的远端 hub origin。local 模式也会保留，供
+   * prefs 回写——本机 host 配了 HUB_URL 时置顶/待办仍应进 hub，
+   * 不能因为连接模式是 local 就只写 localStorage。
+   */
+  private lastHubUrl = loadStr('capri-fe.hubUrl') || ''
+  /**
    * 本机 host 的 hostId（内嵌前端直连 capri-host 时从 /api/status 拿到）。
    * hub 模式下选中该 host 时，API 请求直连本机（base），不绕 hub 中继。
    */
@@ -124,8 +130,16 @@ export class LocalTransport {
     return this.base
   }
 
+  prefsOrigin(): string {
+    return this.hubUrl || this.lastHubUrl
+  }
+
   setConnectionMode(mode: TransportMode, hubUrl: string = '') {
     const next = hubUrl.replace(/\/$/, '')
+    if (next) {
+      this.lastHubUrl = next
+      saveStr('capri-fe.hubUrl', next)
+    }
     if (this.mode === mode && this.hubUrl === next) return
     this.mode = mode
     this.hubUrl = next
@@ -138,11 +152,15 @@ export class LocalTransport {
   }
 
   getHubUrl(): string {
-    return this.hubUrl
+    return this.hubUrl || this.lastHubUrl
   }
 
   setLocalHostId(hostId: string | null) {
     this.localHostId = hostId
+  }
+
+  getLocalHostId(): string | null {
+    return this.localHostId
   }
 
   private isLocalPage(): boolean {

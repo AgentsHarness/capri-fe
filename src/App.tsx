@@ -33,6 +33,20 @@ import { useScrollbackKeys } from './hooks/useScrollbackKeys'
 type AccessPhase = 'checking' | 'gate' | 'ready'
 
 /**
+ * detectMode 去重缓存：React StrictMode 双挂载会让两个 effect 并发
+ * 探测——先完成的 setConnectionMode 会 abortInflight 打断另一个探测的
+ * /api/status，后者误判 local 并覆盖 hub 模式（置顶/待办同步
+ * syncPrefsFromHub 因此被跳过，见 historyPins.ts）。共享同一 promise
+ * 让两次挂载拿到同一份结果。token 提交（handleTokenSubmit）强制重跑
+ * 并刷新缓存。
+ */
+let modeDetectPromise: ReturnType<typeof transport.detectMode> | null = null
+function detectModeOnce(): ReturnType<typeof transport.detectMode> {
+  modeDetectPromise ??= transport.detectMode()
+  return modeDetectPromise
+}
+
+/**
  * Agent-view layout (TUI):
  *   [status bar]
  *   [scrollback …………]  ← j/k select · ←/→ fold · Enter view
@@ -56,7 +70,7 @@ export default function App() {
   useEffect(() => {
     let cancelled = false
     void (async () => {
-      const { mode, hubUrl, localHostId } = await transport.detectMode()
+      const { mode, hubUrl, localHostId } = await detectModeOnce()
       transport.setConnectionMode(mode, hubUrl)
       // 内嵌前端直连 capri-host 时记录本机 hostId：hub 模式下选中本机，
       // API 请求直连本地，不绕 hub 中继。
@@ -89,6 +103,8 @@ export default function App() {
       // /api/status 会被 host 的鉴权挡下（401），配了 HUB_URL 的 host
       // 会被盲判成 local 模式——重跑一次 detectMode 拿回正确模式。
       const { mode, hubUrl, localHostId } = await transport.detectMode()
+      // token 就绪后的权威探测结果刷新缓存，后续挂载不再用旧值。
+      modeDetectPromise = Promise.resolve({ mode, hubUrl, localHostId })
       transport.setConnectionMode(mode, hubUrl)
       transport.setLocalHostId(localHostId ?? null)
       const r = await transport.probeAccess()

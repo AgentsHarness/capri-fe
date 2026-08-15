@@ -165,7 +165,11 @@ export const miscRpc = {
   },
 
   async listHosts(this: TransportCore): Promise<{ hosts: HostInfo[]; defaultHostId?: string }> {
-    const res = await this.fetch(`${this.apiBase()}/api/hosts`)
+    // hubLevel：host 列表是 hub 级数据（不带 ?host=），与选中 host
+    // 无关——host 切换的 abort 风暴（setHost → abortInflight）不能打断
+    // 它，否则 hosts_changed 广播触发的 refreshHosts 会静默失败、列表
+    // 不更新；StrictMode 双挂载的 disconnect 同样不能 abort 它。
+    const res = await this.fetch(`${this.apiBase()}/api/hosts`, {}, { hubLevel: true })
     const data = (await res.json().catch(() => ({}))) as {
       hosts?: HostInfo[]
       defaultHostId?: string
@@ -315,11 +319,12 @@ export const miscRpc = {
   },
 
   async getPrefs(this: TransportCore): Promise<HubPrefsDoc> {
-    if (this.mode !== 'hub') throw new Error('仅 Hub 模式支持置顶/待办持久化')
+    const origin = this.prefsOrigin()
+    if (!origin) throw new Error('仅 Hub 模式支持置顶/待办持久化')
     // hubLevel：hub 级请求，不参与 host 切换的 abortInflight 风暴——
     // 否则启动时与 refreshHosts（自动选中 host → setHost → abort）并发
     // 的 prefs 拉取每次都被中止，置顶/待办永远同步不过来。
-    const res = await this.fetch(`${this.apiBase()}/api/prefs`, {}, { hubLevel: true })
+    const res = await this.fetch(`${origin}/api/prefs`, {}, { hubLevel: true })
     const data = (await res.json().catch(() => ({}))) as {
       prefs?: HubPrefsDoc
       error?: string
@@ -341,9 +346,10 @@ export const miscRpc = {
   },
 
   async putPrefs(this: TransportCore, prefs: HubPrefsDoc): Promise<void> {
-    if (this.mode !== 'hub') throw new Error('仅 Hub 模式支持置顶/待办持久化')
+    const origin = this.prefsOrigin()
+    if (!origin) throw new Error('仅 Hub 模式支持置顶/待办持久化')
     const res = await this.fetch(
-      `${this.apiBase()}/api/prefs`,
+      `${origin}/api/prefs`,
       {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
