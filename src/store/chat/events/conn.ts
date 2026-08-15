@@ -5,12 +5,12 @@ import {
   partitionPendingRequests,
 } from '../pending'
 import {
-  cachedDefaultModeFlags,
+  alreadyReseeded,
   consumeAgentInstance,
+  currentAgentStamp,
   maybeReseedPermissionMode,
   permissionModeFromSnapshot,
   resolveDisplayModeFlags,
-  restoreModeFlags,
   restorePlanMode,
   sessionModesPatch,
 } from '../modeFlags'
@@ -104,16 +104,11 @@ export function handleConnEvent(
           xaiRequests: pendingSnap.xaiRequests,
           modes: ev.modes,
           ...modelSnap,
-          // 权限模式是进程级全局状态：hello 快照的非 ask（auto /
-          // always-approve）是权威；快照 ask 是 agent 刚启动的未播种
-          // 默认——保留上次非 ask 记录或 config.toml 默认，这样设置里
-          // `[ui] permission_mode = always-approve` 会立刻画上徽标。
-          // plan 按会话补充。
-          ...resolveDisplayModeFlags(
-            permSaved,
-            cachedDefaultModeFlags ?? {},
-            permSnap,
-          ),
+          // 徽标只信 agent 回声：hello 非 ask 是权威；ask 仅在本 agent
+          // 实例已经成功 setMode 过时保留那次写入。config.toml 不预涂。
+          ...resolveDisplayModeFlags(permSaved, permSnap, {
+            confirmedWrite: alreadyReseeded(currentAgentStamp()),
+          }),
           ...restorePlanMode(ev.sessionId),
           ...(sessionModesPatch(get, ev.modes) ?? {}),
         })
@@ -241,9 +236,8 @@ export function handleConnEvent(
           // 系统恢复（busy/ready/新回合）：清空分层横幅。
           layerErrors: {},
           ...modelSnap,
-          // 与 hello 相同的恢复：权限模式全局（刷新后徽标不丢，权威是
-          // yolo_mode_changed 广播）；plan 按会话补充。
-          ...restoreModeFlags(),
+          // 权限徽标不从 localStorage 回灌——只信 hello / yolo_mode_changed。
+          // plan 是会话态，从 per-session 副本补充。
           ...restorePlanMode(ev.sessionId),
           ...(sessionModesPatch(get, ev.modes) ?? {}),
           // ready 宣告会话空闲：清掉残留的 turnStartedAt（窗口期旧 hello /

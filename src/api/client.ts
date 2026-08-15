@@ -44,6 +44,7 @@ export type {
   McpToolInfo,
   ExtensionsPayload,
   SettingsPayload,
+  SettingsPatch,
   TerminalOutput,
 } from './transport'
 export type { ExtensionHook, ExtensionPlugin, ExtensionSkill } from './types'

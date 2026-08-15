@@ -5,16 +5,23 @@ import { transport } from '../api/client'
  * every FE-side replica of TUI behavior (page_flip_on_send,
  * collapsed_edit_blocks, remember_tool_approvals, [ui.notifications] …).
  *
- * config.toml stays the single source of truth: the host serves it
- * read-only, we consume. A FAILED fetch is not cached — the abort window
- * during host-switch / reconnect must not permanently lose the config, so
- * the next caller simply retries.
+ * config.toml stays the source of truth. GET is the full safe subset;
+ * POST /api/settings patches the four FE-consumed [ui] scalars. A FAILED
+ * fetch is not cached — the abort window during host-switch / reconnect
+ * must not permanently lose the config, so the next caller retries.
  */
 type UiSection = Record<string, unknown>
 
 let cachedUi: UiSection | undefined
 let inflight: Promise<UiSection> | null = null
 const readyCallbacks = new Set<() => void>()
+const changeListeners = new Set<() => void>()
+
+function notifyUiSettings(): void {
+  readyCallbacks.forEach((cb) => cb())
+  readyCallbacks.clear()
+  changeListeners.forEach((cb) => cb())
+}
 
 /** Fetch (once) and cache the `[ui]` settings section. Resolves `{}` on
  *  failure; the next call retries. */
@@ -26,8 +33,7 @@ export function ensureUiSettings(): Promise<UiSection> {
         s.ui && typeof s.ui === 'object' && !Array.isArray(s.ui) ? s.ui : {}
       ) as UiSection
       cachedUi = ui
-      readyCallbacks.forEach((cb) => cb())
-      readyCallbacks.clear()
+      notifyUiSettings()
       return ui
     })
     .catch(() => {
@@ -66,6 +72,21 @@ export function uiBool(key: string, dflt: boolean): boolean {
 export function uiString(key: string): string | undefined {
   const v = uiSettings()[key]
   return typeof v === 'string' && v ? v : undefined
+}
+
+/** Replace the cached `[ui]` section (after GET/POST /api/settings). */
+export function applyUiSettings(ui: UiSection): void {
+  cachedUi = ui
+  inflight = Promise.resolve(ui)
+  notifyUiSettings()
+}
+
+/** Subscribe to every cache update (not just the first successful fetch). */
+export function onUiSettingsChange(cb: () => void): () => void {
+  changeListeners.add(cb)
+  return () => {
+    changeListeners.delete(cb)
+  }
 }
 
 /** `[ui.notifications]` table (host may or may not ship it). */

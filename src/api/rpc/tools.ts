@@ -1,7 +1,7 @@
 import type { TransportCore } from '../transport'
 import { findArrayField, findField, findObjectField, unwrapExtResult, xaiCall } from './core'
 import type { AgentSkill, CustomModelConfig } from '../types'
-import type { ExtensionsPayload, McpListServer, McpToolInfo, SettingsPayload, TerminalOutput } from '../transport'
+import type { ExtensionsPayload, McpListServer, McpToolInfo, SettingsPatch, SettingsPayload, TerminalOutput } from '../transport'
 
 export const toolsRpc = {
   async mcpList(this: TransportCore): Promise<{ servers: McpListServer[] }> {
@@ -515,5 +515,26 @@ export const toolsRpc = {
       models: findObjectField(data, 'models'),
       cli: findObjectField(data, 'cli'),
     }
-  }
+  },
+
+  async updateSettings(
+    this: TransportCore,
+    patch: SettingsPatch,
+  ): Promise<SettingsPayload> {
+    const res = await this.fetch(this.url('/api/settings'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `update settings failed (${res.status})`)
+    }
+    return {
+      ui: findObjectField(data, 'ui'),
+      session: findObjectField(data, 'session'),
+      models: findObjectField(data, 'models'),
+      cli: findObjectField(data, 'cli'),
+    }
+  },
 }

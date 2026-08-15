@@ -7,12 +7,7 @@ import {
   clearHistoryWindowBuffer,
   runtime,
 } from './globals'
-import {
-  cachedDefaultModeFlags,
-  resolveDisplayModeFlags,
-  restoreModeFlags,
-  restorePlanMode,
-} from './modeFlags'
+import { restorePlanMode } from './modeFlags'
 import { formatTurnDuration } from './format'
 import { clearSuppressedTools } from './tools'
 import { clearStreamBuf, flushLiveStream, sealThought } from './stream'
@@ -276,15 +271,8 @@ export async function loadHistory(
               statusText: `历史已加载 (共 ${get().historyTotalCount ?? '?'} 条更新)`,
             }),
         historyLoadedAt: Date.now(),
-        // 权限模式是进程级全局状态（跟随 agent 客户端级广播），replay
-        // 推导不出 ask/auto/always-approve——这里恢复全局记录，空记录
-        // 回落到 config.toml 默认（设置里 always-approve 要继续显示）；
+        // 权限徽标是进程级、只信 agent 回声，历史回放不覆盖。
         // plan 是会话态，从 per-session 副本补充。
-        ...resolveDisplayModeFlags(
-          restoreModeFlags(),
-          cachedDefaultModeFlags ?? {},
-          {},
-        ),
         ...restorePlanMode(sessionId),
       })
       // 方案 A：快照重建完成，回放窗口期（historyLoading 期间）缓冲的
@@ -372,8 +360,6 @@ export async function loadHistory(
         conn: 'ready',
         statusText: '历史加载失败',
         historyLoadError: msg,
-        // 权限模式全局恢复（同成功分支注释）；plan 按会话补充。
-        ...restoreModeFlags(),
         ...restorePlanMode(sessionId),
         // 已加载出内容时保留内容 + 内联错误行（就地重试语义）；完全没
         // 加载出来时保持空列表，由 scrollback 中央"加载失败"覆盖层显示。

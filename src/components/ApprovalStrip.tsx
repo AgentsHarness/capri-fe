@@ -3,7 +3,7 @@ import { useChatStore } from '../store/chat'
 import { Glyphs } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
 import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS } from '../theme/layout'
-import { onUiSettingsReady, uiBool } from '../store/settings'
+import { onUiSettingsChange, onUiSettingsReady, uiBool } from '../store/settings'
 import type { PendingReq, PermissionScope, ScrollEntry } from '../api/types'
 
 /** One permission option from the request params. `meta` is the ACP
@@ -72,6 +72,7 @@ export function ApprovalStrip() {
   const [, forceRender] = useReducer((x: number) => x + 1, 0)
   useEffect(() => {
     onUiSettingsReady(() => forceRender())
+    return onUiSettingsChange(() => forceRender())
   }, [])
   const rememberApprovals = uiBool('remember_tool_approvals', false)
   const options = rememberApprovals

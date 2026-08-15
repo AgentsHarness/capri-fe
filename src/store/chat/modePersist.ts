@@ -95,39 +95,68 @@ export function planOnWithinGrace(): boolean {
   return Date.now() - planExitApprovedAt < PLAN_EXIT_GRACE_MS
 }
 
-// ── client-global default permission mode (config.toml ui.permission_mode) ──
-// Seeds NEW sessions (session/new `_meta`) AND the composer badge when
-// the host hello snapshot is still the spawn default `ask`. Host records
-// permMode only on set-mode / yolo_mode_changed — it resets to ask on
-// agent spawn and never copies `[ui] permission_mode`, so treating hello
-// `ask` as authority would hide a config default of always-approve.
-// Precedence mirrors the TUI's load_permission_mode: permission_mode >
-// legacy approval_mode > yolo=true.
+// ── client-global default permission mode (config.toml [ui]) ──
+// Used to SEED the agent (session/new `_meta` / maybeReseed setMode).
+// The composer badge does NOT read this — it only shows agent-confirmed
+// state (hello / yolo_mode_changed / a setMode that already succeeded).
+// Parse contract = TUI `permission_mode_from_ui_if_set`: any of the three
+// keys present is an explicit setting; precedence permission_mode >
+// approval_mode > yolo; unknown / "default" / yolo=false → Ask.
 
-/** Map a settings `ui` section to permission flags ({} = no default). */
+const UI_PERMISSION_MODE_KEYS = ['permission_mode', 'approval_mode', 'yolo'] as const
+
+const ASK_FLAGS: ModeFlags = { yoloMode: false, autoMode: false }
+const YOLO_FLAGS: ModeFlags = {
+  yoloMode: true,
+  autoMode: false,
+  permissionMode: 'always-approve',
+}
+const AUTO_FLAGS: ModeFlags = {
+  yoloMode: false,
+  autoMode: true,
+  permissionMode: 'auto',
+}
+
+function uiHas(ui: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(ui, key)
+}
+
+/** Map a settings `ui` section to permission flags ({} = no key set). */
 export function permissionFlagsFromUi(ui?: Record<string, unknown>): ModeFlags {
   if (!ui) return {}
-  const perm = typeof ui.permission_mode === 'string' ? ui.permission_mode : undefined
-  if (perm === 'always-approve') {
-    return { yoloMode: true, autoMode: false, permissionMode: 'always-approve' }
+  if (!UI_PERMISSION_MODE_KEYS.some((k) => uiHas(ui, k))) return {}
+
+  if (typeof ui.permission_mode === 'string') {
+    if (ui.permission_mode === 'always-approve') return { ...YOLO_FLAGS }
+    if (ui.permission_mode === 'auto') return { ...AUTO_FLAGS }
+    return { ...ASK_FLAGS }
   }
-  if (perm === 'auto') {
-    return { yoloMode: false, autoMode: true, permissionMode: 'auto' }
+
+  if (typeof ui.approval_mode === 'string') {
+    // TUI legacy: only "always-approve" is AlwaysApprove; everything else Ask.
+    return ui.approval_mode === 'always-approve' ? { ...YOLO_FLAGS } : { ...ASK_FLAGS }
   }
-  // 'default' / 'ask' / unknown → no client default (agent's own default).
-  if (perm === undefined) {
-    const legacy = typeof ui.approval_mode === 'string' ? ui.approval_mode : undefined
-    if (legacy === 'always-approve') {
-      return { yoloMode: true, autoMode: false, permissionMode: 'always-approve' }
-    }
-    if (legacy === 'auto') {
-      return { yoloMode: false, autoMode: true, permissionMode: 'auto' }
-    }
-    if (ui.yolo === true) {
-      return { yoloMode: true, autoMode: false, permissionMode: 'always-approve' }
-    }
-  }
-  return {}
+
+  if (ui.yolo === true) return { ...YOLO_FLAGS }
+  // Key present (including yolo = false) → explicit Ask, so a remote /
+  // last-known always-approve cannot win.
+  return { ...ASK_FLAGS }
+}
+
+export type PermissionModeLabel = 'ask' | 'auto' | 'always-approve'
+
+/** Canonical label for flags — same function the settings row and `_meta` share. */
+export function permissionLabelFromFlags(flags: ModeFlags): PermissionModeLabel {
+  if (flags.yoloMode === true) return 'always-approve'
+  if (flags.autoMode === true) return 'auto'
+  return 'ask'
+}
+
+/** Effective default the next seed will use (no key → agent Ask). */
+export function effectivePermissionLabelFromUi(
+  ui?: Record<string, unknown>,
+): PermissionModeLabel {
+  return permissionLabelFromFlags(permissionFlagsFromUi(ui))
 }
 
 export let cachedDefaultModeFlags: ModeFlags | undefined
@@ -141,6 +170,12 @@ export let cachedDefaultFlagsPromise: Promise<ModeFlags> | null = null
  * caller simply retries. Only a resolved settings payload marks the
  * default as loaded.
  */
+/** Keep the permission-default cache in lockstep after a settings write. */
+export function syncDefaultModeFlagsFromUi(ui: Record<string, unknown>): void {
+  cachedDefaultModeFlags = permissionFlagsFromUi(ui)
+  cachedDefaultFlagsPromise = Promise.resolve(cachedDefaultModeFlags)
+}
+
 export function ensureDefaultModeFlags(): Promise<ModeFlags> {
   cachedDefaultFlagsPromise ??= ensureUiSettings().then((ui) => {
     if (uiSettingsLoaded()) {
@@ -175,32 +210,29 @@ export function permissionModeFromSnapshot(mode: unknown): ModeFlags {
 }
 
 /**
- * Effective flags for a NEW session / badge: the current global
- * permission mode wins; with none known yet, fall back to config.toml.
+ * Seed source for maybeReseed: last-known write to this client, else
+ * the config.toml default. Not used to paint the badge.
  */
 export function sessionModeFlags(saved: ModeFlags, defaults: ModeFlags): ModeFlags {
   return saved.yoloMode !== undefined || saved.autoMode !== undefined ? saved : defaults
 }
 
 /**
- * Composer / store flags after a hello snapshot. Host non-ask is
- * authority. Snapshot `ask` is the unseeded spawn default — keep last
- * known non-ask (or the config.toml default) so the badge matches TUI
- * launch (`[ui] permission_mode = always-approve` shows immediately).
+ * Live badge flags. Only agent-confirmed state:
+ * - hello / yolo_mode_changed non-ask is authority
+ * - hello ask: keep a write already accepted by THIS agent instance
+ *   (`confirmedWrite` + saved non-ask); otherwise apply ask
+ * Never paints config.toml. A failed / in-flight seed stays ask.
  */
 export function resolveDisplayModeFlags(
   saved: ModeFlags,
-  defaults: ModeFlags,
   snap: ModeFlags,
+  opts?: { confirmedWrite?: boolean },
 ): ModeFlags {
   if (snap.yoloMode === true || snap.autoMode === true) return snap
-  const known = sessionModeFlags(saved, defaults)
-  if (known.yoloMode === true || known.autoMode === true) {
-    return {
-      yoloMode: known.yoloMode === true,
-      autoMode: known.autoMode === true && known.yoloMode !== true,
-      permissionMode: known.yoloMode === true ? 'always-approve' : 'auto',
-    }
+  if (opts?.confirmedWrite) {
+    if (saved.yoloMode === true) return { ...YOLO_FLAGS }
+    if (saved.autoMode === true) return { ...AUTO_FLAGS }
   }
   return snap
 }
@@ -231,14 +263,9 @@ export function permissionSeedMeta(
 // ── agent-restart follow ────────────────────────────────────────────
 // The agent's permission mode lives in ITS process memory only — host
 // restart resets the host mirror to ask (it does not read config.toml).
-// TUI re-applies `[ui] permission_mode` at launch and shows the chip
-// immediately. FE mirrors that: a new `agentStartedAt` (including first
-// contact) drops the stale localStorage copy, then maybeReseed pushes
-// last-known non-ask flags or the config.toml default back onto the
-// agent AND the composer badge. A hello snapshot of auto / always-approve
-// stays authoritative (another client already seeded). Snapshot `ask` is
-// the unseeded spawn default — it must NOT wipe a config default of
-// always-approve (host never records session/new `_meta` seeds).
+// maybeReseed pushes last-known / config.toml onto the agent; the
+// composer badge updates only after setMode succeeds (or hello already
+// reported non-ask). Painting before the write is a false always-approve.
 export const LAST_AGENT_STARTED_KEY = 'acpfe.lastAgentStartedAt'
 
 export function consumeAgentInstance(agentStartedAt: number | undefined): {
@@ -279,13 +306,10 @@ export function markReseeded(stamp: string | null): void {
 }
 
 /**
- * After hello: if the painted mode is last-known / config.toml non-ask
- * while the host snapshot is still ask (fresh spawn, or host never
- * recorded a session/new `_meta` seed), push it to the agent so the
- * host mirror and the composer badge stay in sync. TUI-parity re-seed.
- *
- * setMode runs at most once per agent instance. Shift+Tab bumps
- * `reseedGen` so an in-flight re-seed cannot overwrite a user cycle.
+ * After hello: if the host snapshot is still ask, push last-known /
+ * config.toml non-ask onto the agent. The badge stays ask until setMode
+ * succeeds — Shift+Tab bumps `reseedGen` so an in-flight seed cannot
+ * overwrite a user cycle. At most one setMode per agent instance.
  */
 export async function maybeReseedPermissionMode(
   set: SetState,
@@ -300,23 +324,23 @@ export async function maybeReseedPermissionMode(
     markReseeded(currentAgentStamp())
     return
   }
-  const display = resolveDisplayModeFlags(opts.saved, defaults, snap)
-  if (display.yoloMode !== true && display.autoMode !== true) return
-  const cur = get()
-  if (cur.yoloMode !== display.yoloMode || cur.autoMode !== display.autoMode) {
-    set(display)
-  }
-  const seed = permissionSeedMeta(display)
+  const seedFrom = sessionModeFlags(opts.saved, defaults)
+  const seed = permissionSeedMeta(seedFrom)
   if (!seed) return
   const stamp = currentAgentStamp()
   if (alreadyReseeded(stamp)) return
   if (gen !== reseedGen) return
+  const paint = (flags: ModeFlags) => {
+    if (gen !== reseedGen) return
+    markReseeded(stamp)
+    set({ ...flags })
+  }
   try {
     if (seed.yoloMode) {
       for (const modeId of ['always-approve', 'always_approve', 'yolo']) {
         try {
           await transport.setMode(modeId, get().sessionId)
-          if (gen === reseedGen) markReseeded(stamp)
+          paint(YOLO_FLAGS)
           return
         } catch {
           /* try next host-build id */
@@ -324,10 +348,10 @@ export async function maybeReseedPermissionMode(
       }
     } else {
       await transport.setMode('auto', get().sessionId)
-      if (gen === reseedGen) markReseeded(stamp)
+      paint(AUTO_FLAGS)
     }
   } catch {
-    /* display already applied; seed is best-effort */
+    /* leave the badge as the agent echo; do not paint a failed write */
   }
 }
 

@@ -524,7 +524,7 @@ export function TopBar({
             type="button"
             onClick={openSettings}
             className="inline-flex items-center gap-1 rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
-            title="设置（F2 · config.toml 只读展示）"
+            title="设置（F2）"
           >
             <Settings size={13} strokeWidth={2} aria-hidden />
             settings
@@ -700,7 +700,7 @@ export function TopBar({
                     openSettings()
                   }}
                   className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-                  title="设置（F2 · config.toml 只读展示）"
+                  title="设置（F2）"
                 >
                   <Settings size={14} strokeWidth={2} aria-hidden />
                   settings
