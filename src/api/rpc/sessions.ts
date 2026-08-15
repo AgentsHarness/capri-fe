@@ -410,8 +410,22 @@ export const sessionsRpc = {
     sessionId: string
     cwd: string
     meta?: Record<string, unknown>
-  }): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/session-resume', opts))
+  }): Promise<{
+    models?: unknown
+    modes?: unknown
+    configOptions?: unknown
+    busy?: boolean
+  }> {
+    const res = (await unwrapExtResult(await xaiCall(this, '/api/session-resume', opts))) as
+      | Record<string, unknown>
+      | null
+      | undefined
+    return {
+      models: res?.models,
+      modes: res?.modes,
+      configOptions: res?.configOptions,
+      busy: res?.busy === true,
+    }
   },
 
   async sessionClose(this: TransportCore, opts: { sessionId?: string } = {}): Promise<unknown> {

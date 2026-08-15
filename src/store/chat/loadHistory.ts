@@ -4,6 +4,7 @@ import { applyQueueChanged } from '../promptQueue'
 import type { ChatState, SetState } from './types'
 import { nid } from './ids'
 import {
+  clearHistoryWindowBuffer,
   runtime,
 } from './globals'
 import {
@@ -23,6 +24,27 @@ import {
   replayUpdates,
 } from './history'
 import { entryTimestamp } from './entries'
+
+/**
+ * 快照重建完成后回放窗口期缓冲的 live 内容事件（见 globals.ts）。
+ * 过滤规则：仅回放带 agentTimestampMs 且生成时刻晚于快照末尾写盘
+ * 时间戳的事件（同一 agent 时钟域，必然不在快照里）；无有效快照
+ * 基准（snapTail 非 number）或事件无时间戳 / 早于快照末尾时无法
+ * 判定是否已入快照，全部丢弃（不重复渲染，也不比旧行为更差）。
+ */
+export function replayHistoryWindowBuffer(get: () => ChatState): void {
+  const buffered = runtime.historyWindowBuffer
+  runtime.historyWindowBuffer = []
+  if (buffered.length === 0) return
+  const snapTail = runtime.historySnapTail
+  if (typeof snapTail !== 'number') return
+  for (const ev of buffered) {
+    const ts = (ev as { agentTimestampMs?: unknown }).agentTimestampMs
+    if (typeof ts !== 'number' || !Number.isFinite(ts)) continue
+    if (ts <= snapTail) continue
+    get().handleEvent(ev)
+  }
+}
 
 export async function loadHistory(
   set: SetState,
@@ -49,6 +71,7 @@ export async function loadHistory(
     // （newSession / resetToEmpty / switchHost）——连 entries 清空都不该
     // 发生，直接收口标志返回。
     if (staleLoad()) {
+      clearHistoryWindowBuffer()
       set({ historyLoading: false, historyLoadingMore: false })
       return
     }
@@ -137,6 +160,7 @@ export async function loadHistory(
       // 加载期间会话被切走：放弃本次加载（historyLoading 由下方
       // stale 分支收口），绝不把旧会话的页灌进新视图。
       if (staleLoad()) {
+        clearHistoryWindowBuffer()
         set({ historyLoading: false, historyLoadingMore: false })
         return
       }
@@ -160,6 +184,17 @@ export async function loadHistory(
       const updates = r.updates ?? []
       const fetched = updates.length
       const total = r.totalCount ?? 0
+      // 快照末尾 envelope 的写盘时间戳（agent 时钟域）：窗口期缓冲
+      // 回放的去重基准——live 事件生成时刻晚于它的必然不在快照里
+      // （落盘 ≥ 生成），可安全回放；早于它的可能已在快照中，跳过。
+      let snapTail: number | undefined
+      for (let i = updates.length - 1; i >= 0; i--) {
+        const u = updates[i] as { timestamp?: unknown } | undefined
+        if (u && typeof u.timestamp === 'number' && Number.isFinite(u.timestamp)) {
+          snapTail = u.timestamp
+          break
+        }
+      }
       // Newest page: rebuild from scratch. This page carries the
       // session's FINAL context usage (newest envelope) — the only
       // page allowed to update the context chip.
@@ -208,6 +243,7 @@ export async function loadHistory(
       if (staleLoad()) {
         // 会话已切走：只收口 loading 标志，不动 entries / conn /
         // turnStartedAt / statusText ——新会话的状态由自己的锚定负责。
+        clearHistoryWindowBuffer()
         set({ historyLoading: false, historyLoadingMore: false })
         return
       }
@@ -251,6 +287,15 @@ export async function loadHistory(
         ),
         ...restorePlanMode(sessionId),
       })
+      // 方案 A：快照重建完成，回放窗口期（historyLoading 期间）缓冲的
+      // live 内容事件——busy 会话切换时快照拉取间隙产生的 chunk/
+      // thought 不丢。会话已切走时丢弃残留（回放会污染新会话视图）。
+      runtime.historySnapTail = snapTail
+      if (!staleLoad()) {
+        replayHistoryWindowBuffer(get)
+      } else {
+        clearHistoryWindowBuffer()
+      }
       // 会话级 recap 缓存回填：该会话最近一次摘要（display-only、不
       // 持久化）在跨会话期间到达时只进了 cache——这里在历史重建后
       // 按生成时间就近插回对应对话位置（会话中间生成的 recap 显示在
@@ -315,9 +360,13 @@ export async function loadHistory(
       const msg = e instanceof Error ? e.message : String(e)
       if (staleLoad()) {
         // 会话已切走：失败信息属于旧会话，收口标志即可，不渲染错误行。
+        clearHistoryWindowBuffer()
         set({ historyLoading: false, historyLoadingMore: false })
         return
       }
+      // 快照失败：无回放基准（continueSession 的 grace timer 会再触发
+      // 一次回放，缓冲必须为空才不会误渲染）。重试由调用方重新缓冲。
+      clearHistoryWindowBuffer()
       set({
         historyLoading: false,
         conn: 'ready',
