@@ -163,23 +163,17 @@ export class LocalTransport {
     return this.localHostId
   }
 
-  private isLocalPage(): boolean {
-    try {
-      const hostname = new URL(this.base || location.href).hostname
-      return (
-        hostname === 'localhost' ||
-        hostname === '::1' ||
-        hostname.startsWith('127.')
-      )
-    } catch {
-      return false
-    }
-  }
-
+  /**
+   * 当前是否应直连本机：hub 模式 + 选中了本机 host。localHostId 只在
+   * detectMode 直连探测成功时设置——页面 origin 本身返回了「单 host +
+   * local:true」的 /api/hosts 和带 hostId 的 /api/status，即页面就托管在
+   * 本机 capri-host 上，无需再按页面 hostname 判断：localhost / 127.x /
+   * 局域网 IP（如 192.168.1.6）访问同一台机器的内嵌前端都成立，按
+   * hostname 过滤会把局域网地址误判为远程，白白绕 hub 中继。
+   */
   private isLocalDirect(): boolean {
     return (
       this.mode === 'hub' &&
-      this.isLocalPage() &&
       this.localHostId != null &&
       this.selectedHostId === this.localHostId
     )
