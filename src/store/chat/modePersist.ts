@@ -16,21 +16,28 @@ export const MODE_FLAGS_KEY = 'acpfe.modeFlags'
 export const PLAN_FLAGS_KEY = 'acpfe.planModes'
 
 /**
- * Normalize mode flags for persistence: default-y permission values need
- * no record. A saved permissionMode 'ask'/'default'/'normal' would sit in
- * the record shadowing nothing itself (the composer filters those) but a
- * stale 'ask' written over optimistic flags would suppress the composer
- * badge after a resume even when the agent is actually always-approve.
- * Also applied on read so old records written before this rule clean up.
+ * Normalize mode flags for persistence: only a confirmed non-ask write
+ * (yolo/auto true) or an explicit ask write (`confirmedAsk`) is a record.
+ * Hello-ask echos land as `{ yoloMode: false, autoMode: false }` — those
+ * are the agent's default, not a client write, and must not shadow
+ * config.toml on maybeReseed. Applied on read so old false-only records
+ * clean up to {}.
  */
 export function normalizeModeFlags(flags: ModeFlags): ModeFlags {
-  const out: ModeFlags = { ...flags }
+  const out: ModeFlags = {}
+  if (flags.yoloMode === true) out.yoloMode = true
+  if (flags.autoMode === true) out.autoMode = true
   if (
-    out.permissionMode === 'ask' ||
-    out.permissionMode === 'default' ||
-    out.permissionMode === 'normal'
+    typeof flags.permissionMode === 'string' &&
+    flags.permissionMode &&
+    flags.permissionMode !== 'ask' &&
+    flags.permissionMode !== 'default' &&
+    flags.permissionMode !== 'normal'
   ) {
-    out.permissionMode = undefined
+    out.permissionMode = flags.permissionMode
+  }
+  if (!out.yoloMode && !out.autoMode && flags.confirmedAsk === true) {
+    out.confirmedAsk = true
   }
   return out
 }
@@ -38,19 +45,44 @@ export function normalizeModeFlags(flags: ModeFlags): ModeFlags {
 export function loadGlobalModeFlags(): ModeFlags {
   const parsed = loadJSON<unknown>(MODE_FLAGS_KEY, {})
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
-  // 白名单提取：只认权限三字段，其余一律忽略——旧格式（per-session
+  // 白名单提取：只认权限字段，其余一律忽略——旧格式（per-session
   // map）或未知结构读出来就是 {}，绝不把杂散 key 展开进 store。
   const o = parsed as Record<string, unknown>
   return normalizeModeFlags({
     yoloMode: typeof o.yoloMode === 'boolean' ? o.yoloMode : undefined,
     autoMode: typeof o.autoMode === 'boolean' ? o.autoMode : undefined,
     permissionMode: typeof o.permissionMode === 'string' ? o.permissionMode : undefined,
+    confirmedAsk: o.confirmedAsk === true,
   })
 }
 
 /** Persist the GLOBAL permission-mode flags (shared by every session). */
 export function saveModeFlags(flags: ModeFlags): void {
-  saveJSON(MODE_FLAGS_KEY, normalizeModeFlags(flags))
+  const n = normalizeModeFlags(flags)
+  if (n.yoloMode !== true && n.autoMode !== true && n.confirmedAsk !== true) {
+    // Empty / hello-ask: drop the key so sessionModeFlags falls through
+    // to config.toml instead of treating false booleans as a write.
+    removeKey(MODE_FLAGS_KEY)
+    return
+  }
+  saveJSON(MODE_FLAGS_KEY, n)
+}
+
+/**
+ * Persist a client-confirmed permission write (setMode / settings /
+ * yolo_mode_changed echo). Non-ask → yolo/auto flags; ask/normal →
+ * `confirmedAsk` so a later maybeReseed does not re-push config.toml.
+ */
+export function persistConfirmedPermission(flags: ModeFlags): void {
+  if (flags.yoloMode === true || flags.autoMode === true) {
+    saveModeFlags({
+      yoloMode: flags.yoloMode,
+      autoMode: flags.autoMode,
+      permissionMode: flags.permissionMode,
+    })
+    return
+  }
+  saveModeFlags({ confirmedAsk: true })
 }
 
 /** The global permission-mode flags this client last knew ({} when unknown). */
@@ -211,11 +243,18 @@ export function permissionModeFromSnapshot(mode: unknown): ModeFlags {
 }
 
 /**
- * Seed source for maybeReseed: last-known write to this client, else
+ * Seed source for maybeReseed: last-known *write* to this client, else
  * the config.toml default. Not used to paint the badge.
+ *
+ * `yoloMode: false` / `autoMode: false` is NOT a write — that is the
+ * hello-ask echo (agent default). Treating it as last-known used to
+ * shadow a config.toml `always-approve` / `auto` and skip reseed, so
+ * the composer badge never appeared.
  */
 export function sessionModeFlags(saved: ModeFlags, defaults: ModeFlags): ModeFlags {
-  return saved.yoloMode !== undefined || saved.autoMode !== undefined ? saved : defaults
+  if (saved.yoloMode === true || saved.autoMode === true) return saved
+  if (saved.confirmedAsk === true) return ASK_FLAGS
+  return defaults
 }
 
 /**
@@ -405,6 +444,9 @@ export async function maybeReseedPermissionMode(
     if (gen !== reseedGen) return
     markReseeded(stamp)
     set({ ...flags })
+    // historyLoading skips the store subscriber — persist here so the
+    // successful write survives a refresh even if replay is in flight.
+    persistConfirmedPermission(flags)
   }
   try {
     if (seed.yoloMode) {

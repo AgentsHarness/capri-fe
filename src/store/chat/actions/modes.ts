@@ -6,6 +6,7 @@ import {
   drainPendingForYolo,
   ENABLE_ALWAYS_APPROVE_OPTION_ID,
   markPlanExitApproved,
+  persistConfirmedPermission,
   turnOnAlwaysApprove,
 } from '../modeFlags'
 import { appendEntry } from '../entries'
@@ -38,9 +39,20 @@ export function modeActions(set: SetState, get: () => ChatState) {
       get().showModeBanner(banner)
       set(patch)
     }
-    const persist = async (run: () => Promise<void>) => {
+    const persist = async (
+      run: () => Promise<void>,
+      write?: 'ask' | 'auto' | 'always-approve',
+    ) => {
       try {
         await run()
+        if (write === 'ask') persistConfirmedPermission({})
+        else if (write === 'auto') persistConfirmedPermission({ autoMode: true })
+        else if (write === 'always-approve') {
+          persistConfirmedPermission({
+            yoloMode: true,
+            permissionMode: 'always-approve',
+          })
+        }
       } catch (e) {
         if (cycle !== currentReseedGen()) return
         set(prev)
@@ -71,7 +83,7 @@ export function modeActions(set: SetState, get: () => ChatState) {
       await persist(async () => {
         await transport.setMode('default', sid)
         await transport.setMode('auto', sid)
-      })
+      }, 'auto')
     } else if (inPlan && inAuto) {
       // plan·auto → always (leave plan)
       paint('Switched to mode: Always-Approve', {
@@ -84,7 +96,7 @@ export function modeActions(set: SetState, get: () => ChatState) {
       await persist(async () => {
         await transport.setMode('default', sid)
         await transport.setMode('always-approve', sid)
-      })
+      }, 'always-approve')
     } else if (inPlan) {
       // plan·always → normal (leave plan)
       paint('Switched to mode: Normal', {
@@ -97,7 +109,7 @@ export function modeActions(set: SetState, get: () => ChatState) {
       await persist(async () => {
         await transport.setMode('default', sid)
         await transport.setMode('normal', sid)
-      })
+      }, 'ask')
     } else if (inAuto) {
       // auto → always
       paint('Switched to mode: Always-Approve', {
@@ -107,7 +119,7 @@ export function modeActions(set: SetState, get: () => ChatState) {
         permissionMode: undefined,
         statusText: '已切换到 always-approve 模式',
       })
-      await persist(() => transport.setMode('always-approve', sid))
+      await persist(() => transport.setMode('always-approve', sid), 'always-approve')
     } else {
       // always → normal
       paint('Switched to mode: Normal', {
@@ -117,7 +129,7 @@ export function modeActions(set: SetState, get: () => ChatState) {
         permissionMode: undefined,
         statusText: '已切换到 normal 模式',
       })
-      await persist(() => transport.setMode('normal', sid))
+      await persist(() => transport.setMode('normal', sid), 'ask')
     }
   },
 
@@ -169,6 +181,7 @@ export function modeActions(set: SetState, get: () => ChatState) {
           statusText: inPlan ? '已退出 auto（plan 保持）' : '已切换到 normal 模式',
         })
         await transport.setMode('normal', s.sessionId)
+        persistConfirmedPermission({})
       } else {
         set({
           autoMode: true,
@@ -177,6 +190,7 @@ export function modeActions(set: SetState, get: () => ChatState) {
           statusText: inPlan ? '已切换到 plan·auto 模式' : '已切换到 auto 模式',
         })
         await transport.setMode('auto', s.sessionId)
+        persistConfirmedPermission({ autoMode: true, permissionMode: 'auto' })
       }
     } catch (e) {
       set(prev)
@@ -215,6 +229,7 @@ export function modeActions(set: SetState, get: () => ChatState) {
           statusText: inPlan ? '已退出 always-approve（plan 保持）' : '已切换到 normal 模式',
         })
         await transport.setMode('normal', s.sessionId)
+        persistConfirmedPermission({})
         return
       }
       const ok = await turnOnAlwaysApprove(set, inPlan, s.sessionId)

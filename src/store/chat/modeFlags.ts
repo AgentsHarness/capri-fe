@@ -4,6 +4,7 @@ export {
   normalizeModeFlags,
   loadGlobalModeFlags,
   saveModeFlags,
+  persistConfirmedPermission,
   restoreModeFlags,
   loadPlanModes,
   savePlanMode,
