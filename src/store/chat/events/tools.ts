@@ -4,6 +4,7 @@ import { nid } from '../ids'
 import {
   collapsedEditBlocks,
 } from '../modeFlags'
+import { isEditToolKind } from '../../../theme/toolFamily'
 import { planTodos, toolVerb } from '../format'
 import {
   absorbBashOutputIntoBgTask,
@@ -67,12 +68,12 @@ export function handleToolEvent(
         // TUI [ui] collapsed_edit_blocks=true: edits render as one-line
         // +N/-M diffstats (collapsed) and back-to-back same-file edits
         // merge into one row (default false = diffs expanded, no merge).
-        if (kindName === 'edit' && collapsedEditBlocks()) {
+        if (isEditToolKind(kindName) && collapsedEditBlocks()) {
           const prev = sealed.entries[sealed.entries.length - 1]
           if (
             prev &&
             prev.kind === 'tool' &&
-            prev.kindName === 'edit' &&
+            isEditToolKind(prev.kindName) &&
             prev.title === title
           ) {
             const toolIndex = { ...get().toolIndex }
@@ -109,7 +110,7 @@ export function handleToolEvent(
           kindName,
           detail: tc.title as string | undefined,
           // collapsed_edit_blocks=false (default): edit diffs expanded.
-          expanded: kindName === 'edit' && !collapsedEditBlocks(),
+          expanded: isEditToolKind(kindName) && !collapsedEditBlocks(),
           raw: tc,
           // Activity start for the turn status line's phase timer (TUI
           // tracker started_at); replay/completed snapshots omit it.
@@ -233,6 +234,11 @@ export function handleToolEvent(
             // Finish flash: stamp finishedAt when a running tool settles
             const finishedAt =
               wasRunning && !running ? Date.now() : e.finishedAt
+            // TUI replace_tool_block: Other → Edit rematerializes to the
+            // collapsed_edit_blocks default. Already-Edit keeps the
+            // current fold (user gesture).
+            const becameEdit =
+              isEditToolKind(kindName) && !isEditToolKind(e.kindName)
             return {
               ...e,
               status,
@@ -241,6 +247,9 @@ export function handleToolEvent(
               title: extractTarget(merged) || e.title,
               raw: merged,
               finishedAt,
+              ...(becameEdit
+                ? { expanded: !collapsedEditBlocks() }
+                : {}),
             }
           }),
         })
