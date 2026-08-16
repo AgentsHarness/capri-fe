@@ -59,6 +59,11 @@ export function toolFamily(kindName?: string): ToolFamily {
   return 'standard'
 }
 
+/** Edit-family kinds (edit / write / create / …) — collapsed_edit_blocks. */
+export function isEditToolKind(kindName?: string): boolean {
+  return toolFamily(kindName) === 'edit'
+}
+
 /** Tools that participate in dense groups (TUI ToolCallBlock::is_groupable). */
 export function isGroupableTool(_kindName?: string): boolean {
   return true

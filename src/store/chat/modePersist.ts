@@ -7,6 +7,7 @@ import {
 } from '../../lib/storage'
 import { transport } from '../../api/client'
 import { ensureUiSettings, uiBool, uiSettingsLoaded } from '../settings'
+import { isEditToolKind } from '../../theme/toolFamily'
 import type { ChatState, ModeFlags, SetState } from './types'
 
 /** Global permission-mode flags (single object, all sessions share it). */
@@ -240,6 +241,76 @@ export function resolveDisplayModeFlags(
 /** TUI [ui] collapsed_edit_blocks — read from the shared settings cache. */
 export function collapsedEditBlocks(): boolean {
   return uiBool('collapsed_edit_blocks', false)
+}
+
+/**
+ * Last rematerialized flag. Starts as the `uiBool` default (false) so a
+ * history replay that lands before GET /api/settings can be flipped once
+ * the cache arrives (TUI `apply_collapsed_edit_blocks_flip`).
+ */
+let lastAppliedCollapsedEditBlocks = false
+
+function remapEditExpanded(
+  entries: ChatState['entries'],
+  oldExpanded: boolean,
+  newExpanded: boolean,
+): { entries: ChatState['entries']; changed: boolean } {
+  let changed = false
+  const next = entries.map((e) => {
+    if (e.kind !== 'tool' || !isEditToolKind(e.kindName)) return e
+    // Still on the old policy default — a user ←/→ / click away from it
+    // survives (TUI: gesture is indistinguishable from "folded back to
+    // the old default" and those do flip).
+    if (!!e.expanded !== oldExpanded) return e
+    changed = true
+    return { ...e, expanded: newExpanded }
+  })
+  return { entries: changed ? next : entries, changed }
+}
+
+/**
+ * TUI `apply_collapsed_edit_blocks_flip`: rematerialize Edit rows still
+ * sitting on the old policy default. Does not merge / unmerge already
+ * landed rows (TUI tracker: ingestion-time only).
+ */
+export function applyCollapsedEditBlocksFlip(
+  set: SetState,
+  oldFlag: boolean,
+  newFlag: boolean,
+): void {
+  if (oldFlag === newFlag) return
+  lastAppliedCollapsedEditBlocks = newFlag
+  const oldExpanded = !oldFlag
+  const newExpanded = !newFlag
+  set((s) => {
+    const main = remapEditExpanded(s.entries, oldExpanded, newExpanded)
+    let views = s.subagentViews
+    let viewsChanged = false
+    for (const [sid, view] of Object.entries(s.subagentViews)) {
+      const r = remapEditExpanded(view.items, oldExpanded, newExpanded)
+      if (!r.changed) continue
+      if (!viewsChanged) {
+        views = { ...s.subagentViews }
+        viewsChanged = true
+      }
+      views[sid] = { ...view, items: r.entries }
+    }
+    if (!main.changed && !viewsChanged) return {}
+    return {
+      ...(main.changed ? { entries: main.entries } : {}),
+      ...(viewsChanged ? { subagentViews: views } : {}),
+      // Collapsed Edits join verb groups; drop stale group-expansion ids
+      // (TUI `clear_group_expansion` on the same flip).
+      expandedGroups: new Set(),
+    }
+  })
+}
+
+/** Rematerialize if the cached `[ui]` flag moved since last apply. */
+export function applyCollapsedEditBlocksFromCache(set: SetState): void {
+  const next = collapsedEditBlocks()
+  if (next === lastAppliedCollapsedEditBlocks) return
+  applyCollapsedEditBlocksFlip(set, lastAppliedCollapsedEditBlocks, next)
 }
 
 /**

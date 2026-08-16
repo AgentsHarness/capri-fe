@@ -23,6 +23,8 @@ export {
   sessionModeFlags,
   resolveDisplayModeFlags,
   collapsedEditBlocks,
+  applyCollapsedEditBlocksFlip,
+  applyCollapsedEditBlocksFromCache,
   permissionSeedMeta,
   LAST_AGENT_STARTED_KEY,
   consumeAgentInstance,

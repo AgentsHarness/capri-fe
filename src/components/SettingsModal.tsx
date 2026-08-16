@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useChatStore } from '../store/chat'
 import { transport, type SettingsPatch, type SettingsPayload } from '../api/client'
 import {
+  applyCollapsedEditBlocksFromCache,
   bumpReseedGen,
   currentAgentStamp,
   effectivePermissionLabelFromUi,
@@ -53,8 +54,8 @@ const BOOL_ROWS: {
   },
   {
     key: 'collapsed_edit_blocks',
-    label: '折叠连续编辑',
-    hint: '同文件连续 edit 合并为一行；关则 diff 默认展开',
+    label: '折叠编辑块',
+    hint: '开：diff 收成 +N/−M 一行（已有行立即收起）；同文件连续合并只作用于新到达的 edit。关：每条 diff 默认展开',
     dflt: false,
   },
   {
@@ -201,6 +202,7 @@ export function SettingsModal() {
                     setData(next)
                     const ui = next.ui ?? {}
                     applyUiSettings(ui)
+                    applyCollapsedEditBlocksFromCache(useChatStore.setState)
                     syncDefaultModeFlagsFromUi(ui)
                     if (patch.permission_mode) {
                       await applyLivePermission(patch.permission_mode)

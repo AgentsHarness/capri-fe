@@ -8,6 +8,8 @@ import type { SetState } from './types'
 import { nid } from './ids'
 import { formatElapsed, imageSrc, toolVerb } from './format'
 import { extractTarget, toolCallIdOf } from './tools'
+import { collapsedEditBlocks } from './modeFlags'
+import { isEditToolKind } from '../../theme/toolFamily'
 
 export function sealSubagentStreaming(items: ScrollEntry[]): ScrollEntry[] {
   let changed = false
@@ -239,7 +241,11 @@ export function subagentToolItem(
     verb: toolVerb(kindName, running),
     status,
     kindName,
-    expanded: false,
+    expanded: prev
+      ? isEditToolKind(kindName) && !isEditToolKind(prev.kindName)
+        ? !collapsedEditBlocks()
+        : prev.expanded
+      : isEditToolKind(kindName) && !collapsedEditBlocks(),
     raw: tc,
     // 活动起点（epoch ms）——主 scrollback 相位计时器同款；运行中才打。
     ...(running && !prev ? { startedAt: Date.now() } : {}),
