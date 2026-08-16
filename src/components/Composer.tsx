@@ -1205,12 +1205,23 @@ export function Composer() {
     }
   }, [modeBanner, clearModeBanner])
 
-  // 固定高度：composer 始终保持在编辑状态的单行高度，不再随焦点/内容
-  // 动态伸缩（移除 TUI PromptViewConfig.collapse_unfocused 折叠与
-  // max_prompt_height 半视口增长）——多行内容在输入框内部滚动
+  // 输入框随内容增高，最高到半个视口（TUI PromptViewConfig
+  // max_prompt_height 半视口增长）；超出部分在输入框内部滚动
   // （gn-no-scrollbar 隐藏滚动条，光标由原生 textarea 保持可见）。
-  // 此前的高度 effect（collapsed ? 20px : min(scrollHeight, 视口/2)）
-  // 已整体移除。
+  // 失焦不折叠（collapse_unfocused 保持移除），清空后回落单行。
+  useEffect(() => {
+    const el = taRef.current
+    if (!el) return
+    const remeasure = () => {
+      // Reset height first so scrollHeight reports the full content.
+      el.style.height = 'auto'
+      const max = Math.floor(window.innerHeight / 2)
+      el.style.height = `${Math.min(el.scrollHeight, max)}px`
+    }
+    remeasure()
+    window.addEventListener('resize', remeasure)
+    return () => window.removeEventListener('resize', remeasure)
+  }, [text, chips])
 
   // Restore the caret after a programmatic text edit (chip insert/expand).
   // Runs once per pending request (deps on pendingCaret) — the request is
