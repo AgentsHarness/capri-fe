@@ -144,11 +144,17 @@ export function initChat(
         s.yoloMode !== prev.yoloMode ||
         s.autoMode !== prev.autoMode
       ) {
-        saveModeFlags({
-          permissionMode: s.permissionMode,
-          yoloMode: s.yoloMode,
-          autoMode: s.autoMode,
-        })
+        // Only persist a confirmed non-ask. Hello-ask paints
+        // yoloMode/autoMode false — writing that used to shadow
+        // config.toml on maybeReseed. Explicit ask writes go through
+        // persistConfirmedPermission (setMode / settings).
+        if (s.yoloMode === true || s.autoMode === true) {
+          saveModeFlags({
+            permissionMode: s.permissionMode,
+            yoloMode: s.yoloMode,
+            autoMode: s.autoMode,
+          })
+        }
       }
       if (s.sessionId && s.planMode !== prev.planMode) {
         savePlanMode(s.sessionId, s.planMode)

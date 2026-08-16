@@ -761,4 +761,11 @@ export type SetState = (
 
 export type ModeFlags = Partial<
   Pick<ChatState, 'permissionMode' | 'yoloMode' | 'autoMode'>
->
+> & {
+  /**
+   * Last-known write was an explicit ask/normal (Shift+Tab / /auto off /
+   * settings). Distinct from a hello-ask echo, which must not be persisted
+   * — that would shadow config.toml on maybeReseed.
+   */
+  confirmedAsk?: boolean
+}

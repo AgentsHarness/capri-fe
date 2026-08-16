@@ -7,6 +7,7 @@ import {
   currentAgentStamp,
   effectivePermissionLabelFromUi,
   markReseeded,
+  persistConfirmedPermission,
   syncDefaultModeFlagsFromUi,
   type PermissionModeLabel,
 } from '../store/chat/modeFlags'
@@ -277,6 +278,10 @@ async function applyLivePermission(mode: PermissionModeLabel): Promise<void> {
       autoMode: false,
       permissionMode: 'always-approve',
     })
+    persistConfirmedPermission({
+      yoloMode: true,
+      permissionMode: 'always-approve',
+    })
     markReseeded(currentAgentStamp())
     return
   }
@@ -294,6 +299,9 @@ async function applyLivePermission(mode: PermissionModeLabel): Promise<void> {
     autoMode: mode === 'auto',
     permissionMode: mode === 'auto' ? 'auto' : undefined,
   })
+  persistConfirmedPermission(
+    mode === 'auto' ? { autoMode: true, permissionMode: 'auto' } : {},
+  )
   markReseeded(currentAgentStamp())
 }
 
