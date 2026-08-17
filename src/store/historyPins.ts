@@ -1,6 +1,6 @@
 import { loadJSON, loadStr, removeKey, saveJSON, saveStr } from '../lib/storage'
 import { create } from 'zustand'
-import type { HubPrefsDoc, SessionInfo, TodoStatus, WorkspaceGroup } from '../api/types'
+import type { FePrefsDoc, HubPrefsDoc, SessionInfo, TodoStatus, WorkspaceGroup } from '../api/types'
 import { sessionSortRank } from './historyGroups'
 import { transport } from '../api/client'
 
@@ -43,6 +43,23 @@ export type HistoryPins = {
   pinnedSessions: Set<string>
   /** sessionId → todo 状态；缺失 = 无待办记录。 */
   todos: Record<string, TodoStatus>
+  /** FE 前端偏好（与置顶/待办同一 hub prefs 文档，跨端同步）。 */
+  fePrefs: FePrefs
+}
+
+/** FE 前端偏好默认值；改动经 hub prefs 同步到所有在线浏览器。 */
+export type FePrefs = {
+  /** scrollback 中 toolcall 分组默认折叠（false = 分组默认展开）。 */
+  collapseToolGroups: boolean
+}
+
+function defaultFePrefs(): FePrefs {
+  return { collapseToolGroups: true }
+}
+
+/** fePrefs 全为默认值（对 isEmptyPrefs 无贡献）。 */
+function fePrefsIsDefault(p: FePrefs): boolean {
+  return p.collapseToolGroups === true
 }
 
 function toStringSet(v: unknown): Set<string> {
@@ -58,6 +75,14 @@ function toTodoMap(v: unknown): Record<string, TodoStatus> {
   return out
 }
 
+/** hub 文档中的 fePrefs 段 → 内存态（缺省字段按默认值）。 */
+function fromFePrefsDoc(v: unknown): FePrefs {
+  const d = v && typeof v === 'object' && !Array.isArray(v) ? (v as FePrefsDoc) : {}
+  return {
+    collapseToolGroups: d.collapseToolGroups !== false,
+  }
+}
+
 /**
  * localStorage 读取（v2）＋ 旧版（v1：只有置顶的全局
  * {workspaces, sessions}）迁移。迁移目标放入当前 store 的全局字段——
@@ -70,11 +95,12 @@ function load(): HistoryPins {
   // 处理——否则 v1 分支的 `parsed.workspaces` 会抛 TypeError。
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
     if ('todos' in parsed) {
-      // v2：{ pinnedWorkspaces, pinnedSessions, todos }
+      // v2：{ pinnedWorkspaces, pinnedSessions, todos }（+fePrefs）
       return {
         pinnedWorkspaces: toStringSet(parsed.pinnedWorkspaces),
         pinnedSessions: toStringSet(parsed.pinnedSessions),
         todos: toTodoMap(parsed.todos),
+        fePrefs: fromFePrefsDoc(parsed.fePrefs),
       }
     }
     // v1：{ workspaces, sessions } → 迁移成 v2。
@@ -82,12 +108,14 @@ function load(): HistoryPins {
       pinnedWorkspaces: toStringSet(parsed.workspaces),
       pinnedSessions: toStringSet(parsed.sessions),
       todos: {},
+      fePrefs: defaultFePrefs(),
     }
   }
   return {
     pinnedWorkspaces: new Set(),
     pinnedSessions: new Set(),
     todos: {},
+    fePrefs: defaultFePrefs(),
   }
 }
 
@@ -96,6 +124,7 @@ function persist(pins: HistoryPins): void {
     pinnedWorkspaces: [...pins.pinnedWorkspaces],
     pinnedSessions: [...pins.pinnedSessions],
     todos: pins.todos,
+    fePrefs: pins.fePrefs,
   })
 }
 
@@ -107,6 +136,7 @@ function toWire(p: HistoryPins): HubPrefsDoc {
     pinnedWorkspaces: [...p.pinnedWorkspaces],
     pinnedSessions: [...p.pinnedSessions],
     todos: p.todos,
+    fePrefs: p.fePrefs,
   }
 }
 
@@ -116,14 +146,33 @@ function fromWire(doc: HubPrefsDoc): HistoryPins {
     pinnedWorkspaces: toStringSet(doc.pinnedWorkspaces),
     pinnedSessions: toStringSet(doc.pinnedSessions),
     todos: toTodoMap(doc.todos),
+    fePrefs: fromFePrefsDoc(doc.fePrefs),
   }
+}
+
+/**
+ * 旧版 hub 不认 fePrefs 字段（解码时丢弃未知 JSON 键）：收到不带
+ * fePrefs 的权威文档时保留本地 fePrefs，否则每次 prefs_changed 广播
+ * 都会把用户刚设的偏好打回默认。hub 升级后文档带上 fePrefs，才整体替换。
+ */
+function applyHubPreservingFePrefs(
+  raw: HubPrefsDoc,
+  hub: HistoryPins,
+  local: HistoryPins,
+): HistoryPins {
+  const hasFePrefs =
+    raw.fePrefs != null &&
+    typeof raw.fePrefs === 'object' &&
+    !Array.isArray(raw.fePrefs)
+  return hasFePrefs ? hub : { ...hub, fePrefs: local.fePrefs }
 }
 
 function isEmptyPrefs(p: HistoryPins): boolean {
   return (
     p.pinnedWorkspaces.size === 0 &&
     p.pinnedSessions.size === 0 &&
-    Object.keys(p.todos).length === 0
+    Object.keys(p.todos).length === 0 &&
+    fePrefsIsDefault(p.fePrefs)
   )
 }
 
@@ -132,6 +181,7 @@ function snapshot(p: HistoryPins): string {
     pinnedWorkspaces: [...p.pinnedWorkspaces].sort(),
     pinnedSessions: [...p.pinnedSessions].sort(),
     todos: p.todos,
+    fePrefs: p.fePrefs,
   })
 }
 
@@ -159,6 +209,8 @@ function mergeLocalOverHub(hub: HistoryPins, local: HistoryPins): HistoryPins {
     pinnedWorkspaces: new Set([...hub.pinnedWorkspaces, ...local.pinnedWorkspaces]),
     pinnedSessions: new Set([...hub.pinnedSessions, ...local.pinnedSessions]),
     todos: { ...hub.todos, ...local.todos },
+    // fePrefs 是标量偏好：竞态窗口内以本地为准（同 pins 的本地优先）。
+    fePrefs: { ...hub.fePrefs, ...local.fePrefs },
   }
 }
 
@@ -217,31 +269,36 @@ function applyPrefs(next: HistoryPins): void {
 transport.onEvent((ev) => {
   if (ev.type !== 'prefs_changed') return
   const params = (ev as { params?: { prefs?: HubPrefsDoc } }).params
-  if (!params?.prefs) return
-  const hub = fromWire(params.prefs)
+  const raw = params?.prefs
+  if (!raw) return
+  const hub = fromWire(raw)
   const s = usePins.getState()
   if (hubDirty) {
     const merged: HistoryPins = {
       pinnedWorkspaces: new Set([...s.pinnedWorkspaces, ...hub.pinnedWorkspaces]),
       pinnedSessions: new Set([...s.pinnedSessions, ...hub.pinnedSessions]),
       todos: { ...hub.todos, ...s.todos },
+      fePrefs: { ...hub.fePrefs, ...s.fePrefs },
     }
     applyPrefs(merged)
   } else {
-    applyPrefs(hub)
+    applyPrefs(applyHubPreservingFePrefs(raw, hub, s))
   }
 })
 
-export const usePins = create<
-  HistoryPins & {
-    toggleWorkspacePin: (cwd: string) => void
-    toggleSessionPin: (sessionId: string) => void
-    /** 设置/清除会话待办状态：'todo' | 'completed' | null（清除）。 */
-    setTodoStatus: (sessionId: string, status: TodoStatus | null) => void
-    /** 启动时从 hub 拉取，以 hub 为准替换本地（hub 模式；首次无数据时上推本地）。 */
-    syncPrefsFromHub: () => Promise<void>
-  }
->(() => {
+/** 置顶/待办 + 前端偏好 + 动作的完整 store 形态。 */
+export type HubPrefsState = HistoryPins & {
+  toggleWorkspacePin: (cwd: string) => void
+  toggleSessionPin: (sessionId: string) => void
+  /** 设置/清除会话待办状态：'todo' | 'completed' | null（清除）。 */
+  setTodoStatus: (sessionId: string, status: TodoStatus | null) => void
+  /** 更新 FE 前端偏好（与置顶/待办同一 hub prefs 文档同步）。 */
+  setFePrefs: (patch: Partial<FePrefs>) => void
+  /** 启动时从 hub 拉取，以 hub 为准替换本地（hub 模式；首次无数据时上推本地）。 */
+  syncPrefsFromHub: () => Promise<void>
+}
+
+export const usePins = create<HubPrefsState>(() => {
   const initial = load()
   return {
     ...initial,
@@ -250,7 +307,7 @@ export const usePins = create<
         const next = new Set(s.pinnedWorkspaces)
         if (next.has(cwd)) next.delete(cwd)
         else next.add(cwd)
-        const prefs = { pinnedWorkspaces: next, pinnedSessions: s.pinnedSessions, todos: s.todos }
+        const prefs = { pinnedWorkspaces: next, pinnedSessions: s.pinnedSessions, todos: s.todos, fePrefs: s.fePrefs }
         persist(prefs)
         scheduleHubPush()
         return { pinnedWorkspaces: next }
@@ -260,7 +317,7 @@ export const usePins = create<
         const next = new Set(s.pinnedSessions)
         if (next.has(sessionId)) next.delete(sessionId)
         else next.add(sessionId)
-        const prefs = { pinnedWorkspaces: s.pinnedWorkspaces, pinnedSessions: next, todos: s.todos }
+        const prefs = { pinnedWorkspaces: s.pinnedWorkspaces, pinnedSessions: next, todos: s.todos, fePrefs: s.fePrefs }
         persist(prefs)
         scheduleHubPush()
         return { pinnedSessions: next }
@@ -270,10 +327,17 @@ export const usePins = create<
         const todos = { ...s.todos }
         if (status == null) delete todos[sessionId]
         else todos[sessionId] = status
-        const prefs = { pinnedWorkspaces: s.pinnedWorkspaces, pinnedSessions: s.pinnedSessions, todos }
+        const prefs = { pinnedWorkspaces: s.pinnedWorkspaces, pinnedSessions: s.pinnedSessions, todos, fePrefs: s.fePrefs }
         persist(prefs)
         scheduleHubPush()
         return { todos }
+      }),
+    setFePrefs: (patch) =>
+      usePins.setState((s) => {
+        const fePrefs = { ...s.fePrefs, ...patch }
+        persist({ ...s, fePrefs })
+        scheduleHubPush()
+        return { fePrefs }
       }),
     syncPrefsFromHub: async () => {
       if (!transport.prefsOrigin()) return
@@ -282,7 +346,8 @@ export const usePins = create<
       if (syncInFlight) return syncInFlight
       syncInFlight = (async () => {
         try {
-          const hub = fromWire(await transport.getPrefs())
+          const raw = await transport.getPrefs()
+          const hub = fromWire(raw)
           const s = usePins.getState()
           // 本地有未推送的改动：不能以 hub 覆盖（否则 local 模式改的
           // 置顶/待办会在下次进 hub 时被抹掉）。dirty / 快照不一致
@@ -299,9 +364,11 @@ export const usePins = create<
             await transport.putPrefs(toWire(s))
             markSynced(s)
           } else {
-            // 本地干净：以 hub 为准整体替换（含删除）。
-            applyPrefs(hub)
-            markSynced(hub)
+            // 本地干净：以 hub 为准整体替换（含删除）；旧 hub 未带
+            // fePrefs 时保留本地偏好不被空默认覆盖。
+            const next = applyHubPreservingFePrefs(raw, hub, s)
+            applyPrefs(next)
+            markSynced(next)
           }
         } catch (err) {
           // 拉取失败（hub 未升级 / 网络）：保留本地状态，功能照常。
@@ -314,6 +381,21 @@ export const usePins = create<
     },
   }
 })
+
+// ── FE 前端偏好访问 ───────────────────────────────────────────────────
+
+/**
+ * FE 前端偏好选择器钩子（zustand 订阅，跨端同步后即时重渲染）。
+ * 用法：useFePrefs((s) => s.fePrefs.collapseToolGroups)
+ */
+export function useFePrefs<T>(selector: (s: HubPrefsState) => T): T {
+  return usePins(selector)
+}
+
+/** 非 hook 同步读取（store action / 纯函数路径，选中态计算等）。 */
+export function currentCollapseToolGroups(): boolean {
+  return usePins.getState().fePrefs.collapseToolGroups
+}
 
 /**
  * 工作区排序：置顶的工作目录永远在最前（内部按原 groupWorkspaces 的

@@ -6,6 +6,7 @@ import {
   thoughtModeStepUp,
   type ThoughtDisplayMode,
 } from '../../../scrollback/thoughtMode'
+import { currentCollapseToolGroups } from '../../historyPins'
 import type { ChatState, SetState } from '../types'
 import { selectableRowIds } from '../turn'
 
@@ -100,7 +101,9 @@ export function viewerNavActions(set: SetState, get: () => ChatState) {
 
     // ← on already-collapsed member inside an expanded group → fold the group
     if (!expanded && memberCollapsed) {
-      const spans = scanGroups(entries, expandedGroups)
+      const spans = scanGroups(entries, expandedGroups, {
+        defaultExpanded: !currentCollapseToolGroups(),
+      })
       const span = spanContaining(spans, idx)
       if (span?.expanded) {
         const next = new Set(expandedGroups)
@@ -182,7 +185,9 @@ export function viewerNavActions(set: SetState, get: () => ChatState) {
     else if (e.kind === 'session_event' && e.recap) get().setExpanded(!e.open)
     else {
       const idx = entries.findIndex((x) => x.id === selectedId)
-      const spans = scanGroups(entries, expandedGroups)
+      const spans = scanGroups(entries, expandedGroups, {
+        defaultExpanded: !currentCollapseToolGroups(),
+      })
       const span = spanContaining(spans, idx)
       if (span && !span.expanded) get().toggleGroupExpansion(span.anchorId)
     }

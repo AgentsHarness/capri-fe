@@ -2,11 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { ScrollEntry } from '../../api/types'
 import { userMessagePreview } from '../../format'
 import { useChatStore } from '../../store/chat'
-import {
-  displayRowKey,
-  isDensePackableRow,
-  spanContaining,
-} from '../../scrollback/verbGroup'
+import { displayRowKey, isDensePackableRow, spanContaining } from '../../scrollback/verbGroup'
 import { SPINNER_FRAMES } from '../../theme/glyphs'
 import { COLUMN_PAD_X_CLASS, CONTENT_COLUMN_CLASS } from '../../theme/layout'
 import { UserMessageNav, type UserMessageNavItem } from '../UserMessageNav'

@@ -47,6 +47,7 @@ import {
   scanGroups,
   spanContaining,
 } from '../scrollback/verbGroup'
+import { useFePrefs } from '../store/historyPins'
 import { COLUMN_PAD_X_CLASS, CONTENT_COLUMN_CLASS } from '../theme/layout'
 
 /** Poll interval for live bg_task stdout while the viewer is open. */
@@ -705,6 +706,7 @@ function SubagentTimeline({
     childSid ? s.subagentViews[childSid] : undefined,
   )
   const scrollRef = useRef<HTMLDivElement>(null)
+  const collapseToolGroups = useFePrefs((s) => s.fePrefs.collapseToolGroups)
   // 迷你视图的折叠/选中全部局部化：主 scrollback 的 expandedGroups /
   // selectedId 不接（mini 条目不在主 entries 里）。
   const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(
@@ -848,9 +850,11 @@ function SubagentTimeline({
   // 主 scrollback 同款分组管线：scanGroups → projectDisplayRows。
   // 只用渲染窗口内的条目（renderItems），DOM 保持扁平。
   const { rows, spans } = useMemo(() => {
-    const spans = scanGroups(renderItems, expandedGroups)
+    const spans = scanGroups(renderItems, expandedGroups, {
+      defaultExpanded: !collapseToolGroups,
+    })
     return { rows: projectDisplayRows(renderItems, spans), spans }
-  }, [renderItems, expandedGroups])
+  }, [renderItems, expandedGroups, collapseToolGroups])
 
   // 折叠覆盖（按条目 id）：工具/用户折叠与思考 displayMode 本地化——
   // 不写回 store，渲染时以 patch 合并进条目（EntryView 的 patch 语义）。

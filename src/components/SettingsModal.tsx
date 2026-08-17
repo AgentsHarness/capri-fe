@@ -13,6 +13,7 @@ import {
 } from '../store/chat/modeFlags'
 import { applyUiSettings } from '../store/settings'
 import { pushToast } from '../store/toast'
+import { useFePrefs } from '../store/historyPins'
 import { CustomModelsPanel } from './CustomModelsPanel'
 
 const GROUPS = [
@@ -215,6 +216,7 @@ export function SettingsModal() {
                   }
                 }}
               />
+              <FePrefsSection />
               {sections.map((g) => {
                 const group = data?.[g.key] ?? {}
                 const rows = Object.entries(group)
@@ -384,6 +386,53 @@ function ConsumedSettings({
           </div>
         )
       })}
+    </section>
+  )
+}
+
+/**
+ * 「前端偏好」栏目：FE 侧自有偏好，与置顶/待办同走 hub prefs 通道
+ * （localStorage 离线缓存 + hub 广播跨端同步），不走 host config.toml。
+ */
+function FePrefsSection() {
+  const collapseToolGroups = useFePrefs((s) => s.fePrefs.collapseToolGroups)
+  const setFePrefs = useFePrefs((s) => s.setFePrefs)
+  return (
+    <section className="border-b border-gn-prompt-border/50 py-1">
+      <div className="px-4 pt-2 pb-1 text-[10px] uppercase tracking-wider text-gn-gutter">
+        前端偏好
+      </div>
+      <div className="flex items-start gap-3 px-4 py-1.5">
+        <span
+          className="w-48 shrink-0 pt-0.5 font-mono text-[11.5px] text-gn-muted"
+          title="collapse_tool_groups"
+        >
+          collapse_tool_groups
+        </span>
+        <div className="min-w-0 flex-1">
+          <button
+            type="button"
+            onClick={() => setFePrefs({ collapseToolGroups: !collapseToolGroups })}
+            className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-px text-[10.5px] ${
+              collapseToolGroups
+                ? 'border-gn-green/60 text-gn-green'
+                : 'border-gn-prompt-border text-gn-muted'
+            } hover:bg-gn-bg-highlight`}
+            title="控制 scrollback 里 toolcall 分组是否折叠，改动即时生效"
+          >
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${
+                collapseToolGroups ? 'bg-gn-green' : 'bg-gn-gutter'
+              }`}
+            />
+            {collapseToolGroups ? 'on' : 'off'}
+          </button>
+          <div className="mt-0.5 text-[10.5px] leading-snug text-gn-gutter">
+            折叠 toolcall 分组 · 开：连续 toolcall 折叠成「Read 3 files」分组头，成员隐藏；
+            关：分组默认展开、逐条显示。与置顶/待办同一 hub prefs 通道，跨端同步即时生效。
+          </div>
+        </div>
+      </div>
     </section>
   )
 }

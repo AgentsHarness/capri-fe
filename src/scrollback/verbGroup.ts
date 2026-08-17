@@ -238,6 +238,20 @@ function scanRunForward(
 }
 
 /**
+ * 分组展开态：expandedGroups 记录「与默认方向相反」的手动切换——默认
+ * 折叠（defaultExpanded=false）时集合里有 anchor = 用户展开了该组；
+ * 默认展开（true）时集合里有 anchor = 用户收起了该组。
+ */
+export function spanExpanded(
+  anchorId: string,
+  expandedGroups: ReadonlySet<string>,
+  defaultExpanded: boolean,
+): boolean {
+  const flipped = expandedGroups.has(anchorId)
+  return defaultExpanded ? !flipped : flipped
+}
+
+/**
  * Scan verb runs then truncation runs (verb claims break truncation).
  * `groupToolVerbs` defaults true (TUI default).
  */
@@ -248,11 +262,14 @@ export function scanGroups(
     groupToolVerbs?: boolean
     showThinking?: boolean
     maxVisible?: number
+    /** 分组默认展开（false = 默认折叠成分组头，TUI 默认）。 */
+    defaultExpanded?: boolean
   } = {},
 ): GroupSpan[] {
   const groupToolVerbs = opts.groupToolVerbs !== false
   const showThinking = opts.showThinking !== false
   const maxVisible = opts.maxVisible ?? GROUP_MAX_VISIBLE
+  const defaultExpanded = opts.defaultExpanded === true
   const n = entries.length
   const claimed = new Array<boolean>(n).fill(false)
   const spans: GroupSpan[] = []
@@ -278,7 +295,7 @@ export function scanGroups(
       spans.push({
         range: { start: i, end: scan.end },
         kind: { type: 'verb', members: scan.members },
-        expanded: expandedGroups.has(anchorId),
+        expanded: spanExpanded(anchorId, expandedGroups, defaultExpanded),
         anchorId,
       })
       i = scan.end
@@ -322,7 +339,7 @@ export function scanGroups(
             participants: groupLen,
             hidden: groupLen - maxVisible,
           },
-          expanded: expandedGroups.has(anchorId),
+          expanded: spanExpanded(anchorId, expandedGroups, defaultExpanded),
           anchorId,
         })
       }
