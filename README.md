@@ -30,6 +30,10 @@
 > 安装 Grok Build
 > 启动 [capri-host](https://github.com/AgentsHarness/capri-host) 后会自动拉起 Grok Build 核心以及开放 `http://localhost:8765`，WebUI 已经自动嵌入。
 
+## 截图
+
+![Capri FE 界面](docs/screenshot.png)
+
 ## 能力
 
 - 在手机、平板、另一台电脑的浏览器里，继续本机 grok 的会话
