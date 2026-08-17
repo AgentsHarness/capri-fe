@@ -165,6 +165,7 @@ export const EntryView = memo(function EntryView({
     liveText,
     thoughtText,
     bodyRef,
+    inMini: actions != null,
   }
 
   if (e.kind === 'user') return <UserEntry e={e} chrome={chrome} />
