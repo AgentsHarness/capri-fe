@@ -3,6 +3,7 @@ import {
   projectDisplayRows,
   scanGroups,
 } from '../../scrollback/verbGroup'
+import { currentCollapseToolGroups } from '../historyPins'
 import type { ChatState, SetState } from './types'
 import { nid } from './ids'
 import { formatTurnDuration } from './format'
@@ -12,7 +13,9 @@ export function selectableRowIds(
   entries: ScrollEntry[],
   expandedGroups: ReadonlySet<string>,
 ): string[] {
-  const spans = scanGroups(entries, expandedGroups)
+  const spans = scanGroups(entries, expandedGroups, {
+    defaultExpanded: !currentCollapseToolGroups(),
+  })
   const rows = projectDisplayRows(entries, spans)
   return rows.map((r) => (r.type === 'entry' ? r.entry.id : r.id))
 }

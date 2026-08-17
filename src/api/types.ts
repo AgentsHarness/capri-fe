@@ -4,6 +4,7 @@
  */
 export type {
   ContentBlock,
+  FePrefsDoc,
   HubPrefsDoc,
   Toast,
   TodoStatus,
