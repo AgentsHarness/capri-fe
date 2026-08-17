@@ -72,4 +72,6 @@ export type EntryChrome = {
   liveText: string | undefined
   thoughtText: string | undefined
   bodyRef: { current: HTMLDivElement | null }
+  /** 迷你 scrollback（子代理弹窗）：消息操作行隐藏会话级动作（fork）。 */
+  inMini: boolean
 }
