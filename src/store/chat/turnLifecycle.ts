@@ -7,6 +7,7 @@ import {
   clearStreamBuf,
   flushLiveStream,
   flushStreamBuf,
+  isEmptyAssistant,
   sealAssistantStream,
   sealThought,
 } from './stream'
@@ -330,10 +331,16 @@ export function tailAlreadyTurnEnded(entries: ScrollEntry[]): boolean {
  * NOT liveness evidence; the host probe (topTasks) is the only authority
  * for restored tasks. Live rows always pair 'started' with running: true,
  * so counting `running` alone covers the live path.
+ */
 /** Settle streaming/running entries at turn end (assistant/thought/tool). */
 export function settleTurnEntries(entries: ScrollEntry[]): ScrollEntry[] {
-  return entries.map((e) => {
-    if (e.kind === 'assistant' && e.streaming) return { ...e, streaming: false }
+  const kept: ScrollEntry[] = []
+  for (const e of entries) {
+    if (e.kind === 'assistant') {
+      if (isEmptyAssistant(e)) continue
+      kept.push(e.streaming ? { ...e, streaming: false } : e)
+      continue
+    }
     if (e.kind === 'thought' && e.streaming) {
       // Replay: prefer the server-reported original duration; live falls
       // back to the local startedAt timer (TUI ThinkingBlock::finish
@@ -344,21 +351,23 @@ export function settleTurnEntries(entries: ScrollEntry[]): ScrollEntry[] {
           : e.startedAt != null
             ? formatElapsed(Date.now() - e.startedAt)
             : e.elapsed
-      return {
+      kept.push({
         ...e,
         streaming: false,
         elapsed,
         displayMode: 'collapsed',
         finishedAt: Date.now(),
-      }
+      })
+      continue
     }
     if (e.kind === 'tool' && (e.status === 'pending' || e.status === 'in_progress')) {
-      return {
+      kept.push({
         ...e,
         status: 'completed',
         verb: toolVerb(e.kindName, false),
         finishedAt: Date.now(),
-      }
+      })
+      continue
     }
     // Subagents are deliberately NOT settled here, same as bg_task: a
     // subagent without a `subagent_finished` in the loaded history was
@@ -368,6 +377,7 @@ export function settleTurnEntries(entries: ScrollEntry[]): ScrollEntry[] {
     // in-flight subagent into a green "Agent done" and drop it from the
     // top running-chip / tasks bar, exactly what the TUI avoids by
     // tracking subagent_sessions independently of the parent turn.
-    return e
-  })
+    kept.push(e)
+  }
+  return kept
 }
