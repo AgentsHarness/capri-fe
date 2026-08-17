@@ -192,28 +192,47 @@ export function handleUserStreamEvent(
         const ts = ev.ts ?? Date.now()
         // seal open thought when assistant starts speaking
         const sealed = sealThought(get())
-        const { openAssistantId, entries } = sealed
+        const { openAssistantId } = sealed
         if (openAssistantId) {
           // 已有回答条目：文本只进合并缓冲（rAF 统一落库，见
-          // appendStreamBuf）。状态字段（conn/statusText/awaitingNext）
-          // 由 flushStreamBuf 落库时每帧至多刷新一次——每个 chunk 都
-          // set()（~30ms 一次）会让全部 zustand 订阅者跟着空转，正是
-          // rAF 缓冲要消灭的通知风暴。首个 chunk 的 sealed 状态与条目
-          // 创建在下方 else 分支（openAssistantId 从无到有）一次性落库；
-          // 若流式指针已存在（openThoughtId 同开属异常交错），sealThought
-          // 的结果也在该分支的 set 里生效，此处无状态可丢。
+          // appendStreamBuf）。sealThought 若刚收口思考，先把结果落库，
+          // 否则 entries / openThoughtId 的更新会被丢掉。
+          if (
+            sealed.entries !== get().entries ||
+            sealed.openThoughtId !== get().openThoughtId ||
+            sealed.liveStream !== get().liveStream
+          ) {
+            set({ ...get(), ...sealed })
+          }
           appendStreamBuf(set, get, 'assistant', text)
         } else {
+          // 空白首包不建空壳——纯换行/空格不是回答。后续真正文再开行。
+          if (!text.trim()) break
+          // 指针已空但 liveStream 仍挂着上一段：先写回，再开新行。
+          // 写回即收口：被打断的 assistant 流当场结束（同 sealedForeignLive）。
+          let base = { ...get(), ...sealed }
+          if (base.liveStream) {
+            const foreignId = base.liveStream.entryId
+            base = flushLiveStream(base)
+            base = {
+              ...base,
+              entries: base.entries.map((e) =>
+                e.id === foreignId && e.kind === 'assistant'
+                  ? { ...e, streaming: false }
+                  : e,
+              ),
+            }
+          }
           const id = nid()
           set({
-            ...sealed,
+            ...base,
             conn: 'busy',
             statusText: 'Responding…',
             awaitingNext: false,
             openAssistantId: id,
             openThoughtId: undefined,
             entries: [
-              ...entries,
+              ...base.entries,
               { id, kind: 'assistant', text: '', streaming: true, ts },
             ],
             liveStream: { entryId: id, text },

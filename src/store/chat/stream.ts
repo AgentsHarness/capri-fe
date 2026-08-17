@@ -1,4 +1,4 @@
-import type { AcpEvent } from '../../api/types'
+import type { AcpEvent, ScrollEntry } from '../../api/types'
 import type { ChatState, SetState } from './types'
 import { formatElapsed } from './format'
 
@@ -77,19 +77,23 @@ export function flushStreamBuf(set: SetState, get: () => ChatState): void {
       // Older engines may reject mark options; ignore.
     }
   }
-  const s = get()
-  // Kind mismatch: buffer targeted thought/assistant but liveStream still
-  // points at the other — warn when about to overwrite (DEV).
-  if (
-    dev &&
-    s.liveStream &&
-    ((kind === 'thought' && s.openAssistantId === s.liveStream.entryId) ||
-      (kind === 'assistant' && s.openThoughtId === s.liveStream.entryId))
-  ) {
-    console.warn(
-      '[acp stream] flushStreamBuf kind/liveStream target mismatch',
-      { kind, liveStream: s.liveStream, openThoughtId: s.openThoughtId, openAssistantId: s.openAssistantId },
-    )
+  let s = get()
+  const openId = kind === 'thought' ? s.openThoughtId : s.openAssistantId
+  // liveStream 还挂在另一条上时先写回，禁止用本段缓冲覆盖对方正文。
+  // 写回即收口：被打断/移送指针的 assistant 流当场结束（与
+  // sealedForeignLive / sealAssistantStream 一致，不等回合 settle）。
+  if (s.liveStream && s.liveStream.entryId !== openId) {
+    const foreignId = s.liveStream.entryId
+    s = flushLiveStream(s)
+    set({
+      entries: s.entries.map((e) =>
+        e.id === foreignId && e.kind === 'assistant'
+          ? { ...e, streaming: false }
+          : e,
+      ),
+      liveStream: s.liveStream,
+    })
+    s = get()
   }
   if (kind === 'thought') {
     const openThoughtId = s.openThoughtId
@@ -205,6 +209,16 @@ export function sealAssistantStream(s: ChatState): ChatState {
       : { ...s, openAssistantId: undefined }
   }
   const id = s.openAssistantId
+  const existing = s.entries.find((e) => e.id === id)
+  // 空壳（从未落到正文、也无图）与空 Thinking… 一样整行丢掉。
+  if (existing?.kind === 'assistant' && isEmptyAssistant(existing)) {
+    return {
+      ...s,
+      openAssistantId: undefined,
+      liveStream: s.liveStream?.entryId === id ? null : s.liveStream,
+      entries: s.entries.filter((e) => e.id !== id),
+    }
+  }
   const next: ChatState = {
     ...s,
     openAssistantId: undefined,
@@ -220,6 +234,13 @@ export function sealAssistantStream(s: ChatState): ChatState {
   }
   assertStreamInvariants(next, 'sealAssistantStream')
   return next
+}
+
+/** 无正文、无内嵌图的回答行——不应留在 scrollback。 */
+export function isEmptyAssistant(
+  e: Extract<ScrollEntry, { kind: 'assistant' }>,
+): boolean {
+  return !e.text.trim() && !(e.images && e.images.length > 0)
 }
 
 /**
