@@ -88,6 +88,8 @@ export async function loadHistory(
       historyAnchorId: undefined,
       entries: [],
       liveStream: null,
+      currentStreamStartMs: undefined,
+      lastCompletedTurn: undefined,
       openAssistantId: undefined,
       openThoughtId: undefined,
       pendingOptimisticUserId: undefined,
@@ -232,6 +234,9 @@ export async function loadHistory(
         conn: 'ready',
         entries,
         liveStream: null,
+        currentStreamStartMs: replayMeta.turnOpen
+          ? get().currentStreamStartMs
+          : undefined,
         openAssistantId: replayMeta.turnOpen ? sealed.openAssistantId : undefined,
         openThoughtId: replayMeta.turnOpen ? sealed.openThoughtId : undefined,
       })

@@ -13,6 +13,8 @@ export function resetSessionState(set: (partial: Partial<ChatState>) => void): v
   set({
     entries: [],
     liveStream: null,
+    currentStreamStartMs: undefined,
+    lastCompletedTurn: undefined,
     // Clear the session anchor: until the host's ready(newSessionId)
     // arrives, session-scoped events are dropped (no cross-session leak).
     sessionId: undefined,

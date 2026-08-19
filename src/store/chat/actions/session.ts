@@ -389,6 +389,8 @@ export function sessionActions(set: SetState, get: () => ChatState) {
         pendingOptimisticUserId: undefined,
         openAssistantId: undefined,
         openThoughtId: undefined,
+        currentStreamStartMs: undefined,
+        lastCompletedTurn: undefined,
         liveStream: null,
       })
     }

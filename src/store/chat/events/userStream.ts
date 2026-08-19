@@ -6,12 +6,77 @@ import {
   appendStreamBuf,
   assertStreamInvariants,
   flushLiveStream,
+  flushStreamBuf,
+  sealAssistantStream,
   sealThought,
 } from '../stream'
 import {
   adoptLiveTurnStart,
 } from '../turn'
 import { classifyUserPrompt, findOptimisticUserAbsorbIndex } from '../history'
+
+function finiteStreamStart(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+/**
+ * Keep the TUI stream boundary rule: assistant and thought chunks with the
+ * same streamStartMs share one assistant stream; a changed value closes both
+ * open streaming entries before the new event is handled.
+ */
+function rejectClosedTurnAgentOutput(
+  set: SetState,
+  get: () => ChatState,
+  ev: Extract<AcpEvent, { type: 'chunk' | 'thought' }>,
+): boolean {
+  const completed = get().lastCompletedTurn
+  if (!completed) return false
+  const incoming = finiteStreamStart(ev.streamStartMs)
+  // A different stamped stream can only be a new server-side turn. Let it
+  // through and retire the old guard; an unmarked event is ambiguous and is
+  // dropped until the next user event explicitly opens a turn.
+  if (
+    incoming != null &&
+    completed.streamStartMs != null &&
+    incoming !== completed.streamStartMs
+  ) {
+    set({ lastCompletedTurn: undefined })
+    return false
+  }
+  // A terminal event leaves the view idle until the next user prompt. Agent
+  // chunks that arrive in that gap are late delivery from the closed turn;
+  // accepting one would recreate a streaming row and flip the composer back
+  // to Thinking…/Responding….
+  return true
+}
+
+/**
+ * Keep the TUI stream boundary rule: assistant and thought chunks with the
+ * same streamStartMs share one assistant stream; a changed value closes both
+ * open streaming entries before the new event is handled.
+ */
+function prepareAgentStream(
+  set: SetState,
+  get: () => ChatState,
+  streamStartMs: unknown,
+): void {
+  const incoming = finiteStreamStart(streamStartMs)
+  if (incoming == null) return
+  const current = get().currentStreamStartMs
+  if (current == null) {
+    set({ currentStreamStartMs: incoming })
+    return
+  }
+  if (current === incoming) return
+
+  // A same-kind rAF buffer is not flushed by handleChatEvent's type switch;
+  // commit it before closing the previous stream.
+  flushStreamBuf(set, get)
+  const before = get()
+  const withThoughtSealed = sealThought(flushLiveStream(before))
+  const sealed = sealAssistantStream({ ...before, ...withThoughtSealed })
+  set({ ...sealed, currentStreamStartMs: incoming })
+}
 export function handleUserStreamEvent(
   set: SetState,
   get: () => ChatState,
@@ -24,6 +89,12 @@ export function handleUserStreamEvent(
         // （后台回合的 echo 不能进当前 transcript；replay 无 sessionId，
         // 照常通过）。
         if (ev.sessionId && ev.sessionId !== get().sessionId) break
+        // A user event opens the next turn, including a hidden injected
+        // prompt. Clear the closed-turn guard before classification so the
+        // following agent chunk is not mistaken for late output.
+        if (get().awaitingNext || get().lastCompletedTurn) {
+          set({ awaitingNext: false, lastCompletedTurn: undefined })
+        }
         // 权威回合开始修正（队列收养回合的本地锚定误差，见
         // adoptLiveTurnStart）。
         adoptLiveTurnStart(set, get, ev)
@@ -86,6 +157,7 @@ export function handleUserStreamEvent(
             set({
               ...sealed,
               openAssistantId: undefined,
+              currentStreamStartMs: undefined,
               pendingOptimisticUserId: undefined,
               entries: entries.map((e, i) =>
                 i === absorbIdx && e.kind === 'user'
@@ -107,6 +179,7 @@ export function handleUserStreamEvent(
         set({
           ...sealed,
           openAssistantId: undefined,
+          currentStreamStartMs: undefined,
           pendingOptimisticUserId: undefined,
           entries: [
             ...entries,
@@ -185,6 +258,8 @@ export function handleUserStreamEvent(
       case 'chunk': {
         // 多会话广播（host withSid 约定）：非当前会话忽略。
         if (ev.sessionId && ev.sessionId !== get().sessionId) break
+        if (rejectClosedTurnAgentOutput(set, get, ev)) break
+        prepareAgentStream(set, get, ev.streamStartMs)
         // 权威回合开始修正（队列收养回合的本地锚定误差，见
         // adoptLiveTurnStart）。
         adoptLiveTurnStart(set, get, ev)
@@ -243,79 +318,69 @@ export function handleUserStreamEvent(
       case 'thought': {
         // 多会话广播（host withSid 约定）：非当前会话忽略。
         if (ev.sessionId && ev.sessionId !== get().sessionId) break
+        if (rejectClosedTurnAgentOutput(set, get, ev)) break
+        prepareAgentStream(set, get, ev.streamStartMs)
         // 权威回合开始修正（队列收养回合的本地锚定误差，见
         // adoptLiveTurnStart）。
         adoptLiveTurnStart(set, get, ev)
         const text = ev.text || ''
         if (!text) break
-        const s = get()
-        let openThoughtId = s.openThoughtId
-        let entries = s.entries
-        // Stream switch (assistant → thought, or a stale live stream):
-        // seal the previous stream into ITS entry before the new one
-        // starts, so no text is lost when the pointer moves. After the
-        // map, liveStream must not keep pointing at the old entry — the
-        // first-chunk path reassigns it; the continue path clears it.
-        const prevLs = s.liveStream
-        let sealedForeignLive = false
-        if (prevLs && prevLs.entryId !== openThoughtId) {
-          entries = entries.map((e) => {
-            if (e.id !== prevLs.entryId || !('text' in e)) return e
-            const nextText = e.text + prevLs.text
-            if (e.kind === 'assistant') {
-              // Mid-turn seal of the interrupted assistant stream.
-              return {
-                ...e,
-                text: nextText,
-                streaming: false,
-                ...(prevLs.elapsedMs != null
-                  ? { elapsedMs: prevLs.elapsedMs }
-                  : {}),
-              }
-            }
-            return {
-              ...e,
-              text: nextText,
-              ...(prevLs.elapsedMs != null
-                ? { elapsedMs: prevLs.elapsedMs }
-                : {}),
-            }
-          })
-          sealedForeignLive = true
-        }
 
-        // If placeholder missing (reconnect mid-turn / first thought
-        // chunk), create one. Invariant: entry.text stays empty during
-        // streaming; ALL in-flight text lives in liveStream (same as
-        // assistant first chunk). UI merges with mergeLiveText(e.text, live).
-        if (!openThoughtId || !entries.some((e) => e.id === openThoughtId && e.kind === 'thought')) {
+        // Same streamStartMs may legally transition assistant → thought.
+        // Commit the assistant's pending live text, but keep its pointer open
+        // so a later assistant chunk returns to the same entry. A changed
+        // streamStartMs was already sealed by prepareAgentStream above.
+        let base = get()
+        if (base.liveStream && base.liveStream.entryId !== base.openThoughtId) {
+          base = flushLiveStream(base)
+          set(base)
+        }
+        let openThoughtId = base.openThoughtId
+        const preserveAssistant =
+          finiteStreamStart(ev.streamStartMs) != null && base.openAssistantId != null
+        const entries = preserveAssistant
+          ? base.entries.map((e) =>
+              e.id === base.openAssistantId && e.kind === 'assistant'
+                ? { ...e, streaming: true }
+                : e,
+            )
+          : base.entries
+
+        // If placeholder missing (reconnect mid-turn / first thought chunk),
+        // create one. Invariant: entry.text stays empty during streaming;
+        // ALL in-flight text lives in liveStream.
+        if (
+          !openThoughtId ||
+          !entries.some((e) => e.id === openThoughtId && e.kind === 'thought')
+        ) {
           const id = nid()
           openThoughtId = id
-          entries = [
-            ...entries,
-            {
-              id,
-              kind: 'thought',
-              text: '',
-              displayMode: 'expanded',
-              streaming: true,
-              startedAt: Date.now(),
-              // Replay carries the server-reported original duration
-              // (agentTimestampMs - streamStartMs); live chunks have none
-              // and seal against the local timer instead.
-              ...(ev.elapsedMs != null ? { elapsedMs: ev.elapsedMs } : {}),
-            },
-          ]
           set({
+            ...base,
             conn: 'busy',
             statusText: 'Thinking…',
             awaitingNext: false,
             openThoughtId,
-            openAssistantId: undefined,
-            entries,
-            // Seed liveStream with the first chunk (do NOT put first
-            // chunk only into entry.text — later deltas append to
-            // liveStream; seal does entry.text += liveStream.text).
+            // Preserve openAssistantId for assistant → thought → assistant
+            // interleaving within one generation stream.
+            openAssistantId: preserveAssistant ? base.openAssistantId : undefined,
+            entries: [
+              ...entries,
+              {
+                id,
+                kind: 'thought',
+                text: '',
+                displayMode: 'expanded',
+                streaming: true,
+                startedAt: Date.now(),
+                // Replay carries the server-reported original duration
+                // (agentTimestampMs - streamStartMs); live chunks have none
+                // and seal against the local timer instead.
+                ...(ev.elapsedMs != null ? { elapsedMs: ev.elapsedMs } : {}),
+              },
+            ],
+            // Seed liveStream with the first chunk; later deltas append via
+            // rAF and sealThought moves the complete text into the entry.
             liveStream: {
               entryId: id,
               text,
@@ -325,17 +390,8 @@ export function handleUserStreamEvent(
           assertStreamInvariants(get(), 'thought:first')
           break
         }
-        // 已有进行中的思考块：文本进合并缓冲，rAF 统一落库（每帧至多一次
-        // set()——移动端思考流渲染卡顿的主因）。
-        if (sealedForeignLive) {
-          // Apply the sealed foreign stream + drop the stale liveStream
-          // pointer so UI does not double-render (entry already has text).
-          set({
-            entries,
-            openAssistantId: undefined,
-            liveStream: null,
-          })
-        }
+
+        // Existing thought: text goes through the frame coalescing buffer.
         appendStreamBuf(set, get, 'thought', text, ev.elapsedMs)
         break
       }

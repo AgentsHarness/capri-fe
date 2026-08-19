@@ -195,6 +195,16 @@ export type ChatState = {
    */
   currentPromptId?: string
   /**
+   * Identity of the most recently completed turn. It remains after history
+   * resume even when the UI status rail is reset to idle, so a late agent
+   * chunk cannot reopen the closed turn before the next user prompt.
+   */
+  lastCompletedTurn?: {
+    turnStartMs?: number
+    streamStartMs?: number
+    endMs?: number
+  }
+  /**
    * 生成输出速率（字符/秒）——host 流式期间推送 gen_rate 事件实时更新；
    * 输出结束（工具执行/turn 结束）推送 active:false 清除（只在输出过程
    * 中显示，无回合末冻结值）；新一轮发送清空（host 在 user_message_chunk
@@ -357,6 +367,8 @@ export type ChatState = {
   // streaming pointers
   openAssistantId?: string
   openThoughtId?: string
+  /** Agent-side stream identity shared by interleaved assistant/thought chunks. */
+  currentStreamStartMs?: number
   /**
    * Live streaming text, kept OUT of `entries`.
    *

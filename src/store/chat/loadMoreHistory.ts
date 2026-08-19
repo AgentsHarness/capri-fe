@@ -1,6 +1,6 @@
 import { transport } from '../../api/client'
 import type { ChatState, SetState } from './types'
-import { flushLiveStream, sealThought } from './stream'
+import { flushLiveStream, flushStreamBuf, sealThought } from './stream'
 import { settleTurnEntries } from './turn'
 import {
   MAX_AUTO_FETCH_ENTRIES,
@@ -10,6 +10,61 @@ import {
   remapTurnIdx,
   replayUpdates,
 } from './history'
+
+type LiveReplayState = Pick<
+  ChatState,
+  | 'entries'
+  | 'liveStream'
+  | 'openAssistantId'
+  | 'openThoughtId'
+  | 'currentStreamStartMs'
+  | 'lastCompletedTurn'
+  | 'conn'
+  | 'statusText'
+  | 'awaitingNext'
+  | 'turnStartedAt'
+  | 'currentPromptId'
+  | 'pendingOptimisticUserId'
+  | 'lastSentPromptId'
+  | 'genRate'
+  | 'pending'
+  | 'xaiRequests'
+  | 'usage'
+  | 'todoCounts'
+  | 'todos'
+  | 'planMode'
+  | 'followUps'
+  | 'followUpsResponseId'
+  | 'toolIndex'
+>
+
+function captureLiveReplayState(s: ChatState): LiveReplayState {
+  return {
+    entries: s.entries,
+    liveStream: s.liveStream,
+    openAssistantId: s.openAssistantId,
+    openThoughtId: s.openThoughtId,
+    currentStreamStartMs: s.currentStreamStartMs,
+    lastCompletedTurn: s.lastCompletedTurn,
+    conn: s.conn,
+    statusText: s.statusText,
+    awaitingNext: s.awaitingNext,
+    turnStartedAt: s.turnStartedAt,
+    currentPromptId: s.currentPromptId,
+    pendingOptimisticUserId: s.pendingOptimisticUserId,
+    lastSentPromptId: s.lastSentPromptId,
+    genRate: s.genRate,
+    pending: s.pending,
+    xaiRequests: s.xaiRequests,
+    usage: s.usage,
+    todoCounts: s.todoCounts,
+    todos: s.todos,
+    planMode: s.planMode,
+    followUps: s.followUps,
+    followUpsResponseId: s.followUpsResponseId,
+    toolIndex: s.toolIndex,
+  }
+}
 export async function loadMoreHistory(
   set: SetState,
   get: () => ChatState,
@@ -93,16 +148,43 @@ export async function loadMoreHistory(
         get().pendingOptimisticUserId != null ||
         get().currentPromptId != null ||
         get().turnStartedAt != null
-      // 回放前先把已加载区的 liveStream flush + 空 thought 收口，避免
-      // 回放首条 user 触发 sealThought 删空壳时改写「已加载」集合。
-      // （prepend 已改 id 集合差，删壳不再错位；这里仍清掉脏 open*，
-      // 让回放在干净指针上起步。）
-      if (!liveLocal) {
+      const existingCompletedTurn = get().lastCompletedTurn
+      let liveReplay: LiveReplayState | undefined
+      if (liveLocal) {
+        // Replay older history in an isolated entry/state slice. Otherwise a
+        // historical turn_completed can settle the current live assistant or
+        // thought, and its user/chunk events can steal the live pointers.
+        flushStreamBuf(set, get)
+        liveReplay = captureLiveReplayState(get())
+        set({
+          entries: [],
+          liveStream: null,
+          openAssistantId: undefined,
+          openThoughtId: undefined,
+          currentStreamStartMs: undefined,
+          lastCompletedTurn: undefined,
+          pendingOptimisticUserId: undefined,
+          conn: 'ready',
+          statusText: '历史回放中',
+          awaitingNext: false,
+          turnStartedAt: undefined,
+          currentPromptId: undefined,
+          genRate: undefined,
+          pending: [],
+          xaiRequests: [],
+          toolIndex: {},
+        })
+      } else {
+        // 回放前先把已加载区的 liveStream flush + 空 thought 收口，避免
+        // 回放首条 user 触发 sealThought 删空壳时改写「已加载」集合。
+        // （prepend 已改 id 集合差，删壳不再错位；这里仍清掉脏 open*，
+        // 让回放在干净指针上起步。）
         const pre = sealThought(flushLiveStream(get()))
         set({
           entries: settleTurnEntries(pre.entries),
           openAssistantId: undefined,
           openThoughtId: undefined,
+          currentStreamStartMs: undefined,
           liveStream: null,
           conn: 'ready',
         })
@@ -114,15 +196,26 @@ export async function loadMoreHistory(
       // only the newest page (loadHistory) carries the session's current usage.
       const priorIds = new Set(get().entries.map((e) => e.id))
       replayUpdates(get, r.updates ?? [], { applyUsage: false })
+      // The last replay chunk may still be waiting in the module rAF buffer.
+      // Commit it before taking the new-entry slice or settling the merge.
+      flushStreamBuf(set, get)
       const after = get()
-      let oldEntries = after.entries.filter((e) => priorIds.has(e.id))
-      let newEntries = after.entries
-        .filter((e) => !priorIds.has(e.id))
-        .map((e, i, arr) =>
-          i === arr.length - 1 && e.kind === 'assistant'
-            ? { ...e, streaming: false }
-            : e,
-        )
+      let oldEntries = liveReplay
+        ? liveReplay.entries
+        : after.entries.filter((e) => priorIds.has(e.id))
+      let newEntries = liveReplay
+        ? after.entries.map((e, i, arr) =>
+            i === arr.length - 1 && e.kind === 'assistant'
+              ? { ...e, streaming: false }
+              : e,
+          )
+        : after.entries
+            .filter((e) => !priorIds.has(e.id))
+            .map((e, i, arr) =>
+              i === arr.length - 1 && e.kind === 'assistant'
+                ? { ...e, streaming: false }
+                : e,
+            );
       // Page boundaries can cut an assistant message in half; stitch the
       // continuation (first old entry) onto the new page's last entry.
       const lastNew = newEntries[newEntries.length - 1]
@@ -165,6 +258,15 @@ export async function loadMoreHistory(
         liveLocal ||
         get().pendingOptimisticUserId != null ||
         get().currentPromptId != null
+      const liveStatePatch = liveReplay
+        ? {
+            ...liveReplay,
+            entries: merged,
+            // The historical page was replayed in a clean slice; its tool
+            // index must not replace the live turn's index.
+            toolIndex: liveReplay.toolIndex,
+          }
+        : {}
       // hasMore：还有更早行（绝对游标 > 0）且本页非空。空页停翻，避免
       // 宿主异常时死循环。按轮次时 nextTurnIdx/promptStarts 只影响下一
       // 次 previousTurnWindow；是否可翻只看游标（含首轮前 preamble）。
@@ -173,6 +275,7 @@ export async function loadMoreHistory(
       // 时强制收口（先 flush 再 settle，避免清空 liveStream 丢正文）。
       if (streaming) {
         set({
+          ...liveStatePatch,
           entries: merged,
           historyLoadingMore: false,
           historyTotalCount: total,
@@ -192,6 +295,8 @@ export async function loadMoreHistory(
           entries: settleTurnEntries(sealedMerged.entries),
           openAssistantId: undefined,
           openThoughtId: undefined,
+          currentStreamStartMs: undefined,
+          lastCompletedTurn: existingCompletedTurn,
           liveStream: null,
           // Replay of stored thought chunks drives conn to 'busy' — paging
           // history is not a live turn.

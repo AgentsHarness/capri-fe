@@ -71,6 +71,10 @@ export function envelopeTimestamp(env: RawEnvelope): number | undefined {
   return undefined
 }
 
+function finiteMetaNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
 /** Strip <fork-context>/<resume-context> wrappers from user message text. */
 export function stripContextWrappers(text: string): string {
   for (const tag of ['fork-context', 'resume-context']) {
@@ -210,7 +214,7 @@ export function envelopeToEvent(env: unknown): AcpEvent | null {
   // Turn-end markers are the exception: they finalize streaming blocks.
   if (e.method === '_x.ai/session/update') {
     if (up.sessionUpdate === 'turn_completed' || up.sessionUpdate === 'response_completed') {
-      return turnCompletedEvent(up, completionEndMs(e))
+      return turnCompletedEvent(up, completionEndMs(e), e.params?._meta)
     }
     // Display-only task rows under the x.ai carrier too (same look as live).
     const taskEv = historicalTaskEvent(up)
@@ -221,7 +225,18 @@ export function envelopeToEvent(env: unknown): AcpEvent | null {
     case 'agent_message_chunk': {
       const text = contentText(up.content)
       if (!text) return null
-      return { type: 'chunk', text, ts: envelopeTimestamp(e) }
+      const meta = (e.params?._meta ?? {}) as Record<string, unknown>
+      const streamStartMs = finiteMetaNumber(meta.streamStartMs)
+      const agentTimestampMs = finiteMetaNumber(meta.agentTimestampMs)
+      const turnStartMs = finiteMetaNumber(meta.turnStartMs)
+      return {
+        type: 'chunk',
+        text,
+        ts: envelopeTimestamp(e),
+        ...(turnStartMs != null ? { turnStartMs } : {}),
+        ...(streamStartMs != null ? { streamStartMs } : {}),
+        ...(agentTimestampMs != null ? { agentTimestampMs } : {}),
+      }
     }
     case 'agent_thought_chunk': {
       const text = contentText(up.content)
@@ -232,17 +247,21 @@ export function envelopeToEvent(env: unknown): AcpEvent | null {
       // (~0ms → bogus "Thought for 0.0s"). Graceful: old envelopes without
       // meta fall back to the local timer path.
       const meta = (e.params?._meta ?? {}) as Record<string, unknown>
-      const agentTs =
-        typeof meta.agentTimestampMs === 'number' ? meta.agentTimestampMs : undefined
-      const streamStart =
-        typeof meta.streamStartMs === 'number' ? meta.streamStartMs : undefined
+      const agentTs = finiteMetaNumber(meta.agentTimestampMs)
+      const streamStart = finiteMetaNumber(meta.streamStartMs)
+      const turnStartMs = finiteMetaNumber(meta.turnStartMs)
       const elapsedMs =
         agentTs != null && streamStart != null && agentTs >= streamStart
           ? agentTs - streamStart
           : undefined
-      return elapsedMs != null
-        ? { type: 'thought', text, elapsedMs }
-        : { type: 'thought', text }
+      return {
+        type: 'thought',
+        text,
+        ...(elapsedMs != null ? { elapsedMs } : {}),
+        ...(turnStartMs != null ? { turnStartMs } : {}),
+        ...(streamStart != null ? { streamStartMs: streamStart } : {}),
+        ...(agentTs != null ? { agentTimestampMs: agentTs } : {}),
+      }
     }
     case 'user_message_chunk': {
       // Prefer content-block / chunk meta (TUI user_prompt_meta +
@@ -329,7 +348,7 @@ export function envelopeToEvent(env: unknown): AcpEvent | null {
     // streaming forever — "stuck mid-thinking" after resuming history.
     case 'turn_completed':
     case 'response_completed':
-      return turnCompletedEvent(up, completionEndMs(e))
+      return turnCompletedEvent(up, completionEndMs(e), e.params?._meta)
     default:
       // Standard carrier lifecycle kinds: route through the same
       // session_notification channel as the live bridge's default arm
@@ -369,6 +388,7 @@ export function completionEndMs(e: RawEnvelope): number | undefined {
 export function turnCompletedEvent(
   up: Record<string, unknown>,
   endMs: number | undefined,
+  meta?: unknown,
 ): AcpEvent {
   return {
     type: 'turn_completed',
@@ -376,5 +396,6 @@ export function turnCompletedEvent(
     agentResult:
       typeof up.agent_result === 'string' ? up.agent_result : undefined,
     endMs,
+    ...(meta && typeof meta === 'object' && !Array.isArray(meta) ? { meta } : {}),
   }
 }

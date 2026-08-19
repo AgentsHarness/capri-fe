@@ -58,6 +58,14 @@ export function finalizeTurn(
       awaitingNext: true,
       openAssistantId: undefined,
       openThoughtId: undefined,
+      currentStreamStartMs: undefined,
+      lastCompletedTurn: {
+        ...(turnStart != null ? { turnStartMs: turnStart } : {}),
+        ...(s.currentStreamStartMs != null
+          ? { streamStartMs: s.currentStreamStartMs }
+          : {}),
+        endMs: Date.now(),
+      },
       turnStartedAt: undefined,
       currentPromptId: undefined,
       // Turn end: the host resolved every outstanding permission request
@@ -106,6 +114,8 @@ export function adoptTurn(
     entries: [...sealed.entries, userEntry],
     openAssistantId: undefined,
     openThoughtId: undefined,
+    currentStreamStartMs: undefined,
+    lastCompletedTurn: undefined,
     pendingOptimisticUserId: userId,
     conn: 'busy',
     statusText: 'Waiting for response…',
