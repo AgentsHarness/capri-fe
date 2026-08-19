@@ -265,8 +265,26 @@ export function handleUserStreamEvent(
         adoptLiveTurnStart(set, get, ev)
         const text = ev.text || ''
         const ts = ev.ts ?? Date.now()
-        // seal open thought when assistant starts speaking
-        const sealed = sealThought(get())
+        // A same-stream thought may be followed by assistant text and then
+        // more thought text. Keep the thought pointer alive in that case so
+        // the later thought chunk continues the same scrollback block.
+        const current = get()
+        const incomingStreamStart = finiteStreamStart(ev.streamStartMs)
+        const keepThoughtOpen =
+          incomingStreamStart != null &&
+          current.currentStreamStartMs === incomingStreamStart &&
+          current.openThoughtId != null &&
+          current.entries.some(
+            (e) => e.id === current.openThoughtId && e.kind === 'thought',
+          )
+        const sealed = keepThoughtOpen
+          ? {
+              entries: current.entries,
+              openAssistantId: current.openAssistantId,
+              openThoughtId: current.openThoughtId,
+              liveStream: current.liveStream,
+            }
+          : sealThought(current)
         const { openAssistantId } = sealed
         if (openAssistantId) {
           // 已有回答条目：文本只进合并缓冲（rAF 统一落库，见
@@ -305,7 +323,9 @@ export function handleUserStreamEvent(
             statusText: 'Responding…',
             awaitingNext: false,
             openAssistantId: id,
-            openThoughtId: undefined,
+            // Keep a same-stream thought alive across an interleaved assistant
+            // chunk; a later thought chunk will append to that same entry.
+            openThoughtId: keepThoughtOpen ? base.openThoughtId : undefined,
             entries: [
               ...base.entries,
               { id, kind: 'assistant', text: '', streaming: true, ts },
