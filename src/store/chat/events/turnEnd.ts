@@ -146,11 +146,20 @@ export function handleTurnEndEvent(
         const flushed = flushLiveStream(get())
         const sealed = sealThought(flushed)
         const settled = settleTurnEntries(sealed.entries)
+        const lastCompletedTurn = {
+          ...(ev.turnStartedAt != null ? { turnStartMs: ev.turnStartedAt } : {}),
+          ...(get().currentStreamStartMs != null
+            ? { streamStartMs: get().currentStreamStartMs }
+            : {}),
+          ...(ev.endMs != null ? { endMs: ev.endMs } : {}),
+        }
         if (tailAlreadyTurnEnded(settled)) {
           set({
             ...sealed,
             openAssistantId: undefined,
             openThoughtId: undefined,
+            currentStreamStartMs: undefined,
+            lastCompletedTurn,
             entries: settled,
           })
           break
@@ -170,6 +179,8 @@ export function handleTurnEndEvent(
           ...sealed,
           openAssistantId: undefined,
           openThoughtId: undefined,
+          currentStreamStartMs: undefined,
+          lastCompletedTurn,
           // Idle until the next user message — lets the turn-status line
           // show the still-running cue after a replayed history load.
           awaitingNext: true,
@@ -195,6 +206,7 @@ export function handleTurnEndEvent(
         // TUI TurnCancelled marker ("Turn cancelled by user in 2.0s.").
         // Idempotent: prompt_complete may have already finalized the turn.
         const turnStart = get().turnStartedAt
+        const turnStreamStart = get().currentStreamStartMs
         const marker: ScrollEntry | null = turnIsLive(get())
           ? {
               id: nid(),
@@ -215,6 +227,14 @@ export function handleTurnEndEvent(
             awaitingNext: true,
             openAssistantId: undefined,
             openThoughtId: undefined,
+            currentStreamStartMs: undefined,
+            lastCompletedTurn: {
+              ...(turnStart != null ? { turnStartMs: turnStart } : {}),
+              ...(turnStreamStart != null
+                ? { streamStartMs: turnStreamStart }
+                : {}),
+              endMs: Date.now(),
+            },
             turnStartedAt: undefined,
             currentPromptId: undefined,
             xaiRequests: [], // host answered every pending x.ai request already

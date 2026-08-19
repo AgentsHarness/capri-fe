@@ -65,7 +65,19 @@ export type AcpEvent =
       /** authenticate `_meta` passthrough (host only sends when non-nil). */
       authMeta?: unknown
     }
-  | { type: 'chunk'; text: string; messageId?: string; ts?: number; sessionId?: string }
+  | {
+      type: 'chunk'
+      text: string
+      messageId?: string
+      ts?: number
+      /** Agent-side turn identity stamped by the shell. */
+      turnStartMs?: number
+      /** Agent-side generation stream identity. Same value may span assistant/thought interleaving. */
+      streamStartMs?: number
+      /** Agent-side timestamp for the chunk. */
+      agentTimestampMs?: number
+      sessionId?: string
+    }
   | {
       type: 'user_chunk'
       text: string
@@ -74,6 +86,11 @@ export type AcpEvent =
       /** Forwarded content-block meta (content._meta): display override + cron framing. */
       displayText?: string
       displayAsCron?: boolean
+      /** Agent-side turn identity stamped by the shell. */
+      turnStartMs?: number
+      /** Agent-side timestamp metadata forwarded by the host. */
+      agentTimestampMs?: number
+      streamStartMs?: number
       /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
       sessionId?: string
     }
@@ -119,6 +136,12 @@ export type AcpEvent =
        * ThinkingBlock::streaming_replay parity).
        */
       elapsedMs?: number
+      /** Agent-side turn identity stamped by the shell. */
+      turnStartMs?: number
+      /** Agent-side generation stream identity. */
+      streamStartMs?: number
+      /** Agent-side timestamp of this chunk. */
+      agentTimestampMs?: number
       /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
       sessionId?: string
     }
@@ -158,7 +181,7 @@ export type AcpEvent =
    * 模式下前端据此丢弃非当前会话的事件（store 分发时按 sessionId 过滤）。
    */
   | { type: 'busy'; sessionId?: string }
-  | { type: 'done'; stopReason?: string; sessionId?: string }
+  | { type: 'done'; stopReason?: string; meta?: unknown; sessionId?: string }
   | { type: 'cancelled'; sessionId?: string }
   /** Turn-end marker replayed from stored history (turn_completed). Live
       events carry the owning sessionId — other sessions' completions are
@@ -168,6 +191,8 @@ export type AcpEvent =
       sessionId?: string
       /** Relayed x.ai update (host shape — stop_reason / agent_result / usage). */
       update?: Record<string, unknown>
+      /** params._meta from the live/replayed carrier (prompt identity and timestamps). */
+      meta?: unknown
       /** Normalized stop_reason (replay derives it from the stored envelope). */
       stopReason?: string
       /** Normalized agent_result (TurnFailed error text on replay). */

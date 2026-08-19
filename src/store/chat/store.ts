@@ -36,6 +36,8 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
   return {
     entries: [],
   liveStream: null,
+  currentStreamStartMs: undefined,
+  lastCompletedTurn: undefined,
   conn: 'connecting',
   statusText: '连接中…',
   recapPendingFor: undefined,

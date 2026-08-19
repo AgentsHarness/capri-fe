@@ -80,15 +80,20 @@ export function flushStreamBuf(set: SetState, get: () => ChatState): void {
   let s = get()
   const openId = kind === 'thought' ? s.openThoughtId : s.openAssistantId
   // liveStream 还挂在另一条上时先写回，禁止用本段缓冲覆盖对方正文。
-  // 写回即收口：被打断/移送指针的 assistant 流当场结束（与
-  // sealedForeignLive / sealAssistantStream 一致，不等回合 settle）。
+  // 同一生成流的 assistant → thought 切换保留 assistant 指针；显式
+  // 流边界和工具/回合收口再结束它。
   if (s.liveStream && s.liveStream.entryId !== openId) {
     const foreignId = s.liveStream.entryId
     s = flushLiveStream(s)
     set({
       entries: s.entries.map((e) =>
         e.id === foreignId && e.kind === 'assistant'
-          ? { ...e, streaming: false }
+          ? {
+              ...e,
+              // A thought from the same agent stream temporarily owns
+              // liveStream, but the assistant entry remains logically open.
+              streaming: kind === 'thought' && s.openAssistantId === foreignId,
+            }
           : e,
       ),
       liveStream: s.liveStream,
@@ -109,8 +114,10 @@ export function flushStreamBuf(set: SetState, get: () => ChatState): void {
       statusText: 'Thinking…',
       awaitingNext: false,
       openThoughtId,
-      openAssistantId: undefined,
-      // 落库目标 = liveStream（perf 合并）：entries 流式期间引用不变，
+      // The assistant pointer stays open when this thought belongs to the
+      // same generation stream; it is cleared by an explicit stream boundary
+      // or tool/turn seal instead.
+      openAssistantId: s.openAssistantId,
       // 只有正在流的行经 liveText 重渲染——分组/折叠/memo 全跳过。
       liveStream: {
         entryId: openThoughtId,

@@ -235,6 +235,7 @@ export async function continueSession(
         awaitingNext: false,
         openAssistantId: undefined,
         openThoughtId: undefined,
+        currentStreamStartMs: undefined,
         liveStream: null,
       })
     }

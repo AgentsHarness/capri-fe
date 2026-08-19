@@ -99,6 +99,8 @@ export async function sendPrompt(
       entries: [...sealed.entries, userEntry],
       openAssistantId: undefined,
       openThoughtId: undefined,
+      currentStreamStartMs: undefined,
+      lastCompletedTurn: undefined,
       pendingOptimisticUserId: userId,
       lastSentPromptId: userId,
       conn: 'busy',

@@ -2,9 +2,126 @@ import type { ChatState } from './types'
 import { modelDisplayName } from './model'
 import {
   type RawEnvelope,
+  completionEndMs,
   envelopeToEvent,
   envelopeTimestamp,
 } from './envelopeParse'
+
+function replayUpdateKind(env: unknown): string | undefined {
+  const e = env as RawEnvelope
+  return typeof e.params?.update?.sessionUpdate === 'string'
+    ? e.params.update.sessionUpdate
+    : undefined
+}
+
+function replayMeta(env: unknown): Record<string, unknown> | undefined {
+  const e = env as RawEnvelope
+  const paramsMeta = e.params?._meta
+  if (paramsMeta && typeof paramsMeta === 'object') {
+    return paramsMeta as Record<string, unknown>
+  }
+  const updateMeta = e.params?.update?._meta
+  return updateMeta && typeof updateMeta === 'object'
+    ? (updateMeta as Record<string, unknown>)
+    : undefined
+}
+
+function replayMetaNumber(
+  env: unknown,
+  key: 'turnStartMs' | 'turn_start_ms' | 'agentTimestampMs',
+): number | undefined {
+  const value = replayMeta(env)?.[key]
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return undefined
+}
+
+function replayTurnStartMs(env: unknown): number | undefined {
+  return (
+    replayMetaNumber(env, 'turnStartMs') ??
+    replayMetaNumber(env, 'turn_start_ms')
+  )
+}
+
+function isReplayTurnEnd(kind: string | undefined): boolean {
+  return kind === 'turn_completed' || kind === 'response_completed'
+}
+
+function isReplayUserChunk(kind: string | undefined): boolean {
+  return kind === 'user_message_chunk'
+}
+
+function isReplayAgentStream(kind: string | undefined): boolean {
+  return kind === 'agent_message_chunk' || kind === 'agent_thought_chunk'
+}
+
+/**
+ * Storage order is normally the agent order, but a late flush can append an
+ * old agent chunk after its turn_completed envelope. Move only an event that
+ * proves it belongs to the closed turn (same turnStartMs and an agent time at
+ * or before the terminal); discard every other post-terminal agent chunk or
+ * thought until the next user chunk establishes a new turn.
+ */
+export function reorderLateAgentEvents(updates: unknown[]): unknown[] {
+  const ordered: unknown[] = []
+  let activeTurnStartMs: number | undefined
+  let closed:
+    | { turnStartMs?: number; endMs?: number; insertAt: number }
+    | undefined
+
+  for (const env of updates) {
+    const kind = replayUpdateKind(env)
+    if (closed && isReplayUserChunk(kind)) {
+      closed = undefined
+      activeTurnStartMs = undefined
+    }
+
+    if (closed && isReplayAgentStream(kind)) {
+      const turnStartMs = replayTurnStartMs(env)
+      const agentTimestampMs = replayMetaNumber(env, 'agentTimestampMs')
+      const belongsToClosedTurn =
+        closed.turnStartMs != null &&
+        turnStartMs === closed.turnStartMs &&
+        closed.endMs != null &&
+        agentTimestampMs != null &&
+        agentTimestampMs <= closed.endMs
+      if (belongsToClosedTurn) {
+        ordered.splice(closed.insertAt, 0, env)
+        closed.insertAt += 1
+      }
+      continue
+    }
+
+    if (isReplayTurnEnd(kind)) {
+      const terminalStartMs = replayTurnStartMs(env) ?? activeTurnStartMs
+      ordered.push(env)
+      // response_completed + turn_completed can both be persisted for one
+      // turn. Keep the first terminal as the insertion point for late chunks.
+      if (!closed) {
+        closed = {
+          turnStartMs: terminalStartMs,
+          endMs: completionEndMs(env as RawEnvelope),
+          insertAt: ordered.length - 1,
+        }
+      }
+      activeTurnStartMs = undefined
+      continue
+    }
+
+    if (closed) {
+      ordered.push(env)
+      continue
+    }
+
+    const turnStartMs = replayTurnStartMs(env)
+    if (turnStartMs != null) activeTurnStartMs = turnStartMs
+    ordered.push(env)
+  }
+  return ordered
+}
 
 // ── history envelope replay ───────────────────────────────────────
 // A stored update is the JSONL envelope {timestamp, method, params} with
@@ -15,6 +132,7 @@ export function replayUpdates(
   updates: unknown[],
   opts?: { applyUsage?: boolean },
 ): { turnStartedAt?: number; turnOpen: boolean } {
+  updates = reorderLateAgentEvents(updates)
   let userBuf = ''
   let userIsCron = false
   let userTs: number | undefined
@@ -112,6 +230,10 @@ export function replayUpdates(
     // the host's liveness probe (replayRunningTasks).
     const ev = envelopeToEvent(env)
     if (!ev) continue
+    // Older pages are transcript-only: never let a stored usage_update
+    // overwrite the current session's context chip. The newest page applies
+    // its accumulated total once after the loop.
+    if (ev.type === 'usage' && opts?.applyUsage === false) continue
     anyEvent = true
     if (ev.type === 'turn_completed') {
       sawTurnEnd = true

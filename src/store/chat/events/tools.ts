@@ -56,6 +56,7 @@ export function handleToolEvent(
             ...sealed,
             openAssistantId: undefined,
             openThoughtId: undefined,
+            currentStreamStartMs: undefined,
           })
           break
         }
@@ -85,6 +86,7 @@ export function handleToolEvent(
               awaitingNext: false,
               openAssistantId: undefined,
               openThoughtId: undefined,
+              currentStreamStartMs: undefined,
               toolIndex,
               entries: [
                 ...sealed.entries.slice(0, -1),
@@ -129,6 +131,7 @@ export function handleToolEvent(
           awaitingNext: false,
           openAssistantId: undefined,
           openThoughtId: undefined,
+          currentStreamStartMs: undefined,
           toolIndex,
           entries: [...sealed.entries, entry],
         })
@@ -269,6 +272,7 @@ export function handleToolEvent(
         const sealedAsst = sealAssistantStream(get())
         set({
           ...sealedAsst,
+          currentStreamStartMs: undefined,
           todoCounts: counts,
           todos: items,
           // Some hosts piggyback the plan-mode flag on the plan event —
