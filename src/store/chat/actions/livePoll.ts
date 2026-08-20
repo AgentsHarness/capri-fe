@@ -1,4 +1,5 @@
 import { transport } from '../../../api/client'
+import type { ChatState, SetState } from '../types'
 import {
   captureAsyncScope,
   isAsyncScopeCurrent,

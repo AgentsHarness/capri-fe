@@ -25,9 +25,11 @@ export async function sendPrompt(
     // 空状态（无活动会话）：发送消息即开始新对话 — 先用空状态选择的
     // 工作目录创建会话（目录留空 → 宿主默认），POST /api/session 响应
     // 携带 sessionId，锚定后直接发送本条消息。
-    if (!get().sessionId) {
-      const emptyCwd = get().emptyCwd?.trim()
-      const hostAtStart = get().hostId
+    const initial = get()
+    let sendScope = captureAsyncScope(get, initial.sessionId, initial.cwd)
+    if (!initial.sessionId) {
+      const emptyCwd = initial.emptyCwd?.trim()
+      const hostAtStart = initial.hostId
       try {
         const createdSessionId = await get().newSession(emptyCwd || undefined)
         // A new-session response is only usable by the request that created
@@ -60,12 +62,7 @@ export async function sendPrompt(
     // 409）→ 行保留 degraded + 渲染错误行，手动重发。sendFollowUp /
     // slash 命令 / sendQueuedHead 竞态下忙时调用 send 也走这里。
     const live = get()
-    let sendScope = captureAsyncScope(get, live.sessionId, live.cwd)
-    // 会话切换进行中守卫：continueSession（点会话列表切会话）入口即同步
-    // 锚定 sessionId（列表行立即高亮选中），随后 historyLoading 拉取历史
-    // ——切换完成前绝不能把消息发进正在加载的会话：保留草稿不发（与
-    // sendQueuedToSession 的 historyLoading 守卫一致），等加载完成由用户
-    // 重发。空状态 newSession 不置 historyLoading，不受影响。
+    sendScope = captureAsyncScope(get, live.sessionId, live.cwd)
     if (live.sessionId && live.historyLoading) {
       pushToast('正在切换会话，请稍候再发送')
       return
