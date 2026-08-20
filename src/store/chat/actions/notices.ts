@@ -21,12 +21,19 @@ export function noticeActions(set: SetState, get: () => ChatState) {
     if (!sessionId || sessionId === s.sessionId) return
     const now = Date.now()
     const last = s.completedNotices[sessionId]
-    const next = { ...s.completedNotices, [sessionId]: now }
-    // 上限：超 100 个会话时清最旧 50（字符串对象键按插入序迭代），
-    // 防止长时间运行后 completedNotices 无上限增长。
+    let next = { ...s.completedNotices, [sessionId]: now }
+    // 上限：超 100 个会话时清最旧 50，防止长时间运行后 completedNotices
+    // 无上限增长。按**时间戳**排序而不是插入序——已存在的 key 用对象
+    // 展开重写时仍保留原插入位置，"插入序前 50" 并不是"最旧 50"，
+    // 一个反复完成的会话会被误当成最旧的裁掉。
     const keys = Object.keys(next)
     if (keys.length > 100) {
-      for (const k of keys.slice(0, 50)) delete next[k]
+      const keep = keys
+        .sort((a, b) => next[b] - next[a])
+        .slice(0, keys.length - 50)
+      const pruned: Record<string, number> = {}
+      for (const k of keep) pruned[k] = next[k]
+      next = pruned
     }
     set({ completedNotices: next })
     if (last && now - last < NOTICE_DEDUP_WINDOW_MS) return
@@ -50,19 +57,32 @@ export function noticeActions(set: SetState, get: () => ChatState) {
       // 首次遇到完成事件时请求一次授权。授予后系统通知已发出 — 撤掉
       // 刚入队的页面 toast，避免双重提醒；期间用户已打开该会话时通知
       // 作废，toast 一并撤掉。
-      void Notification.requestPermission().then((p) => {
-        if (!get().completedNotices[sessionId]) {
-          dismissToast(toastId)
-          return
-        }
-        if (p !== 'granted') return
-        try {
-          new Notification(`会话完成：${title}`, { body: '点击左侧会话列表查看' })
-          dismissToast(toastId)
-        } catch {
-          /* 构造失败 — 保留页面 toast 作为兜底 */
-        }
-      })
+      //
+      // 必须包 Promise.resolve + catch：本函数跑在 SSE 事件派发路径上，
+      // 而 requestPermission 有两种坑——旧 Safari 是回调式、返回
+      // undefined（裸 .then 直接 TypeError 打断事件处理），现代浏览器
+      // 在没有用户手势时会 reject（未处理的 promise rejection）。
+      try {
+        void Promise.resolve(Notification.requestPermission())
+          .then((p) => {
+            if (!get().completedNotices[sessionId]) {
+              dismissToast(toastId)
+              return
+            }
+            if (p !== 'granted') return
+            try {
+              new Notification(`会话完成：${title}`, { body: '点击左侧会话列表查看' })
+              dismissToast(toastId)
+            } catch {
+              /* 构造失败 — 保留页面 toast 作为兜底 */
+            }
+          })
+          .catch(() => {
+            /* 无用户手势被拒 / 不支持 — 页面 toast 已是兜底 */
+          })
+      } catch {
+        /* 同步抛（老实现）— 页面 toast 已是兜底 */
+      }
     }
     pushToast(text, toastId)
   },

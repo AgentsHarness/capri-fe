@@ -189,10 +189,14 @@ export function initChat(
     // 延迟到宏任务：StrictMode 的 effect 双调用（setup → cleanup →
     // setup）会在同步阶段立刻 disconnect 一次，直接调用会被它 abort
     // （"[pins] hub 同步失败 AbortError"），延迟后只有最终的连接在飞。
-    setTimeout(() => {
+    // id 必须留着在 cleanup 里清：否则首次挂载的定时器在 cleanup 之后
+    // 照样触发（多同步一次），卸载场景更是在 transport.disconnect()
+    // 之后触发，必然被 abort 并打一行控制台错误。
+    const pinsSyncTimer = setTimeout(() => {
       void usePins.getState().syncPrefsFromHub()
     }, 0)
     return () => {
+      clearTimeout(pinsSyncTimer)
       unsub()
       unsubMode()
       unsubUi()
