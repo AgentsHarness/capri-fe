@@ -118,6 +118,9 @@ function MermaidDiagram({ source }: { source: string }) {
   useEffect(() => {
     let cancelled = false
     const id = `gn-mermaid-${++diagramSeq}`
+    // 源/主题变了先回到 rendering：否则 status 仍是上一次的 ready，
+    // 新图渲染完成前一直显示**上一张图**（且不显示 rendering 提示）。
+    setStatus({ kind: 'rendering' })
     void (async () => {
       try {
         const mermaid = await loadMermaid()

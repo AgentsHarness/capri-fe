@@ -71,6 +71,12 @@ export default function App() {
     let cancelled = false
     void (async () => {
       const { mode, hubUrl, localHostId } = await detectModeOnce()
+      // 必须在动 transport 之前就退出：setConnectionMode 内部会
+      // abortInflight()，被取消的挂载（StrictMode setup→cleanup→setup）
+      // 若继续跑下去，会打断**新一轮挂载**正在飞的 probeAccess
+      // （/api/hosts），后者被 catch 成 'error' → 下面「网络错误也进主
+      // 界面」的分支直接跳过密钥门禁，之后每个请求都 401。
+      if (cancelled) return
       transport.setConnectionMode(mode, hubUrl)
       // 内嵌前端直连 capri-host 时记录本机 hostId：hub 模式下选中本机，
       // API 请求直连本地，不绕 hub 中继。
