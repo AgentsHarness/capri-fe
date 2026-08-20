@@ -11,6 +11,7 @@ import { clearSuppressedTools } from '../tools'
 import { modelLabel } from '../model'
 import { appendEntry } from '../entries'
 import { pushToast } from '../../toast'
+import { clearSubagentSettleTimer, clearTurnBlipTimer } from '../turn'
 
 export function hostActions(set: SetState, get: () => ChatState) {
   return {
@@ -62,9 +63,11 @@ export function hostActions(set: SetState, get: () => ChatState) {
     if (transport.getConnectionMode() !== 'hub') return
     if (hostId === get().selectedHostId) return
     // Invalidate every in-flight async result from the previous host.
-    runtime.sessionSwitchGen += 1
+    const myGen = ++runtime.sessionSwitchGen
     clearContinueSessionTimer()
     clearPeerSessionLoad()
+    clearSubagentSettleTimer()
+    clearTurnBlipTimer()
     get().stopTopTaskPolling()
     transport.setHost(hostId)
     saveStr('capri-fe.host', hostId)
@@ -79,6 +82,7 @@ export function hostActions(set: SetState, get: () => ChatState) {
       cwd: undefined,
       // 换 host 即换会话视图：旧 host 的加载失败提示一并清掉。
       historyLoadError: undefined,
+      historyOpen: false,
       // 空状态工作目录按 host 隔离：切换到哪个 host 就显示哪个 host
       // 自己选过的目录（没有则 undefined → 宿主默认），绝不沿用别的
       // host 的路径。
@@ -86,6 +90,15 @@ export function hostActions(set: SetState, get: () => ChatState) {
       homeDir: undefined,
       entries: [],
       liveStream: null,
+      openAssistantId: undefined,
+      openThoughtId: undefined,
+      currentStreamStartMs: undefined,
+      lastCompletedTurn: undefined,
+      turnStartedAt: undefined,
+      currentPromptId: undefined,
+      awaitingNext: false,
+      genRate: undefined,
+      lastSentPromptId: undefined,
       sessions: [],
       workspaces: [],
       workspaceLoading: false,
@@ -103,8 +116,13 @@ export function hostActions(set: SetState, get: () => ChatState) {
       layerErrors: {},
       conn: 'connecting',
       statusText: host ? '连接中…' : 'Host 未配对',
-      historyOpen: false,
-      historyTotalCount: undefined,
+      historyLoading: false,
+      historyLoadingMore: false,
+      historySessionId: undefined,
+      historyCwd: undefined,
+      historyLoadedAt: undefined,
+      historyPrependedAt: undefined,
+      historyAnchorId: undefined,
       historyLoadedCount: 0,
       historyLoadedStart: undefined,
       historyHasMore: false,
@@ -118,6 +136,8 @@ export function hostActions(set: SetState, get: () => ChatState) {
       bgTaskIndex: {},
       topTasks: [],
       scheduledTasks: [],
+      gitInfo: undefined,
+      sessionStats: undefined,
       followUps: undefined,
       followUpsResponseId: undefined,
       cancelPanelOpen: false,
@@ -128,6 +148,7 @@ export function hostActions(set: SetState, get: () => ChatState) {
     // model state, pending requests and busy flags hydrate consistently.
     try {
       const st = await transport.status()
+      if (myGen !== runtime.sessionSwitchGen || get().selectedHostId !== hostId) return
       // GET /api/status serializes the host Status struct verbatim, so a
       // boot failure arrives as `bootError` — while the SSE hello event
       // (http.go handleSSE) maps the same field to `error`. Normalize so
@@ -146,6 +167,7 @@ export function hostActions(set: SetState, get: () => ChatState) {
         ...(snapError ? { error: snapError } : {}),
       })
     } catch {
+      if (myGen !== runtime.sessionSwitchGen || get().selectedHostId !== hostId) return
       // Host 不可达：丢弃未落库的流式缓冲并取消 rAF，避免残留 flush
       // 在错误态之后把 conn 重新顶回 busy。
       clearStreamBuf()

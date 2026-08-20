@@ -1,5 +1,5 @@
-/** Shared module-level session/runtime state (was file-private in chat.ts). */
 import type { AcpEvent } from '../../api/types'
+import type { ChatState } from './types'
 
 /** 会话完成提醒去重窗口：同一会话在此窗口内只通知一次。 */
 export const NOTICE_DEDUP_WINDOW_MS = 30_000
@@ -16,6 +16,7 @@ export const runtime = {
   peerSessionLoadSid: null as string | null,
   sessionSwitchGen: 0,
   newSessionInFlight: false,
+  newSessionInFlightGeneration: undefined as number | undefined,
   lastLiveQueueChangedAt: 0,
   /**
    * 切会话窗口期（historyLoading）缓冲的 live 内容事件：快照拉取期间
@@ -31,6 +32,45 @@ export const runtime = {
 
 /** 缓冲上限：超限丢弃新事件（窗口正常只有几十条，防异常场景膨胀）。 */
 export const HISTORY_WINDOW_BUFFER_CAP = 2000
+
+export type AsyncScope = {
+  generation: number
+  selectedHostId?: string
+  hostId?: string
+  sessionId?: string
+  cwd?: string
+}
+
+/** Capture the identity that owns a host/session-scoped request. */
+export function captureAsyncScope(
+  get: () => ChatState,
+  sessionId?: string,
+  cwd?: string,
+): AsyncScope {
+  const s = get()
+  return {
+    generation: runtime.sessionSwitchGen,
+    selectedHostId: s.selectedHostId,
+    hostId: s.hostId,
+    ...(sessionId != null ? { sessionId } : {}),
+    ...(cwd != null ? { cwd } : {}),
+  }
+}
+
+/** Return false unless the request still owns the current host/session view. */
+export function isAsyncScopeCurrent(
+  get: () => ChatState,
+  scope: AsyncScope,
+): boolean {
+  const s = get()
+  return (
+    scope.generation === runtime.sessionSwitchGen &&
+    scope.selectedHostId === s.selectedHostId &&
+    scope.hostId === s.hostId &&
+    (scope.sessionId == null || scope.sessionId === s.sessionId) &&
+    (scope.cwd == null || scope.cwd === s.cwd)
+  )
+}
 
 export function bufferHistoryWindowEvent(ev: AcpEvent): void {
   if (runtime.historyWindowBuffer.length >= HISTORY_WINDOW_BUFFER_CAP) return

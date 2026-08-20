@@ -1,5 +1,6 @@
 import type { ChatState } from './types'
 import { clearSubagentSettleTimer, clearTurnBlipTimer } from './turn'
+import { runtime, clearHistoryWindowBuffer } from './globals'
 
 /**
  * 清空当前会话的全部本地状态，落到"无会话"空状态（sessionId 置空，
@@ -10,6 +11,9 @@ import { clearSubagentSettleTimer, clearTurnBlipTimer } from './turn'
  * replay/load 恢复）。
  */
 export function resetSessionState(set: (partial: Partial<ChatState>) => void): void {
+  // Every reset invalidates async work even when it is not followed by a
+  // session/new request (for example, the New button's empty state).
+  runtime.sessionSwitchGen += 1
   set({
     entries: [],
     liveStream: null,
@@ -81,6 +85,7 @@ export function resetSessionState(set: (partial: Partial<ChatState>) => void): v
     // 的 staleLoad 守卫只收口标志，不污染状态。
     historyLoading: false,
     historyLoadingMore: false,
+    historyLoadedAt: undefined,
     historyPromptStarts: undefined,
     historyTurnIdx: 0,
     historyPrependedAt: undefined,

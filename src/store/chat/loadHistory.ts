@@ -5,6 +5,8 @@ import type { ChatState, SetState } from './types'
 import { nid } from './ids'
 import {
   clearHistoryWindowBuffer,
+  captureAsyncScope,
+  isAsyncScopeCurrent,
   runtime,
 } from './globals'
 import { restorePlanMode } from './modeFlags'
@@ -47,6 +49,13 @@ export async function loadHistory(
   sessionId: string,
   cwd: string
 ): Promise<void> {
+    const loadSid = sessionId
+    const scope = captureAsyncScope(get, sessionId, cwd)
+    const staleLoad = () =>
+      !isAsyncScopeCurrent(get, scope) ||
+      get().sessionId !== loadSid ||
+      get().cwd !== cwd
+    if (staleLoad()) return
     // Reset the scrollback; load only the newest turn (turnIndex: 1).
     // Older turns load on scroll-up via loadMoreHistory — one turn per
     // gesture. Sticky pins the user prompt when it scrolls away; after
@@ -55,21 +64,10 @@ export async function loadHistory(
     clearSuppressedTools()
     // 流式缓冲丢弃：换会话后旧流的文本绝不能落进新 scrollback。
     clearStreamBuf()
-    // 本次加载的会话锚：加载期间视图可能已切走（newSession / resetToEmpty /
-    // switchHost / 窗口期 hello 重锚）——完成时校验，绝不把旧会话的历史
-    // 与 turnStartedAt 灌进新会话的空白时间线（否则新会话第一条消息会被
-    // turnIsLive 误判而错误排队；历史本身也会污染新会话视图）。
-    const loadSid = sessionId
-    const staleLoad = () => get().sessionId !== loadSid
-    // 入口即校验：调用方（hello / continueSession / rewind / peer）都在
     // 调用前锚定了 sessionId，这里不匹配说明调用后、执行前会话已被切走
     // （newSession / resetToEmpty / switchHost）——连 entries 清空都不该
     // 发生，直接收口标志返回。
-    if (staleLoad()) {
-      clearHistoryWindowBuffer()
-      set({ historyLoading: false, historyLoadingMore: false })
-      return
-    }
+    if (staleLoad()) return
     set({
       historyOpen: false,
       historyLoading: true,
@@ -156,11 +154,7 @@ export async function loadHistory(
       }
       // 加载期间会话被切走：放弃本次加载（historyLoading 由下方
       // stale 分支收口），绝不把旧会话的页灌进新视图。
-      if (staleLoad()) {
-        clearHistoryWindowBuffer()
-        set({ historyLoading: false, historyLoadingMore: false })
-        return
-      }
+      if (staleLoad()) return
       // turnIndex only — no limit. Capping at INITIAL_TURN_LIMIT used to
       // cut the END of long last turns (agent returns [start, start+limit)),
       // so assistant text / turn_completed after the cap never appeared
@@ -169,10 +163,7 @@ export async function loadHistory(
       const r = await transport.loadSessionHistory(sessionId, cwd, {
         turnIndex: INITIAL_TURNS,
       })
-      if (staleLoad()) {
-        set({ historyLoading: false, historyLoadingMore: false })
-        return
-      }
+      if (staleLoad()) return
       promptStarts = r.promptStarts
       turnIdx =
         promptStarts && promptStarts.length > 0
@@ -224,6 +215,7 @@ export async function loadHistory(
       const hasMore = turnBased
         ? turnIdx > 0
         : loadedStart > 0 && historyHasMorePage(total || undefined, loaded, fetched, INITIAL_TURN_LIMIT)
+      if (staleLoad()) return
       set({
         historyTotalCount: total || undefined,
         historyLoadedCount: loaded,
@@ -240,13 +232,6 @@ export async function loadHistory(
         openAssistantId: replayMeta.turnOpen ? sealed.openAssistantId : undefined,
         openThoughtId: replayMeta.turnOpen ? sealed.openThoughtId : undefined,
       })
-      if (staleLoad()) {
-        // 会话已切走：只收口 loading 标志，不动 entries / conn /
-        // turnStartedAt / statusText ——新会话的状态由自己的锚定负责。
-        clearHistoryWindowBuffer()
-        set({ historyLoading: false, historyLoadingMore: false })
-        return
-      }
       set({
         historyLoading: false,
         // Replay of stored thought chunks drives conn to 'busy'; history is
@@ -284,11 +269,11 @@ export async function loadHistory(
       // live 内容事件——busy 会话切换时快照拉取间隙产生的 chunk/
       // thought 不丢。会话已切走时丢弃残留（回放会污染新会话视图）。
       runtime.historySnapTail = snapTail
-      if (!staleLoad()) {
-        replayHistoryWindowBuffer(get)
-      } else {
+      if (staleLoad()) {
         clearHistoryWindowBuffer()
+        return
       }
+      replayHistoryWindowBuffer(get)
       // 会话级 recap 缓存回填：该会话最近一次摘要（display-only、不
       // 持久化）在跨会话期间到达时只进了 cache——这里在历史重建后
       // 按生成时间就近插回对应对话位置（会话中间生成的 recap 显示在
@@ -352,9 +337,7 @@ export async function loadHistory(
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       if (staleLoad()) {
-        // 会话已切走：失败信息属于旧会话，收口标志即可，不渲染错误行。
         clearHistoryWindowBuffer()
-        set({ historyLoading: false, historyLoadingMore: false })
         return
       }
       // 快照失败：无回放基准（continueSession 的 grace timer 会再触发

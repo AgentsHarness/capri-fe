@@ -1,17 +1,20 @@
 import { transport } from '../../../api/client'
 import type { ChatState, SetState } from '../types'
+import { captureAsyncScope, isAsyncScopeCurrent } from '../globals'
 
 export function liveTaskActions(set: SetState, get: () => ChatState) {
   return {
   refreshTaskOutput: async (taskId, sessionId, cwd) => {
     if (!taskId) return
     const s = get()
+    const scope = captureAsyncScope(get, sessionId, cwd)
     const entryId = s.bgTaskIndex[taskId]
     try {
       const snap = await transport.taskOutput(
         taskId,
         sessionId || cwd ? { sessionId, cwd } : undefined,
       )
+      if (!isAsyncScopeCurrent(get, scope)) return
       // Live row target: update the scrollback entry (viewer renders it).
       if (entryId) {
         set({
@@ -65,8 +68,10 @@ export function liveTaskActions(set: SetState, get: () => ChatState) {
   },
 
   syncLiveTasks: async () => {
+    const scope = captureAsyncScope(get)
     try {
       const tasks = await transport.listTasks()
+      if (!isAsyncScopeCurrent(get, scope)) return
       // Empty list is not authoritative (parse race / session still
       // focusing). Never use absence to settle running rows — that caused
       // a flash: history shows ⠋N, then sync marks everything completed.

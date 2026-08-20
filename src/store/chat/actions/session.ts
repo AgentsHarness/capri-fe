@@ -6,6 +6,8 @@ import type { ChatState, SetState } from '../types'
 import {
   clearContinueSessionTimer,
   clearPeerSessionLoad,
+  captureAsyncScope,
+  isAsyncScopeCurrent,
   runtime,
 } from '../globals'
 import { permissionSeedMeta } from '../modeFlags'
@@ -98,12 +100,14 @@ function fallbackGroupsFromSessions(sessions: SessionInfo[]): WorkspaceGroup[] {
 export function sessionActions(set: SetState, get: () => ChatState) {
   return {
   refreshSessions: async (retry = 1) => {
+    const scope = captureAsyncScope(get)
     // hub 模式未选中 host：host 级请求没有 ?host= 会打到 hub 根路径
     // 404（数据不在 hub），且选中后（switchHost）自会重新拉取——跳过，
     // 避免启动期无效请求与 4 秒后的冗余重试。
     if (transport.getConnectionMode() === 'hub' && !transport.getHost()) return
     try {
       const { sessions } = await transport.listSessions()
+      if (!isAsyncScopeCurrent(get, scope)) return
       set({ sessions })
       // Busy 转变检测（完成提醒兜底）：某会话从 busy → idle 且不是
       // 当前会话 → 通知 + ✓。第一次拉取只建基线，不误报。
@@ -129,12 +133,15 @@ export function sessionActions(set: SetState, get: () => ChatState) {
       // 会话列表为空。
       if (retry > 0) {
         await new Promise((r) => setTimeout(r, 4000))
+        if (!isAsyncScopeCurrent(get, scope)) return
         return get().refreshSessions(retry - 1)
       }
     }
   },
 
   refreshWorkspaces: async (retry = 1) => {
+    const scope = captureAsyncScope(get)
+    const isCurrent = () => isAsyncScopeCurrent(get, scope)
     // hub 模式未选中 host：同上（refreshSessions），跳过并复位 loading，
     // 避免无效 404 请求与转圈卡死。
     if (transport.getConnectionMode() === 'hub' && !transport.getHost()) {
@@ -146,6 +153,7 @@ export function sessionActions(set: SetState, get: () => ChatState) {
     if (loadStr(WORKSPACE_MODE_KEY) === 'full') {
       try {
         const workspaces = await transport.workspaceList()
+        if (!isCurrent()) return
         set({
           workspaces,
           workspaceLoading: false,
@@ -154,8 +162,10 @@ export function sessionActions(set: SetState, get: () => ChatState) {
         })
         return
       } catch {
+        if (!isCurrent()) return
         if (retry > 0) {
           await new Promise((r) => setTimeout(r, 4000))
+          if (!isCurrent()) return
           return get().refreshWorkspaces(retry - 1)
         }
         set({
@@ -170,6 +180,7 @@ export function sessionActions(set: SetState, get: () => ChatState) {
     try {
       const limit = get().workspaceRecentLimit
       const { groups, count } = await transport.workspaceListRecent(limit)
+      if (!isCurrent()) return
       const merged = mergeRecentWorkspaces(get().workspaces, groups, limit, limit)
       set({
         workspaces: merged,
@@ -185,18 +196,21 @@ export function sessionActions(set: SetState, get: () => ChatState) {
       // 而非失败，不重试不降级（新一轮挂载/切换自会重新拉取）。恢复
       // loading，避免刷新按钮/中央加载态卡住。
       if (e instanceof Error && e.name === 'AbortError') {
-        set({ workspaceLoading: false })
+        if (isCurrent()) set({ workspaceLoading: false })
         return
       }
+      if (!isCurrent()) return
       // 启动窗口容错：host 刚重启时 agent 预热 boot 可能超过 fetch
       // 超时（502），重试一次再降级，避免首屏侧边栏空白。
       if (retry > 0) {
         await new Promise((r) => setTimeout(r, 4000))
+        if (!isCurrent()) return
         return get().refreshWorkspaces(retry - 1)
       }
       // 降级 1：全量 workspace-list（旧 agent 无 workspace-list-recent）。
       try {
         const workspaces = await transport.workspaceList()
+        if (!isCurrent()) return
         set({
           workspaces,
           workspaceLoading: false,
@@ -292,10 +306,11 @@ export function sessionActions(set: SetState, get: () => ChatState) {
       if (s.sessionStats) set({ sessionStats: undefined })
       return
     }
+    const scope = captureAsyncScope(get, s.sessionId, s.cwd)
     try {
       const stats = await transport.sessionStats(s.sessionId, s.cwd)
       // 拉取期间可能已切换会话（async 竞态）：结果只对发起时的会话有效。
-      if (get().sessionId === s.sessionId && get().cwd === s.cwd) {
+      if (isAsyncScopeCurrent(get, scope)) {
         set({ sessionStats: stats })
       }
     } catch {
@@ -306,8 +321,10 @@ export function sessionActions(set: SetState, get: () => ChatState) {
   refreshGitInfo: async () => {
     const s = get()
     if (!s.sessionId || !s.cwd) return
+    const scope = captureAsyncScope(get, s.sessionId, s.cwd)
     try {
       const info = await transport.gitInfo(s.sessionId, s.cwd)
+      if (!isAsyncScopeCurrent(get, scope)) return
       // Empty branch = not a git repo (or detached without a name) — hide
       // the status-bar branch entirely rather than showing "(detached)".
       set({
@@ -327,7 +344,6 @@ export function sessionActions(set: SetState, get: () => ChatState) {
   newSession: async (cwd?: string) => {
     // Any in-flight session switch (grace-window callback / async loads)
     // must not re-anchor after a fresh session starts.
-    runtime.sessionSwitchGen += 1
     clearContinueSessionTimer()
     clearPeerSessionLoad()
     get().stopTopTaskPolling()
@@ -345,6 +361,8 @@ export function sessionActions(set: SetState, get: () => ChatState) {
     // 权限模式是进程级全局状态：复位不清（删除场景同样保留），store
     // 现值即继承值，无需经 flags 回灌。
     resetSessionState(set)
+    const newSessionGen = runtime.sessionSwitchGen
+    const hostScope = captureAsyncScope(get)
     // New session lands in the CURRENT conversation's workspace: inherit
     // its cwd so "new" starts in the same directory (captured above, before
     // the anchor reset clears it). An explicit cwd (sidebar group
@@ -354,6 +372,7 @@ export function sessionActions(set: SetState, get: () => ChatState) {
     // 回填前，宿主的 hello/busy 广播（hub 双连接 SSE 重连 / WS 缺口回放）
     // 会穿过所有会话守卫——hello handler 凭此标志只吸收快照、不重锚。
     runtime.newSessionInFlight = true
+    runtime.newSessionInFlightGeneration = newSessionGen
     let res: unknown
     try {
       res = await transport.newSession({
@@ -361,9 +380,12 @@ export function sessionActions(set: SetState, get: () => ChatState) {
         ...(inheritMeta ? { meta: inheritMeta } : {}),
       })
     } finally {
-      runtime.newSessionInFlight = false
+      if (runtime.newSessionInFlightGeneration === newSessionGen) {
+        runtime.newSessionInFlight = false
+        runtime.newSessionInFlightGeneration = undefined
+      }
     }
-    // POST /api/session 响应直接携带新会话 id（host Snapshot）——提前
+    if (newSessionGen !== runtime.sessionSwitchGen || !isAsyncScopeCurrent(get, hostScope)) return
     // 锚定 sessionId，不等 SSE ready（ready 到达时幂等覆盖）。空状态
     // 发送消息时依赖这一点：newSession 返回后即可继续发 prompt。
     const sid = (res as { sessionId?: unknown } | null)?.sessionId
@@ -393,7 +415,9 @@ export function sessionActions(set: SetState, get: () => ChatState) {
         lastCompletedTurn: undefined,
         liveStream: null,
       })
+      return sid
     }
+    return undefined
   },
 
   resetToEmpty: () => {
