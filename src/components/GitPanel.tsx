@@ -694,6 +694,10 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
               value={commitMsg}
               onChange={(e) => setCommitMsg(e.target.value)}
               onKeyDown={(e) => {
+                // 输入法组字中的 Enter 是「上屏候选词」，不是提交——
+                // 中文提交信息按回车选词会把半截文本 commit 出去
+                // （Composer / QuestionModal 等处同款守卫）。
+                if (e.nativeEvent.isComposing) return
                 if (e.key === 'Enter' && commitMsg.trim() && !busy) {
                   const msg = commitMsg.trim()
                   void runOp('commit', () =>

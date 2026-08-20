@@ -631,6 +631,9 @@ export function SessionHistoryList() {
                             onDoubleClick={(e) => e.stopPropagation()}
                             onKeyDown={(e) => {
                               e.stopPropagation()
+                              // 输入法组字中的 Enter 是上屏候选词：中文
+                              // 标题按回车选词会把半截标题存进去。
+                              if (e.nativeEvent.isComposing) return
                               if (e.key === 'Enter') {
                                 e.preventDefault()
                                 void commitRename(s)

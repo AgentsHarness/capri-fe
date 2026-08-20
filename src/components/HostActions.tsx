@@ -184,6 +184,10 @@ export function RenameHostModal({
           maxLength={256}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {
+            // 输入法组字中的 Enter 是上屏候选词，不是提交（中文 Host
+            // 名按回车选词会把半截名字存下来）。Escape 照常放行——
+            // 组字中的 Esc 由输入法自己吞掉，不会到这里。
+            if (e.nativeEvent.isComposing) return
             if (e.key === 'Enter') void submit()
             if (e.key === 'Escape') onClose()
           }}
