@@ -21,24 +21,49 @@ import {
   replayUpdates,
 } from './history'
 import { entryTimestamp } from './entries'
+import {
+  envelopeTimestamp,
+  replayEnvelopeKeys,
+  replayEventKeys,
+} from './envelopeParse'
 
 /**
- * 快照重建完成后回放窗口期缓冲的 live 内容事件（见 globals.ts）。
- * 过滤规则：仅回放带 agentTimestampMs 且生成时刻晚于快照末尾写盘
- * 时间戳的事件（同一 agent 时钟域，必然不在快照里）；无有效快照
- * 基准（snapTail 非 number）或事件无时间戳 / 早于快照末尾时无法
- * 判定是否已入快照，全部丢弃（不重复渲染，也不比旧行为更差）。
+ * Compare agent milliseconds with stored envelope time in epoch milliseconds.
+ * Unknown time is not a reason to drop content: semantic keys are the stable
+ * boundary fallback, while events with no key are replayed conservatively.
+ */
+function finiteAgentTimestamp(ev: unknown): number | undefined {
+  const value = (ev as { agentTimestampMs?: unknown }).agentTimestampMs
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+/**
+ * Replay events received while rebuilding a history snapshot. Timestamp is
+ * only a fast path: stored timestamps are normalized to epoch ms, and keys
+ * cover tools, plans, images, and other non-text updates without timestamps.
  */
 export function replayHistoryWindowBuffer(get: () => ChatState): void {
   const buffered = runtime.historyWindowBuffer
   runtime.historyWindowBuffer = []
   if (buffered.length === 0) return
   const snapTail = runtime.historySnapTail
-  if (typeof snapTail !== 'number') return
+  const snapshotKeys = runtime.historySnapEventKeys
   for (const ev of buffered) {
-    const ts = (ev as { agentTimestampMs?: unknown }).agentTimestampMs
-    if (typeof ts !== 'number' || !Number.isFinite(ts)) continue
-    if (ts <= snapTail) continue
+    const keys = replayEventKeys(ev)
+    let knownInSnapshot = false
+    for (const key of keys) {
+      const count = snapshotKeys.get(key) ?? 0
+      if (count > 0) {
+        snapshotKeys.set(key, count - 1)
+        knownInSnapshot = true
+        break
+      }
+    }
+    if (knownInSnapshot) continue
+    const ts = finiteAgentTimestamp(ev)
+    if (snapTail != null && ts != null && ts <= snapTail) continue
+    // With no comparable timestamp or key, retaining the event is safer than
+    // silently losing a tool/plan/image update during the load window.
     get().handleEvent(ev)
   }
 }
@@ -172,15 +197,22 @@ export async function loadHistory(
       const updates = r.updates ?? []
       const fetched = updates.length
       const total = r.totalCount ?? 0
-      // 快照末尾 envelope 的写盘时间戳（agent 时钟域）：窗口期缓冲
-      // 回放的去重基准——live 事件生成时刻晚于它的必然不在快照里
-      // （落盘 ≥ 生成），可安全回放；早于它的可能已在快照中，跳过。
+      // Normalize every stored timestamp to epoch milliseconds before comparing
+      // it with live agentTimestampMs. Build semantic keys as the fallback for
+      // events whose payload has no comparable timestamp.
       let snapTail: number | undefined
-      for (let i = updates.length - 1; i >= 0; i--) {
-        const u = updates[i] as { timestamp?: unknown } | undefined
-        if (u && typeof u.timestamp === 'number' && Number.isFinite(u.timestamp)) {
-          snapTail = u.timestamp
-          break
+      runtime.historySnapEventKeys.clear()
+      for (const update of updates) {
+        const keyTime = envelopeTimestamp(update as Parameters<typeof envelopeTimestamp>[0])
+        if (keyTime != null && (snapTail == null || keyTime > snapTail)) {
+          snapTail = keyTime
+        }
+        const key = replayEnvelopeKeys(update)
+        for (const eventKey of key) {
+          runtime.historySnapEventKeys.set(
+            eventKey,
+            (runtime.historySnapEventKeys.get(eventKey) ?? 0) + 1,
+          )
         }
       }
       // Newest page: rebuild from scratch. This page carries the

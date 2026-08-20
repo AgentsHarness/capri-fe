@@ -11,6 +11,9 @@ export {
   userPromptTextsMatch,
   findOptimisticUserAbsorbIndex,
   envelopeToEvent,
+  envelopeToEvents,
+  replayEventKeys,
+  replayEnvelopeKeys,
   completionEndMs,
   turnCompletedEvent,
 } from './envelopeParse'

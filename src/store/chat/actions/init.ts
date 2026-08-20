@@ -63,11 +63,10 @@ export function initChat(
         if (!isTurnEnd && !isClientRequest && !isSessionLoadBoundary) {
           // 方案 A 窗口期缓冲：切 busy 会话时，快照拉取期间到达的
           // 本会话 live 内容事件（chunk/thought/user_chunk/…）不再
-          // 直接丢弃——loadHistory 快照重建后按 agentTimestampMs 与
-          // 快照末尾写盘时间戳的关系回放（同一 agent 时钟域，落盘 ≥
-          // 生成，时间戳晚于快照末尾的事件必然不在快照里，严格不
-          // 重复；无时间戳的事件无法判定，维持旧行为丢弃）。终态 /
-          // client_request / 会话加载边界事件仍放行实时处理（见上）。
+          // 直接丢弃——loadHistory 重建后按统一 epoch-ms 边界与稳定
+          // 事件键去重回放。没有可比较时间戳的工具/计划/图片等事件也
+          // 保留，不能静默丢失。终态 / client_request / 会话加载边界事件
+          // 仍放行实时处理（见上）。
           if (evSid == null || evSid === s.sessionId) {
             bufferHistoryWindowEvent(ev)
           }

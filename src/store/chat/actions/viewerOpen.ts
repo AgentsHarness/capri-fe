@@ -1,7 +1,7 @@
 import type { ScrollEntry } from '../../../api/types'
 import { transport } from '../../../api/client'
 import type { ChatState, SetState } from '../types'
-import { envelopeToEvent } from '../history'
+import { envelopeToEvents } from '../history'
 import {
   applySubagentViewEvent,
   SUBAGENT_VIEW_PAGE_SIZE,
@@ -140,8 +140,8 @@ export function viewerOpenActions(set: SetState, get: () => ChatState) {
           ?.params
         const envSid = envParams?.sessionId
         if (typeof envSid === 'string' && envSid !== childSessionId) continue
-        const ev = envelopeToEvent(env)
-        if (ev) replayed = subagentViewAppend(replayed, ev)
+        const events = envelopeToEvents(env)
+        for (const ev of events) replayed = subagentViewAppend(replayed, ev)
       }
       // 记录分页游标（包络条数——与宿主负 offset 语义一致，过滤掉的非
       // scrollback 事件不占游标位）：回放填充的视图（loadedCount > 0）
@@ -215,8 +215,8 @@ export function viewerOpenActions(set: SetState, get: () => ChatState) {
           ?.params
         const envSid = envParams?.sessionId
         if (typeof envSid === 'string' && envSid !== childSessionId) continue
-        const ev = envelopeToEvent(env)
-        if (ev) applySubagentViewEvent(set, childSessionId, ev)
+        const events = envelopeToEvents(env)
+        for (const ev of events) applySubagentViewEvent(set, childSessionId, ev)
       }
       const after = get().subagentViews[childSessionId]
       if (!after) return false

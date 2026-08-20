@@ -3,7 +3,7 @@ import { modelDisplayName } from './model'
 import {
   type RawEnvelope,
   completionEndMs,
-  envelopeToEvent,
+  envelopeToEvents,
   envelopeTimestamp,
 } from './envelopeParse'
 
@@ -228,14 +228,15 @@ export function replayUpdates(
     // informational lines (envelopeToEvent) — never captured into the
     // task system. The live running set is established once at resume via
     // the host's liveness probe (replayRunningTasks).
-    const ev = envelopeToEvent(env)
-    if (!ev) continue
-    // Older pages are transcript-only: never let a stored usage_update
-    // overwrite the current session's context chip. The newest page applies
-    // its accumulated total once after the loop.
-    if (ev.type === 'usage' && opts?.applyUsage === false) continue
-    anyEvent = true
-    if (ev.type === 'turn_completed') {
+    const events = envelopeToEvents(env)
+    if (events.length === 0) continue
+    for (const ev of events) {
+      // Older pages are transcript-only: never let a stored usage_update
+      // overwrite the current session's context chip. The newest page applies
+      // its accumulated total once after the loop.
+      if (ev.type === 'usage' && opts?.applyUsage === false) continue
+      anyEvent = true
+      if (ev.type === 'turn_completed') {
       sawTurnEnd = true
       userAfterEnd = false
       // Attach this closing turn's real start (tracked from the envelope
@@ -315,8 +316,9 @@ export function replayUpdates(
       if (ev.ts != null) userTs = ev.ts
       continue
     }
-    flushUser()
-    getStore().handleEvent(ev)
+      flushUser()
+      getStore().handleEvent(ev)
+    }
   }
   flushUser()
   // Apply the page's newest token count once (after the loop, so no
