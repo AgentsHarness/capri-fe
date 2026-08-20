@@ -77,7 +77,9 @@ export function handleConnEvent(
         const suppressAnchor =
           get().sessionId == null &&
           ev.sessionId != null &&
-          (get().pendingOptimisticUserId != null || runtime.newSessionInFlight)
+          (get().pendingOptimisticUserId != null ||
+            (runtime.newSessionInFlight &&
+              runtime.newSessionInFlightGeneration === runtime.sessionSwitchGen))
         // Pending is host-global (all sessions' clientReqs). Scope to the
         // session this hello is announcing so another conversation's
         // permission / question never paints on the active view. Untagged

@@ -11,6 +11,7 @@ import {
 } from './stream'
 import { armTurnBlipWatchdog, turnIsLive } from './turn'
 import { pushToast } from '../toast'
+import { captureAsyncScope, isAsyncScopeCurrent } from './globals'
 
 export async function sendPrompt(
   set: SetState,
@@ -26,9 +27,22 @@ export async function sendPrompt(
     // 携带 sessionId，锚定后直接发送本条消息。
     if (!get().sessionId) {
       const emptyCwd = get().emptyCwd?.trim()
+      const hostAtStart = get().hostId
       try {
-        await get().newSession(emptyCwd || undefined)
+        const createdSessionId = await get().newSession(emptyCwd || undefined)
+        // A new-session response is only usable by the request that created
+        // it. A host switch can otherwise leave this prompt targeting the new
+        // host's unrelated active session.
+        if (
+          !createdSessionId ||
+          get().sessionId !== createdSessionId ||
+          get().hostId !== hostAtStart
+        ) {
+          return
+        }
+        sendScope = captureAsyncScope(get, createdSessionId, get().cwd)
       } catch (e) {
+        if (get().hostId !== hostAtStart) return
         const msg = e instanceof Error ? e.message : String(e)
         set({
           entries: [
@@ -46,6 +60,7 @@ export async function sendPrompt(
     // 409）→ 行保留 degraded + 渲染错误行，手动重发。sendFollowUp /
     // slash 命令 / sendQueuedHead 竞态下忙时调用 send 也走这里。
     const live = get()
+    let sendScope = captureAsyncScope(get, live.sessionId, live.cwd)
     // 会话切换进行中守卫：continueSession（点会话列表切会话）入口即同步
     // 锚定 sessionId（列表行立即高亮选中），随后 historyLoading 拉取历史
     // ——切换完成前绝不能把消息发进正在加载的会话：保留草稿不发（与
@@ -129,6 +144,7 @@ export async function sendPrompt(
         { promptId, sessionId: get().sessionId },
       )
     } catch (e) {
+      if (!isAsyncScopeCurrent(get, sendScope)) return
       const msg = e instanceof Error ? e.message : String(e)
       // drop empty thinking shell on failure
       const s = get()

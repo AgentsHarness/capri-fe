@@ -1,7 +1,7 @@
 import { transport } from '../../api/client'
 import type { ChatState, SetState } from './types'
 import { flushLiveStream, flushStreamBuf, sealThought } from './stream'
-import { settleTurnEntries } from './turn'
+import { runtime, captureAsyncScope, isAsyncScopeCurrent } from './globals'
 import {
   MAX_AUTO_FETCH_ENTRIES,
   adaptivePageSize,
@@ -84,6 +84,11 @@ export async function loadMoreHistory(
     // 续翻归属校验：链式翻页期间会话被切走（newSession 清 historySessionId）
     // 即停，绝不把旧会话的页继续灌进新会话。
     const sid = s.historySessionId
+    const scope = captureAsyncScope(get, sid, s.historyCwd)
+    const isCurrent = () =>
+      isAsyncScopeCurrent(get, scope) &&
+      get().historySessionId === sid &&
+      get().historyCwd === s.historyCwd
     const chained = chainedPages ?? 0
     // 已加载区最老行（绝对下标）。缺失时用 total-loaded 兜底（旧状态）。
     const loadedStart =
@@ -134,11 +139,7 @@ export async function loadMoreHistory(
         offset: reqOffset,
         limit: reqLimit,
       })
-      // 会话在 await 期间被切走：丢弃本页，不灌 entries。
-      if (get().historySessionId !== sid) {
-        set({ historyLoadingMore: false })
-        return
-      }
+      if (!isCurrent()) return
       const fetched = r.updates?.length ?? 0
       // 真·live 回合：本端发送中 / 已知 promptId / loadHistory 对仍 open
       // 回合恢复的 turnStartedAt。turnOpen 已收紧（completed 后 stray
@@ -325,11 +326,12 @@ export async function loadMoreHistory(
         countUserMessages(newEntries) === 0 &&
         hasMore &&
         loadedNew < MAX_AUTO_FETCH_ENTRIES &&
-        get().historySessionId === sid
+        isCurrent()
       ) {
         void get().loadMoreHistory(anchorId, chained + 1)
       }
     } catch (e) {
+      if (!isCurrent()) return
       // 失败必须就地可见：静默吞掉会让「点击加载」看起来无效（按钮闪
       // 一下恢复、什么也没发生）。错误显示在加载按钮上，下次点击/上滑
       // 自动重试。

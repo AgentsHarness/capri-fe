@@ -5,6 +5,8 @@ import {
   clearContinueSessionTimer,
   clearHistoryWindowBuffer,
   clearPeerSessionLoad,
+  captureAsyncScope,
+  isAsyncScopeCurrent,
   runtime,
 } from './globals'
 import { syncPendingForSession } from './pending'
@@ -32,6 +34,7 @@ export async function continueSession(
     clearHistoryWindowBuffer()
     // Invalidate in-flight async results from a previous switch.
     const myGen = ++runtime.sessionSwitchGen
+    const scope = captureAsyncScope(get, sessionId, cwd)
     // The prompt queue is per-session: swap the active queue to the
     // target session's NOW (stash the current session's queue under its
     // id, restore the target's) — before any async work, so neither the
@@ -109,7 +112,7 @@ export async function continueSession(
       }
       // The user may have switched host / opened another session while we
       // were loading — never write this session's data into that view.
-      if (myGen !== runtime.sessionSwitchGen) return
+      if (myGen !== runtime.sessionSwitchGen || !isAsyncScopeCurrent(get, scope)) return
       if (loaded.models != null || loaded.modes != null) {
         const modelSnap = applyLoadedModels(loaded.models)
         set({
@@ -138,7 +141,7 @@ export async function continueSession(
       // otherwise render a dangling started row with no completion.
       await get().replayRunningTasks(sessionId, cwd)
       await get().loadHistory(sessionId, cwd)
-      if (myGen !== runtime.sessionSwitchGen) return
+      if (myGen !== runtime.sessionSwitchGen || !isAsyncScopeCurrent(get, scope)) return
       // 权限模式是进程级全局状态（跟随 agent 广播），store 中即最新值，
       // 无需按会话恢复；plan 按会话从副本补充（权威是 replay 的
       // current_mode_update）。
@@ -157,7 +160,7 @@ export async function continueSession(
         runtime.continueSessionTimer = null
         // Another switch happened inside the grace window: do NOT re-anchor
         // this (now stale) session's snapshot.
-        if (myGen !== runtime.sessionSwitchGen) return
+        if (myGen !== runtime.sessionSwitchGen || !isAsyncScopeCurrent(get, scope)) return
         // Re-apply the load response's SessionModelState — a stale hello
         // (EventSource reconnect) or the load's own ready may have raced
         // in with process-global models while historyLoading; the HTTP
@@ -215,7 +218,7 @@ export async function continueSession(
         replayHistoryWindowBuffer(get)
       }, 500)
     } catch (e) {
-      if (myGen !== runtime.sessionSwitchGen) return
+      if (myGen !== runtime.sessionSwitchGen || !isAsyncScopeCurrent(get, scope)) return
       const msg = e instanceof Error ? e.message : String(e)
       // 加载失败：从加载态收口为失败态——scrollback 中央加载提示转为
       // "加载失败 + 原因"（historyLoadError，见 Scrollback 覆盖层），

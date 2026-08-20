@@ -636,7 +636,7 @@ export type ChatState = {
    * Create a fresh session. cwd 显式指定时（右键分组"在此目录新建"）
    * 用指定目录；缺省继承当前会话的 cwd；两者皆空 → 宿主默认目录。
    */
-  newSession: (cwd?: string) => Promise<void>
+  newSession: (cwd?: string) => Promise<string | undefined>
   /**
    * 进入无会话空状态（不创建会话）：停轮询、清流式缓冲、清空全部
    * 会话状态。侧边栏顶部 new 点击后先落在这里，用户选好工作目录
