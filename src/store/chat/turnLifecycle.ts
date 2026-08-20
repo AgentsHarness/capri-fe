@@ -30,17 +30,23 @@ export function finalizeTurn(
     stopReason === 'cancelled'
   // TUI prompt_origin.rs: no-output turns suppress the marker (had_output
   // → None); bash turns (the `!` shell-mode prompt) suppress it too.
+  //
+  // 从末尾扫到**本回合的 user 行**为止：只有走到 user 行才知道这回合是不是
+  // shell 回合。此前的写法在遇到第一条 assistant/thought/tool 就 break，
+  // 于是 bashTurn 只可能在 hasOutput 为 false 时为真（那种情况本来就不出
+  // 标记）——等于 shell 回合的抑制从未生效，`!cmd` 跑完照样多一行
+  // "Worked for 0.2s"。
   let bashTurn = false
   let hasOutput = false
-  for (let i = get().entries.length - 1; i >= 0; i--) {
-    const e = get().entries[i]
+  const scan = get().entries
+  for (let i = scan.length - 1; i >= 0; i--) {
+    const e = scan[i]
     if (e.kind === 'user') {
-      bashTurn = (e as { isShell?: boolean }).isShell === true
+      bashTurn = e.isShell === true
       break
     }
     if (e.kind === 'assistant' || e.kind === 'thought' || e.kind === 'tool') {
       hasOutput = true
-      break
     }
   }
   const marker =

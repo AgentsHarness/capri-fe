@@ -347,13 +347,30 @@ export function sealThought(
 }
 
 
-/** Flush the rAF stream buffer when the next event is not the same kind. */
+/**
+ * Flush the rAF stream buffer when the next event is not the same kind.
+ *
+ * 同类流式事件（thought→thought / chunk→chunk）**必须**继续攒进缓冲，
+ * 否则 rAF 合帧完全失效：每个 chunk 都同步 flush 一次 = 每个 chunk 一次
+ * set() + 一次整树渲染，正是本模块要消除的移动端卡顿。异类流（thought
+ * ↔ assistant）与一切非流式事件（tool_call / 回合终态 / …）在处理前
+ * 必须先落库，保证 scrollback 顺序（见模块头「顺序保证」）。
+ *
+ * 同类不 flush 的前提由调用方保证：prepareAgentStream 在 streamStartMs
+ * 变化（生成流切换）时自己先 flushStreamBuf 再收口旧流。
+ */
 export function flushStreamBufBeforeEvent(
   set: SetState,
   get: () => ChatState,
   ev: AcpEvent,
 ): void {
-  if (ev.type === 'thought' ? streamBufKind === 'assistant' : streamBufText !== '') {
+  const incoming: StreamBufKind | null =
+    ev.type === 'thought' ? 'thought' : ev.type === 'chunk' ? 'assistant' : null
+  if (incoming == null) {
+    if (streamBufText !== '') flushStreamBuf(set, get)
+    return
+  }
+  if (streamBufKind != null && streamBufKind !== incoming) {
     flushStreamBuf(set, get)
   }
 }

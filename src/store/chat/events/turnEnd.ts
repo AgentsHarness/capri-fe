@@ -5,6 +5,8 @@ import { formatTurnDuration, toolVerb } from '../format'
 import {
   clearStreamBuf,
   flushLiveStream,
+  flushStreamBuf,
+  sealAssistantStream,
   sealThought,
 } from '../stream'
 import {
@@ -286,8 +288,20 @@ export function handleTurnEndEvent(
         // 不进横幅。不带 sessionId 的 error 才是 host 级错误（boot 失败：
         // agent 进程起不来 / initialize / authenticate 失败），进横幅。
         if (ev.sessionId) {
+          // 回合级错误也是回合终态（下面就清了 turnStartedAt）——必须像
+          // finalizeTurn 一样收口流：
+          // 1) 缓冲文本先落库，否则 rAF 里那一帧会在错误态之后 flush，
+          //    把 conn 重新顶回 'busy' + statusText 'Responding…'；
+          // 2) liveStream 并入条目并 streaming:false，否则回答行永远停在
+          //    流式态、文本滞留 liveStream（切会话即丢）；
+          // 3) 必须清 openThoughtId —— turnIsLive() 把它算作「回合仍在
+          //    跑」，不清的话 sendPrompt 会把用户的下一条消息**静默塞进
+          //    队列**而不是发出去。
+          flushStreamBuf(set, get)
           const s = get()
+          const sealed = sealThought(sealAssistantStream(s))
           set({
+            ...sealed,
             conn: s.conn === 'busy' ? 'ready' : s.conn,
             // source='transport'：host↔agent 传输断了（agent 可能已
             // 不可用）——host 不再自动重启，错误行带「重启」动作按钮；
@@ -299,7 +313,7 @@ export function handleTurnEndEvent(
             turnStartedAt: undefined,
             currentPromptId: undefined,
             entries: [
-              ...s.entries,
+              ...sealed.entries,
               {
                 id: nid(),
                 kind: 'error',

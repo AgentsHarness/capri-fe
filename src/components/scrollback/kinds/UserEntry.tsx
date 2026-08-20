@@ -37,7 +37,7 @@ export function UserEntry({
   const chevronShown = foldable && (shell.selected || shell.hovered) && !expanded
   // TUI: is_bash → "$ " (command color), is_cron → "↻  ", else prompt_arrow.
   // Shell-mode submissions carry the isShell marker from the store's send().
-  const isShell = (e as { isShell?: boolean }).isShell === true
+  const isShell = e.isShell === true
   const prefixGlyph = isShell ? '$' : e.isCron ? Glyphs.cronPrompt : Glyphs.promptArrow
   const prefixColor = isShell
     ? 'var(--color-gn-cyan)'
