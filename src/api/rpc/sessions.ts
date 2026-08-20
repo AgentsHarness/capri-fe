@@ -1,5 +1,5 @@
 import type { TransportCore } from '../transport'
-import { findArrayField, findObjectField, pickSummaryActivityAt, unwrapExtResult, xaiCall } from './core'
+import { assertRpcOk, findArrayField, findObjectField, pickSummaryActivityAt, readRpcJson, requireRpcObject, unwrapExtResult, xaiCall } from './core'
 import type {
   HostStatus,
   RewindMode,
@@ -74,9 +74,11 @@ export const sessionsRpc = {
       headers: { 'Content-Type': 'application/json' },
       body: '{}',
     })
-    const data = await res.json()
+    const raw = await readRpcJson(res)
+    assertRpcOk(res, raw, 'sessions failed')
+    const data = requireRpcObject(raw, '/api/sessions', res.status)
     const out: { sessions: SessionInfo[]; nextCursor?: string; meta?: Record<string, unknown> } = {
-      sessions: data.sessions ?? [],
+      sessions: Array.isArray(data.sessions) ? (data.sessions as SessionInfo[]) : [],
     }
     // 防御性解析：nextCursor 仅字符串时带上；meta 仅 object 时带上。
     if (typeof data.nextCursor === 'string') out.nextCursor = data.nextCursor
@@ -221,7 +223,9 @@ export const sessionsRpc = {
 
   async status(this: TransportCore): Promise<HostStatus> {
     const res = await this.fetch(this.url('/api/status'))
-    return res.json()
+    const raw = await readRpcJson(res)
+    assertRpcOk(res, raw, 'status failed')
+    return requireRpcObject(raw, '/api/status', res.status) as HostStatus
   },
 
   async sessionInfo(this: TransportCore, sessionId?: string): Promise<SessionInfoDetail> {
