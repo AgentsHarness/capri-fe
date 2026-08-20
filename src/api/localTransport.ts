@@ -63,6 +63,13 @@ export class LocalTransport {
   private accessToken: string
   /** A token entered this session may be used to authenticate mode detection. */
   private allowDetectAuth = false
+  /**
+   * 本机 origin（this.base）是否要求 FE_TOKEN。来自直连 /api/hosts 的
+   * authRequired。EventSource 不能设 Authorization，只有本机真的要
+   * token 时才把密钥放进 /events?token=，避免把 hub token 泄漏到
+   * 开放本机的 URL / 代理日志里。
+   */
+  private localAuthRequired = false
   private intentionalClose = false
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private reconnectAttempt = 0
@@ -155,18 +162,23 @@ export class LocalTransport {
   setConnectionMode(mode: TransportMode, hubUrl: string = '') {
     const next = hubUrl.replace(/\/$/, '')
     if (mode === 'local') {
+      const wipingToken = !this.localAuthRequired && this.accessToken !== ''
       const changed =
         this.mode !== 'local' ||
         this.hubUrl !== '' ||
         this.lastHubUrl !== '' ||
-        this.accessToken !== ''
+        wipingToken
       this.mode = 'local'
       this.hubUrl = ''
       this.lastHubUrl = ''
-      this.allowDetectAuth = false
       removeKey('capri-fe.hubUrl')
-      this.accessToken = ''
-      removeKey('capri-fe-token')
+      // 本机也要 FE_TOKEN 时保留密钥（门禁刚写入 / 刷新后从 localStorage
+      // 读出的都是本机的）。本机开放则丢掉可能残留的 hub token。
+      if (wipingToken) {
+        this.accessToken = ''
+        this.allowDetectAuth = false
+        removeKey('capri-fe-token')
+      }
       this.abortInflight()
       for (const ac of this.hubInflight) ac.abort()
       this.hubInflight.clear()
@@ -241,17 +253,32 @@ export class LocalTransport {
         { auth: this.allowDetectAuth, hubLevel: true },
       )
     } catch {
+      this.localAuthRequired = false
       return { mode: 'local', hubUrl: '' }
     }
-    if (res.status === 401) return { mode: 'hub', hubUrl: this.base }
-    if (!res.ok) return { mode: 'local', hubUrl: '' }
+    if (res.status === 401) {
+      this.localAuthRequired = false
+      return { mode: 'hub', hubUrl: this.base }
+    }
+    if (!res.ok) {
+      this.localAuthRequired = false
+      return { mode: 'local', hubUrl: '' }
+    }
     const data = (await res.json().catch(() => ({}))) as {
       hosts?: Array<{ local?: boolean }>
       defaultHostId?: string
+      authRequired?: boolean
     }
     const direct =
       !data.defaultHostId && data.hosts?.length === 1 && data.hosts[0]?.local === true
-    if (!direct) return { mode: 'hub', hubUrl: this.base }
+    if (!direct) {
+      this.localAuthRequired = false
+      return { mode: 'hub', hubUrl: this.base }
+    }
+    // 必须在 /api/status 之前记下：status 本身也受 FE_TOKEN 门禁，
+    // 刷新后 allowDetectAuth 仍是 false，不带已存 token 会 401，
+    // 下面 catch 就会把配了 HUB_URL 的 host 盲判成 local。
+    this.localAuthRequired = data.authRequired === true
     // capri-host 直连：模式由 host 配置决定（HUB_URL 环境变量）；
     // 顺带记录本机 hostId，供 hub 模式下选中本机时 API 直连本地。
     try {
@@ -259,7 +286,7 @@ export class LocalTransport {
         await this.fetch(
           `${this.base}/api/status`,
           {},
-          { auth: this.allowDetectAuth, hubLevel: true },
+          { auth: this.allowDetectAuth || this.localAuthRequired, hubLevel: true },
         )
       ).json()) as { mode?: string; hubUrl?: string; hostId?: string }
       if (st.mode === 'hub')
@@ -395,7 +422,11 @@ export class LocalTransport {
     opts: { timeoutMs?: number; signal?: AbortSignal; hubLevel?: boolean; auth?: boolean } = {},
   ): Promise<Response> {
     const headers = new Headers(init.headers)
-    if (this.isLocalRequest(input) && opts.auth !== true) {
+    // 本机开放时剥掉 hub token；本机自己要 FE_TOKEN（或调用方强制
+    // auth:true）则照常带 Bearer。host withAuth 的约定就是 apiFetch
+    // 走 Authorization、EventSource 走 ?token=。
+    const sendLocalAuth = this.localAuthRequired || opts.auth === true
+    if (this.isLocalRequest(input) && !sendLocalAuth) {
       headers.delete('Authorization')
     } else if (opts.auth !== false && this.accessToken && !headers.has('Authorization')) {
       headers.set('Authorization', `Bearer ${this.accessToken}`)
@@ -441,6 +472,19 @@ export class LocalTransport {
     // 启动竞态，prefs 读写均标记 hubLevel）。
     for (const ac of this.inflight) ac.abort()
     this.inflight.clear()
+  }
+
+  /**
+   * Local capri-host live stream. EventSource cannot set Authorization;
+   * host withAuth accepts ?token= for this path. Only attach the query
+   * when the local origin itself requires FE_TOKEN.
+   */
+  private liveSseURL(): string {
+    const path = `${this.base}/events`
+    if (this.accessToken && this.localAuthRequired) {
+      return `${path}?token=${encodeURIComponent(this.accessToken)}`
+    }
+    return path
   }
 
   private liveWsURL(): string {
@@ -740,10 +784,7 @@ export class LocalTransport {
     if (gen !== this.gen) return
     if (this.es) return // already on the SSE path; never double-connect
     this.clearSseReconnect()
-    // Local SSE is always same-origin; hub tokens belong on hub HTTP/WS
-    // requests only and must not leak into a local URL query string.
-    const eventsURL = `${this.base}/events`
-    const es = new EventSource(eventsURL)
+    const es = new EventSource(this.liveSseURL())
     this.es = es
     es.onopen = () => {
       if (gen !== this.gen || this.es !== es) return
