@@ -1,7 +1,8 @@
 import { transport } from '../../api/client'
 import type { ChatState, SetState } from './types'
 import { flushLiveStream, flushStreamBuf, sealThought } from './stream'
-import { runtime, captureAsyncScope, isAsyncScopeCurrent } from './globals'
+import { settleTurnEntries } from './turnLifecycle'
+import { captureAsyncScope, isAsyncScopeCurrent } from './globals'
 import {
   MAX_AUTO_FETCH_ENTRIES,
   adaptivePageSize,

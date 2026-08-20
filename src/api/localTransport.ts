@@ -380,7 +380,7 @@ export class LocalTransport {
     opts: { timeoutMs?: number; signal?: AbortSignal; hubLevel?: boolean; auth?: boolean } = {},
   ): Promise<Response> {
     const headers = new Headers(init.headers)
-    if (this.isLocalRequest(input)) {
+    if (this.isLocalRequest(input) && opts.auth !== true) {
       headers.delete('Authorization')
     } else if (opts.auth !== false && this.accessToken && !headers.has('Authorization')) {
       headers.set('Authorization', `Bearer ${this.accessToken}`)

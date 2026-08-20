@@ -13,6 +13,7 @@ import { runtime, clearHistoryWindowBuffer } from './globals'
 export function resetSessionState(set: (partial: Partial<ChatState>) => void): void {
   // Every reset invalidates async work even when it is not followed by a
   // session/new request (for example, the New button's empty state).
+  clearHistoryWindowBuffer()
   runtime.sessionSwitchGen += 1
   set({
     entries: [],
