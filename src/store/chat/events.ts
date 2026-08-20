@@ -14,7 +14,6 @@ export function handleChatEvent(
   get: () => ChatState,
   ev: AcpEvent,
 ): void {
-  flushStreamBufBeforeEvent(set, get, ev)
   const raw = ev as { update?: unknown }
   if (raw.update && typeof raw.update === 'object') {
     const u = raw.update as { sessionUpdate?: unknown }
@@ -26,6 +25,11 @@ export function handleChatEvent(
       } as AcpEvent
     }
   }
+  // 归一化之后再判：流式缓冲的「同类不 flush」必须按**真正会被派发的**
+  // 事件形状决定。若在改写之前判，一个 type:'chunk' 但带 envelope
+  // update 的事件会被当成同类流跳过 flush，随后却走 session_notification
+  // 分支落一行非流式内容——缓冲文本的顺序就错到它后面去了。
+  flushStreamBufBeforeEvent(set, get, ev)
   if (handleConnEvent(set, get, ev)) return
   if (handleUserStreamEvent(set, get, ev)) return
   if (handleToolEvent(set, get, ev)) return

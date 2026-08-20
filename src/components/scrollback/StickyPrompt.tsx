@@ -54,21 +54,21 @@ export function StickyPrompt({
             <span
               className="mt-[1.5px] shrink-0"
               style={{
-                color: (pinnedUser as { isShell?: boolean }).isShell
+                color: pinnedUser.isShell
                   ? 'var(--color-gn-cyan)'
                   : 'var(--color-gn-accent-user)',
               }}
             >
               <IconGlyph
                 glyph={
-                  (pinnedUser as { isShell?: boolean }).isShell
+                  pinnedUser.isShell
                     ? '$'
                     : pinnedUser.isCron
                       ? Glyphs.cronPrompt
                       : Glyphs.promptArrow
                 }
                 color={
-                  (pinnedUser as { isShell?: boolean }).isShell
+                  pinnedUser.isShell
                     ? 'var(--color-gn-cyan)'
                     : 'var(--color-gn-accent-user)'
                 }

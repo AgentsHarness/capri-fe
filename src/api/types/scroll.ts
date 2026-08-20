@@ -19,6 +19,16 @@ export type ScrollEntry =
        */
       isCron?: boolean
       /**
+       * Shell-mode submission (Composer `!` 直执行 / send 的 fromShell)：
+       * 行首用 TUI 的 `$ ` 前缀、等宽字体渲染，且回合收口不追加
+       * "Worked for X" 标记。
+       *
+       * 之前这个字段只是各处 `as { isShell?: boolean }` 断言出来的隐式
+       * 属性（写在 send.ts / appendLocalEntry，读在 UserEntry /
+       * StickyPrompt / finalizeTurn）——类型上不存在的字段对重构不可见。
+       */
+      isShell?: boolean
+      /**
        * Images attached to this prompt (user-sent, echoed back via
        * user_message_chunk image blocks — merged into this row instead of
        * duplicating). `data` is a data URI.
