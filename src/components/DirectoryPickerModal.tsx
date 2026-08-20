@@ -205,6 +205,9 @@ export function DirectoryPickerModal({
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
+                // 输入法组字中的 Enter 是上屏候选词，不是「跳转」
+                // （中文目录名按回车选词会拿半截路径去跳）。
+                if (e.nativeEvent.isComposing) return
                 if (e.key === 'Enter') submitDraft()
               }}
               spellCheck={false}
