@@ -1,6 +1,6 @@
 import type { TransportCore } from '../transport'
 import { AccessTokenError, AgentTurnError } from '../transport'
-import { findArrayField, unwrapExtResult, xaiCall } from './core'
+import { assertRpcOk, findArrayField, readRpcJson, unwrapExtResult, xaiCall } from './core'
 import type { ContentBlock, HostInfo, HubPrefsDoc, PermissionScope } from '../types'
 
 /**
@@ -97,7 +97,7 @@ export const miscRpc = {
    * Ctrl+C, "Always continue" preference).
    */
   async cancel(this: TransportCore, opts: { cancelSubagents?: boolean } = {}, sessionId?: string): Promise<void> {
-    await this.fetch(this.url('/api/cancel'), {
+    const res = await this.fetch(this.url('/api/cancel'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -106,6 +106,10 @@ export const miscRpc = {
         ...(sessionId ? { sessionId } : {}),
       }),
     })
+    const data = await readRpcJson(res)
+    // Empty/invalid success bodies remain valid for this command-style RPC;
+    // non-2xx and explicit {ok:false} responses must still reach callers.
+    assertRpcOk(res, data, 'cancel failed')
   },
 
   async respondPermission(this: TransportCore, 
@@ -471,8 +475,8 @@ export const miscRpc = {
         ...(sessionId ? { sessionId } : {}),
       }),
     })
-    const data = await res.json()
-    if (!res.ok || data.ok === false) throw new Error(data.error || 'subagent cancel failed')
+    const data = await readRpcJson(res)
+    assertRpcOk(res, data, 'subagent cancel failed')
     return data
   },
 
@@ -485,8 +489,8 @@ export const miscRpc = {
         ...(sessionId ? { sessionId } : {}),
       }),
     })
-    const data = await res.json()
-    if (!res.ok || data.ok === false) throw new Error(data.error || 'task kill failed')
+    const data = await readRpcJson(res)
+    assertRpcOk(res, data, 'task kill failed')
     return data
   },
 

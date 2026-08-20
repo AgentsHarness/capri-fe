@@ -1,16 +1,59 @@
 import type { TransportCore } from '../transport'
 
+type JsonObject = Record<string, unknown>
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function responseError(data: unknown): string | undefined {
+  if (!isJsonObject(data)) return undefined
+  const value = data.error ?? data.message
+  if (typeof value === 'string' && value.trim()) return value
+  if (value == null || value === false || value === '') return undefined
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
+}
+
+/** Read an RPC response without turning an empty or invalid body into a parse error. */
+export async function readRpcJson(res: Response): Promise<unknown | undefined> {
+  try {
+    return await res.json()
+  } catch {
+    return undefined
+  }
+}
+
+/** Apply the HTTP/RPC success convention while retaining the host's error text. */
+export function assertRpcOk(res: Response, data: unknown, fallback: string): void {
+  if (!res.ok || (isJsonObject(data) && data.ok === false)) {
+    throw new Error(responseError(data) || `${fallback} (${res.status})`)
+  }
+}
+
+export function requireRpcObject(
+  data: unknown,
+  path: string,
+  status: number,
+): JsonObject {
+  if (!isJsonObject(data)) {
+    throw new Error(`${path} returned invalid JSON response (${status})`)
+  }
+  return data
+}
+
 export async function xaiCall(core: TransportCore, path: string, body: Record<string, unknown>): Promise<unknown> {
     const res = await core.fetch(core.url(path), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
-    const data = await res.json().catch(() => ({}))
-    if (!res.ok || data.ok === false) {
-      throw new Error(data.error || `${path} failed (${res.status})`)
-    }
-    return data.result
+    const data = await readRpcJson(res)
+    assertRpcOk(res, data, path + ' failed')
+    return isJsonObject(data) ? data.result : undefined
   }
 
 export function findField(root: unknown, key: string): unknown {
