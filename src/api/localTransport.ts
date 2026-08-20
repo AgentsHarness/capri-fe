@@ -14,6 +14,8 @@ type HubWsFrame =
   | { type: 'ping'; ts?: number }
   | { type: string; [k: string]: unknown }
 
+type SequencedEvent = AcpEvent & { hostId?: string; seq?: number }
+
 /**
  * Default hard timeout for transport fetches. Host-side endpoints are
  * quick operations; 30s covers slow hubs while bounding half-open TCP
@@ -53,13 +55,17 @@ export class LocalTransport {
   private localHostId: string | null = null
   /** Shared secret for hub FE_TOKEN (Authorization / WS ?token=). */
   private accessToken: string
+  /** A token entered this session may be used to authenticate mode detection. */
+  private allowDetectAuth = false
   private intentionalClose = false
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private reconnectAttempt = 0
-  /** Last event seq seen per host (gap-pull bookkeeping). */
+  /** Last event seq seen per host (the highest contiguous seq emitted). */
   private lastSeq = new Map<string, number>()
+  /** Sequenced live/pulled events waiting for the missing predecessor. */
+  private pendingSeq = new Map<string, Map<number, SequencedEvent>>()
   /** In-flight gap pulls per host (dedupe). */
-  private pulling = new Set<string>()
+  private pulling = new Map<string, Promise<void>>()
   /**
    * Abort controllers of every in-flight fetch (gap pulls included), so
    * disconnect()/setHost()/setAccessToken() can settle them all — a
@@ -84,6 +90,8 @@ export class LocalTransport {
    * (the React StrictMode double-mount race).
    */
   private gen = 0
+  /** Serialize WebSocket frames so async decompression cannot reorder them. */
+  private wsMessageTail: Promise<void> = Promise.resolve()
   /**
    * Last live-stream event arrival (epoch ms; null = never). The live
    * channel (SSE /events, hub WS) and the HTTP prompt RPC are independent
@@ -116,6 +124,7 @@ export class LocalTransport {
   setAccessToken(token: string | null) {
     const next = (token ?? '').trim()
     this.accessToken = next
+    this.allowDetectAuth = next !== ''
     if (next) saveStr('capri-fe-token', next)
     else removeKey('capri-fe-token')
     // Requests issued under the old token are settled now (re-fetches pick
@@ -131,16 +140,36 @@ export class LocalTransport {
   }
 
   prefsOrigin(): string {
-    return this.hubUrl || this.lastHubUrl
+    return this.mode === 'hub' ? this.hubUrl || this.lastHubUrl : ''
   }
 
   setConnectionMode(mode: TransportMode, hubUrl: string = '') {
     const next = hubUrl.replace(/\/$/, '')
+    if (mode === 'local') {
+      const changed =
+        this.mode !== 'local' ||
+        this.hubUrl !== '' ||
+        this.lastHubUrl !== '' ||
+        this.accessToken !== ''
+      this.mode = 'local'
+      this.hubUrl = ''
+      this.lastHubUrl = ''
+      removeKey('capri-fe.hubUrl')
+      this.accessToken = ''
+      this.allowDetectAuth = false
+      removeKey('capri-fe-token')
+      this.abortInflight()
+      for (const ac of this.hubInflight) ac.abort()
+      this.hubInflight.clear()
+      if (changed && (this.es || this.ws)) this.connect()
+      return
+    }
     if (next) {
       this.lastHubUrl = next
       saveStr('capri-fe.hubUrl', next)
     }
     if (this.mode === mode && this.hubUrl === next) return
+    this.resetSequencing()
     this.mode = mode
     this.hubUrl = next
     this.abortInflight()
@@ -152,7 +181,7 @@ export class LocalTransport {
   }
 
   getHubUrl(): string {
-    return this.hubUrl || this.lastHubUrl
+    return this.mode === 'hub' ? this.hubUrl || this.lastHubUrl : ''
   }
 
   setLocalHostId(hostId: string | null) {
@@ -194,7 +223,11 @@ export class LocalTransport {
   }> {
     let res: Response
     try {
-      res = await this.fetch(`${this.base}/api/hosts`)
+      res = await this.fetch(
+        `${this.base}/api/hosts`,
+        {},
+        { auth: this.allowDetectAuth },
+      )
     } catch {
       return { mode: 'local', hubUrl: '' }
     }
@@ -211,7 +244,11 @@ export class LocalTransport {
     // 顺带记录本机 hostId，供 hub 模式下选中本机时 API 直连本地。
     try {
       const st = (await (
-        await this.fetch(`${this.base}/api/status`)
+        await this.fetch(
+          `${this.base}/api/status`,
+          {},
+          { auth: this.allowDetectAuth },
+        )
       ).json()) as { mode?: string; hubUrl?: string; hostId?: string }
       if (st.mode === 'hub')
         return { mode: 'hub', hubUrl: st.hubUrl || this.base, localHostId: st.hostId }
@@ -310,6 +347,18 @@ export class LocalTransport {
     return this.fetch(this.url(path), init, opts)
   }
 
+  private isLocalRequest(input: string): boolean {
+    if (this.mode === 'local') return true
+    if (!this.isLocalDirect()) return false
+    try {
+      const target = new URL(input, location.href)
+      const local = new URL(this.base || location.href, location.href)
+      return target.origin === local.origin
+    } catch {
+      return false
+    }
+  }
+
   /**
    * fetch wrapper that attaches Authorization: Bearer when a hub FE
    * token is configured. All API calls go through this so token handling
@@ -328,10 +377,12 @@ export class LocalTransport {
   private async fetch(
     input: string,
     init: RequestInit = {},
-    opts: { timeoutMs?: number; signal?: AbortSignal; hubLevel?: boolean } = {},
+    opts: { timeoutMs?: number; signal?: AbortSignal; hubLevel?: boolean; auth?: boolean } = {},
   ): Promise<Response> {
     const headers = new Headers(init.headers)
-    if (this.accessToken && !headers.has('Authorization')) {
+    if (this.isLocalRequest(input)) {
+      headers.delete('Authorization')
+    } else if (opts.auth !== false && this.accessToken && !headers.has('Authorization')) {
       headers.set('Authorization', `Bearer ${this.accessToken}`)
     }
     const ac = new AbortController()
@@ -363,6 +414,12 @@ export class LocalTransport {
     }
   }
 
+  private resetSequencing() {
+    this.lastSeq.clear()
+    this.pendingSeq.clear()
+    this.pulling.clear()
+  }
+
   private abortInflight() {
     // 只作废 host 级在途请求（gap pulls 等）；hub 级请求（hubInflight）
     // 与选中 host 无关，host 切换不能杀掉它们（见 syncPrefsFromHub 的
@@ -386,45 +443,92 @@ export class LocalTransport {
     return u.toString()
   }
 
-  private async gapPull(hostId: string, after: number, gen = this.gen) {
+  private async gapPull(hostId: string, after: number, gen = this.gen): Promise<void> {
+    const active = this.pulling.get(hostId)
+    if (active) return active
     if (gen !== this.gen) return
-    if (this.pulling.has(hostId)) return
-    this.pulling.add(hostId)
+
+    const pull = this.performGapPull(hostId, after, gen)
+    this.pulling.set(hostId, pull)
+    void pull.finally(() => {
+      if (this.pulling.get(hostId) !== pull) return
+      this.pulling.delete(hostId)
+      if (gen === this.gen && (this.lastSeq.get(hostId) ?? 0) > after) {
+        this.ensureGapPull(hostId, gen)
+      }
+    }).catch(() => {
+      /* performGapPull handles transport failures; keep cleanup defensive. */
+    })
+    return pull
+  }
+
+  private async performGapPull(hostId: string, after: number, gen: number) {
     try {
       const qs = `?host=${encodeURIComponent(hostId)}&after=${after}`
       const res = await this.fetch(`${this.apiBase()}/api/events${qs}`)
-      if (!res.ok) return
-      const body = (await res.json()) as { events?: Array<AcpEvent & { seq?: number }> }
-      const evs = body.events || []
-      // Fill the gap; skip events a live frame already delivered.
-      for (const ev of evs) {
+      if (!res.ok || gen !== this.gen) return
+      const body = (await res.json()) as { events?: SequencedEvent[] }
+      for (const ev of body.events || []) {
         if (gen !== this.gen) return
-        const seen = this.lastSeq.get(hostId) ?? 0
-        const s = ev.seq ?? 0
-        if (s <= seen) continue
-        this.lastSeq.set(hostId, s)
-        this.emit(ev)
+        this.acceptSequencedEvent(ev, gen)
       }
+      // A response may contain a later event without the beginning of the
+      // requested range. Keep it buffered; a subsequent live event retries
+      // from the still-missing contiguous sequence.
+      this.drainSequenced(hostId, gen)
     } catch {
-      /* offline; the next hello/events re-triggers the pull */
-    } finally {
-      // Timeout and abort (disconnect/setHost/setAccessToken) both reject
-      // the fetch and land here too — the per-host slot never wedges.
-      this.pulling.delete(hostId)
+      /* offline; the next live event or hello re-triggers the pull */
     }
   }
 
-  private trackSeq(ev: AcpEvent) {
-    const host = (ev as { hostId?: string }).hostId
-    const seq = (ev as { seq?: number }).seq
-    if (!host || typeof seq !== 'number' || seq <= 0) return
-    const prev = this.lastSeq.get(host) ?? 0
-    // Duplicate: gap-pull already delivered this seq.
-    if (seq <= prev) return
-    if (prev > 0 && seq > prev + 1) {
-      void this.gapPull(host, prev)
+  private acceptSequencedEvent(ev: SequencedEvent, gen = this.gen): void {
+    const host = ev.hostId
+    const seq = ev.seq
+    if (!host || typeof seq !== 'number' || !Number.isSafeInteger(seq) || seq <= 0) {
+      this.emit(ev)
+      return
     }
-    this.lastSeq.set(host, seq)
+    if (gen !== this.gen) return
+
+    const last = this.lastSeq.get(host) ?? 0
+    if (seq <= last) return
+
+    let pending = this.pendingSeq.get(host)
+    if (!pending) {
+      pending = new Map<number, SequencedEvent>()
+      this.pendingSeq.set(host, pending)
+    }
+    // A future event must wait for every predecessor. In particular, seq=8
+    // must not advance lastSeq and make the later gap pull discard seq=6/7.
+    if (!pending.has(seq)) pending.set(seq, ev)
+    this.drainSequenced(host, gen)
+    this.ensureGapPull(host, gen)
+  }
+
+  private ensureGapPull(host: string, gen: number): void {
+    if (gen !== this.gen) return
+    const pending = this.pendingSeq.get(host)
+    if (!pending || pending.size === 0) return
+    const last = this.lastSeq.get(host) ?? 0
+    const firstPending = Math.min(...pending.keys())
+    if (firstPending > last + 1) {
+      void this.gapPull(host, last, gen)
+    }
+  }
+
+  private drainSequenced(host: string, gen: number): void {
+    if (gen !== this.gen) return
+    const pending = this.pendingSeq.get(host)
+    if (!pending) return
+    let last = this.lastSeq.get(host) ?? 0
+    while (pending.has(last + 1)) {
+      const ev = pending.get(last + 1)!
+      pending.delete(last + 1)
+      last += 1
+      this.lastSeq.set(host, last)
+      this.emit(ev)
+    }
+    if (pending.size === 0) this.pendingSeq.delete(host)
   }
 
   private reconcileSeq(seqs?: Record<string, number>) {
@@ -438,14 +542,14 @@ export class LocalTransport {
     if (hubSeq > mine) void this.gapPull(this.selectedHostId, mine)
   }
 
-  private async onWsMessage(msg: MessageEvent, gen: number) {
+  private async onWsMessage(msg: MessageEvent, gen: number, ws: WebSocket) {
     let text: string
     if (typeof msg.data === 'string') {
       text = msg.data
     } else if (msg.data instanceof Blob) {
       // Compressed binary frame (flate/deflate-raw).
       const buf = await msg.data.arrayBuffer()
-      if (gen !== this.gen || this.ws?.readyState !== WebSocket.OPEN) return
+      if (gen !== this.gen || this.ws !== ws || ws.readyState !== WebSocket.OPEN) return
       if (typeof DecompressionStream === 'undefined') {
         warnNoDecompressionOnce()
         return
@@ -455,7 +559,7 @@ export class LocalTransport {
       text = await new Response(stream).text()
       // The connection may have been replaced while decompressing — a
       // stale socket's events must not leak into the new generation.
-      if (gen !== this.gen) return
+      if (gen !== this.gen || this.ws !== ws) return
     } else {
       return
     }
@@ -481,8 +585,7 @@ export class LocalTransport {
           // 对齐去重）。远程 host 事件不受影响。
           const evHost = (ev as { hostId?: string }).hostId
           if (this.isLocalDirect() && evHost === this.localHostId) continue
-          this.trackSeq(ev)
-          this.emit(ev)
+          this.acceptSequencedEvent(ev as SequencedEvent, gen)
         }
       }
       return
@@ -534,6 +637,7 @@ export class LocalTransport {
       return
     }
     this.ws = ws
+    this.wsMessageTail = Promise.resolve()
 
     ws.onopen = () => {
       if (gen !== this.gen || this.ws !== ws) return
@@ -544,7 +648,11 @@ export class LocalTransport {
 
     ws.onmessage = (msg) => {
       if (gen !== this.gen || this.ws !== ws) return
-      void this.onWsMessage(msg, gen)
+      this.wsMessageTail = this.wsMessageTail
+        .then(() => this.onWsMessage(msg, gen, ws))
+        .catch(() => {
+          /* malformed/decompression failures do not break the frame queue */
+        })
     }
 
     ws.onclose = () => {
@@ -574,11 +682,9 @@ export class LocalTransport {
   private connectSSE(gen: number, trackSeq = false) {
     if (gen !== this.gen) return
     if (this.es) return // already on the SSE path; never double-connect
-    // Local capri-host: EventSource cannot set Authorization headers — token
-    // query is unused locally but kept for symmetry if a proxy gates it.
-    const eventsURL = this.accessToken
-      ? `${this.base}/events?token=${encodeURIComponent(this.accessToken)}`
-      : `${this.base}/events`
+    // Local SSE is always same-origin; hub tokens belong on hub HTTP/WS
+    // requests only and must not leak into a local URL query string.
+    const eventsURL = `${this.base}/events`
     const es = new EventSource(eventsURL)
     this.es = es
     es.onopen = () => {
@@ -586,16 +692,18 @@ export class LocalTransport {
       if (!trackSeq) return
       // 重连（含首次）：从 hub 缓冲补拉本机缺口（本地 SSE 断线期间
       // 的事件 hub 已缓冲）。lastSeq 为 0 时补全量最近事件。
-      const after = this.lastSeq.get(this.localHostId ?? '') ?? 0
-      if (after > 0) void this.gapPull(this.localHostId ?? '', after, gen)
+      const hostId = this.localHostId
+      if (hostId) {
+        void this.gapPull(hostId, this.lastSeq.get(hostId) ?? 0, gen)
+      }
     }
     es.onmessage = (msg) => {
       if (gen !== this.gen || this.es !== es) return
       try {
         const data = JSON.parse(msg.data) as AcpEvent
         if (data && typeof data === 'object' && 'type' in data) {
-          if (trackSeq) this.trackSeq(data)
-          this.emit(data)
+          if (trackSeq) this.acceptSequencedEvent(data as SequencedEvent, gen)
+          else this.emit(data)
         }
       } catch {
         /* ignore */
