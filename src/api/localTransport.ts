@@ -24,6 +24,12 @@ type SequencedEvent = AcpEvent & { hostId?: string; seq?: number }
  */
 const DEFAULT_FETCH_TIMEOUT_MS = 30_000
 
+/**
+ * 每个 host 的乱序等待缓冲上限。超限即认赔（推进水位放出已有事件），
+ * 防止一个补不回来的缺口把 live 通道永久憋死并无界占用内存。
+ */
+const PENDING_SEQ_CAP = 2000
+
 /** 无 DecompressionStream 环境（旧浏览器）压缩帧会被丢弃——只告警一次。 */
 let warnedNoDecompression = false
 function warnNoDecompressionOnce(): void {
@@ -60,6 +66,9 @@ export class LocalTransport {
   private intentionalClose = false
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private reconnectAttempt = 0
+  /** 本地 SSE 的重连定时器/退避计数（与 hub WS 路径互不干扰）。 */
+  private sseReconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private sseReconnectAttempt = 0
   /** Last event seq seen per host (the highest contiguous seq emitted). */
   private lastSeq = new Map<string, number>()
   /** Sequenced live/pulled events waiting for the missing predecessor. */
@@ -154,9 +163,9 @@ export class LocalTransport {
       this.mode = 'local'
       this.hubUrl = ''
       this.lastHubUrl = ''
+      this.allowDetectAuth = false
       removeKey('capri-fe.hubUrl')
       this.accessToken = ''
-      this.allowDetectAuth = false
       removeKey('capri-fe-token')
       this.abortInflight()
       for (const ac of this.hubInflight) ac.abort()
@@ -226,7 +235,10 @@ export class LocalTransport {
       res = await this.fetch(
         `${this.base}/api/hosts`,
         {},
-        { auth: this.allowDetectAuth },
+        // hubLevel：模式探测是 hub 级请求（不带 ?host=），绝不能被
+        // host 切换 / setConnectionMode 的 abortInflight 风暴打断——
+        // 被 abort 会走下面的 catch 盲判成 local 模式。
+        { auth: this.allowDetectAuth, hubLevel: true },
       )
     } catch {
       return { mode: 'local', hubUrl: '' }
@@ -247,7 +259,7 @@ export class LocalTransport {
         await this.fetch(
           `${this.base}/api/status`,
           {},
-          { auth: this.allowDetectAuth },
+          { auth: this.allowDetectAuth, hubLevel: true },
         )
       ).json()) as { mode?: string; hubUrl?: string; hostId?: string }
       if (st.mode === 'hub')
@@ -264,7 +276,10 @@ export class LocalTransport {
 
   async probeAccess(): Promise<'ok' | 'need_token' | 'error'> {
     try {
-      const res = await this.fetch(`${this.apiBase()}/api/hosts`)
+      // hubLevel：门禁探测与选中 host 无关，被 abortInflight 打断会退成
+      // 'error'，调用方（App）把 'error' 当「网络问题也进主界面」处理，
+      // 于是本该弹出的密钥门禁被跳过。
+      const res = await this.fetch(`${this.apiBase()}/api/hosts`, {}, { hubLevel: true })
       if (res.status === 401) return 'need_token'
       if (!res.ok) return 'error'
       // capri-host 配置了 FE_TOKEN 时 /api/hosts 保持开放（启动探测端点），
@@ -501,6 +516,17 @@ export class LocalTransport {
     // A future event must wait for every predecessor. In particular, seq=8
     // must not advance lastSeq and make the later gap pull discard seq=6/7.
     if (!pending.has(seq)) pending.set(seq, ev)
+    // 缺口补不回来时（前驱在 hub 缓冲里已过期 / host 侧永久丢失）pending
+    // 会无界增长，最终把整条 live 通道憋死。超过上限就认赔：把水位推到
+    // 最小待决序号之前，让 drainSequenced 立刻按序放出已有事件（丢几条
+    // 事件远好过之后所有事件都出不来）。
+    if (pending.size > PENDING_SEQ_CAP) {
+      let firstPending = Infinity
+      for (const k of pending.keys()) {
+        if (k < firstPending) firstPending = k
+      }
+      if (Number.isFinite(firstPending)) this.lastSeq.set(host, firstPending - 1)
+    }
     this.drainSequenced(host, gen)
     this.ensureGapPull(host, gen)
   }
@@ -510,7 +536,13 @@ export class LocalTransport {
     const pending = this.pendingSeq.get(host)
     if (!pending || pending.size === 0) return
     const last = this.lastSeq.get(host) ?? 0
-    const firstPending = Math.min(...pending.keys())
+    // O(n) 循环而不是 Math.min(...pending.keys())：pendingSeq 由缺口大小
+    // 决定，长时间缺前驱时条目可以很多，展开成实参会触碰引擎的实参上限
+    // 直接抛 RangeError。
+    let firstPending = Infinity
+    for (const k of pending.keys()) {
+      if (k < firstPending) firstPending = k
+    }
     if (firstPending > last + 1) {
       void this.gapPull(host, last, gen)
     }
@@ -539,7 +571,27 @@ export class LocalTransport {
     const hubSeq = seqs[this.selectedHostId]
     if (typeof hubSeq !== 'number') return
     const mine = this.lastSeq.get(this.selectedHostId) ?? 0
+    // hub 报的 seq 比本地水位低 = host/hub 重启后序号从头计数（hello 的
+    // seqs 是权威值）。不重置的话 acceptSequencedEvent 的 `seq <= last`
+    // 会把重启后**所有** live 事件静默丢弃，直到序号重新爬过旧水位
+    // ——用户看到的是「连着但永远不更新」，只能刷新页面。
+    if (hubSeq < mine) {
+      this.resetHostSequencing(this.selectedHostId, hubSeq)
+      return
+    }
     if (hubSeq > mine) void this.gapPull(this.selectedHostId, mine)
+  }
+
+  /** 序号回退（host 重启）：把该 host 的水位对齐到权威值并丢弃陈旧 pending。 */
+  private resetHostSequencing(hostId: string, seq: number): void {
+    this.lastSeq.set(hostId, seq)
+    const pending = this.pendingSeq.get(hostId)
+    if (pending) {
+      for (const k of pending.keys()) {
+        if (k <= seq) pending.delete(k)
+      }
+      if (pending.size === 0) this.pendingSeq.delete(hostId)
+    }
   }
 
   private async onWsMessage(msg: MessageEvent, gen: number, ws: WebSocket) {
@@ -615,8 +667,13 @@ export class LocalTransport {
     if (want && !this.es) {
       this.connectSSE(this.gen, true)
     } else if (!want && this.es) {
+      this.clearSseReconnect()
       this.es.close()
       this.es = null
+    } else if (!want) {
+      // 已经没有 es，但可能有在飞的重连定时器——不清会把不该开的
+      // 近路重新拉起来。
+      this.clearSseReconnect()
     }
   }
 
@@ -682,6 +739,7 @@ export class LocalTransport {
   private connectSSE(gen: number, trackSeq = false) {
     if (gen !== this.gen) return
     if (this.es) return // already on the SSE path; never double-connect
+    this.clearSseReconnect()
     // Local SSE is always same-origin; hub tokens belong on hub HTTP/WS
     // requests only and must not leak into a local URL query string.
     const eventsURL = `${this.base}/events`
@@ -689,6 +747,7 @@ export class LocalTransport {
     this.es = es
     es.onopen = () => {
       if (gen !== this.gen || this.es !== es) return
+      this.sseReconnectAttempt = 0
       if (!trackSeq) return
       // 重连（含首次）：从 hub 缓冲补拉本机缺口（本地 SSE 断线期间
       // 的事件 hub 已缓冲）。lastSeq 为 0 时补全量最近事件。
@@ -710,7 +769,39 @@ export class LocalTransport {
       }
     }
     es.onerror = () => {
-      // browser will reconnect EventSource automatically
+      if (gen !== this.gen || this.es !== es) return
+      // readyState CONNECTING = 浏览器自己在重连（网络级中断），不插手。
+      // CLOSED 则是**永久失败**：按规范，服务端回非 200 / 非
+      // text/event-stream（host 重启后要 token 的 401、反代 502/503）时
+      // 浏览器关闭该 EventSource 且不再重试——local 模式（默认模式）的
+      // live 通道就此死亡，用户只能刷新页面。这里接管重连。
+      if (es.readyState !== EventSource.CLOSED) return
+      es.close()
+      this.es = null
+      if (this.intentionalClose) return
+      this.scheduleSseReconnect(gen, trackSeq)
+    }
+  }
+
+  /** EventSource 永久关闭后的指数退避重连（与 WS 路径各用一个定时器）。 */
+  private scheduleSseReconnect(gen: number, trackSeq: boolean): void {
+    if (this.sseReconnectTimer != null) return
+    const delay = Math.min(30_000, 1000 * 2 ** Math.min(this.sseReconnectAttempt, 5))
+    this.sseReconnectAttempt += 1
+    this.sseReconnectTimer = setTimeout(() => {
+      this.sseReconnectTimer = null
+      if (gen !== this.gen || this.intentionalClose || this.es) return
+      // 期间模式/选中 host 可能已变：只有本路仍是当前该开的那条才重连。
+      const want = trackSeq ? this.mode === 'hub' && this.isLocalDirect() : this.mode === 'local'
+      if (!want) return
+      this.connectSSE(gen, trackSeq)
+    }, delay)
+  }
+
+  private clearSseReconnect(): void {
+    if (this.sseReconnectTimer != null) {
+      clearTimeout(this.sseReconnectTimer)
+      this.sseReconnectTimer = null
     }
   }
 
@@ -721,6 +812,7 @@ export class LocalTransport {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
+    this.clearSseReconnect()
     // Settle every in-flight fetch (gap pulls included) so their finally
     // blocks run — gapPull releases its per-host pulling slot. Hub-level
     // requests (prefs) are settled here too, never by host switches.
