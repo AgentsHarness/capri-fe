@@ -1,5 +1,4 @@
 import type { AcpEvent, ScrollEntry, ToolCall } from '../../api/types'
-import { contentText } from './format'
 
 export function historicalTaskEvent(
   up: Record<string, unknown>,
@@ -73,6 +72,69 @@ export function envelopeTimestamp(env: RawEnvelope): number | undefined {
 
 function finiteMetaNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+type ContentPart =
+  | { kind: 'text'; text: string }
+  | { kind: 'image'; data: string; mimeType?: string }
+
+/** Preserve image blocks instead of treating their lack of text as empty content. */
+function contentParts(value: unknown, out: ContentPart[] = []): ContentPart[] {
+  if (typeof value === 'string') {
+    out.push({ kind: 'text', text: value })
+    return out
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) contentParts(item, out)
+    return out
+  }
+  if (!value || typeof value !== 'object') return out
+  const object = value as Record<string, unknown>
+  if (object.type === 'image' && typeof object.data === 'string') {
+    out.push({
+      kind: 'image',
+      data: object.data,
+      mimeType:
+        typeof object.mimeType === 'string'
+          ? object.mimeType
+          : typeof object.mime_type === 'string'
+            ? object.mime_type
+            : undefined,
+    })
+    return out
+  }
+  if (typeof object.text === 'string') {
+    out.push({ kind: 'text', text: object.text })
+    return out
+  }
+  if ('content' in object) contentParts(object.content, out)
+  return out
+}
+
+function stableReplayJson(value: unknown): string {
+  if (value === undefined) return 'undefined'
+  if (value === null || typeof value === 'boolean' || typeof value === 'number') {
+    return JSON.stringify(value)
+  }
+  if (typeof value === 'string') return JSON.stringify(value)
+  if (Array.isArray(value)) return `[${value.map(stableReplayJson).join(',')}]`
+  if (typeof value === 'object') {
+    const object = value as Record<string, unknown>
+    return `{${Object.keys(object)
+      .filter((key) => key !== '_meta')
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableReplayJson(object[key])}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(String(value))
+}
+
+function toolReplayPayload(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
+  const object = { ...(value as Record<string, unknown>) }
+  delete object.sessionUpdate
+  delete object._meta
+  return object
 }
 
 /** Strip <fork-context>/<resume-context> wrappers from user message text. */
@@ -200,165 +262,308 @@ export function findOptimisticUserAbsorbIndex(
  * Convert one stored session/update envelope into the AcpEvent the live
  * pipeline understands, or null when it carries no renderable content.
  */
-export function envelopeToEvent(env: unknown): AcpEvent | null {
-  const e = env as RawEnvelope
-  if (!e || (e.method !== 'session/update' && e.method !== '_x.ai/session/update')) {
-    return null
+function replayImageKey(
+  data: string,
+  mimeType: string | undefined,
+): string {
+  return `image:${stableReplayJson({ data, mimeType })}`
+}
+
+function replayUpdateKeys(
+  up: Record<string, unknown>,
+  envelopeMeta?: Record<string, unknown>,
+): string[] {
+  const kind = typeof up.sessionUpdate === 'string' ? up.sessionUpdate : undefined
+  const meta = {
+    ...(envelopeMeta ?? {}),
+    ...((up._meta ?? {}) as Record<string, unknown>),
   }
-  const up = e.params?.update
-  if (!up) return null
-  // x.ai carrier (`_x.ai/session/update` on the wire): the live bridge
-  // unwraps it and routes EVERY kind through the session_notification
-  // channel (subagent/task/recap/retry/hook/model_changed/…). Replay must
-  // do the same or those blocks silently vanish from loaded history.
-  // Turn-end markers are the exception: they finalize streaming blocks.
-  if (e.method === '_x.ai/session/update') {
-    if (up.sessionUpdate === 'turn_completed' || up.sessionUpdate === 'response_completed') {
-      return turnCompletedEvent(up, completionEndMs(e), e.params?._meta)
-    }
-    // Display-only task rows under the x.ai carrier too (same look as live).
-    const taskEv = historicalTaskEvent(up)
-    if (taskEv) return { type: 'task_lifecycle', ...taskEv }
-    return { type: 'session_notification', method: e.method, params: e.params }
-  }
-  switch (up.sessionUpdate) {
+  const agentTimestampMs = finiteMetaNumber(meta.agentTimestampMs)
+  const parts = contentParts(up.content)
+  const textKey = (prefix: string, text: string, isCron?: boolean) =>
+    `${prefix}:${stableReplayJson({
+      text,
+      ...(isCron ? { isCron: true } : {}),
+      ...(agentTimestampMs != null ? { agentTimestampMs } : {}),
+    })}`
+  switch (kind) {
     case 'agent_message_chunk': {
-      const text = contentText(up.content)
-      if (!text) return null
-      const meta = (e.params?._meta ?? {}) as Record<string, unknown>
-      const streamStartMs = finiteMetaNumber(meta.streamStartMs)
-      const agentTimestampMs = finiteMetaNumber(meta.agentTimestampMs)
-      const turnStartMs = finiteMetaNumber(meta.turnStartMs)
-      return {
-        type: 'chunk',
-        text,
-        ts: envelopeTimestamp(e),
-        ...(turnStartMs != null ? { turnStartMs } : {}),
-        ...(streamStartMs != null ? { streamStartMs } : {}),
-        ...(agentTimestampMs != null ? { agentTimestampMs } : {}),
-      }
+      const text = contentTextParts(parts)
+      const keys = text ? [textKey('chunk', text)] : []
+      return keys.concat(
+        parts
+          .filter((part): part is Extract<ContentPart, { kind: 'image' }> => part.kind === 'image')
+          .map((part) => replayImageKey(part.data, part.mimeType)),
+      )
     }
     case 'agent_thought_chunk': {
-      const text = contentText(up.content)
-      if (!text) return null
-      // TUI replay parity (NotificationMeta): the persisted envelope's
-      // `_meta` keeps the ORIGINAL timestamps, so the replayed thought can
-      // seal with the real duration instead of the replay wall-clock
-      // (~0ms → bogus "Thought for 0.0s"). Graceful: old envelopes without
-      // meta fall back to the local timer path.
-      const meta = (e.params?._meta ?? {}) as Record<string, unknown>
-      const agentTs = finiteMetaNumber(meta.agentTimestampMs)
-      const streamStart = finiteMetaNumber(meta.streamStartMs)
-      const turnStartMs = finiteMetaNumber(meta.turnStartMs)
-      const elapsedMs =
-        agentTs != null && streamStart != null && agentTs >= streamStart
-          ? agentTs - streamStart
-          : undefined
-      return {
-        type: 'thought',
-        text,
-        ...(elapsedMs != null ? { elapsedMs } : {}),
-        ...(turnStartMs != null ? { turnStartMs } : {}),
-        ...(streamStart != null ? { streamStartMs: streamStart } : {}),
-        ...(agentTs != null ? { agentTimestampMs: agentTs } : {}),
-      }
+      const text = contentTextParts(parts)
+      return text ? [textKey('thought', text)] : []
     }
     case 'user_message_chunk': {
-      // Prefer content-block / chunk meta (TUI user_prompt_meta +
-      // user_message_chunk_meta); fall back to text-shape classification.
-      // Wire shape: update._meta = ContentChunk.meta (hideFromScrollback);
-      // content._meta = TextContent.meta (displayText / displayAsCron).
-      const chunkMeta = (up._meta ?? up.meta) as Record<string, unknown> | undefined
-      if (chunkMeta?.hideFromScrollback === true) return null
       const content = up.content as Record<string, unknown> | undefined
       const blockMeta =
         content && typeof content === 'object'
           ? ((content._meta ?? content.meta) as Record<string, unknown> | undefined)
           : undefined
-      if (blockMeta?.hideFromScrollback === true) return null
       const displayText =
         typeof blockMeta?.displayText === 'string' ? blockMeta.displayText : undefined
       const displayAsCron = blockMeta?.displayAsCron === true
-      const raw = displayText ?? contentText(up.content)
-      if (!raw) return null
-      // Pre-classify so history aggregation still carries isCron across chunks
-      // that already have displayAsCron; text-shape cron framing is applied
-      // after flush (full buffered text) in handleEvent.
-      const classified = classifyUserPrompt(raw, displayAsCron)
-      if (!classified) return null
-      return {
-        type: 'user_message',
-        text: classified.text,
-        isCron: classified.isCron || undefined,
-        ts: envelopeTimestamp(e),
-      }
+      const text = displayText ?? contentParts(up.content)
+        .filter((part): part is Extract<ContentPart, { kind: 'text' }> => part.kind === 'text')
+        .map((part) => part.text)
+        .join('')
+      const keys = text
+        ? (() => {
+            const classified = classifyUserPrompt(text, displayAsCron)
+            return classified
+              ? [textKey('user', classified.text, classified.isCron)]
+              : []
+          })()
+        : []
+      return keys.concat(
+        parts
+          .filter((part): part is Extract<ContentPart, { kind: 'image' }> => part.kind === 'image')
+          .map((part) => replayImageKey(part.data, part.mimeType)),
+      )
     }
     case 'tool_call':
-      return { type: 'tool_call', toolCall: up as unknown as ToolCall }
+      return [`tool_call:${stableReplayJson(toolReplayPayload(up))}`]
     case 'tool_call_update':
-      return { type: 'tool_call_update', toolCallUpdate: up as unknown as ToolCall }
+      return [`tool_update:${stableReplayJson(toolReplayPayload(up))}`]
     case 'plan':
-      return { type: 'plan', entries: up.entries }
+      return [`plan:${stableReplayJson(up.entries)}`]
     case 'usage_update':
-      return {
-        type: 'usage',
-        used: up.used as number | undefined,
-        size: up.size as number | undefined,
-        cost: up.cost,
+      return [`usage:${stableReplayJson({ used: up.used, size: up.size, cost: up.cost })}`]
+    case 'task_backgrounded': {
+      const task = historicalTaskEvent(up)
+      return task ? [`task:started:${stableReplayJson({ taskId: task.taskId, title: task.title })}`] : []
+    }
+    case 'task_completed': {
+      const task = historicalTaskEvent(up)
+      return task
+        ? [`task:completed:${stableReplayJson({ taskId: task.taskId, title: task.title, output: task.output })}`]
+        : []
+    }
+    default:
+      return kind ? [`notification:${kind}:${stableReplayJson(up)}`] : []
+  }
+}
+
+/** Stable semantic keys used to deduplicate buffered live events against a snapshot. */
+export function replayEventKeys(ev: AcpEvent): string[] {
+  switch (ev.type) {
+    case 'chunk':
+      return [`chunk:${stableReplayJson({ text: ev.text, ...(ev.agentTimestampMs != null ? { agentTimestampMs: ev.agentTimestampMs } : {}) })}`]
+    case 'thought':
+      return [`thought:${stableReplayJson({ text: ev.text, ...(ev.agentTimestampMs != null ? { agentTimestampMs: ev.agentTimestampMs } : {}) })}`]
+    case 'user_chunk':
+    case 'user_message': {
+      const raw =
+        ev.type === 'user_chunk' ? ev.displayText ?? ev.text : ev.text
+      const classified = classifyUserPrompt(
+        raw,
+        ev.type === 'user_message' ? ev.isCron : ev.displayAsCron,
+      )
+      return classified
+        ? [`user:${stableReplayJson({ text: classified.text, ...(classified.isCron ? { isCron: true } : {}), ...(ev.type === 'user_chunk' && ev.agentTimestampMs != null ? { agentTimestampMs: ev.agentTimestampMs } : {}) })}`]
+        : []
+    }
+    case 'image':
+      return [replayImageKey(ev.data, ev.mimeType)]
+    case 'tool_call':
+      return [`tool_call:${stableReplayJson(toolReplayPayload(ev.toolCall))}`]
+    case 'tool_call_update':
+      return [`tool_update:${stableReplayJson(toolReplayPayload(ev.toolCallUpdate))}`]
+    case 'plan':
+      return [`plan:${stableReplayJson(ev.entries)}`]
+    case 'task_lifecycle':
+      return [`task:${ev.kind}:${stableReplayJson({ taskId: ev.taskId, title: ev.title, output: ev.output })}`]
+    case 'usage':
+      return [`usage:${stableReplayJson({ used: ev.used, size: ev.size, cost: ev.cost })}`]
+    case 'session_notification': {
+      const update = ev.params?.update
+      if (update && typeof update === 'object' && !Array.isArray(update)) {
+        const keys = replayUpdateKeys(
+          update as Record<string, unknown>,
+          (ev.params?._meta as Record<string, unknown> | undefined),
+        )
+        if (keys.length > 0) return keys
       }
+      return [`notification:${stableReplayJson({ method: ev.method, params: ev.params })}`]
+    }
+    default:
+      return []
+  }
+}
+
+/** Keys for a stored envelope, including every content block in a mixed chunk. */
+export function replayEnvelopeKeys(env: unknown): string[] {
+  const e = env as RawEnvelope
+  const up = e.params?.update
+  if (!up) return []
+  return replayUpdateKeys(up, envelopeMeta(e))
+}
+
+function envelopeMeta(e: RawEnvelope): Record<string, unknown> {
+  const updateMeta = e.params?.update?._meta
+  return {
+    ...(updateMeta && typeof updateMeta === 'object' ? updateMeta : {}),
+    ...(e.params?._meta ?? {}),
+  } as Record<string, unknown>
+}
+
+function envelopeContentMeta(up: Record<string, unknown>): Record<string, unknown> {
+  const content = up.content
+  if (!content || typeof content !== 'object' || Array.isArray(content)) return {}
+  const object = content as Record<string, unknown>
+  return (object._meta ?? object.meta ?? {}) as Record<string, unknown>
+}
+
+function contentTextParts(parts: ContentPart[]): string {
+  return parts
+    .filter((part): part is Extract<ContentPart, { kind: 'text' }> => part.kind === 'text')
+    .map((part) => part.text)
+    .join('')
+}
+
+function imageEvents(
+  parts: ContentPart[],
+  meta: Record<string, unknown>,
+  ts: number | undefined,
+  role: 'user' | 'assistant',
+): AcpEvent[] {
+  const agentTimestampMs = finiteMetaNumber(meta.agentTimestampMs)
+  return parts
+    .filter((part): part is Extract<ContentPart, { kind: 'image' }> => part.kind === 'image')
+    .map((part) => ({
+      type: 'image' as const,
+      data: part.data,
+      mimeType: part.mimeType,
+      ts,
+      role,
+      ...(agentTimestampMs != null ? { agentTimestampMs } : {}),
+    }))
+}
+
+/** Convert one stored envelope into all renderable events, preserving mixed content blocks. */
+export function envelopeToEvents(env: unknown): AcpEvent[] {
+  const e = env as RawEnvelope
+  if (!e || (e.method !== 'session/update' && e.method !== '_x.ai/session/update')) {
+    return []
+  }
+  const up = e.params?.update
+  if (!up) return []
+  const ts = envelopeTimestamp(e)
+  const meta = envelopeMeta(e)
+  if (e.method === '_x.ai/session/update') {
+    if (up.sessionUpdate === 'turn_completed' || up.sessionUpdate === 'response_completed') {
+      return [turnCompletedEvent(up, completionEndMs(e), e.params?._meta)]
+    }
+    const taskEv = historicalTaskEvent(up)
+    if (taskEv) return [{ type: 'task_lifecycle', ...taskEv }]
+    return [{ type: 'session_notification', method: e.method, params: e.params }]
+  }
+  switch (up.sessionUpdate) {
+    case 'agent_message_chunk': {
+      const parts = contentParts(up.content)
+      const text = contentTextParts(parts)
+      const events: AcpEvent[] = []
+      if (text) {
+        events.push({
+          type: 'chunk',
+          text,
+          ts,
+          ...(finiteMetaNumber(meta.turnStartMs) != null ? { turnStartMs: finiteMetaNumber(meta.turnStartMs) } : {}),
+          ...(finiteMetaNumber(meta.streamStartMs) != null ? { streamStartMs: finiteMetaNumber(meta.streamStartMs) } : {}),
+          ...(finiteMetaNumber(meta.agentTimestampMs) != null ? { agentTimestampMs: finiteMetaNumber(meta.agentTimestampMs) } : {}),
+        })
+      }
+      events.push(...imageEvents(parts, meta, ts, 'assistant'))
+      return events
+    }
+    case 'agent_thought_chunk': {
+      const text = contentTextParts(contentParts(up.content))
+      if (!text) return []
+      const agentTs = finiteMetaNumber(meta.agentTimestampMs)
+      const streamStart = finiteMetaNumber(meta.streamStartMs)
+      const elapsedMs =
+        agentTs != null && streamStart != null && agentTs >= streamStart
+          ? agentTs - streamStart
+          : undefined
+      return [{
+        type: 'thought',
+        text,
+        ...(elapsedMs != null ? { elapsedMs } : {}),
+        ...(finiteMetaNumber(meta.turnStartMs) != null ? { turnStartMs: finiteMetaNumber(meta.turnStartMs) } : {}),
+        ...(streamStart != null ? { streamStartMs: streamStart } : {}),
+        ...(agentTs != null ? { agentTimestampMs: agentTs } : {}),
+      }]
+    }
+    case 'user_message_chunk': {
+      const chunkMeta = (up._meta ?? up.meta) as Record<string, unknown> | undefined
+      if (chunkMeta?.hideFromScrollback === true) return []
+      const blockMeta = envelopeContentMeta(up)
+      if (blockMeta.hideFromScrollback === true) return []
+      const parts = contentParts(up.content)
+      const raw =
+        typeof blockMeta.displayText === 'string'
+          ? blockMeta.displayText
+          : contentTextParts(parts)
+      const displayAsCron = blockMeta.displayAsCron === true
+      const events: AcpEvent[] = []
+      if (raw) {
+        const classified = classifyUserPrompt(raw, displayAsCron)
+        if (classified) {
+          events.push({
+            type: 'user_message',
+            text: classified.text,
+            isCron: classified.isCron || undefined,
+            ts,
+          })
+        }
+      }
+      events.push(...imageEvents(parts, meta, ts, 'user'))
+      return events
+    }
+    case 'tool_call':
+      return [{ type: 'tool_call', toolCall: up as unknown as ToolCall, ...(finiteMetaNumber(meta.agentTimestampMs) != null ? { agentTimestampMs: finiteMetaNumber(meta.agentTimestampMs) } : {}) }]
+    case 'tool_call_update':
+      return [{ type: 'tool_call_update', toolCallUpdate: up as unknown as ToolCall, ...(finiteMetaNumber(meta.agentTimestampMs) != null ? { agentTimestampMs: finiteMetaNumber(meta.agentTimestampMs) } : {}) }]
+    case 'plan':
+      return [{ type: 'plan', entries: up.entries, ...(finiteMetaNumber(meta.agentTimestampMs) != null ? { agentTimestampMs: finiteMetaNumber(meta.agentTimestampMs) } : {}) }]
+    case 'usage_update':
+      return [{ type: 'usage', used: up.used as number | undefined, size: up.size as number | undefined, cost: up.cost }]
     case 'current_mode_update': {
-      // The stored envelope carries {currentModeId} directly on the update
-      // (the session/new|load `modes` shape), NOT inside modeState — the
-      // old mapping read up.modeState, so plan/permission mode never
-      // survived history replay. Feed either shape through extractModeFlags.
-      const ms =
-        up.modeState ??
-        (typeof up.currentModeId === 'string'
-          ? { currentModeId: up.currentModeId }
-          : undefined)
-      return ms ? { type: 'modes_update', modes: ms } : null
+      const ms = up.modeState ?? (typeof up.currentModeId === 'string' ? { currentModeId: up.currentModeId } : undefined)
+      return ms ? [{ type: 'modes_update', modes: ms }] : []
     }
     case 'config_option_update':
-      return { type: 'config_options_update', configOptions: up.configOptions }
+      return [{ type: 'config_options_update', configOptions: up.configOptions }]
     case 'session_info_update': {
-      // 存储包络的 _meta 带 x.ai/titleIsManual（true=手动改名，false=
-      // /rename --auto 结果，缺省=自动标题）——随事件带给消费端
-      // （extMisc session_info case 据此阻止自动标题覆盖手动改名）。
-      const meta = (e.params?._meta ?? {}) as Record<string, unknown>
       const titleIsManual = meta['x.ai/titleIsManual']
-      return {
+      return [{
         type: 'session_info',
         title: up.title as string | undefined,
         ...(typeof titleIsManual === 'boolean' ? { titleIsManual } : {}),
-      }
+      }]
     }
-    // Stored task lifecycle events render as display-only bg_task rows
-    // in history (same look as live, never captured into the task
-    // system): the live running set is established once at resume via
-    // the host liveness probe; a captured row for a long-dead task would
-    // stick as "running" forever.
     case 'task_backgrounded':
     case 'task_completed': {
       const taskEv = historicalTaskEvent(up)
-      return taskEv ? { type: 'task_lifecycle', ...taskEv } : null
+      return taskEv ? [{ type: 'task_lifecycle', ...taskEv }] : []
     }
-    // Turn-end markers: every finished turn is stored with its closing
-    // turn_completed (some builds use response_completed). Without it the
-    // replayed scrollback would keep the turn's last thought/assistant
-    // streaming forever — "stuck mid-thinking" after resuming history.
     case 'turn_completed':
     case 'response_completed':
-      return turnCompletedEvent(up, completionEndMs(e), e.params?._meta)
+      return [turnCompletedEvent(up, completionEndMs(e), e.params?._meta)]
     default:
-      // Standard carrier lifecycle kinds: route through the same
-      // session_notification channel as the live bridge's default arm
-      // (subagent/task/monitor/response/compact/recap/…).
-      return {
-        type: 'session_notification',
-        method: e.method,
-        params: e.params,
-      }
+      return [{ type: 'session_notification', method: e.method, params: e.params }]
   }
+}
+
+/** Backward-compatible single-event view; mixed content uses the first block. */
+export function envelopeToEvent(env: unknown): AcpEvent | null {
+  return envelopeToEvents(env)[0] ?? null
 }
 
 /**

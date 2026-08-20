@@ -99,7 +99,7 @@ export type AcpEvent =
    * ({type:'image', data, mimeType} content blocks). `data` is a data URI
    * or bare base64; bare base64 is wrapped with `mimeType` at the store.
    */
-  | { type: 'image'; sessionId?: string; data: string; mimeType?: string; ts?: number }
+  | { type: 'image'; sessionId?: string; data: string; mimeType?: string; ts?: number; agentTimestampMs?: number; role?: 'user' | 'assistant' }
   | {
       type: 'task_lifecycle'
       /**
@@ -145,9 +145,9 @@ export type AcpEvent =
       /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
       sessionId?: string
     }
-  | { type: 'tool_call'; toolCall: ToolCall; sessionId?: string }
-  | { type: 'tool_call_update'; toolCallUpdate: ToolCall; sessionId?: string }
-  | { type: 'plan'; entries: unknown; sessionId?: string }
+  | { type: 'tool_call'; toolCall: ToolCall; sessionId?: string; agentTimestampMs?: number }
+  | { type: 'tool_call_update'; toolCallUpdate: ToolCall; sessionId?: string; agentTimestampMs?: number }
+  | { type: 'plan'; entries: unknown; sessionId?: string; agentTimestampMs?: number }
   /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
   | {
       type: 'usage'

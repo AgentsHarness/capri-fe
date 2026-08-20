@@ -209,7 +209,7 @@ export function handleUserStreamEvent(
         const sealed = sealThought(get())
         const { openAssistantId, entries } = sealed
         const img = { data: src, mimeType: ev.mimeType }
-        if (openAssistantId) {
+        if (openAssistantId && ev.role !== 'user') {
           set({
             ...sealed,
             conn: 'busy',
