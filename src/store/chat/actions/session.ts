@@ -325,16 +325,22 @@ export function sessionActions(set: SetState, get: () => ChatState) {
     try {
       const info = await transport.gitInfo(s.sessionId, s.cwd)
       if (!isAsyncScopeCurrent(get, scope)) return
+      // 降级保护：git_head_changed 事件携带 agent 的三路 worktree 检测
+      // 结果（linked / standalone grok clone / worktree DB），host 轮询
+      // 探测（rev-parse + marker 兜底）仍可能漏判（如纯 DB label 记录、
+      // 新旧 host 混排期）。事件已给出 isWorktree:true 而轮询说 false
+      // 时保留事件值——轮询只是兜底，不能把已对齐的显示降级回去；分支
+      // 缺失时 worktree 字段也不再被清零。
+      const prev = get().gitInfo
+      const downgrade = prev?.isWorktree === true && !info.isWorktree && !info.mainRepo
       // Empty branch = not a git repo (or detached without a name) — hide
       // the status-bar branch entirely rather than showing "(detached)".
       set({
-        gitInfo: info.branch
-          ? {
-              branch: info.branch,
-              isWorktree: !!info.isWorktree,
-              mainRepo: info.mainRepo ?? null,
-            }
-          : { branch: null, isWorktree: false, mainRepo: null },
+        gitInfo: {
+          branch: info.branch ? info.branch : null,
+          isWorktree: downgrade ? true : !!info.isWorktree,
+          mainRepo: downgrade ? (prev.mainRepo ?? null) : (info.mainRepo ?? null),
+        },
       })
     } catch {
       /* ignore — keep whatever git_head_changed delivered */
