@@ -693,14 +693,20 @@ function EffortListEditor({
   value?: CustomModelConfig['reasoning_efforts']
   onChange: (v?: CustomModelConfig['reasoning_efforts']) => void
 }) {
-  const rows = (value ?? []).map((r) =>
-    typeof r === 'string'
-      ? { value: r, label: '', default: false }
-      : { value: r.value ?? '', label: r.label ?? '', default: r.default === true },
+  // 本地草稿态：value 为空的行（新增行、只填了 label 的行）保留在本地参与
+  // 渲染，只有非空行才向上 emit——否则「＋ 添加档位」的空行会被立即过滤，
+  // 按钮看起来没反应。
+  const [rows, setRows] = useState(() =>
+    (value ?? []).map((r) =>
+      typeof r === 'string'
+        ? { value: r, label: '', default: false }
+        : { value: r.value ?? '', label: r.label ?? '', default: r.default === true },
+    ),
   )
-  const emit = (rows: { value: string; label: string; default: boolean }[]) => {
+  const update = (next: { value: string; label: string; default: boolean }[]) => {
+    setRows(next)
     const out: NonNullable<CustomModelConfig['reasoning_efforts']> = []
-    for (const r of rows) {
+    for (const r of next) {
       if (!r.value) continue
       out.push({
         value: r.value,
@@ -720,7 +726,7 @@ function EffortListEditor({
             onChange={(e) => {
               const next = [...rows]
               next[i] = { ...r, value: e.target.value }
-              emit(next)
+              update(next)
             }}
           >
             <option value="">（选择档位）</option>
@@ -737,7 +743,7 @@ function EffortListEditor({
             onChange={(e) => {
               const next = [...rows]
               next[i] = { ...r, label: e.target.value }
-              emit(next)
+              update(next)
             }}
           />
           <label className="flex items-center gap-1 text-[10.5px] text-gn-muted">
@@ -747,7 +753,7 @@ function EffortListEditor({
               onChange={(e) => {
                 const next = [...rows]
                 next[i] = { ...r, default: e.target.checked }
-                emit(next)
+                update(next)
               }}
               className="accent-gn-magenta"
             />
@@ -755,7 +761,7 @@ function EffortListEditor({
           </label>
           <button
             type="button"
-            onClick={() => emit(rows.filter((_, j) => j !== i))}
+            onClick={() => update(rows.filter((_, j) => j !== i))}
             className="rounded px-1 text-[11px] text-gn-muted hover:text-gn-red"
           >
             ✕
@@ -764,7 +770,7 @@ function EffortListEditor({
       ))}
       <button
         type="button"
-        onClick={() => emit([...rows, { value: '', label: '', default: false }])}
+        onClick={() => update([...rows, { value: '', label: '', default: false }])}
         className="rounded border border-gn-prompt-border px-2 py-px text-[10.5px] text-gn-muted hover:text-gn-fg"
       >
         ＋ 添加档位
