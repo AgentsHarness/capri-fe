@@ -89,6 +89,43 @@ function finiteMetaNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
+/**
+ * Live-event agent timestamp (epoch ms). Host forwards `_meta.agentTimestampMs`
+ * as a top-level field on chunk / user_chunk / thought; nested `params._meta`
+ * / `update._meta` are accepted so gap-pull frames still compare against
+ * loadHistory's snapTail.
+ */
+export function eventAgentTimestampMs(ev: unknown): number | undefined {
+  if (!ev || typeof ev !== 'object') return undefined
+  const e = ev as Record<string, unknown>
+  const direct = finiteMetaNumber(e.agentTimestampMs)
+  if (direct != null) return direct
+  const params = e.params
+  if (params && typeof params === 'object' && !Array.isArray(params)) {
+    const p = params as Record<string, unknown>
+    const fromParams = finiteMetaNumber(
+      (p._meta as Record<string, unknown> | undefined)?.agentTimestampMs,
+    )
+    if (fromParams != null) return fromParams
+    const update = p.update
+    if (update && typeof update === 'object' && !Array.isArray(update)) {
+      const fromUpdate = finiteMetaNumber(
+        ((update as Record<string, unknown>)._meta as Record<string, unknown> | undefined)
+          ?.agentTimestampMs,
+      )
+      if (fromUpdate != null) return fromUpdate
+    }
+  }
+  const update = e.update
+  if (update && typeof update === 'object' && !Array.isArray(update)) {
+    return finiteMetaNumber(
+      ((update as Record<string, unknown>)._meta as Record<string, unknown> | undefined)
+        ?.agentTimestampMs,
+    )
+  }
+  return undefined
+}
+
 type ContentPart =
   | { kind: 'text'; text: string }
   | { kind: 'image'; data: string; mimeType?: string }
@@ -267,6 +304,13 @@ export function findOptimisticUserAbsorbIndex(
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i]
     if (e.kind === 'thought') continue
+    // Closed-turn chrome sits after the last user ("Worked for Xs"). Walk
+    // past it so a recap echo can still merge; do NOT walk past assistant
+    // / tool content — that would absorb a repeated prompt into the
+    // previous turn.
+    if (e.kind === 'session_event' || e.kind === 'status' || e.kind === 'error') {
+      continue
+    }
     if (e.kind === 'user' && userPromptTextsMatch(e.text, echoText)) return i
     return -1
   }

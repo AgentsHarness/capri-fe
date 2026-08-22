@@ -5,6 +5,7 @@ import {
   envelopeTimestamp,
   envelopeToEvent,
   envelopeToEvents,
+  eventAgentTimestampMs,
   extractCronPromptBody,
   findOptimisticUserAbsorbIndex,
   normalizeUserPromptText,
@@ -126,6 +127,44 @@ describe('findOptimisticUserAbsorbIndex', () => {
   it('无 pendingId → 忽略末尾 thought 找匹配 user；text 不匹配 → -1', () => {
     expect(findOptimisticUserAbsorbIndex(entries, undefined, 'second')).toBe(2)
     expect(findOptimisticUserAbsorbIndex(entries, undefined, 'nope')).toBe(-1)
+  })
+
+  it('越过回合收口 chrome（Worked for / status / error）仍命中最后一条 user', () => {
+    const withMarker: ScrollEntry[] = [
+      { id: 'u2', kind: 'user', text: 'second' },
+      { id: 'm', kind: 'session_event', text: 'Worked for 1.0s' },
+    ]
+    expect(findOptimisticUserAbsorbIndex(withMarker, undefined, 'second')).toBe(0)
+    expect(
+      findOptimisticUserAbsorbIndex(
+        [
+          { id: 'u2', kind: 'user', text: 'second' },
+          { id: 'a', kind: 'assistant', text: 'reply' },
+          { id: 'm', kind: 'session_event', text: 'Worked for 1.0s' },
+        ],
+        undefined,
+        'second',
+      ),
+    ).toBe(-1)
+  })
+})
+
+describe('eventAgentTimestampMs', () => {
+  it('顶层 / params._meta / update._meta', () => {
+    expect(eventAgentTimestampMs({ type: 'chunk', agentTimestampMs: 9 })).toBe(9)
+    expect(
+      eventAgentTimestampMs({
+        type: 'chunk',
+        params: { _meta: { agentTimestampMs: 11 } },
+      }),
+    ).toBe(11)
+    expect(
+      eventAgentTimestampMs({
+        type: 'session_notification',
+        params: { update: { _meta: { agentTimestampMs: 13 } } },
+      }),
+    ).toBe(13)
+    expect(eventAgentTimestampMs({ type: 'chunk', text: 'x' })).toBeUndefined()
   })
 })
 

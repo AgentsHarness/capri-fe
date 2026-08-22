@@ -1,5 +1,6 @@
 import type { AcpEvent } from '../../api/types'
 import type { ChatState, SetState } from './types'
+import { dropLiveCoveredBySnapshot } from './globals'
 import { flushStreamBufBeforeEvent } from './stream'
 import { handleConnEvent } from './events/conn'
 import { handleUserStreamEvent } from './events/userStream'
@@ -17,6 +18,13 @@ export function handleChatEvent(
   // resync 由 transport/init 层处理（全量重建，见 store/chat/resync.ts），
   // 不是聊天事件；任何其他路径漏到这里都直接忽略，绝不参与流缓冲/分发。
   if (ev.type === 'resync') return
+  // Page refresh of a completed turn: hello → loadHistory paints the
+  // snapshot, then hub gap-pull replays the same last-turn live events
+  // after historyLoading drops. Those frames carry sessionId + the
+  // original agentTimestampMs ≤ snapTail — drop them so the last
+  // message is not appended a second time. Snapshot replay has no
+  // sessionId and is unaffected.
+  if (dropLiveCoveredBySnapshot(ev)) return
   const raw = ev as { update?: unknown }
   if (raw.update && typeof raw.update === 'object') {
     const u = raw.update as { sessionUpdate?: unknown }

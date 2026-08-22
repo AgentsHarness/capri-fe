@@ -3,6 +3,8 @@ export {
   historicalTaskEvent,
   type RawEnvelope,
   envelopeTimestamp,
+  envelopeAgentTimestampMs,
+  eventAgentTimestampMs,
   stripContextWrappers,
   extractCronPromptBody,
   userMessageHiddenFromScrollback,

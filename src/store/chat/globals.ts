@@ -1,5 +1,6 @@
 import type { AcpEvent } from '../../api/types'
 import type { ChatState } from './types'
+import { eventAgentTimestampMs } from './envelopeParse'
 
 /** 会话完成提醒去重窗口：同一会话在此窗口内只通知一次。 */
 export const NOTICE_DEDUP_WINDOW_MS = 30_000
@@ -26,7 +27,11 @@ export const runtime = {
    * 实时处理）。
    */
   historyWindowBuffer: [] as AcpEvent[],
-  /** 最近一次快照（/api/session-updates）末尾 envelope 的写盘时间戳（epoch ms）。 */
+  /**
+   * 最近一次快照末尾 envelope 的 agent 时间戳（epoch ms）。窗口期缓冲
+   * 回放用它做时间兜底；historyLoading 落回 false 之后，hello 刷新路径
+   * 的 hub gap-pull 仍用同一水位丢掉已在快照里的 live 事件。
+   */
   historySnapTail: undefined as number | undefined,
   /** Stable semantic keys for the envelopes included in the current snapshot. */
   historySnapEventKeys: new Map<string, number>(),
@@ -72,6 +77,35 @@ export function isAsyncScopeCurrent(
     (scope.sessionId == null || scope.sessionId === s.sessionId) &&
     (scope.cwd == null || scope.cwd === s.cwd)
   )
+}
+
+/**
+ * Live content types that, if already in the history snapshot, would paint
+ * a second copy of the last turn after a page refresh (hello → loadHistory
+ * then hub gap-pull). Control events (hello/ready/done/client_request/…)
+ * must not be gated — they have no snapshot counterpart, or the terminal
+ * path is already idempotent.
+ */
+const SNAPSHOT_LIVE_DEDUP_TYPES = new Set([
+  'chunk',
+  'thought',
+  'user_chunk',
+  'user_message',
+  'image',
+])
+
+/**
+ * Drop a live/gap-pull event already covered by the just-loaded snapshot.
+ * History replay envelopes have no sessionId and must pass; only wire
+ * events (hello-path gap-pull after historyLoading falls) are filtered.
+ */
+export function dropLiveCoveredBySnapshot(ev: AcpEvent): boolean {
+  if (!SNAPSHOT_LIVE_DEDUP_TYPES.has(ev.type)) return false
+  if ((ev as { sessionId?: string }).sessionId == null) return false
+  const tail = runtime.historySnapTail
+  if (tail == null) return false
+  const ts = eventAgentTimestampMs(ev)
+  return ts != null && ts <= tail
 }
 
 export function bufferHistoryWindowEvent(ev: AcpEvent): void {

@@ -24,19 +24,10 @@ import { entryTimestamp } from './entries'
 import {
   envelopeAgentTimestampMs,
   envelopeTimestamp,
+  eventAgentTimestampMs,
   replayEnvelopeKeys,
   replayEventKeys,
 } from './envelopeParse'
-
-/**
- * Compare agent milliseconds with stored envelope time in epoch milliseconds.
- * Unknown time is not a reason to drop content: semantic keys are the stable
- * boundary fallback, while events with no key are replayed conservatively.
- */
-function finiteAgentTimestamp(ev: unknown): number | undefined {
-  const value = (ev as { agentTimestampMs?: unknown }).agentTimestampMs
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
-}
 
 /**
  * Replay events received while rebuilding a history snapshot. Timestamp is
@@ -61,7 +52,7 @@ export function replayHistoryWindowBuffer(get: () => ChatState): void {
       }
     }
     if (knownInSnapshot) continue
-    const ts = finiteAgentTimestamp(ev)
+    const ts = eventAgentTimestampMs(ev)
     if (snapTail != null && ts != null && ts <= snapTail) continue
     // With no comparable timestamp or key, retaining the event is safer than
     // silently losing a tool/plan/image update during the load window.
@@ -259,6 +250,11 @@ export async function loadHistory(
         ? turnIdx > 0
         : loadedStart > 0 && historyHasMorePage(total || undefined, loaded, fetched, INITIAL_TURN_LIMIT)
       if (staleLoad()) return
+      // snapTail 必须在 historyLoading 落回 false 之前生效：刷新走
+      // hello → loadHistory，门控一落，hub gap-pull 的上一轮 live
+      // 事件会当新事件进 handleEvent；水位晚于门控的话最后一条会再
+      // 画一遍（user_chunk 还会清掉 lastCompletedTurn，整轮复读）。
+      runtime.historySnapTail = snapTail
       set({
         historyTotalCount: total || undefined,
         historyLoadedCount: loaded,
@@ -311,7 +307,6 @@ export async function loadHistory(
       // 方案 A：快照重建完成，回放窗口期（historyLoading 期间）缓冲的
       // live 内容事件——busy 会话切换时快照拉取间隙产生的 chunk/
       // thought 不丢。会话已切走时丢弃残留（回放会污染新会话视图）。
-      runtime.historySnapTail = snapTail
       if (staleLoad()) {
         clearHistoryWindowBuffer()
         return
