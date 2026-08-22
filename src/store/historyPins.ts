@@ -1,6 +1,7 @@
 import { loadJSON, loadStr, removeKey, saveJSON, saveStr } from '../lib/storage'
 import { create } from 'zustand'
 import type { FePrefsDoc, HubPrefsDoc, SessionInfo, TodoStatus, WorkspaceGroup } from '../api/types'
+import { PrefsConflictError } from '../api/transport'
 import { sessionSortRank } from './historyGroups'
 import { transport } from '../api/client'
 
@@ -23,9 +24,18 @@ import { transport } from '../api/client'
  *   hub 地址取 prefsOrigin()：跨源直连 / host 报的 HUB_URL /
  *   同源部署回退页面 origin；local 模式无 hub 地址，仅走 localStorage。
  *
+ * 版本与冲突（hub 支持 version 时）：hub 给文档维护单调递增版本，
+ * 回写带 baseVersion 条件写；版本过旧 hub 回 409 + 当前文档，本地把
+ * 待推「操作」（自上次成功同步以来的 ops 日志）重放到该文档上再重试
+ * ——全量覆盖会踩掉别端在该版本窗口里的删除，重放不会。旧 hub 无
+ * 版本概念 → 无条件写（退化为后写覆盖）。
+ *
  * 并发语义：同一时刻只有一端在写（单用户多浏览器、低频操作），后写
- * 覆盖收敛一致；毫秒级竞态窗口内本地未推送的变更以「合并（本地优先）」
- * 保留，不丢操作。
+ * 覆盖收敛一致。本地未推送（dirty）期间收到的 prefs_changed 一律
+ * 忽略、保本地，由随后的回写落地（不做并集合并——并集表达不了删除，
+ * 会把别端刚删的置顶/待办复活再写回 hub）；曾同步过的端再次同步时
+ * 以 hub 文档为准（含删除），只有从未同步过的端（迁移 / 首连）才把
+ * 本地条目并集补齐上推。WS 重连（hub_conn）补拉一次对齐断线缺口。
  *
  * 通过 zustand 暴露，保证组件在 toggle 后立即重渲染。
  */
@@ -35,8 +45,14 @@ const PIN_KEY = 'acpfe.historyPins'
 const SYNC_KEY = 'acpfe.historyPins.synced'
 /** 本地有尚未 PUT 成功的变更（跨刷新保留，避免启动时被 hub 覆盖）。 */
 const DIRTY_KEY = 'acpfe.historyPins.dirty'
+/** hub 文档版本（CAS base；无此键 = hub 不支持版本 / 未知）。 */
+const VER_KEY = 'acpfe.historyPins.ver'
+/** 自上次成功同步以来的本地操作日志（冲突重放用，跨刷新保留）。 */
+const OPS_KEY = 'acpfe.historyPins.ops'
 /** 变更后延迟多久统一回写 hub（合并连续点击）。 */
 const HUB_PUSH_DEBOUNCE_MS = 500
+/** 版本冲突重放上限：超过说明竞争异常激烈，保留 dirty/ops 待下次再推。 */
+const HUB_CONFLICT_RETRIES = 4
 
 export type HistoryPins = {
   pinnedWorkspaces: Set<string>
@@ -55,11 +71,6 @@ export type FePrefs = {
 
 function defaultFePrefs(): FePrefs {
   return { collapseToolGroups: true }
-}
-
-/** fePrefs 全为默认值（对 isEmptyPrefs 无贡献）。 */
-function fePrefsIsDefault(p: FePrefs): boolean {
-  return p.collapseToolGroups === true
 }
 
 function toStringSet(v: unknown): Set<string> {
@@ -167,15 +178,6 @@ function applyHubPreservingFePrefs(
   return hasFePrefs ? hub : { ...hub, fePrefs: local.fePrefs }
 }
 
-function isEmptyPrefs(p: HistoryPins): boolean {
-  return (
-    p.pinnedWorkspaces.size === 0 &&
-    p.pinnedSessions.size === 0 &&
-    Object.keys(p.todos).length === 0 &&
-    fePrefsIsDefault(p.fePrefs)
-  )
-}
-
 function snapshot(p: HistoryPins): string {
   return JSON.stringify({
     pinnedWorkspaces: [...p.pinnedWorkspaces].sort(),
@@ -192,6 +194,99 @@ function markSynced(p: HistoryPins): void {
 function localUnsynced(p: HistoryPins): boolean {
   const last = loadStr(SYNC_KEY)
   return last != null && last !== snapshot(p)
+}
+
+// ── 版本（CAS base）与操作日志（冲突重放） ─────────────────────────────
+// 两者都从 localStorage 读穿（无内存缓存）：多标签页共享同一份存储，
+// 测试间 clear 也能自动复位。
+
+/** hub 文档版本；null = hub 不支持版本 / 未知 → 无条件写。 */
+function hubBaseVersion(): number | null {
+  const raw = loadStr(VER_KEY)
+  if (raw == null || raw === '') return null
+  const n = Number(raw)
+  return Number.isSafeInteger(n) && n >= 0 ? n : null
+}
+
+function setHubBaseVersion(v: number | null): void {
+  if (v == null) removeKey(VER_KEY)
+  else saveStr(VER_KEY, String(v))
+}
+
+/** 自上次成功同步以来的本地操作（重放到任意 hub 文档都保持语义：删除不会复活、新增不会丢失）。 */
+export type PrefsOp =
+  | { kind: 'workspacePin'; cwd: string; on: boolean }
+  | { kind: 'sessionPin'; sessionId: string; on: boolean }
+  | { kind: 'todo'; sessionId: string; status: TodoStatus | null }
+  | { kind: 'fePrefs'; patch: Partial<FePrefs> }
+
+function sanitizeOps(v: unknown): PrefsOp[] {
+  if (!Array.isArray(v)) return []
+  return v.filter((x): x is PrefsOp => {
+    if (!x || typeof x !== 'object') return false
+    const op = x as Record<string, unknown>
+    switch (op.kind) {
+      case 'workspacePin':
+        return typeof op.cwd === 'string' && typeof op.on === 'boolean'
+      case 'sessionPin':
+        return typeof op.sessionId === 'string' && typeof op.on === 'boolean'
+      case 'todo':
+        return (
+          typeof op.sessionId === 'string' &&
+          (op.status == null || op.status === 'todo' || op.status === 'completed')
+        )
+      case 'fePrefs':
+        return !!op.patch && typeof op.patch === 'object' && !Array.isArray(op.patch)
+      default:
+        return false
+    }
+  })
+}
+
+function pendingOps(): PrefsOp[] {
+  return sanitizeOps(loadJSON(OPS_KEY, []))
+}
+
+function recordOp(op: PrefsOp): void {
+  saveJSON(OPS_KEY, [...pendingOps(), op])
+}
+
+function clearOps(): void {
+  removeKey(OPS_KEY)
+}
+
+/** 把操作日志按原顺序重放到任意基础文档上（基础里别端的删除得以保留）。 */
+function replayOps(base: HistoryPins, ops: PrefsOp[]): HistoryPins {
+  let next = base
+  for (const op of ops) {
+    switch (op.kind) {
+      case 'workspacePin': {
+        const ws = new Set(next.pinnedWorkspaces)
+        if (op.on) ws.add(op.cwd)
+        else ws.delete(op.cwd)
+        next = { ...next, pinnedWorkspaces: ws }
+        break
+      }
+      case 'sessionPin': {
+        const ss = new Set(next.pinnedSessions)
+        if (op.on) ss.add(op.sessionId)
+        else ss.delete(op.sessionId)
+        next = { ...next, pinnedSessions: ss }
+        break
+      }
+      case 'todo': {
+        const todos = { ...next.todos }
+        if (op.status == null) delete todos[op.sessionId]
+        else todos[op.sessionId] = op.status
+        next = { ...next, todos }
+        break
+      }
+      case 'fePrefs':
+        next = { ...next, fePrefs: { ...next.fePrefs, ...op.patch } }
+        break
+    }
+  }
+  return next
 }
 
 /** 本地有 hub 没有的置顶/待办（或待办状态不同）——未推送的新增。 */
@@ -217,8 +312,9 @@ function mergeLocalOverHub(hub: HistoryPins, local: HistoryPins): HistoryPins {
 let hubPushTimer: ReturnType<typeof setTimeout> | null = null
 /**
  * 本地有尚未推送成功的变更（防抖等待中 / 上次 PUT 失败）。收到他人
- * 广播时据此决定「合并保留本地」还是「以 hub 为准替换」——只有毫秒级
- * 竞态窗口内会合并，正常流一律替换（删除才能同步）。
+ * 广播时据此决定「忽略广播保本地」还是「以 hub 为准替换」——dirty
+ * 期间不并集合并（并集表达不了删除，会把别端刚删的置顶/待办复活，
+ * 再随防抖 PUT 写死到 hub），待推改动由随后的回写以后写覆盖落地。
  * 跨刷新持久化到 DIRTY_KEY，避免 local 模式跳过推送后重启被 hub 覆盖。
  */
 let hubDirty = loadStr(DIRTY_KEY) === '1'
@@ -245,16 +341,72 @@ function scheduleHubPush(): void {
   }, HUB_PUSH_DEBOUNCE_MS)
 }
 
-async function pushToHub(): Promise<void> {
-  try {
-    const s = usePins.getState()
-    await transport.putPrefs(toWire(s))
-    setDirty(false)
-    markSynced(s)
-  } catch (err) {
-    // 写失败（无 hub 地址 / 网络）：保留本地状态与 dirty，下次变更或启动再推。
-    console.warn('[pins] hub 持久化失败（已保留本地）', err)
+/** 是否有一轮回写在跑（串行执行，见 pushToHub）。 */
+let hubPushRunning = false
+/** 跑动期间又有推送请求：本轮结束后再推一轮最新状态。 */
+let hubPushAgain = false
+/** 最后一轮回写的完成信号（syncPrefsFromHub 等待用）。 */
+let hubPushDone: Promise<void> = Promise.resolve()
+
+/**
+ * 回写 hub（推「当前」状态）；尚无 hub 地址 / 失败都静默降级（本地
+ * 状态不丢，dirty 保留）。串行执行：同时最多一个 PUT 在飞，跑动期间
+ * 到来的请求只标记「再来一轮」，避免两个 PUT 乱序落地把旧文档写回
+ * hub。带 baseVersion 条件写：409 时 hub 已在冲突响应带回当前文档，
+ * 把本地待推「操作」重放到上面再重试——全量覆盖会踩掉别端在该版本
+ * 窗口里的删除。PUT 成功后仅当所推快照仍等于当前状态才清 dirty /
+ * markSynced / 清 ops——在飞期间的新编辑保持 dirty（其防抖定时器已
+ * armed，下一轮收敛），否则自己 PUT 的回声广播到达时会以 hub 为准
+ * 整体替换，把尚未推送的编辑冲掉。dirty / markSynced / ops 的收敛
+ * 只在这里发生（syncPrefsFromHub 的上推分支也复用本函数）。
+ */
+function pushToHub(): Promise<void> {
+  if (hubPushRunning) {
+    hubPushAgain = true
+    return hubPushDone
   }
+  hubPushRunning = true
+  hubPushDone = (async () => {
+    try {
+      // 外层 do-while：串行排队（跑动期间到来的请求标记「再来一轮」，
+      // 推最新状态）；内层 for：单轮内的版本冲突重放重试。
+      do {
+        hubPushAgain = false
+        for (let attempt = 0; ; attempt++) {
+          const s = usePins.getState()
+          let okVersion: number | undefined
+          try {
+            const res = await transport.putPrefs(toWire(s), hubBaseVersion() ?? undefined)
+            okVersion = res?.version
+          } catch (err) {
+            if (err instanceof PrefsConflictError && attempt < HUB_CONFLICT_RETRIES) {
+              // baseVersion 过期：重放待推操作到 hub 当前文档再重试。
+              // 无操作记录（异常场景）时重放结果即 hub 文档，等价于
+              // 放弃本地陈旧内容（dirty/ops 保留，正常流程不会走到）。
+              if (typeof err.version === 'number') setHubBaseVersion(err.version)
+              applyPrefs(replayOps(fromWire(err.prefs ?? {}), pendingOps()))
+              continue
+            }
+            throw err
+          }
+          if (typeof okVersion === 'number') setHubBaseVersion(okVersion)
+          if (snapshot(usePins.getState()) === snapshot(s)) {
+            setDirty(false)
+            markSynced(s)
+            clearOps()
+          }
+          break
+        }
+      } while (hubPushAgain)
+    } catch (err) {
+      // 写失败（无 hub 地址 / 网络 / 重放超限）：保留本地状态与 dirty，
+      // 下次变更或启动再推。
+      console.warn('[pins] hub 持久化失败（已保留本地）', err)
+    } finally {
+      hubPushRunning = false
+    }
+  })()
+  return hubPushDone
 }
 
 /** 以一份权威文档替换本地（写 localStorage + 内存）。 */
@@ -264,26 +416,26 @@ function applyPrefs(next: HistoryPins): void {
 }
 
 // 模块级注册：hub 广播 prefs_changed（任意一端 PUT 成功后）→ 本浏览器
-// 实时应用，无需刷新。dirty（自己的变更还没推上去）时合并本地优先，
-// 避免刚点的操作被他人文档冲掉；否则以 hub 为准整体替换（含删除）。
+// 实时应用，无需刷新。dirty（自己的变更还没推上去）时忽略本次广播、
+// 保本地不动——并集合并会把刚删除的置顶/待办复活，随后防抖 PUT 把
+// 复活后的文档写死到 hub；待推改动由随后的回写（含冲突重放）落地。
+// 干净时以 hub 为准整体替换（含删除），并跟随广播推进 CAS base——
+// dirty 时故意不推进，让下一次推送 409 → 重放，而不是拿旧 base
+// 静默覆盖别端改动。
+// hub_conn 上线（WS 连接/重连成功）：断线期间可能错过广播，补一次
+// syncPrefsFromHub——干净时应用别端改动（含删除），dirty 时重试上推。
 transport.onEvent((ev) => {
+  if (ev.type === 'hub_conn') {
+    if (ev.online) void usePins.getState().syncPrefsFromHub()
+    return
+  }
   if (ev.type !== 'prefs_changed') return
-  const params = (ev as { params?: { prefs?: HubPrefsDoc } }).params
+  const params = (ev as { params?: { prefs?: HubPrefsDoc; version?: number } }).params
   const raw = params?.prefs
   if (!raw) return
-  const hub = fromWire(raw)
-  const s = usePins.getState()
-  if (hubDirty) {
-    const merged: HistoryPins = {
-      pinnedWorkspaces: new Set([...s.pinnedWorkspaces, ...hub.pinnedWorkspaces]),
-      pinnedSessions: new Set([...s.pinnedSessions, ...hub.pinnedSessions]),
-      todos: { ...hub.todos, ...s.todos },
-      fePrefs: { ...hub.fePrefs, ...s.fePrefs },
-    }
-    applyPrefs(merged)
-  } else {
-    applyPrefs(applyHubPreservingFePrefs(raw, hub, s))
-  }
+  if (hubDirty) return
+  if (typeof params?.version === 'number') setHubBaseVersion(params.version)
+  applyPrefs(applyHubPreservingFePrefs(raw, fromWire(raw), usePins.getState()))
 })
 
 /** 置顶/待办 + 前端偏好 + 动作的完整 store 形态。 */
@@ -294,7 +446,7 @@ export type HubPrefsState = HistoryPins & {
   setTodoStatus: (sessionId: string, status: TodoStatus | null) => void
   /** 更新 FE 前端偏好（与置顶/待办同一 hub prefs 文档同步）。 */
   setFePrefs: (patch: Partial<FePrefs>) => void
-  /** 启动时从 hub 拉取，以 hub 为准替换本地（hub 模式；首次无数据时上推本地）。 */
+  /** 从 hub 拉取对齐（启动 / WS 重连时）：本地有未推送改动则整份上推，曾同步过的干净本地以 hub 为准（含删除）。 */
   syncPrefsFromHub: () => Promise<void>
 }
 
@@ -309,6 +461,7 @@ export const usePins = create<HubPrefsState>(() => {
         else next.add(cwd)
         const prefs = { pinnedWorkspaces: next, pinnedSessions: s.pinnedSessions, todos: s.todos, fePrefs: s.fePrefs }
         persist(prefs)
+        recordOp({ kind: 'workspacePin', cwd, on: next.has(cwd) })
         scheduleHubPush()
         return { pinnedWorkspaces: next }
       }),
@@ -319,6 +472,7 @@ export const usePins = create<HubPrefsState>(() => {
         else next.add(sessionId)
         const prefs = { pinnedWorkspaces: s.pinnedWorkspaces, pinnedSessions: next, todos: s.todos, fePrefs: s.fePrefs }
         persist(prefs)
+        recordOp({ kind: 'sessionPin', sessionId, on: next.has(sessionId) })
         scheduleHubPush()
         return { pinnedSessions: next }
       }),
@@ -329,6 +483,7 @@ export const usePins = create<HubPrefsState>(() => {
         else todos[sessionId] = status
         const prefs = { pinnedWorkspaces: s.pinnedWorkspaces, pinnedSessions: s.pinnedSessions, todos, fePrefs: s.fePrefs }
         persist(prefs)
+        recordOp({ kind: 'todo', sessionId, status })
         scheduleHubPush()
         return { todos }
       }),
@@ -336,6 +491,7 @@ export const usePins = create<HubPrefsState>(() => {
       usePins.setState((s) => {
         const fePrefs = { ...s.fePrefs, ...patch }
         persist({ ...s, fePrefs })
+        recordOp({ kind: 'fePrefs', patch })
         scheduleHubPush()
         return { fePrefs }
       }),
@@ -346,29 +502,40 @@ export const usePins = create<HubPrefsState>(() => {
       if (syncInFlight) return syncInFlight
       syncInFlight = (async () => {
         try {
-          const raw = await transport.getPrefs()
+          // 拉取期间自己的防抖 PUT 可能落地并清掉 dirty，GET 响应于是
+          // 成了旧文档：进入时先记下 dirty，届时仍走整份上推（重推同一
+          // 文档无害），不能拿旧响应整体替换本地。
+          const dirtyAtStart = hubDirty || localUnsynced(usePins.getState())
+          const pull = await transport.getPrefs()
+          const raw = pull.prefs ?? {}
+          // 版本随文档一起来：无版本 = 旧 hub → 无条件写（后写覆盖）。
+          setHubBaseVersion(typeof pull.version === 'number' ? pull.version : null)
           const hub = fromWire(raw)
           const s = usePins.getState()
-          // 本地有未推送的改动：不能以 hub 覆盖（否则 local 模式改的
-          // 置顶/待办会在下次进 hub 时被抹掉）。dirty / 快照不一致
-          // → 整份本地上推（含删除）；仅 extras（首次补齐）→ 合并后上推。
-          if (hubDirty || localUnsynced(s) || hasLocalExtras(s, hub)) {
-            const next = hubDirty || localUnsynced(s) ? s : mergeLocalOverHub(hub, s)
-            applyPrefs(next)
-            await transport.putPrefs(toWire(next))
-            setDirty(false)
-            markSynced(next)
-          } else if (isEmptyPrefs(hub) && !isEmptyPrefs(s)) {
-            // 首次部署 / hub 数据被清：hub 还没有任何记录，把本地上推。
-            applyPrefs(s)
-            await transport.putPrefs(toWire(s))
-            markSynced(s)
+          if (dirtyAtStart || hubDirty || localUnsynced(s)) {
+            // 本地有未推送的改动：把待推「操作」重放到最新 hub 文档上
+            // 再条件上推（经 pushToHub：别端在线期间的删除不丢、本地
+            // 改动也不丢）；无操作记录（旧版本升级遗留的 dirty）退回
+            // 整份本地上推。
+            const ops = pendingOps()
+            applyPrefs(ops.length > 0 ? replayOps(hub, ops) : s)
+            await pushToHub()
+          } else if (loadStr(SYNC_KEY) == null && hasLocalExtras(s, hub)) {
+            // 从未与 hub 同步过（v1 迁移 / local 模式攒下的数据）且本地
+            // 有 hub 没有的条目：并集补齐后上推。曾同步过的端不走这里
+            // ——「本地干净但比 hub 多」只可能是别端删了，必须以 hub
+            // 为准整体替换，否则刷新一次就把别端刚删的置顶/待办复活
+            // 并写回 hub（删到最后一条时 hub 文档即为空）。
+            applyPrefs(mergeLocalOverHub(hub, s))
+            await pushToHub()
           } else {
-            // 本地干净：以 hub 为准整体替换（含删除）；旧 hub 未带
-            // fePrefs 时保留本地偏好不被空默认覆盖。
+            // 本地干净（曾同步过 / 本地本就为空）：以 hub 为准整体替换
+            // （含删除，含删空后的空文档）；旧 hub 未带 fePrefs 时保留
+            // 本地偏好不被空默认覆盖。
             const next = applyHubPreservingFePrefs(raw, hub, s)
             applyPrefs(next)
             markSynced(next)
+            clearOps()
           }
         } catch (err) {
           // 拉取失败（hub 未升级 / 网络）：保留本地状态，功能照常。

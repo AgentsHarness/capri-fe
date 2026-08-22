@@ -1,4 +1,4 @@
-import type { AcpEvent } from './types'
+import type { AcpEvent, HubPrefsDoc } from './types'
 import type { ExtensionHook, ExtensionPlugin, ExtensionSkill } from './types'
 
 
@@ -40,6 +40,24 @@ export class AccessTokenError extends Error {
   constructor(message = '需要有效的访问 token') {
     super(message)
     this.name = 'AccessTokenError'
+  }
+}
+
+/**
+ * PUT /api/prefs 409 — 条件写入（baseVersion）版本过旧被 hub 拒绝。
+ * 冲突响应体带回 hub 当前文档与版本（免去一次 GET），调用方把本地
+ * 待推操作重放到该文档上再以新版本重试。
+ */
+export class PrefsConflictError extends Error {
+  /** hub 当前文档版本（重试的 baseVersion）。 */
+  version?: number
+  /** hub 当前文档。 */
+  prefs?: HubPrefsDoc
+  constructor(message: string, version?: number, prefs?: HubPrefsDoc) {
+    super(message)
+    this.name = 'PrefsConflictError'
+    this.version = version
+    this.prefs = prefs
   }
 }
 
