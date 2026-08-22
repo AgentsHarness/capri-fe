@@ -83,6 +83,18 @@ export class LocalTransport {
   /** In-flight gap pulls per host (dedupe). */
   private pulling = new Map<string, Promise<void>>()
   /**
+   * Abort controllers of in-flight gap pulls only (a subset of `inflight`):
+   * a resync must stop the per-hole pulls without killing unrelated
+   * host-level requests the way abortInflight() would.
+   */
+  private gapPullAborts = new Set<AbortController>()
+  /**
+   * Bumped on every resync (and sequencing reset). Gap-pull responses
+   * fetched under an older epoch are discarded — an already-resolved fetch
+   * must not re-deliver the very events the resync just retired.
+   */
+  private gapPullEpoch = 0
+  /**
    * Abort controllers of every in-flight fetch (gap pulls included), so
    * disconnect()/setHost()/setAccessToken() can settle them all — a
    * gapPull's finally then releases its per-host slot instead of wedging
@@ -460,7 +472,15 @@ export class LocalTransport {
     }
   }
 
+  /** Abort every in-flight gap pull and invalidate their results (epoch). */
+  private stopGapPulls(): void {
+    this.gapPullEpoch += 1
+    for (const ac of this.gapPullAborts) ac.abort()
+    this.gapPullAborts.clear()
+  }
+
   private resetSequencing() {
+    this.stopGapPulls()
     this.lastSeq.clear()
     this.pendingSeq.clear()
     this.pulling.clear()
@@ -507,12 +527,22 @@ export class LocalTransport {
     if (active) return active
     if (gen !== this.gen) return
 
-    const pull = this.performGapPull(hostId, after, gen)
+    const epoch = this.gapPullEpoch
+    const ac = new AbortController()
+    this.gapPullAborts.add(ac)
+    const pull = this.performGapPull(hostId, after, gen, epoch, ac.signal)
     this.pulling.set(hostId, pull)
     void pull.finally(() => {
+      this.gapPullAborts.delete(ac)
       if (this.pulling.get(hostId) !== pull) return
       this.pulling.delete(hostId)
-      if (gen === this.gen && (this.lastSeq.get(hostId) ?? 0) > after) {
+      // Stale (resynced / re-sequenced) pulls never re-arm: the resync's
+      // full rebuild supersedes the hole they were chasing.
+      if (
+        gen === this.gen &&
+        epoch === this.gapPullEpoch &&
+        (this.lastSeq.get(hostId) ?? 0) > after
+      ) {
         this.ensureGapPull(hostId, gen)
       }
     }).catch(() => {
@@ -521,14 +551,20 @@ export class LocalTransport {
     return pull
   }
 
-  private async performGapPull(hostId: string, after: number, gen: number) {
+  private async performGapPull(
+    hostId: string,
+    after: number,
+    gen: number,
+    epoch: number,
+    signal: AbortSignal,
+  ) {
     try {
       const qs = `?host=${encodeURIComponent(hostId)}&after=${after}`
-      const res = await this.fetch(`${this.apiBase()}/api/events${qs}`)
-      if (!res.ok || gen !== this.gen) return
+      const res = await this.fetch(`${this.apiBase()}/api/events${qs}`, {}, { signal })
+      if (!res.ok || gen !== this.gen || epoch !== this.gapPullEpoch) return
       const body = (await res.json()) as { events?: SequencedEvent[] }
       for (const ev of body.events || []) {
-        if (gen !== this.gen) return
+        if (gen !== this.gen || epoch !== this.gapPullEpoch) return
         this.acceptSequencedEvent(ev, gen)
       }
       // A response may contain a later event without the beginning of the
@@ -638,6 +674,37 @@ export class LocalTransport {
     }
   }
 
+  /**
+   * Hub 慢消费者保护：该订阅者被累计丢弃的事件超过阈值后，hub 会在
+   * events 帧内下发 {"type":"resync","fromSeq":N}（N 为触发本次丢弃的
+   * 事件序号）。此时逐洞 gap-pull 已不划算：
+   * 1) 中止一切在途 gap-pull（abort + epoch 作废已返回未消费的响应）；
+   * 2) 清空乱序等待缓冲，并把选中 host 的水位前跳到 fromSeq-1——缺口
+   *    交给上层全量重建（store 走 loadHistory 从 host 持久化历史重放），
+   *    旧洞不再逐个补；fromSeq 及之后的新事件照常按序放出（下一个
+   *    live 事件若仍超前，会触发一次 after=fromSeq-1 的整段拉取，即
+   *    hub 约定的一次性恢复路径）；
+   * 3) 透传 resync 给上层触发重建（store 侧防抖：重建进行中的新
+   *    resync 直接忽略，绝不并发重建）。
+   */
+  private handleResyncFrame(fromSeq: unknown, gen: number): void {
+    if (gen !== this.gen) return
+    this.stopGapPulls()
+    this.pendingSeq.clear()
+    this.pulling.clear()
+    const seq =
+      typeof fromSeq === 'number' && Number.isSafeInteger(fromSeq) && fromSeq > 0
+        ? fromSeq
+        : 0
+    const host = this.selectedHostId
+    if (host && seq > 0) {
+      const cur = this.lastSeq.get(host) ?? 0
+      // 只前进不回退：回退水位会让已按序放出的事件重复投递。
+      if (seq - 1 > cur) this.lastSeq.set(host, seq - 1)
+    }
+    this.emit({ type: 'resync', fromSeq: seq })
+  }
+
   private async onWsMessage(msg: MessageEvent, gen: number, ws: WebSocket) {
     let text: string
     if (typeof msg.data === 'string') {
@@ -681,6 +748,12 @@ export class LocalTransport {
           // 对齐去重）。远程 host 事件不受影响。
           const evHost = (ev as { hostId?: string }).hostId
           if (this.isLocalDirect() && evHost === this.localHostId) continue
+          // resync 是 hub 的控制标记（无 hostId/seq），不能进 seq 排序
+          // 通路（会被当 flat event 原样透传），单独拦截处理。
+          if ((ev as { type?: string }).type === 'resync') {
+            this.handleResyncFrame((ev as { fromSeq?: unknown }).fromSeq, gen)
+            continue
+          }
           this.acceptSequencedEvent(ev as SequencedEvent, gen)
         }
       }
