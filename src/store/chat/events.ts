@@ -14,6 +14,9 @@ export function handleChatEvent(
   get: () => ChatState,
   ev: AcpEvent,
 ): void {
+  // resync 由 transport/init 层处理（全量重建，见 store/chat/resync.ts），
+  // 不是聊天事件；任何其他路径漏到这里都直接忽略，绝不参与流缓冲/分发。
+  if (ev.type === 'resync') return
   const raw = ev as { update?: unknown }
   if (raw.update && typeof raw.update === 'object') {
     const u = raw.update as { sessionUpdate?: unknown }
