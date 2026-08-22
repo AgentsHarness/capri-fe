@@ -377,6 +377,10 @@ function extractReadFile(raw: unknown): {
   const nested = unwrapTagged(body)
   if (nested) {
     const tag = nested.tag
+    if (/ImageContent|image/i.test(tag)) return { media: 'image' }
+    if (/Pdf/i.test(tag)) return { media: 'pdf' }
+    // NOTE: ImageContent 必须先于 FileContent/content 判定——后者含
+    // "content" 子串，先判会吞掉图片标签（media 永远为空）。
     if (/FileContent|content/i.test(tag) && isObj(nested.body)) {
       const b = nested.body
       return {
@@ -395,8 +399,6 @@ function extractReadFile(raw: unknown): {
         limit: typeof b.limit === 'number' ? b.limit : undefined,
       }
     }
-    if (/ImageContent|image/i.test(tag)) return { media: 'image' }
-    if (/Pdf/i.test(tag)) return { media: 'pdf' }
     if (
       /NotFound|Directory|Permission|TooLarge|Error|Denied/i.test(tag) &&
       (typeof nested.body === 'string' || isObj(nested.body))
