@@ -10,8 +10,8 @@ import type { HubPrefsDoc } from './types'
  */
 // rpcMixins 经 Object.assign 挂在原型上，类类型上不可见——补上测试用面。
 type PrefsRpc = {
-  getPrefs(): Promise<HubPrefsDoc>
-  putPrefs(prefs: HubPrefsDoc): Promise<void>
+  getPrefs(): Promise<{ prefs: HubPrefsDoc; version?: number }>
+  putPrefs(prefs: HubPrefsDoc, baseVersion?: number): Promise<{ version?: number }>
 }
 
 function makeTransport(): LocalTransport & PrefsRpc {
@@ -88,12 +88,34 @@ describe('getPrefs (same-origin)', () => {
       'fetch',
       vi.fn(async () =>
         new Response(
-          JSON.stringify({ ok: true, prefs: { pinnedWorkspaces: ['/x'] } }),
+          JSON.stringify({ ok: true, prefs: { pinnedWorkspaces: ['/x'] }, version: 7 }),
           { status: 200 },
         ),
       ),
     )
-    const prefs = await t.getPrefs()
+    const { prefs, version } = await t.getPrefs()
     expect(prefs).toEqual({ pinnedWorkspaces: ['/x'] })
+    expect(version).toBe(7)
+  })
+
+  it('putPrefs 带 baseVersion 时写入请求体（条件写）', async () => {
+    const t = makeTransport()
+    t.setConnectionMode('hub', 'https://hub.example')
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
+      new Response(JSON.stringify({ ok: true, version: 8 }), { status: 200 }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const res = await t.putPrefs({ pinnedWorkspaces: [] }, 7)
+      expect(res.version).toBe(8)
+      const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as {
+        prefs?: unknown
+        baseVersion?: number
+      }
+      expect(body.baseVersion).toBe(7)
+      expect(body.prefs).toEqual({ pinnedWorkspaces: [] })
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

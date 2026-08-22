@@ -1,5 +1,5 @@
 import type { TransportCore } from '../transport'
-import { AccessTokenError, AgentTurnError } from '../transport'
+import { AccessTokenError, AgentTurnError, PrefsConflictError } from '../transport'
 import { assertRpcOk, findArrayField, readRpcJson, unwrapExtResult, xaiCall } from './core'
 import type { ContentBlock, HostInfo, HubPrefsDoc, PermissionScope } from '../types'
 
@@ -322,7 +322,12 @@ export const miscRpc = {
     }
   },
 
-  async getPrefs(this: TransportCore): Promise<HubPrefsDoc> {
+  /**
+   * GET /api/prefs — 拉取置顶/待办文档 + 当前版本（版本是 PUT 条件
+   * 写入的 base；旧 hub 不带 version 字段 → undefined，调用方退回
+   * 无条件写）。
+   */
+  async getPrefs(this: TransportCore): Promise<{ prefs: HubPrefsDoc; version?: number }> {
     const origin = this.prefsOrigin()
     if (!origin) throw new Error('仅 Hub 模式支持置顶/待办持久化')
     // hubLevel：hub 级请求，不参与 host 切换的 abortInflight 风暴——
@@ -331,6 +336,7 @@ export const miscRpc = {
     const res = await this.fetch(`${origin}/api/prefs`, {}, { hubLevel: true })
     const data = (await res.json().catch(() => ({}))) as {
       prefs?: HubPrefsDoc
+      version?: number
       error?: string
       ok?: boolean
     }
@@ -341,40 +347,65 @@ export const miscRpc = {
     }
     if (!res.ok || data.ok === false) {
       throw new Error(
-        typeof data.error === 'string' && data.error
-          ? data.error
-          : `prefs read failed (${res.status})`,
+        typeof data.error === 'string' && data.error ? data.error : `prefs read failed (${res.status})`,
       )
     }
-    return data.prefs ?? {}
+    return {
+      prefs: data.prefs ?? {},
+      version: typeof data.version === 'number' ? data.version : undefined,
+    }
   },
 
-  async putPrefs(this: TransportCore, prefs: HubPrefsDoc): Promise<void> {
+  /**
+   * PUT /api/prefs {prefs, baseVersion?} — 全量替换置顶/待办文档。
+   * baseVersion（新 hub）使写入成为条件写：版本过旧时 hub 回 409 +
+   * 当前文档（抛 PrefsConflictError，调用方重放待推操作后重试）；
+   * 不带 baseVersion 为无条件写（旧 hub / 旧 FE 兼容）。成功响应带
+   * 新版本。
+   */
+  async putPrefs(
+    this: TransportCore,
+    prefs: HubPrefsDoc,
+    baseVersion?: number,
+  ): Promise<{ version?: number }> {
     const origin = this.prefsOrigin()
     if (!origin) throw new Error('仅 Hub 模式支持置顶/待办持久化')
+    const body: Record<string, unknown> = { prefs }
+    if (baseVersion != null) body.baseVersion = baseVersion
     const res = await this.fetch(
       `${origin}/api/prefs`,
       {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prefs }),
+        body: JSON.stringify(body),
       },
       // hubLevel：同上，回写不被 host 切换的 abort 风暴打断。
       { hubLevel: true },
     )
-    const data = (await res.json().catch(() => ({}))) as { error?: string; ok?: boolean }
+    const data = (await res.json().catch(() => ({}))) as {
+      error?: string
+      ok?: boolean
+      version?: number
+      prefs?: HubPrefsDoc
+    }
     if (res.status === 401) {
       throw new AccessTokenError(
         typeof data.error === 'string' && data.error ? data.error : '需要有效的访问 token',
       )
     }
-    if (!res.ok || data.ok === false) {
-      throw new Error(
-        typeof data.error === 'string' && data.error
-          ? data.error
-          : `prefs write failed (${res.status})`,
+    if (res.status === 409) {
+      throw new PrefsConflictError(
+        typeof data.error === 'string' && data.error ? data.error : '置顶/待办版本冲突',
+        typeof data.version === 'number' ? data.version : undefined,
+        data.prefs,
       )
     }
+    if (!res.ok || data.ok === false) {
+      throw new Error(
+        typeof data.error === 'string' && data.error ? data.error : `prefs write failed (${res.status})`,
+      )
+    }
+    return { version: typeof data.version === 'number' ? data.version : undefined }
   },
 
   async billing(this: TransportCore, sessionId?: string): Promise<import('../types').BillingConfigResponse> {

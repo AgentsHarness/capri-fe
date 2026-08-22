@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionInfo, WorkspaceGroup } from '../api/types'
+import { PrefsConflictError } from '../api/transport'
 import { transport } from '../api/client'
 import { sortSessionsWithPins, sortWorkspacesWithPins, usePins } from './historyPins'
 
@@ -13,8 +14,8 @@ vi.mock('../api/client', () => ({
       handlers.push(h)
       return () => {}
     }),
-    getPrefs: vi.fn(async () => ({})),
-    putPrefs: vi.fn(async () => undefined),
+    getPrefs: vi.fn(async () => ({ prefs: {} })),
+    putPrefs: vi.fn(async () => ({})),
     prefsOrigin: vi.fn((): string => ''),
   },
 }))
@@ -87,15 +88,61 @@ describe('prefs_changed 广播（跨端同步）', () => {
     expect([...usePins.getState().pinnedSessions]).toEqual(['s9'])
   })
 
-  it('本地 dirty（未推送）时合并保留本地，刚点的操作不被冲掉', () => {
+  it('本地 dirty（未推送）时忽略广播保本地，刚点的操作不被冲掉', () => {
     usePins.getState().toggleWorkspacePin('/mine') // → dirty
     handlers[0]({
       type: 'prefs_changed',
       params: { prefs: { pinnedWorkspaces: ['/theirs'], pinnedSessions: [], todos: {}, fePrefs: {} } },
     })
-    const merged = usePins.getState().pinnedWorkspaces
-    expect(merged.has('/mine')).toBe(true)
-    expect(merged.has('/theirs')).toBe(true)
+    const pins = usePins.getState().pinnedWorkspaces
+    expect(pins.has('/mine')).toBe(true)
+    // 不做并集合并——并集表达不了删除，会把别端刚删的条目复活；
+    // 待推改动由随后的回写以后写覆盖落地。
+    expect(pins.has('/theirs')).toBe(false)
+  })
+
+  it('PUT 在飞期间的新编辑不被自己 PUT 的回声广播冲掉', async () => {
+    vi.mocked(transport.prefsOrigin).mockReturnValue('http://hub')
+    let resolvePut: (() => void) | undefined
+    vi.mocked(transport.putPrefs).mockImplementationOnce(
+      () => new Promise<{ version?: number }>((r) => { resolvePut = () => r({}) }),
+    )
+    usePins.getState().toggleWorkspacePin('/a')
+    await vi.advanceTimersByTimeAsync(HUB_PUSH_DEBOUNCE_MS) // PUT1 在飞（挂起）
+    usePins.getState().setTodoStatus('s1', 'todo') // PUT1 在飞期间的新编辑
+    resolvePut?.()
+    await vi.advanceTimersByTimeAsync(0) // pushToHub 复核：快照不一致 → 保持 dirty
+    // 自己 PUT1 的回声（不含 s1）到达：dirty 未清 → 忽略，不冲掉新编辑
+    handlers[0]({
+      type: 'prefs_changed',
+      params: { prefs: { pinnedWorkspaces: ['/a'], pinnedSessions: [], todos: {}, fePrefs: {} } },
+    })
+    expect(usePins.getState().todos['s1']).toBe('todo')
+    // 新编辑的防抖到点 → 第二轮 PUT 推最新状态
+    await vi.advanceTimersByTimeAsync(HUB_PUSH_DEBOUNCE_MS)
+    expect(transport.putPrefs).toHaveBeenCalledTimes(2)
+    const last = vi.mocked(transport.putPrefs).mock.calls.at(-1)?.[0]
+    expect(last?.pinnedWorkspaces).toEqual(['/a'])
+    expect(last?.todos).toEqual({ s1: 'todo' })
+  })
+
+  it('hub_conn 上线（WS 重连成功）后补拉对齐，掉线不触发', async () => {
+    vi.mocked(transport.prefsOrigin).mockReturnValue('http://hub')
+    vi.mocked(transport.getPrefs).mockResolvedValue({
+      prefs: {
+        pinnedWorkspaces: ['/fresh'],
+        pinnedSessions: [],
+        todos: {},
+      },
+    })
+    handlers[0]({ type: 'hub_conn', online: true })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(transport.getPrefs).toHaveBeenCalled()
+    expect([...usePins.getState().pinnedWorkspaces]).toEqual(['/fresh'])
+    vi.clearAllMocks()
+    handlers[0]({ type: 'hub_conn', online: false })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(transport.getPrefs).not.toHaveBeenCalled()
   })
 })
 
@@ -108,10 +155,12 @@ describe('syncPrefsFromHub', () => {
   it('本地干净时以 hub 为准整体替换（含删除）', async () => {
     vi.mocked(transport.prefsOrigin).mockReturnValue('http://hub')
     vi.mocked(transport.getPrefs).mockResolvedValue({
-      pinnedWorkspaces: ['/x'],
-      pinnedSessions: [],
-      todos: {},
-      fePrefs: { collapseToolGroups: false },
+      prefs: {
+        pinnedWorkspaces: ['/x'],
+        pinnedSessions: [],
+        todos: {},
+        fePrefs: { collapseToolGroups: false },
+      },
     })
     await usePins.getState().syncPrefsFromHub()
     const st = usePins.getState()
@@ -126,8 +175,112 @@ describe('syncPrefsFromHub', () => {
     await usePins.getState().syncPrefsFromHub()
     expect(transport.putPrefs).toHaveBeenCalledWith(
       expect.objectContaining({ todos: { s1: 'todo' } }),
+      undefined,
     )
     expect(usePins.getState().todos['s1']).toBe('todo')
+  })
+
+  it('曾同步过的干净本地：别端删除（含删空）不复活、不上推', async () => {
+    vi.mocked(transport.prefsOrigin).mockReturnValue('http://hub')
+    vi.mocked(transport.getPrefs).mockResolvedValue({
+      prefs: {
+        pinnedWorkspaces: ['/x'],
+        pinnedSessions: [],
+        todos: { s1: 'todo' },
+      },
+    })
+    await usePins.getState().syncPrefsFromHub() // 对齐：本地 {/x, s1}
+    expect([...usePins.getState().pinnedWorkspaces]).toEqual(['/x'])
+    expect(transport.putPrefs).not.toHaveBeenCalled()
+    vi.clearAllMocks()
+    vi.mocked(transport.prefsOrigin).mockReturnValue('http://hub')
+    // 别端删掉了全部条目（删到最后一条时 hub 文档即为空）
+    vi.mocked(transport.getPrefs).mockResolvedValue({
+      prefs: {
+        pinnedWorkspaces: [],
+        pinnedSessions: [],
+        todos: {},
+      },
+    })
+    await usePins.getState().syncPrefsFromHub()
+    expect([...usePins.getState().pinnedWorkspaces]).toEqual([])
+    expect(usePins.getState().todos['s1']).toBeUndefined()
+    // 关键：不把本地旧条目推回 hub（旧行为：hub 为空即整份上推 → 删除被复活）
+    expect(transport.putPrefs).not.toHaveBeenCalled()
+  })
+
+  it('从未同步过的端：本地旧条目并集补齐后上推（迁移/首连）', async () => {
+    usePins.setState({ pinnedWorkspaces: new Set(['/legacy']) })
+    vi.mocked(transport.prefsOrigin).mockReturnValue('http://hub')
+    vi.mocked(transport.getPrefs).mockResolvedValue({
+      prefs: {
+        pinnedWorkspaces: ['/hubpin'],
+        pinnedSessions: [],
+        todos: {},
+      },
+    })
+    await usePins.getState().syncPrefsFromHub()
+    expect([...usePins.getState().pinnedWorkspaces]).toEqual(['/hubpin', '/legacy'])
+    expect(transport.putPrefs).toHaveBeenCalledWith(
+      expect.objectContaining({ pinnedWorkspaces: ['/hubpin', '/legacy'] }),
+      undefined,
+    )
+  })
+
+  it('dirty 启动同步：待推操作重放到最新 hub 文档再上推（别端删除不丢）', async () => {
+    vi.mocked(transport.prefsOrigin).mockReturnValue('http://hub')
+    // hub 现状：/x 已被别端删除（本地 localStorage 还留着旧的 /x + 新 /y）
+    vi.mocked(transport.getPrefs).mockResolvedValue({
+      prefs: { pinnedWorkspaces: [], pinnedSessions: [], todos: {} },
+      version: 5,
+    })
+    usePins.setState({
+      pinnedWorkspaces: new Set(['/x', '/y']),
+      todos: { s1: 'todo' },
+    })
+    // 手工制造「dirty + 待推操作」：取消 /x 置顶 + 设待办 s2
+    usePins.getState().toggleWorkspacePin('/x') // → 删除 /x（op 记录）
+    usePins.getState().setTodoStatus('s2', 'todo') // → op 记录
+    await usePins.getState().syncPrefsFromHub()
+    // 重放结果 = hub 文档 {空} + ops{删 /x, todo s2}，而非整份本地
+    const doc = vi.mocked(transport.putPrefs).mock.calls[0]?.[0]
+    expect(doc?.pinnedWorkspaces).toEqual([])
+    expect(doc?.todos).toEqual({ s2: 'todo' })
+    expect(vi.mocked(transport.putPrefs).mock.calls[0]?.[1]).toBe(5)
+    expect(usePins.getState().todos['s1']).toBeUndefined() // 本地残留的旧待办不回写
+  })
+
+  it('版本冲突：PUT 409 后待推操作重放到 hub 当前文档再重试', async () => {
+    vi.mocked(transport.prefsOrigin).mockReturnValue('http://hub')
+    // 对齐到 v1：{pin /x}
+    vi.mocked(transport.getPrefs).mockResolvedValue({
+      prefs: { pinnedWorkspaces: ['/x'], pinnedSessions: [], todos: {} },
+      version: 1,
+    })
+    await usePins.getState().syncPrefsFromHub()
+    expect([...usePins.getState().pinnedWorkspaces]).toEqual(['/x'])
+    // 本地新增 pin /y（dirty，base v1）；别端已删除 /x 并推进到 v2
+    usePins.getState().toggleWorkspacePin('/y')
+    vi.mocked(transport.putPrefs)
+      .mockImplementationOnce(() =>
+        Promise.reject(
+          new PrefsConflictError('conflict', 2, {
+            pinnedWorkspaces: [],
+            pinnedSessions: [],
+            todos: {},
+          }),
+        ),
+      )
+      .mockImplementationOnce(async () => ({ version: 3 }))
+    await vi.advanceTimersByTimeAsync(HUB_PUSH_DEBOUNCE_MS)
+    expect(transport.putPrefs).toHaveBeenCalledTimes(2)
+    // 第一次：本地全量（还含已被别端删除的 /x）+ base 1 → 409
+    expect(vi.mocked(transport.putPrefs).mock.calls[0]?.[1]).toBe(1)
+    // 第二次：重放 {pin /y} 到 v2 文档 → 只含 /y + base 2（删除不复活、新增不丢）
+    const second = vi.mocked(transport.putPrefs).mock.calls[1]
+    expect(second?.[0]?.pinnedWorkspaces).toEqual(['/y'])
+    expect(second?.[1]).toBe(2)
+    expect([...usePins.getState().pinnedWorkspaces]).toEqual(['/y'])
   })
 })
 
