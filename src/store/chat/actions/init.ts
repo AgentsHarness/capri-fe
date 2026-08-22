@@ -25,6 +25,7 @@ import {
 import {
   applySubagentViewEvent,
 } from '../subagent'
+import { handleResyncRebuild } from '../resync'
 
 export function initChat(
   set: SetState,
@@ -33,6 +34,14 @@ export function initChat(
 ): () => void {
     const unsub = transport.onEvent((ev) => {
       const s = get()
+      // hub 慢消费者 resync：必须在下方 historyLoading 窗口过滤之前
+      // 拦截——落进窗口缓冲的话，重放阶段（historyLoading 已落回
+      // false）会再次触发重建，形成重建循环。防抖（重建进行中忽略
+      // 新 resync）在 handleResyncRebuild 内。
+      if (ev.type === 'resync') {
+        handleResyncRebuild(get)
+        return
+      }
       // While switching to a historical session (historyLoading), the agent
       // re-streams the whole conversation as part of session/load (recap).
       // Drop those SSE events — loadHistory rebuilds the scrollback from
