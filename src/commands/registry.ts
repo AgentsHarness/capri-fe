@@ -81,6 +81,20 @@ function sendPrompt(text: string) {
 }
 
 /**
+ * Parse a `/goal --budget` token amount: bare number, or K/M suffix
+ * (case-insensitive: "500k" = 500_000, "2M" = 2_000_000). Returns
+ * undefined when the amount is not a finite non-negative number.
+ */
+export function parseBudgetTokens(raw: string): number | undefined {
+  const m = raw.trim().match(/^([\d.]+)([kKmM])?$/)
+  if (!m) return undefined
+  const n = Number(m[1])
+  if (!Number.isFinite(n) || n < 0) return undefined
+  const mult = m[2] ? (m[2].toLowerCase() === 'k' ? 1_000 : 1_000_000) : 1
+  return Math.round(n * mult)
+}
+
+/**
  * Composer registers its model-menu opener here so `/model` with no args
  * can open the exact same menu the model caption button uses.
  */
@@ -441,7 +455,7 @@ export const slashCommands: SlashCommand[] = [
         )
         return
       }
-      const budget = budgetMatch ? Math.round(Number(budgetMatch[1])) : undefined
+      const budget = budgetMatch ? parseBudgetTokens(budgetMatch[1]) : undefined
       void st.goalSet(objective, budget)
     },
   },

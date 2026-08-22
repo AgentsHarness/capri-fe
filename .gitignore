@@ -30,3 +30,6 @@ dist-ssr
 .vite/
 node_modules/
 dist/
+
+# Vitest coverage artifacts
+coverage/

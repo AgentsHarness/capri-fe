@@ -41,7 +41,10 @@ export function formatTurnDuration(ms: number): string {
   return `${Math.floor(mins / 60)}h${mins % 60}m`
 }
 
-/** TUI context_bar fmt_tokens: "500", "5.2K", "48.8K", "1.2M". */
+/**
+ * TUI context_bar fmt_tokens: "500", "5.2K", "49K", "1.2M".
+ * <10K 保留一位小数；≥10K 四舍五入到整 K；≥10M 同理到整 M。
+ */
 export function fmtTokens(n: number): string {
   if (n >= 1_000_000) {
     return n >= 10_000_000 ? `${Math.round(n / 1_000_000)}M` : `${(n / 1_000_000).toFixed(1)}M`
