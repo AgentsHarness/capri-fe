@@ -347,6 +347,14 @@ export type AcpEvent =
    * regardless of the selected host.
    */
   | { type: 'prefs_changed'; params?: { prefs?: HubPrefsDoc } }
+  /**
+   * Hub 慢消费者保护：该浏览器订阅者因慢被累计丢弃的事件超过阈值后，
+   * hub 在 events 帧内主动下发（无 hostId、无 seq）。fromSeq 为触发
+   * 本次丢弃的事件序号——FE 应放弃逐洞 gap-pull，一次性全量重建状态
+   * （transport 前跳 seq 水位 + store 走 loadHistory 重放持久化历史，
+   * 见 localTransport.handleResyncFrame / store/chat/resync.ts）。
+   */
+  | { type: 'resync'; fromSeq: number }
   /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
   | { type: 'models_update'; sessionId?: string; params?: Record<string, unknown> }
   | { type: 'announcements_update'; params?: Record<string, unknown> }
