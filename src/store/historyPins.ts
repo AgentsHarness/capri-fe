@@ -20,8 +20,8 @@ import { transport } from '../api/client'
  *   为准整体替换**本地（含删除）；之后每次变更防抖 500ms 全量 PUT 回写，
  *   hub 随即广播 prefs_changed——所有在线浏览器实时应用同一份文档，
  *   一端的置顶/待办（含取消）改动直接同步到另一端，无需刷新。
- *   本机 host 配了 HUB_URL 时，即使当前连接是 local / 本机近路，
- *   也回写该 hub（prefsOrigin）；完全没有 hub 地址才只走 localStorage。
+ *   hub 地址取 prefsOrigin()：跨源直连 / host 报的 HUB_URL /
+ *   同源部署回退页面 origin；local 模式无 hub 地址，仅走 localStorage。
  *
  * 并发语义：同一时刻只有一端在写（单用户多浏览器、低频操作），后写
  * 覆盖收敛一致；毫秒级竞态窗口内本地未推送的变更以「合并（本地优先）」

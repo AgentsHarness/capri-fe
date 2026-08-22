@@ -49,9 +49,8 @@ export class LocalTransport {
   /** hub 模式的 hub 浏览器侧地址（跨源直连用；空则退回 base）。 */
   private hubUrl = ''
   /**
-   * 最近一次探测到的远端 hub origin。local 模式也会保留，供
-   * prefs 回写——本机 host 配了 HUB_URL 时置顶/待办仍应进 hub，
-   * 不能因为连接模式是 local 就只写 localStorage。
+   * 最近一次探测到的远端 hub origin（仅 hub 模式使用）。local 模式
+   * 由 setConnectionMode 清空——置顶/待办只走 localStorage。
    */
   private lastHubUrl = loadStr('capri-fe.hubUrl') || ''
   /**
@@ -168,7 +167,11 @@ export class LocalTransport {
   }
 
   prefsOrigin(): string {
-    return this.mode === 'hub' ? this.hubUrl || this.lastHubUrl : ''
+    // 部署版前端与 hub 同源时（页面即 hub，base / 显式 hubUrl 均为
+    // 空串），prefs 落在页面自身 origin——相对路径 /api/prefs 经反代
+    // 直达 hub。跨源 hub（host 报的 HUB_URL / 显式 hubUrl）优先。
+    // local 模式不写 hub：置顶/待办仅存 localStorage。
+    return this.mode === 'hub' ? this.hubUrl || this.lastHubUrl || location.origin : ''
   }
 
   setConnectionMode(mode: TransportMode, hubUrl: string = '') {

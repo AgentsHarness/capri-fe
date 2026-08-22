@@ -113,9 +113,9 @@ export interface TransportCore {
   url(path: string): string
   apiBase(): string
   /**
-   * 置顶/待办文档的 origin。host 报过 HUB_URL 时即使用该地址
-   * （即使当前连接模式是 local / 选中本机近路），避免 prefs
-   * 被写到没有 /api/prefs 的 capri-host。
+   * 置顶/待办文档的 origin。hub 模式返回远端 hub 地址（跨源直连 /
+   * host 报的 HUB_URL），部署版与 hub 同源时回退到页面自身 origin；
+   * local 模式返回空（置顶/待办仅存 localStorage）。
    */
   prefsOrigin(): string
   mode: TransportMode
