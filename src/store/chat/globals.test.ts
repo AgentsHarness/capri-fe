@@ -9,6 +9,7 @@ import {
   clearHistoryWindowBuffer,
   clearContinueSessionTimer,
   clearPeerSessionLoad,
+  dropLiveCoveredBySnapshot,
 } from './globals'
 import type { ChatState } from './types'
 
@@ -88,6 +89,44 @@ describe('historyWindowBuffer', () => {
     expect(runtime.historyWindowBuffer).toHaveLength(0)
     expect(runtime.historySnapTail).toBeUndefined()
     expect(runtime.historySnapEventKeys.size).toBe(0)
+  })
+})
+
+describe('dropLiveCoveredBySnapshot', () => {
+  beforeEach(() => clearHistoryWindowBuffer())
+
+  it('有 sessionId 且 ts ≤ snapTail 的 live chunk 丢弃；无 sid 的回放放行', () => {
+    runtime.historySnapTail = 1000
+    expect(
+      dropLiveCoveredBySnapshot({
+        type: 'chunk',
+        text: 'x',
+        sessionId: 's1',
+        agentTimestampMs: 1000,
+      } as never),
+    ).toBe(true)
+    expect(
+      dropLiveCoveredBySnapshot({
+        type: 'chunk',
+        text: 'x',
+        agentTimestampMs: 1000,
+      } as never),
+    ).toBe(false)
+    expect(
+      dropLiveCoveredBySnapshot({
+        type: 'chunk',
+        text: 'new',
+        sessionId: 's1',
+        agentTimestampMs: 1001,
+      } as never),
+    ).toBe(false)
+    expect(
+      dropLiveCoveredBySnapshot({
+        type: 'done',
+        sessionId: 's1',
+        agentTimestampMs: 1,
+      } as never),
+    ).toBe(false)
   })
 })
 

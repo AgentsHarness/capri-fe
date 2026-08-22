@@ -218,4 +218,62 @@ describe('loadHistory 窗口缓冲去重（snapTail 毫秒边界）', () => {
       .entries.find((e) => e.kind === 'assistant')
     expect((assistant as { text?: string }).text).toBe('旧日志回复')
   })
-})
+
+  it('historyLoading 落回 false 后，gap-pull 的同回合 live 事件不再追加最后一条', async () => {
+    const snap = [
+      envelope(
+        'user_message_chunk',
+        { type: 'text', text: 'hello' },
+        { agentTimestampMs: T - 2000, turnStartMs: T - 2000 },
+      ),
+      envelope(
+        'agent_message_chunk',
+        { type: 'text', text: '最终回复' },
+        { agentTimestampMs: T, streamStartMs: T - 1000, turnStartMs: T - 2000 },
+      ),
+      envelope(
+        'turn_completed',
+        {},
+        { agentTimestampMs: T + 50, turnStartMs: T - 2000 },
+      ),
+    ]
+    vi.mocked(transport.loadSessionHistory).mockResolvedValue({
+      updates: snap,
+      promptStarts: [0],
+      totalCount: snap.length,
+      hasMore: false,
+    } as never)
+
+    await useChatStore.getState().loadHistory(SID, CWD)
+
+    const before = useChatStore.getState().entries.filter((e) => e.kind === 'assistant')
+    expect(before).toHaveLength(1)
+    expect((before[0] as { text?: string }).text).toBe('最终回复')
+
+    // 刷新路径：hello → loadHistory 完成后 hub gap-pull 把上一轮 live
+    // 事件再投一遍（带 sessionId，historyLoading 已是 false）。
+    useChatStore.getState().handleEvent({
+      type: 'user_chunk',
+      text: 'hello',
+      agentTimestampMs: T - 2000,
+      sessionId: SID,
+    } as AcpEvent)
+    useChatStore.getState().handleEvent({
+      type: 'chunk',
+      text: '最终回复',
+      agentTimestampMs: T,
+      streamStartMs: T - 1000,
+      turnStartMs: T - 2000,
+      sessionId: SID,
+    } as AcpEvent)
+
+    const users = useChatStore.getState().entries.filter((e) => e.kind === 'user')
+    const assistants = useChatStore
+      .getState()
+      .entries.filter((e) => e.kind === 'assistant')
+    expect(users).toHaveLength(1)
+    expect(assistants).toHaveLength(1)
+    expect((assistants[0] as { text?: string }).text).toBe('最终回复')
+  })
+}
+)

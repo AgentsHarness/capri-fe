@@ -13,7 +13,11 @@ import {
 import {
   adoptLiveTurnStart,
 } from '../turn'
-import { classifyUserPrompt, findOptimisticUserAbsorbIndex } from '../history'
+import {
+  classifyUserPrompt,
+  findOptimisticUserAbsorbIndex,
+  userPromptTextsMatch,
+} from '../history'
 
 function finiteStreamStart(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
@@ -91,9 +95,22 @@ export function handleUserStreamEvent(
         if (ev.sessionId && ev.sessionId !== get().sessionId) break
         // A user event opens the next turn, including a hidden injected
         // prompt. Clear the closed-turn guard before classification so the
-        // following agent chunk is not mistaken for late output.
-        if (get().awaitingNext || get().lastCompletedTurn) {
-          set({ awaitingNext: false, lastCompletedTurn: undefined })
+        // following agent chunk is not mistaken for late output — except a
+        // recap echo of the last prompt after a closed snapshot load
+        // (page-refresh gap-pull): that must NOT open a new turn, or the
+        // last assistant is painted twice.
+        const closedTurn = get().lastCompletedTurn
+        const pendingUserId = get().pendingOptimisticUserId
+        if (get().awaitingNext || closedTurn) {
+          if (
+            !(
+              ev.type === 'user_chunk' &&
+              closedTurn &&
+              !pendingUserId
+            )
+          ) {
+            set({ awaitingNext: false, lastCompletedTurn: undefined })
+          }
         }
         // 权威回合开始修正（队列收养回合的本地锚定误差，见
         // adoptLiveTurnStart）。
@@ -173,6 +190,30 @@ export function handleUserStreamEvent(
               ),
             })
             break
+          }
+          // Closed-turn recap (no pending optimistic row): the echo matches
+          // the last user prompt sitting above the "Worked for" marker.
+          // Ignore it so gap-pull after refresh does not append a second
+          // copy of the last turn. A genuinely new prompt has different
+          // text (or pendingOptimisticUserId from send()).
+          if (closedTurn && !pendingUserId) {
+            let lastUserText: string | undefined
+            for (let i = entries.length - 1; i >= 0; i--) {
+              const e = entries[i]
+              if (e.kind === 'user') {
+                lastUserText = e.text
+                break
+              }
+            }
+            if (
+              lastUserText != null &&
+              userPromptTextsMatch(lastUserText, classified.text)
+            ) {
+              break
+            }
+            // Different text → real next prompt; drop the closed-turn guard
+            // that was kept above so later agent chunks are accepted.
+            set({ awaitingNext: false, lastCompletedTurn: undefined })
           }
         }
 
