@@ -22,6 +22,7 @@ import {
 } from './history'
 import { entryTimestamp } from './entries'
 import {
+  envelopeAgentTimestampMs,
   envelopeTimestamp,
   replayEnvelopeKeys,
   replayEventKeys,
@@ -200,10 +201,20 @@ export async function loadHistory(
       // Normalize every stored timestamp to epoch milliseconds before comparing
       // it with live agentTimestampMs. Build semantic keys as the fallback for
       // events whose payload has no comparable timestamp.
+      // 边界必须取 envelope 自己的 _meta.agentTimestampMs（毫秒级）：shell
+      // 写盘的粗粒度 timestamp 是秒级取整，最新 envelope 内 chunk 的毫秒
+      // 时间戳可能晚于该取整点——刷新时 hub 缓冲回放的细粒度 chunk（与
+      // 快照聚合 envelope 关于同一内容）语义键永远不相等，若兜底边界仍用
+      // 秒级戳，最新 envelope 覆盖的最后 ~1 秒内容会漏过去重被再次回放，
+      // 表现为最后一条 assistant 文本重复。_meta.agentTimestampMs 是该
+      // envelope 批内最新 chunk 的时间，批内所有细粒度 chunk 均 <= 它，
+      // 边界因此覆盖整个快照；无 _meta 的旧日志回退粗粒度写盘戳。
       let snapTail: number | undefined
       runtime.historySnapEventKeys.clear()
       for (const update of updates) {
-        const keyTime = envelopeTimestamp(update as Parameters<typeof envelopeTimestamp>[0])
+        const keyTime =
+          envelopeAgentTimestampMs(update) ??
+          envelopeTimestamp(update as Parameters<typeof envelopeTimestamp>[0])
         if (keyTime != null && (snapTail == null || keyTime > snapTail)) {
           snapTail = keyTime
         }

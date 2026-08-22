@@ -70,6 +70,21 @@ export function envelopeTimestamp(env: RawEnvelope): number | undefined {
   return undefined
 }
 
+/**
+ * The envelope's own agent timestamp (epoch ms), read from the same
+ * `params._meta.agentTimestampMs` the semantic replay keys hash. Modern
+ * shells stamp every envelope with it — the shell's coarse `timestamp`
+ * is second-granularity and can fall BEHIND the ms timestamps of the
+ * chunks inside the newest envelope, so dedupe boundaries must compare
+ * live `agentTimestampMs` (ms) against this ms field, not the coarse
+ * stamp (see loadHistory snapTail).
+ */
+export function envelopeAgentTimestampMs(env: unknown): number | undefined {
+  const meta = envelopeMeta(env as RawEnvelope)
+  const v = meta.agentTimestampMs
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined
+}
+
 function finiteMetaNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
