@@ -20,6 +20,14 @@ export type Transport = {
   }>
   getAccessToken(): string
   probeAccess(): Promise<'ok' | 'need_token' | 'error'>
+  /**
+   * Subscribe to auth-invalid notifications: fired when a request carrying a
+   * token is rejected with 401 after the app is past the gate (FE_TOKEN was
+   * changed server-side). The subscriber should reset to the access gate.
+   */
+  onAuthInvalid(handler: () => void): () => void
+  /** Clear the stored token and abort in-flight requests (log out). */
+  logout(): void
   onEvent(handler: TransportHandler): () => void
   emitLocal(ev: AcpEvent): void
   lastLiveEventAt(): number | null

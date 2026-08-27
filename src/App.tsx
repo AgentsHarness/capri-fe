@@ -63,6 +63,21 @@ export default function App() {
 
   useEffect(() => initTheme(), [initTheme])
 
+  // Runtime auth invalidation: when a request carrying a token is rejected
+  // with 401 after the app is past the gate (FE_TOKEN was changed in config
+  // and the process reloaded it, or the token was rotated server-side), the
+  // transport fires onAuthInvalid. We clear the stored token and fall back to
+  // the gate so the user can re-enter the new one — every device self-heals
+  // on its next failed request instead of staying wedged on a stale token.
+  useEffect(() => {
+    if (phase !== 'ready') return
+    return transport.onAuthInvalid(() => {
+      transport.logout()
+      setGateError('密钥已变更或失效，请重新输入')
+      setPhase('gate')
+    })
+  }, [phase])
+
   // Probe hub access before mounting the main shell. Mode detection first:
   // base 指向 capri-host 直连 → 模式由 host 配置决定（HUB_URL → hub）；否则
   // 视为 hub（部署版前端连 hub 的场景）。Local mode returns ok immediately;
@@ -122,6 +137,25 @@ export default function App() {
         setGateError('密钥无效，请检查后重试')
         return
       }
+      // hub 模式探测远端 hub 失败（内网/localhost 打开了配了 HUB_URL 的
+      // host，但远端 hub 不可达 / token 不匹配）。回退到本机直连：页面
+      // 就托管在 host 上，本机直连永远可达，不应当因为远端 hub 不可达
+      // 就把用户卡在密钥门禁里。hub 能力保留——host 切换面板里仍可选
+      // hub 看全部 host，只是默认用本机。
+      if (mode === 'hub') {
+        transport.setConnectionMode('local', '')
+        const localHostId2 = localHostId ?? null
+        transport.setLocalHostId(localHostId2)
+        const r2 = await transport.probeAccess()
+        if (r2 === 'ok') {
+          setPhase('ready')
+          return
+        }
+        if (r2 === 'need_token') {
+          setGateError('密钥无效，请检查后重试')
+          return
+        }
+      }
       setGateError('无法连接 Hub，请稍后重试')
     } finally {
       setSubmitting(false)
@@ -146,10 +180,10 @@ export default function App() {
     )
   }
 
-  return <AppShell />
+  return <AppShell onLogout={() => { transport.logout(); setGateError(undefined); setPhase('gate') }} />
 }
 
-function AppShell() {
+function AppShell({ onLogout }: { onLogout: () => void }) {
   const init = useChatStore((s) => s.init)
   const [mcpOpen, setMcpOpen] = useState(false)
   const [gitOpen, setGitOpen] = useState(false)
@@ -169,7 +203,7 @@ function AppShell() {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-gn-bg-base text-gn-fg font-ui transition-colors duration-150">
-      <TopBar onOpenMcp={() => setMcpOpen(true)} onOpenGit={() => setGitOpen(true)} />
+      <TopBar onOpenMcp={() => setMcpOpen(true)} onOpenGit={() => setGitOpen(true)} onLogout={onLogout} />
       {/* Host errors / connection warnings — always visible, dismissible. */}
       <ErrorBanner />
       <div className="flex min-h-0 flex-1">

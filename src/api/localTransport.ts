@@ -69,6 +69,14 @@ export class LocalTransport {
    * 开放本机的 URL / 代理日志里。
    */
   private localAuthRequired = false
+  /**
+   * Auth-invalid subscribers: notified when a request carrying a token is
+   * rejected with 401 after the app is past the gate (i.e. the token the
+   * browser holds no longer matches what the server expects — typically
+   * because FE_TOKEN was changed in config and the process reloaded it).
+   * App subscribes to reset to the access gate so the user can re-enter.
+   */
+  private authInvalidHandlers = new Set<() => void>()
   private intentionalClose = false
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private reconnectAttempt = 0
@@ -467,12 +475,53 @@ export class LocalTransport {
     try {
       // `await` matters: with a bare `return`, the finally would run the
       // moment fetch() returns its pending promise — un-wiring the abort
-      // listeners and untracking the controller before the request ends.
-      return await fetch(input, { ...init, signal: ac.signal, headers })
+      // listeners and un-tracking the controller before the request ends.
+      const res = await fetch(input, { ...init, signal: ac.signal, headers })
+      // Auth-invalid detection: a request that carried a token but was still
+      // rejected with 401 means the server's FE_TOKEN no longer matches what
+      // this browser holds (operator changed config / token rotated). The
+      // boot probe path handles its own 401; this catches the case where the
+      // app is already past the gate and a runtime call hits a stale token.
+      // Only fire when a token was actually sent — a 401 on a no-token probe
+      // is the normal "show the gate" trigger, not an invalidation.
+      if (res.status === 401 && this.accessToken && headers.has('Authorization')) {
+        this.emitAuthInvalid()
+      }
+      return res
     } finally {
       for (const { s, fn } of wired) s.removeEventListener('abort', fn)
       tracked.delete(ac)
     }
+  }
+
+  /**
+   * Subscribe to auth-invalid events (a runtime 401 carrying a token).
+   * Returns an unsubscribe function. App uses this to reset to the access
+   * gate so the user can re-enter the new token after it was changed.
+   */
+  onAuthInvalid(handler: () => void): () => void {
+    this.authInvalidHandlers.add(handler)
+    return () => this.authInvalidHandlers.delete(handler)
+  }
+
+  private emitAuthInvalid(): void {
+    for (const h of this.authInvalidHandlers) {
+      try { h() } catch { /* subscriber error must not break other handlers */ }
+    }
+  }
+
+  /**
+   * Log out: clear the stored token and abort in-flight requests. The caller
+   * (App) is responsible for resetting the UI to the access gate — this only
+   * wipes the credential and transport state so subsequent requests do not
+   * keep sending the rejected token.
+   */
+  logout(): void {
+    this.accessToken = ''
+    this.allowDetectAuth = false
+    removeKey('capri-fe-token')
+    this.abortInflight()
+    if (this.es || this.ws) this.connect()
   }
 
   /** Abort every in-flight gap pull and invalidate their results (epoch). */

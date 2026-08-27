@@ -4,11 +4,13 @@ import {
   Boxes,
   GitBranch,
   History,
+  LogOut,
   Plus,
   Puzzle,
   Settings,
 } from 'lucide-react'
 import { useChatStore } from '../store/chat'
+import { transport } from '../api/client'
 import { ThemeOptions, ThemePicker } from './ThemePicker'
 import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS } from '../theme/layout'
 import { SessionHistoryList } from './SessionHistoryList'
@@ -209,9 +211,11 @@ export function WorkspaceBar({
 export function TopBar({
   onOpenMcp,
   onOpenGit,
+  onLogout,
 }: {
   onOpenMcp?: () => void
   onOpenGit?: () => void
+  onLogout?: () => void
 }) {
   const hostName = useChatStore((s) => s.hostName)
   const hostId = useChatStore((s) => s.hostId)
@@ -529,6 +533,17 @@ export function TopBar({
             <Settings size={13} strokeWidth={2} aria-hidden />
             settings
           </button>
+          {onLogout && transport.getAccessToken() && (
+            <button
+              type="button"
+              onClick={onLogout}
+              className="inline-flex items-center gap-1 rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+              title="退出登录（清除本机保存的密钥）"
+            >
+              <LogOut size={13} strokeWidth={2} aria-hidden />
+              退出
+            </button>
+          )}
         </div>
         {/* Mobile-only new — sits left of history (no ⋮ dive needed).
             Desktop relies on the sidebar "会话 new" header button. */}
@@ -705,6 +720,20 @@ export function TopBar({
                   <Settings size={14} strokeWidth={2} aria-hidden />
                   settings
                 </button>
+                {onLogout && transport.getAccessToken() && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMoreOpen(false)
+                      onLogout()
+                    }}
+                    className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                    title="退出登录（清除本机保存的密钥）"
+                  >
+                    <LogOut size={14} strokeWidth={2} aria-hidden />
+                    退出登录
+                  </button>
+                )}
               </div>
             </>
           )}
