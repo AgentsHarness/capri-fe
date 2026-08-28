@@ -31,12 +31,19 @@ const CONSUMED_UI_KEYS = new Set([
   'collapsed_edit_blocks',
   'page_flip_on_send',
   'remember_tool_approvals',
+  'follow_up_behavior',
 ])
 
 const PERM_CHOICES: { id: PermissionModeLabel; label: string }[] = [
   { id: 'ask', label: 'ask' },
   { id: 'auto', label: 'auto' },
   { id: 'always-approve', label: 'always-approve' },
+]
+
+/** TUI [ui].follow_up_behavior choices (queue default; steer = mid-turn). */
+const FOLLOW_UP_CHOICES: { id: 'queue' | 'steer'; label: string }[] = [
+  { id: 'queue', label: 'queue' },
+  { id: 'steer', label: 'steer' },
 ]
 
 const BOOL_ROWS: {
@@ -351,6 +358,38 @@ function ConsumedSettings({
           </div>
           <div className="mt-1 text-[10.5px] leading-snug text-gn-gutter">
             新会话 / agent 启动默认；改动同时应用到当前会话。
+          </div>
+        </div>
+      </div>
+      <div className="flex items-start gap-3 px-4 py-1.5">
+        <span className="w-48 shrink-0 pt-0.5 font-mono text-[11.5px] text-gn-muted">
+          follow_up_behavior
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap gap-1">
+            {FOLLOW_UP_CHOICES.map((c) => {
+              const on =
+                (ui?.follow_up_behavior === 'steer' ? 'steer' : 'queue') === c.id
+              return (
+                <button
+                  key={c.id}
+                  type="button"
+                  disabled={disabled || on}
+                  onClick={() => void onPatch({ follow_up_behavior: c.id })}
+                  className={`rounded-full border px-2 py-px text-[10.5px] ${
+                    on
+                      ? 'border-gn-green/60 text-gn-green'
+                      : 'border-gn-prompt-border text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
+                  } disabled:opacity-50`}
+                >
+                  {c.label}
+                </button>
+              )
+            })}
+          </div>
+          <div className="mt-1 text-[10.5px] leading-snug text-gn-gutter">
+            steer：回合运行中 Enter 发送的消息仍入队，agent 在下一个工具/模型
+            安全间隙自动中途注入（不取消回合）；queue：等当前回合结束。
           </div>
         </div>
       </div>

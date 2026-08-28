@@ -110,12 +110,15 @@ export type SettingsPayload = {
   cli?: Record<string, unknown>
 }
 
-/** POST /api/settings body — only the four FE-consumed [ui] scalars. */
+/** POST /api/settings body — FE-consumed [ui] scalars (host allowlists). */
 export type SettingsPatch = {
   collapsed_edit_blocks?: boolean
   page_flip_on_send?: boolean
   remember_tool_approvals?: boolean
   permission_mode?: 'ask' | 'auto' | 'always-approve'
+  /** TUI [ui].follow_up_behavior — 'steer' lets the agent promote queued
+   *  follow-ups into mid-turn interjections at safe gaps. */
+  follow_up_behavior?: 'queue' | 'steer'
 }
 
 

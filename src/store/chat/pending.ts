@@ -6,10 +6,14 @@ import { runtime } from './globals'
 // ── pending client requests (permission / x.ai questions) ───────────
 // Interactive x.ai/* methods that get a UI card. Everything else is
 // auto-rejected so the agent never hangs on an unsupported method.
+// folder_trust only arrives when the host declares the
+// x.ai/folderTrust.interactive capability; before then the whitelist
+// entry is harmless.
 export const SUPPORTED_XAI_REQUESTS = new Set([
   'x.ai/ask_user_question',
   'x.ai/exit_plan_mode',
   'x.ai/diff_review',
+  'x.ai/folder_trust/request',
 ])
 
 /** Owning session of a pending request (top-level wire, or params fallback). */

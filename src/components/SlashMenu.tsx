@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { Fragment, useEffect, useRef } from 'react'
 import type { SlashCommand, SlashMatch } from '../commands/registry'
 
 /**
@@ -7,6 +7,11 @@ import type { SlashCommand, SlashMatch } from '../commands/registry'
  * Enter/Tab execute. When nothing matches, the footer shows the
  * unknown-command hint: Enter then takes the plain slash-line path
  * (error row appended, NEVER sent to the agent).
+ *
+ * Skills (source 'skill') sink below the commands behind a group header
+ * (TUI 1.0.9: "Skills sink below the commands because there can be far
+ * more of them than fit on screen"). Headers are non-interactive rows so
+ * the flat `selected` index keeps mapping 1:1 onto `matches`.
  */
 export function SlashMenu({
   input,
@@ -26,6 +31,7 @@ export function SlashMenu({
   // space yet), but keep the filter defensive against any stray text.
   const query = input.slice(1).split(/\s/)[0]
   const unknown = query.length > 0 && matches.length === 0
+  const firstSkillIdx = matches.findIndex((m) => m.cmd.source === 'skill')
 
   // Keep the highlighted row visible while ↑/↓ walks the list.
   useEffect(() => {
@@ -41,41 +47,52 @@ export function SlashMenu({
       </div>
       <div ref={listRef} className="gn-no-scrollbar max-h-56 overflow-y-auto py-0.5">
         {matches.map((m, i) => (
-          <button
-            key={m.cmd.name}
-            type="button"
-            data-sel={i === selected ? '1' : '0'}
-            onMouseEnter={() => onHover(i)}
-            onClick={() => onPick(m.cmd)}
-            className={`block w-full px-3 py-[5px] text-left transition-colors ${
-              i === selected ? 'bg-gn-bg-highlight' : ''
-            }`}
-          >
-            <span className="font-mono text-[12px] text-gn-cyan">
-              /{m.cmd.name}
-            </span>
-            {m.cmd.source === 'agent' && (
-              <span className="ml-1 font-mono text-[10px] text-gn-accent-system">
-                [agent]
-              </span>
+          <Fragment key={m.cmd.name}>
+            {i === firstSkillIdx && (
+              <div className="border-t border-gn-prompt-border/60 px-3 pb-0.5 pt-1.5 text-[10px] uppercase tracking-wider text-gn-gutter first:border-t-0">
+                技能
+              </div>
             )}
-            {(m.cmd.aliases ?? []).map((a) => (
-              <span
-                key={a}
-                className="ml-1 font-mono text-[10px] text-gn-gray-dim"
-              >
-                /{a}
+            <button
+              type="button"
+              data-sel={i === selected ? '1' : '0'}
+              onMouseEnter={() => onHover(i)}
+              onClick={() => onPick(m.cmd)}
+              className={`block w-full px-3 py-[5px] text-left transition-colors ${
+                i === selected ? 'bg-gn-bg-highlight' : ''
+              }`}
+            >
+              <span className="font-mono text-[12px] text-gn-cyan">
+                /{m.cmd.name}
               </span>
-            ))}
-            {m.cmd.argHint && (
-              <span className="ml-1 font-mono text-[10px] text-gn-gray-dim">
-                {m.cmd.argHint}
+              {m.cmd.source === 'agent' && (
+                <span className="ml-1 font-mono text-[10px] text-gn-accent-system">
+                  [agent]
+                </span>
+              )}
+              {m.cmd.source === 'skill' && (
+                <span className="ml-1 font-mono text-[10px] text-gn-accent-system">
+                  [skill]
+                </span>
+              )}
+              {(m.cmd.aliases ?? []).map((a) => (
+                <span
+                  key={a}
+                  className="ml-1 font-mono text-[10px] text-gn-gray-dim"
+                >
+                  /{a}
+                </span>
+              ))}
+              {m.cmd.argHint && (
+                <span className="ml-1 font-mono text-[10px] text-gn-gray-dim">
+                  {m.cmd.argHint}
+                </span>
+              )}
+              <span className="ml-2 text-[11px] text-gn-muted">
+                {m.cmd.description}
               </span>
-            )}
-            <span className="ml-2 text-[11px] text-gn-muted">
-              {m.cmd.description}
-            </span>
-          </button>
+            </button>
+          </Fragment>
         ))}
       </div>
       <div className="border-t border-gn-prompt-border px-3 py-[3px] text-[10px]">
