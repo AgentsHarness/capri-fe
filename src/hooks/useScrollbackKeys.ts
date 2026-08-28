@@ -6,6 +6,14 @@ const NAV_KEYS = new Set([
   'k',
   'h',
   'l',
+  'J',
+  'K',
+  'H',
+  'L',
+  'g',
+  'G',
+  'PageUp',
+  'PageDown',
   'ArrowUp',
   'ArrowDown',
   'ArrowLeft',
@@ -14,6 +22,36 @@ const NAV_KEYS = new Set([
   ' ',
   'Escape',
 ])
+
+/** The scrollback scroll container (Scrollback.tsx data-scrollback-box). */
+function scrollBox(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('[data-scrollback-box]')
+}
+
+/**
+ * TUI NextResponse / PrevResponse (Shift+J / Shift+K) and PrevTurn /
+ * NextTurn (Shift+H / Shift+L, actions/defaults.rs): select the nearest
+ * entry of the given kind in `dir` and scroll it into view.
+ */
+function jumpToKind(
+  st: ReturnType<typeof useChatStore.getState>,
+  kind: 'user' | 'assistant',
+  dir: 1 | -1,
+): void {
+  const idx = st.entries.findIndex((e) => e.id === st.selectedId)
+  let i = (idx === -1 ? (dir === 1 ? -1 : st.entries.length) : idx) + dir
+  while (i >= 0 && i < st.entries.length) {
+    const e = st.entries[i]
+    if (e?.kind === kind) {
+      st.selectEntry(e.id)
+      document
+        .querySelector(`[data-entry-id="${e.id}"]`)
+        ?.scrollIntoView({ block: 'nearest' })
+      return
+    }
+    i += dir
+  }
+}
 
 /**
  * True when the event target sits on (or inside) an interactive control —
@@ -36,6 +74,12 @@ function onInteractiveControl(target: EventTarget | null): boolean {
  * - ← / → / h / l: collapse / expand selected foldable block (inline)
  * - Enter: open block viewer (TUI OpenBlockViewer)
  * - Space: toggle inline expand
+ * - g / G: scroll to top / bottom (G restores bottom-follow)
+ * - PgUp / PgDn: page the conversation (also from the prompt, TUI docs)
+ * - Ctrl+J / Ctrl+K: scroll a line down / up without moving selection
+ * - Ctrl+U / Ctrl+D: half page up / down
+ * - Shift+J / Shift+K: next / previous assistant response
+ * - Shift+H / Shift+L: previous / next user turn (TUI PrevTurn/NextTurn)
  * - Esc: close viewer if open, else scrollback → prompt (or the cancel
  *   flow when busy: saved preference acts directly, running subagents
  *   open the cancel panel, otherwise the turn is cancelled)
@@ -113,6 +157,41 @@ export function useScrollbackKeys() {
         }
         return
       }
+      // Ctrl+J / Ctrl+K / Ctrl+U / Ctrl+D (TUI ScrollDown / ScrollUp /
+      // HalfPageUp / HalfPageDown): scroll the conversation without moving
+      // the selection. Inert while a modal surface owns the keys.
+      if (
+        e.ctrlKey &&
+        (e.key === 'j' ||
+          e.key === 'J' ||
+          e.key === 'k' ||
+          e.key === 'K' ||
+          e.key === 'u' ||
+          e.key === 'U' ||
+          e.key === 'd' ||
+          e.key === 'D')
+      ) {
+        if (
+          store0.viewerEntryId ||
+          store0.viewerTask ||
+          store0.xaiRequests.length > 0 ||
+          store0.cancelPanelOpen ||
+          store0.queuePanelOpen
+        ) {
+          return
+        }
+        const box = scrollBox()
+        if (!box) return
+        e.preventDefault()
+        const line = e.key === 'j' || e.key === 'J' || e.key === 'k' || e.key === 'K'
+        const amount = line
+          ? 48
+          : Math.max(120, Math.round(box.clientHeight / 2))
+        const up =
+          e.key === 'k' || e.key === 'K' || e.key === 'u' || e.key === 'U'
+        box.scrollBy({ top: up ? -amount : amount })
+        return
+      }
       if (e.ctrlKey) return
 
       const target = e.target as HTMLElement | null
@@ -179,12 +258,24 @@ export function useScrollbackKeys() {
         return
       }
 
-      // Typing in the prompt: only Esc→cancel flow while busy
+      // Typing in the prompt: Esc→cancel flow while busy; PgUp/PgDn page
+      // the conversation without stealing focus (TUI docs: "prompt
+      // focused — PgUp/PgDn scroll the conversation").
       if (inField) {
         const store = useChatStore.getState()
         if (e.key === 'Escape' && store.conn === 'busy') {
           e.preventDefault()
           void store.requestCancelTurn()
+          return
+        }
+        if (e.key === 'PageUp' || e.key === 'PageDown') {
+          const box = scrollBox()
+          if (box) {
+            e.preventDefault()
+            box.scrollBy({
+              top: (e.key === 'PageUp' ? -1 : 1) * box.clientHeight * 0.9,
+            })
+          }
         }
         return
       }
@@ -231,6 +322,52 @@ export function useScrollbackKeys() {
           // Space: inline fold toggle (not viewer)
           e.preventDefault()
           store.toggleSelected()
+          return
+        case 'g': {
+          // TUI GotoTop: jump to the scrollback top (follow pauses
+          // automatically — the box's onScroll sees the distance grow).
+          e.preventDefault()
+          const box = scrollBox()
+          if (box) box.scrollTop = 0
+          return
+        }
+        case 'G': {
+          // TUI GotoBottom: jump to the bottom; landing near the bottom
+          // re-engages the existing bottom-follow.
+          e.preventDefault()
+          const box = scrollBox()
+          if (box) box.scrollTop = box.scrollHeight
+          return
+        }
+        case 'PageUp':
+        case 'PageDown':
+          e.preventDefault()
+          scrollBox()?.scrollBy({
+            top:
+              (e.key === 'PageUp' ? -1 : 1) *
+              (scrollBox()?.clientHeight ?? 0) *
+              0.9,
+          })
+          return
+        case 'J':
+          // TUI NextResponse: next assistant reply
+          e.preventDefault()
+          jumpToKind(store, 'assistant', 1)
+          return
+        case 'K':
+          // TUI PrevResponse: previous assistant reply
+          e.preventDefault()
+          jumpToKind(store, 'assistant', -1)
+          return
+        case 'H':
+          // TUI PrevTurn: previous user prompt
+          e.preventDefault()
+          jumpToKind(store, 'user', -1)
+          return
+        case 'L':
+          // TUI NextTurn: next user prompt
+          e.preventDefault()
+          jumpToKind(store, 'user', 1)
           return
         case 'Escape':
           // TUI: Esc while a turn runs goes through the cancel flow —

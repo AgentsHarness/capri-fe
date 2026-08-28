@@ -12,6 +12,8 @@ import { usePromptQueue } from '../store/promptQueue'
 import { THEMES, useThemeStore } from '../store/theme'
 import type { ThemeId } from '../theme/tokens'
 import type { AgentCommand } from '../api/types'
+import { slashRecencyScore } from './recency'
+import { cachedSkills } from './skills'
 
 export type SlashCommand = {
   name: string
@@ -22,8 +24,10 @@ export type SlashCommand = {
    * Command origin. Local commands omit it; agent-advertised commands
    * (ACP `available_commands_update`) set `'agent'` so the menu can tag
    * them and their `run` sends the raw `/name args` line to the agent.
+   * Skills (GET /api/extensions) set `'skill'` — the menu sinks them
+   * below the commands (TUI 1.0.9 grouping).
    */
-  source?: 'local' | 'agent'
+  source?: 'local' | 'agent' | 'skill'
   run: (args: string) => void | Promise<void>
 }
 
@@ -573,7 +577,6 @@ export function mergedSlashCommands(
   agentCommandsOverride?: AgentCommand[],
 ): SlashCommand[] {
   const agentCommands = agentCommandsOverride ?? useChatStore.getState().agentCommands
-  if (agentCommands.length === 0) return slashCommands
   const claimed = new Set<string>()
   for (const c of slashCommands) {
     claimed.add(c.name.toLowerCase())
@@ -593,6 +596,30 @@ export function mergedSlashCommands(
       source: 'agent',
       // TUI semantics: the raw `/name args` line is passed through to the
       // agent as a user prompt — the agent parses the slash command itself.
+      run: (args) => {
+        const trimmed = args.trim()
+        sendPrompt(trimmed ? `/${name} ${trimmed}` : `/${name}`)
+      },
+    })
+  }
+  // Skills sink below the commands (TUI slash/mod.rs MenuGroup: Command <
+  // BundledSkill < OtherSkill — "there can be far more of them than fit on
+  // screen"). Invoked the same way as agent commands: the `/name args`
+  // line goes to the agent as a prompt. If the agent already advertises a
+  // skill as an ACP command, that entry wins (claimed-dedupe).
+  for (const sk of cachedSkills()) {
+    const name = (sk?.name ?? '').trim()
+    if (!name) continue
+    const key = name.toLowerCase()
+    if (claimed.has(key)) continue
+    claimed.add(key)
+    out.push({
+      name,
+      description:
+        sk.enabled === false
+          ? `技能（${sk.scope || 'skill'}，已停用）`
+          : `技能${sk.scope ? ` · ${sk.scope}` : ''}`,
+      source: 'skill',
       run: (args) => {
         const trimmed = args.trim()
         sendPrompt(trimmed ? `/${name} ${trimmed}` : `/${name}`)
@@ -637,7 +664,30 @@ export function filterSlashCommands(
 ): SlashMatch[] {
   const q = input.slice(1).split(/\s/)[0].trim().toLowerCase()
   const commands = mergedSlashCommands(agentCommands)
-  if (!q) return commands.map((cmd) => ({ cmd, score: 0 }))
+  if (!q) {
+    // TUI bare-`/` menu key (slash/mod.rs MenuKey): group first (commands
+    // < skills), then recency (commands only — "nothing ranks skills"),
+    // then name. Stable sort with the list index as the final tiebreak so
+    // never-used commands keep their registry order.
+    const now = Date.now()
+    return commands
+      .map((cmd, idx) => ({ cmd, idx }))
+      .sort((a, b) => {
+        const aSkill = a.cmd.source === 'skill' ? 1 : 0
+        const bSkill = b.cmd.source === 'skill' ? 1 : 0
+        if (aSkill !== bSkill) return aSkill - bSkill
+        if (aSkill === 0) {
+          const ra = slashRecencyScore(a.cmd.name, now)
+          const rb = slashRecencyScore(b.cmd.name, now)
+          if (ra !== rb) return rb - ra
+        } else {
+          const na = a.cmd.name.localeCompare(b.cmd.name)
+          if (na !== 0) return na
+        }
+        return a.idx - b.idx
+      })
+      .map(({ cmd }) => ({ cmd, score: 0 }))
+  }
   const out: SlashMatch[] = []
   for (const cmd of commands) {
     const name = cmd.name
@@ -657,8 +707,14 @@ export function filterSlashCommands(
     else score = 4
     out.push({ cmd, score })
   }
+  // Ranked matches: score first, then recency (TUI fuzzy sort puts MRU
+  // right after the match score), then name.
+  const now = Date.now()
   out.sort(
-    (a, b) => a.score - b.score || a.cmd.name.localeCompare(b.cmd.name),
+    (a, b) =>
+      a.score - b.score ||
+      slashRecencyScore(b.cmd.name, now) - slashRecencyScore(a.cmd.name, now) ||
+      a.cmd.name.localeCompare(b.cmd.name),
   )
   return out
 }

@@ -447,6 +447,27 @@ export function handleExtMiscEvent(
         }
         break
       }
+      case 'session_interjection': {
+        // x.ai/session/interjection (typed carrier for interjection.rs's
+        // broadcast_interjection): the agent injected a queued follow-up
+        // (or an explicit x.ai/interject) into the running turn at a safe
+        // gap. Wire params: {sessionId, text, interjectionId?}. Rendered
+        // as a session_event row so the user sees WHERE their steer landed
+        // (TUI shows the injected text inline); no optimistic local row —
+        // the broadcast is the single source (the pager dedupes its own
+        // echo by interjectionId, which the FE never mints).
+        const p = (ev.params ?? {}) as Record<string, unknown>
+        const text = typeof p.text === 'string' ? p.text.trim() : ''
+        if (!text) break
+        const sid = (ev as { sessionId?: string }).sessionId
+        if (!sid || sid === get().sessionId) {
+          appendEntry(set, {
+            kind: 'session_event',
+            text: `已插话（steer）: ${text}`,
+          })
+        }
+        break
+      }
       case 'queue_changed': {
         // x.ai/queue/changed (host bridge.go broadcasts the TYPED carrier)
         // — the agent's authoritative prompt-queue snapshot. The FE's

@@ -14,6 +14,7 @@ import { ApprovalStrip } from './components/ApprovalStrip'
 import { PlanApproval } from './components/PlanApproval'
 import { CancelPanel } from './components/CancelPanel'
 import { QuestionModal } from './components/QuestionModal'
+import { FolderTrustCard } from './components/FolderTrustCard'
 import { DiffReviewModal } from './components/DiffReviewModal'
 import { MemoryModal } from './components/MemoryModal'
 import { McpPanel } from './components/McpPanel'
@@ -194,6 +195,7 @@ function AppShell() {
       </div>
       <BlockViewer />
       <QuestionModal />
+      <FolderTrustCard />
       <DiffReviewModal />
       <MemoryModal />
       <McpPanel open={mcpOpen} onClose={() => setMcpOpen(false)} />

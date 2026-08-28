@@ -75,7 +75,7 @@ export function ApprovalStrip() {
     return onUiSettingsChange(() => forceRender())
   }, [])
   const rememberApprovals = uiBool('remember_tool_approvals', false)
-  const options = rememberApprovals
+  let options = rememberApprovals
     ? rawOptions
     : visiblePermissionOptions(rawOptions)
   const toolCall = req?.params?.toolCall as
@@ -88,6 +88,22 @@ export function ApprovalStrip() {
   // Independent of `expanded` so Ctrl+F can collapse an expanded view again.
   const commandLines = command ? command.split('\n') : []
   const collapsible = commandLines.length > PERMISSION_COLLAPSED_ROWS
+  // TUI 1.0.9 "no memorable authorization → no Always-allow row": the
+  // agent computes this exactly (always_allow_row_is_effective) for fancy
+  // clients, but the generic option set the host receives is ungated —
+  // the display layer suppresses the row for the two documented shapes
+  // (env-wrapped dangerous verbs, multi-step chains). Bash only: MCP
+  // grants are exact by construction and always memorable.
+  const rawInputRec = (toolCall?.rawInput ??
+    toolCall?.raw_input) as { variant?: string } | undefined
+  const mcpish =
+    rawInputRec?.variant === 'UseTool' ||
+    rawInputRec?.variant === 'MCPTool' ||
+    parseMcpQualifiedName(command)?.server != null
+  if (!!command && !mcpish && !bashAlwaysAllowEffective(command)) {
+    const kept = options.filter((o) => !isAlwaysOption(o))
+    if (kept.length > 0) options = kept // never an empty card
+  }
   const hasAlways = options.some(isAlwaysOption)
 
   // ── MCP scope (TUI McpScopeState) ─────────────────────────────────
@@ -878,6 +894,126 @@ const ALWAYS_RE = /always|always_allow|alwaysAllow|始终|总是/i
 function visiblePermissionOptions(raw: Option[]): Option[] {
   const kept = raw.filter((o) => !isAlwaysOption(o))
   return kept.length > 0 ? kept : raw
+}
+
+/** Verbs for which the agent pins an always-allow grant to the whole
+ *  command (bash_grants.rs is_dangerous_command_words; `git push` is the
+ *  two-word special case). */
+const ALWAYS_DANGEROUS = new Set([
+  'rm',
+  'chmod',
+  'chown',
+  'chgrp',
+  'chattr',
+  'pkill',
+  'kill',
+  'killall',
+])
+
+/** Wrapper prefixes the agent strips before matching grants
+ *  (bash_command_splitting.rs primary_command_from_script). */
+const BASH_WRAPPERS = new Set([
+  'env',
+  'timeout',
+  'nice',
+  'ionice',
+  'chrt',
+  'stdbuf',
+])
+
+function isWrapperAssignment(word: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*=/.test(word)
+}
+
+/** Split on top-level chain operators (&& || ; |) — quote-aware, so pipes
+ *  inside quotes don't count. */
+function splitTopLevelSegments(script: string): string[] {
+  const segs: string[] = []
+  let cur = ''
+  let quote: string | null = null
+  for (let i = 0; i < script.length; i++) {
+    const ch = script[i]!
+    if (quote) {
+      if (ch === quote) quote = null
+      cur += ch
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch
+      cur += ch
+      continue
+    }
+    if (
+      (ch === '&' && script[i + 1] === '&') ||
+      (ch === '|' && script[i + 1] === '|')
+    ) {
+      segs.push(cur)
+      cur = ''
+      i++
+      continue
+    }
+    if (ch === '|' || ch === ';') {
+      segs.push(cur)
+      cur = ''
+      continue
+    }
+    cur += ch
+  }
+  segs.push(cur)
+  return segs.map((s) => s.trim()).filter((s) => s.length > 0)
+}
+
+/**
+ * Conservative client-side mirror of the agent's "memorable
+ * authorization" gate (bash_grants.rs always_allow_row_is_effective):
+ * an always-allow answer is only offered when the grant it would save
+ * can actually stop the script from prompting again. Suppresses the row
+ * for the two documented shapes (docs 22-permissions-and-safety.md):
+ *  1. multi-step chains — the grant binds the primary command only, the
+ *     remaining steps would still need approval;
+ *  2. dangerous verbs behind wrapper prefixes (env/timeout/nice/…) —
+ *     the agent matches grants against the stripped script, so a grant
+ *     saved for the wrapped text never matches.
+ * Everything else stays eligible (erring toward the row appearing —
+ * the pre-1.0.9 behavior — rather than hiding a usable one).
+ */
+function bashAlwaysAllowEffective(script: string): boolean {
+  const trimmed = script.trim()
+  if (!trimmed) return false
+  const segs = splitTopLevelSegments(trimmed)
+  if (segs.length > 1) return false
+  const words = (segs[0] ?? '').split(/\s+/).filter(Boolean)
+  let i = 0
+  let wrapped = false
+  while (i < words.length) {
+    const w = words[i]!
+    if (!BASH_WRAPPERS.has(w)) break
+    wrapped = true
+    i++
+    // Wrapper arguments: flags, env assignments; a bare value right
+    // after a flag or after `timeout` (duration) is eaten conservatively.
+    while (i < words.length) {
+      const a = words[i]!
+      if (a.startsWith('-') || isWrapperAssignment(a)) {
+        i++
+        if (
+          (w === 'timeout' || a === '-n' || a === '-o' || a === '-i') &&
+          i < words.length &&
+          !/^-/.test(words[i]!) &&
+          !isWrapperAssignment(words[i]!)
+        ) {
+          i++
+        }
+        continue
+      }
+      break
+    }
+  }
+  if (!wrapped) return true
+  const verb = (words[i] ?? '').split('/').pop() ?? ''
+  if (ALWAYS_DANGEROUS.has(verb)) return false
+  if (verb === 'git' && words[i + 1] === 'push') return false
+  return true
 }
 
 /** An option carrying "always allow" semantics (optionId or label). */

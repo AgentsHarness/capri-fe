@@ -17,6 +17,8 @@ vi.mock('../store/promptQueue', () => ({
 
 import { useChatStore } from '../store/chat'
 import { usePromptQueue } from '../store/promptQueue'
+import { bumpSlashRecency } from './recency'
+import { setCachedSkills } from './skills'
 import {
   filterSlashCommands,
   isMultilineEnabled,
@@ -158,8 +160,11 @@ describe('matchSlash', () => {
 })
 
 describe('mergedSlashCommands', () => {
-  it('无 agent 命令 → 本地列表', () => {
-    expect(mergedSlashCommands([])).toBe(slashCommands)
+  it('无 agent 命令 → 本地列表内容一致（skills 仍会追加，不再返回同一引用）', () => {
+    const merged = mergedSlashCommands([])
+    for (const c of slashCommands) {
+      expect(merged.find((m) => m.name === c.name)).toBe(c)
+    }
   })
 
   it('agent 命令追加；与本地名/别名冲突时跳过', () => {
@@ -544,5 +549,47 @@ describe('/help', () => {
       kind: 'session_event',
       text: expect.stringContaining('/new / /clear'),
     })
+  })
+})
+describe('slash 菜单 recency + skills 分组（TUI 1.0.9 对齐）', () => {
+  it('skills 追加在 agent 命令之后，source 为 skill；与已有名冲突时跳过', () => {
+    setCachedSkills([
+      { name: 'zskill', scope: 'project' },
+      { name: 'deploy' }, // 与上面用例注入的 agent 命令无关，但可能与本地冲突
+      { name: 'model' }, // 与本地命令冲突 → 跳过
+    ])
+    const merged = mergedSlashCommands([{ name: 'deploy', description: 'd' }])
+    const skill = merged.find((c) => c.name === 'zskill')
+    expect(skill).toMatchObject({ name: 'zskill', source: 'skill' })
+    expect(merged.filter((c) => c.name === 'model')).toHaveLength(1)
+    expect(merged.filter((c) => c.name === 'deploy')).toHaveLength(1)
+    // skills 在 agent 命令之后
+    expect(merged.findIndex((c) => c.name === 'zskill')).toBeGreaterThan(
+      merged.findIndex((c) => c.name === 'deploy'),
+    )
+    skill!.run('arg')
+    expect(fake.send).toHaveBeenCalledWith('/zskill arg')
+    setCachedSkills([])
+  })
+
+  it('bare / 菜单：最近使用的命令排前，skills 沉底并按字母序', () => {
+    setCachedSkills([
+      { name: 'zskill' },
+      { name: 'askill' },
+    ])
+    bumpSlashRecency('model')
+    const rows = filterSlashCommands('/')
+    const names = rows.map((r) => r.cmd.name)
+    const modelIdx = names.indexOf('model')
+    const settingsIdx = names.indexOf('settings')
+    expect(modelIdx).toBeGreaterThan(-1)
+    // 用过的 model 排在未用的 settings 之前（同组内 recency 优先）
+    expect(modelIdx).toBeLessThan(settingsIdx)
+    // skills 在所有命令之后，且按字母序
+    const aIdx = names.indexOf('askill')
+    const zIdx = names.indexOf('zskill')
+    expect(aIdx).toBeGreaterThan(settingsIdx)
+    expect(zIdx).toBeGreaterThan(aIdx)
+    setCachedSkills([])
   })
 })

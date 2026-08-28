@@ -37,6 +37,8 @@ import {
   registerModelMenuOpener,
   type SlashCommand,
 } from '../commands/registry'
+import { bumpSlashRecency } from '../commands/recency'
+import { setCachedSkills } from '../commands/skills'
 
 /** ── TUI paste-chip port (PromptWidget::handle_paste) ──────────────────
  * Pastes at/above the chip threshold become an atomic `[Pasted: N lines]`
@@ -490,6 +492,39 @@ export function Composer() {
   const queuePanelRef = useRef<HTMLDivElement>(null)
   const queuePillRef = useRef<HTMLButtonElement>(null)
 
+  // ── TUI Esc ladder (prompt.rs try_handle_esc_policy, idle side) ──────
+  // First idle Esc ARMS: a non-empty draft shows "press again to clear"
+  // (second Esc within the TTL clears the buffer); an empty draft arms the
+  // rewind picker (second Esc opens /rewind, first press stays silent
+  // apart from the hint). Any other key disarms. Busy Esc never reaches
+  // this — the cancel flow owns it.
+  const escArmAtRef = useRef(0)
+  const [escHint, setEscHint] = useState<'clear' | 'rewind' | null>(null)
+  const escHintTimerRef = useRef<number | null>(null)
+  const disarmEsc = () => {
+    if (escArmAtRef.current === 0 && escHint == null) return
+    escArmAtRef.current = 0
+    setEscHint(null)
+  }
+  const armEsc = (hint: 'clear' | 'rewind') => {
+    escArmAtRef.current = Date.now()
+    setEscHint(hint)
+    if (escHintTimerRef.current != null) {
+      window.clearTimeout(escHintTimerRef.current)
+    }
+    escHintTimerRef.current = window.setTimeout(() => {
+      escArmAtRef.current = 0
+      setEscHint(null)
+    }, 800)
+  }
+  useEffect(() => {
+    return () => {
+      if (escHintTimerRef.current != null) {
+        window.clearTimeout(escHintTimerRef.current)
+      }
+    }
+  }, [])
+
   // ── TUI shell mode (`! ` prefix; command goes to the agent as a prompt) ──
   const [shellMode, setShellMode] = useState(false)
   // ── TUI slash command menu (`/` prefix; fuzzy menu + local execution) ──
@@ -829,9 +864,30 @@ export function Composer() {
   // Agent-advertised commands (ACP available_commands_update) feed the
   // menu — subscribed here so the list refreshes when they arrive.
   const agentCommands = useChatStore((s) => s.agentCommands)
+  // Skills join the menu below the commands (TUI 1.0.9 grouping). The
+  // extension list is fetched once per mount; the tick forces the memo
+  // to recompute after the module-wide cache updates.
+  const [skillsTick, setSkillsTick] = useState(0)
+  useEffect(() => {
+    let alive = true
+    void transport
+      .extensions()
+      .then((d) => {
+        if (!alive) return
+        setCachedSkills(Array.isArray(d?.skills) ? d.skills : [])
+        setSkillsTick((t) => t + 1)
+      })
+      .catch(() => {
+        /* offline / no host — menu runs without skills */
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
   const slashMatches = useMemo(
     () => (slashOpen ? filterSlashCommands(text, agentCommands) : []),
-    [slashOpen, text, agentCommands],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [slashOpen, text, agentCommands, skillsTick],
   )
   const slashList = useMemo(
     () => slashMatches.map((m) => m.cmd),
@@ -841,6 +897,9 @@ export function Composer() {
 
   /** Execute a slash command (menu pick or typed line) — clears the buffer. */
   const runSlashCommand = async (cmd: SlashCommand, args: string) => {
+    // TUI slash MRU: every execution refreshes the recency score that
+    // orders the bare `/` menu (slash/mru.rs).
+    bumpSlashRecency(cmd.name)
     setSlashDismissed(true)
     setText('')
     setChips([])
@@ -1678,6 +1737,20 @@ export function Composer() {
       </div>
     )
 
+  // ── TUI Esc ladder hint (prompt.rs "press again to clear") ──
+  // Transient row between the status area and the prompt; auto-expires
+  // with the 800ms arm TTL (armEsc's timer clears the state).
+  const escHintRow = escHint && (
+    <div
+      className="flex min-h-4 items-center gap-1.5 pb-2 pr-0.5 font-ui text-[12px] leading-[1.4] text-gn-gray select-none"
+      style={{ paddingLeft: COMPOSER_BODY_PAD_LEFT_PX }}
+    >
+      {escHint === 'clear'
+        ? '再按一次 Esc 清空草稿（回合不受影响）'
+        : '再按一次 Esc 打开 rewind 选择器'}
+    </div>
+  )
+
   return (
     // In-flow bottom area (no overlay). Deliberately NOT a scroll
     // container: the slash menu / queue panel float above the chrome and
@@ -1868,6 +1941,7 @@ export function Composer() {
         {/* TUI queue hint 独立一行（不挤状态行）：排队中/空闲有剩余条目时
             都显示，点击展开队列面板。 */}
         {queueRow}
+        {escHintRow}
         {/* ── TUI follow-up suggestion chips (x.ai/follow_ups, follow_ups.rs) ──
           Turn-end suggestions rendered as a transient row between the
           scrollback and the prompt (TUI: `[ label ]` chips above the prompt
@@ -2228,6 +2302,32 @@ export function Composer() {
                   // browsers): keyCode 229 lingers on some Chromium builds
                   // after composition ends and would swallow plain Enter.
                   if (e.nativeEvent.isComposing) return
+                  // Any non-Esc key disarms the idle Esc ladder.
+                  if (e.key !== 'Escape') disarmEsc()
+                  // TUI Ctrl+L (VS Code family mid-turn interject key):
+                  // send the current draft as a mid-turn interjection —
+                  // the agent injects it at the next tool/model safe gap
+                  // WITHOUT cancelling the turn (x.ai/interject →
+                  // {status:"queued"}; the session_interjection broadcast
+                  // renders the echo row). Needs a running turn and a
+                  // non-empty draft; Enter/queue paths are unaffected.
+                  if (e.ctrlKey && (e.key === 'l' || e.key === 'L')) {
+                    if (busy && text.trim()) {
+                      e.preventDefault()
+                      const { expandedText } = buildBlocks(text, chips)
+                      void transport
+                        .interject({ text: expandedText })
+                        .catch(() => {
+                          pushToast('插话发送失败')
+                        })
+                      setText('')
+                      setChips([])
+                      useChatStore.setState({
+                        statusText: '插话已发送，将在安全间隙注入当前回合',
+                      })
+                    }
+                    return
+                  }
                   // TUI Shift+Tab (prompt focused): cycle mode
                   // Normal → Plan → Auto → Always → Normal (store.cycleMode).
                   if (e.key === 'Tab' && e.shiftKey) {
@@ -2315,8 +2415,28 @@ export function Composer() {
                       }
                       return
                     }
+                    // Queue pane owns ↑/↓ while open (TUI queue pane focus:
+                    // the capture-phase panel effect skips keys typed in the
+                    // textarea, so the textarea navigates the selection here).
+                    if (queuePanelOpen && queueEditIndex == null && queue.length > 0) {
+                      e.preventDefault()
+                      const sel = Math.min(queueSel, queue.length - 1)
+                      setQueueSel(
+                        e.key === 'ArrowUp'
+                          ? Math.max(0, sel - 1)
+                          : Math.min(queue.length - 1, sel + 1),
+                      )
+                      return
+                    }
                     if (e.key === 'ArrowUp' && text === '' && !shellMode) {
-                      if (history.length > 0) {
+                      if (queue.length > 0) {
+                        // TUI 1.0.9: ↑ on an empty prompt moves focus into
+                        // the queue pane with the LAST row highlighted;
+                        // history opens only when nothing is queued.
+                        e.preventDefault()
+                        setQueueSel(queue.length - 1)
+                        setQueuePanelOpen(true)
+                      } else if (history.length > 0) {
                         e.preventDefault()
                         setHistSel(0)
                         setHistOpen(true)
@@ -2578,6 +2698,34 @@ export function Composer() {
                     if (shellMode && text === '') {
                       e.preventDefault()
                       setShellMode(false)
+                      return
+                    }
+                    // TUI Esc ladder, idle side (prompt.rs
+                    // try_handle_esc_policy): first Esc arms — a draft
+                    // shows "press again to clear", an empty draft arms the
+                    // rewind picker; the second Esc within the TTL executes.
+                    // Busy keeps the pre-existing cancel flow below (the
+                    // ladder never delays a cancel).
+                    if (!busy) {
+                      const armed = Date.now() - escArmAtRef.current < 800
+                      const hasDraft = text !== '' || chips.length > 0
+                      if (!armed) {
+                        armEsc(hasDraft ? 'clear' : 'rewind')
+                        e.preventDefault()
+                        e.stopPropagation()
+                        return
+                      }
+                      escArmAtRef.current = 0
+                      setEscHint(null)
+                      e.preventDefault()
+                      e.stopPropagation()
+                      if (hasDraft) {
+                        setText('')
+                        setChips([])
+                        setHistOpen(false)
+                        return
+                      }
+                      useChatStore.getState().openRewind()
                       return
                     }
                     // TUI: Esc while busy goes through the cancel flow —
