@@ -153,6 +153,87 @@ export function promptIdMismatch(
 }
 
 /**
+ * Agent 回合终态新增的权威时长（update.elapsed_ms，墙钟毫秒）。2026-08-27
+ * agent（1.0.9+）起随 turn_completed 下发；旧 agent / 旧信封没有该键，
+ * 调用方回落到本地 turnStartedAt 推导。snake_case 是 wire 原样
+ * （SessionUpdate 枚举字段全 snake），camelCase 兜底 host 已归一化的形状。
+ */
+export function wireElapsedMs(upd: unknown): number | undefined {
+  if (!upd || typeof upd !== 'object' || Array.isArray(upd)) return undefined
+  const o = upd as Record<string, unknown>
+  for (const k of ['elapsed_ms', 'elapsedMs']) {
+    const v = o[k]
+    if (typeof v === 'number' && Number.isFinite(v) && v >= 0) return v
+  }
+  return undefined
+}
+
+/**
+ * 回合取消的结构化上下文（turn 终态 `_meta.cancellationContext` 与
+ * prompt_complete 顶层同键，2026-08-27 agent 起）：hook/tool 级取消原因。
+ * 渲染成取消标记后的补充行；无该键返回 undefined（旧 agent 静默跳过）。
+ * wire 内层字段 snake_case（tool_name/hook_name），camelCase 兜底。
+ */
+export function cancellationContextText(root: unknown): string | undefined {
+  const read = (o: unknown): Record<string, unknown> | undefined => {
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return undefined
+    const rec = o as Record<string, unknown>
+    for (const k of ['cancellationContext', 'cancellation_context']) {
+      const v = rec[k]
+      if (v && typeof v === 'object' && !Array.isArray(v)) {
+        return v as Record<string, unknown>
+      }
+    }
+    return undefined
+  }
+  if (!root || typeof root !== 'object' || Array.isArray(root)) return undefined
+  const o = root as Record<string, unknown>
+  const ctx = read(o) ?? read(o._meta) ?? read(o.meta)
+  if (!ctx) return undefined
+  const pick = (...keys: string[]): string | undefined => {
+    for (const k of keys) {
+      const v = ctx[k]
+      if (typeof v === 'string' && v.trim()) return v.trim()
+    }
+    return undefined
+  }
+  const tool = pick('tool_name', 'toolName')
+  const hook = pick('hook_name', 'hookName')
+  const reason = pick('reason')
+  const trigger = pick('trigger')
+  const by = hook ? `hook "${hook}"` : trigger ? `trigger "${trigger}"` : undefined
+  const whileRunning = tool ? ` while running "${tool}"` : ''
+  const detail = reason ? `: ${reason}` : ''
+  if (!by && !whileRunning && !detail) return undefined
+  return `Cancelled${by ? ` by ${by}` : ''}${whileRunning}${detail}`
+}
+
+/**
+ * 回合取消上下文详情行的去重：同一回合的 prompt_complete 与
+ * turn_completed rail 都携带 cancellationContext，两路都会尝试渲染——
+ * 尾部已存在同文本详情行时跳过。走查规则与 tailAlreadyTurnEnded 同款：
+ * 越过 status/error；session_event 里命中同文本 → true、收口标记 → 继续、
+ * 其他 → 止步；遇到内容条目（user/assistant/tool/…）即止。
+ */
+export function tailHasCancellationDetail(
+  entries: ScrollEntry[],
+  text: string,
+): boolean {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i]
+    if (e.kind === 'status' || e.kind === 'error') continue
+    if (e.kind === 'session_event') {
+      if (e.text === text) return true
+      if (isTurnEndLine(e)) continue
+      return false
+    }
+    return false
+  }
+  return false
+}
+
+
+/**
  * TUI "Worked for Xs" marker entry. `elapsedMs` undefined → plain
  * "Turn completed." (TUI TurnCompleted with no elapsed).
  */

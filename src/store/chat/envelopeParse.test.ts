@@ -184,6 +184,16 @@ describe('turnCompletedEvent / completionEndMs', () => {
     })
   })
 
+  it('update.elapsed_ms → 事件携带 elapsedMs（camelCase 兜底）', () => {
+    const snake = turnCompletedEvent({ stop_reason: 'end_turn', elapsed_ms: 4321 }, 9)
+    expect((snake as { elapsedMs?: number }).elapsedMs).toBe(4321)
+    const camel = turnCompletedEvent({ stop_reason: 'end_turn', elapsedMs: 4321 }, 9)
+    expect((camel as { elapsedMs?: number }).elapsedMs).toBe(4321)
+    // 旧信封没有该键 → 不携带（replay 回落 turnStart/endMs 推导）
+    const absent = turnCompletedEvent({ stop_reason: 'end_turn' }, 9)
+    expect((absent as { elapsedMs?: number }).elapsedMs).toBeUndefined()
+  })
+
   it('meta 非对象不携带', () => {
     const ev = turnCompletedEvent({}, 1, 'str')
     expect((ev as { meta?: unknown }).meta).toBeUndefined()

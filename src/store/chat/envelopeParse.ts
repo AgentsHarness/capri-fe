@@ -648,18 +648,32 @@ export function completionEndMs(e: RawEnvelope): number | undefined {
  * correct marker — TurnFailed / TurnCancelled / Worked for — instead of a
  * blanket "Turn completed.") plus the completion's agentTimestampMs as the
  * turn's end stamp (replayUpdates injects the real start from the meta).
+ * update.elapsed_ms (1.0.9+ agent) rides along as the authoritative wall-
+ * clock duration; old envelopes omit it and replay falls back to deriving
+ * from the turn-start/end stamps.
  */
 export function turnCompletedEvent(
   up: Record<string, unknown>,
   endMs: number | undefined,
   meta?: unknown,
 ): AcpEvent {
+  const elapsedRaw =
+    typeof up.elapsed_ms === 'number'
+      ? up.elapsed_ms
+      : typeof up.elapsedMs === 'number'
+        ? up.elapsedMs
+        : undefined
   return {
     type: 'turn_completed',
     stopReason: typeof up.stop_reason === 'string' ? up.stop_reason : undefined,
     agentResult:
       typeof up.agent_result === 'string' ? up.agent_result : undefined,
     endMs,
+    ...(typeof elapsedRaw === 'number' &&
+    Number.isFinite(elapsedRaw) &&
+    elapsedRaw >= 0
+      ? { elapsedMs: elapsedRaw }
+      : {}),
     ...(meta && typeof meta === 'object' && !Array.isArray(meta) ? { meta } : {}),
   }
 }

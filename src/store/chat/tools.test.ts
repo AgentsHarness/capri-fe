@@ -19,10 +19,12 @@ import {
   shouldSuppressToolFromScrollback,
   suppressedToolIds,
   toolCallIdOf,
+  toolKindName,
   toolRawInput,
   toolRawOutput,
   toolTitle,
   toolVariant,
+  xaiToolKind,
 } from './tools'
 
 function tc(over: Partial<ToolCall> = {}): ToolCall {
@@ -60,6 +62,24 @@ describe('extractTarget / raw 访问器', () => {
     expect(toolCallIdOf(tc({ tool_call_id: 'b' }))).toBe('b')
     expect(toolCallIdOf(tc({ id: 'c' }))).toBe('c')
     expect(toolCallIdOf({ title: 'x' } as ToolCall)).toBeUndefined()
+  })
+
+  it('xaiToolKind / toolKindName：x.ai/tool.kind 优先于顶层 kind', () => {
+    // send_subagent_message（1.0.9+）：官方顶层 kind 恒为 other，扩展
+    // 分类 active_agent_message 驱动动词渲染。
+    const msg = tc({
+      kind: 'other',
+      _meta: { 'x.ai/tool': { kind: 'active_agent_message', version: 1 } },
+    })
+    expect(xaiToolKind(msg)).toBe('active_agent_message')
+    expect(toolKindName(msg, undefined)).toBe('active_agent_message')
+    // 无扩展 meta → 官方 kind / 兜底
+    expect(xaiToolKind(tc({ kind: 'read' }))).toBeUndefined()
+    expect(toolKindName(tc({ kind: 'read' }), undefined)).toBe('read')
+    expect(toolKindName(tc(), 'other')).toBe('other')
+    // 形状防御：meta / x.ai/tool 非对象
+    expect(xaiToolKind(tc({ _meta: 'x' as never }))).toBeUndefined()
+    expect(xaiToolKind(tc({ _meta: { 'x.ai/tool': 'x' } as never }))).toBeUndefined()
   })
 })
 
