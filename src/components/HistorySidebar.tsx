@@ -1,8 +1,9 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { Plus } from 'lucide-react'
 import { useChatStore } from '../store/chat'
 import { SessionHistoryList } from './SessionHistoryList'
 import { SessionListHeader } from './SessionListHeader'
+import { SessionSearchBox } from './SessionSearchBox'
 
 /**
  * Desktop (lg+) history sidebar — persistent, grouped by workspace
@@ -14,6 +15,10 @@ import { SessionListHeader } from './SessionListHeader'
  * empty-state picker lets the user choose a workspace (or just type,
  * which auto-creates with the host default dir).
  *
+ * The search box runs a server full-text session search (agent
+ * `x.ai/session/search`); while it is active it replaces the grouped
+ * list with the flat hit list (see {@link SessionSearchBox}).
+ *
  * The list is fetched on mount (and kept fresh by the host's
  * sessions_changed notifications). The aside is always mounted — hidden
  * below lg — so the mount refresh also serves the mobile dropdown.
@@ -23,6 +28,7 @@ export function HistorySidebar() {
   const refreshWorkspaces = useChatStore((s) => s.refreshWorkspaces)
   const resetToEmpty = useChatStore((s) => s.resetToEmpty)
   const sidebarCollapsed = useChatStore((s) => s.sidebarCollapsed)
+  const [searchActive, setSearchActive] = useState(false)
 
   useEffect(() => {
     void refreshSessions()
@@ -51,8 +57,9 @@ export function HistorySidebar() {
           new
         </button>
       </div>
+      <SessionSearchBox onActive={setSearchActive} />
       <div className="gn-no-scrollbar flex-1 overflow-y-auto">
-        <SessionHistoryList />
+        {searchActive ? null : <SessionHistoryList />}
       </div>
     </aside>
   )

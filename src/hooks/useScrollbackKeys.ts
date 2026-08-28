@@ -16,6 +16,20 @@ const NAV_KEYS = new Set([
 ])
 
 /**
+ * True when the event target sits on (or inside) an interactive control —
+ * links, buttons, selects, details/summary or any explicitly-tabbable
+ * element. Those own Tab/Enter/Space natively (audit B1).
+ */
+function onInteractiveControl(target: EventTarget | null): boolean {
+  return (
+    target instanceof Element &&
+    !!target.closest(
+      'a[href], button, select, summary, [tabindex]:not([tabindex="-1"])',
+    )
+  )
+}
+
+/**
  * Global keybindings matching TUI scrollback navigation:
  * - Tab: toggle prompt ↔ scrollback focus
  * - j/k / ↑↓: move selection (scrollback focus)
@@ -25,7 +39,12 @@ const NAV_KEYS = new Set([
  * - Esc: close viewer if open, else scrollback → prompt (or the cancel
  *   flow when busy: saved preference acts directly, running subagents
  *   open the cancel panel, otherwise the turn is cancelled)
- * - Ctrl+C: cancel the running turn directly (subagents keep running)
+ * - Ctrl+C: TUI ladder — a non-empty draft is cleared first (turn keeps
+ *   running); an empty draft cancels the running turn (subagents keep
+ *   running). Idle with a draft clears it; idle and empty does nothing.
+ * - Tab / Enter / Space: pane-switch and scrollback bindings yield to
+ *   native behavior on interactive controls (link/button/select), so
+ *   keyboard focus traversal and activation stay reachable (audit B1).
  */
 export function useScrollbackKeys() {
   useEffect(() => {
@@ -50,34 +69,45 @@ export function useScrollbackKeys() {
         useChatStore.getState().openViewer()
         return
       }
-      // Ctrl+C: TUI — cancel the running turn directly (subagents keep
-      // running; no panel, no preference check). Skipped while the viewer /
-      // x.ai surfaces / cancel panel own the keys, and while a text
-      // selection exists (browser copy must win).
+      // Ctrl+C — TUI ladder (03-keyboard-shortcuts.md): a non-empty draft
+      // is cleared first and the turn keeps running; an EMPTY draft
+      // cancels the running turn directly (subagents keep running; no
+      // panel, no preference check). Idle with a draft clears it; idle
+      // and empty does nothing. Skipped while the viewer / x.ai surfaces
+      // / cancel panel own the keys, and while a text selection exists
+      // (browser copy must win).
       if (e.ctrlKey && (e.key === 'c' || e.key === 'C')) {
         const st = useChatStore.getState()
         if (
-          st.conn === 'busy' &&
-          !(st.viewerEntryId || st.viewerTask) &&
-          st.xaiRequests.length === 0 &&
-          !st.cancelPanelOpen
+          (st.viewerEntryId || st.viewerTask) ||
+          st.xaiRequests.length > 0 ||
+          st.cancelPanelOpen
         ) {
-          const t = e.target as HTMLElement | null
-          const inField =
-            !!t &&
-            (t.tagName === 'TEXTAREA' ||
-              t.tagName === 'INPUT' ||
-              t.isContentEditable)
-          if (inField) {
-            const el = t as HTMLTextAreaElement | HTMLInputElement
-            if (
-              el.selectionStart != null &&
-              el.selectionEnd != null &&
-              el.selectionStart !== el.selectionEnd
-            ) {
-              return // copy the selection, not a cancel
-            }
+          return
+        }
+        const t = e.target as HTMLElement | null
+        const inField =
+          !!t &&
+          (t.tagName === 'TEXTAREA' ||
+            t.tagName === 'INPUT' ||
+            t.isContentEditable)
+        if (inField) {
+          const el = t as HTMLTextAreaElement | HTMLInputElement
+          if (
+            el.selectionStart != null &&
+            el.selectionEnd != null &&
+            el.selectionStart !== el.selectionEnd
+          ) {
+            return // copy the selection, not a clear/cancel
           }
+        }
+        if (st.composerDraftLen > 0) {
+          // Draft first: clear it, keep the turn (TUI Ctrl+C semantics).
+          e.preventDefault()
+          st.clearComposerDraft()
+          return
+        }
+        if (st.conn === 'busy') {
           e.preventDefault()
           void st.cancelTurn({})
         }
@@ -112,18 +142,39 @@ export function useScrollbackKeys() {
       // listener handles x/e/j/k/swap; Esc closes the panel in Composer).
       if (store0.queuePanelOpen) return
 
-      // Tab always switches focus panes
+      // Activation keys on a focused control (link/button/select row)
+      // must reach the control — the scrollback bindings below (Enter →
+      // viewer, Space → fold toggle) must not swallow native keyboard
+      // activation (same audit-B1 class as the Tab fix). j/k/←/→ don't
+      // collide with any control, so they keep working globally.
+      if (
+        (e.key === 'Enter' || e.key === ' ') &&
+        !inField &&
+        onInteractiveControl(target)
+      ) {
+        return
+      }
+
+      // Tab: TUI pane-switch (prompt ↔ scrollback) — but native focus
+      // traversal wins whenever focus already sits on an interactive
+      // control (link / button / select / another field): hijacking Tab
+      // unconditionally made every link and button keyboard-unreachable
+      // (audit B1). The composer textarea keeps the pane-switch binding.
       if (e.key === 'Tab') {
-        e.preventDefault()
-        const store = useChatStore.getState()
-        if (store.focusMode === 'prompt') {
-          store.setFocus('scrollback')
-          if (inField) target.blur()
-        } else {
-          store.setFocus('prompt')
-          requestAnimationFrame(() => {
-            document.getElementById('composer-input')?.focus()
-          })
+        const isComposer =
+          target instanceof HTMLElement && target.id === 'composer-input'
+        if (isComposer || (!inField && !onInteractiveControl(target))) {
+          e.preventDefault()
+          const store = useChatStore.getState()
+          if (store.focusMode === 'prompt') {
+            store.setFocus('scrollback')
+            if (inField) target?.blur()
+          } else {
+            store.setFocus('prompt')
+            requestAnimationFrame(() => {
+              document.getElementById('composer-input')?.focus()
+            })
+          }
         }
         return
       }

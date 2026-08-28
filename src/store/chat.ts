@@ -20,6 +20,8 @@ export {
 } from './chat/format'
 export type {
   ExtensionsTab,
+  FileSearchMatch,
+  FileSearchState,
   FocusMode,
   McpInitProgress,
   McpServerInfo,

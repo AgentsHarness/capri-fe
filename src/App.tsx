@@ -25,6 +25,7 @@ import { SessionInfoModal } from './components/SessionInfoModal'
 import { ContextModal } from './components/ContextModal'
 import { UsageModal } from './components/UsageModal'
 import { RewindPicker } from './components/RewindPicker'
+import { ContentSearchModal } from './components/ContentSearchModal'
 import { WorkflowPanel } from './components/WorkflowPanel'
 import { ToastStack } from './components/ToastStack'
 import { registerMcpPanelOpener } from './commands/registry'
@@ -203,6 +204,7 @@ function AppShell() {
       <ContextModal />
       <UsageModal />
       <RewindPicker />
+      <ContentSearchModal />
       <WorkflowPanel />
       <ToastStack />
     </div>

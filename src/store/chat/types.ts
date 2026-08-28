@@ -23,6 +23,7 @@ import type { McpListServer } from '../../api/client'
 import type {
   ConnState,
   ExtensionsTab,
+  FileSearchState,
   FocusMode,
   McpInitProgress,
   McpServerInfo,
@@ -35,6 +36,8 @@ import type {
 export type {
   ConnState,
   ExtensionsTab,
+  FileSearchState,
+  FileSearchMatch,
   FocusMode,
   McpInitProgress,
   McpServerInfo,
@@ -364,6 +367,20 @@ export type ChatState = {
   settingsOpen: boolean
   openSettings: () => void
   closeSettings: () => void
+  // ── content search modal (TUI /search panel; /api/search/content) ────
+  contentSearchOpen: boolean
+  /** Prefill for the query input — `/search foo` opens mid-search. */
+  contentSearchPrefill: string
+  openContentSearch: (query?: string) => void
+  closeContentSearch: () => void
+  // ── @ file picker engine state (TUI fuzzy file search) ───────────────
+  /**
+   * Live fuzzy file-search session feeding the Composer's @ popover.
+   * Null = closed. Matches arrive via the `search_fuzzy_status` SSE event
+   * (each generation carries the full snapshot); the searchId guards
+   * stale sessions. The Composer owns open/change/close lifecycle.
+   */
+  fileSearch: FileSearchState | null
   // streaming pointers
   openAssistantId?: string
   openThoughtId?: string
@@ -453,6 +470,20 @@ export type ChatState = {
    */
   stashedDraft: string | null
   setStashedDraft: (text: string | null) => void
+  /**
+   * Live composer draft length, mirrored from the Composer's local buffer
+   * for the GLOBAL key handler (useScrollbackKeys Ctrl+C ladder: draft
+   * cleared before a running turn is cancelled). Write-only mirror —
+   * nothing subscribes to it, so per-keystroke updates cost no renders.
+   */
+  composerDraftLen: number
+  /**
+   * Global Ctrl+C "clear the draft first" custody: the key handler bumps
+   * this nonce; the Composer watches it and clears its local buffer
+   * (text + chips). Kept as a nonce so repeated clears always fire.
+   */
+  composerClearNonce: number
+  clearComposerDraft: () => void
   /**
    * Cancel-turn panel (TUI CancelTurnPanel): Esc / [stop] while busy opens
    * it instead of cancelling immediately — only when the current turn has

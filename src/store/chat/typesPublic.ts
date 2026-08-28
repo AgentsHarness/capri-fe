@@ -107,3 +107,27 @@ export type WorkflowRun = {
   pendingControl?: 'pause' | 'resume' | 'stop'
 }
 
+
+/** One fuzzy file-search match (x.ai/search/fuzzy/status FuzzyMatch). */
+export type FileSearchMatch = {
+  /** File path relative to the search root (workspace cwd). */
+  path: string
+  /** Match score (higher is better) when the wire carries it. */
+  score?: number
+  /** Indices of matched chars within `path` (for highlight). */
+  matchedIndices?: number[]
+}
+
+/**
+ * Live fuzzy file-search session (Composer @ picker engine state, TUI
+ * fuzzy file search). `matches` is the full snapshot of the newest
+ * generation — the workspace replaces (not appends) per batch.
+ */
+export type FileSearchState = {
+  searchId: string
+  matches: FileSearchMatch[]
+  /** True when the engine finished the current query (status done flag). */
+  done: boolean
+  /** Total engine-side matches when the wire carries it. */
+  total?: number
+}

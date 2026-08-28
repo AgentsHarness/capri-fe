@@ -301,6 +301,16 @@ export const slashCommands: SlashCommand[] = [
     run: () => void useChatStore.getState().requestRecap(),
   },
   {
+    name: 'search',
+    aliases: ['find', 'grep'],
+    description: '搜索工作区文件内容（结果按文件分组，复制 路径:行号）',
+    argHint: '[pattern]',
+    run: (args) => {
+      // With args: open the modal mid-search on the pattern (TUI /search).
+      useChatStore.getState().openContentSearch(args.trim())
+    },
+  },
+  {
     name: 'session-info',
     description: '查看当前会话信息（入滚动区）',
     run: () => void useChatStore.getState().showSessionInfo(),

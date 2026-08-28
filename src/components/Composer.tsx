@@ -27,7 +27,9 @@ import {
 import { IconGlyph } from './IconGlyph'
 import { fmtTok } from '../format'
 import { Accents } from '../theme/accents'
+import { atTokenAt } from '../lib/atToken'
 import { SlashMenu } from './SlashMenu'
+import { FilePickerMenu } from './FilePickerMenu'
 import {
   filterSlashCommands,
   isMultilineEnabled,
@@ -364,6 +366,25 @@ export function Composer() {
   // Live caret position — textarea selection changes don't re-render, so
   // onSelect/keyup/mouseup mirror it here for the paste preview overlay.
   const [caretPos, setCaretPos] = useState(0)
+  // ── Global Ctrl+C draft custody (TUI Ctrl+C ladder, hook side) ──
+  // The global key handler clears the draft BEFORE cancelling a running
+  // turn: it reads composerDraftLen (mirrored below) and bumps
+  // composerClearNonce; this effect clears the local buffer on the bump.
+  const composerClearNonce = useChatStore((s) => s.composerClearNonce)
+  const clearNonceRef = useRef(composerClearNonce)
+  useEffect(() => {
+    if (composerClearNonce === clearNonceRef.current) return
+    clearNonceRef.current = composerClearNonce
+    setText('')
+    setChips([])
+    setHistOpen(false)
+    taRef.current?.focus()
+  }, [composerClearNonce])
+  // Mirror the draft length for the global handler (write-only store
+  // field — nothing subscribes, so per-keystroke updates cost no render).
+  useEffect(() => {
+    useChatStore.setState({ composerDraftLen: text.length })
+  }, [text])
   const send = useChatStore((s) => s.send)
   const conn = useChatStore((s) => s.conn)
   // 会话切换加载中：turn status 整行显示「回放中…」，加载完毕再按
@@ -876,6 +897,148 @@ export function Composer() {
     document.addEventListener('mousedown', onDown)
     return () => document.removeEventListener('mousedown', onDown)
   }, [slashOpen])
+
+  // ── TUI @ file picker (fuzzy file search) ───────────────────────────
+  // Typing `@` (word start) opens the file popover; the token after `@`
+  // is the fuzzy query. Matches stream through the store's `fileSearch`
+  // state (search_fuzzy_status SSE event) — the change RPC itself only
+  // arms the query. Enter/Tab insert `@path ` at the token, Esc/whitespace
+  // close. Mutually exclusive with the slash menu (token detection runs
+  // only when it's closed) and shell mode.
+  const fileSearch = useChatStore((s) => s.fileSearch)
+  const cwd = useChatStore((s) => s.cwd)
+  const [atOpen, setAtOpen] = useState(false)
+  const [atQuery, setAtQuery] = useState('')
+  const [atSel, setAtSel] = useState(0)
+  const atTokenStartRef = useRef(-1)
+  const atOpeningRef = useRef(false)
+  const atTimerRef = useRef<number | null>(null)
+
+  /** Arm/refresh the engine for `query`; no-op without a workspace. */
+  const atSearch = (query: string) => {
+    if (atTimerRef.current != null) {
+      window.clearTimeout(atTimerRef.current)
+      atTimerRef.current = null
+    }
+    if (query === '') return // engine requires a non-empty query
+    const fire = async () => {
+      let searchId = useChatStore.getState().fileSearch?.searchId
+      if (!searchId) {
+        if (atOpeningRef.current) return
+        atOpeningRef.current = true
+        try {
+          const st = useChatStore.getState()
+          const res = await transport.searchFuzzyOpen(
+            st.cwd ? { cwd: st.cwd } : {},
+          )
+          const sid =
+            res && typeof res === 'object' && typeof res.searchId === 'string'
+              ? res.searchId
+              : undefined
+          if (!sid) return
+          searchId = sid
+          useChatStore.setState({
+            fileSearch: { searchId, matches: [], done: true },
+          })
+        } catch {
+          return // no engine (old host / no workspace) — picker stays empty
+        } finally {
+          atOpeningRef.current = false
+        }
+      }
+      try {
+        await transport.searchFuzzyChange({ searchId, query, limit: 20 })
+      } catch {
+        /* stale searchId or engine hiccup — next keystroke retries */
+      }
+    }
+    // Debounce: the engine owns per-query versioning; this only limits
+    // request spam while typing.
+    atTimerRef.current = window.setTimeout(() => {
+      atTimerRef.current = null
+      void fire()
+    }, 120)
+  }
+
+  /** Tear the engine session down and close the popover. */
+  const closeAtPicker = () => {
+    if (atTimerRef.current != null) {
+      window.clearTimeout(atTimerRef.current)
+      atTimerRef.current = null
+    }
+    const searchId = useChatStore.getState().fileSearch?.searchId
+    useChatStore.setState({ fileSearch: null })
+    if (searchId) void transport.searchFuzzyClose({ searchId }).catch(() => {})
+    atOpeningRef.current = false
+    atTokenStartRef.current = -1
+    setAtOpen(false)
+    setAtQuery('')
+    setAtSel(0)
+  }
+
+  /**
+   * Re-detect the @ token under the caret (text edits AND caret moves —
+   * moving out of the token closes the picker, moving within re-queries).
+   */
+  const detectAtToken = (value: string, caret: number) => {
+    if (shellMode || slashOpen) {
+      if (atOpen) closeAtPicker()
+      return
+    }
+    const tok = atTokenAt(value, caret)
+    if (!tok) {
+      if (atOpen) closeAtPicker()
+      return
+    }
+    // Same token (onChange + onSelect both fire per edit) — nothing to do.
+    if (atOpen && tok.start === atTokenStartRef.current && tok.query === atQuery) {
+      return
+    }
+    atTokenStartRef.current = tok.start
+    setAtOpen(true)
+    setAtQuery(tok.query)
+    setAtSel(0)
+    atSearch(tok.query)
+  }
+
+  /** Insert the picked path in place of the `@token`, caret after it. */
+  const pickAtMatch = (path: string) => {
+    const el = taRef.current
+    const start = atTokenStartRef.current
+    if (start < 0) return
+    const caret = el?.selectionStart ?? text.length
+    const inserted = `@${path} `
+    const next = text.slice(0, start) + inserted + text.slice(caret)
+    setText(next)
+    setChips((cs) => pruneChips(next, cs))
+    setPendingCaret(start + inserted.length)
+    closeAtPicker()
+  }
+
+  // Click outside the composer chrome dismisses the @ picker too.
+  useEffect(() => {
+    if (!atOpen) return
+    const onDown = (e: MouseEvent) => {
+      if (
+        composerChromeRef.current &&
+        !composerChromeRef.current.contains(e.target as Node)
+      ) {
+        closeAtPicker()
+      }
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [atOpen])
+
+  // Session switch / unmount: the engine session is tied to this
+  // composer's workspace — release it.
+  useEffect(() => {
+    if (atOpen) closeAtPicker()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cwd])
+  useEffect(() => closeAtPicker, [])
+
 
   /** Expanded image chips → inline thumbnail row above the textarea. */
   const expandedImgs = useMemo(
@@ -1947,6 +2110,21 @@ export function Composer() {
               onPick={(cmd) => void runSlashCommand(cmd, '')}
             />
           )}
+          {/* TUI @ file picker — floats above the composer while an `@`
+              token is being typed (fuzzy file search; Enter/Tab inserts
+              `@path ` over the token). Mutually exclusive with the slash
+              menu (token detection is skipped while it's open). */}
+          {atOpen && !slashOpen && (
+            <FilePickerMenu
+              query={atQuery}
+              matches={fileSearch?.matches ?? []}
+              done={fileSearch?.done ?? true}
+              total={fileSearch?.total}
+              selected={Math.min(atSel, Math.max(0, (fileSearch?.matches.length ?? 1) - 1))}
+              onHover={setAtSel}
+              onPick={pickAtMatch}
+            />
+          )}
           {/* Expanded image chips — inline thumbnails above the textarea
               (TUI Enter expands `[Image #N]` to the rendered image). */}
           {expandedImgs.length > 0 && (
@@ -2033,6 +2211,9 @@ export function Composer() {
                   setSlashSel(0)
                   // Keep chips in sync with the editable label text.
                   setChips((cs) => pruneChips(v, cs))
+                  // @ token under the (post-edit) caret arms/closes the
+                  // file picker — runs after every buffer edit.
+                  detectAtToken(v, e.target.selectionStart ?? v.length)
                 }}
                 onFocus={() => {
                   setFocused(true)
@@ -2069,6 +2250,42 @@ export function Composer() {
                     e.preventDefault()
                     setShellMode(false)
                     return
+                  }
+                  // TUI @ file picker: ↑/↓ walk the matches, Enter/Tab
+                  // insert the path, Esc closes. Only these keys are
+                  // consumed while the popover is open; with no matches
+                  // (or an empty query) Enter/Esc still fall through to
+                  // their usual handlers (submit / panel close).
+                  if (atOpen) {
+                    const atMatches = fileSearch?.matches ?? []
+                    if (e.key === 'Escape') {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      closeAtPicker()
+                      return
+                    }
+                    if (atMatches.length > 0) {
+                      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                        e.preventDefault()
+                        if (e.key === 'ArrowUp') {
+                          setAtSel((s) => Math.max(0, s - 1))
+                        } else {
+                          setAtSel((s) => Math.min(atMatches.length - 1, s + 1))
+                        }
+                        return
+                      }
+                      if (
+                        (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey) ||
+                        e.key === 'Tab'
+                      ) {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        pickAtMatch(atMatches[Math.min(atSel, atMatches.length - 1)].path)
+                        return
+                      }
+                    }
+                    // No matches / empty query: fall through (Enter submits,
+                    // typing continues) — the picker stays open for edits.
                   }
                   // TUI slash menu: Tab executes the highlighted command
                   // (swallows the global Tab focus-toggle).
@@ -2404,7 +2621,12 @@ export function Composer() {
                 onSelect={() => {
                   // Mirror the live caret (selectionchange) for the preview.
                   const t = taRef.current
-                  if (t) setCaretPos(t.selectionStart)
+                  if (t) {
+                    setCaretPos(t.selectionStart)
+                    // Caret moves re-check the @ token (moving out of one
+                    // closes the picker; moving within re-queries).
+                    detectAtToken(text, t.selectionStart)
+                  }
                 }}
                 onKeyUp={() => {
                   const t = taRef.current

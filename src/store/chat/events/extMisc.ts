@@ -1,4 +1,5 @@
 import type { AcpEvent, AgentCommand } from '../../../api/types'
+import type { FileSearchMatch } from '../typesPublic'
 import { applyQueueChanged } from '../../promptQueue'
 import type { ChatState, SetState } from '../types'
 import { runtime } from '../globals'
@@ -242,6 +243,50 @@ export function handleExtMiscEvent(
         appendEntry(set, {
           kind: 'status',
           text: `扩展通知: ${ev.method ?? 'x.ai/*'}`,
+        })
+        break
+      }
+      case 'search_fuzzy_status': {
+        // @ file-picker engine stream (workspace run_fuzzy_notifications,
+        // forwarded by the host as this typed event): {sessionId, searchId,
+        // matches: [{path, score, matchedIndices}], total, done,
+        // generation}. Each generation carries the FULL match snapshot —
+        // replace wholesale. Feeds only the Composer popover; no
+        // scrollback row (the TUI shows this inside its /search panel).
+        // A searchId that isn't the picker's current session is stale and
+        // dropped; when the picker is closed (fileSearch null) the event
+        // is dropped too.
+        const cur = get().fileSearch
+        if (!cur) break
+        const p = (ev.params ?? {}) as Record<string, unknown>
+        const searchId = typeof p.searchId === 'string' ? p.searchId : ''
+        if (!searchId || searchId !== cur.searchId) break
+        const matches: FileSearchMatch[] = []
+        if (Array.isArray(p.matches)) {
+          for (const m of p.matches) {
+            if (m == null || typeof m !== 'object') continue
+            const o = m as Record<string, unknown>
+            if (typeof o.path !== 'string' || !o.path) continue
+            matches.push({
+              path: o.path,
+              ...(typeof o.score === 'number' ? { score: o.score } : {}),
+              ...(Array.isArray(o.matchedIndices)
+                ? {
+                    matchedIndices: o.matchedIndices.filter(
+                      (x): x is number => typeof x === 'number',
+                    ),
+                  }
+                : {}),
+            })
+          }
+        }
+        set({
+          fileSearch: {
+            ...cur,
+            matches,
+            done: p.done === true,
+            ...(typeof p.total === 'number' ? { total: p.total } : {}),
+          },
         })
         break
       }
