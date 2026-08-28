@@ -19,6 +19,7 @@ export function finalizeTurn(
   set: SetState,
   get: () => ChatState,
   stopReason: string | undefined,
+  wireElapsedMs?: number,
 ): void {
   // 流式缓冲先落库：收口前的最后一段思考文本不能丢（兜底定时器路径
   // 不经 handleEvent，这里统一保证）。
@@ -51,7 +52,11 @@ export function finalizeTurn(
   }
   const marker =
     turnIsLive(get()) && !failedTurn && !bashTurn && hasOutput
-      ? turnMarker(turnStart != null ? Date.now() - turnStart : undefined)
+      ? turnMarker(
+          // Wire elapsed (turn_completed 的 elapsed_ms) 优先：agent 墙钟
+          // 权威值，免疫本端时钟偏差 / 收口延迟；旧 agent 缺省走本地推导。
+          wireElapsedMs ?? (turnStart != null ? Date.now() - turnStart : undefined),
+        )
       : null
   set((s) => {
     // 收口前把 liveStream 文本并入对应条目（流式期间文本在 liveStream，

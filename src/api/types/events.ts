@@ -197,6 +197,13 @@ export type AcpEvent =
       stopReason?: string
       /** Normalized agent_result (TurnFailed error text on replay). */
       agentResult?: string
+      /**
+       * Agent-reported wall-clock turn duration (update.elapsed_ms, ms).
+       * Authoritative for the "Worked for" marker — immune to the local
+       * clock skew that Date.now() − turnStartedAt suffers. Absent on old
+       * agents/stored envelopes; callers fall back to local derivation.
+       */
+      elapsedMs?: number
       /** Replay: the closed turn's real start (epoch ms), injected by
           replayUpdates from the envelope meta. */
       turnStartedAt?: number

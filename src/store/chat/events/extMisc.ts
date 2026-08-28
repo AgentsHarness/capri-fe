@@ -11,6 +11,8 @@ import {
   promptIdMismatch,
   tailAlreadyTurnEnded,
   turnEndMarkerText,
+  cancellationContextText,
+  tailHasCancellationDetail,
 } from '../turn'
 import { applySessionModelState } from '../model'
 import { appendEntry } from '../entries'
@@ -148,6 +150,8 @@ export function handleExtMiscEvent(
         // 守卫 + 幂等 settle）；失败/取消标记是本 rail 的职责（done 对
         // error/rate_limit 不追加标记），收口后按 tailAlreadyTurnEnded
         // 去重补渲染（TUI viewer 的 stop_reason 映射同款）。
+        // cancellationContext（1.0.9+ agent 顶层新增）：hook/tool 级取消
+        // 原因，取消标记后补一行细节；旧 agent 无该键，静默跳过。
         const railEndTs = s.turnStartedAt
         finalizeTurn(set, get, stopReason)
         if (
@@ -167,6 +171,16 @@ export function handleExtMiscEvent(
               ...(warning ? { warning } : {}),
             })
           }
+        }
+        // cancellationContext（1.0.9+ agent 顶层新增）：hook/tool 级取消
+        // 原因，取消标记后补一行细节；旧 agent 无该键，静默跳过。
+        // turn_completed rail 同回合也会渲染同文本行，按尾部去重。
+        const cancelDetail = cancellationContextText(p)
+        if (
+          cancelDetail &&
+          !tailHasCancellationDetail(get().entries, cancelDetail)
+        ) {
+          appendEntry(set, { kind: 'session_event', text: cancelDetail })
         }
         break
       }

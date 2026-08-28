@@ -14,6 +14,7 @@ import {
   shouldSuppressToolFromScrollback,
   suppressedToolIds,
   toolCallIdOf,
+  toolKindName,
 } from '../tools'
 import {
   sealAssistantStream,
@@ -61,7 +62,7 @@ export function handleToolEvent(
           break
         }
         const status = (tc.status as string) || 'pending'
-        const kindName = (tc.kind as string) || 'other'
+        const kindName = toolKindName(tc, undefined)
         const running = status === 'pending' || status === 'in_progress'
         const title = extractTarget(tc) || (tc.title as string) || kindName
         const id = nid()
@@ -215,7 +216,7 @@ export function handleToolEvent(
               const mergedRaws = [...(e.mergedRaws ?? [])]
               mergedRaws[mergedIdx] = { ...mergedRaws[mergedIdx], ...tc }
               const status = (tc.status as string) || e.status
-              const kindName = (tc.kind as string) || e.kindName || 'other'
+              const kindName = toolKindName(tc, e.kindName)
               const running = status === 'pending' || status === 'in_progress'
               const finishedAt =
                 wasRunningBefore && !running ? Date.now() : e.finishedAt
@@ -230,7 +231,7 @@ export function handleToolEvent(
             }
             const merged: ToolCall = { ...(e.raw || {}), ...tc }
             const status = (merged.status as string) || e.status
-            const kindName = (merged.kind as string) || e.kindName || 'other'
+            const kindName = toolKindName(merged, e.kindName)
             const running = status === 'pending' || status === 'in_progress'
             const wasRunning =
               e.status === 'pending' || e.status === 'in_progress'

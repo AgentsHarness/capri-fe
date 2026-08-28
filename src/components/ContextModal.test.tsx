@@ -54,7 +54,12 @@ describe('ContextModal', () => {
         freeTokens: 38_000,
         usagePct: 60,
         autoCompactThresholdPercent: 85,
-        usageCategories: [{ label: 'web', tokens: 1000, detail: 'x' }],
+        usageCategories: [
+          { label: 'web', tokens: 1000, detail: 'x' },
+          // 1.0.9+ agent 新增类别（usage_categories 的 AGENTS.md 行）：
+          // FE 按通用行渲染，不依赖枚举。
+          { label: 'AGENTS.md', tokens: 2000, detail: '1 file(s)' },
+        ],
       },
     })
     render(<ContextModal />)
@@ -72,6 +77,7 @@ describe('ContextModal', () => {
     // info 行：工具定义 detail
     expect(screen.getByText('5 tools')).toBeInTheDocument()
     expect(screen.getByText('web')).toBeInTheDocument()
+    expect(screen.getByText('AGENTS.md')).toBeInTheDocument()
     // auto-compact 未触发
     expect(screen.getByText(/Auto-compact at 85% · ~25K tokens remaining/)).toBeInTheDocument()
   })

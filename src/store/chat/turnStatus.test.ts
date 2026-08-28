@@ -3,14 +3,17 @@ import type { ScrollEntry } from '../../api/types'
 import {
   adoptLiveTurnStart,
   busyPlausibleForView,
+  cancellationContextText,
   eventPromptId,
   isTurnEndLine,
   liveTurnStartMs,
   promptIdMismatch,
   selectableRowIds,
+  tailHasCancellationDetail,
   turnEndMarkerText,
   turnIsLive,
   turnMarker,
+  wireElapsedMs,
 } from './turnStatus'
 
 function tool(id: string, over: Partial<Extract<ScrollEntry, { kind: 'tool' }>> = {}): ScrollEntry {
@@ -87,6 +90,89 @@ describe('eventPromptId / promptIdMismatch', () => {
     expect(promptIdMismatch({ promptId: 'a' }, 'a')).toBe(false)
     expect(promptIdMismatch({}, 'a')).toBe(false)
     expect(promptIdMismatch({ promptId: 'a' }, undefined)).toBe(false)
+  })
+})
+
+describe('wireElapsedMs', () => {
+  it('update.elapsed_ms 提取（camelCase 兜底）', () => {
+    expect(wireElapsedMs({ elapsed_ms: 4321 })).toBe(4321)
+    expect(wireElapsedMs({ elapsedMs: 4321 })).toBe(4321)
+    expect(wireElapsedMs({ elapsed_ms: 0 })).toBe(0)
+    expect(wireElapsedMs({ elapsed_ms: -1 })).toBeUndefined()
+    expect(wireElapsedMs({ elapsed_ms: 'x' })).toBeUndefined()
+    expect(wireElapsedMs({})).toBeUndefined()
+    expect(wireElapsedMs(null)).toBeUndefined()
+    expect(wireElapsedMs(undefined)).toBeUndefined()
+  })
+})
+
+describe('cancellationContextText', () => {
+  it('hook + tool + reason 全量', () => {
+    expect(
+      cancellationContextText({
+        cancellationContext: {
+          tool_name: 'Bash',
+          hook_name: 'pre_tool_use',
+          reason: 'dangerous command',
+          trigger: 'hook',
+        },
+      }),
+    ).toBe('Cancelled by hook "pre_tool_use" while running "Bash": dangerous command')
+  })
+
+  it('_meta / meta 载体；camelCase 字段兜底', () => {
+    expect(
+      cancellationContextText({ _meta: { cancellationContext: { toolName: 'Edit', reason: 'no' } } }),
+    ).toBe('Cancelled while running "Edit": no')
+    expect(
+      cancellationContextText({ meta: { cancellation_context: { hookName: 'stop', reason: 'blocked' } } }),
+    ).toBe('Cancelled by hook "stop": blocked')
+  })
+
+  it('仅 trigger / 无 reason', () => {
+    expect(cancellationContextText({ cancellationContext: { trigger: 'user' } })).toBe(
+      'Cancelled by trigger "user"',
+    )
+    expect(cancellationContextText({ cancellationContext: {} })).toBeUndefined()
+  })
+
+  it('无该键 → undefined（旧 agent / 用户取消）', () => {
+    expect(cancellationContextText({})).toBeUndefined()
+    expect(cancellationContextText(undefined)).toBeUndefined()
+    expect(
+      cancellationContextText({ cancellationContext: 'garbage' }),
+    ).toBeUndefined()
+  })
+})
+
+describe('tailHasCancellationDetail', () => {
+  const detail = 'Cancelled by hook "pre_tool_use": no'
+  const marker: ScrollEntry = { id: 'm', kind: 'session_event', text: 'Turn cancelled.' }
+  const detailRow: ScrollEntry = { id: 'd', kind: 'session_event', text: detail }
+
+  it('尾部已有同文本详情行 → true（prompt_complete / turn_completed 双 rail 去重）', () => {
+    expect(tailHasCancellationDetail([marker, detailRow], detail)).toBe(true)
+    expect(tailHasCancellationDetail([detailRow], detail)).toBe(true)
+  })
+
+  it('只有收口标记 → false（详情尚未渲染）', () => {
+    expect(tailHasCancellationDetail([marker], detail)).toBe(false)
+  })
+
+  it('详情行之后有内容条目 → false（属于别的回合）', () => {
+    expect(
+      tailHasCancellationDetail([detailRow, { id: 'u', kind: 'user', text: 'next' } as ScrollEntry], detail),
+    ).toBe(false)
+  })
+
+  it('越过 status/error 行；非收口 session_event 止步', () => {
+    expect(
+      tailHasCancellationDetail([detailRow, { id: 's', kind: 'status', text: 'x' } as ScrollEntry], detail),
+    ).toBe(true)
+    expect(
+      tailHasCancellationDetail([{ id: 'o', kind: 'session_event', text: '其他事件' } as ScrollEntry], detail),
+    ).toBe(false)
+    expect(tailHasCancellationDetail([], detail)).toBe(false)
   })
 })
 

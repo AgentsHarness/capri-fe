@@ -81,5 +81,8 @@ export function toolHeader(
     return { verb: running ? 'Thinking' : 'Thought', pathish: false }
   if (k === 'mcp' || k === 'use_tool')
     return { verb: running ? 'Calling' : 'Called', pathish: false }
+  // x.ai 扩展分类（tool_call _meta["x.ai/tool"].kind）：子代理消息注入。
+  if (k === 'active_agent_message' || k === 'send_subagent_message')
+    return { verb: running ? 'Sending' : 'Sent', pathish: false }
   return { verb: running ? 'Running' : 'Ran', pathish: false }
 }

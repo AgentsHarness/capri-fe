@@ -3,6 +3,7 @@ import type { WireEvent } from './wire'
 import { formatTurnDuration } from '../format'
 import {
   tailAlreadyTurnEnded,
+  wireElapsedMs,
 } from '../turn'
 import { modelLabel } from '../model'
 import { appendEntry } from '../entries'
@@ -401,8 +402,14 @@ export function handleNotifApps(
                   ? String(f.agent_result ?? 'unknown error')
                   : 'rate limited'
               const ts = get().turnStartedAt
-              const dur =
-                ts != null ? formatTurnDuration(Date.now() - ts) : null
+              // update.elapsed_ms（1.0.9+）是 agent 墙钟权威值；旧 agent
+              // 回退本地 turnStartedAt 推导。
+              const wireMs = wireElapsedMs(f)
+              const dur = wireMs != null
+                ? formatTurnDuration(wireMs)
+                : ts != null
+                  ? formatTurnDuration(Date.now() - ts)
+                  : null
               appendEntry(set, {
                 kind: 'session_event',
                 text:
