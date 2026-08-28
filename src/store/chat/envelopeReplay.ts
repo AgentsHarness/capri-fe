@@ -1,8 +1,10 @@
 import type { ChatState } from './types'
+import type { ScrollEntry } from '../../api/types'
 import { modelDisplayName } from './model'
 import {
   type RawEnvelope,
   completionEndMs,
+  envelopeMsgSeq,
   envelopeToEvents,
   envelopeTimestamp,
 } from './envelopeParse'
@@ -59,15 +61,27 @@ function isReplayAgentStream(kind: string | undefined): boolean {
 }
 
 /**
- * Storage order is normally the agent order, but a late flush can append an
- * old agent chunk after its turn_completed envelope. Move only an event that
- * proves it belongs to the closed turn (same turnStartMs and an agent time at
- * or before the terminal); discard every other post-terminal agent chunk or
- * thought until the next user chunk establishes a new turn.
+ * Storage order is normally the agent order, but a late flush can append
+ * envelopes after the turn they belong to. Two shapes are relocated:
+ *
+ * - A late agent chunk/thought that proves it belongs to the closed turn
+ *   (same turnStartMs and an agent time at or before the terminal) moves
+ *   back before the terminal; every other post-terminal agent chunk or
+ *   thought is discarded until the next user chunk establishes a new turn.
+ * - A cancelled turn's user echo can be persisted AFTER its own
+ *   turn_completed (late echo flush) while its `_meta.agentTimestampMs`
+ *   still predates the terminal. Move it back to just after the previous
+ *   user chunk so replay renders [user prompt, …, "Turn cancelled by user
+ *   in 18s."] instead of marker-above-prompt (the initial page only loads
+ *   the newest turn, so the marker would sit at the very top of the
+ *   scrollback). An echo at or after the terminal is the NEXT turn's
+ *   prompt and stays put.
  */
 export function reorderLateAgentEvents(updates: unknown[]): unknown[] {
   const ordered: unknown[] = []
   let activeTurnStartMs: number | undefined
+  /** Index (in ordered) of the newest user chunk — echo insertion anchor. */
+  let lastUserIdx = -1
   let closed:
     | { turnStartMs?: number; endMs?: number; insertAt: number }
     | undefined
@@ -75,6 +89,16 @@ export function reorderLateAgentEvents(updates: unknown[]): unknown[] {
   for (const env of updates) {
     const kind = replayUpdateKind(env)
     if (closed && isReplayUserChunk(kind)) {
+      // Late echo of the closed turn's own prompt (agentTimestampMs at or
+      // before the terminal's end) → relocate before the turn content.
+      // No comparable stamp → treat as the next turn's prompt (legacy).
+      const echoTs = replayMetaNumber(env, 'agentTimestampMs')
+      if (closed.endMs != null && echoTs != null && echoTs <= closed.endMs) {
+        ordered.splice(lastUserIdx + 1, 0, env)
+        closed.insertAt += 1
+        lastUserIdx += 1
+        continue
+      }
       closed = undefined
       activeTurnStartMs = undefined
     }
@@ -119,6 +143,7 @@ export function reorderLateAgentEvents(updates: unknown[]): unknown[] {
     const turnStartMs = replayTurnStartMs(env)
     if (turnStartMs != null) activeTurnStartMs = turnStartMs
     ordered.push(env)
+    if (isReplayUserChunk(kind)) lastUserIdx = ordered.length - 1
   }
   return ordered
 }
@@ -131,8 +156,29 @@ export function replayUpdates(
   getStore: () => ChatState,
   updates: unknown[],
   opts?: { applyUsage?: boolean },
-): { turnStartedAt?: number; turnOpen: boolean } {
+): {
+  turnStartedAt?: number
+  turnOpen: boolean
+  /** 回放新产生条目的 id → 信封顶层 msgSeq（调用方盖到条目上）。 */
+  entryMsgSeq: Map<string, number>
+} {
   updates = reorderLateAgentEvents(updates)
+  // 回放产生的条目按「产生它的第一条事件」盖信封顶层 msgSeq：新条目只会
+  // 追加在尾部（删除只发生在既有条目上），从尾向前扫到已知 id 即停，均摊
+  // O(1)。聚合用户行的 msgSeq 由 flushUser 的事件直接携带（userStream 落
+  // 到条目上），这里遇到已带 msgSeq 的条目只标记已见、不覆盖。
+  // entries 兜底：测试用的最小 store mock 可能不带该字段。
+  const seenIds = new Set((getStore().entries ?? []).map((e) => e.id))
+  const entryMsgSeq = new Map<string, number>()
+  const stampNewEntries = (seq: number | undefined) => {
+    const es = getStore().entries ?? []
+    for (let i = es.length - 1; i >= 0; i--) {
+      const entry = es[i]!
+      if (seenIds.has(entry.id)) break
+      seenIds.add(entry.id)
+      if (seq != null && entry.msgSeq == null) entryMsgSeq.set(entry.id, seq)
+    }
+  }
   let userBuf = ''
   let userIsCron = false
   let userTs: number | undefined
@@ -161,6 +207,7 @@ export function replayUpdates(
   // Newest envelope's session-accumulated token count of this page; the
   // usage event is fired once after the loop (last envelope wins).
   let pageMetaUsed: number | undefined
+  let userMsgSeq: number | undefined
   const flushUser = () => {
     if (userBuf) {
       getStore().handleEvent({
@@ -168,10 +215,13 @@ export function replayUpdates(
         text: userBuf,
         isCron: userIsCron || undefined,
         ts: userTs,
+        // 多 chunk 聚合的用户行取首条 chunk 的 msgSeq。
+        ...(userMsgSeq != null ? { msgSeq: userMsgSeq } : {}),
       })
       userBuf = ''
       userIsCron = false
       userTs = undefined
+      userMsgSeq = undefined
     }
   }
   for (const env of updates) {
@@ -228,8 +278,14 @@ export function replayUpdates(
     // informational lines (envelopeToEvent) — never captured into the
     // task system. The live running set is established once at resume via
     // the host's liveness probe (replayRunningTasks).
+    const seq = envelopeMsgSeq(env)
     const events = envelopeToEvents(env)
-    if (events.length === 0) continue
+    if (events.length === 0) {
+      // 无渲染事件的信封（如隐藏注入）也可能已通过上面的模型切换分支
+      // 产生提示行——统一在此盖戳/标记已见。
+      stampNewEntries(seq)
+      continue
+    }
     for (const ev of events) {
       // Older pages are transcript-only: never let a stored usage_update
       // overwrite the current session's context chip. The newest page applies
@@ -314,11 +370,13 @@ export function replayUpdates(
       userBuf += ev.text
       if (ev.isCron) userIsCron = true
       if (ev.ts != null) userTs = ev.ts
+      if (userMsgSeq == null && ev.msgSeq != null) userMsgSeq = ev.msgSeq
       continue
     }
       flushUser()
       getStore().handleEvent(ev)
     }
+    stampNewEntries(seq)
   }
   flushUser()
   // Apply the page's newest token count once (after the loop, so no
@@ -336,7 +394,28 @@ export function replayUpdates(
     turnOpen:
       anyEvent &&
       (sawTurnEnd ? userAfterEnd && turnStartTs != null : true),
+    entryMsgSeq,
   }
+}
+
+/**
+ * 把 replayUpdates 返回的 entryMsgSeq 盖到回放产生的条目上（按 id 对齐；
+ * 已带 msgSeq 的条目不覆盖）。stamps 为空时原数组返回，避免无谓重排。
+ */
+export function applyEntryMsgSeq<T extends ScrollEntry>(
+  entries: T[],
+  stamps: Map<string, number> | undefined,
+): T[] {
+  if (!stamps || stamps.size === 0) return entries
+  let changed = false
+  const next = entries.map((e) => {
+    if (e.msgSeq != null) return e
+    const seq = stamps.get(e.id)
+    if (seq == null) return e
+    changed = true
+    return { ...e, msgSeq: seq } as T
+  })
+  return changed ? next : entries
 }
 
 /** Accumulated session tokens from a stored envelope's `_meta.totalTokens`. */

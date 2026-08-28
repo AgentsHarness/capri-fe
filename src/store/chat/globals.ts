@@ -1,6 +1,6 @@
 import type { AcpEvent } from '../../api/types'
 import type { ChatState } from './types'
-import { eventAgentTimestampMs } from './envelopeParse'
+import { eventAgentTimestampMs, eventEventId } from './envelopeParse'
 
 /** 会话完成提醒去重窗口：同一会话在此窗口内只通知一次。 */
 export const NOTICE_DEDUP_WINDOW_MS = 30_000
@@ -35,6 +35,12 @@ export const runtime = {
   historySnapTail: undefined as number | undefined,
   /** Stable semantic keys for the envelopes included in the current snapshot. */
   historySnapEventKeys: new Map<string, number>(),
+  /**
+   * 快照信封的 params._meta.eventId 集合（loadHistory 时与
+   * historySnapEventKeys 并行构建）：live↔快照接缝按顶层 eventId 精确
+   * 对账（host attachStreamMeta 提升的字段），比时间戳兜底更准。
+   */
+  historySnapEventIds: new Set<string>(),
 }
 
 /** 缓冲上限：超限丢弃新事件（窗口正常只有几十条，防异常场景膨胀）。 */
@@ -102,6 +108,11 @@ const SNAPSHOT_LIVE_DEDUP_TYPES = new Set([
 export function dropLiveCoveredBySnapshot(ev: AcpEvent): boolean {
   if (!SNAPSHOT_LIVE_DEDUP_TYPES.has(ev.type)) return false
   if ((ev as { sessionId?: string }).sessionId == null) return false
+  // eventId 优先对账：顶层 eventId 命中快照集合 = 已在快照里，无论时间
+  // 戳如何都丢弃（agent 重启后 eventId 计数归零，单靠时间戳会误判）。
+  const eventId = eventEventId(ev)
+  if (eventId != null && runtime.historySnapEventIds.has(eventId)) return true
+  // 未命中回退现有 agentTimestampMs ≤ snapTail 规则（旧 host 无 eventId）。
   const tail = runtime.historySnapTail
   if (tail == null) return false
   const ts = eventAgentTimestampMs(ev)
@@ -118,6 +129,7 @@ export function clearHistoryWindowBuffer(): void {
   runtime.historyWindowBuffer = []
   runtime.historySnapTail = undefined
   runtime.historySnapEventKeys.clear()
+  runtime.historySnapEventIds.clear()
 }
 
 export function clearContinueSessionTimer() {

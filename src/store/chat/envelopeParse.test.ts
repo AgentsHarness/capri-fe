@@ -2,10 +2,13 @@ import { describe, expect, it } from 'vitest'
 import type { AcpEvent, ScrollEntry } from '../../api/types'
 import {
   classifyUserPrompt,
+  envelopeEventId,
+  envelopeMsgSeq,
   envelopeTimestamp,
   envelopeToEvent,
   envelopeToEvents,
   eventAgentTimestampMs,
+  eventEventId,
   extractCronPromptBody,
   findOptimisticUserAbsorbIndex,
   normalizeUserPromptText,
@@ -296,6 +299,48 @@ describe('envelopeToEvents', () => {
       }),
     )
     expect(done[0]).toMatchObject({ type: 'task_lifecycle', kind: 'completed', taskId: 't1' })
+  })
+})
+
+describe('envelopeToEvents：信封顶层 msgSeq 线程进派生事件', () => {
+  it('带 msgSeq 的信封：所有派生事件携带同一 msgSeq', () => {
+    const env = {
+      msgSeq: 7,
+      method: 'session/update',
+      params: {
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: [
+            { type: 'text', text: 'hi ' },
+            { type: 'image', data: 'abc', mimeType: 'image/png' },
+          ],
+        },
+      },
+    }
+    const evs = envelopeToEvents(env)
+    expect(evs[0]).toMatchObject({ type: 'chunk', text: 'hi ', msgSeq: 7 })
+    expect(evs[1]).toMatchObject({ type: 'image', msgSeq: 7 })
+  })
+
+  it('无 msgSeq（旧 host / 回退透传）→ 事件不带该字段', () => {
+    const evs = envelopeToEvents(
+      env('session/update', { sessionUpdate: 'agent_message_chunk', content: 'x' }),
+    )
+    expect(evs).toHaveLength(1)
+    expect('msgSeq' in evs[0]!).toBe(false)
+  })
+
+  it('envelopeMsgSeq / envelopeEventId / eventEventId', () => {
+    expect(envelopeMsgSeq({ msgSeq: 3 })).toBe(3)
+    expect(envelopeMsgSeq({})).toBeUndefined()
+    expect(envelopeMsgSeq({ msgSeq: 'x' })).toBeUndefined()
+    expect(envelopeEventId({ params: { _meta: { eventId: 's1-5' } } })).toBe('s1-5')
+    expect(envelopeEventId({ params: {} })).toBeUndefined()
+    // live：顶层优先，嵌套 params._meta / update._meta 兜底。
+    expect(eventEventId({ eventId: 's1-5' })).toBe('s1-5')
+    expect(eventEventId({ params: { _meta: { eventId: 's1-6' } } })).toBe('s1-6')
+    expect(eventEventId({ update: { _meta: { eventId: 's1-7' } } })).toBe('s1-7')
+    expect(eventEventId({})).toBeUndefined()
   })
 })
 

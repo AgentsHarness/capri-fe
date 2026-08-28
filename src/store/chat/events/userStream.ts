@@ -231,6 +231,8 @@ export function handleUserStreamEvent(
               isCron: classified.isCron || undefined,
               ts,
               expanded: false,
+              // 回放聚合用户行携带首条 chunk 的 msgSeq（live 事件无）。
+              ...(ev.msgSeq != null ? { msgSeq: ev.msgSeq } : {}),
             },
           ],
         })

@@ -1,4 +1,9 @@
-export { replayUpdates, envelopeTotalTokens } from './envelopeReplay'
+export { replayUpdates, applyEntryMsgSeq, envelopeTotalTokens } from './envelopeReplay'
+export {
+  envelopeMsgSeq,
+  envelopeEventId,
+  eventEventId,
+} from './envelopeParse'
 export {
   historicalTaskEvent,
   type RawEnvelope,

@@ -5,6 +5,7 @@ import { useChatStore } from '../chat'
 import {
   bufferHistoryWindowEvent,
   clearHistoryWindowBuffer,
+  runtime,
 } from './globals'
 
 vi.mock('../../api/client', () => ({
@@ -36,7 +37,7 @@ describe('loadHistory 窗口缓冲去重（snapTail 毫秒边界）', () => {
   const envelope = (
     sessionUpdate: string,
     content: unknown,
-    meta: Record<string, number>,
+    meta: Record<string, number | string>,
     timestamp = coarseSec,
   ) => ({
     timestamp,
@@ -274,6 +275,87 @@ describe('loadHistory 窗口缓冲去重（snapTail 毫秒边界）', () => {
     expect(users).toHaveLength(1)
     expect(assistants).toHaveLength(1)
     expect((assistants[0] as { text?: string }).text).toBe('最终回复')
+  })
+
+  it('live 顶层 eventId 命中快照 eventId 集合 → 丢弃；未命中回退 snapTail 规则', async () => {
+    const snap = [
+      envelope(
+        'user_message_chunk',
+        { type: 'text', text: 'hello' },
+        { agentTimestampMs: T - 2000, turnStartMs: T - 2000, eventId: `${SID}-1` },
+      ),
+      envelope(
+        'agent_message_chunk',
+        { type: 'text', text: '最终回复' },
+        {
+          agentTimestampMs: T,
+          streamStartMs: T - 1000,
+          turnStartMs: T - 2000,
+          eventId: `${SID}-2`,
+        },
+      ),
+    ]
+    vi.mocked(transport.loadSessionHistory).mockResolvedValue({
+      updates: snap,
+      promptStarts: [0],
+      totalCount: snap.length,
+      hasMore: false,
+    } as never)
+
+    await useChatStore.getState().loadHistory(SID, CWD)
+    // 快照 eventId 集合在 loadHistory 时从 params._meta.eventId 构建。
+    expect(runtime.historySnapEventIds.has(`${SID}-1`)).toBe(true)
+    expect(runtime.historySnapEventIds.has(`${SID}-2`)).toBe(true)
+
+    // 命中：eventId 已在快照里 → 无视时间戳（T+9999 > snapTail）丢弃，
+    // 最后一条 assistant 不会被追加成两遍。
+    useChatStore.getState().handleEvent({
+      type: 'chunk',
+      text: '最终回复',
+      agentTimestampMs: T + 9999,
+      streamStartMs: T - 1000,
+      turnStartMs: T - 2000,
+      eventId: `${SID}-2`,
+      sessionId: SID,
+    } as AcpEvent)
+    expect(
+      useChatStore.getState().entries.filter((e) => e.kind === 'assistant'),
+    ).toHaveLength(1)
+
+    // 未命中 + ts ≤ snapTail → 回退现有时间戳规则，仍丢弃。
+    useChatStore.getState().handleEvent({
+      type: 'chunk',
+      text: '最终回复',
+      agentTimestampMs: T - 5,
+      streamStartMs: T - 1000,
+      turnStartMs: T - 2000,
+      eventId: `${SID}-99`,
+      sessionId: SID,
+    } as AcpEvent)
+    expect(
+      useChatStore.getState().entries.filter((e) => e.kind === 'assistant'),
+    ).toHaveLength(1)
+
+    // 未命中 + ts > snapTail → 真正的新内容，照常接收（流式续写同一条）。
+    useChatStore.getState().handleEvent({
+      type: 'chunk',
+      text: '真正新内容',
+      agentTimestampMs: T + 500,
+      streamStartMs: T - 1000,
+      turnStartMs: T - 2000,
+      eventId: `${SID}-99`,
+      sessionId: SID,
+    } as AcpEvent)
+    await new Promise((r) => requestAnimationFrame(r))
+    const s = useChatStore.getState()
+    const assistant = s.entries.find((e) => e.kind === 'assistant')
+    const streamed =
+      s.liveStream != null && s.liveStream.entryId === assistant?.id
+        ? s.liveStream.text
+        : ''
+    expect((assistant as { text?: string }).text + streamed).toBe(
+      '最终回复真正新内容',
+    )
   })
 }
 )
