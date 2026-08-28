@@ -17,12 +17,16 @@ import { settleTurnEntries } from './turn'
 import {
   INITIAL_TURN_LIMIT,
   INITIAL_TURNS,
+  applyEntryMsgSeq,
+  findMsgSeqGap,
   historyHasMorePage,
   replayUpdates,
+  sortEntriesByMsgSeq,
 } from './history'
 import { entryTimestamp } from './entries'
 import {
   envelopeAgentTimestampMs,
+  envelopeEventId,
   envelopeTimestamp,
   eventAgentTimestampMs,
   replayEnvelopeKeys,
@@ -166,7 +170,11 @@ export async function loadHistory(
       let turnIdx = 0
       // Turn metadata of the newest replayed page (real start time + open
       // flag), used below to restore the in-flight turn timer.
-      let replayMeta: { turnStartedAt?: number; turnOpen: boolean } = {
+      let replayMeta: {
+        turnStartedAt?: number
+        turnOpen: boolean
+        entryMsgSeq?: Map<string, number>
+      } = {
         turnOpen: false,
       }
       // 加载期间会话被切走：放弃本次加载（historyLoading 由下方
@@ -187,6 +195,12 @@ export async function loadHistory(
           ? Math.max(0, promptStarts.length - INITIAL_TURNS)
           : 0
       const updates = r.updates ?? []
+      // 页内 msgSeq 连续性自检：页来自 turnIndex 切片，host 归一化序号
+      // 会话内密集，正常必须连续（断裂说明 host 归一化/切片异常）。
+      if (import.meta.env.DEV) {
+        const gap = findMsgSeqGap(updates)
+        if (gap) console.warn(`[acp history] 页内 msgSeq 不连续：${gap}`)
+      }
       const fetched = updates.length
       const total = r.totalCount ?? 0
       // Normalize every stored timestamp to epoch milliseconds before comparing
@@ -202,7 +216,10 @@ export async function loadHistory(
       // 边界因此覆盖整个快照；无 _meta 的旧日志回退粗粒度写盘戳。
       let snapTail: number | undefined
       runtime.historySnapEventKeys.clear()
+      runtime.historySnapEventIds.clear()
       for (const update of updates) {
+        const eventId = envelopeEventId(update)
+        if (eventId != null) runtime.historySnapEventIds.add(eventId)
         const keyTime =
           envelopeAgentTimestampMs(update) ??
           envelopeTimestamp(update as Parameters<typeof envelopeTimestamp>[0])
@@ -240,11 +257,15 @@ export async function loadHistory(
       // 新 user 落入「已加载区」被 merge 甩到时间线末尾。
       const flushed = flushLiveStream(get())
       const sealed = sealThought(flushed)
+      // 回放条目补盖信封 msgSeq；全部带 msgSeq 时按其稳定排序（契约：
+      // 任一条目缺失则完全保持现有行为，不排序）。
+      const stampedEntries = applyEntryMsgSeq(sealed.entries, replayMeta.entryMsgSeq)
+      const sortedEntries = sortEntriesByMsgSeq(stampedEntries)
       // 已结束的回合：settle + 清流式指针。仍 open（真·进行中）时保留
       // open*，但 liveStream 已 flush，文本不会丢。
       const entries = replayMeta.turnOpen
-        ? sealed.entries
-        : settleTurnEntries(sealed.entries)
+        ? sortedEntries
+        : settleTurnEntries(sortedEntries)
       // 按轮次模式：还有更早轮次 ⟺ 游标 > 0；按条数兜底：loadedStart > 0。
       const hasMore = turnBased
         ? turnIdx > 0

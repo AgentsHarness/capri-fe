@@ -5,10 +5,14 @@ import {
   MAX_PAGE_DOUBLE_STEPS,
   adaptivePageSize,
   countUserMessages,
+  findMsgSeqGap,
   historyHasMorePage,
+  mergeEntriesByMsgSeq,
   previousTurnWindow,
   remapTurnIdx,
+  sortEntriesByMsgSeq,
 } from './historyPage'
+import type { ScrollEntry } from '../../api/types'
 
 describe('adaptivePageSize', () => {
   it('起步 100，每次续翻翻倍，封顶 1600', () => {
@@ -82,5 +86,60 @@ describe('countUserMessages', () => {
       ]),
     ).toBe(2)
     expect(countUserMessages([])).toBe(0)
+  })
+})
+describe('sortEntriesByMsgSeq', () => {
+  const e = (id: string, msgSeq?: number): ScrollEntry =>
+    ({ id, kind: 'user', text: id, ...(msgSeq != null ? { msgSeq } : {}) }) as ScrollEntry
+
+  it('全带 msgSeq 时按其稳定排序（等值保持原相对序）', () => {
+    const input = [e('c', 2), e('a', 0), e('b', 0), e('d', 1)]
+    expect(sortEntriesByMsgSeq(input).map((x) => x.id)).toEqual(['a', 'b', 'd', 'c'])
+  })
+
+  it('任一条目缺 msgSeq → 原数组返回（不排序）', () => {
+    const input = [e('b', 2), e('a')]
+    expect(sortEntriesByMsgSeq(input)).toBe(input)
+    expect(sortEntriesByMsgSeq([])).toEqual([])
+  })
+})
+
+describe('mergeEntriesByMsgSeq', () => {
+  const e = (id: string, msgSeq?: number): ScrollEntry =>
+    ({ id, kind: 'user', text: id, ...(msgSeq != null ? { msgSeq } : {}) }) as ScrollEntry
+
+  it('两侧按 msgSeq 稳定归并；等值取前插页（older）', () => {
+    const older = [e('o0', 0), e('o2', 2), e('o4', 4)]
+    const newer = [e('n1', 1), e('n2', 2), e('n5', 5)]
+    expect(mergeEntriesByMsgSeq(older, newer)!.map((x) => x.id)).toEqual([
+      'o0',
+      'n1',
+      'o2',
+      'n2',
+      'o4',
+      'n5',
+    ])
+  })
+
+  it('任一侧有条目缺 msgSeq → null（调用方回退现有拼接）', () => {
+    expect(mergeEntriesByMsgSeq([e('o', 0)], [e('n')])).toBeNull()
+    expect(mergeEntriesByMsgSeq([e('o')], [e('n', 0)])).toBeNull()
+    expect(mergeEntriesByMsgSeq([], [])).toEqual([])
+  })
+})
+
+describe('findMsgSeqGap', () => {
+  const env = (msgSeq?: number) => ({ ...(msgSeq != null ? { msgSeq } : {}) })
+
+  it('连续页 / 纯旧页（全不带 msgSeq）→ null', () => {
+    expect(findMsgSeqGap([env(3), env(4), env(5)])).toBeNull()
+    expect(findMsgSeqGap([env(), env(), env()])).toBeNull()
+    expect(findMsgSeqGap([])).toBeNull()
+  })
+
+  it('断裂 / 重复 / 中途缺失 → 返回断裂描述', () => {
+    expect(findMsgSeqGap([env(0), env(1), env(3)]))!.toContain('期望 2')
+    expect(findMsgSeqGap([env(0), env(1), env(1)]))!.toContain('期望 2')
+    expect(findMsgSeqGap([env(0), env(), env(2)]))!.toContain('缺失 msgSeq')
   })
 })

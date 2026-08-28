@@ -6,10 +6,13 @@ import { captureAsyncScope, isAsyncScopeCurrent } from './globals'
 import {
   MAX_AUTO_FETCH_ENTRIES,
   adaptivePageSize,
+  applyEntryMsgSeq,
   countUserMessages,
+  mergeEntriesByMsgSeq,
   previousTurnWindow,
   remapTurnIdx,
   replayUpdates,
+  sortEntriesByMsgSeq,
 } from './history'
 
 type LiveReplayState = Pick<
@@ -197,7 +200,7 @@ export async function loadMoreHistory(
       // Older pages never update the context chip (applyUsage: false) —
       // only the newest page (loadHistory) carries the session's current usage.
       const priorIds = new Set(get().entries.map((e) => e.id))
-      replayUpdates(get, r.updates ?? [], { applyUsage: false })
+      const replay = replayUpdates(get, r.updates ?? [], { applyUsage: false })
       // The last replay chunk may still be waiting in the module rAF buffer.
       // Commit it before taking the new-entry slice or settling the merge.
       flushStreamBuf(set, get)
@@ -218,6 +221,9 @@ export async function loadMoreHistory(
                 ? { ...e, streaming: false }
                 : e,
             );
+      // 新页条目补盖信封 msgSeq；全部带 msgSeq 时按其稳定排序（页内有序
+      // 是下方归并的前提）。
+      newEntries = sortEntriesByMsgSeq(applyEntryMsgSeq(newEntries, replay.entryMsgSeq))
       // Page boundaries can cut an assistant message in half; stitch the
       // continuation (first old entry) onto the new page's last entry.
       const lastNew = newEntries[newEntries.length - 1]
@@ -252,7 +258,12 @@ export async function loadMoreHistory(
       // replayed first) — close it out instead of leaving "Running …"
       // stuck on a historical page boundary. Skipped only for true local
       // live turns (see liveLocal above).
-      const merged = [...newEntries, ...oldEntries]
+      // 前插旧页与已加载区按 msgSeq 归并；任一端缺 msgSeq 完全保持现有
+      // 拼接行为（旧页整段在前，不归并）。
+      const merged = mergeEntriesByMsgSeq(newEntries, oldEntries) ?? [
+        ...newEntries,
+        ...oldEntries,
+      ]
       // 回放后 openAssistantId/liveStream 常被「本页半截 assistant」填上，
       // 不代表真 live。历史分页一律 settle + conn ready；本端发送中则
       // 整段跳过，避免打掉正在流的条目 / 未合并的 liveStream。
