@@ -58,6 +58,9 @@ export async function continueSession(
       entries: [],
       pending: [],
       xaiRequests: [],
+      // 状态栏分支属会话态：换会话即清，旧会话的 ⎇ 不能挂在新会话视图上
+      // （下方 refreshGitInfo 回来后由本会话的 git-info 重新填充）。
+      gitInfo: undefined,
     })
     // load 响应 models 的应用 + effort 兜底（立即应用与宽限窗口重放共用）：
     // agent 的 session/load 会把会话持久化的模型 id 映射到当前 catalog 键
