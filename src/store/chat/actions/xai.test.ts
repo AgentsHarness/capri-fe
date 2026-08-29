@@ -11,6 +11,10 @@ vi.mock('../../../api/client', () => ({
       .mockResolvedValue({ sessionId: 'wt-1', worktreePath: '/wt', effectiveCwd: '/wt/x' }),
     sessionDelete: vi.fn().mockResolvedValue({}),
     btw: vi.fn().mockResolvedValue({ answer: '**答案**' }),
+    memoryRewrite: vi.fn().mockResolvedValue({
+      ok: true,
+      result: { rewritten: '## 部署\n\n- eu-west 集群' },
+    }),
   },
 }))
 
@@ -42,7 +46,7 @@ function bind(state: ChatState) {
   }
   return xaiActions(set, () => state) as Pick<
     ChatState,
-    'forkSession' | 'deleteSession' | 'askBtw'
+    'forkSession' | 'deleteSession' | 'askBtw' | 'rememberNote'
   >
 }
 
@@ -191,5 +195,80 @@ describe('xaiActions.askBtw', () => {
     resolveBtw({ answer: '迟到的答案' })
     await p
     expect(state.entries).toHaveLength(0)
+  })
+})
+
+describe('xaiActions.rememberNote', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(transport.memoryRewrite as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      result: { rewritten: '## 部署\n\n- eu-west 集群' },
+    })
+  })
+
+  it('有会话 → memoryRewrite 带显式 sessionId 与原文；反馈行含改写稿与原文', async () => {
+    const state = makeState({
+      cwd: '/w',
+      entries: [
+        { id: 'u1', kind: 'user', text: '第一段对话' },
+        { id: 'u2', kind: 'user', text: '第二段对话' },
+      ],
+    })
+    await bind(state).rememberNote('部署用 eu-west')
+    expect(transport.memoryRewrite).toHaveBeenCalledWith(
+      's1',
+      '部署用 eu-west',
+      expect.stringContaining('CWD: /w'),
+    )
+    const ctx = (transport.memoryRewrite as ReturnType<typeof vi.fn>).mock
+      .calls[0][2] as string
+    expect(ctx).toContain('- 第一段对话')
+    expect(ctx).toContain('- 第二段对话')
+    expect(state.entries).toHaveLength(3)
+    const e = state.entries[2] as { kind: string; text: string }
+    expect(e.kind).toBe('session_event')
+    expect(e.text).toContain('改写稿')
+    expect(e.text).toContain('eu-west 集群')
+    expect(e.text).toContain('部署用 eu-west')
+  })
+
+  it('rewritten 缺失 → 展示原文（不回退到提示词路径）', async () => {
+    ;(transport.memoryRewrite as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      result: {},
+    })
+    const state = makeState()
+    await bind(state).rememberNote('原文笔记')
+    expect(transport.memoryRewrite).toHaveBeenCalled()
+    expect(state.entries).toHaveLength(1)
+    expect(state.entries[0]).toMatchObject({
+      kind: 'session_event',
+      text: expect.stringContaining('原文笔记'),
+    })
+  })
+
+  it('无活动会话 → 错误行，不发请求', async () => {
+    const state = makeState({ sessionId: undefined })
+    await bind(state).rememberNote('x')
+    expect(transport.memoryRewrite).not.toHaveBeenCalled()
+    expect(state.entries).toHaveLength(1)
+    expect(state.entries[0]).toMatchObject({
+      kind: 'error',
+      text: expect.stringContaining('无活动会话'),
+    })
+  })
+
+  it('请求失败 → 错误行可见', async () => {
+    ;(transport.memoryRewrite as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('rewrite failed'),
+    )
+    const state = makeState()
+    await bind(state).rememberNote('x')
+    expect(state.entries).toHaveLength(1)
+    expect(state.entries[0]).toMatchObject({
+      kind: 'error',
+      text: expect.stringContaining('rewrite failed'),
+    })
   })
 })
