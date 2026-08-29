@@ -597,10 +597,10 @@ export const slashCommands: SlashCommand[] = [
     run: (args) => {
       const a = args.trim().toLowerCase()
       if (a === 'on' || a === 'off') {
-        // No wire toggle for memory in the web FE — route through the
-        // agent prompt path (architecture limitation: the FE cannot call
-        // agent tools directly).
-        sendPrompt(a === 'on' ? '请开启记忆' : '请关闭记忆')
+        // 走 session 内置 slash 通道：human prompt 以 / 开头时由 agent
+        // 侧解析为 BuiltinAction::MemoryToggle（与 TUI 键入 /memory on
+        // 同路径），无需 ext 端点。
+        sendPrompt(`/memory ${a}`)
         return
       }
       // No args → browse modal (cached memory_files list, read-only).
@@ -616,10 +616,10 @@ export const slashCommands: SlashCommand[] = [
     name: 'dream',
     description: '执行记忆整合（consolidation）',
     run: () => {
-      // No wire method for consolidation — prompt-path only (see /memory).
-      // The host's /api/memory-rewrite endpoint exists for a future direct
-      // call; the FE currently cannot invoke it meaningfully.
-      sendPrompt('请执行记忆整合（memory consolidation）')
+      // 走 session 内置 /dream slash 命令（BuiltinAction::Dream →
+      // run_dream_slash_command）。memory ext 只暴露 flush/rewrite，没有
+      // consolidation 端点——发字面命令与 TUI 键入 /dream 同路径。
+      sendPrompt('/dream')
     },
   },
   {
@@ -632,7 +632,10 @@ export const slashCommands: SlashCommand[] = [
         err('用法: /remember <笔记内容>，例如 /remember 暂存部署使用 eu-west 集群')
         return
       }
-      sendPrompt(`请记住：${note}（写入记忆）`)
+      // POST /api/memory-rewrite → _x.ai/memory/rewrite：LLM 改写不落盘
+      // （host 无保存端点，TUI 的落盘是本地文件写入），结果作为滚动区
+      // 反馈呈现。
+      void useChatStore.getState().rememberNote(note)
     },
   },
   // ── MCP 管理（TUI /mcps）────────────────────────────────────────────

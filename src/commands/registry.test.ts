@@ -76,6 +76,7 @@ interface FakeChat {
   goalSet: ReturnType<typeof vi.fn>
   openMemory: ReturnType<typeof vi.fn>
   memoryFlush: ReturnType<typeof vi.fn>
+  rememberNote: ReturnType<typeof vi.fn>
 }
 
 let fake: FakeChat
@@ -129,6 +130,7 @@ beforeEach(() => {
     goalSet: vi.fn(),
     openMemory: vi.fn(),
     memoryFlush: vi.fn(),
+    rememberNote: vi.fn(),
   } as FakeChat
   vi.mocked(useChatStore.getState).mockReturnValue(fake as never)
   // registry 的 status() 走 setState；让 setState 真实写入 fake
@@ -647,26 +649,27 @@ describe('parseBudgetTokens', () => {
 })
 
 describe('slash command runs — /memory /remember /dream', () => {
-  it('on/off 走提示词路径；无参打开浏览', () => {
+  it('on/off 走 session 内置 slash；无参打开浏览', () => {
     run('memory', 'on')
-    expect(fake.send).toHaveBeenCalledWith('请开启记忆')
+    expect(fake.send).toHaveBeenCalledWith('/memory on')
     fake.send.mockClear()
     run('memory', 'off')
-    expect(fake.send).toHaveBeenCalledWith('请关闭记忆')
+    expect(fake.send).toHaveBeenCalledWith('/memory off')
     run('memory')
     expect(fake.openMemory).toHaveBeenCalled()
   })
 
-  it('/remember 无参报错；有参走提示词', () => {
+  it('/remember 无参报错；有参调 rememberNote（不再发中文提示词）', () => {
     run('remember')
     expect(fake.appendLocalEntry).toHaveBeenCalledWith({ kind: 'error', text: expect.stringContaining('用法') })
     run('remember', '部署用 eu-west')
-    expect(fake.send).toHaveBeenCalledWith('请记住：部署用 eu-west（写入记忆）')
+    expect(fake.rememberNote).toHaveBeenCalledWith('部署用 eu-west')
+    expect(fake.send).not.toHaveBeenCalled()
   })
 
-  it('/dream 走提示词路径', () => {
+  it('/dream 走 session 内置 slash 命令', () => {
     run('dream')
-    expect(fake.send).toHaveBeenCalledWith('请执行记忆整合（memory consolidation）')
+    expect(fake.send).toHaveBeenCalledWith('/dream')
   })
 })
 
