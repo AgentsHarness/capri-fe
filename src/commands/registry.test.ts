@@ -38,6 +38,8 @@ interface FakeChat {
   cwd: string | null
   sessionTitle: string | null
   entries: Array<Record<string, unknown>>
+  historyLoadedStart?: number
+  historyHasMore?: boolean
   statusText?: string
   agentCommands: Array<{ name: string; description: string; argHint?: string }>
   appendLocalEntry: ReturnType<typeof vi.fn>
@@ -559,6 +561,90 @@ describe('slash command runs — /copy', () => {
     writeText.mockRejectedValue(new Error('denied'))
     await run('copy')
     expect(chat().statusText).toBe('复制失败: denied')
+  })
+})
+
+describe('slash command runs — /export', () => {
+  const writeText = vi.fn()
+  let appendSpy: ReturnType<typeof vi.spyOn> | null = null
+
+  beforeEach(() => {
+    writeText.mockReset()
+    writeText.mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    })
+    Object.defineProperty(URL, 'createObjectURL', {
+      value: vi.fn(() => 'blob:mock'),
+      configurable: true,
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      value: vi.fn(),
+      configurable: true,
+    })
+    // 默认 callThrough：append 照常发生，spy 记录 calls 供断言取 <a>
+    // 引用（click 后立即 remove，querySelector 已不可见）。
+    appendSpy = vi.spyOn(document.body, 'appendChild')
+  })
+
+  afterEach(() => {
+    appendSpy?.mockRestore()
+  })
+
+  it('无活动会话 → 错误，剪贴板不触发', async () => {
+    fake.sessionId = null
+    await run('export')
+    expect(fake.appendLocalEntry).toHaveBeenCalledWith({
+      kind: 'error',
+      text: '没有可导出的会话',
+    })
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('无对话内容（只有 status 行）→ 错误', async () => {
+    fake.entries = [{ id: '1', kind: 'status', text: 'ready' }]
+    await run('export')
+    expect(fake.appendLocalEntry).toHaveBeenCalledWith({
+      kind: 'error',
+      text: '没有可导出的对话内容',
+    })
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('无参数 → 整段转录复制到剪贴板（带未加载历史提示）；失败 → status', async () => {
+    fake.entries = [
+      { id: '1', kind: 'user', text: '问' },
+      { id: '2', kind: 'assistant', text: '答' },
+    ]
+    fake.historyLoadedStart = 3
+    await run('export')
+    expect(writeText).toHaveBeenCalledTimes(1)
+    const md = writeText.mock.calls[0][0] as string
+    expect(md).toContain('## User')
+    expect(md).toContain('## Assistant')
+    expect(md).toContain('*注：') // 未加载历史提示行
+    expect(chat().statusText).toContain('已复制会话转录到剪贴板')
+
+    writeText.mockRejectedValue(new Error('denied'))
+    await run('export')
+    expect(chat().statusText).toBe('复制失败: denied')
+  })
+
+  it('有参数 → Blob 下载 + 文件名安全化 + 及时 revoke', async () => {
+    fake.entries = [
+      { id: '1', kind: 'user', text: '问' },
+      { id: '2', kind: 'assistant', text: '答' },
+    ]
+    await run('export', '../会话记录.txt')
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(1)
+    const blob = (URL.createObjectURL as ReturnType<typeof vi.fn>).mock.calls[0][0] as Blob
+    expect(blob.type).toBe('text/markdown;charset=utf-8')
+    const anchor = appendSpy!.mock.calls[0][0] as HTMLAnchorElement
+    expect(anchor.download).toBe('__会话记录.txt.md')
+    expect(anchor.href).toBe('blob:mock')
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:mock')
+    expect(chat().statusText).toContain('已导出为')
   })
 })
 
