@@ -161,6 +161,30 @@ describe('ContextModal', () => {
     })
   })
 
+  it('锁定当前会话：sessionId 随请求带上（否则 host 填活动会话）', async () => {
+    useChatStore.setState({ sessionId: 'sess-42' })
+    extMock.mockResolvedValue({ model: 'grok' })
+    render(<ContextModal />)
+    await waitFor(() =>
+      expect(extMock).toHaveBeenCalledWith({ sessionId: 'sess-42' }),
+    )
+  })
+
+  it('footer 统计行：Turns · Tool calls · Compactions', async () => {
+    extMock.mockResolvedValue({
+      context: {
+        used: 60_000,
+        total: 100_000,
+        usagePct: 60,
+        turnCount: 5,
+        toolCallCount: 12,
+        compactionCount: 1,
+      },
+    })
+    render(<ContextModal />)
+    await screen.findByText(/Turns: 5 · Tool calls: 12 · Compactions: 1/)
+  })
+
   it('usageCategories 非数组 → 忽略', async () => {
     extMock.mockResolvedValue({
       context: {

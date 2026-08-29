@@ -14,8 +14,9 @@ import { contextUrgencyColor } from '../theme/contextColor'
  *
  * Layout mirrors the TUI block: at-a-glance totals (two-decimal percent),
  * model name, categorical bar (system / messages / reasoning-overhead /
- * free), legend + tool-definition / category rows, and the auto-compact
- * estimate line. Unlike the TUI's `precise_usage_percent` (which is not
+ * free), legend + tool-definition / category rows, the auto-compact
+ * estimate line, and the `Turns · Tool calls · Compactions` footer. Unlike
+ * the TUI's `precise_usage_percent` (which is not
  * clamped), the percent here is clamped to 100 to stay consistent with
  * the context chip and /session-info.
  */
@@ -33,7 +34,12 @@ export function ContextModal() {
     setLoading(true)
     setError(undefined)
     try {
-      const raw = await transport.sessionInfoExt()
+      // 锁定打开弹窗时正在查看的会话：省略 sessionId 时 host 会填自己的
+      // 活动会话（Bridge.XaiCall），多 tab / 查看别的会话时模型和数字都会
+      // 取自那个会话。
+      const raw = await transport.sessionInfoExt({
+        sessionId: useChatStore.getState().sessionId ?? undefined,
+      })
       const o =
         raw && typeof raw === 'object' && !Array.isArray(raw)
           ? (raw as Record<string, unknown>)
@@ -300,6 +306,12 @@ export function ContextModal() {
                     : `Auto-compact at ${autoCompact.threshold}% · ~${fmtTokBig(autoCompact.remaining)} tokens remaining`}
                 </div>
               )}
+
+              {/* Footer stats — TUI ContextInfoBlock's last line. */}
+              <div className="font-mono text-[11px] leading-snug text-gn-gutter">
+                Turns: {ctx.turnCount} · Tool calls: {ctx.toolCallCount} · Compactions:{' '}
+                {ctx.compactionCount}
+              </div>
             </div>
           )}
         </div>
