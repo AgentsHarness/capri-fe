@@ -113,15 +113,28 @@ export type ExtensionsPayload = {
 }
 
 
-/** GET / POST /api/settings — safe config.toml subset. */
+/**
+ * GET / POST /api/settings — safe config.toml subset. `toolset` carries
+ * ONLY [toolset.ask_user_question].timeout_enabled / timeout_secs (the
+ * host filters the rest of the [toolset] subtree out of the payload).
+ */
 export type SettingsPayload = {
   ui?: Record<string, unknown>
   session?: Record<string, unknown>
   models?: Record<string, unknown>
   cli?: Record<string, unknown>
+  toolset?: {
+    ask_user_question?: {
+      /** 问答卡片超时是否武装；缺省 = true（agent 默认武装）。 */
+      timeout_enabled?: boolean
+      /** 超时秒数（正整数，host 校验 1–86400）；缺省 = 1800。 */
+      timeout_secs?: number
+    }
+  }
 }
 
-/** POST /api/settings body — FE-consumed [ui] scalars (host allowlists). */
+/** POST /api/settings body — FE-consumed [ui] + [toolset.ask_user_question]
+ *  scalars (host allowlists both). */
 export type SettingsPatch = {
   collapsed_edit_blocks?: boolean
   page_flip_on_send?: boolean
@@ -130,6 +143,12 @@ export type SettingsPatch = {
   /** TUI [ui].follow_up_behavior — 'steer' lets the agent promote queued
    *  follow-ups into mid-turn interjections at safe gaps. */
   follow_up_behavior?: 'queue' | 'steer'
+  toolset?: {
+    ask_user_question?: {
+      timeout_enabled?: boolean
+      timeout_secs?: number
+    }
+  }
 }
 
 
