@@ -93,6 +93,7 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
   sessionInfoOpen: false,
   contextOpen: false,
   usageOpen: false,
+  planViewerOpen: false,
   tasksBarOpen: false,
   setTasksBarOpen: (open) => set({ tasksBarOpen: open }),
   showTimestamps: true,
@@ -219,6 +220,9 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
 
   openUsage: () => set({ usageOpen: true }),
   closeUsage: () => set({ usageOpen: false }),
+
+  openPlanViewer: () => set({ planViewerOpen: true }),
+  closePlanViewer: () => set({ planViewerOpen: false }),
 
   /** 写入/清除某一层的错误（undefined = 清除该层）。 */
   setLayerError: (layer, err) =>
