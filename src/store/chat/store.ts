@@ -4,7 +4,6 @@ import { transport } from '../../api/client'
 import { usePromptQueue } from '../promptQueue'
 import type { ChatState, SetState } from './types'
 import { CANCEL_SUBAGENTS_PREF_KEY, loadCancelSubagentsPref } from './cancelPref'
-import { formatSessionInfo } from './format'
 import { handleChatEvent } from './events'
 import {
   continueSession as loadContinueSession,
@@ -220,23 +219,6 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
 
   openUsage: () => set({ usageOpen: true }),
   closeUsage: () => set({ usageOpen: false }),
-
-  showSessionInfo: async () => {
-    try {
-      const info = await transport.sessionInfo(get().sessionId)
-      // Host's in-process record can lag on the title (agent-side
-      // session_info_update not delivered for resumed sessions) — merge
-      // it from the roster list we already fetched.
-      if (!info.title) {
-        const s = get().sessions.find((x) => x.sessionId === info.sessionId)
-        if (s?.title) info.title = s.title
-      }
-      appendEntry(set, { kind: 'status', text: formatSessionInfo(info) })
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      appendEntry(set, { kind: 'error', text: `/session-info 失败: ${msg}` })
-    }
-  },
 
   /** 写入/清除某一层的错误（undefined = 清除该层）。 */
   setLayerError: (layer, err) =>
