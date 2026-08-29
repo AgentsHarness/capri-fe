@@ -96,3 +96,73 @@ export function notificationsSettings(): Record<string, unknown> {
     ? (v as Record<string, unknown>)
     : {}
 }
+
+/**
+ * `toolset.ask_user_question` section of GET /api/settings — the host
+ * filters the payload to the two timeout scalars. Cached once, same
+ * semantics as the `[ui]` cache above; a FAILED fetch is not cached.
+ */
+type ToolsetSection = {
+  ask_user_question?: { timeout_enabled?: boolean; timeout_secs?: number }
+}
+
+let cachedToolset: ToolsetSection | undefined
+let toolsetInflight: Promise<ToolsetSection> | null = null
+const toolsetReadyCallbacks = new Set<() => void>()
+const toolsetChangeListeners = new Set<() => void>()
+
+function notifyToolsetSettings(): void {
+  toolsetReadyCallbacks.forEach((cb) => cb())
+  toolsetReadyCallbacks.clear()
+  toolsetChangeListeners.forEach((cb) => cb())
+}
+
+/** Fetch (once) and cache the `toolset` section; `{}` on failure (retried
+ *  by the next caller, same as ensureUiSettings). */
+export function ensureToolsetSettings(): Promise<ToolsetSection> {
+  toolsetInflight ??= transport
+    .settings()
+    .then((s) => {
+      const ts =
+        s.toolset && typeof s.toolset === 'object' && !Array.isArray(s.toolset)
+          ? (s.toolset as ToolsetSection)
+          : {}
+      cachedToolset = ts
+      notifyToolsetSettings()
+      return ts
+    })
+    .catch(() => {
+      toolsetInflight = null // failed — retry next call
+      return {}
+    })
+  return toolsetInflight
+}
+
+/** Sync accessor — `undefined` until ensureToolsetSettings resolves. */
+export function toolsetSettings(): ToolsetSection | undefined {
+  return cachedToolset
+}
+
+/** Run cb once the toolset settings are available (immediately if already). */
+export function onToolsetSettingsReady(cb: () => void): void {
+  if (cachedToolset !== undefined) {
+    cb()
+    return
+  }
+  toolsetReadyCallbacks.add(cb)
+}
+
+/** Replace the cached `toolset` section (after GET/POST /api/settings). */
+export function applyToolsetSettings(ts: ToolsetSection | undefined): void {
+  cachedToolset = ts
+  toolsetInflight = ts ? Promise.resolve(ts) : null
+  notifyToolsetSettings()
+}
+
+/** Subscribe to every toolset cache update. */
+export function onToolsetSettingsChange(cb: () => void): () => void {
+  toolsetChangeListeners.add(cb)
+  return () => {
+    toolsetChangeListeners.delete(cb)
+  }
+}
