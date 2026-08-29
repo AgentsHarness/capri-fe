@@ -79,6 +79,9 @@ interface FakeChat {
   openMemory: ReturnType<typeof vi.fn>
   memoryFlush: ReturnType<typeof vi.fn>
   rememberNote: ReturnType<typeof vi.fn>
+  workflowRuns: Record<string, { runId: string; name: string; status?: string }>
+  workflowControl: ReturnType<typeof vi.fn>
+  saveWorkflowScript: ReturnType<typeof vi.fn>
 }
 
 let fake: FakeChat
@@ -133,6 +136,9 @@ beforeEach(() => {
     openMemory: vi.fn(),
     memoryFlush: vi.fn(),
     rememberNote: vi.fn(),
+    workflowRuns: {},
+    workflowControl: vi.fn(),
+    saveWorkflowScript: vi.fn(() => Promise.resolve()),
   } as FakeChat
   vi.mocked(useChatStore.getState).mockReturnValue(fake as never)
   // registry 的 status() 走 setState；让 setState 真实写入 fake
@@ -235,7 +241,7 @@ describe('filterSlashCommands', () => {
 })
 
 describe('slash command runs — 会话类', () => {
-  it('/new /resume /compact /rewind /fork /recap /session-info /context /plan /timestamps /settings /flush /workflows', () => {
+  it('/new /resume /compact /rewind /fork /recap /session-info /context /plan /timestamps /settings /flush', () => {
     run('new')
     expect(fake.newSession).toHaveBeenCalled()
     run('resume')
@@ -261,8 +267,6 @@ describe('slash command runs — 会话类', () => {
     expect(fake.openSettings).toHaveBeenCalled()
     run('flush')
     expect(fake.memoryFlush).toHaveBeenCalled()
-    run('workflows')
-    expect(fake.setWorkflowPanelOpen).toHaveBeenCalledWith(true)
   })
 
   it('/view-plan（含别名 show-plan / plan-view）：无活动会话与无 plan 提示，有 plan 打开弹窗', () => {
@@ -348,6 +352,87 @@ describe('slash command runs — 会话类', () => {
     expect(fake.openExtensions).toHaveBeenCalledWith('skills')
     run('marketplace')
     expect(fake.openExtensions).toHaveBeenCalledWith('marketplace')
+  })
+
+  it('/workflows → 扩展面板的 workflows tab（目录浏览），不再是运行面板', () => {
+    run('workflows')
+    expect(fake.openExtensions).toHaveBeenCalledWith('workflows')
+    expect(fake.setWorkflowPanelOpen).not.toHaveBeenCalled()
+  })
+})
+
+describe('slash command runs — /workflow（单数，TUI workflow.rs + shell resolve 对齐）', () => {
+  const runs = {
+    wf_1: { runId: 'wf_1', name: 'deep research', status: 'running' },
+  }
+
+  it('/workflow runs 打开运行面板（大小写不敏感）；runs 带参数不拦截', () => {
+    run('workflow', 'runs')
+    expect(fake.setWorkflowPanelOpen).toHaveBeenCalledWith(true)
+    run('workflow', 'RUNS')
+    expect(fake.setWorkflowPanelOpen).toHaveBeenCalledTimes(2)
+    fake.setWorkflowPanelOpen.mockClear()
+    // 带附加参数的 runs 是名为 runs 的 workflow 的 launch（shell 语义）。
+    run('workflow', 'runs extra')
+    expect(fake.setWorkflowPanelOpen).not.toHaveBeenCalled()
+    expect(fake.send).toHaveBeenCalledWith('/workflow runs extra')
+  })
+
+  it('manage op（前置，按 runId 或名称，大小写不敏感）→ workflowControl', () => {
+    fake.workflowRuns = runs
+    run('workflow', 'pause wf_1')
+    expect(fake.workflowControl).toHaveBeenCalledWith('wf_1', 'pause')
+    run('workflow', 'RESUME deep research')
+    expect(fake.workflowControl).toHaveBeenCalledWith('wf_1', 'resume')
+    run('workflow', 'stop wf_1')
+    expect(fake.workflowControl).toHaveBeenCalledWith('wf_1', 'stop')
+    expect(fake.send).not.toHaveBeenCalled()
+  })
+
+  it('manage op 倒序形式 `/workflow <run> pause`（shell second_is_final_op）', () => {
+    fake.workflowRuns = runs
+    run('workflow', 'wf_1 pause')
+    expect(fake.workflowControl).toHaveBeenCalledWith('wf_1', 'pause')
+    // 三个 token 不构成倒序管理（仍是 launch 透传）。
+    run('workflow', 'wf_1 pause x')
+    expect(fake.send).toHaveBeenCalledWith('/workflow wf_1 pause x')
+  })
+
+  it('/workflow save <run> → 保存脚本（复用面板的 saveWorkflowScript）', () => {
+    fake.workflowRuns = runs
+    run('workflow', 'save wf_1')
+    expect(fake.saveWorkflowScript).toHaveBeenCalledWith('wf_1')
+  })
+
+  it('管理 op 缺 handle / 未知 handle → 中文提示，不猜 run', () => {
+    run('workflow', 'pause')
+    expect(fake.appendLocalEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'error', text: expect.stringContaining('用法: /workflow') }),
+    )
+    expect(fake.workflowControl).not.toHaveBeenCalled()
+    // 有运行但 handle 未知 → 提示 + 列出当前运行。
+    fake.workflowRuns = runs
+    fake.appendLocalEntry.mockClear()
+    run('workflow', 'pause unknown-x')
+    expect(fake.workflowControl).not.toHaveBeenCalled()
+    expect(fake.appendLocalEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'error',
+        text: expect.stringContaining('未找到工作流运行「unknown-x」'),
+      }),
+    )
+  })
+
+  it('launch 与裸调用原样透传（断言发出的文本）', () => {
+    run('workflow', 'deep-research foo')
+    expect(fake.send).toHaveBeenCalledWith('/workflow deep-research foo')
+    run('workflow', 'deep-research rust pitfalls --agent-budget 4')
+    expect(fake.send).toHaveBeenCalledWith(
+      '/workflow deep-research rust pitfalls --agent-budget 4',
+    )
+    // 裸调用：透传让 shell 给文本概览（TUI PassThrough("/workflow")）。
+    run('workflow', '')
+    expect(fake.send).toHaveBeenCalledWith('/workflow')
   })
 })
 

@@ -8,6 +8,7 @@ const { transportMock } = vi.hoisted(() => ({
     extensions: vi.fn(),
     skillsList: vi.fn(),
     skillsToggle: vi.fn(),
+    workflowsList: vi.fn(),
     // historyPins 等模块加载期注册 onEvent 回调
     onEvent: vi.fn(() => () => {}),
   },
@@ -50,6 +51,12 @@ describe('ExtensionsModal', () => {
     transportMock.extensions.mockReset().mockResolvedValue(payload)
     transportMock.skillsList.mockReset().mockResolvedValue([])
     transportMock.skillsToggle.mockReset().mockResolvedValue({})
+    transportMock.workflowsList.mockReset().mockResolvedValue({
+      workflows: [
+        { name: 'b-wf', description: 'touches ci', source: 'user', path: '/x/.grok/workflows/b-wf.rhai' },
+        { name: 'a-wf', description: 'docs', source: 'user', when_to_use: '调研时' },
+      ],
+    })
     setup()
   })
 
@@ -164,6 +171,47 @@ describe('ExtensionsModal', () => {
     expect(screen.queryByText('local-s')).toBeNull()
     clickText('Project')
     expect(screen.getByText('local-s')).not.toBeNull()
+  })
+
+  it('workflows tab：目录浏览（A–Z 平铺，name/描述/source/when to use/path）', async () => {
+    setup({ sessionId: 'sess-1' })
+    render(<ExtensionsModal />)
+    clickText('workflows')
+    expect(await screen.findByText('a-wf')).not.toBeNull()
+    expect(transportMock.workflowsList).toHaveBeenCalledWith({ sessionId: 'sess-1' })
+    expect(screen.getByText('touches ci')).not.toBeNull()
+    // 无状态过滤条（TUI Workflows tab 恒 StatusFilter::All）
+    expect(screen.queryByText('Enabled')).toBeNull()
+    // A–Z：a-wf 在 b-wf 前面
+    const dialog = screen.getByRole('dialog', { name: 'extensions' })
+    expect(dialog.textContent!.indexOf('a-wf')).toBeLessThan(
+      dialog.textContent!.indexOf('b-wf'),
+    )
+    expect(screen.getByText('when to use · 调研时')).not.toBeNull()
+    expect(screen.getByText('/x/.grok/workflows/b-wf.rhai')).not.toBeNull()
+  })
+
+  it('workflows tab：加载态', async () => {
+    transportMock.workflowsList.mockReturnValue(new Promise(() => {}))
+    render(<ExtensionsModal />)
+    clickText('workflows')
+    expect(await screen.findByText('加载 workflows…')).not.toBeNull()
+  })
+
+  it('workflows tab：空态（gate 关闭 / 无已安装 workflow 同样为空）', async () => {
+    transportMock.workflowsList.mockResolvedValue({ workflows: [] })
+    render(<ExtensionsModal />)
+    clickText('workflows')
+    expect(await screen.findByText(/暂无已安装的 workflows/)).not.toBeNull()
+  })
+
+  it('workflows tab：请求失败 → 错误 + 重试', async () => {
+    transportMock.workflowsList.mockRejectedValueOnce(new Error('wf net down'))
+    render(<ExtensionsModal />)
+    clickText('workflows')
+    expect(await screen.findByText('wf net down')).not.toBeNull()
+    clickText('重试')
+    expect(await screen.findByText('a-wf')).not.toBeNull()
   })
 
   it('hooksVersion 变化 → 重新拉取', async () => {

@@ -7,7 +7,7 @@ import {
   type ExtensionPlugin,
   type ExtensionSkill,
 } from '../api/client'
-import type { AgentSkill } from '../api/types'
+import type { AgentSkill, WorkflowInfo } from '../api/types'
 import { Glyphs } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
 
@@ -15,6 +15,7 @@ const TABS = [
   { id: 'hooks', label: 'hooks' },
   { id: 'plugins', label: 'plugins' },
   { id: 'skills', label: 'skills' },
+  { id: 'workflows', label: 'workflows' },
   { id: 'marketplace', label: 'marketplace' },
 ] as const
 
@@ -182,9 +183,14 @@ export function ExtensionsModal() {
   const [agentSkillsError, setAgentSkillsError] = useState<string>()
   const [skillBusyName, setSkillBusyName] = useState<string>()
   const [agentSkillError, setAgentSkillError] = useState<string>()
+  // ── workflows 目录（x.ai/workflows/list — 会话级注册表，独立 seq）──
+  const [workflows, setWorkflows] = useState<WorkflowInfo[]>()
+  const [workflowsError, setWorkflowsError] = useState<string>()
+  const [workflowsLoading, setWorkflowsLoading] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
   const reqSeq = useRef(0)
   const skillReqSeq = useRef(0)
+  const workflowsReqSeq = useRef(0)
 
   const fetchData = useCallback(async () => {
     const seq = ++reqSeq.current
@@ -240,13 +246,40 @@ export function ExtensionsModal() {
     }
   }
 
+  /** x.ai/workflows/list — 已安装 workflow 目录（A 步取证：返回
+   *  `{workflows: [...]}`，字段 name/description/source + 可选
+   *  when_to_use/path；shell gate 关闭时为空数组）。 */
+  const fetchWorkflows = useCallback(async () => {
+    const seq = ++workflowsReqSeq.current
+    setWorkflowsLoading(true)
+    setWorkflowsError(undefined)
+    try {
+      const st = useChatStore.getState()
+      const payload = await transport.workflowsList({
+        sessionId: st.sessionId ?? undefined,
+      })
+      // 防御：ext result 已由 unwrapExtResult 解包；结构不符按失败处理。
+      const list = payload?.workflows
+      if (!Array.isArray(list)) throw new Error('workflows 返回结构异常')
+      if (seq === workflowsReqSeq.current) setWorkflows(list)
+    } catch (e) {
+      if (seq === workflowsReqSeq.current) {
+        setWorkflows(undefined)
+        setWorkflowsError(e instanceof Error ? e.message : String(e))
+      }
+    } finally {
+      if (seq === workflowsReqSeq.current) setWorkflowsLoading(false)
+    }
+  }, [])
+
   // Fetch on open AND on every hooks_changed / plugins_changed bump while
   // open (hooksVersion) — a single effect covers both triggers.
   useEffect(() => {
     if (!open) return
     void fetchData()
     void fetchAgentSkills()
-  }, [open, hooksVersion, fetchData, fetchAgentSkills])
+    void fetchWorkflows()
+  }, [open, hooksVersion, fetchData, fetchAgentSkills, fetchWorkflows])
 
   useEffect(() => {
     if (!open) return
@@ -312,8 +345,9 @@ export function ExtensionsModal() {
           ))}
         </div>
 
-        {/* Status filter — TUI StatusFilter (All / Enabled / Disabled). */}
-        {tab !== 'marketplace' && (
+        {/* Status filter — TUI StatusFilter (All / Enabled / Disabled).
+            Workflows/Marketplace 除外：TUI 这两 tab 恒为 StatusFilter::All。 */}
+        {tab !== 'marketplace' && tab !== 'workflows' && (
           <div className="flex items-center gap-1 border-b border-gn-prompt-border/50 px-3 py-1.5">
             {STATUS_FILTERS.map((f) => (
               <button
@@ -362,6 +396,13 @@ export function ExtensionsModal() {
               agentSkillError={agentSkillError}
               skillBusyName={skillBusyName}
               onToggleSkill={(s) => void toggleAgentSkill(s)}
+            />
+          ) : tab === 'workflows' ? (
+            <WorkflowsTab
+              loading={workflowsLoading}
+              error={workflowsError}
+              workflows={workflows}
+              onRetry={() => void fetchWorkflows()}
             />
           ) : (
             <MarketplaceTab />
@@ -699,6 +740,88 @@ function SkillsTab({
           </div>
         ))
       )}
+    </>
+  )
+}
+
+/** 一条 workflow 目录行 — TUI workflows_picker_rows：name（+source 徽标）、
+ *  描述、when to use / path 字段行。 */
+function WorkflowItem({ w }: { w: WorkflowInfo }) {
+  return (
+    <div className="flex items-start gap-2.5 border-b border-gn-prompt-border/50 px-4 py-2">
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+          <span className="truncate font-mono text-[12.5px] text-gn-fg">{w.name}</span>
+          {w.source ? (
+            <span className="shrink-0 rounded border border-gn-prompt-border px-1 text-[9px] leading-[14px] text-gn-gutter">
+              {w.source}
+            </span>
+          ) : null}
+        </div>
+        {w.description ? (
+          <div className="mt-0.5 text-[11px] leading-snug text-gn-muted">{w.description}</div>
+        ) : null}
+        {w.when_to_use ? (
+          <div className="mt-0.5 text-[11px] text-gn-gutter">when to use · {w.when_to_use}</div>
+        ) : null}
+        {w.path ? (
+          <div className="mt-0.5 truncate font-mono text-[11px] text-gn-gutter" title={w.path}>
+            {w.path}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+/** Workflows tab — 目录浏览（只读）。加载/失败/空态三态，A–Z 平铺
+ *  （TUI build_workflows_picker_rows：flat list，无分组、无过滤）。 */
+function WorkflowsTab({
+  loading,
+  error,
+  workflows,
+  onRetry,
+}: {
+  loading: boolean
+  error?: string
+  workflows?: WorkflowInfo[]
+  onRetry: () => void
+}) {
+  if (loading && workflows === undefined) {
+    return (
+      <div className="px-4 py-6 text-center text-[12px] text-gn-muted">
+        加载 workflows…
+      </div>
+    )
+  }
+  if (error) {
+    return (
+      <div className="px-4 py-5 text-center">
+        <div className="text-[12px] text-gn-red">{error}</div>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="mt-2 rounded border border-gn-prompt-border px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+        >
+          重试
+        </button>
+      </div>
+    )
+  }
+  if (!workflows || workflows.length === 0) {
+    // TUI WORKFLOWS_EMPTY_PLACEHOLDER 的中文对应（gate 关闭时同样为空）。
+    return (
+      <div className="px-4 py-6 text-center text-[12px] text-gn-muted">
+        暂无已安装的 workflows — 可以让 agent 帮你创建一个
+      </div>
+    )
+  }
+  const rows = [...workflows].sort((a, b) => cmpStrCi(a.name, b.name))
+  return (
+    <>
+      {rows.map((w) => (
+        <WorkflowItem key={w.name} w={w} />
+      ))}
     </>
   )
 }

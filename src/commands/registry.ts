@@ -61,9 +61,68 @@ function setMultilineEnabled(on: boolean): void {
   saveBool(MULTILINE_KEY, on)
 }
 
-/** /hooks /plugins /skills /marketplace — extensions modal on its tab. */
+/** /hooks /plugins /skills /marketplace /workflows — extensions modal on its tab. */
 function openExtensionsCmd(tab: ExtensionsTab) {
   useChatStore.getState().openExtensions(tab)
+}
+
+// ── /workflow（TUI slash/commands/workflow.rs + shell resolve 对齐）────
+// 单复数是两个命令：/workflow（复数带 s 是目录浏览）是操作命令——
+// `runs` 打开运行面板；pause/resume/stop/save 复用 store 的
+// workflowControl / saveWorkflowScript；其余形式（launch、裸调用）原文
+// 透传给 shell（TUI PassThrough），busy 时由 sendPrompt 进队列。
+// Shell 接受的 manage op（xai-grok-shell slash_commands.rs resolve）：
+// `/workflow pause|resume|stop|save [run]` 与倒序 `/workflow <run> pause`
+// （op 大小写不敏感）；`runs` 仅在无附加参数时是 op，带参数时仍是
+// 名为 runs 的 workflow 的 launch。
+const WORKFLOW_MANAGE_OPS = new Set(['pause', 'resume', 'stop', 'save'])
+type WorkflowManageOp = 'pause' | 'resume' | 'stop' | 'save'
+
+/** run handle 按 runId 或名称匹配（TUI 建议填充的是 run.name）。 */
+function findWorkflowRun(handle: string) {
+  const q = handle.toLowerCase()
+  return Object.values(useChatStore.getState().workflowRuns).find(
+    (r) => r.runId.toLowerCase() === q || r.name.toLowerCase() === q,
+  )
+}
+
+/** 缺少/未知 run handle 时给中文提示，不猜一个 run（TUI manage_run_items
+ *  只把本会话已知的 run 列入建议）。 */
+function workflowRunMissingHint(handle: string | undefined) {
+  const runs = Object.values(useChatStore.getState().workflowRuns)
+  if (handle) {
+    err(
+      runs.length > 0
+        ? `未找到工作流运行「${handle}」。当前运行: ${runs.map((r) => r.name).join('、')}`
+        : `未找到工作流运行「${handle}」（当前会话没有运行记录）`,
+    )
+    return
+  }
+  err(
+    runs.length > 0
+      ? `用法: /workflow pause|resume|stop|save <运行 ID 或名称>。当前运行: ${runs
+          .map((r) => r.name)
+          .join('、')}`
+      : '用法: /workflow pause|resume|stop|save <运行 ID 或名称> — 当前会话没有运行记录，先用 /workflow <名称> 启动一个 workflow',
+  )
+}
+
+function runWorkflowControl(op: WorkflowManageOp, handle: string) {
+  const st = useChatStore.getState()
+  if (!handle) {
+    workflowRunMissingHint(undefined)
+    return
+  }
+  const run = findWorkflowRun(handle)
+  if (!run) {
+    workflowRunMissingHint(handle)
+    return
+  }
+  if (op === 'save') {
+    void st.saveWorkflowScript(run.runId)
+    return
+  }
+  st.workflowControl(run.runId, op)
 }
 
 /**
@@ -640,10 +699,44 @@ export const slashCommands: SlashCommand[] = [
       void st.goalSet(objective, budget)
     },
   },
+  // ── workflow（TUI /workflow 单数 + /workflows 复数语义）──────────────
+  {
+    name: 'workflow',
+    description: '启动已保存的 workflow、查看运行列表、管理运行（pause/resume/stop/save）',
+    argHint: '<名称> [--agent-budget N] [--effort LEVEL] [args] | runs | pause|resume|stop|save [名称]',
+    run: (args) => {
+      const trimmed = args.trim()
+      // `/workflow runs`：精确 op（大小写不敏感，TUI workflow.rs run）→
+      // 打开运行面板。带附加参数时不拦截（shell 当作名为 runs 的 launch）。
+      if (trimmed.toLowerCase() === 'runs') {
+        useChatStore.getState().setWorkflowPanelOpen(true)
+        return
+      }
+      const tokens = trimmed.split(/\s+/).filter(Boolean)
+      const [first, second] = tokens
+      const firstOp = first && WORKFLOW_MANAGE_OPS.has(first.toLowerCase())
+        ? (first.toLowerCase() as WorkflowManageOp)
+        : undefined
+      if (firstOp) {
+        // op 前置：run handle 取整段剩余文本（shell 的 run_id 允许空格）。
+        runWorkflowControl(firstOp, tokens.slice(1).join(' '))
+        return
+      }
+      // 倒序形式 `/workflow <run> pause`（shell second_is_final_op，必须
+      // 恰好两个 token，否则仍是 launch）。
+      if (tokens.length === 2 && second && WORKFLOW_MANAGE_OPS.has(second.toLowerCase())) {
+        runWorkflowControl(second.toLowerCase() as WorkflowManageOp, first)
+        return
+      }
+      // launch 与裸调用（文本概览由 shell 给）：原样透传，与 TUI
+      // PassThrough("/workflow [args]") 一致；busy 时 sendPrompt 进队列。
+      sendPrompt(trimmed ? `/workflow ${trimmed}` : '/workflow')
+    },
+  },
   {
     name: 'workflows',
-    description: '打开工作流运行面板',
-    run: () => useChatStore.getState().setWorkflowPanelOpen(true),
+    description: '浏览已安装的 workflow 目录',
+    run: () => openExtensionsCmd('workflows'),
   },
   // ── memory system (TUI /memory /flush /dream /remember) ────────────
   {

@@ -24,7 +24,7 @@ export type McpInitProgress = {
 }
 
 /** Extensions modal tabs (TUI /hooks /plugins /skills /marketplace). */
-export type ExtensionsTab = 'hooks' | 'plugins' | 'skills' | 'marketplace'
+export type ExtensionsTab = 'hooks' | 'plugins' | 'skills' | 'workflows' | 'marketplace'
 
 /**
  * TUI TodoCounts — derived from session/update `plan` entries (plan →
