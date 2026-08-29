@@ -54,6 +54,9 @@ export const toolsRpc = {
           .filter((t) => t.name)
         return {
           name: typeof s.name === 'string' ? s.name : '',
+          ...(typeof s.displayName === 'string' && s.displayName
+            ? { displayName: s.displayName }
+            : {}),
           ...(typeof s.command === 'string' && s.command ? { command: s.command } : {}),
           ...(Array.isArray(s.args) ? { args: s.args.map(String) } : {}),
           ...(env && Object.keys(env).length > 0 ? { env } : {}),
@@ -63,11 +66,30 @@ export const toolsRpc = {
               ? { enabled: sess.enabled }
               : {}),
           ...(typeof s.source === 'string' && s.source ? { source: s.source } : {}),
+          // Human-readable source overlay (agent `sourceLabel`, e.g.
+          // "plugin: foo"); the bare `source` enum stays as fallback.
+          ...(typeof s.sourceLabel === 'string' && s.sourceLabel
+            ? { sourceLabel: s.sourceLabel }
+            : {}),
           ...(typeof s.url === 'string' && s.url ? { url: s.url } : {}),
           ...(typeof s.status === 'string' && s.status
             ? { status: s.status }
             : typeof sess.status === 'string' && sess.status
               ? { status: sess.status }
+              : {}),
+          // Why the server has no tools (agent skips these when false):
+          // OAuth pending / setup not filled in yet.
+          ...(typeof sess.authRequired === 'boolean'
+            ? { authRequired: sess.authRequired }
+            : {}),
+          ...(typeof sess.setupRequired === 'boolean'
+            ? { setupRequired: sess.setupRequired }
+            : {}),
+          // Agent-side count, useful when the wire omitted the tool list.
+          ...(typeof s.toolCount === 'number'
+            ? { toolCount: s.toolCount }
+            : typeof sess.toolCount === 'number'
+              ? { toolCount: sess.toolCount }
               : {}),
           // Only attach the tools array when the wire actually carried one
           // (empty array = a connected server with zero tools; undefined =

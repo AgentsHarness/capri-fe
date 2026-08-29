@@ -69,13 +69,24 @@ export type TransportMode = 'local' | 'hub'
 /** One configured MCP server from GET /api/mcp/list (host reads config). */
 export type McpListServer = {
   name: string
+  /** Agent `displayName` — human label; `name` stays the stable id. */
+  displayName?: string
   command?: string
   args?: string[]
   env?: Record<string, string>
   enabled?: boolean
   source?: string
+  /** Agent `sourceLabel` — display overlay for `source` (e.g. "plugin: foo"). */
+  sourceLabel?: string
   url?: string
   status?: string
+  /** Session flags explaining WHY a server has no tools (agent wire
+   *  `session.authRequired` / `session.setupRequired`; the agent omits
+   *  them when false, so they are optional here). */
+  authRequired?: boolean
+  setupRequired?: boolean
+  /** Agent-side tool count; present even when `tools` is not. */
+  toolCount?: number
   /**
    * Tools of the server's live session (agent wire `session.tools`,
    * camelCase). Undefined = the wire carried no tool info (config-only

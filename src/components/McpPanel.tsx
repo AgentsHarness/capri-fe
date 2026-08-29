@@ -6,14 +6,18 @@ import { transport, type McpListServer, type McpToolInfo } from '../api/client'
  * MCP server panel (x.ai/mcp/server_status + host /api/mcp/*) — web
  * counterpart of the TUI /mcps modal.
  *
- * Upper half: 服务器状态 — the event-stream rows (mcp_server_status),
- * patched in place as notifications arrive, plus the aggregate MCP init
- * progress (mcp_init_progress: `MCP (connected/total)` bar while
- * connecting); mcpVersion (tools_changed / servers_updated) shows as a
- * "已更新" hint in the footer.
+ * Both halves render `rows` — the merged view of the event stream
+ * (mcp_server_status) and GET /api/mcp/list. `mcp_server_status` is an
+ * incremental notification (only fired on status change, never replayed
+ * when the panel opens), so the event stream alone is usually empty;
+ * the list is what makes the panel informative on first open.
  *
- * Lower half: 管理 — GET /api/mcp/list merges the configured servers into
- * the display (rows marked `agent-list`); per-row 启用/禁用 toggle
+ * Upper half: 服务器状态 — read-only status rows plus the aggregate MCP
+ * init progress (mcp_init_progress: `MCP (connected/total)` bar while
+ * connecting).
+ *
+ * Lower half: 管理 — the same rows with their config (rows marked
+ * `agent-list` came in from the list response); per-row 启用/禁用 toggle
  * (/api/mcp-toggle), per-tool 启用/禁用 toggle (/api/mcp-toggle-tool —
  * the tool list comes from the list response's session.tools, degraded to
  * 无工具信息 when absent), 删除 (/api/mcp-remove, window.confirm), 认证
@@ -21,6 +25,8 @@ import { transport, type McpListServer, type McpToolInfo } from '../api/client'
  * 添加服务器 form (/api/mcp-add). Merge rule: the event stream wins for
  * status, the list supplements config/source. Every host call degrades to
  * an inline error line — the read-only 服务器状态 view is never affected.
+ * mcp_tools_changed / mcp_servers_updated bump mcpVersion, which
+ * re-triggers the list fetch while the panel is open.
  */
 export function McpPanel({
   open,
@@ -31,6 +37,8 @@ export function McpPanel({
 }) {
   const mcpServers = useChatStore((s) => s.mcpServers)
   const mcpInit = useChatStore((s) => s.mcpInit)
+  /** Bumped by mcp_tools_changed / mcp_servers_updated (no payload data). */
+  const mcpVersion = useChatStore((s) => s.mcpVersion)
   const mcpList = useChatStore((s) => s.mcpList)
   const mcpToggle = useChatStore((s) => s.mcpToggle)
   const mcpToggleTool = useChatStore((s) => s.mcpToggleTool)
@@ -98,9 +106,24 @@ export function McpPanel({
   }, [open, onClose, refreshList])
 
   /**
+   * mcp_tools_changed / mcp_servers_updated only bump mcpVersion — the
+   * notification carries no server data — so re-fetch the list while the
+   * panel is open. The mount/open fetch above covers the first value;
+   * refreshList's reqSeq guard keeps a late response from overwriting.
+   */
+  const seenMcpVersion = useRef(mcpVersion)
+  useEffect(() => {
+    if (seenMcpVersion.current === mcpVersion) return
+    seenMcpVersion.current = mcpVersion
+    if (open) void refreshList()
+  }, [open, mcpVersion, refreshList])
+
+  /**
    * Merge rule: event-stream rows (mcp_server_status) win for status;
    * the agent-list result supplements config/source and adds rows the
-   * stream has not reported yet.
+   * stream has not reported yet. `rows` is the panel's single source of
+   * truth — both halves render it (the stream alone is empty on a fresh
+   * open, since status events are only pushed on change).
    */
   const rows = useMemo(() => {
     const map = new Map<string, McpRow>()
@@ -117,6 +140,12 @@ export function McpPanel({
           env: existing.env ?? l.env,
           url: existing.url ?? l.url,
           enabled: l.enabled,
+          // Config-only fields the event stream never carries.
+          displayName: l.displayName,
+          sourceLabel: l.sourceLabel,
+          authRequired: l.authRequired,
+          setupRequired: l.setupRequired,
+          toolCount: l.toolCount,
           // Tool list comes from the agent list only (event-stream rows
           // carry no tools). `??` keeps the last-known list when the
           // fresh response omits it.
@@ -135,6 +164,11 @@ export function McpPanel({
           env: l.env,
           url: l.url,
           enabled: l.enabled,
+          displayName: l.displayName,
+          sourceLabel: l.sourceLabel,
+          authRequired: l.authRequired,
+          setupRequired: l.setupRequired,
+          toolCount: l.toolCount,
           tools: l.tools,
           fromList: true,
         })
@@ -173,8 +207,8 @@ export function McpPanel({
   /**
    * Per-tool enable/disable (POST /api/mcp-toggle-tool — TUI /mcps tool
    * row toggle → x.ai/mcp/toggle_tool). Optimistic local flip + silent
-   * refresh so the list converges with the agent (tools_changed bumps
-   * mcpVersion in the footer).
+   * refresh so the list converges with the agent (the tools_changed
+   * notification also bumps mcpVersion, which re-fetches on its own).
    */
   const toggleTool = async (server: string, tool: string, enabled: boolean) => {
     if (busy || toolBusy) return
@@ -326,7 +360,7 @@ export function McpPanel({
         <header className="flex items-center gap-2 rounded-t border-b border-gn-prompt-border bg-gn-bg-dark px-4 py-2.5">
           <span className="text-[13px] font-bold text-gn-fg">MCP servers</span>
           <span className="text-[11px] text-gn-muted">
-            {mcpServers.length} 个服务器
+            {rows.length} 个服务器
           </span>
           <button
             type="button"
@@ -338,10 +372,12 @@ export function McpPanel({
         </header>
 
         <div className="max-h-[62vh] overflow-y-auto">
-          {/* ── 上半区: 服务器状态（事件流，只读） ─────────────────── */}
-          <div className="px-4 pt-2.5 pb-1 text-[10px] uppercase tracking-wider text-gn-gutter">
-            服务器状态 · x.ai/mcp/server_status
-          </div>
+          {/* ── 上半区: 服务器状态（合并行，只读） ─────────────────── */}
+          {(mcpInit || rows.length > 0) && (
+            <div className="px-4 pt-2.5 pb-1 text-[10px] uppercase tracking-wider text-gn-gutter">
+              服务器状态
+            </div>
+          )}
           {mcpInit && !(mcpInit.total > 0 && mcpInit.connected >= mcpInit.total) ? (
             <div className="border-b border-gn-prompt-border/50 px-4 py-2">
               <div className="flex items-center gap-2">
@@ -364,28 +400,30 @@ export function McpPanel({
               ) : null}
             </div>
           ) : null}
-          {mcpServers.length === 0 ? (
-            <div className="px-4 py-3 text-center text-[12px] text-gn-muted">
-              尚未收到服务器状态通知
-            </div>
-          ) : (
-            mcpServers.map((s) => (
+          {rows.length === 0 ? null : (
+            rows.map((s) => (
               <div
                 key={s.name}
                 className="flex items-start gap-2.5 border-b border-gn-prompt-border/50 px-4 py-2"
               >
                 <span
-                  className={`mt-[5px] h-2 w-2 shrink-0 rounded-full ${statusDot(s.status)}`}
-                  title={s.status ?? 'unknown'}
+                  className={`mt-[5px] h-2 w-2 shrink-0 rounded-full ${statusDot(rowStatus(s))}`}
+                  title={rowStatus(s) ?? 'unknown'}
                 />
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-baseline gap-2">
+                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
                     <span className="truncate font-mono text-[12.5px] text-gn-fg">
                       {s.name}
                     </span>
+                    {s.displayName && s.displayName !== s.name ? (
+                      <span className="min-w-0 truncate text-[11px] text-gn-fg2">
+                        {s.displayName}
+                      </span>
+                    ) : null}
+                    <McpFlags row={s} />
                     <span className="shrink-0 text-[11px] text-gn-muted">
-                      {s.status ?? 'unknown'}
-                      {s.source ? ` · ${s.source}` : ''}
+                      {rowStatus(s) ?? 'unknown'}
+                      {rowSource(s) ? ` · ${rowSource(s)}` : ''}
                     </span>
                   </div>
                   {s.reason ? (
@@ -429,7 +467,7 @@ export function McpPanel({
 
           {!listError && rows.length === 0 ? (
             <div className="px-4 py-3 text-center text-[12px] text-gn-muted">
-              没有已配置的服务器（或 host 尚未实现 /api/mcp/list）
+              没有已配置的服务器
             </div>
           ) : (
             rows.map((s) => {
@@ -456,9 +494,15 @@ export function McpPanel({
                             agent-list
                           </span>
                         )}
+                        {s.displayName && s.displayName !== s.name ? (
+                          <span className="min-w-0 truncate text-[11px] text-gn-fg2">
+                            {s.displayName}
+                          </span>
+                        ) : null}
+                        <McpFlags row={s} />
                         <span className="shrink-0 text-[11px] text-gn-muted">
-                          {s.status ?? '未连接'}
-                          {s.source ? ` · ${s.source}` : ''}
+                          {rowStatus(s) ?? '未连接'}
+                          {rowSource(s) ? ` · ${rowSource(s)}` : ''}
                         </span>
                       </div>
                       {s.command ? (
@@ -477,16 +521,27 @@ export function McpPanel({
                           env: {Object.keys(s.env).join(', ')}
                         </div>
                       ) : null}
-                      {/* 工具列表 — agent wire session.tools（camelCase）；
-                          缺失或为空 → 无工具信息（优雅降级，不报错）。 */}
+                      {/* 工具列表 — agent wire session.tools（camelCase）。
+                          三态区分：有列表 → 计数+可启停；列表为空 → 该服务器
+                          没有工具；wire 未带列表 → 退回 toolCount，仍无则
+                          无工具信息（优雅降级，不报错）。 */}
                       <div className="mt-1.5">
                         <span className="text-[10px] uppercase tracking-wider text-gn-gutter">
                           工具
-                          {s.tools ? ` (${s.tools.length})` : ''}
+                          {toolCountOf(s) != null ? ` (${toolCountOf(s)})` : ''}
                         </span>
-                        {s.tools == null || s.tools.length === 0 ? (
+                        {s.tools == null ? (
                           <span className="ml-2 text-[11px] text-gn-muted">
                             无工具信息
+                            {s.authRequired
+                              ? '（需要认证后才会拉取工具）'
+                              : s.setupRequired
+                                ? '（需要配置后才会拉取工具）'
+                                : ''}
+                          </span>
+                        ) : s.tools.length === 0 ? (
+                          <span className="ml-2 text-[11px] text-gn-muted">
+                            该服务器没有工具
                           </span>
                         ) : (
                           <div className="mt-1 space-y-0.5">
@@ -869,11 +924,63 @@ type McpRow = McpServerInfo & {
   env?: Record<string, string>
   url?: string
   enabled?: boolean
+  /** Agent list `displayName` — human label next to the stable name. */
+  displayName?: string
+  /** Agent list `sourceLabel` — display overlay for the `source` enum. */
+  sourceLabel?: string
+  /** Session flags: OAuth pending / required config missing. */
+  authRequired?: boolean
+  setupRequired?: boolean
+  /** Agent-side tool count (present even when `tools` is not). */
+  toolCount?: number
   /** Tool list from the agent list response (session.tools); undefined
    *  when the wire carried none (→ 无工具信息). */
   tools?: McpToolInfo[]
   /** True when this row came (at least in part) from GET /api/mcp/list. */
   fromList: boolean
+}
+
+/** Status for display: the event stream wins; the session flags explain a
+ *  list-only row that never reported a status. Undefined → 未连接/unknown. */
+function rowStatus(row: McpRow): string | undefined {
+  if (row.status) return row.status
+  if (row.setupRequired) return 'setup_required'
+  if (row.authRequired) return 'needs_auth'
+  return undefined
+}
+
+/** Source for display: `sourceLabel` (e.g. "plugin: foo") over wire `source`. */
+function rowSource(row: McpRow): string | undefined {
+  return row.sourceLabel ?? row.source
+}
+
+/** Tool count of a row: the list when present, else the agent's count. */
+function toolCountOf(row: McpRow): number | undefined {
+  return row.tools ? row.tools.length : row.toolCount
+}
+
+/** 需要认证 / 需要配置 badges — why a server shows no tools. */
+function McpFlags({ row }: { row: McpRow }) {
+  return (
+    <>
+      {row.authRequired ? (
+        <span
+          className="shrink-0 rounded border border-gn-prompt-border px-1 text-[9px] leading-[14px] text-gn-orange"
+          title="该服务器需要认证（agent session.authRequired）"
+        >
+          需要认证
+        </span>
+      ) : null}
+      {row.setupRequired ? (
+        <span
+          className="shrink-0 rounded border border-gn-prompt-border px-1 text-[9px] leading-[14px] text-gn-yellow"
+          title="该服务器缺少必填配置（agent session.setupRequired）"
+        >
+          需要配置
+        </span>
+      ) : null}
+    </>
+  )
 }
 
 function statusDot(status?: string): string {
@@ -885,6 +992,9 @@ function statusDot(status?: string): string {
       return 'bg-gn-yellow animate-pulse'
     case 'needs_auth':
       return 'bg-gn-orange'
+    case 'setup_required':
+    case 'setuprequired':
+      return 'bg-gn-yellow'
     default:
       return 'bg-gn-red'
   }
