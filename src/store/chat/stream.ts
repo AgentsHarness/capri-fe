@@ -346,6 +346,56 @@ export function sealThought(
   }
 }
 
+/**
+ * Visual seal of a thought whose pointer must stay alive: same-stream
+ * thinking → answer transition (userStream chunk 分支的 keepThoughtOpen
+ * 路径）。条目侧与 sealThought 同款（streaming:false / elapsed /
+ * collapsed / finishedAt），但 openThoughtId 保留——后续 thought chunk
+ * 由 resume 路径重新打开并续写同一条目。空壳（无正文，无可续写）整行
+ * 丢掉并清指针，与 sealThought 的空占位处理一致。无正在流式的思考时
+ * 原样返回同一引用——逐 chunk 调用不会制造 entries 新引用。
+ */
+export function sealThoughtVisual(s: ChatState): ChatState {
+  const tid = s.openThoughtId
+  if (!tid) return s
+  const existing = s.entries.find((e) => e.id === tid)
+  if (existing?.kind !== 'thought') return s
+  if (!existing.streaming) return s
+  const flushed = s.liveStream?.entryId === tid ? flushLiveStream(s) : s
+  // After flush the sealed text sits on the entry; empty means no chunks
+  // ever arrived — nothing to resume, drop the placeholder entirely.
+  if (
+    !flushed.entries.some(
+      (e) => e.id === tid && e.kind === 'thought' && !!e.text.trim(),
+    )
+  ) {
+    return {
+      ...flushed,
+      openThoughtId: undefined,
+      entries: flushed.entries.filter((e) => e.id !== tid),
+    }
+  }
+  return {
+    ...flushed,
+    entries: flushed.entries.map((e) => {
+      if (e.id !== tid || e.kind !== 'thought') return e
+      const elapsed =
+        e.elapsedMs != null
+          ? formatElapsed(e.elapsedMs)
+          : e.startedAt != null
+            ? formatElapsed(Date.now() - e.startedAt)
+            : e.elapsed
+      return {
+        ...e,
+        streaming: false,
+        elapsed,
+        displayMode: 'collapsed',
+        finishedAt: Date.now(),
+      }
+    }),
+  }
+}
+
 
 /**
  * Flush the rAF stream buffer when the next event is not the same kind.
