@@ -4,6 +4,7 @@ import { useChatStore } from '../store/chat'
 import type { AskQuestion } from '../api/types'
 import { Glyphs } from '../theme/glyphs'
 import { Markdown } from './Markdown'
+import { ensureToolsetSettings, toolsetSettings } from '../store/settings'
 
 /**
  * x.ai/ask_user_question card — web counterpart of the TUI question view
@@ -27,8 +28,46 @@ import { Markdown } from './Markdown'
  *   chat_about_this   { outcome:"chat_about_this", partial_answers:{qText:label} }  (plan mode)
  *   skip_interview    { outcome:"skip_interview", partial_answers:{qText:label} }   (plan mode)
  *   cancelled         { outcome:"cancelled" }
+ *
+ * Timeout presentation (honest, per the ask_user_question wire type):
+ * the ACP request today carries NO deadline (AskUserQuestionExtRequest =
+ * sessionId/toolCallId/questions/mode — see grok-build …/ask_user_question/
+ * types.rs), so no countdown is fabricated here. When the wire DOES carry
+ * `deadlineAt` (unix ms — a future agent extension), the card shows the
+ * real remaining time and, on expiry, waits for the agent to close the
+ * interaction (the tool times out agent-side and resolves the request);
+ * the FE never auto-answers on timeout. Without a deadline, the card shows
+ * a config-derived static hint (`[toolset.ask_user_question]`, defaults
+ * enabled / 1800s — the agent's own defaults) only while enabled.
  */
 const ANCHOR_ID = 'capri-xai-question-anchor'
+
+/** Agent-side default budget: ask_user_question RESPONSE_TIMEOUT (30 min). */
+const DEFAULT_ASK_TIMEOUT_SECS = 1800
+
+/**
+ * Extract an optional deadline from the request params. Today's ACP wire
+ * (AskUserQuestionExtRequest) has no deadline field — this only fires for
+ * a future agent extension `deadlineAt` (unix ms). Invalid / past values
+ * are treated as absent so no bogus countdown is ever rendered.
+ */
+function extractDeadlineMs(params: Record<string, unknown> | undefined): number | undefined {
+  const v = params?.deadlineAt
+  const n = typeof v === 'number' && Number.isFinite(v) ? v : NaN
+  if (Number.isNaN(n) || n <= Date.now()) return undefined
+  return n
+}
+
+/** Remaining-time label: h:mm:ss ≥ 1h, else mm:ss. */
+function formatRemaining(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000))
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  const mm = String(m).padStart(h > 0 ? 2 : 1, '0')
+  const ss = String(s).padStart(2, '0')
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`
+}
 
 export function QuestionModal() {
   const xaiRequests = useChatStore((s) => s.xaiRequests)
@@ -50,6 +89,33 @@ export function QuestionModal() {
   // Whether the freeform input owns the keyboard (TUI QuestionFocus::InputMode).
   const [inputActive, setInputActive] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+
+  // Toolset config for the static timeout hint (host-safe subset of
+  // [toolset.ask_user_question]). Fire-and-forget: the hint appears once
+  // the cached section resolves; a failed fetch just leaves no hint.
+  useEffect(() => {
+    void ensureToolsetSettings()
+  }, [])
+
+  // Deadline, remembered per request: evaluated once when the request
+  // arrives (and kept past expiry, so the card shows 「已超时」 instead of
+  // reclassifying the request as deadline-less after the fact).
+  const [deadlineMs, setDeadlineMs] = useState<number | undefined>(() =>
+    extractDeadlineMs(req?.params),
+  )
+  useEffect(() => {
+    setDeadlineMs(extractDeadlineMs(req?.params))
+    // 新请求行（requestId 变化）或同请求 params 更新 → 重新评估 deadline。
+  }, [req])
+
+  // Live remaining time when the wire carries a deadline (future agent
+  // extension; today's ACP request never includes one).
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (deadlineMs == null) return
+    const t = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(t)
+  }, [deadlineMs])
 
   // Portaled anchor: the App-level mount stays put, the card DOM lands in
   // the Composer's anchor so it reads as an inline card above the input.
@@ -288,6 +354,29 @@ export function QuestionModal() {
   const focusedOpt = q?.options[cur]
   const previewText = focusedOpt?.preview?.trim() ? focusedOpt.preview : undefined
 
+  // 超时呈现（诚实原则：wire 无 deadline 时不造倒计时）：
+  // - deadlineAt 存在（未来 agent 扩展）→ 真实剩余时间，到点等 agent 收尾；
+  // - 否则基于 [toolset.ask_user_question] 的静态提示，仅 enabled 时显示
+  //   （缺省 enabled=true / 1800s，与 agent 侧默认一致）。
+  const aq = toolsetSettings()?.ask_user_question
+  const remainingMs = deadlineMs != null ? deadlineMs - now : undefined
+  const timeoutLine =
+    deadlineMs != null
+      ? remainingMs !== undefined && remainingMs > 0
+        ? `提问倒计时 ${formatRemaining(remainingMs)}`
+        : '提问已超时，等待 agent 收尾…'
+      : aq?.timeout_enabled === false
+        ? undefined
+        : (() => {
+            const secs = aq?.timeout_secs
+            const secsOk =
+              typeof secs === 'number' && Number.isInteger(secs) && secs > 0
+            const eff = secsOk ? (secs as number) : DEFAULT_ASK_TIMEOUT_SECS
+            return secsOk
+              ? `本会话提问超时 ${eff} 秒后自动放弃`
+              : `本会话提问超时 ${eff} 秒后自动放弃（默认）`
+          })()
+
   return createPortal(
     <div
       className="mx-auto mb-1.5 w-full max-w-[640px] overflow-hidden rounded border border-gn-magenta/40 bg-gn-bg-dark shadow-lg"
@@ -469,6 +558,15 @@ export function QuestionModal() {
           取消
         </button>
       </footer>
+
+      {timeoutLine ? (
+        <div
+          className="border-t border-gn-prompt-border/60 px-3 py-1.5 text-[11px] text-gn-muted"
+          role="status"
+        >
+          {timeoutLine}
+        </div>
+      ) : null}
 
       <div className="border-t border-gn-prompt-border/60 px-3 py-1.5 text-[11px] text-gn-muted">
         <span className="text-gn-fg2">j/k</span> 选择 ·{' '}

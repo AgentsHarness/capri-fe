@@ -49,8 +49,9 @@ describe('MemoryModal', () => {
     expect(screen.getByText('512 B')).toBeInTheDocument()
     expect(screen.getByText('2.0 KB')).toBeInTheDocument()
     expect(screen.getByText('4.0 MB')).toBeInTheDocument()
-    // 会话日志显示时间而非 '—'
-    expect(screen.getByText('11/15/2023', { exact: false })).toBeInTheDocument()
+    // 会话日志显示时间而非 '—'（toLocaleString 随 locale 变化：en-US
+    // 输出 11/15/2023，zh-CN 输出 2023/11/15 —— 两者都接受）
+    expect(screen.getByText(/11\/15\/2023|2023\/11\/15/)).toBeInTheDocument()
   })
 
   it('无 source 且路径不可分类 → 扁平 A-Z 列表', () => {
