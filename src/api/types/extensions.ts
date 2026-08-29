@@ -18,15 +18,27 @@ export type ExtensionPlugin = {
 }
 
 /** GET /api/extensions — one skill row (path = SKILL.md location). */
-
-
-/** GET /api/extensions — one skill row (path = SKILL.md location). */
 export type ExtensionSkill = {
   name: string
   scope?: string
   path?: string
   /** Optional enable state — skills without it stay visible under any filter. */
   enabled?: boolean
+}
+
+/**
+ * POST /api/workflows/list (x.ai/workflows/list) — one workflow catalog
+ * entry. Mirrors the shell's `WorkflowListing`
+ * (xai-grok-shell/src/session/workflow/registry.rs) and the pager's
+ * `WorkflowInfo` (extensions_modal.rs): name / description always present;
+ * when_to_use and path are skipped on the wire when absent.
+ */
+export type WorkflowInfo = {
+  name: string
+  description: string
+  when_to_use?: string
+  source: string
+  path?: string
 }
 
 /**

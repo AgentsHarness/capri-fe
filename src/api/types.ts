@@ -52,6 +52,7 @@ export type {
   ExtensionSkill,
   ModelOption,
   ReasoningEffortOption,
+  WorkflowInfo,
 } from './types/extensions'
 export type {
   BillingConfig,

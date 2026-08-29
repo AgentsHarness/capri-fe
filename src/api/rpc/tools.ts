@@ -1,6 +1,6 @@
 import type { TransportCore } from '../transport'
 import { findArrayField, findField, findObjectField, unwrapExtResult, xaiCall } from './core'
-import type { AgentSkill, CustomModelConfig } from '../types'
+import type { AgentSkill, CustomModelConfig, WorkflowInfo } from '../types'
 import type { ExtensionsPayload, McpListServer, McpToolInfo, SettingsPatch, SettingsPayload, TerminalOutput } from '../transport'
 
 export const toolsRpc = {
@@ -422,7 +422,9 @@ export const toolsRpc = {
     return unwrapExtResult(await xaiCall(this, '/api/marketplace/action', opts))
   },
 
-  async workflowsList(this: TransportCore, opts: { sessionId?: string } = {}): Promise<unknown> {
+  /** x.ai/workflows/list — 已安装 workflow 目录（会话级注册表）。
+   *  Resolves to `{ workflows: [...] }`（ext wrapper 的 result 已解包）。 */
+  async workflowsList(this: TransportCore, opts: { sessionId?: string } = {}): Promise<{ workflows?: WorkflowInfo[] }> {
     return unwrapExtResult(await xaiCall(this, '/api/workflows/list', opts))
   },
 
