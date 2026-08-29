@@ -11,7 +11,13 @@ import { useChatStore, type ExtensionsTab } from '../store/chat'
 import { usePromptQueue } from '../store/promptQueue'
 import { THEMES, useThemeStore } from '../store/theme'
 import type { ThemeId } from '../theme/tokens'
-import type { AgentCommand } from '../api/types'
+import type { AgentCommand, ContentBlock } from '../api/types'
+import {
+  imagineInstruction,
+  imagineUsageMessage,
+  imagineVideoInstruction,
+  imagineVideoUsageMessage,
+} from './imagine'
 import { slashRecencyScore } from './recency'
 import { cachedSkills } from './skills'
 import { fmtBytes } from '../format'
@@ -68,22 +74,25 @@ function openExtensionsCmd(tab: ExtensionsTab) {
 
 /**
  * Send a prompt to the agent now, or queue it while a turn is running
- * (TUI mid-turn queue semantics — same as /loop).
+ * (TUI mid-turn queue semantics — same as /loop). `blocks` overrides the
+ * wire content (e.g. /imagine 的 image_gen 指令块) while the scrollback
+ * keeps `text`; undefined → a plain text block from `text`.
  */
-function sendPrompt(text: string) {
+function sendPrompt(text: string, blocks?: ContentBlock[]) {
   const st = useChatStore.getState()
   if (st.conn === 'busy') {
     // Tag with the active session so the queue never drains into another.
     usePromptQueue.getState().enqueue(
       {
         text,
-        blocks: [{ type: 'text', text }],
+        blocks: blocks && blocks.length > 0 ? blocks : [{ type: 'text', text }],
       },
       st.sessionId ?? '',
     )
     return
   }
-  void st.send(text)
+  if (blocks && blocks.length > 0) void st.send(text, blocks)
+  else void st.send(text)
 }
 
 /**
@@ -434,6 +443,45 @@ export const slashCommands: SlashCommand[] = [
           : `已请求定时任务：调度中… · ${promptText}（agent 会确认运行频率并创建 scheduler_create）`,
       )
       sendPrompt(`/loop ${trimmed}`)
+    },
+  },
+  // ── /imagine（TUI slash/commands/imagine.rs 语义移植）─────────────
+  // shell 把 imagine / imagine-video 烧成 PAGER_COMMAND_KEYS 保留名
+  // （xai-grok-shell slash_commands.rs:487-597），agent 不广播、同名
+  // skill 也占用不了——只能本地实现。指令文本复刻自 xai-grok-tools-api
+  // 的 imagine_instruction / imagine_video_instruction（见 imagine.ts，
+  // agent 侧改名需同步）。TUI 效果：显示文本是用户敲的
+  // `/imagine <描述>`，发给模型的是指令块——send 的 text/blocks 分离
+  // 与 InjectSkill 的 display_text/prompt_blocks 同构。工具可用性由
+  // agent 侧决定（无 image_gen 或档位受限时 agent 会直接说明）。
+  {
+    name: 'imagine',
+    description: '根据文字描述生成图片',
+    argHint: '<description>',
+    run: (args) => {
+      const prompt = args.trim()
+      if (!prompt) {
+        note(imagineUsageMessage())
+        return
+      }
+      sendPrompt(`/imagine ${prompt}`, [
+        { type: 'text', text: imagineInstruction(prompt) },
+      ])
+    },
+  },
+  {
+    name: 'imagine-video',
+    description: '根据文字描述生成视频（从一张源图开始）',
+    argHint: '<description>',
+    run: (args) => {
+      const prompt = args.trim()
+      if (!prompt) {
+        note(imagineVideoUsageMessage())
+        return
+      }
+      sendPrompt(`/imagine-video ${prompt}`, [
+        { type: 'text', text: imagineVideoInstruction(prompt) },
+      ])
     },
   },
   {
