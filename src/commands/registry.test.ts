@@ -60,6 +60,11 @@ interface FakeChat {
   sessionInfoOpen?: boolean
   openContext: ReturnType<typeof vi.fn>
   togglePlanMode: ReturnType<typeof vi.fn>
+  openPlanViewer: ReturnType<typeof vi.fn>
+  planViewerOpen?: boolean
+  planMode: boolean
+  permissionMode?: string
+  todos?: Array<Record<string, unknown>>
   toggleTimestamps: ReturnType<typeof vi.fn>
   setAlwaysApproveMode: ReturnType<typeof vi.fn>
   setAutoMode: ReturnType<typeof vi.fn>
@@ -108,6 +113,11 @@ beforeEach(() => {
     }),
     openContext: vi.fn(),
     togglePlanMode: vi.fn(),
+    openPlanViewer: vi.fn(() => {
+      fake.planViewerOpen = true
+    }),
+    planMode: false,
+    todos: [],
     toggleTimestamps: vi.fn(),
     setAlwaysApproveMode: vi.fn(),
     setAutoMode: vi.fn(),
@@ -249,6 +259,56 @@ describe('slash command runs — 会话类', () => {
     expect(fake.memoryFlush).toHaveBeenCalled()
     run('workflows')
     expect(fake.setWorkflowPanelOpen).toHaveBeenCalledWith(true)
+  })
+
+  it('/view-plan（含别名 show-plan / plan-view）：无活动会话与无 plan 提示，有 plan 打开弹窗', () => {
+    // 有会话但无 plan → 提示，不开弹窗。
+    run('view-plan')
+    expect(fake.appendLocalEntry).toHaveBeenCalledWith({
+      kind: 'error',
+      text: '当前会话还没有 plan',
+    })
+    expect(fake.openPlanViewer).not.toHaveBeenCalled()
+    // 无活动会话 → 提示（/rename /delete 同款写法）。
+    fake.sessionId = null
+    run('view-plan')
+    expect(fake.appendLocalEntry).toHaveBeenCalledWith({
+      kind: 'error',
+      text: '查看失败: 无活动会话',
+    })
+    expect(fake.openPlanViewer).not.toHaveBeenCalled()
+    // 有 plan → 打开 planViewer（TUI show-plan / plan-view 别名同语义；
+    // run() helper 只认 c.name，别名走 matchSlash 解析）。
+    fake.sessionId = 's1'
+    fake.todos = [{ content: 'x', status: 'pending' }]
+    const aliasRun = (alias: string) => {
+      const m = matchSlash(`/${alias}`)
+      if (!m) throw new Error(`no alias ${alias}`)
+      m.cmd.run(m.args)
+    }
+    aliasRun('show-plan')
+    expect(fake.openPlanViewer).toHaveBeenCalledTimes(1)
+    expect(fake.planViewerOpen).toBe(true)
+    aliasRun('plan-view')
+    expect(fake.openPlanViewer).toHaveBeenCalledTimes(2)
+    run('view-plan')
+    expect(fake.openPlanViewer).toHaveBeenCalledTimes(3)
+  })
+
+  it('/plan 已进入 plan 模式 → 提示用 /view-plan（TUI modes.rs 对齐），不改切换语义', () => {
+    fake.planMode = true
+    run('plan')
+    expect(fake.togglePlanMode).not.toHaveBeenCalled()
+    expect(fake.statusText).toBe('已在 plan 模式，用 /view-plan 查看当前 plan')
+    // plan·auto / plan·always 叠加态（permissionMode==='plan'）同样视为已进入。
+    fake.planMode = false
+    fake.permissionMode = 'plan'
+    run('plan')
+    expect(fake.togglePlanMode).not.toHaveBeenCalled()
+    // 未进入 → 照常切换。
+    fake.permissionMode = undefined
+    run('plan')
+    expect(fake.togglePlanMode).toHaveBeenCalledTimes(1)
   })
 
   it('/fork 参数（TUI parse_fork_args 对齐）：--worktree / --no-worktree / 互斥 / directive 拒绝', () => {

@@ -413,8 +413,39 @@ export const slashCommands: SlashCommand[] = [
   },
   {
     name: 'plan',
-    description: '进入计划模式（plan 中再次执行无效，Shift+Tab 退出）',
-    run: () => void useChatStore.getState().togglePlanMode(),
+    description: '进入计划模式（已进入时提示用 /view-plan，Shift+Tab 退出）',
+    run: () => {
+      const st = useChatStore.getState()
+      // TUI dispatch_enter_plan_mode parity: re-running /plan while
+      // already in plan (incl. the plan·auto / plan·always overlays) is
+      // a no-op with a "use /view-plan" toast — the flag check mirrors
+      // store togglePlanMode's own guard.
+      if (st.planMode === true || st.permissionMode === 'plan') {
+        status('已在 plan 模式，用 /view-plan 查看当前 plan')
+        return
+      }
+      void st.togglePlanMode()
+    },
+  },
+  {
+    name: 'view-plan',
+    aliases: ['show-plan', 'plan-view'],
+    description: '查看当前会话已保存的 plan（弹窗）',
+    run: () => {
+      const st = useChatStore.getState()
+      if (!st.sessionId) {
+        err('查看失败: 无活动会话')
+        return
+      }
+      // The current plan lives in the store's plan-derived todo state
+      // (todos/todoCounts — same source as the status-bar badge; plan
+      // events never land in the scrollback). No host endpoint exists.
+      if (!st.todos || st.todos.length === 0) {
+        err('当前会话还没有 plan')
+        return
+      }
+      st.openPlanViewer()
+    },
   },
   {
     name: 'copy',
