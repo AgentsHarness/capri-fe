@@ -602,6 +602,11 @@ export interface ChatUiState {
   usageOpen: boolean
   openUsage: () => void
   closeUsage: () => void
+  /** /view-plan modal visibility (TUI view-plan command — plan preview). */
+  planViewerOpen: boolean
+  /** Open / close the /view-plan plan viewer modal. */
+  openPlanViewer: () => void
+  closePlanViewer: () => void
   /**
    * Sticky running-tasks bar under the top bar (TUI tasks pane). Toggled
    * by the ⠋N chip and the composer's idle still-running cue — shared so
