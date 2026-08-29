@@ -41,6 +41,12 @@ import { pushToast } from './toast'
  * queueReorder/queueClear）——行 id 与 agent queue_meta.id 一致（都是
  * promptId），所以这些通知现在对 agent 侧队列真实生效。
  *
+ * 删除/清空与出队是异步竞态：本地立即移除、host 通知随后才到 agent。若
+ * agent 已把该行 pop 进 running 槽位，remove 追不上、消息照常开回合——
+ * 此时删除登记（deletedRows）让 applyQueueChanged 认出竞态：该行仍收养出
+ * 用户行（不留没有用户行的隐形回合），并 toast 告知「删除未生效」（见
+ * settleDeletedRunning）。
+ *
  * ── Session scoping ─────────────────────────────────────────────────
  * 队列是 PER-SESSION 的 prompt-widget 状态（永远不全局）：store 维护
  * per-session stash（`queues` map），活跃会话的队列在 `queue`；chat.ts
@@ -102,6 +108,37 @@ export function qid(): string {
 /** Max sessions kept in the per-session queue stash (oldest dropped). */
 const QUEUE_SESSIONS_MAX = 50
 
+/** 删除行登记的保留上限（最旧的先淘汰）。导出供测试断言边界。 */
+export const DELETED_ROWS_MAX = 64
+
+/**
+ * 记下用户删除 / 清空的行（id → 行本体）。删除是本地先行、
+ * `x.ai/queue/remove` 异步生效：agent 可能已经把该行 pop 进 running 槽位
+ * （队首 + 上一回合刚收口），晚到的 remove 即 no-op，消息照常开一个回合。
+ * applyQueueChanged 靠这份登记认出竞态（deletedRunning 分支）。Map 保持插入
+ * 顺序，超限先丢最旧的登记。
+ */
+function rememberDeleted(
+  prev: Map<string, QueuedPrompt>,
+  rows: QueuedPrompt[],
+): Map<string, QueuedPrompt> {
+  if (rows.length === 0) return prev
+  const next = new Map(prev)
+  for (const r of rows) next.set(r.id, r)
+  while (next.size > DELETED_ROWS_MAX) {
+    const oldest = next.keys().next().value
+    if (oldest === undefined) break
+    next.delete(oldest)
+  }
+  return next
+}
+
+/** 队列正文可能很长，提示条里截断成一行。 */
+function clipRowText(text: string, max = 24): string {
+  const t = text.replace(/\s+/g, ' ').trim()
+  return t.length > max ? `${t.slice(0, max)}…` : t
+}
+
 /**
  * Best-effort host sync: failures surface via `onError` when the caller
  * cares. 默认静默（显示类操作失败会被下一次广播校正）；破坏性操作
@@ -121,6 +158,22 @@ function syncQueue(
 function queueSyncToast(prefix: string, e: unknown): void {
   const msg = e instanceof Error ? e.message : String(e)
   pushToast(`${prefix}: ${msg}`)
+}
+
+/**
+ * 结算「删除晚于出队」竞态：本地已删的行被 agent 收养开跑（remove 没能
+ * 赶上）。只提示一次（登记即注销，后续同一回合的广播不再重复），并给出
+ * 唯一可行的补救——中止已开跑的回合。
+ */
+function settleDeletedRunning(id: string, text: string): void {
+  const st = usePromptQueue.getState()
+  if (!st.deletedRows.has(id)) return
+  const deletedRows = new Map(st.deletedRows)
+  deletedRows.delete(id)
+  usePromptQueue.setState({ deletedRows })
+  pushToast(
+    `删除未生效：「${clipRowText(text)}」已开始执行，无法撤回（点 [stop] 可中止本回合）`,
+  )
 }
 
 /**
@@ -199,6 +252,12 @@ type PromptQueueState = {
    */
   drainedIds: Set<string>
   /**
+   * 用户删除/清空过的行（id → 行本体，含正文与 blocks），与 `drainedIds`
+   * 同步登记、比它更晚过期。用途见 `rememberDeleted`：认出「本地删了但
+   * agent 已经开跑」的竞态，把该行照常收养出用户行并提示删除无效。
+   */
+  deletedRows: Map<string, QueuedPrompt>
+  /**
    * Queue-panel edit mode (TUI PromptMode::EditingQueued): index of the
    * row being edited. The row renders as a textarea; Enter saves, Esc
    * cancels, Shift+Enter inserts a newline.
@@ -255,6 +314,7 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
   queue: [],
   sending: false,
   drainedIds: new Set(),
+  deletedRows: new Map(),
   editIndex: null,
   editDraft: '',
   enqueue: (item, sessionId) => {
@@ -301,10 +361,14 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
       const list = s.queues[sessionId] ?? []
       const drainedIds = new Set(s.drainedIds)
       drainedIds.delete(item.id)
+      // 行回到镜像：撤销删除登记，否则它开跑时会被误报成「删除未生效」。
+      const deletedRows = new Map(s.deletedRows)
+      deletedRows.delete(item.id)
       return {
         queues: { ...s.queues, [sessionId]: [item, ...list] },
         queue: s.sessionId === sessionId ? [item, ...s.queue] : s.queue,
         drainedIds,
+        deletedRows,
       }
     })
   },
@@ -324,6 +388,7 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
     set((st) => {
       const idx = st.queue.findIndex((q) => q.id === id)
       if (idx === -1) return st
+      const row = st.queue[idx]
       const queue = st.queue.filter((q) => q.id !== id)
       let editIndex = st.editIndex
       if (editIndex != null) {
@@ -335,6 +400,9 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
         queue,
         // 删除即永别：后续广播不得复活该行。
         drainedIds: new Set(st.drainedIds).add(id),
+        // 正文留一份：agent 侧 remove 若晚于出队（该行已开跑），
+        // applyQueueChanged 用它收养出用户行并提示删除无效。
+        deletedRows: rememberDeleted(st.deletedRows, [row]),
         editIndex,
         editDraft: editIndex == null ? '' : st.editDraft,
       }
@@ -372,6 +440,8 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
       // cleared queue must not resurrect from the stale stash.
       sessionId: st.sessionId,
       drainedIds: new Set([...st.drainedIds, ...st.queue.map((q) => q.id)]),
+      // 逐行留正文：清空同样可能晚于 agent 出队（队首已在开跑）。
+      deletedRows: rememberDeleted(st.deletedRows, st.queue),
     }))
     // 清空时编辑锁在飞 → 释放，防止 host 侧队列永久保持组合。
     if (editedId) {
@@ -689,9 +759,17 @@ export function applyQueueChanged(
     list == null ? null : parsed === 0 && list.length > 0 ? null : built
 
   // ── 收养：running_prompt_id 命中本地镜像行 ─────────────────────
+  // 例外：命中的是本端删除过的行（deletedRunning）时，说明 queue/remove
+  // 晚于 agent 出队——删除已经追不上，这条消息正在开它的回合。drainedIds
+  // 的「永别」过滤针对的是 stale 广播复活，不能把它吞成一个没有用户行的
+  // 隐形回合：照常收养出用户行，并提示删除未生效（settleDeletedRunning）。
+  const deletedRunning =
+    runningId && !toStash && drainedIds.has(runningId)
+      ? st.deletedRows.get(runningId)
+      : undefined
   let adoption: QueueAdoption | null = null
-  if (runningId && !drainedIds.has(runningId)) {
-    let row = byId.get(runningId)
+  if (runningId && (deletedRunning || !drainedIds.has(runningId))) {
+    let row = byId.get(runningId) ?? deletedRunning
     if (!row) {
       // running id 与本地乐观 id 不同时（meta.promptId 丢失）仍按 text
       // 对齐：QueueChanged 带 runningText。
@@ -712,6 +790,7 @@ export function applyQueueChanged(
       }
     }
   }
+  if (adoption && deletedRunning) settleDeletedRunning(adoption.id, adoption.text)
 
   if (snapshot) {
     // 本地在途行（乐观回显 / 降级，FE 侧尚悬而未决）不在快照里 → 保留
