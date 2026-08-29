@@ -5,6 +5,7 @@ import { entryExpanded } from '../../../scrollback/entryState'
 import { Accents } from '../../../theme/accents'
 import { Glyphs } from '../../../theme/glyphs'
 import { Ansi } from '../../Ansi'
+import { Markdown } from '../../Markdown'
 import { TodoMark } from '../../todoMark'
 import { Bullet, EntryShell } from '../EntryShell'
 import type { EntryChrome } from '../chrome'
@@ -251,6 +252,73 @@ export function CreditLimitEntry({
     <EntryShell {...shell}>
       <div className="text-[13px] font-bold py-1" style={{ color: Accents.warning }}>
         {e.text}
+      </div>
+    </EntryShell>
+  )
+}
+
+export function BtwEntry({
+  e,
+  chrome,
+}: {
+  e: Extract<ScrollEntry, { kind: 'btw' }>
+  chrome: EntryChrome
+}) {
+  const { shell, bullet, onHeaderClick, onHeaderDblClick, toggleBtw } = chrome
+  const expanded = entryExpanded(e)
+  return (
+    <EntryShell {...shell}>
+      <div
+        className="flex items-start gap-1.5 py-[2px] text-[13px] leading-[1.35]"
+        title="click fold · dblclick / enter view"
+        onClick={(ev) => {
+          ev.stopPropagation()
+          onHeaderClick(() => toggleBtw(e.id))
+        }}
+        onDoubleClick={(ev) => {
+          ev.stopPropagation()
+          ev.preventDefault()
+          onHeaderDblClick()
+        }}
+      >
+        <Bullet color={bullet.color} animated={bullet.animated} />
+        <div className="min-w-0 flex-1">
+          {expanded ? (
+            <>
+              {/* 头部一行 /btw <问题>（TUI btw.rs header，金色粗体）。 */}
+              <div className="font-bold leading-[1.35]" style={{ color: Accents.plan }}>
+                /btw {e.question}
+              </div>
+              {/* 错误态直接可见；答案走 markdown（TUI BtwBlock 同款）。 */}
+              {e.error ? (
+                <div
+                  className="mt-0.5 text-[12.5px] leading-[1.45] whitespace-pre-wrap break-words"
+                  style={{ color: Accents.error }}
+                >
+                  {e.error}
+                </div>
+              ) : e.answer ? (
+                <Markdown source={e.answer} />
+              ) : e.streaming ? (
+                <div className="mt-0.5 text-[12px] text-gn-muted">等待回答…</div>
+              ) : null}
+            </>
+          ) : (
+            // 折叠态只有一行（TUI Collapsed）：muted 头部；错误时行内截断
+            // 露出错误摘要，折叠中也能直接看到失败。
+            <div className="flex min-w-0 items-baseline gap-1 font-bold text-gn-muted">
+              <span className="shrink-0">/btw {e.question}</span>
+              {e.error ? (
+                <span
+                  className="min-w-0 truncate text-[12px] font-normal"
+                  style={{ color: Accents.error }}
+                >
+                  {e.error}
+                </span>
+              ) : null}
+            </div>
+          )}
+        </div>
       </div>
     </EntryShell>
   )

@@ -346,6 +346,21 @@ export const slashCommands: SlashCommand[] = [
     run: () => void useChatStore.getState().requestRecap(),
   },
   {
+    name: 'btw',
+    description: '旁路提问：不打断当前回合，答案以独立区块展示',
+    argHint: '<question>',
+    run: (args) => {
+      const q = args.trim()
+      if (!q) {
+        err('用法: /btw <问题>，例如 /btw 这个改动会影响哪些文件')
+        return
+      }
+      // 与 /loop 不同：busy 中也必须立即发出（旁路问题不占 prompt 队列、
+      // 不排队）——走 store 的 askBtw 直发 x.ai/btw。
+      void useChatStore.getState().askBtw(q)
+    },
+  },
+  {
     name: 'search',
     aliases: ['find', 'grep'],
     description: '搜索工作区文件内容（结果按文件分组，复制 路径:行号）',
