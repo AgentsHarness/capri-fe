@@ -98,6 +98,37 @@ export function parseBudgetTokens(raw: string): number | undefined {
   return Math.round(n * mult)
 }
 
+// ── /loop（TUI slash/commands/loop_cmd.rs 语义移植）─────────────────
+// 只把形如 `^\d+[smhd]$` 且数字非 0 的首 token 当 interval（仅用于即时
+// 回执预览）；不匹配时整串都是 prompt，留给 agent 推导真实调度。
+// `/loop` 不再自造中文指令：原文 `/loop <args>` 透传给 host，由 shell
+// 的 PROMPT_COMMANDS 通道（gate: Scheduler）拦截并展开。
+const LOOP_INTERVAL_RE = /^([1-9]\d*)([smhd])$/
+
+function isLoopIntervalToken(token: string): boolean {
+  const m = LOOP_INTERVAL_RE.exec(token)
+  if (!m) return false
+  // TUI rejects tokens that overflow u64; mirror with safe-integer check.
+  return Number.isSafeInteger(Number(m[1]))
+}
+
+function parseLoopArgs(args: string): { interval?: string; promptText: string } {
+  const trimmed = args.trim()
+  const sp = trimmed.search(/\s/)
+  const first = sp === -1 ? trimmed : trimmed.slice(0, sp)
+  const rest = sp === -1 ? '' : trimmed.slice(sp + 1).trim()
+  if (rest && isLoopIntervalToken(first)) return { interval: first, promptText: rest }
+  return { promptText: trimmed }
+}
+
+/** "5m" → "5 分钟"（回执文案用，中文无单复数区分）。 */
+function loopIntervalToHuman(token: string): string {
+  const m = LOOP_INTERVAL_RE.exec(token)
+  if (!m) return token
+  const unit = { s: '秒', m: '分钟', h: '小时', d: '天' }[m[2] as 's' | 'm' | 'h' | 'd']
+  return `${Number(m[1])} ${unit}`
+}
+
 /**
  * Composer registers its model-menu opener here so `/model` with no args
  * can open the exact same menu the model caption button uses.
@@ -383,32 +414,24 @@ export const slashCommands: SlashCommand[] = [
   {
     name: 'loop',
     description: '创建定时任务',
-    argHint: '[interval] [prompt...]',
+    argHint: '[interval] <prompt>',
     run: (args) => {
-      const sp = args.search(/\s/)
-      const interval = (sp === -1 ? args : args.slice(0, sp)).trim()
-      const promptText = (sp === -1 ? '' : args.slice(sp + 1)).trim()
-      if (!interval || !promptText) {
-        err('用法: /loop [间隔] [提示词...]，例如 /loop 5m 检查测试状态')
+      const trimmed = args.trim()
+      const { interval, promptText } = parseLoopArgs(trimmed)
+      if (!promptText) {
+        err('用法: /loop [间隔] [提示词...]，例如 /loop 5m 检查测试状态；不写间隔时 agent 会询问运行频率')
         return
       }
-      // The FE cannot call agent tools directly — the interval is passed
-      // through verbatim and the agent creates the scheduler task.
-      const text = `请创建一个定时任务（用 scheduler_create 工具）：每 ${interval} 执行一次：${promptText}`
-      const st = useChatStore.getState()
-      if (st.conn === 'busy') {
-        // Mid-turn: queue like any Enter prompt; auto-sends at turn end.
-        // Tag with the active session so it never drains into another.
-        usePromptQueue.getState().enqueue(
-          {
-            text,
-            blocks: [{ type: 'text', text }],
-          },
-          st.sessionId ?? '',
-        )
-        return
-      }
-      void st.send(text)
+      // 原文透传（TUI PROMPT_COMMANDS 通道）：shell 收到以 /loop 开头的
+      // prompt 会拦截并展开成 loop_schedule_instruction（scheduler gate
+      // 通过时），fire mode 由 host 决定。与 agent 广播命令的 pass-through
+      // run 一致——busy 时由 sendPrompt 走 prompt 队列。
+      note(
+        interval
+          ? `已请求定时任务：每 ${loopIntervalToHuman(interval)} · ${promptText}（实际调度以 agent 创建的 scheduler_create 为准）`
+          : `已请求定时任务：调度中… · ${promptText}（agent 会确认运行频率并创建 scheduler_create）`,
+      )
+      sendPrompt(`/loop ${trimmed}`)
     },
   },
   {
