@@ -11,22 +11,21 @@
 | MCP 面板"没有信息" | `d2713e1` | 头部计数与状态区改吃合并后的 `rows`（原先吃只在变化时推送的事件流）；`mcpVersion` 变化触发重取；补回 `displayName` / `sourceLabel` / `authRequired` / `setupRequired` / `toolCount`；空态归位 |
 | `/recap`、设置里的 `permission_mode` | 无需改动 | 调查确认二者已是完整真链路：`/recap` → `POST /api/recap` → `session_recap` 事件；`permission_mode` 三选一同时写 `[ui]` 配置并应用到当前会话 |
 | `/compat` | 不做 | 它不是斜杠命令，是 config.toml 的 `[compat.<vendor>.<surface>]` 布尔表（vendor ∈ cursor/claude/codex，surface ∈ skills/rules/agents/mcps/hooks/sessions） |
+| 04 home 新建 worktree | `6cf40e5`（host 配套 `9ef215a`） | 空状态页出现「在新 worktree 中开始」（按「已选目录 + git 仓库」门控，`gitRepoRoot` 探针按 cwd 缓存）；host `worktree/create` 无活动会话时给唯一占位 sessionId，home 场景不再 404 |
+| 05 `/btw` 旁路提问 | `377eed0`（host `8372db8`） | FE 命令 + 金色滚动区块（默认折叠/展开、错误常驻可见），busy 直发不进队列、按会话绑定；host 透传显式 sessionId（多标签页不再打错会话） |
+| 06 `follow_up_behavior` 设置无效 | `44cdb98`（host `f80a958`） | 取证确认 FE 键名/取值与 agent canonical 一致（queue/steer，每回合读取）；host 进写白名单 + 未知键 400 前置检查；FE 只需补用例 |
+| 07 `default_selected_permission` 缺失 | `5cf690e` | FE 本地持久化（localStorage）四取值；审批游标按「YOLO 身份排除 → kind → optionId → 标签」解析，`allow_command_always` 绝不选全局行 |
+| 08 ask question timeout 缺失 | `2f25507`（host `712526d`） | 取证：agent wire **无 deadline 字段**（到点 agent 自行 resolve）→ 卡片只做基于配置的静态提示不造假倒计时；host 暴露/写入 `[toolset.ask_user_question]` 两键（1–86400 校验） |
+| 09 `/view-plan` | `88476a6` | 弹窗读 store `todos/todoCounts`（与状态条徽标同源，plan 事件不进滚动区已核实）；别名 `show-plan`/`plan-view`；`/plan` 重入提示改用 `/view-plan` |
+| 10 `/loop` 被本地实现降级 | `1a3bd2b` | 删自造中文指令，改 `/loop <args>` 原文透传（shell PROMPT_COMMANDS 通道拦截展开，与 TUI 逐字一致）；interval 校验/回执对齐 TUI；`required_tools` 门控因 host 丢弃 update 级 meta.tools 未做（取证说明） |
+| 11 `/remember` / `/dream` | `1494204` | `/remember` 走 `memory-rewrite` 真端点（改写不落盘，全链路无保存端点 → 滚动区反馈，不造假确认弹窗）；`/dream`、`/memory on|off` 改发内置 slash 命令 |
+| 12 `/export` | `772954a` | 纯前端；TUI 三段式 Markdown 结构（工具一行摘要、思考块跳过）；无参数剪贴板/有参数下载；文件名安全化；未加载历史如实标注（分页加载语义） |
+| 13 `/workflow` 与 `/workflows` 语义反了 | `d0567f9` | `/workflow` 单数对齐：`runs` 开运行面板、manage ops（pause/resume/stop/save，runId 或名称匹配，不猜 run）、其余原样透传；`/workflows` 改扩展面板 workflows 目录 tab（`workflowsList`，加载/错误/空三态） |
+| 14 `/imagine` / `/imagine-video` | `1d277c6` | 本地复刻 `imagine_instruction`（agent 把这两个名字烧成保留名不广播）；显示文本与发送内容分离（send 的 text/blocks）；busy 走队列；video 版按取证确认工具存在即注册 |
 
 ## 待办
 
-| 编号 | 任务 | 卡在哪 | 动的仓库 |
-|---|---|---|---|
-| [04](04-home-worktree.md) | home 支持新建 worktree | 12 个 `gitWorktree*` 只有 1 个有调用方；入口要按「选了目录 + 是 git 仓库」门控 | FE |
-| [05](05-btw.md) | `/btw` 旁路提问 | agent / host / `transport.btw` 三层全通，只差 FE 命令与区块；host 还漏传 sessionId | FE + host |
-| [06](06-follow-up-behavior.md) | `follow_up_behavior` 设置无效 | host 写入通道静默丢弃未知键 | host + FE |
-| [07](07-default-selected-permission.md) | `default_selected_permission` 缺失 | TUI 有该设置（审批弹窗默认光标），FE 游标恒为第 0 项 | FE |
-| [08](08-question-timeout.md) | ask question timeout 缺失 | `[toolset.ask_user_question]` 既不在 host 的 settings 安全子集也不在写白名单 | FE + host |
-| [09](09-view-plan.md) | `/view-plan` | 有 `/plan` 与审批卡，缺「查看当前 plan」入口 | FE |
-| [10](10-loop.md) | `/loop` 被本地实现降级 | FE 本地命令遮蔽了 shell 广播的真 `/loop`，且缺 interval 校验与预览 | FE |
-| [11](11-remember.md) | `/remember` / `/dream` | 真端点 `memoryRewrite` + host `/api/memory-rewrite` 都在，零调用方 | FE |
-| [12](12-export.md) | `/export` | 无导出能力；历史分页加载导致 transcript 完整性需要显式取舍 | FE |
-| [13](13-workflow-s.md) | `/workflow` 与 `/workflows` 语义反了 | FE 的复数对应 TUI 的单数 `runs`；缺目录 tab 与单数命令 | FE |
-| [14](14-imagine.md) | `/imagine` / `/imagine-video` | agent 不广播该命令（名字被 pager 烧掉），FE 必须本地复刻 instruction | FE |
+全部完成（04–14 分四批 × 3/3/3/2 并行 worktree 执行，逐批审查合并于 main，FE 基线 106 files / 1151 tests、host 全绿）。
 
 ## 派工时的统一约束
 
