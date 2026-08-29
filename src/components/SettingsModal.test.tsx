@@ -49,9 +49,14 @@ beforeEach(() => {
   vi.mocked(transport.settings).mockResolvedValue({
     ui: { ...uiData },
   })
-  vi.mocked(transport.updateSettings).mockImplementation(async (patch) => ({
-    ui: { ...uiData, ...patch },
-  }))
+  vi.mocked(transport.updateSettings).mockImplementation(async (patch) => {
+    // toolset 键独立回显，不混入 [ui]。
+    const { toolset, ...uiPatch } = patch
+    return {
+      ui: { ...uiData, ...uiPatch },
+      ...(toolset ? { toolset: { ask_user_question: { ...toolset.ask_user_question } } } : {}),
+    }
+  })
   vi.mocked(transport.listCustomModels).mockResolvedValue([])
 })
 
@@ -261,5 +266,48 @@ describe('SettingsModal', () => {
     expect(btn().textContent).toContain('on')
     fireEvent.click(btn())
     expect(btn().textContent).toContain('off')
+  })
+
+  it('timeout_enabled 开关 patch toolset 并回显', async () => {
+    vi.mocked(transport.settings).mockResolvedValue({
+      ui: { ...uiData },
+      toolset: { ask_user_question: { timeout_enabled: true, timeout_secs: 60 } },
+    })
+    openModal()
+    render(<SettingsModal />)
+    const toggle = () => screen.getByTitle(/提问卡片超时是否武装/)
+    await waitFor(() => expect(toggle()).not.toBeNull())
+    expect(toggle().textContent).toContain('on')
+    fireEvent.click(toggle())
+    await waitFor(() => {
+      expect(transport.updateSettings).toHaveBeenCalledWith({
+        toolset: { ask_user_question: { timeout_enabled: false } },
+      })
+    })
+    // mock 回显 → 开关落到 off
+    await waitFor(() => expect(toggle().textContent).toContain('off'))
+  })
+
+  it('timeout_secs 输入 Enter 提交；非法值不提交', async () => {
+    vi.mocked(transport.settings).mockResolvedValue({
+      ui: { ...uiData },
+      toolset: { ask_user_question: { timeout_enabled: true, timeout_secs: 60 } },
+    })
+    openModal()
+    render(<SettingsModal />)
+    const inputEl = (await screen.findByPlaceholderText('1800（默认 30 分钟）')) as HTMLInputElement
+    expect(inputEl.value).toBe('60')
+    fireEvent.change(inputEl, { target: { value: '123' } })
+    fireEvent.keyDown(inputEl, { key: 'Enter' })
+    await waitFor(() => {
+      expect(transport.updateSettings).toHaveBeenCalledWith({
+        toolset: { ask_user_question: { timeout_secs: 123 } },
+      })
+    })
+    // 非法值（0）→ 本地拦截，不发 patch
+    fireEvent.change(inputEl, { target: { value: '0' } })
+    fireEvent.keyDown(inputEl, { key: 'Enter' })
+    fireEvent.blur(inputEl)
+    expect(transport.updateSettings).toHaveBeenCalledTimes(1)
   })
 })

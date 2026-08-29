@@ -536,6 +536,7 @@ export const toolsRpc = {
       session: findObjectField(data, 'session'),
       models: findObjectField(data, 'models'),
       cli: findObjectField(data, 'cli'),
+      toolset: findObjectField(data, 'toolset'),
     }
   },
 
@@ -557,6 +558,7 @@ export const toolsRpc = {
       session: findObjectField(data, 'session'),
       models: findObjectField(data, 'models'),
       cli: findObjectField(data, 'cli'),
+      toolset: findObjectField(data, 'toolset'),
     }
   },
 }

@@ -11,7 +11,7 @@ import {
   syncDefaultModeFlagsFromUi,
   type PermissionModeLabel,
 } from '../store/chat/modeFlags'
-import { applyUiSettings } from '../store/settings'
+import { applyUiSettings, applyToolsetSettings } from '../store/settings'
 import { pushToast } from '../store/toast'
 import { useFePrefs } from '../store/historyPins'
 import { CustomModelsPanel } from './CustomModelsPanel'
@@ -201,6 +201,7 @@ export function SettingsModal() {
             <>
               <ConsumedSettings
                 ui={data?.ui}
+                toolset={data?.toolset}
                 savingKey={savingKey}
                 disabled={!!savingKey}
                 onPatch={async (patch) => {
@@ -211,6 +212,7 @@ export function SettingsModal() {
                     setData(next)
                     const ui = next.ui ?? {}
                     applyUiSettings(ui)
+                    applyToolsetSettings(next.toolset)
                     applyCollapsedEditBlocksFromCache(useChatStore.setState)
                     syncDefaultModeFlagsFromUi(ui)
                     if (patch.permission_mode) {
@@ -316,11 +318,13 @@ async function applyLivePermission(mode: PermissionModeLabel): Promise<void> {
 
 function ConsumedSettings({
   ui,
+  toolset,
   savingKey,
   disabled,
   onPatch,
 }: {
   ui?: Record<string, unknown>
+  toolset?: SettingsPayload['toolset']
   savingKey?: string
   disabled: boolean
   onPatch: (patch: SettingsPatch) => Promise<void>
@@ -425,7 +429,110 @@ function ConsumedSettings({
           </div>
         )
       })}
+      <AskTimeoutSection toolset={toolset} savingKey={savingKey} disabled={disabled} onPatch={onPatch} />
     </section>
+  )
+}
+
+/** `[toolset.ask_user_question]` timeout pair — TUI「Ask-Question timeout」。
+ *  提示如实标注：agent 只在会话启动（agent build）时解析这两个键，改
+ *  动只影响新会话。secs 缺省 = agent 默认 1800（30 分钟）。 */
+const ASK_TIMEOUT_SECS_MAX = 86400
+
+function AskTimeoutSection({
+  toolset,
+  savingKey,
+  disabled,
+  onPatch,
+}: {
+  toolset?: SettingsPayload['toolset']
+  savingKey?: string
+  disabled: boolean
+  onPatch: (patch: SettingsPatch) => Promise<void>
+}) {
+  const aq = toolset?.ask_user_question
+  // 缺省与 agent 侧 DEFAULT_ASK_USER_QUESTION_TIMEOUT_ENABLED 一致。
+  const on = aq?.timeout_enabled !== false
+  const secs = aq?.timeout_secs
+  const busy = savingKey === 'toolset'
+  const [draft, setDraft] = useState('')
+
+  const commitSecs = () => {
+    const n = Number(draft)
+    if (!Number.isInteger(n) || n < 1 || n > ASK_TIMEOUT_SECS_MAX) {
+      setDraft('') // 非法输入不提交，回退显示当前值
+      return
+    }
+    setDraft('')
+    void onPatch({ toolset: { ask_user_question: { timeout_secs: n } } })
+  }
+
+  return (
+    <>
+      <div className="px-4 pt-2 pb-1 text-[10px] uppercase tracking-wider text-gn-gutter">
+        ask_user_question 超时
+      </div>
+      <div className="flex items-start gap-3 px-4 py-1.5">
+        <span
+          className="w-48 shrink-0 pt-0.5 font-mono text-[11.5px] text-gn-muted"
+          title="toolset.ask_user_question.timeout_enabled"
+        >
+          timeout_enabled
+        </span>
+        <div className="min-w-0 flex-1">
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => void onPatch({ toolset: { ask_user_question: { timeout_enabled: !on } } })}
+            className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-px text-[10.5px] ${
+              on
+                ? 'border-gn-green/60 text-gn-green'
+                : 'border-gn-prompt-border text-gn-muted'
+            } hover:bg-gn-bg-highlight disabled:opacity-50`}
+            title="提问卡片超时是否武装；关 = 一直等答案"
+          >
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${on ? 'bg-gn-green' : 'bg-gn-gutter'}`}
+            />
+            {busy ? '…' : on ? 'on' : 'off'}
+          </button>
+          <div className="mt-0.5 text-[10.5px] leading-snug text-gn-gutter">
+            开：提问超时自动放弃，agent 继续（默认开）· 只影响新会话。
+          </div>
+        </div>
+      </div>
+      <div className="flex items-start gap-3 px-4 py-1.5">
+        <span
+          className="w-48 shrink-0 pt-0.5 font-mono text-[11.5px] text-gn-muted"
+          title="toolset.ask_user_question.timeout_secs"
+        >
+          timeout_secs
+        </span>
+        <div className="min-w-0 flex-1">
+          <input
+            type="number"
+            min={1}
+            max={ASK_TIMEOUT_SECS_MAX}
+            inputMode="numeric"
+            disabled={disabled}
+            value={draft || (secs !== undefined ? String(secs) : '')}
+            placeholder="1800（默认 30 分钟）"
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={commitSecs}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                commitSecs()
+              }
+            }}
+            className="w-32 rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 text-[12px] text-gn-fg outline-none placeholder:text-gn-gray focus:border-gn-magenta/50"
+          />
+          <div className="mt-0.5 text-[10.5px] leading-snug text-gn-gutter">
+            超时秒数（1–{ASK_TIMEOUT_SECS_MAX}，Enter / 失焦生效）· 只影响新会话。
+          </div>
+        </div>
+      </div>
+    </>
   )
 }
 
