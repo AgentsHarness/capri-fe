@@ -13,6 +13,7 @@ import { ThemeOptions, ThemePicker } from './ThemePicker'
 import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS } from '../theme/layout'
 import { SessionHistoryList } from './SessionHistoryList'
 import { SessionListHeader } from './SessionListHeader'
+import { SessionSearchBox } from './SessionSearchBox'
 import {
   ContextChip,
   GoalChip,
@@ -235,6 +236,16 @@ export function TopBar({
   // Mobile (lg:hidden) "更多" menu — the secondary action buttons fold
   // into one ⋮ trigger; clicking expands them vertically.
   const [moreOpen, setMoreOpen] = useState(false)
+  // history 下拉的会话搜索（与桌面侧边栏同一套 SessionSearchBox：按钮
+  // 展开 → 命中接管列表；打开命中或收起下拉后归位）。
+  const [historySearchOpen, setHistorySearchOpen] = useState(false)
+  const [historySearchActive, setHistorySearchActive] = useState(false)
+  // 收起下拉同时归位搜索：下次打开回到紧凑列表态。
+  const closeMobileHistory = () => {
+    closeHistory()
+    setHistorySearchOpen(false)
+    setHistorySearchActive(false)
+  }
   // The theme row expands inline (accordion) inside the 更多 menu.
   const [themeExpanded, setThemeExpanded] = useState(false)
   // 单个 host 的操作菜单（右键 / 行内 ⋮ 打开，fixed 坐标）。
@@ -547,7 +558,7 @@ export function TopBar({
         <div className="relative lg:hidden">
           <button
             type="button"
-            onClick={() => (historyOpen ? closeHistory() : void openHistory())}
+            onClick={() => (historyOpen ? closeMobileHistory() : void openHistory())}
             className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 min-h-8 ${
               historyOpen
                 ? 'border-gn-prompt-border bg-gn-bg-highlight text-gn-fg'
@@ -564,12 +575,16 @@ export function TopBar({
                 type="button"
                 className="fixed inset-0 z-30 cursor-default"
                 aria-label="close"
-                onClick={closeHistory}
+                onClick={closeMobileHistory}
               />
               {/* Mobile dropdown — renders the SAME workspace-grouped list as
                   the desktop sidebar (SessionHistoryList), so the two ends
                   stay in sync (分组 / 折叠 / 加载更多 / 重命名 / 删除)，
-                  plus the same「会话 + 刷新」header (SessionListHeader).
+                  plus the same「会话 + 刷新 + 搜索」header
+                  (SessionListHeader). Session search mirrors the desktop
+                  sidebar: button → SessionSearchBox replaces the grouped
+                  list while a query is active; opening a hit also closes
+                  the dropdown.
                   Width is viewport-capped: right-anchored to the history
                   button, a fixed w-80 would poke past the LEFT edge on
                   narrow phones (320px). Header is outside the scroll area
@@ -579,11 +594,29 @@ export function TopBar({
                 className="absolute right-0 top-full z-40 mt-1 flex max-h-[70vh] w-[min(84vw,20rem)] flex-col overflow-hidden rounded border border-gn-prompt-border bg-gn-bg-base shadow-xl isolate"
                 style={{ backgroundColor: 'var(--color-gn-bg-base)' }}
               >
-                <div className="flex min-h-[37px] shrink-0 items-center gap-2 border-b border-gn-prompt-border px-3 py-2">
-                  <SessionListHeader alignRight />
+                {/* py-1.5（非 py-2）：给 labeled 大按钮留高度的同时，
+                    头部总高保持 37px 不变。 */}
+                <div className="flex min-h-[37px] shrink-0 items-center gap-2 border-b border-gn-prompt-border px-3 py-1.5">
+                  <SessionListHeader
+                    alignRight
+                    labeled
+                    searchOpen={historySearchOpen}
+                    onToggleSearch={() => setHistorySearchOpen((v) => !v)}
+                  />
                 </div>
+                {historySearchOpen && (
+                  <SessionSearchBox
+                    onActive={setHistorySearchActive}
+                    onRequestClose={() => {
+                      // 打开命中后：搜索归位，下拉一并收起（会话已切换）。
+                      setHistorySearchOpen(false)
+                      setHistorySearchActive(false)
+                      closeHistory()
+                    }}
+                  />
+                )}
                 <div className="gn-no-scrollbar min-h-0 overflow-y-auto">
-                  <SessionHistoryList />
+                  {historySearchOpen && historySearchActive ? null : <SessionHistoryList />}
                 </div>
               </div>
             </>

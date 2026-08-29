@@ -34,8 +34,11 @@ const PAGE_LIMIT = 20
 
 export function SessionSearchBox({
   onActive,
+  onRequestClose,
 }: {
   onActive: (active: boolean) => void
+  /** 打开某条命中后收起整个搜索框（按钮化后的展开容器由父级卸载）。 */
+  onRequestClose?: () => void
 }) {
   const [query, setQuery] = useState('')
   const [hits, setHits] = useState<SessionSearchHit[]>([])
@@ -46,6 +49,11 @@ export function SessionSearchBox({
   const reqSeq = useRef(0)
   const trimmed = query.trim()
   const active = trimmed.length > 0
+
+  // 按钮化展开：挂载即聚焦，点开直接可打字。
+  useEffect(() => {
+    inputRef.current?.focus()
+  }, [])
 
   useEffect(() => {
     onActive(active)
@@ -109,6 +117,7 @@ export function SessionSearchBox({
   const openHit = (h: SessionSearchHit) => {
     setQuery('')
     setHits([])
+    onRequestClose?.()
     void useChatStore.getState().continueSession(h.sessionId, h.cwd || '')
   }
 

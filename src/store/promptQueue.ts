@@ -18,10 +18,12 @@ import { pushToast } from './toast'
  *    （chat.ts adoptTurn；FE 不再自己发队首）。
  * 3. 队列行 send-now（[发送现在]/双 Enter）→ x.ai/queue/interject
  *    {id, expectedVersion}（version 取自广播副本）→ agent 版本校验后
- *    提升为下一个运行（不取消回合；版本不符是 no-op 并重广播）。
+ *    提升为下一个运行；运行中回合 front 已提交时 agent 会取消它、该行
+ *    立即开跑（send_now_cancels_running_turn——goal 活跃或 front 未提交
+ *    则豁免）；版本不符是 no-op 并重广播。
  *    乐观回显行（无 version）是 agent-owned——FE 只等收养广播，绝不
  *    cancel-then-send（重发会双跑）；仅 RPC 失败降级行（degraded，
- *    agent 从没见过）保留 cancel-then-send 兜底（Composer.sendQueuedHead）。
+ *    agent 从没见过）保留 cancel-then-send 兜底（Composer.sendQueuedItem）。
  * 4. RPC 失败（网络 / agent 拒绝 / 竞态 409）：行标记 degraded
  *    （FE-owned，agent 从未见过），行上渲染红色失败徽标（失败原因作
  *    tooltip）；不再自动重发——由用户手动双 Enter / [发送现在] 投递
@@ -189,9 +191,9 @@ type PromptQueueState = {
   /** True while a queued prompt is being sent (guards auto-send races). */
   sending: boolean
   /**
-   * Ids that left the LOCAL queue for sending / deletion (dequeue /
-   * removeAt / clear / RPC-resolved). A stale `queue_changed` broadcast
-   * must never resurrect them; applyQueueChanged drops these rows (TUI
+   * Ids that left the LOCAL queue for deletion (removeAt / clear /
+   * RPC-resolved). A stale `queue_changed` broadcast must never resurrect
+   * them; applyQueueChanged drops these rows (TUI
    * retire_optimistic_echo parity: once a row is gone it never reappears
    * in a later broadcast).
    */
@@ -211,14 +213,12 @@ type PromptQueueState = {
    * （FE-owned，保留手动重发）并记录失败原因 errorText（队列行红色
    * 徽标展示）。不再向 scrollback 渲染错误行：主回合输出不因排队消息
    * 的 RPC 失败而被打断。不再向 host 镜像 queueInterject——prompt RPC
-   * 本身就是入队。
+   * 本身就是入队。排队消息由 composer 上方的内联队列区展示。
    */
   enqueue: (
     item: Omit<QueuedPrompt, 'id' | 'ts' | 'version' | 'optimistic' | 'degraded' | 'errorText'>,
     sessionId: string,
   ) => void
-  /** Remove and return the head; undefined when empty. */
-  dequeue: () => QueuedPrompt | undefined
   /** Put an item back at the front of a session's stash (send rejected). */
   requeueFront: (sessionId: string, item: QueuedPrompt) => void
   removeAt: (id: string) => void
@@ -246,6 +246,8 @@ type PromptQueueState = {
   moveUp: (index: number) => void
   /** TUI SwapDown — move the row one slot later. */
   moveDown: (index: number) => void
+  /** 拖拽落点：把 from 行挪到 to（含端点，与当前列表下标一致）。 */
+  moveTo: (from: number, to: number) => void
 }
 
 export const usePromptQueue = create<PromptQueueState>((set, get) => ({
@@ -294,29 +296,6 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
         },
       )
   },
-  dequeue: () => {
-    const head = get().queue[0]
-    if (!head) return undefined
-    set((s) => ({
-      queue: s.queue.slice(1),
-      // 出队（发送）即永别：后续广播不得复活该行。
-      drainedIds: new Set(s.drainedIds).add(head.id),
-      // The edited row was the head — leave edit mode; otherwise shift.
-      editIndex:
-        s.editIndex == null
-          ? null
-          : s.editIndex === 0
-            ? null
-            : s.editIndex - 1,
-      editDraft: s.editIndex === 0 ? '' : s.editDraft,
-    }))
-    // 队首出队（FE-owned 行发送 / 取消+重发兜底）→ 从 agent 队列移除同
-    // 一条目（行 id = promptId = queue_meta.id，agent 侧可匹配；未知 id
-    // 是 no-op）。带会话标签，防止切换竞态下 host 把删除落到新会话。
-    const sid = get().sessionId
-    syncQueue(() => transport.queueRemove({ id: head.id }, sid))
-    return head
-  },
   requeueFront: (sessionId, item) => {
     set((s) => {
       const list = s.queues[sessionId] ?? []
@@ -331,6 +310,12 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
   },
   removeAt: (id) => {
     const s = get()
+    // 删除携带本端最后见过的权威版本：agent 侧 remove 按 (id, version)
+    // 精确匹配（editable_queue_meta_matches），缺省 = 0 只匹配从未编辑
+    // 过的行——编辑过的行（version ≥ 1）不带 expectedVersion 会被 no-op，
+    // 行照常执行（「以为删了实际会发出去」）。无 version 的 FE-owned 行
+    // （乐观/降级）省略键，与 agent 默认 0 同义。
+    const targetVersion = s.queue.find((q) => q.id === id)?.version
     // 被删的正是编辑中的行：编辑锁须随行释放（清 editIndex 前先留证）。
     const editedId =
       s.editIndex != null && s.queue[s.editIndex]?.id === id
@@ -361,9 +346,18 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
     }
     // 删除失败必须提醒：行已从本地镜像移除（drainedIds），但 agent 侧
     // 队列里仍在——回合结束会照常执行，用户以为删了实际会发出去。
-    syncQueue(() => transport.queueRemove({ id }, s.sessionId), {
-      onError: (e) => queueSyncToast('删除队列消息失败（消息仍会发送）', e),
-    })
+    syncQueue(
+      () =>
+        transport.queueRemove(
+          targetVersion != null
+            ? { id, expectedVersion: targetVersion }
+            : { id },
+          s.sessionId,
+        ),
+      {
+        onError: (e) => queueSyncToast('删除队列消息失败（消息仍会发送）', e),
+      },
+    )
   },
   clear: () => {
     const s = get()
@@ -467,20 +461,22 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
     set({ editIndex: null, editDraft: '' })
     if (id) syncQueue(() => transport.queueReleaseEdit({ id }, s.sessionId))
   },
-  moveUp: (index) => {
+  moveUp: (index) => get().moveTo(index, index - 1),
+  moveDown: (index) => get().moveTo(index, index + 1),
+  moveTo: (from, to) => {
     const s = get()
-    if (index <= 0 || index >= s.queue.length) return
+    const n = s.queue.length
+    if (from === to || from < 0 || to < 0 || from >= n || to >= n) return
     const next = [...s.queue]
-    ;[next[index - 1], next[index]] = [next[index], next[index - 1]]
-    set({ queue: next })
-    syncQueue(() => transport.queueReorder({ ids: next.map((q) => q.id) }, s.sessionId))
-  },
-  moveDown: (index) => {
-    const s = get()
-    if (index < 0 || index >= s.queue.length - 1) return
-    const next = [...s.queue]
-    ;[next[index], next[index + 1]] = [next[index + 1], next[index]]
-    set({ queue: next })
+    const [item] = next.splice(from, 1)
+    next.splice(to, 0, item)
+    let editIndex = s.editIndex
+    if (editIndex != null) {
+      if (editIndex === from) editIndex = to
+      else if (from < editIndex && to >= editIndex) editIndex -= 1
+      else if (from > editIndex && to <= editIndex) editIndex += 1
+    }
+    set({ queue: next, editIndex })
     syncQueue(() => transport.queueReorder({ ids: next.map((q) => q.id) }, s.sessionId))
   },
 }))

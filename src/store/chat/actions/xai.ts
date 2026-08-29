@@ -3,6 +3,7 @@ import type { ChatState, SetState } from '../types'
 import { nid } from '../ids'
 import { appendEntry } from '../entries'
 import { scheduledTaskDeletedText } from '../tasks'
+import { pushToast } from '../../toast'
 
 export function xaiActions(set: SetState, get: () => ChatState) {
   return {
@@ -47,16 +48,82 @@ export function xaiActions(set: SetState, get: () => ChatState) {
     }
   },
 
+  /**
+   * Fork the current session. Shared by the /fork command (full copy, TUI
+   * /fork parity incl. --worktree) and the per-message Fork button
+   * (targetPromptIndex = clicked message's turn → agent-side truncation).
+   * On success the FE refreshes the session lists and switches to the
+   * forked session (TUI switches to the peer agent).
+   */
   forkSession: async (opts) => {
+    const { worktree, targetPromptIndex, ...rest } = opts ?? {}
+    const st = get()
+    const sid = st.sessionId
+    const cwd = st.cwd
+    if (!sid || !cwd) {
+      appendEntry(set, { kind: 'error', text: 'fork 失败: 无活动会话' })
+      return
+    }
+    // Forking mid-turn would snapshot the session without the in-flight
+    // turn's output — same busy rule as the /rewind picker (cancel-offer
+    // there; a toast here, fork is restartable).
+    if (st.conn === 'busy') {
+      pushToast('会话运行中：等回合结束或先取消当前回合再 fork')
+      return
+    }
     try {
-      const r = await transport.forkSession(opts ?? {}, get().sessionId)
-      const newId =
-        (r.result as Record<string, unknown> | undefined)?.newSessionId as
-          | string
-          | undefined
-      appendEntry(set, {
-        kind: 'status',
-        text: newId ? `已 fork 新会话 ${newId.slice(0, 8)}…` : '已 fork 新会话',
+      let newId: string | undefined
+      let newCwd = cwd
+      if (worktree) {
+        // TUI /fork --worktree (effects.rs CreateWorktreeSession): derive the
+        // session into a fresh git worktree (full history, no truncation).
+        // resume_session keys on the host's ACTIVE session — the FE forks the
+        // session it is viewing, which is that one. Response wire keys:
+        // {sessionId, worktreePath, effectiveCwd}.
+        const r = await transport.gitWorktreeResumeSession({ sourceCwd: cwd, copyMode: 'dirty' })
+        const o = (r ?? {}) as Record<string, unknown>
+        newId =
+          (typeof o.sessionId === 'string' && o.sessionId) ||
+          (typeof o.session_id === 'string' && o.session_id) ||
+          undefined
+        const wt =
+          (typeof o.effectiveCwd === 'string' && o.effectiveCwd) ||
+          (typeof o.worktreePath === 'string' && o.worktreePath) ||
+          ''
+        if (wt) newCwd = wt
+      } else {
+        const params: Record<string, unknown> = { ...rest }
+        if (targetPromptIndex != null) {
+          // Clamp against the agent's own turn numbering: rewind points cover
+          // every prompt 0..N-1, and the FE's window-relative count can
+          // diverge from counted turns (mid-turn phantom user rows).
+          const pts = await transport.rewindPoints(sid, cwd)
+          if (pts.points.length === 0) throw new Error('没有可截断的回合')
+          params.targetPromptIndex = Math.min(
+            Math.max(0, Math.floor(targetPromptIndex)),
+            pts.points.length - 1,
+          )
+        }
+        const r = await transport.forkSession(params, sid)
+        newId =
+          (r.result as Record<string, unknown> | undefined)?.newSessionId as
+            | string
+            | undefined
+      }
+      if (!newId) throw new Error('fork 响应缺少新会话 id')
+      // Switch FIRST, then refresh the lists: continueSession bumps
+      // sessionSwitchGen, so refreshes dispatched before it capture the
+      // pre-switch generation and get their results dropped by
+      // isAsyncScopeCurrent — the forked session never showed up in the
+      // sidebar. After the switch the generation is stable and both
+      // refreshes land.
+      await get().continueSession(newId, newCwd)
+      void get().refreshSessions()
+      void get().refreshWorkspaces()
+      set({
+        statusText: worktree
+          ? `已在 worktree 中派生新会话 ${newId.slice(0, 8)}…`
+          : `已 fork 新会话 ${newId.slice(0, 8)}…`,
       })
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -113,14 +180,19 @@ export function xaiActions(set: SetState, get: () => ChatState) {
     try {
       await transport.sessionDelete(sessionId, cwd)
       set({ statusText: `已删除会话 ${sessionId.slice(0, 8)}` })
-      void get().refreshSessions()
-      void get().refreshWorkspaces()
       // Deleting the ACTIVE session lands in the EMPTY state (no
       // auto-new): reset all session-scoped state and drop the anchor.
       // The host clears its active-session pointer on the same delete,
       // so the next prompt without a sessionId creates a fresh session
       // there. Historical deletes just refresh the list.
+      // resetToEmpty bumps sessionSwitchGen — run it BEFORE the list
+      // refreshes: both capture an async scope keyed on that generation,
+      // and a bump after dispatch makes isAsyncScopeCurrent drop the
+      // fresh lists (the sidebar kept showing the deleted session until
+      // an unrelated refresh).
       if (isCurrent) get().resetToEmpty()
+      void get().refreshSessions()
+      void get().refreshWorkspaces()
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       set({

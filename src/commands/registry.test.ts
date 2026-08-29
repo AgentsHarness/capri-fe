@@ -243,6 +243,30 @@ describe('slash command runs — 会话类', () => {
     expect(fake.setWorkflowPanelOpen).toHaveBeenCalledWith(true)
   })
 
+  it('/fork 参数（TUI parse_fork_args 对齐）：--worktree / --no-worktree / 互斥 / directive 拒绝', () => {
+    run('fork', '')
+    expect(fake.forkSession).toHaveBeenLastCalledWith({})
+    run('fork', '--worktree')
+    expect(fake.forkSession).toHaveBeenLastCalledWith({ worktree: true })
+    run('fork', '  --no-worktree  ')
+    expect(fake.forkSession).toHaveBeenLastCalledWith({ worktree: false })
+    const callsBefore = fake.forkSession.mock.calls.length
+    run('fork', '--worktree --no-worktree')
+    expect(fake.appendLocalEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'error', text: expect.stringContaining('互斥') }),
+    )
+    run('fork', '--worktree --worktree')
+    expect(fake.appendLocalEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'error', text: expect.stringContaining('重复') }),
+    )
+    // 未知 bareword 视作 directive 开头（TUI 语义），FE 无首条提示通道 → 拒绝。
+    run('fork', 'investigate the bug')
+    expect(fake.appendLocalEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'error', text: expect.stringContaining('首条提示') }),
+    )
+    expect(fake.forkSession.mock.calls.length).toBe(callsBefore)
+  })
+
   it('扩展命令 /hooks /plugins /skills /marketplace', () => {
     run('hooks')
     expect(fake.openExtensions).toHaveBeenCalledWith('hooks')

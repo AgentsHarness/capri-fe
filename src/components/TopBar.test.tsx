@@ -11,6 +11,7 @@ vi.mock('../api/client', () => ({
     listSessions: vi.fn(async () => ({ sessions: [] })),
     pairingCode: vi.fn(async () => ({ code: 'PAIR-CODE-123', ttl: 300 })),
     getHubUrl: vi.fn(() => ''),
+    sessionSearch: vi.fn(async () => ({ results: [] })),
   },
 }))
 
@@ -276,6 +277,33 @@ describe('TopBar', () => {
     fireEvent.click(screen.getByTitle('加载历史会话'))
     await vi.waitFor(() => {
       expect(useChatStore.getState().historyOpen).toBe(true)
+      expect(screen.getByText('没有历史会话')).not.toBeNull()
+    })
+  })
+
+  it('移动端历史下拉：搜索按钮展开搜索框，命中接管列表，收起后归位', async () => {
+    render(<TopBar />)
+    fireEvent.click(screen.getByTitle('加载历史会话'))
+    await vi.waitFor(() => {
+      expect(screen.getByText('没有历史会话')).not.toBeNull()
+    })
+    // 下拉头部有搜索按钮（与桌面侧边栏同款，移动端带文字大热区）。
+    const searchBtn = screen.getByRole('button', { name: '搜索历史会话' })
+    expect(searchBtn.textContent).toContain('搜索')
+    expect(screen.getByTitle('刷新会话列表').textContent).toContain('刷新')
+    fireEvent.click(searchBtn)
+    const input = screen.getByPlaceholderText('全文搜索历史会话…')
+    // 查询生效 → 分组列表让位给命中列表（空结果文案来自搜索框）。
+    fireEvent.change(input, { target: { value: 'foo' } })
+    await vi.waitFor(() => {
+      expect(screen.queryByText('没有历史会话')).toBeNull()
+      expect(screen.getByText('没有匹配的会话')).not.toBeNull()
+    })
+    // 收起下拉后重新打开：搜索归位为收起态（无输入框）。
+    fireEvent.click(screen.getByRole('button', { name: 'close' }))
+    fireEvent.click(screen.getByTitle('加载历史会话'))
+    expect(screen.queryByPlaceholderText('全文搜索历史会话…')).toBeNull()
+    await vi.waitFor(() => {
       expect(screen.getByText('没有历史会话')).not.toBeNull()
     })
   })

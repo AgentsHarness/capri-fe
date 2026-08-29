@@ -296,8 +296,49 @@ export const slashCommands: SlashCommand[] = [
   },
   {
     name: 'fork',
-    description: '派生当前会话',
-    run: () => void useChatStore.getState().forkSession(),
+    description: '派生当前会话（--worktree 在隔离 git worktree 中派生）',
+    argHint: '[--worktree|--no-worktree]',
+    run: (args) => {
+      // TUI parse_fork_args parity: leading flags only; an unknown bareword
+      // starts the directive — the FE has no first-prompt channel for a
+      // fork, so reject it instead of silently ignoring the text.
+      let worktree: boolean | undefined
+      let rest = args.trimStart()
+      for (;;) {
+        const m = rest.match(/^(\S+)\s*([\s\S]*)$/)
+        if (!m) break
+        const [, flag, after] = m
+        if (flag === '--worktree') {
+          if (worktree === false) {
+            err('--worktree 与 --no-worktree 互斥')
+            return
+          }
+          if (worktree === true) {
+            err('--worktree 重复指定')
+            return
+          }
+          worktree = true
+        } else if (flag === '--no-worktree') {
+          if (worktree === true) {
+            err('--worktree 与 --no-worktree 互斥')
+            return
+          }
+          if (worktree === false) {
+            err('--no-worktree 重复指定')
+            return
+          }
+          worktree = false
+        } else {
+          break
+        }
+        rest = after.trimStart()
+      }
+      if (rest) {
+        err('FE 暂不支持 fork 首条提示；请先 fork，再在新会话中发送该内容')
+        return
+      }
+      void useChatStore.getState().forkSession(worktree === undefined ? {} : { worktree })
+    },
   },
   {
     name: 'recap',

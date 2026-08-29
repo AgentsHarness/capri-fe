@@ -175,8 +175,7 @@ export function useScrollbackKeys() {
           store0.viewerEntryId ||
           store0.viewerTask ||
           store0.xaiRequests.length > 0 ||
-          store0.cancelPanelOpen ||
-          store0.queuePanelOpen
+          store0.cancelPanelOpen
         ) {
           return
         }
@@ -217,9 +216,6 @@ export function useScrollbackKeys() {
       // Cancel-turn panel owns the keyboard while open (defense in depth —
       // the panel's own capture listener already stops the keys).
       if (store0.cancelPanelOpen) return
-      // Queue dropdown owns the row keys while open (its own capture
-      // listener handles x/e/j/k/swap; Esc closes the panel in Composer).
-      if (store0.queuePanelOpen) return
 
       // Activation keys on a focused control (link/button/select row)
       // must reach the control — the scrollback bindings below (Enter →

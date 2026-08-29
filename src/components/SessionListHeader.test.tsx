@@ -65,10 +65,56 @@ describe('SessionListHeader', () => {
     expect(screen.getByRole('button', { name: '刷新会话列表' })).toBeInTheDocument()
   })
 
+  it('提供 onToggleSearch 时渲染搜索按钮并回调；缺省不渲染', () => {
+    const onToggle = vi.fn()
+    const { rerender } = render(
+      <SessionListHeader onToggleSearch={onToggle} />,
+    )
+    const btn = screen.getByRole('button', { name: '搜索历史会话' })
+    expect(btn).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(btn)
+    expect(onToggle).toHaveBeenCalledTimes(1)
+    rerender(<SessionListHeader onToggleSearch={onToggle} searchOpen />)
+    expect(screen.getByRole('button', { name: '关闭会话搜索' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    // 不传 onToggleSearch：缺省无搜索按钮（无搜索入口的嵌入方）。
+    render(<SessionListHeader />)
+    expect(screen.queryByRole('button', { name: '搜索历史会话' })).toBeNull()
+  })
+
   it('alignRight → ml-auto 定位', () => {
     const { container } = render(<SessionListHeader alignRight />)
     const iconWrap = container.querySelector('.ml-auto')
     expect(iconWrap).not.toBeNull()
+  })
+
+  it('labeled：刷新/搜索带文字大热区，回调与状态机不变', () => {
+    const onToggle = vi.fn()
+    render(<SessionListHeader labeled onToggleSearch={onToggle} />)
+    // 刷新：可见文字 + min-h-6 热区，点击仍触发刷新。
+    const refresh = screen.getByRole('button', { name: '刷新会话列表' })
+    expect(refresh).toHaveClass('min-h-6')
+    expect(refresh.textContent).toContain('刷新')
+    fireEvent.click(refresh)
+    expect(useChatStore.getState().refreshSessions).toHaveBeenCalledTimes(1)
+    // 搜索：可见文字，展开后文字切换为「收起」。
+    const search = screen.getByRole('button', { name: '搜索历史会话' })
+    expect(search).toHaveClass('min-h-6')
+    expect(search.textContent).toContain('搜索')
+    fireEvent.click(search)
+    expect(onToggle).toHaveBeenCalledTimes(1)
+    // 标题与形态切换文字统一 11px（与按钮一致）。
+    expect(screen.getByText('会话')).toHaveClass('text-[11px]')
+    expect(screen.getByRole('button', { name: '目录视图' })).toHaveClass('text-[11px]')
+    expect(screen.getByRole('button', { name: '标记视图' })).toHaveClass('text-[11px]')
+    render(
+      <SessionListHeader labeled onToggleSearch={onToggle} searchOpen />,
+    )
+    expect(screen.getByRole('button', { name: '关闭会话搜索' }).textContent).toContain(
+      '收起',
+    )
   })
 
   it('卸载时清理 ✓ 回落定时器', () => {
