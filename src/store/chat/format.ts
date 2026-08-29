@@ -1,4 +1,4 @@
-import type { ScrollEntry, SessionInfoDetail, TopTask } from '../../api/types'
+import type { ScrollEntry, TopTask } from '../../api/types'
 import { toolHeader } from '../../theme/glyphs'
 import type { TodoCounts, TodoItem } from './types'
 
@@ -53,45 +53,6 @@ export function fmtTokens(n: number): string {
     return n >= 10_000 ? `${Math.round(n / 1_000)}K` : `${(n / 1_000).toFixed(1)}K`
   }
   return String(n)
-}
-
-/**
- * TUI /session-info (format_session_info): the host's SessionInfoDetail
- * rendered as a plain text block (fields on separate lines) that gets
- * pushed into the scrollback — fields render exactly as the host
- * reports them.
- */
-export function formatSessionInfo(info: SessionInfoDetail): string {
-  const lines: string[] = ['Session info']
-  if (info.title) lines.push(`  Title: ${info.title}`)
-  if (info.sessionId) lines.push(`  Session ID: ${info.sessionId}`)
-  if (info.cwd) lines.push(`  Workspace: ${info.cwd}`)
-  if (info.model) {
-    const m = info.model
-    const label = [m.name || m.modelId, m.reasoningEffort].filter(Boolean).join(' · ')
-    lines.push(`  Model: ${label}`)
-  }
-  const ctxSize = info.contextSize || info.model?.contextWindow || 0
-  if (ctxSize > 0) {
-    const used = info.contextUsed ?? 0
-    // TUI usage_percentage_u8 clamps at 100 — never render >100% even
-    // when used transiently exceeds the window (pre-auto-compact).
-    const pct = Math.min(100, Math.round((used / ctxSize) * 100))
-    lines.push(`  Context: ${fmtTokens(used)} / ${fmtTokens(ctxSize)} tokens (${pct}%)`)
-  }
-  if (info.gitBranch) {
-    const wt =
-      info.gitIsWorktree && info.gitMainRepo
-        ? ` (worktree of ${info.gitMainRepo})`
-        : info.gitIsWorktree
-          ? ' (worktree)'
-          : ''
-    lines.push(`  Git: ${info.gitBranch}${wt}`)
-  }
-  if (info.hostName || info.hostId) {
-    lines.push(`  Host: ${[info.hostName, info.hostId].filter(Boolean).join(' · ')}`)
-  }
-  return lines.join('\n')
 }
 
 /**

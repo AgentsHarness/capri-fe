@@ -55,7 +55,8 @@ interface FakeChat {
   renameSession: ReturnType<typeof vi.fn>
   forkSession: ReturnType<typeof vi.fn>
   requestRecap: ReturnType<typeof vi.fn>
-  showSessionInfo: ReturnType<typeof vi.fn>
+  openSessionInfo: ReturnType<typeof vi.fn>
+  sessionInfoOpen?: boolean
   openContext: ReturnType<typeof vi.fn>
   togglePlanMode: ReturnType<typeof vi.fn>
   toggleTimestamps: ReturnType<typeof vi.fn>
@@ -98,7 +99,11 @@ beforeEach(() => {
     renameSession: vi.fn(),
     forkSession: vi.fn(),
     requestRecap: vi.fn(),
-    showSessionInfo: vi.fn(),
+    sessionInfoOpen: false,
+    // 真实 store 里 openSessionInfo 就是置 sessionInfoOpen；fake 同步语义。
+    openSessionInfo: vi.fn(() => {
+      fake.sessionInfoOpen = true
+    }),
     openContext: vi.fn(),
     togglePlanMode: vi.fn(),
     toggleTimestamps: vi.fn(),
@@ -228,7 +233,8 @@ describe('slash command runs — 会话类', () => {
     run('recap')
     expect(fake.requestRecap).toHaveBeenCalled()
     run('session-info')
-    expect(fake.showSessionInfo).toHaveBeenCalled()
+    expect(fake.openSessionInfo).toHaveBeenCalled()
+    expect(fake.sessionInfoOpen).toBe(true)
     run('context')
     expect(fake.openContext).toHaveBeenCalled()
     run('plan')

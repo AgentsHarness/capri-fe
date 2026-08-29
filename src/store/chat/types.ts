@@ -593,12 +593,6 @@ export interface ChatUiState {
   /** Open / close the /session-info modal. */
   openSessionInfo: () => void
   closeSessionInfo: () => void
-  /**
-   * TUI /session-info: fetch session details (POST /api/session-info) and
-   * append them to the scrollback as a read-only text block (kind 'status')
-   * — the TUI pushes a plain text block into the scrollback, no modal.
-   */
-  showSessionInfo: () => Promise<void>
   /** /context modal visibility (TUI context command — context breakdown). */
   contextOpen: boolean
   /** Open / close the /context detail modal. */

@@ -3,7 +3,6 @@ import {
   contentText,
   fmtTokens,
   formatElapsed,
-  formatSessionInfo,
   formatTurnDuration,
   imageSrc,
   planTodos,
@@ -53,42 +52,6 @@ describe('fmtTokens', () => {
     expect(fmtTokens(48_800)).toBe('49K')
     expect(fmtTokens(1_200_000)).toBe('1.2M')
     expect(fmtTokens(10_000_000)).toBe('10M')
-  })
-})
-
-describe('formatSessionInfo', () => {
-  it('字段齐全时逐行渲染', () => {
-    const text = formatSessionInfo({
-      title: 'My session',
-      sessionId: 's1',
-      cwd: '/tmp',
-      model: { name: 'grok-3', modelId: 'grok-3', reasoningEffort: 'high' },
-      contextSize: 1000,
-      contextUsed: 250,
-      gitBranch: 'main',
-      gitIsWorktree: true,
-      gitMainRepo: 'capri',
-      hostName: 'mac',
-      hostId: 'h1',
-    } as never)
-    expect(text).toContain('Session info')
-    expect(text).toContain('Title: My session')
-    expect(text).toContain('Session ID: s1')
-    expect(text).toContain('Workspace: /tmp')
-    expect(text).toContain('Model: grok-3 · high')
-    expect(text).toContain('Context: 250 / 1.0K tokens (25%)')
-    expect(text).toContain('Git: main (worktree of capri)')
-    expect(text).toContain('Host: mac · h1')
-  })
-
-  it('contextUsed 超窗口 → 百分比钳 100', () => {
-    const text = formatSessionInfo({ contextSize: 100, contextUsed: 500, model: { name: 'x' } } as never)
-    expect(text).toContain('(100%)')
-  })
-
-  it('最小字段也能渲染', () => {
-    const text = formatSessionInfo({} as never)
-    expect(text).toBe('Session info')
   })
 })
 

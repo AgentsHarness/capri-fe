@@ -366,7 +366,13 @@ export type SessionInfoExt = {
   model?: string
   modelDisplayName?: string
   resolvedModelId?: string
+  /** Model checkpoint fingerprint (TUI "Model Hash" row). */
+  modelFingerprint?: string
+  /** Catalog opt-in — governs both Model Hash display and resolved-id exposure. */
+  showModelFingerprint?: boolean
   apiBackend?: string
+  /** Gateway chat conversation id（gateway 代理会话才有，TUI "Conversation ID" 行）。 */
+  conversationId?: string
   agentName?: string
   turns?: number
   turnIndex?: number

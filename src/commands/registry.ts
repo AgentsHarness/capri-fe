@@ -357,8 +357,8 @@ export const slashCommands: SlashCommand[] = [
   },
   {
     name: 'session-info',
-    description: '查看当前会话信息（入滚动区）',
-    run: () => void useChatStore.getState().showSessionInfo(),
+    description: '查看当前会话信息（弹窗：ID/模型/上下文/回合等）',
+    run: () => void useChatStore.getState().openSessionInfo(),
   },
   {
     name: 'context',
