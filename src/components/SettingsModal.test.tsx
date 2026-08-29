@@ -331,5 +331,4 @@ it('前端偏好：default_selected_permission 默认高亮 + 点击持久化', 
     fireEvent.blur(inputEl)
     expect(transport.updateSettings).toHaveBeenCalledTimes(1)
   })
-  })
 })

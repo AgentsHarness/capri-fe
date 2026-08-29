@@ -91,6 +91,49 @@ export function xaiActions(set: SetState, get: () => ChatState) {
   },
 
   /**
+   * Memory system — /remember <note>: the raw note goes through
+   * POST /api/memory-rewrite → _x.ai/memory/rewrite, a one-shot LLM
+   * reformat for MEMORY.md. That call does NOT persist — the TUI writes
+   * the chosen text into its LOCAL memory storage, and the web FE has no
+   * such channel (no save endpoint), so the rewritten entry is presented
+   * in the scrollback instead of behind a fake confirm dialog. sessionId
+   * is passed explicitly — never rely on the host's active-session
+   * fallback.
+   */
+  rememberNote: async (rawText: string) => {
+    const st = get()
+    if (!st.sessionId) {
+      appendEntry(set, { kind: 'error', text: '记忆笔记失败: 无活动会话' })
+      return
+    }
+    try {
+      const data: unknown = await transport.memoryRewrite(
+        st.sessionId,
+        rawText,
+        extractRememberContext(st),
+      )
+      const rewritten =
+        data && typeof data === 'object'
+          ? (data as { result?: { rewritten?: unknown } }).result?.rewritten
+          : undefined
+      const text =
+        typeof rewritten === 'string' && rewritten.trim() ? rewritten : rawText
+      appendEntry(
+        set,
+        text === rawText
+          ? { kind: 'session_event', text: `记忆笔记（原文）:\n${rawText}` }
+          : {
+              kind: 'session_event',
+              text: `记忆笔记（改写稿）:\n${text}\n\n── 原文 ──\n${rawText}`,
+            },
+      )
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      appendEntry(set, { kind: 'error', text: `记忆笔记失败: ${msg}` })
+    }
+  },
+
+  /**
    * Fork the current session. Shared by the /fork command (full copy, TUI
    * /fork parity incl. --worktree) and the per-message Fork button
    * (targetPromptIndex = clicked message's turn → agent-side truncation).
@@ -406,4 +449,26 @@ function patchBtw(
     return e
   })
   return changed ? out : entries
+}
+
+/**
+ * 轻量版会话上下文（TUI `extract_session_context` 的浏览器替代）：
+ * CWD + 最近 5 条 user 文本（各截断 200 字符），供 memory/rewrite 的
+ * 改写调用携带。纯读滚动区，无 DOM/fs 依赖。
+ */
+function extractRememberContext(st: ChatState): string {
+  const parts = [`CWD: ${st.cwd ?? ''}`]
+  const recent: string[] = []
+  for (let i = st.entries.length - 1; i >= 0 && recent.length < 5; i--) {
+    const e = st.entries[i]
+    if (e && e.kind === 'user' && typeof e.text === 'string') {
+      const t = e.text.trim()
+      if (t) recent.push(t.length > 200 ? `${t.slice(0, 200)}...` : t)
+    }
+  }
+  if (recent.length) {
+    recent.reverse()
+    parts.push('Recent prompts:', ...recent.map((p) => `- ${p}`))
+  }
+  return parts.join('\n')
 }
