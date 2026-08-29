@@ -484,25 +484,50 @@ describe('slash command runs — /delete /rename', () => {
 })
 
 describe('slash command runs — /loop', () => {
-  it('缺间隔或提示 → 用法错误', () => {
+  it('无参数 → 用法错误，不发请求', () => {
     run('loop')
-    run('loop', '5m')
+    run('loop', '   ')
     expect(fake.appendLocalEntry).toHaveBeenCalledTimes(2)
+    expect(fake.send).not.toHaveBeenCalled()
   })
 
-  it('busy → 排队；空闲 → 直发', () => {
+  it('原文透传：有参数 → 发送 /loop <args> 原文（busy 排队 / 空闲直发）', () => {
     fake.conn = 'busy'
     fake.sessionId = 's2'
     run('loop', '5m 检查测试状态')
-    const q = vi.mocked(usePromptQueue.getState).mock.results[0]?.value as { enqueue: ReturnType<typeof vi.fn> }
+    const q = vi.mocked(usePromptQueue.getState)()
     expect(q.enqueue).toHaveBeenCalledWith(
-      expect.objectContaining({ text: expect.stringContaining('每 5m 执行一次') }),
+      expect.objectContaining({ text: '/loop 5m 检查测试状态' }),
       's2',
     )
 
     fake.conn = 'idle'
     run('loop', '1h 汇报')
-    expect(fake.send).toHaveBeenCalledWith(expect.stringContaining('每 1h 执行一次'))
+    expect(fake.send).toHaveBeenCalledWith('/loop 1h 汇报')
+  })
+
+  it('回执：leading interval → 「每 n 单位 · prompt」；否则「调度中…」占位', () => {
+    run('loop', '5m 检查测试状态')
+    expect(fake.appendLocalEntry).toHaveBeenCalledWith({
+      kind: 'session_event',
+      text: expect.stringContaining('已请求定时任务：每 5 分钟 · 检查测试状态'),
+    })
+
+    fake.appendLocalEntry.mockClear()
+    run('loop', '每 30 分钟检查一次')
+    expect(fake.appendLocalEntry).toHaveBeenCalledWith({
+      kind: 'session_event',
+      text: expect.stringContaining('已请求定时任务：调度中…'),
+    })
+  })
+
+  it('非 interval 首 token / 裸 interval / 零值 / 坏后缀 → 不当错误，整串透传', () => {
+    fake.send.mockClear()
+    for (const args of ['每 30 分钟检查一次', '5m', '0m 检查', '5x 检查']) {
+      run('loop', args)
+      expect(fake.send).toHaveBeenCalledWith(`/loop ${args}`)
+      fake.send.mockClear()
+    }
   })
 })
 
