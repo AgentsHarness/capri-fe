@@ -178,6 +178,39 @@ describe('SettingsModal', () => {
     })
   })
 
+  it('follow_up pills：默认 queue 高亮；点击 patch follow_up_behavior 并回显选中', async () => {
+    openModal()
+    render(<SettingsModal />)
+    await waitFor(() => expect(screen.getByText('follow_up_behavior')).not.toBeNull())
+    const queueBtn = () => screen.getByText('queue')
+    const steerBtn = () => screen.getByText('steer')
+    // 未配置（agent 默认 queue）→ queue 高亮
+    expect(queueBtn().className).toContain('border-gn-green')
+    expect(steerBtn().className).not.toContain('border-gn-green')
+    fireEvent.click(steerBtn())
+    await waitFor(() => {
+      expect(transport.updateSettings).toHaveBeenCalledWith({ follow_up_behavior: 'steer' })
+    })
+    // mock 回显 patch → 选中态切到 steer，不再弹回
+    await waitFor(() => expect(steerBtn().className).toContain('border-gn-green'))
+  })
+
+  it('follow_up 更新失败 → toast 展示 host 错误，选中态不跳变', async () => {
+    vi.mocked(transport.updateSettings).mockRejectedValue(
+      new Error('不允许的设置项 follow_up_behavior'),
+    )
+    openModal()
+    render(<SettingsModal />)
+    await waitFor(() => expect(screen.getByText('steer')).not.toBeNull())
+    const queueBtn = () => screen.getByText('queue')
+    fireEvent.click(screen.getByText('steer'))
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts[0]?.text).toBe('不允许的设置项 follow_up_behavior')
+    })
+    // setData 未发生 → 仍停留在原选中态（queue）
+    expect(queueBtn().className).toContain('border-gn-green')
+  })
+
   it('加载失败 → 错误 + 重试', async () => {
     vi.mocked(transport.settings).mockRejectedValueOnce(new Error('net down')).mockResolvedValueOnce({
       ui: { ...uiData },
