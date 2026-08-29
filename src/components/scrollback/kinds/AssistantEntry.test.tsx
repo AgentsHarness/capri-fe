@@ -32,6 +32,7 @@ function makeChrome(e: ScrollEntry, selected = true): EntryChrome {
     toggleTool: () => {},
     toggleThought: () => {},
     toggleUser: () => {},
+    toggleBtw: () => {},
     cancelSubagent: () => {},
     killTask: () => {},
     liveText: undefined,

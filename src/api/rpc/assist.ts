@@ -3,8 +3,12 @@ import { unwrapExtResult, xaiCall } from './core'
 
 /** busy 期间的插话/辅助输入：/btw 小话、interject 插话、suggest 补全建议。 */
 export const assistRpc = {
-  async btw(this: TransportCore, opts: { question: string }): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/btw', opts))
+  async btw(this: TransportCore, opts: { question: string; sessionId?: string }): Promise<unknown> {
+    // sessionId 可选：显式给出时透传（/btw 问答始终落在发起会话上，即使
+    // 浏览器已切到别的会话）；缺省省略该键 → host 沿用活动会话。
+    const body: Record<string, unknown> = { question: opts.question }
+    if (opts.sessionId) body.sessionId = opts.sessionId
+    return unwrapExtResult(await xaiCall(this, '/api/btw', body))
   },
 
   async interject(this: TransportCore, opts: { text: string }): Promise<unknown> {

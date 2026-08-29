@@ -19,6 +19,7 @@ export function entryRunning(e: ScrollEntry): boolean {
   if (e.kind === 'subagent' || e.kind === 'workflow' || e.kind === 'bg_task')
     return !!e.running
   if (e.kind === 'session_event') return !!e.streaming
+  if (e.kind === 'btw') return !!e.streaming
   return false
 }
 
@@ -30,6 +31,7 @@ export function entryFailed(e: ScrollEntry): boolean {
     return e.status === 'failed' || e.status === 'cancelled'
   if (e.kind === 'workflow') return e.status === 'failed'
   if (e.kind === 'bg_task') return e.status === 'failed'
+  if (e.kind === 'btw') return !!e.error
   return false
 }
 
@@ -39,6 +41,8 @@ export function entryExpanded(e: ScrollEntry): boolean {
   // and expanded both show body content).
   if (e.kind === 'thought') return thoughtDisplayMode(e) !== 'collapsed'
   if (e.kind === 'session_event') return !!e.open
+  // btw 默认折叠（TUI default_display_mode Collapsed）。
+  if (e.kind === 'btw') return !!e.open
   // User defaults to collapsed when foldable (TUI default_display_mode).
   if (e.kind === 'user') {
     if (!userIsFoldable(e.text)) return true
@@ -59,6 +63,8 @@ export function entryFoldable(e: ScrollEntry): boolean {
   }
   if (e.kind === 'thought') return !e.streaming && !!e.text
   if (e.kind === 'session_event') return !!e.recap
+  // 有待展开的内容（答案或错误）才可折叠；请求进行中无正文可看。
+  if (e.kind === 'btw') return !e.streaming && (!!e.answer || !!e.error)
   if (e.kind === 'user') return userIsFoldable(e.text)
   if (e.kind === 'group_header') return true
   return false
@@ -120,6 +126,8 @@ export function entryAtMinFold(e: ScrollEntry): boolean {
     return !e.expanded
   }
   if (e.kind === 'session_event') return !e.open
+  // btw 同款：折叠 = 最小形态。
+  if (e.kind === 'btw') return !e.open
   // group_header.collapse === expanded (synthetic); min fold = not expanded
   if (e.kind === 'group_header') return !e.collapse
   return false
@@ -142,6 +150,7 @@ export function expandableGlyph(e: ScrollEntry, active: boolean): string | null 
     e.kind !== 'tool' &&
     e.kind !== 'thought' &&
     e.kind !== 'session_event' &&
+    e.kind !== 'btw' &&
     e.kind !== 'subagent' &&
     e.kind !== 'workflow' &&
     e.kind !== 'bg_task' &&

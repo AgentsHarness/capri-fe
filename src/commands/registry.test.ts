@@ -55,6 +55,7 @@ interface FakeChat {
   renameSession: ReturnType<typeof vi.fn>
   forkSession: ReturnType<typeof vi.fn>
   requestRecap: ReturnType<typeof vi.fn>
+  askBtw: ReturnType<typeof vi.fn>
   openSessionInfo: ReturnType<typeof vi.fn>
   sessionInfoOpen?: boolean
   openContext: ReturnType<typeof vi.fn>
@@ -99,6 +100,7 @@ beforeEach(() => {
     renameSession: vi.fn(),
     forkSession: vi.fn(),
     requestRecap: vi.fn(),
+    askBtw: vi.fn(),
     sessionInfoOpen: false,
     // 真实 store 里 openSessionInfo 就是置 sessionInfoOpen；fake 同步语义。
     openSessionInfo: vi.fn(() => {
@@ -441,6 +443,34 @@ describe('slash command runs — /loop', () => {
     fake.conn = 'idle'
     run('loop', '1h 汇报')
     expect(fake.send).toHaveBeenCalledWith(expect.stringContaining('每 1h 执行一次'))
+  })
+})
+
+describe('slash command runs — /btw', () => {
+  it('无参数 → 用法错误，不发请求', () => {
+    run('btw')
+    run('btw', '   ')
+    expect(fake.appendLocalEntry).toHaveBeenCalledTimes(2)
+    expect(fake.appendLocalEntry).toHaveBeenCalledWith({
+      kind: 'error',
+      text: expect.stringContaining('用法'),
+    })
+    expect(fake.askBtw).not.toHaveBeenCalled()
+  })
+
+  it('有参数 → 调 askBtw（store 直发 x.ai/btw 并带当前 sessionId）', () => {
+    run('btw', '还有多少步完成？')
+    expect(fake.askBtw).toHaveBeenCalledWith('还有多少步完成？')
+  })
+
+  it('busy（回合进行中）也必须照常发出——不走 sendPrompt 排队分支、不进 prompt 队列', () => {
+    fake.conn = 'busy'
+    fake.sessionId = 's2'
+    run('btw', '当前回合还剩几步')
+    expect(fake.askBtw).toHaveBeenCalledWith('当前回合还剩几步')
+    const q = vi.mocked(usePromptQueue.getState)()
+    expect(q.enqueue).not.toHaveBeenCalled()
+    expect(fake.send).not.toHaveBeenCalled()
   })
 })
 
