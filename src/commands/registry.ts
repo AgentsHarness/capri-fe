@@ -14,6 +14,8 @@ import type { ThemeId } from '../theme/tokens'
 import type { AgentCommand } from '../api/types'
 import { slashRecencyScore } from './recency'
 import { cachedSkills } from './skills'
+import { fmtBytes } from '../format'
+import { renderTranscript, safeExportFilename } from '../lib/exportTranscript'
 
 export type SlashCommand = {
   name: string
@@ -487,6 +489,61 @@ export const slashCommands: SlashCommand[] = [
         status('已复制最近一条回复到剪贴板')
       } catch (e) {
         status(`复制失败: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    },
+  },
+  {
+    name: 'export',
+    description: '导出当前会话为 Markdown（无参数复制到剪贴板，带文件名下载）',
+    argHint: '[filename]',
+    run: async (args) => {
+      const st = useChatStore.getState()
+      if (!st.sessionId) {
+        err('没有可导出的会话')
+        return
+      }
+      // FE 历史是分页加载的：只导出已加载部分，文件头/末尾如实标注
+      // 可能还有未上翻加载的更早历史（TUI 服务端全量 transcript 在
+      // Web 端不可得，host 亦无 export 端点——纯前端实现）。
+      const md = renderTranscript(
+        st.entries,
+        {
+          sessionId: st.sessionId,
+          cwd: st.cwd,
+          title: st.sessionTitle,
+          modelName: st.modelName,
+          historyLoadedStart: st.historyLoadedStart,
+          historyHasMore: st.historyHasMore,
+        },
+        st.liveStream,
+      )
+      if (!md) {
+        err('没有可导出的对话内容')
+        return
+      }
+      const filename = args.trim()
+      if (!filename) {
+        try {
+          await navigator.clipboard.writeText(md)
+          status('已复制会话转录到剪贴板')
+        } catch (e) {
+          status(`复制失败: ${e instanceof Error ? e.message : String(e)}`)
+        }
+        return
+      }
+      try {
+        const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = safeExportFilename(filename)
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        URL.revokeObjectURL(url)
+        status(`已导出为 ${a.download}（${fmtBytes(blob.size)}）`)
+      } catch (e) {
+        status(`导出失败: ${e instanceof Error ? e.message : String(e)}`)
       }
     },
   },
