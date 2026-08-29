@@ -10,6 +10,7 @@ vi.mock('../../../api/client', () => ({
       .fn()
       .mockResolvedValue({ sessionId: 'wt-1', worktreePath: '/wt', effectiveCwd: '/wt/x' }),
     sessionDelete: vi.fn().mockResolvedValue({}),
+    btw: vi.fn().mockResolvedValue({ answer: '**答案**' }),
   },
 }))
 
@@ -39,7 +40,10 @@ function bind(state: ChatState) {
   const set: SetState = (partial) => {
     Object.assign(state, typeof partial === 'function' ? partial(state) : partial)
   }
-  return xaiActions(set, () => state) as Pick<ChatState, 'forkSession' | 'deleteSession'>
+  return xaiActions(set, () => state) as Pick<
+    ChatState,
+    'forkSession' | 'deleteSession' | 'askBtw'
+  >
 }
 
 describe('xaiActions.forkSession', () => {
@@ -119,3 +123,73 @@ describe('xaiActions.forkSession', () => {
 function refreshOrder(state: ChatState): number {
   return (state.refreshSessions as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]
 }
+
+describe('xaiActions.askBtw', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(transport.btw as ReturnType<typeof vi.fn>).mockResolvedValue({ answer: '**答案**' })
+  })
+
+  it('带当前 sessionId 直发 transport.btw（busy 中也发，不进队列）', async () => {
+    const state = makeState({ conn: 'busy' })
+    await bind(state).askBtw('还剩几步？')
+    expect(transport.btw).toHaveBeenCalledWith({
+      question: '还剩几步？',
+      sessionId: 's1',
+    })
+  })
+
+  it('等待反馈：先插入 streaming 进行中条目，响应到达后原位更新为答案', async () => {
+    const state = makeState()
+    const p = bind(state).askBtw('翻译一下')
+    // 请求未返回时：一条进行中的 btw 条目（可见等待反馈）。
+    expect(state.entries).toHaveLength(1)
+    const pending = state.entries[0] as Extract<ChatState['entries'][number], { kind: 'btw' }>
+    expect(pending.kind).toBe('btw')
+    expect(pending.question).toBe('翻译一下')
+    expect(pending.streaming).toBe(true)
+    expect(pending.open).toBe(false)
+    await p
+    // 原位更新：同一条目变为答案，streaming 收口。
+    expect(state.entries).toHaveLength(1)
+    const done = state.entries[0] as Extract<ChatState['entries'][number], { kind: 'btw' }>
+    expect(done).toMatchObject({ kind: 'btw', answer: '**答案**', streaming: false })
+  })
+
+  it('失败 → 错误写进同一区块（open 展开直接可见），不静默', async () => {
+    ;(transport.btw as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('session not found'))
+    const state = makeState()
+    await bind(state).askBtw('q')
+    expect(state.entries).toHaveLength(1)
+    const e = state.entries[0] as Extract<ChatState['entries'][number], { kind: 'btw' }>
+    expect(e).toMatchObject({
+      kind: 'btw',
+      error: 'session not found',
+      streaming: false,
+      open: true,
+    })
+  })
+
+  it('无活动会话 → 错误行，不发请求', async () => {
+    const state = makeState({ sessionId: undefined })
+    await bind(state).askBtw('q')
+    expect(transport.btw).not.toHaveBeenCalled()
+    expect(state.entries).toHaveLength(1)
+    expect(state.entries[0]).toMatchObject({ kind: 'error', text: expect.stringContaining('无活动会话') })
+  })
+
+  it('应答晚于切走会话 → 按 id 找不到条目，不污染当前会话滚动区', async () => {
+    let resolveBtw: (v: unknown) => void = () => {}
+    ;(transport.btw as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise((res) => { resolveBtw = res }),
+    )
+    const state = makeState()
+    const p = bind(state).askBtw('慢问题')
+    // 请求未返回期间用户切走：loadHistory 重建 → entries 换成新会话的。
+    state.entries = []
+    state.sessionId = 'other'
+    resolveBtw({ answer: '迟到的答案' })
+    await p
+    expect(state.entries).toHaveLength(0)
+  })
+})

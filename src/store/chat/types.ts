@@ -682,6 +682,8 @@ export interface ChatUiState {
   toggleThought: (id: string) => void
   /** Expand/collapse long user prompts (←/→ / click). */
   toggleUser: (id: string) => void
+  /** 折叠/展开 btw 侧问区块（←/→ / click；默认折叠，TUI BtwBlock）。 */
+  toggleBtw: (id: string) => void
   /** → expand / ← collapse selected foldable block or group */
   setExpanded: (expanded: boolean) => void
   /**
@@ -740,6 +742,11 @@ export interface ChatActions {
   dismissNotice: () => void
   /** x.ai/recap — fire-and-forget "where was I" summary. */
   requestRecap: () => Promise<void>
+  /**
+   * x.ai/btw — 旁路小话（/btw）：busy 中也直接发出、不占 prompt 队列；
+   * 结果以 btw 滚动区块呈现（按发起会话绑定，切走会话不残留）。
+   */
+  askBtw: (question: string) => Promise<void>
   /**
    * Fork the current session (x.ai/session/fork; TUI /fork). On success the
    * FE switches to the forked session (TUI switches to the peer agent) and
