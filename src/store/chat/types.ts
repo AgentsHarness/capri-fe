@@ -872,6 +872,8 @@ export interface ChatActions {
   continueSession: (sessionId: string, cwd: string) => Promise<void>
   /** Memory system — /flush: ask the host to persist session knowledge. */
   memoryFlush: () => Promise<void>
+  /** Memory system — /remember: send a raw note to the agent's LLM rewriter. */
+  rememberNote: (rawText: string) => Promise<void>
 }
 
 export type ChatState = ChatConnState &
