@@ -81,10 +81,10 @@ describe('runStep', () => {
     expect(runStep({ id: 's', kind: 'subagent', title: 's', status: 'completed', running: false })).toEqual({ kind: 'member', vg: 'subagent' })
   })
 
-  it('thought：showThinking 且折叠非流式有内容 → thought；否则 transparent', () => {
+  it('thought：showThinking 且折叠非流式（含空文本）→ thought；否则 transparent', () => {
     expect(runStep(thought())).toEqual({ kind: 'thought' })
+    expect(runStep(thought({ text: '' }))).toEqual({ kind: 'thought' })
     expect(runStep(thought({ streaming: true }))).toEqual({ kind: 'transparent' })
-    expect(runStep(thought({ text: '' }))).toEqual({ kind: 'transparent' })
     expect(runStep(thought({ displayMode: 'expanded' }))).toEqual({ kind: 'transparent' })
     expect(runStep(thought(), false)).toEqual({ kind: 'transparent' })
   })
@@ -145,6 +145,14 @@ describe('scanGroups — verb runs', () => {
     expect(spans[1].range.start).toBe(2)
   })
 
+  it('空文本收口思考认领进 run：尾部噪音行折叠后不再漏光杆行', () => {
+    const entries = [tool({ kindName: 'read' }), tool({ kindName: 'read' }), thought({ text: '' })]
+    const spans = scanGroups(entries, new Set())
+    expect(spans).toHaveLength(1)
+    expect(spans[0].range).toEqual({ start: 0, end: 3 })
+    expect(projectDisplayRows(entries, spans)).toHaveLength(1)
+  })
+
   it('groupToolVerbs=false 时不做 verb 分组', () => {
     const spans = scanGroups([tool({ kindName: 'read' }), tool({ kindName: 'read' })], new Set(), {
       groupToolVerbs: false,
@@ -201,6 +209,199 @@ describe('scanGroups — truncation', () => {
   })
 })
 
+describe('scanGroups / projectDisplayRows — thought 参与截断密度', () => {
+  /** 思考-工具交替 n 轮（2n 个参与者，全部折叠态）。 */
+  const alt = (n: number) =>
+    Array.from({ length: n }, (_, i) => [
+      thought({ text: `t${i}` }),
+      tool({ kindName: 'execute' }),
+    ]).flat()
+
+  it('交替密集段：thought 计入 participants，超阈值成 truncation 组', () => {
+    const entries = alt(12) // 24 participants
+    const spans = scanGroups(entries, new Set())
+    expect(spans).toHaveLength(1)
+    expect(spans[0]).toMatchObject({
+      range: { start: 0, end: 24 },
+      kind: { type: 'truncation', participants: 24, hidden: 14 },
+      anchorId: entries[0].id,
+    })
+  })
+
+  it('短交替（≤ maxVisible+1）不折叠：思考-工具-思考保持平铺', () => {
+    expect(scanGroups(alt(5), new Set())).toHaveLength(0) // 10 participants
+  })
+
+  it('流式思考不劈开截断段（实时行保持可见、不计数）', () => {
+    const entries = [
+      ...Array.from({ length: 12 }, () => tool({ kindName: 'execute' })),
+      thought({ text: 'live', streaming: true }),
+      tool({ kindName: 'execute' }),
+    ]
+    const spans = scanGroups(entries, new Set())
+    expect(spans).toHaveLength(1)
+    expect(spans[0].range).toEqual({ start: 0, end: 14 })
+    expect(spans[0].kind).toEqual({ type: 'truncation', participants: 13, hidden: 3 })
+  })
+
+  it('手动展开的思考不劈开截断段（且留在参与者集合内）', () => {
+    const entries = [
+      ...Array.from({ length: 12 }, () => tool({ kindName: 'execute' })),
+      thought({ displayMode: 'expanded' }),
+      tool({ kindName: 'execute' }),
+    ]
+    const spans = scanGroups(entries, new Set())
+    expect(spans).toHaveLength(1)
+    expect(spans[0].range).toEqual({ start: 0, end: 14 })
+    // 展开思考仍计入参与者:14 = 13 工具 + 1 思考
+    expect(spans[0].kind).toEqual({ type: 'truncation', participants: 14, hidden: 4 })
+  })
+
+  it('点开 thought 数字冻结：参与者/隐藏预算/标签全部不动（17 → 16 回归）', () => {
+    const entries = [
+      ...Array.from({ length: 16 }, () => tool({ kindName: 'execute' })),
+      thought({ text: 'mid' }),
+      tool({ kindName: 'execute' }),
+    ]
+    const collapsed = scanGroups(entries, new Set())
+    expect(collapsed).toHaveLength(1)
+    expect(collapsed[0].kind).toEqual({ type: 'truncation', participants: 18, hidden: 8 })
+    expect(truncationLabel(entries, collapsed[0])).toMatchObject({
+      text: 'Ran 17 commands, Thought 1 time',
+    })
+
+    const openedEntries = entries.map((e) =>
+      e.kind === 'thought' ? { ...e, displayMode: 'expanded' as const } : e,
+    )
+    const opened = scanGroups(openedEntries, new Set())
+    expect(opened).toHaveLength(1)
+    expect(opened[0].range).toEqual({ start: 0, end: 18 })
+    // 参与者集合不变:participants/hidden 与折叠态完全一致 → 尾部不滑行
+    expect(opened[0].kind).toEqual({ type: 'truncation', participants: 18, hidden: 8 })
+    expect(truncationLabel(openedEntries, opened[0])).toMatchObject({
+      text: 'Ran 17 commands, Thought 1 time',
+    })
+    // 展开的思考豁免隐藏,原位可见
+    const rows = projectDisplayRows(openedEntries, opened)
+    expect(
+      rows.some(
+        (r) =>
+          r.type === 'entry' &&
+          r.entry.kind === 'thought' &&
+          r.entry.displayMode === 'expanded',
+      ),
+    ).toBe(true)
+  })
+
+  it('纯思考段不触发截断（阈值只数工具，短段保持平铺）', () => {
+    const entries = Array.from({ length: 12 }, () => thought({ text: 't' }))
+    expect(scanGroups(entries, new Set())).toHaveLength(0)
+  })
+
+  it('折叠点只看工具数：6 轮交替（12 参与者、6 工具）不折叠', () => {
+    expect(scanGroups(alt(6), new Set())).toHaveLength(0)
+  })
+
+  it('折叠段前的思考一并入组隐藏', () => {
+    const entries = [
+      thought({ text: 'pre' }),
+      ...Array.from({ length: 13 }, () => tool({ kindName: 'execute' })),
+    ]
+    const spans = scanGroups(entries, new Set())
+    expect(spans).toHaveLength(1)
+    expect(spans[0]).toMatchObject({
+      range: { start: 0, end: 14 },
+      kind: { type: 'truncation', participants: 14, hidden: 4 },
+    })
+    const rows = projectDisplayRows(entries, spans)
+    // header + 10 可见尾部（前导 thought 与最旧 3 条 execute 藏进前缀）
+    expect(rows).toHaveLength(11)
+    expect(rows[0].type).toBe('group_header')
+  })
+
+  it('纯思考短段不成组（保持平铺）', () => {
+    expect(scanGroups([thought(), thought(), thought()], new Set())).toHaveLength(0)
+  })
+
+  it('折叠截断组：thought 随最旧前缀一起隐藏，尾部原序可见', () => {
+    const entries = alt(12)
+    const rows = projectDisplayRows(entries, scanGroups(entries, new Set()))
+    // 24 参与 - 14 隐藏 + 1 header = 11 行
+    expect(rows).toHaveLength(11)
+    expect(rows[0].type).toBe('group_header')
+    const tail = rows.slice(1).map((r) => (r.type === 'entry' ? r.entry.kind : 'header'))
+    expect(tail).toEqual(Array.from({ length: 10 }, (_, i) => (i % 2 === 0 ? 'thought' : 'tool')))
+    expect(rows[1]).toMatchObject({ type: 'entry', index: 14 })
+  })
+
+  it('展开截断组：header + 全部参与者（思考原位，时间线保真）', () => {
+    const entries = alt(12)
+    const rows = projectDisplayRows(entries, scanGroups(entries, new Set([entries[0].id])))
+    expect(rows).toHaveLength(25)
+    expect(rows[1]).toMatchObject({ type: 'entry', index: 0 })
+    expect(rows[24]).toMatchObject({ type: 'entry', index: 23 })
+  })
+
+  it('truncationLabel：thought 计数以 "Thought N times" 追加在工具段之后', () => {
+    const entries = alt(12)
+    const span = scanGroups(entries, new Set())[0]
+    expect(truncationLabel(entries, span)).toEqual({
+      text: 'Ran 12 commands, Thought 12 times',
+      running: false,
+      failed: false,
+    })
+  })
+})
+
+describe('scanGroups — subagent（task）与密集段的边界', () => {
+  const bash = (n: number) => Array.from({ length: n }, () => tool({ kindName: 'execute' }))
+  const subagent = (running = false): ScrollEntry => ({
+    id: 'sa1',
+    kind: 'subagent',
+    title: 'task',
+    status: running ? 'started' : 'completed',
+    running,
+  })
+
+  it('纯 subagent run 不成组：密集段跨越 task 连续折叠', () => {
+    const entries = [...bash(12), subagent(), ...bash(12)]
+    const spans = scanGroups(entries, new Set())
+    expect(spans).toHaveLength(1)
+    expect(spans[0]).toMatchObject({
+      range: { start: 0, end: 25 },
+      kind: { type: 'truncation', participants: 25, hidden: 15 },
+    })
+  })
+
+  it('task 之后的低密度段随同一组折叠（不再因 task 断开重新够阈值）', () => {
+    const entries = [...bash(12), subagent(), ...bash(5)]
+    const spans = scanGroups(entries, new Set())
+    expect(spans).toHaveLength(1)
+    expect(spans[0].kind).toEqual({ type: 'truncation', participants: 18, hidden: 8 })
+    const rows = projectDisplayRows(entries, spans)
+    expect(rows).toHaveLength(11) // header + 10 可见尾部（含原位的 task 行）
+  })
+
+  it('孤立 task 保持自身条目行，不退化成 1 成员裸 header', () => {
+    const entries = [subagent()]
+    const spans = scanGroups(entries, new Set())
+    expect(spans).toHaveLength(0)
+    const rows = projectDisplayRows(entries, spans)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ type: 'entry', entry: { kind: 'subagent' } })
+  })
+
+  it('夹在 Read run 中的 task 照旧并入 verb 组（toolMembers ≥ 1）', () => {
+    const entries = [...Array.from({ length: 5 }, () => tool({ kindName: 'read' })), subagent(true), ...Array.from({ length: 5 }, () => tool({ kindName: 'read' }))]
+    const spans = scanGroups(entries, new Set())
+    expect(spans).toHaveLength(1)
+    expect(spans[0].kind).toEqual({ type: 'verb', members: 11 })
+    expect(verbGroupLabel(entries, spans[0])).toMatchObject({
+      text: 'Reading 10 files, Running 1 subagent',
+    })
+  })
+})
+
 describe('verbGroupLabel / truncationLabel', () => {
   it('按 bucket 汇总动词+名词，running 统一进行时', () => {
     const entries = [tool({ kindName: 'read' }), tool({ kindName: 'read' }), tool({ kindName: 'search' })]
@@ -226,12 +427,14 @@ describe('verbGroupLabel / truncationLabel', () => {
     })
   })
 
-  it('truncationLabel 只统计 hidden 数量前缀', () => {
+  it('truncationLabel 盘点整组（全组计数，不再只数 hidden 前缀）', () => {
     const entries = Array.from({ length: 13 }, () => tool({ kindName: 'execute' }))
     const span = scanGroups(entries, new Set())[0]
-    const label = truncationLabel(entries, span)
-    // hidden=3 → 只盘点前 3 个参与成员
-    expect(label).toEqual({ text: 'Ran 3 commands', running: false, failed: false })
+    expect(truncationLabel(entries, span)).toEqual({
+      text: 'Ran 13 commands',
+      running: false,
+      failed: false,
+    })
   })
 
   it('空 span / 非 truncation → null', () => {

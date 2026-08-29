@@ -2,13 +2,17 @@ import { loadJSON, saveJSON } from '../lib/storage'
 import {
   useEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
   type ClipboardEvent as ReactClipboardEvent,
+  type PointerEvent as ReactPointerEvent,
 } from 'react'
+import { GripVertical } from 'lucide-react'
 import { useChatStore, formatTurnDuration, stillRunningCue } from '../store/chat'
 import { pushToast } from '../store/toast'
 import { usePromptQueue } from '../store/promptQueue'
+import { onUiSettingsChange, onUiSettingsReady, uiString } from '../store/settings'
 import { transport } from '../api/client'
 import type { ContentBlock, ScrollEntry } from '../api/types'
 import {
@@ -23,6 +27,7 @@ import {
   COMPOSER_BODY_PAD_LEFT_PX,
   CONTENT_COLUMN_CLASS,
   COLUMN_PAD_X_CLASS,
+  ICON_COL_CLASS,
 } from '../theme/layout'
 import { IconGlyph } from './IconGlyph'
 import { fmtTok } from '../format'
@@ -440,6 +445,23 @@ export function Composer() {
   const taRef = useRef<HTMLTextAreaElement>(null)
   const busy = conn === 'busy'
 
+  // ── 队首去向徽标（follow_up_behavior 对齐）─────────────────────────
+  // 队列第一行在「立即发送」左侧标注队首的下一个去向：
+  // - busy + [ui].follow_up_behavior=steer → 「引导」：agent 在下一个
+  //   工具/模型安全间隙把队首注入运行中回合，不取消回合（shell 侧
+  //   drain_interjections_at_safe_point 的 promote_queued_as_interjections）。
+  // - 其余（queue 默认 / 空闲）→ 「队列」：等当前回合结束后作为下一
+  //   回合运行（steer 提升仅在回合运行中生效，空闲时队首同样按回合跑）。
+  // settings 缓存是模块级非响应式状态，随 ApprovalStrip 惯用法订阅变更
+  // 强制重渲；degraded 队首不标注（agent 从没见过该行，两个去向都
+  // 不适用）。
+  const [, forceQueueBadgeRender] = useReducer((x: number) => x + 1, 0)
+  useEffect(() => {
+    onUiSettingsReady(() => forceQueueBadgeRender())
+    return onUiSettingsChange(() => forceQueueBadgeRender())
+  }, [])
+  const headSteer = busy && uiString('follow_up_behavior') === 'steer'
+
   // ── Scrollbar gutter alignment ────────────────────────────────────
   // The scrollback box reserves its scrollbar gutter via
   // scrollbar-gutter: stable so its centered column never jumps when the
@@ -481,16 +503,21 @@ export function Composer() {
 
   // ── TUI mid-turn send queue (Enter during a turn → queued) ──
   const queue = usePromptQueue((s) => s.queue)
-  // Queue dropdown visibility lives in the chat store so the global
-  // scrollback keys can defer to it (TUI queue pane owns the keyboard).
+  // queuePanelOpen = composer 内联队列是否展开（不再是弹窗）。顶部 +N
+  // 徽标与标题行共用这个开关。
   const queuePanelOpen = useChatStore((s) => s.queuePanelOpen)
   const setQueuePanelOpen = useChatStore((s) => s.setQueuePanelOpen)
   const queueEditIndex = usePromptQueue((s) => s.editIndex)
   const queueEditDraft = usePromptQueue((s) => s.editDraft)
-  // Selected queue row (TUI queue pane selection; ↑↓/j/k move it).
+  // Selected queue row (↑↓/j/k)；queueFocus 时快捷键归队列，否则滚动区
+  // 照常吃 j/k（内联条常驻展开时不能把滚动键抢走）。
   const [queueSel, setQueueSel] = useState(0)
+  const [queueFocus, setQueueFocus] = useState(false)
+  // 左侧抓手拖拽：from = 抓起行，over = 当前落点（都是当前 queue 下标）。
+  const [queueDrag, setQueueDrag] = useState<{ from: number; over: number } | null>(null)
+  const queueDragRef = useRef<{ from: number; over: number } | null>(null)
   const queuePanelRef = useRef<HTMLDivElement>(null)
-  const queuePillRef = useRef<HTMLButtonElement>(null)
+  const queueLenRef = useRef(0)
 
   // ── TUI Esc ladder (prompt.rs try_handle_esc_policy, idle side) ──────
   // First idle Esc ARMS: a non-empty draft shows "press again to clear"
@@ -638,12 +665,13 @@ export function Composer() {
   }
 
   /**
-   * TUI double-Enter / [发送现在]: drain the queue head immediately.
+   * 空输入双 Enter（队首）或行内「立即发送」（指定 id）。
    * Server-authoritative semantics (TUI 对齐):
    * - 队首行已确认（有 version，来自 queue_changed 广播）→
    *   x.ai/queue/interject {id, expectedVersion}：agent 版本校验后把该行
-   *   提升为下一个运行（send_now=true，插到 front），不取消当前回合
-   *   （已知行 send_now_cancels_running_turn=false）。行保留在本地镜像
+   *   提升为下一个运行（send_now=true，插到 front）。运行中回合 front
+   *   已提交时 agent 会取消它、该行立即开跑（send_now_cancels_running_turn
+   *   ——goal 活跃或 front 未提交则豁免）。行保留在本地镜像
    *   （广播是校正通道）；版本不符/未知 id → agent no-op 并重广播，
    *   行原样保留。收养广播（running_prompt_id）到达时移除并渲染用户行。
    * - 队首行非降级（乐观回显 / 已确认但广播无 version）→ agent-owned：
@@ -658,7 +686,7 @@ export function Composer() {
    * 否则整回合（send 在回合完成时才 resolve）期间 onSubmit 的 sending
    * 守卫会把 Enter 静默吞掉。
    */
-  const sendQueuedHead = async () => {
+  const sendQueuedItem = async (id?: string) => {
     const q = usePromptQueue.getState()
     if (q.sending) return
     // Stale-queue guard: the queue is tagged with the session it was
@@ -671,16 +699,20 @@ export function Composer() {
       q.switchSession(activeSession || undefined)
       return
     }
-    const head = q.queue[0]
-    if (!head) return
+    const item = id ? q.queue.find((x) => x.id === id) : q.queue[0]
+    if (!item) return
     q.setSending(true)
     try {
-      if (head.version != null) {
-        // 已确认行 → send-now via interject（agent 提升，不取消回合）。
-        // 错误忽略：广播是校正通道，行保留在镜像，显示可能短暂陈旧。
+      if (!item.degraded) {
+        // agent-owned 行（乐观回显 / 已确认）→ send-now via interject
+        // （提升为下一个运行；运行中回合可能被 agent 取消、该行立即
+        // 开跑）。错误忽略：广播是校正通道，行保留在镜像。
         try {
           await transport.queueInterject(
-            { id: head.id, expectedVersion: head.version },
+            {
+              id: item.id,
+              ...(item.version != null ? { expectedVersion: item.version } : {}),
+            },
             activeSession,
           )
         } catch {
@@ -688,25 +720,10 @@ export function Composer() {
         }
         return
       }
-      if (!head.degraded) {
-        // 非降级行都是 agent-owned：
-        // - 乐观回显（prompt RPC 已发出且被接受）：agent 正在跑或已排进
-        //   权威队列，收养广播（running_prompt_id）会移除镜像行并渲染
-        //   用户行；
-        // - 已确认但广播没带 version 的旧行：同样在 agent 权威队列里，
-        //   回合结束由 agent 自动 pop。
-        // FE 若在此 cancel-then-send 会把同一条消息再发一遍——agent 先
-        // 跑完在飞的那条、再跑这条，视觉上就是「第一条消息被当作
-        // queued 再次发送」。这里只等广播/收养（TUI
-        // send_now_awaiting_confirm 语义）。
-        return
-      }
       // RPC 失败降级行（FE-owned，agent 从没见过）→ cancel-then-send
-      // 兜底：取消运行中回合（后台任务继续），然后发送队首作为下一回合。
+      // 兜底：取消运行中回合（后台任务继续），然后发送该行。
       if (useChatStore.getState().conn === 'busy') {
         await useChatStore.getState().cancel()
-        // Let the cancelled SSE land first so it can't clobber the new
-        // turn's busy state (bounded wait; no-op when already idle).
         for (
           let i = 0;
           i < 50 && useChatStore.getState().conn === 'busy';
@@ -715,29 +732,18 @@ export function Composer() {
           await new Promise((r) => setTimeout(r, 10))
         }
       }
-      // 取消等待窗口内收养广播可能已把当初按下的队首移除（乐观行被
-      // agent 收养、新回合已开始）——队首已不是该行时放弃手动发送，
-      // 交给广播收养流程，绝不把别的行误发出去。
-      if (usePromptQueue.getState().queue[0]?.id !== head.id) return
-      const popped = q.dequeue()
-      if (!popped) return
+      if (!usePromptQueue.getState().queue.some((x) => x.id === item.id)) return
+      q.removeAt(item.id)
       try {
-        const sendPromise = useChatStore.getState().send(popped.text, popped.blocks, {
-          // 降级行重发保持同一 promptId（agent queue_meta 身份一致）。
-          promptId: popped.degraded ? popped.id : undefined,
+        const sendPromise = useChatStore.getState().send(item.text, item.blocks, {
+          promptId: item.id,
         })
-        // 竞态窗口已过：send() 同步置 conn=busy——立即释放锁（见函数头
-        // 注释）。
         q.setSending(false)
         await sendPromise
-        if (useChatStore.getState().conn !== 'error') pushHistory(popped.text)
+        if (useChatStore.getState().conn !== 'error') pushHistory(item.text)
       } catch {
-        // 发送被拒（host 409「上一条消息还在处理中」——cancel 尚未落到
-        // host 侧 / 传输失败）：队首已出队，必须放回当前会话队首，否则
-        // 该条永久丢失。错误已由 send() 渲染成 scrollback 行，不重复
-        // 处理。
         const active = useChatStore.getState().sessionId
-        if (active) usePromptQueue.getState().requeueFront(active, popped)
+        if (active) usePromptQueue.getState().requeueFront(active, item)
       } finally {
         q.setSending(false)
       }
@@ -826,7 +832,7 @@ export function Composer() {
     const trimmed = text.trim()
     if (!trimmed) {
       // Double-Enter: empty input + Enter → send the queue head now.
-      if (q.queue.length > 0) void sendQueuedHead()
+      if (q.queue.length > 0) void sendQueuedItem()
       return
     }
     if (shellMode) {
@@ -834,18 +840,17 @@ export function Composer() {
       return
     }
     const st = useChatStore.getState()
-    if (st.conn === 'busy') {
-      // TUI: Enter during a running turn → server-authoritative enqueue：
-      // 立即 fire-and-forget 发 prompt RPC（`_meta.promptId`，agent 把它
-      // 插进权威队列），本地插乐观回显行；RPC 失败（含竞态 409）→
-      // 行保留 degraded（手动重发）+ 渲染错误行。
+    if (st.conn === 'busy' && st.sessionId) {
+      // TUI: Enter during a running turn → server-authoritative enqueue。
+      // 走 send() 的忙分支（共享实现）：只入 agent 权威队列，不进
+      // transcript——排队消息本身由 composer 上方的内联队列区展示
+      // （默认展开，可收起为 "N queued"）；回合收口后 agent pop 队首，
+      // 收养广播把该条渲染为用户行。RPC 失败 → 行保留 degraded（队列
+      // 区红点 + 失败徽标，可手动重发）。
       const { expandedText, blocks } = buildBlocks(text, chips)
       setText('')
       setChips([])
-      // Tag the queue with the active session so drains stay session-scoped.
-      // 失败不滚 scrollback 错误行：行标记 degraded 后由队列面板的红色
-      // 徽标提示（失败原因作 tooltip），主回合输出不被打断。
-      q.enqueue({ text: expandedText, blocks }, st.sessionId ?? '')
+      void useChatStore.getState().send(expandedText, blocks)
       taRef.current?.focus()
       return
     }
@@ -1105,36 +1110,18 @@ export function Composer() {
     [chips],
   )
 
-  // Close the recall / queue panels on outside click or Escape.
+  // Close the recall panel on outside click or Escape. Queue 已内联进
+  // composer，不再有弹窗可关。
   useEffect(() => {
-    if (!histOpen && !queuePanelOpen) return
+    if (!histOpen) return
     const onDown = (e: MouseEvent) => {
       const t = e.target as Node
-      if (
-        histOpen &&
-        histPanelRef.current &&
-        !histPanelRef.current.contains(t)
-      ) {
+      if (histPanelRef.current && !histPanelRef.current.contains(t)) {
         setHistOpen(false)
-      }
-      if (
-        queuePanelOpen &&
-        queuePanelRef.current &&
-        !queuePanelRef.current.contains(t) &&
-        !queuePillRef.current?.contains(t)
-      ) {
-        setQueuePanelOpen(false)
-        // Closing the panel discards any in-progress row edit.
-        usePromptQueue.getState().cancelEdit()
       }
     }
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
-      if (histOpen) setHistOpen(false)
-      // While editing a row, Esc cancels the edit instead of closing the
-      // panel (the edit textarea stops propagation itself; this is the
-      // defense-in-depth for keys that bypass it).
-      if (queuePanelOpen && queueEditIndex == null) setQueuePanelOpen(false)
+      if (e.key === 'Escape') setHistOpen(false)
     }
     document.addEventListener('mousedown', onDown)
     document.addEventListener('keydown', onKey)
@@ -1142,21 +1129,25 @@ export function Composer() {
       document.removeEventListener('mousedown', onDown)
       document.removeEventListener('keydown', onKey)
     }
-  }, [histOpen, queuePanelOpen, queueEditIndex, setQueuePanelOpen])
+  }, [histOpen])
 
   // Keep the queue selection inside the current list (rows drain / get
-  // deleted while the panel is open).
+  // deleted). New items auto-expand the strip so the message itself is
+  // visible in composer — not just "N queued".
   useEffect(() => {
+    if (queue.length > queueLenRef.current) setQueuePanelOpen(true)
+    queueLenRef.current = queue.length
+    if (queue.length === 0) setQueueFocus(false)
     setQueueSel((s) => Math.min(s, Math.max(0, queue.length - 1)))
-  }, [queue.length])
+  }, [queue.length, setQueuePanelOpen])
 
-  // ── Queue panel keyboard ops (TUI queue.rs): x delete, e/Enter edit,
+  // ── Inline queue keyboard ops (TUI queue.rs): x delete, e/Enter edit,
   // ↑↓/j/k move the selection, Shift+K/↑ or Ctrl+↑ swap up, Shift+J/↓ or
-  // Ctrl+↓ swap down. Active only while the panel is open and NOT while
-  // editing or typing in the composer textarea — plain typing always
-  // wins. Capture phase so the scrollback nav keys never see these.
+  // Ctrl+↓ swap down. Only while the strip is focused (empty-prompt ↑
+  // or a row click) — typing in the composer and scrollback j/k win
+  // otherwise. Capture phase so the scrollback nav keys never see these.
   useEffect(() => {
-    if (!queuePanelOpen || queueEditIndex != null || queue.length === 0) return
+    if (!queueFocus || queueEditIndex != null || queue.length === 0) return
     const onKey = (e: KeyboardEvent) => {
       if (e.isComposing) return
       const t = e.target as HTMLElement | null
@@ -1206,14 +1197,14 @@ export function Composer() {
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [queuePanelOpen, queueEditIndex, queueSel, queue.length])
+  }, [queueFocus, queueEditIndex, queueSel, queue.length])
 
   // TUI queue: server-authoritative drain — the AGENT pops the queue head
   // at turn end (auto-drain) and broadcasts running_prompt_id for
   // adoption; the FE never auto-sends queue rows (legacy 409 auto-retry
   // removed). Agent-owned rows (optimistic in-flight / confirmed) are
   // adopted via the broadcast; FE-owned degraded rows (RPC 失败保留) are
-  // sent MANUALLY via 双 Enter / [发送现在] (sendQueuedHead). The
+  // sent MANUALLY via 双 Enter / 行内「立即发送」 (sendQueuedItem). The
   // `sending` mutex guards against Enter races.
 
   // TUI rewind draft custody: the /rewind picker stashes the prompt while
@@ -1705,35 +1696,194 @@ export function Composer() {
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [usage, statusText, permissionMode, yoloMode, autoMode, planMode])
 
-  // ── TUI queue hint (turn_status.rs: `· N queued`) ──
-  // 队列状态不进状态行（右侧簇在窄屏会挤）——独立一行，字号与 busy
-  // 状态块一致（13.5px / tabular-nums / 灰色），纵向尽量收窄。
+  const setQueueDragBoth = (
+    v: { from: number; over: number } | null,
+  ) => {
+    queueDragRef.current = v
+    setQueueDrag(v)
+  }
+  const onQueueGripPointerDown = (
+    i: number,
+    e: ReactPointerEvent<HTMLButtonElement>,
+  ) => {
+    if (queueEditIndex != null) return
+    if (e.button !== 0) return
+    e.preventDefault()
+    e.stopPropagation()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    setQueueDragBoth({ from: i, over: i })
+    setQueueSel(i)
+    setQueueFocus(true)
+  }
+  const onQueueGripPointerMove = (e: ReactPointerEvent<HTMLButtonElement>) => {
+    const drag = queueDragRef.current
+    if (!drag) return
+    const list = queuePanelRef.current
+    if (!list) return
+    let best = drag.from
+    let bestDist = Infinity
+    list.querySelectorAll<HTMLElement>('[data-queue-idx]').forEach((el) => {
+      const r = el.getBoundingClientRect()
+      const idx = Number(el.dataset.queueIdx)
+      if (!Number.isFinite(idx)) return
+      const d = Math.abs(e.clientY - (r.top + r.height / 2))
+      if (d < bestDist) {
+        bestDist = d
+        best = idx
+      }
+    })
+    if (best !== drag.over) setQueueDragBoth({ from: drag.from, over: best })
+  }
+  const onQueueGripPointerUp = () => {
+    const drag = queueDragRef.current
+    if (!drag) return
+    if (drag.from !== drag.over) {
+      usePromptQueue.getState().moveTo(drag.from, drag.over)
+      setQueueSel(drag.over)
+    }
+    setQueueDragBoth(null)
+  }
+
+  // ── Inline queue strip：忙时 Enter 只入队，消息正文在 composer 上方。
+  // 每行常驻 立即发送 / 编辑 / 删除；左侧抓手拖拽排序。字号与 status 行一致。
   const queueRow =
-    queue.length > 0 && (
+    queue.length > 0 &&
+    queuePanelOpen && (
       <div
-        // Same vertical rhythm as the status line: pb-2 below the row,
-        // no extra top margin — spacing to the row above comes from that
-        // row's own bottom padding (8px between stacked rows, 8px before
-        // the chrome).
-        className="flex min-h-4 items-center gap-1.5 pb-2 pr-0.5 font-ui text-[13.5px] leading-[1.4] select-none"
+        ref={queuePanelRef}
+        className="select-none pb-2 pr-0.5 font-ui text-[13.5px] leading-[1.4]"
         style={{ paddingLeft: COMPOSER_BODY_PAD_LEFT_PX }}
       >
-        <button
-          ref={queuePillRef}
-          type="button"
-          onClick={() => setQueuePanelOpen(!queuePanelOpen)}
-          className="inline-flex min-h-5 items-center rounded px-1 tabular-nums text-gn-gray transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg sm:min-h-0"
-          title="点击查看发送队列（发送现在 / 删除 / 编辑）"
-        >
-          {/* 有降级（发送失败）行：红点提示，面板打开后行上徽标说明。 */}
-          {queue.some((q) => q.degraded) && (
-            <span
-              className="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-gn-red"
-              title="有消息发送失败，点击查看并重发"
-            />
-          )}
-          · {queue.length} queued
-        </button>
+        <div className="gn-no-scrollbar flex max-h-28 flex-col gap-0.5 overflow-y-auto">
+          {queue.map((q, i) => {
+            const editing = queueEditIndex === i
+            const selected = queueFocus && queueSel === i
+            const actionClass =
+              'shrink-0 rounded px-1.5 py-[2px] text-gn-gray hover:bg-gn-bg-highlight hover:text-gn-fg'
+            return (
+              <div
+                key={q.id}
+                data-queue-idx={i}
+                onMouseEnter={() => setQueueSel(i)}
+                onMouseDown={() => {
+                  setQueueSel(i)
+                  setQueueFocus(true)
+                }}
+                className={`flex min-h-5 items-center gap-1.5 rounded py-0.5 ${
+                  selected && !editing ? 'bg-gn-bg-highlight/70' : ''
+                } ${queueDrag?.from === i ? 'opacity-50' : ''} ${
+                  queueDrag && queueDrag.over === i && queueDrag.from !== i
+                    ? 'border-t border-gn-cyan'
+                    : ''
+                }`}
+              >
+                <button
+                  type="button"
+                  disabled={editing}
+                  onPointerDown={(e) => onQueueGripPointerDown(i, e)}
+                  onPointerMove={onQueueGripPointerMove}
+                  onPointerUp={onQueueGripPointerUp}
+                  onPointerCancel={onQueueGripPointerUp}
+                  className={`${ICON_COL_CLASS} cursor-grab text-gn-gray touch-none hover:text-gn-fg active:cursor-grabbing disabled:cursor-default disabled:opacity-40`}
+                  aria-label="拖拽排序"
+                  title="拖拽排序"
+                >
+                  <GripVertical size={13} strokeWidth={2.25} aria-hidden />
+                </button>
+                {editing ? (
+                  <textarea
+                    autoFocus
+                    rows={1}
+                    value={queueEditDraft}
+                    onChange={(e) =>
+                      usePromptQueue.getState().setEditDraft(e.target.value)
+                    }
+                    onKeyDown={(e) => {
+                      if (e.nativeEvent.isComposing) return
+                      if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey) {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        usePromptQueue.getState().saveEdit()
+                      } else if (e.key === 'Escape') {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        usePromptQueue.getState().cancelEdit()
+                      }
+                    }}
+                    className="gn-no-scrollbar min-h-[1.4em] flex-1 resize-none bg-transparent font-ui text-[13.5px] leading-[1.4] text-gn-fg outline-none"
+                    spellCheck={false}
+                  />
+                ) : (
+                  <span
+                    className="min-w-0 flex-1 truncate text-gn-gray"
+                    title={q.degraded ? `发送失败：${q.errorText ?? ''}` : q.text}
+                  >
+                    {q.degraded ? (
+                      <span className="mr-1.5 text-gn-red">失败</span>
+                    ) : null}
+                    {q.text}
+                  </span>
+                )}
+                {editing ? (
+                  <button
+                    type="button"
+                    onClick={() => usePromptQueue.getState().saveEdit()}
+                    className={actionClass}
+                  >
+                    保存
+                  </button>
+                ) : (
+                  <>
+                    {i === 0 && !q.degraded ? (
+                      <span
+                        className={`shrink-0 rounded border px-1 py-px text-[10px] leading-none ${
+                          headSteer
+                            ? 'border-gn-cyan/50 text-gn-cyan'
+                            : 'border-gn-prompt-border/70 text-gn-gutter'
+                        }`}
+                        title={
+                          headSteer
+                            ? 'steer：队首将在运行中回合的下一个工具/模型安全间隙注入（不取消回合）'
+                            : 'queue：队首等当前回合结束后作为下一回合运行'
+                        }
+                      >
+                        {headSteer ? '引导' : '队列'}
+                      </span>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => void sendQueuedItem(q.id)}
+                      className="shrink-0 rounded px-1.5 py-[2px] text-gn-cyan hover:bg-gn-bg-highlight"
+                      title="立即发送这条"
+                    >
+                      立即发送
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setQueueSel(i)
+                        setQueueFocus(true)
+                        usePromptQueue.getState().startEdit(i)
+                      }}
+                      className={actionClass}
+                    >
+                      编辑
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => usePromptQueue.getState().removeAt(q.id)}
+                      className="shrink-0 rounded px-1.5 py-[2px] text-gn-gray hover:bg-gn-bg-highlight hover:text-gn-red"
+                      aria-label="删除这条排队消息"
+                      title="删除"
+                    >
+                      删除
+                    </button>
+                  </>
+                )}
+              </div>
+            )
+          })}
+        </div>
       </div>
     )
 
@@ -1938,8 +2088,7 @@ export function Composer() {
           </div>
           )}
         </div>
-        {/* TUI queue hint 独立一行（不挤状态行）：排队中/空闲有剩余条目时
-            都显示，点击展开队列面板。 */}
+        {/* 内联发送队列（无弹窗）：排队消息正文 + 行内操作。 */}
         {queueRow}
         {escHintRow}
         {/* ── TUI follow-up suggestion chips (x.ai/follow_ups, follow_ups.rs) ──
@@ -1983,161 +2132,6 @@ export function Composer() {
             taRef.current?.focus()
           }}
         >
-          {/* Queue panel — floats above the composer; per-item delete,
-              [发送现在] drains the head immediately. */}
-          {queuePanelOpen && queue.length > 0 && (
-            <div
-              ref={queuePanelRef}
-              className="absolute bottom-full left-0 right-0 z-40 mb-1 overflow-hidden rounded border border-gn-prompt-border-active bg-gn-bg-dark shadow-2xl"
-            >
-              <div className="flex items-center justify-between border-b border-gn-prompt-border px-3 py-1.5">
-                <span className="text-[11px] font-bold text-gn-fg2">
-                  发送队列 ({queue.length})
-                </span>
-                <span className="text-[10px] text-gn-gray">
-                  回合结束后自动发送队首
-                </span>
-              </div>
-              <div className="gn-no-scrollbar max-h-40 overflow-y-auto">
-                {queue.map((q, i) => {
-                  const editing = queueEditIndex === i
-                  const selected = queueSel === i
-                  return (
-                    <div
-                      key={q.id}
-                      onMouseEnter={() => setQueueSel(i)}
-                      onMouseDown={() => setQueueSel(i)}
-                      className={`group flex items-center gap-2 border-b border-gn-prompt-border/40 px-3 py-1.5 ${
-                        selected && !editing ? 'bg-gn-bg-highlight/50' : ''
-                      }`}
-                    >
-                      <span className="shrink-0 text-[10px] tabular-nums text-gn-gray">
-                        {i + 1}
-                      </span>
-                      {editing ? (
-                        // TUI queue_edit.rs: the row becomes a textarea —
-                        // Enter saves, Esc cancels, Shift+Enter newlines.
-                        <textarea
-                          autoFocus
-                          rows={1}
-                          value={queueEditDraft}
-                          onChange={(e) =>
-                            usePromptQueue.getState().setEditDraft(e.target.value)
-                          }
-                          onKeyDown={(e) => {
-                            if (e.nativeEvent.isComposing) return
-                            if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey) {
-                              e.preventDefault()
-                              e.stopPropagation()
-                              usePromptQueue.getState().saveEdit()
-                            } else if (e.key === 'Escape') {
-                              e.preventDefault()
-                              e.stopPropagation()
-                              usePromptQueue.getState().cancelEdit()
-                            }
-                            // Shift+Enter → native newline
-                          }}
-                          className="gn-no-scrollbar min-h-[20px] flex-1 resize-none bg-transparent font-ui text-[11.5px] leading-[1.5] text-gn-fg outline-none"
-                          spellCheck={false}
-                        />
-                      ) : (
-                        <span
-                          className="min-w-0 flex-1 truncate text-[11.5px] text-gn-fg"
-                          title={q.text}
-                          onDoubleClick={() =>
-                            usePromptQueue.getState().startEdit(i)
-                          }
-                        >
-                          {q.text}
-                        </span>
-                      )}
-                      {!editing && (
-                        <>
-                          {/* RPC 失败降级行：红色徽标提示手动重发（失败
-                              原因作 tooltip）；不再滚 scrollback 错误行。 */}
-                          {q.degraded && (
-                            <span
-                              className="shrink-0 rounded border border-gn-red/40 bg-gn-diff-del-bg/60 px-1 py-[1px] text-[10px] leading-none font-semibold text-gn-red"
-                              title={
-                                q.errorText
-                                  ? `${q.errorText}\n双 Enter / [发送现在] 重发`
-                                  : '发送失败：双 Enter / [发送现在] 重发'
-                              }
-                            >
-                              发送失败
-                            </span>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              usePromptQueue.getState().moveUp(i)
-                              setQueueSel(Math.max(0, i - 1))
-                            }}
-                            className="shrink-0 rounded px-1 text-gn-gray transition-opacity hover:bg-gn-bg-highlight hover:text-gn-fg sm:opacity-0 sm:group-hover:opacity-100"
-                            title="上移 (Shift+K / Ctrl+↑)"
-                          >
-                            ↑
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              usePromptQueue.getState().moveDown(i)
-                              setQueueSel(Math.min(queue.length - 1, i + 1))
-                            }}
-                            className="shrink-0 rounded px-1 text-gn-gray transition-opacity hover:bg-gn-bg-highlight hover:text-gn-fg sm:opacity-0 sm:group-hover:opacity-100"
-                            title="下移 (Shift+J / Ctrl+↓)"
-                          >
-                            ↓
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => usePromptQueue.getState().startEdit(i)}
-                            className="shrink-0 rounded px-1 text-gn-gray transition-opacity hover:bg-gn-bg-highlight hover:text-gn-fg sm:opacity-0 sm:group-hover:opacity-100"
-                            title="编辑 (e)"
-                          >
-                            e
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => usePromptQueue.getState().removeAt(q.id)}
-                            className="shrink-0 rounded px-1 text-gn-gray transition-opacity hover:bg-gn-bg-highlight hover:text-gn-red sm:opacity-0 sm:group-hover:opacity-100"
-                            title="从队列删除 (x)"
-                          >
-                            {Glyphs.ballotX}
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-              <div className="flex items-center gap-2 border-t border-gn-prompt-border px-3 py-1.5">
-                <button
-                  type="button"
-                  onClick={() => void sendQueuedHead()}
-                  className="rounded bg-gn-bg-highlight px-2 py-[2px] text-[11px] text-gn-cyan transition-colors hover:bg-gn-bg-hover"
-                  title="立即发送队首"
-                >
-                  发送现在
-                </button>
-                <button
-                  type="button"
-                  onClick={() => usePromptQueue.getState().clear()}
-                  className="rounded px-2 py-[2px] text-[11px] text-gn-gray transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
-                >
-                  清空
-                </button>
-                <span className="flex-1" />
-                {/* 键盘快捷键提示仅桌面显示——触屏没有 hover/快捷键，窄屏
-                    也放不下（10px × 90 字 ≈ 460px）。 */}
-                <span className="hidden text-[10px] text-gn-gray sm:inline">
-                  {queueEditIndex != null
-                    ? 'Enter 保存 · Shift+Enter 换行 · Esc 取消'
-                    : 'x 删除 · e 编辑 · ↑↓ 选择 · Shift+K/↑ 上移 · Shift+J/↓ 下移 · Esc 关闭'}
-                </span>
-              </div>
-            </div>
-          )}
           {/* Prompt history recall panel (TUI ↑ on empty input). */}
           {histOpen && history.length > 0 && (
             <div
@@ -2415,10 +2409,8 @@ export function Composer() {
                       }
                       return
                     }
-                    // Queue pane owns ↑/↓ while open (TUI queue pane focus:
-                    // the capture-phase panel effect skips keys typed in the
-                    // textarea, so the textarea navigates the selection here).
-                    if (queuePanelOpen && queueEditIndex == null && queue.length > 0) {
+                    // 队列获焦时 ↑/↓ 在行间移动（空输入；输入中不抢光标）。
+                    if (queueFocus && queueEditIndex == null && queue.length > 0 && text === '') {
                       e.preventDefault()
                       const sel = Math.min(queueSel, queue.length - 1)
                       setQueueSel(
@@ -2430,12 +2422,12 @@ export function Composer() {
                     }
                     if (e.key === 'ArrowUp' && text === '' && !shellMode) {
                       if (queue.length > 0) {
-                        // TUI 1.0.9: ↑ on an empty prompt moves focus into
-                        // the queue pane with the LAST row highlighted;
-                        // history opens only when nothing is queued.
+                        // 空输入 ↑：焦点进 composer 内联队列（最后一行），
+                        // 没有排队消息才打开提示历史。
                         e.preventDefault()
                         setQueueSel(queue.length - 1)
                         setQueuePanelOpen(true)
+                        setQueueFocus(true)
                       } else if (history.length > 0) {
                         e.preventDefault()
                         setHistSel(0)
@@ -2686,12 +2678,16 @@ export function Composer() {
                       setHistOpen(false)
                       return
                     }
-                    if (queuePanelOpen) {
+                    if (queueEditIndex != null) {
                       e.preventDefault()
                       e.stopPropagation()
-                      setQueuePanelOpen(false)
-                      // Closing the panel discards any in-progress edit.
                       usePromptQueue.getState().cancelEdit()
+                      return
+                    }
+                    if (queueFocus) {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      setQueueFocus(false)
                       return
                     }
                     // TUI: Esc in shell mode with an empty input exits.

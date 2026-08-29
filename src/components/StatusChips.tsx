@@ -19,6 +19,8 @@ import type { TodoItem } from '../store/chat'
  *
  * Hovered mirrors TUI context_bar: the tokens swap for a progress bar
  * filling the same width plus the 5-col percentage (`████ 42.0%`).
+ * Clicked opens the /context modal (store contextOpen — same surface the
+ * `/context` slash command drives) for the full breakdown.
  */
 export function ContextChip({
   used,
@@ -28,6 +30,7 @@ export function ContextChip({
   size?: number
 }) {
   const [hovered, setHovered] = useState(false)
+  const openContext = useChatStore((s) => s.openContext)
   if (used == null || size == null || size <= 0) return null
   // TUI usage_percentage: clamped to 100 (used can transiently exceed the
   // window before auto-compact; the TUI never renders >100%).
@@ -46,10 +49,13 @@ export function ContextChip({
   const filled = Math.min(barWidth, Math.round((pct / 100) * barWidth))
   const pctStr = `${pct.toFixed(1)}%`.padStart(5, ' ')
   return (
-    <span
-      className={`shrink-0 whitespace-nowrap rounded px-0 py-0.5 font-mono text-[12px] leading-none tabular-nums`}
+    <button
+      type="button"
+      onClick={openContext}
+      className={`shrink-0 cursor-pointer whitespace-nowrap rounded px-0 py-0.5 text-left font-mono text-[12px] leading-none tabular-nums hover:bg-gn-bg-highlight`}
       style={{ color }}
-      title={`上下文 ${Math.round(pct)}% (${fmtTok(used)} / ${fmtTok(size)})`}
+      title={`上下文 ${Math.round(pct)}% (${fmtTok(used)} / ${fmtTok(size)}) · 点击查看 /context 明细`}
+      aria-label={`上下文 ${Math.round(pct)}% · 打开 /context 明细`}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
@@ -66,7 +72,7 @@ export function ContextChip({
       ) : (
         defaultStr
       )}
-    </span>
+    </button>
   )
 }
 
@@ -963,8 +969,8 @@ export function McpChip({ onOpen }: { onOpen: () => void }) {
 
 /**
  * `+N` queue badge — TUI queue item (accent_user, after the context
- * chip): mid-turn queued prompt count. Hidden at 0; click toggles the
- * composer's queue panel (same store flag the queue pill uses).
+ * chip): mid-turn queued prompt count. Hidden at 0; click expands /
+ * collapses the composer's inline queue strip (no popup).
  */
 export function QueueBadge() {
   const queue = usePromptQueue((s) => s.queue)
@@ -979,7 +985,7 @@ export function QueueBadge() {
       className={`shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-fg2 hover:bg-gn-bg-highlight ${
         open ? 'bg-gn-bg-highlight' : ''
       }`}
-      title={open ? '收起发送队列' : `发送队列 · ${queue.length} 条待发（点击切换）`}
+      title={open ? '收起排队消息' : `展开排队消息 · ${queue.length} 条`}
     >
       +{queue.length}
     </button>

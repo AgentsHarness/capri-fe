@@ -109,12 +109,37 @@ export function AssistantEntry({
     }
   }
 
-  /** Fork：派生当前会话副本（与 /fork 同一动作；宿主不支持按消息截断，
-   *  副本含会话全部历史，消息按钮只是把入口放到了回复下方）。 */
+  /**
+   * Fork：从该消息所在轮次分叉（agent targetPromptIndex，0-based 含端点，
+   * 副本保留第 0..=k 轮）。k = historyTurnIdx（promptStarts 中最老已加载
+   * 轮的下标，即窗口首条 user 行的轮次）+ 该消息之前 user 行数 − 1（被点
+   * 消息属于其上方最近一条 user 行开启的轮；排除 shell `!` 直执行行——
+   * 不经 agent，不开新轮）。定位不到（条目不在主 entries）→ 不带索引 =
+   * 完整副本。busy 守护 / 索引校验 / 切换到新会话都在 store 的
+   * forkSession 里。
+   */
   const forkMessage = () => {
     if (forking) return
     setForking(true)
-    void useChatStore.getState().forkSession().finally(() => setForking(false))
+    void (async () => {
+      try {
+        const st = useChatStore.getState()
+        const at = st.entries.findIndex((x) => x.id === e.id)
+        const turnIdx =
+          at >= 0
+            ? st.historyTurnIdx +
+              st.entries
+                .slice(0, at)
+                .filter((x) => x.kind === 'user' && !x.isShell).length -
+              1
+            : undefined
+        await st.forkSession(
+          turnIdx != null && turnIdx >= 0 ? { targetPromptIndex: turnIdx } : {},
+        )
+      } finally {
+        setForking(false)
+      }
+    })()
   }
 
   const rowBtn =
@@ -186,7 +211,7 @@ export function AssistantEntry({
                 type="button"
                 onClick={forkMessage}
                 disabled={forking}
-                title="派生当前会话副本（/fork）"
+                title="从该消息分叉出新会话（含这轮及之前的全部历史）"
                 className={`${rowBtn} text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-50`}
               >
                 <GitFork size={11} strokeWidth={2} aria-hidden />

@@ -1,4 +1,4 @@
-import type { ToolCall } from '../../api/types'
+import type { ScrollEntry, ToolCall } from '../../api/types'
 import type { ChatState } from './types'
 import { nonBlankStr, wireTaskId } from './util'
 
@@ -309,6 +309,70 @@ export function bashOutputText(bash: Record<string, unknown>): string | undefine
     return bash.output
   }
   return undefined
+}
+
+/**
+ * Content fingerprint used to attribute an update that carries no
+ * toolCallId. Completion updates omit rawInput entirely, so the only
+ * discriminators on the wire are the Bash rawOutput.command and the
+ * write/edit diff path; earlier rename updates carry rawInput instead.
+ */
+export function anonToolKey(tc: ToolCall): string | undefined {
+  const cmd =
+    nonBlankStr(bashRawOutput(tc)?.command) ??
+    nonBlankStr(toolRawInput(tc)?.command)
+  if (cmd) return `cmd:${cmd}`
+  const ri = toolRawInput(tc)
+  const path =
+    nonBlankStr(ri?.path) ??
+    nonBlankStr(ri?.filePath) ??
+    nonBlankStr(ri?.file_path) ??
+    diffContentPath(tc)
+  return path ? `path:${path}` : undefined
+}
+
+function diffContentPath(tc: ToolCall): string | undefined {
+  const content = (tc as { content?: unknown }).content
+  if (!Array.isArray(content)) return undefined
+  for (const c of content) {
+    if (!c || typeof c !== 'object') continue
+    if ((c as { type?: unknown }).type !== 'diff') continue
+    const p = nonBlankStr((c as { path?: unknown }).path)
+    if (p) return p
+  }
+  return undefined
+}
+
+/**
+ * Routing target for a tool_call_update whose toolCallId is empty. Some
+ * OpenAI/responses-compatible endpoints hand back function calls with no
+ * call_id, and the agent relays that blank key verbatim, so nothing can be
+ * looked up in toolIndex — the row sat at "Running" until the turn-end
+ * settle (minutes for a long agentic turn). Claim the oldest unclaimed
+ * anonymous row instead; `exact` says whether the content fingerprint
+ * identified it, which is what makes merging raw safe.
+ */
+export function findAnonToolTarget(
+  entries: ScrollEntry[],
+  tc: ToolCall,
+): { entryId: string; exact: boolean } | undefined {
+  const candidates = entries.filter(
+    (e) =>
+      e.kind === 'tool' &&
+      !e.toolCallId &&
+      (e.status === 'pending' || e.status === 'in_progress'),
+  )
+  const first = candidates[0]
+  if (!first) return undefined
+  const key = anonToolKey(tc)
+  if (key) {
+    for (const e of candidates) {
+      if (e.kind === 'tool' && e.raw && anonToolKey(e.raw) === key) {
+        return { entryId: e.id, exact: true }
+      }
+    }
+  }
+  return { entryId: first.id, exact: false }
 }
 
 /**

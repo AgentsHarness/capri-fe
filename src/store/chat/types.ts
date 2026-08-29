@@ -48,6 +48,18 @@ export type {
 } from './typesPublic'
 
 /**
+ * forkSession 选项：
+ * - targetPromptIndex — 按轮截断（agent ForkSessionRequest.target_prompt_index，
+ *   0-based 含端点：副本保留第 0..=k 轮）。缺省 = 完整副本。
+ * - worktree — TUI /fork --worktree：经 x.ai/git/worktree/resume_session 在
+ *   新 git worktree 中派生（全量历史，无截断）。
+ */
+export type ForkSessionOpts = {
+  targetPromptIndex?: number
+  worktree?: boolean
+}
+
+/**
  * 一条分层错误（hub / host 层横幅数据源）。
  * - id：恢复事件精确清除用（如 hub-ws 重连成功只清该条）；缺省按层整体覆盖。
  * - action：横幅可执行的恢复动作（当前仅重启 agent）。
@@ -516,7 +528,7 @@ export type ChatState = {
   modeBanner: string | null
   showModeBanner: (text: string) => void
   clearModeBanner: () => void
-  /** Composer queue dropdown visibility (TUI queue pane). */
+  /** Composer 内联队列是否展开（无弹窗；顶部 +N / 「N queued」共用）。 */
   queuePanelOpen: boolean
   /** Accepts a plain value or a functional updater (queue pill toggle). */
   setQueuePanelOpen: (open: boolean | ((v: boolean) => boolean)) => void
@@ -610,8 +622,16 @@ export type ChatState = {
   dismissNotice: () => void
   /** x.ai/recap — fire-and-forget "where was I" summary. */
   requestRecap: () => Promise<void>
-  /** x.ai/session/fork — fork the current session. */
-  forkSession: (opts?: Record<string, unknown>) => Promise<void>
+  /**
+   * Fork the current session (x.ai/session/fork; TUI /fork). On success the
+   * FE switches to the forked session (TUI switches to the peer agent) and
+   * refreshes the session lists.
+   * - `targetPromptIndex` — fork keeps turns 0..=k (0-based, inclusive;
+   *   agent ForkSessionRequest.target_prompt_index). Omitted → full copy.
+   * - `worktree` — TUI /fork --worktree: derive in a fresh git worktree via
+   *   x.ai/git/worktree/resume_session (full history; no truncation).
+   */
+  forkSession: (opts?: ForkSessionOpts) => Promise<void>
   /** x.ai/session/rename. */
   renameSession: (title: string) => Promise<void>
   /** x.ai/subagent/cancel. */

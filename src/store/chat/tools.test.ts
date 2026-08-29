@@ -1,12 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { ToolCall } from '../../api/types'
+import type { ScrollEntry, ToolCall } from '../../api/types'
 import {
   absorbBashOutputIntoBgTask,
   absorbTaskOutputIntoBgTask,
+  anonToolKey,
   bashOutputText,
   bashRawOutput,
   clearSuppressedTools,
   extractTarget,
+  findAnonToolTarget,
   isBgExecuteTool,
   isBgPlumbingTool,
   isExecuteToolFunctionName,
@@ -212,5 +214,48 @@ describe('bashRawOutput / bashOutputText / isOrphanBashStreamUpdate / absorbBash
       tc({ rawOutput: { type: 'Bash', command: 'ls', output: 'o' } }),
     )
     expect(set).not.toHaveBeenCalled()
+  })
+})
+
+describe('anonToolKey / findAnonToolTarget（空 toolCallId 认领）', () => {
+  const row = (id: string, over: Partial<ScrollEntry> = {}): ScrollEntry =>
+    ({
+      id,
+      kind: 'tool',
+      title: '',
+      verb: 'Running',
+      status: 'in_progress',
+      ...over,
+    }) as ScrollEntry
+
+  it('判别键：Bash command > rawInput command > path > diff path', () => {
+    expect(anonToolKey(tc({ rawOutput: { type: 'Bash', command: 'ls -a' } }))).toBe('cmd:ls -a')
+    expect(anonToolKey(tc({ rawInput: { command: 'npm t' } }))).toBe('cmd:npm t')
+    expect(anonToolKey(tc({ rawInput: { path: '/a/b.ts' } }))).toBe('path:/a/b.ts')
+    expect(
+      anonToolKey(tc({ content: [{ type: 'diff', path: '/c.ts' }] })),
+    ).toBe('path:/c.ts')
+    // 列表/读取类工具的终态 update 不带任何可辨字段。
+    expect(anonToolKey(tc({ rawOutput: { type: 'ListDir', Content: {} } }))).toBeUndefined()
+  })
+
+  it('精确命中优先于 FIFO，且只认未收口的匿名行', () => {
+    const entries: ScrollEntry[] = [
+      row('e1', { raw: tc({ rawInput: { command: 'A' } }) }),
+      row('e2', { raw: tc({ rawInput: { command: 'B' } }) }),
+      row('e3', { toolCallId: 'call_3', raw: tc({ rawInput: { command: 'C' } }) }),
+      row('e4', { status: 'completed', raw: tc({ rawInput: { command: 'B' } }) }),
+    ]
+    expect(findAnonToolTarget(entries, tc({ rawOutput: { type: 'Bash', command: 'B' } }))).toEqual({
+      entryId: 'e2',
+      exact: true,
+    })
+    // 无键可辨 → 最早那条匿名 running 行（e3 带 id、e4 已收口，都不候选）。
+    expect(findAnonToolTarget(entries, tc({ status: 'completed' }))).toEqual({
+      entryId: 'e1',
+      exact: false,
+    })
+    expect(findAnonToolTarget([entries[2]], tc({ rawInput: { command: 'C' } }))).toBeUndefined()
+    expect(findAnonToolTarget([], tc({ rawInput: { command: 'A' } }))).toBeUndefined()
   })
 })

@@ -4,7 +4,14 @@
  *
  * Verb runs: consecutive collapsed non-destructive tools fold into one
  * "Read 3 files, Searched 2 patterns" header.
- * Truncation: long dense collapsed-groupable runs hide older rows behind "N more".
+ * Truncation: long dense collapsed-groupable runs — tools AND sealed
+ * collapsed thoughts (thought-tool-thought alternation included) — hide
+ * the oldest rows behind one header. The header label counts the WHOLE
+ * run (FE deviation: the TUI counts only the hidden prefix). The fold
+ * TRIGGER counts tools only, so short thought-tool alternation stays
+ * flat (thoughts hide / label with the group once it forms). A manually
+ * expanded thought keeps its participant slot (still counted, exempt
+ * from hiding) so opening it never shifts counts or slides rows.
  */
 
 import type { ScrollEntry } from '../api/types'
@@ -153,7 +160,10 @@ export function runStep(e: ScrollEntry, showThinking = true): RunStep {
     return { kind: 'break' }
   }
   if (e.kind === 'thought') {
-    if (showThinking && !isRunning(e) && isCollapsed(e) && e.text.trim()) {
+    // 收口思考(含空文本噪音行)认领进 run,折叠时随组隐藏——空文本的
+    // 光杆 "Thought" 行不该漏在折叠组外。流式/手动展开保持 transparent:
+    // 实时与用户主动打开的内容不藏。
+    if (showThinking && !isRunning(e) && isCollapsed(e)) {
       return { kind: 'thought' }
     }
     return { kind: 'transparent' }
@@ -205,7 +215,7 @@ function nounOf(vg: VerbGroupKind, count: number): string {
 
 // ── Scan ───────────────────────────────────────────────────────────────
 
-type RunScan = { members: number; end: number; stop: number }
+type RunScan = { members: number; toolMembers: number; end: number; stop: number }
 
 function scanRunForward(
   entries: ScrollEntry[],
@@ -218,12 +228,14 @@ function scanRunForward(
   if (step0.kind !== 'member' && step0.kind !== 'thought') return null
 
   let members = 0
+  let toolMembers = 0
   let end = start
   let i = start
   while (i < entries.length) {
     const step = runStep(entries[i], showThinking)
     if (step.kind === 'member') {
       members += 1
+      if (step.vg !== 'subagent') toolMembers += 1
       end = i + 1
     } else if (step.kind === 'thought') {
       end = i + 1
@@ -234,7 +246,7 @@ function scanRunForward(
     }
     i += 1
   }
-  return { members, end, stop: i }
+  return { members, toolMembers, end, stop: i }
 }
 
 /**
@@ -283,7 +295,10 @@ export function scanGroups(
         i += 1
         continue
       }
-      if (scan.members < 1) {
+      if (scan.members < 1 || scan.toolMembers < 1) {
+        // 无工具成员的 run（纯 subagent）不成组：孤 task 保持自身行、
+        // 落给 truncation 参与密度——否则它会把密集段劈成两半（task
+        // 之后各自重新够阈值），自己还退化成 1 成员的裸 header。
         i = scan.stop
         continue
       }
@@ -312,25 +327,30 @@ export function scanGroups(
       }
       const groupStart = i
       let groupLen = 1
+      // 触发计数只数工具类参与者：thought 与工具一同隐藏/计数/进标签，
+      // 但不把混合回合的折叠点提前——思考-工具交替的折叠阈值与纯工具
+      // 回合一致（> maxVisible + 1 个工具），短交替保持平铺可见。
+      let toolLen = entries[i].kind === 'thought' ? 0 : 1
       let j = i + 1
       while (j < n) {
         if (claimed[j]) break
         const e = entries[j]
         if (participatesInTruncation(e, showThinking)) {
           groupLen += 1
-        } else if (!(e.kind === 'thought' && !e.text.trim())) {
-          // hidden empty thinking is transparent; anything else breaks
-          if (e.kind === 'thought' && !isRunning(e) && isCollapsed(e)) {
-            // finished collapsed thought inside dense run — skip, don't break
-            j += 1
-            continue
-          }
+          if (e.kind !== 'thought') toolLen += 1
+        } else if (e.kind === 'thought') {
+          // 思考永不截断密集段（与 verb 扫描的 transparent 语义一致）。
+          // 走到这里的是流式思考（直播行不计数、不隐藏）以及
+          // showThinking=false 时的全部思考；展开的思考已计入参与者。
+          j += 1
+          continue
+        } else {
           break
         }
         j += 1
       }
       const groupEnd = j
-      if (groupLen > maxVisible + 1) {
+      if (toolLen > maxVisible + 1) {
         const anchorId = entries[groupStart].id
         spans.push({
           range: { start: groupStart, end: groupEnd },
@@ -352,13 +372,17 @@ export function scanGroups(
 }
 
 function participatesInTruncation(e: ScrollEntry, showThinking: boolean): boolean {
-  if (!isGroupable(e) || !isCollapsed(e)) return false
+  if (!isGroupable(e)) return false
   if (e.kind === 'thought') {
-    // hidden empty / streaming thoughts don't participate
-    if (!showThinking) return false
-    if (isRunning(e) || !e.text.trim()) return false
+    // 收口思考（含空文本噪音行）计入截断密度，且**展开不退出参与者集合**：
+    // 手动打开只豁免隐藏（projectDisplayRows 里跳过），参与数 / 隐藏预算 /
+    // 标签计数全部不动——否则点开一条 thought 会让 hidden 预算 +1，尾部
+    // 滑出一条旧行。流式思考不参与（直播行不进数字）。
+    return showThinking && !e.streaming
   }
-  return e.kind === 'tool' || e.kind === 'subagent' || e.kind === 'bg_task'
+  return (
+    isCollapsed(e) && (e.kind === 'tool' || e.kind === 'subagent' || e.kind === 'bg_task')
+  )
 }
 
 // ── Labels ─────────────────────────────────────────────────────────────
@@ -398,33 +422,34 @@ export function verbGroupLabel(
   return { text: text || 'Tools', running, failed: failedCount > 0 }
 }
 
+/**
+ * Truncation 组标签：盘点整组参与者（全组计数，与 verb 组头「描述整个
+ * span」一致；旧版只数 hidden 前缀，header 下方跟着 10 行可见成员时读不通）。
+ * thought 参与密度但不占工具动词条表，以 "Thought N times" 追加在工具段
+ * 之后；无词表参与者（bg_task）计入密度、不进标签。
+ */
 export function truncationLabel(
   entries: ScrollEntry[],
   span: GroupSpan,
   showThinking = true,
 ): GroupLabel | null {
   if (span.kind.type !== 'truncation') return null
-  const hidden = span.kind.hidden
   const buckets = new Map<VerbGroupKind, number>()
   let running = false
   let failedCount = 0
+  let thoughtCount = 0
   const order: VerbGroupKind[] = []
-  let participants = 0
 
   for (let i = span.range.start; i < span.range.end; i++) {
     const e = entries[i]
     if (!e) break
-    if (e.kind === 'thought' && !e.text.trim()) continue
-    if (!participatesInTruncation(e, showThinking) && e.kind === 'thought') continue
-    if (!participatesInTruncation(e, showThinking) && e.kind !== 'thought') break
+    if (!participatesInTruncation(e, showThinking)) continue
     if (e.kind === 'thought') {
-      participants += 1
-      if (participants >= hidden) break
+      thoughtCount += 1
       continue
     }
-    participants += 1
     const lk = labelKind(e)
-    if (!lk) return null
+    if (!lk) continue
     if (!buckets.has(lk)) {
       buckets.set(lk, 0)
       order.push(lk)
@@ -432,34 +457,39 @@ export function truncationLabel(
     buckets.set(lk, (buckets.get(lk) || 0) + 1)
     if (isRunning(e)) running = true
     if (isFailed(e)) failedCount += 1
-    if (participants >= hidden) break
   }
 
-  if (order.length === 0) return null
   const parts: string[] = []
   for (const vg of order) {
     const count = buckets.get(vg) || 0
     parts.push(`${verbOf(vg, running)} ${count} ${nounOf(vg, count)}`)
   }
+  if (thoughtCount > 0) {
+    parts.push(`Thought ${thoughtCount} ${thoughtCount === 1 ? 'time' : 'times'}`)
+  }
+  if (parts.length === 0) return null
   let text = parts.join(', ')
   if (failedCount > 0) text += ` · ${failedCount} failed`
   return { text, running, failed: failedCount > 0 }
 }
 
-/** Truncation header label (TUI count excludes the header itself). */
+/**
+ * Truncation header label — collapsed / expanded 共用整组计数一版。退化
+ * （全组无词表，如纯 bg_task）时回落 "N more"。
+ */
 function truncationHeaderLabel(
   entries: ScrollEntry[],
   span: GroupSpan,
   kind: { type: 'truncation'; participants: number; hidden: number },
   showThinking: boolean,
 ): GroupLabel {
-  const base =
-    truncationLabel(entries, span, showThinking) ||
-    ({ text: `${kind.hidden - 1} more`, running: false, failed: false } satisfies GroupLabel)
-  if (!truncationLabel(entries, span, showThinking)) {
-    base.text = `${Math.max(0, kind.hidden - 1)} more`
-  }
-  return base
+  return (
+    truncationLabel(entries, span, showThinking) || {
+      text: `${Math.max(0, kind.hidden)} more`,
+      running: false,
+      failed: false,
+    }
+  )
 }
 
 /**
@@ -525,11 +555,15 @@ export function projectDisplayRows(
       }
     } else {
       // collapsed truncation: hide the oldest `hidden` participants
+      // （thought 参与者一并藏进前缀；透明行跳过、不打断前缀计数）。
+      // 展开的思考占参与者名额但豁免隐藏——保持可见，预算由其余参与者补齐。
       const toHide = span.kind.hidden
       let seen = 0
       for (let i = span.range.start; i < span.range.end && seen < toHide; i++) {
-        if (!participatesInTruncation(entries[i], showThinking)) {
-          if (entries[i]?.kind === 'thought') continue
+        const e = entries[i]
+        if (e?.kind === 'thought' && !isCollapsed(e)) continue
+        if (!participatesInTruncation(e, showThinking)) {
+          if (e?.kind === 'thought') continue
           break
         }
         hidden.add(i)
@@ -575,14 +609,7 @@ export function projectDisplayRows(
         headerRowFor(
           span,
           'truncation',
-          () => {
-            const tlab = truncationLabel(entries, span, showThinking)
-            return {
-              text: tlab?.text || `${kind.participants - 1} tool calls`,
-              running: tlab?.running || false,
-              failed: tlab?.failed || false,
-            }
-          },
+          () => truncationHeaderLabel(entries, span, kind, showThinking),
           headerCache,
         ),
       )

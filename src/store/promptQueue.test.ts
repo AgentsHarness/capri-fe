@@ -52,20 +52,6 @@ describe('队列基础操作', () => {
     })
   })
 
-  it('dequeue 弹出队首、记入 drainedIds、通知 host 删除', () => {
-    usePromptQueue.setState({ queue: [row('p1', 'a'), row('p2', 'b')], sessionId: 'sess-1' })
-    const head = usePromptQueue.getState().dequeue()
-    expect(head?.id).toBe('p1')
-    const st = usePromptQueue.getState()
-    expect(st.queue.map((q) => q.id)).toEqual(['p2'])
-    expect(st.drainedIds.has('p1')).toBe(true)
-    expect(transport.queueRemove).toHaveBeenCalledWith({ id: 'p1' }, 'sess-1')
-  })
-
-  it('dequeue 空队列返回 undefined', () => {
-    expect(usePromptQueue.getState().dequeue()).toBeUndefined()
-  })
-
   it('removeAt 删除指定行并 drain（stale 广播不得复活）', () => {
     usePromptQueue.setState({ queue: [row('p1', 'a'), row('p2', 'b')], sessionId: 's' })
     usePromptQueue.getState().removeAt('p1')
@@ -73,6 +59,22 @@ describe('队列基础操作', () => {
     expect(st.queue.map((q) => q.id)).toEqual(['p2'])
     expect(st.drainedIds.has('p1')).toBe(true)
     expect(transport.queueRemove).toHaveBeenCalledWith({ id: 'p1' }, 's')
+  })
+
+  it('removeAt 携带行版本（agent 侧 remove 按 (id, version) 精确匹配）', () => {
+    usePromptQueue.setState({
+      queue: [row('p1', 'a', { version: 2 }), row('p2', 'b')],
+      sessionId: 's',
+    })
+    // 编辑过的行（agent 侧 version ≥ 1）不带 expectedVersion 会被 no-op。
+    usePromptQueue.getState().removeAt('p1')
+    expect(transport.queueRemove).toHaveBeenCalledWith(
+      { id: 'p1', expectedVersion: 2 },
+      's',
+    )
+    // 无版本的 FE-owned 行省略键（agent 默认 0 同义）。
+    usePromptQueue.getState().removeAt('p2')
+    expect(transport.queueRemove).toHaveBeenLastCalledWith({ id: 'p2' }, 's')
   })
 
   it('clear 清空全部行、全部 drain、保留会话标签并通知 host', () => {
@@ -161,6 +163,19 @@ describe('moveUp / moveDown', () => {
     expect(usePromptQueue.getState().queue.map((x) => x.id)).toEqual(['a', 'c', 'b'])
     q.moveDown(0)
     expect(usePromptQueue.getState().queue.map((x) => x.id)).toEqual(['c', 'a', 'b'])
+    expect(transport.queueReorder).toHaveBeenCalledWith({ ids: ['c', 'a', 'b'] }, 's')
+  })
+
+  it('moveTo 跨行拖到目标下标，并修正编辑中的行', () => {
+    usePromptQueue.setState({
+      queue: [row('a', '1'), row('b', '2'), row('c', '3')],
+      sessionId: 's',
+      editIndex: 2,
+    })
+    usePromptQueue.getState().moveTo(2, 0)
+    const st = usePromptQueue.getState()
+    expect(st.queue.map((x) => x.id)).toEqual(['c', 'a', 'b'])
+    expect(st.editIndex).toBe(0)
     expect(transport.queueReorder).toHaveBeenCalledWith({ ids: ['c', 'a', 'b'] }, 's')
   })
 })

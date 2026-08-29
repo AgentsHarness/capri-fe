@@ -147,7 +147,7 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
   modeBanner: null,
   showModeBanner: (text) => set({ modeBanner: text }),
   clearModeBanner: () => set({ modeBanner: null }),
-  queuePanelOpen: false,
+  queuePanelOpen: true,
   setQueuePanelOpen: (open) =>
     set({
       queuePanelOpen:
