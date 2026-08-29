@@ -44,6 +44,16 @@ export function viewerNavActions(set: SetState, get: () => ChatState) {
     })
   },
 
+  toggleBtw: (id) => {
+    set({
+      entries: get().entries.map((e) =>
+        e.id === id && e.kind === 'btw' ? { ...e, open: !e.open } : e,
+      ),
+      selectedId: id,
+      focusMode: 'scrollback',
+    })
+  },
+
   setFocus: (mode) => {
     const s = get()
     if (mode === 'scrollback') {
@@ -156,6 +166,16 @@ export function viewerNavActions(set: SetState, get: () => ChatState) {
       })
       return
     }
+    if (entry.kind === 'btw') {
+      if (!!entry.open === expanded) return
+      set({
+        entries: entries.map((e) =>
+          e.id === selectedId && e.kind === 'btw' ? { ...e, open: expanded } : e,
+        ),
+        focusMode: 'scrollback',
+      })
+      return
+    }
     if (entry.kind === 'session_event' && entry.recap) {
       set({
         entries: entries.map((e) =>
@@ -182,6 +202,7 @@ export function viewerNavActions(set: SetState, get: () => ChatState) {
     if (e.kind === 'tool') get().setExpanded(!e.expanded)
     else if (e.kind === 'thought') get().toggleThought(e.id)
     else if (e.kind === 'user') get().setExpanded(!e.expanded)
+    else if (e.kind === 'btw') get().toggleBtw(e.id)
     else if (e.kind === 'session_event' && e.recap) get().setExpanded(!e.open)
     else {
       const idx = entries.findIndex((x) => x.id === selectedId)

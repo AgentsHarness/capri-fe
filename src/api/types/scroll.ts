@@ -221,6 +221,25 @@ export type ScrollEntry =
     }  | { id: string; kind: 'credit_limit'; text: string; msgSeq?: number }
   | {
       id: string
+      kind: 'btw'
+      /**
+       * 原始问题（TUI BtwBlock.question）——折叠头一行 "/btw <question>"。
+       * 独立 kind 而非复用 assistant：btw 答案不该被 /copy 抄走、也
+       * 不该被回合收口逻辑当作助手回复处理。
+       */
+      question: string
+      /** 答案（agent 返回的 markdown 文本；Markdown 组件渲染）。 */
+      answer?: string
+      /** 请求失败信息（错误态在区块内直接可见）。 */
+      error?: string
+      /** 等待回答中（进行中的可见反馈；脉冲金色 rail）。 */
+      streaming?: boolean
+      /** 折叠/展开（默认折叠，TUI BtwBlock default_display_mode Collapsed）。 */
+      open?: boolean
+      msgSeq?: number
+    }
+  | {
+      id: string
       kind: 'group_header'
       count: number
       /** Expanded-group collapse chrome ("▾ N tool calls") vs truncation ("N more"). */

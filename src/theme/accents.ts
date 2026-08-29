@@ -282,6 +282,20 @@ export function resolveAccent(opts: AccentResolveOpts): AccentPaint {
     )
   }
 
+  // ── Btw (TUI btw.rs golden accent；运行中脉冲、失败转红) ────────────
+  if (kind === 'btw') {
+    return withInteraction(
+      {
+        show: true,
+        color: failed ? Accents.error : Accents.plan,
+        animated: running,
+        frozen: running && pendingFreeze,
+      },
+      selected,
+      hovered,
+    )
+  }
+
   // ── Error entry ────────────────────────────────────────────────────
   if (kind === 'error') {
     return withInteraction(
@@ -511,6 +525,10 @@ export function resolveBullet(opts: AccentResolveOpts): BulletPaint {
   }
 
   if (kind === 'error') return { color: Accents.error }
+  if (kind === 'btw') {
+    if (failed) return { color: Accents.error }
+    return { color: Accents.plan, animated: running && !pendingFreeze }
+  }
   if (kind === 'group_header') {
     const gh = opts.groupHeader
     if (gh?.failed) return { color: Accents.error }

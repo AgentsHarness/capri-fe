@@ -9,6 +9,7 @@ import { DENSE_ROW_CLASS, HEADER_ROW_CLASS } from '../../theme/layout'
 import type { EntryChrome, EntryViewProps } from './chrome'
 import { AssistantEntry } from './kinds/AssistantEntry'
 import {
+  BtwEntry,
   CreditLimitEntry,
   ErrorEntry,
   GroupHeaderEntry,
@@ -77,6 +78,7 @@ export const EntryView = memo(function EntryView({
   const storeToggleTool = useChatStore((s) => s.toggleTool)
   const storeToggleThought = useChatStore((s) => s.toggleThought)
   const storeToggleUser = useChatStore((s) => s.toggleUser)
+  const storeToggleBtw = useChatStore((s) => s.toggleBtw)
   const storeOpenViewer = useChatStore((s) => s.openViewer)
   const storeSelectEntry = useChatStore((s) => s.selectEntry)
   const cancelSubagent = useChatStore((s) => s.cancelSubagent)
@@ -84,6 +86,7 @@ export const EntryView = memo(function EntryView({
   const toggleTool = actions?.toggleTool ?? storeToggleTool
   const toggleThought = actions?.toggleThought ?? storeToggleThought
   const toggleUser = actions?.toggleUser ?? storeToggleUser
+  const toggleBtw = actions?.toggleBtw ?? storeToggleBtw
   const openViewer = actions?.openViewer ?? storeOpenViewer
   const selectEntry = actions?.selectEntry ?? storeSelectEntry
   const onSelect = () => selectEntry(e.id)
@@ -160,6 +163,7 @@ export const EntryView = memo(function EntryView({
     toggleTool,
     toggleThought,
     toggleUser,
+    toggleBtw,
     cancelSubagent,
     killTask,
     liveText,
@@ -181,6 +185,7 @@ export const EntryView = memo(function EntryView({
   if (e.kind === 'bg_task') return <BgTaskEntry e={e} chrome={chrome} />
   if (e.kind === 'session_event') return <SessionEventEntry e={e} chrome={chrome} />
   if (e.kind === 'credit_limit') return <CreditLimitEntry e={e} chrome={chrome} />
+  if (e.kind === 'btw') return <BtwEntry e={e} chrome={chrome} />
   if (e.kind === 'group_header') return <GroupHeaderEntry e={e} chrome={chrome} />
   return null
 }, entryViewEqual)

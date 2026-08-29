@@ -1,4 +1,5 @@
 import { transport } from '../../../api/client'
+import type { ScrollEntry } from '../../../api/types'
 import type { ChatState, SetState } from '../types'
 import { nid } from '../ids'
 import { appendEntry } from '../entries'
@@ -21,6 +22,47 @@ export function xaiActions(set: SetState, get: () => ChatState) {
         statusText: '摘要失败',
         entries: [...get().entries, { id: nid(), kind: 'error', text: msg }],
       })
+    }
+  },
+
+  /**
+   * /btw — 旁路小话（x.ai/btw）：不打断当前回合，直接发请求、不占 prompt
+   * 队列。等待反馈是滚动区里一条进行中的 btw 条目（金色脉冲），HTTP 响应
+   * 到达后按 id 原位更新为答案（markdown）或错误。
+   * 按会话绑定：条目属于发起会话的 entries——用户切走会话后更新按 id
+   * 找不到条目即自然失效，不会把答案/错误写进别的会话的滚动区（与
+   * recapPendingFor 同款防跨会话残留）。
+   */
+  askBtw: async (question) => {
+    const sid = get().sessionId
+    if (!sid) {
+      appendEntry(set, { kind: 'error', text: 'btw 失败: 无活动会话' })
+      return
+    }
+    const id = nid()
+    set({
+      entries: [
+        ...get().entries,
+        { id, kind: 'btw', question, streaming: true, open: false },
+      ],
+    })
+    try {
+      const raw = await transport.btw({ question, sessionId: sid })
+      const answer =
+        raw && typeof raw === 'object'
+          ? String((raw as Record<string, unknown>).answer ?? '')
+          : ''
+      set((s) => ({ entries: patchBtw(s.entries, id, { answer, streaming: false }) }))
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      // 错误态留在区块里直接可见（open 展开），不静默。
+      set((s) => ({
+        entries: patchBtw(s.entries, id, {
+          error: msg,
+          streaming: false,
+          open: true,
+        }),
+      }))
     }
   },
 
@@ -344,4 +386,24 @@ export function xaiActions(set: SetState, get: () => ChatState) {
     }
   },
   } satisfies Partial<ChatState>
+}
+
+/**
+ * 按 id 原位更新 btw 条目（答案/错误落位）；id 不在当前 entries（用户已
+ * 切走会话）→ 原样返回原数组（引用不变，zustand 浅比较跳过重渲染）。
+ */
+function patchBtw(
+  entries: ScrollEntry[],
+  id: string,
+  patch: { answer?: string; error?: string; streaming: boolean; open?: boolean },
+): ScrollEntry[] {
+  let changed = false
+  const out = entries.map((e) => {
+    if (e.id === id && e.kind === 'btw') {
+      changed = true
+      return { ...e, ...patch }
+    }
+    return e
+  })
+  return changed ? out : entries
 }
