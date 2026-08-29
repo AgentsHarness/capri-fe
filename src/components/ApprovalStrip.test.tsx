@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import type { PendingReq } from '../api/types'
+import { saveDefaultSelectedPermission } from '../lib/defaultSelectedPermission'
 
 // ── chat store mock：pending / respondPermission / resetPermissions ──
 const h = vi.hoisted(() => {
@@ -470,5 +471,195 @@ describe('ApprovalStrip — 子代理来源标注', () => {
     const { container: c5 } = render(<ApprovalStrip />)
     expect(c5.textContent).not.toContain('Subagent')
     expect(c5.textContent).not.toContain('Child session')
+  })
+})
+
+// ── default_selected_permission：新请求到达时的初始游标行 ──
+// 解析器纯函数单测见 src/lib/defaultSelectedPermission.test.ts；这里走
+// 渲染路径验证「选中态（黄色高亮行）落在哪一行 + Enter 确认的就是它」。
+const yoloRow = { optionId: 'enable-always-approve', name: '始终允许（所有会话）' }
+
+function selectedIndex(container: HTMLElement): number {
+  const rows = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).filter(
+    (b) => b.className.includes('min-h-10'),
+  )
+  return rows.findIndex((b) => b.className.includes('border-gn-yellow/60'))
+}
+
+describe('ApprovalStrip — 默认选中行（default_selected_permission）', () => {
+  it('默认（未设置）→ 游标落在 enable-always-approve 全局行', () => {
+    applyUiSettings({ remember_tool_approvals: true })
+    setPending([
+      req({
+        params: {
+          toolCall: { title: 'ls -la' },
+          options: [
+            yoloRow,
+            { optionId: 'allow-once', name: '允许一次' },
+            { optionId: 'reject-once', name: '拒绝' },
+          ],
+        },
+      }),
+    ])
+    const { container } = render(<ApprovalStrip />)
+    expect(selectedIndex(container)).toBe(0)
+    // Enter 确认的就是预选行
+    key('Enter')
+    expect(respond).toHaveBeenCalledWith('r1', 'enable-always-approve', false, {
+      commandParts: ['ls', '-la'],
+      isGlob: false,
+    })
+  })
+
+  it('默认且没有 enable-always-approve 行 → 回落 0（既有行为不变）', () => {
+    applyUiSettings({ remember_tool_approvals: true })
+    setPending([
+      req({
+        params: {
+          toolCall: { title: 'ls -la' },
+          options: [
+            { optionId: 'allow-once', name: '允许一次' },
+            { optionId: 'reject-once', name: '拒绝' },
+          ],
+        },
+      }),
+    ])
+    const { container } = render(<ApprovalStrip />)
+    expect(selectedIndex(container)).toBe(0)
+    expect(container.textContent).toContain('允许一次')
+  })
+
+  it('allow_once → 跳过同 kind 的全局行，落在允许一次行', () => {
+    applyUiSettings({ remember_tool_approvals: true })
+    saveDefaultSelectedPermission('allow_once')
+    setPending([
+      req({
+        params: {
+          toolCall: { title: 'ls -la' },
+          options: [
+            yoloRow,
+            { optionId: 'allow-once', name: '允许一次' },
+            { optionId: 'reject-once', name: '拒绝' },
+          ],
+        },
+      }),
+    ])
+    const { container } = render(<ApprovalStrip />)
+    expect(selectedIndex(container)).toBe(1)
+  })
+
+  it('reject → 游标落在拒绝行', () => {
+    saveDefaultSelectedPermission('reject')
+    setPending([
+      req({
+        params: {
+          options: [
+            { optionId: 'allow-once', name: '允许一次' },
+            { optionId: 'reject-once', name: '拒绝' },
+          ],
+        },
+      }),
+    ])
+    const { container } = render(<ApprovalStrip />)
+    expect(selectedIndex(container)).toBe(1)
+  })
+
+  it('allow_command_always → 选中始终允许该命令行，绝不是全局行', () => {
+    applyUiSettings({ remember_tool_approvals: true })
+    saveDefaultSelectedPermission('allow_command_always')
+    setPending([
+      req({
+        params: {
+          toolCall: { title: 'ls -la' },
+          options: [
+            yoloRow,
+            { optionId: 'allow-once', name: '允许一次' },
+            { optionId: 'allow-always-command', name: '始终允许该命令' },
+            { optionId: 'reject-once', name: '拒绝' },
+          ],
+        },
+      }),
+    ])
+    const { container } = render(<ApprovalStrip />)
+    expect(selectedIndex(container)).toBe(2)
+    const rows = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).filter(
+      (b) => b.className.includes('min-h-10'),
+    )
+    expect(rows[2]?.textContent).toContain('始终允许该命令')
+  })
+
+  it('remember_tool_approvals=false 时 always 行被过滤，allow_command_always 回落 0', () => {
+    saveDefaultSelectedPermission('allow_command_always')
+    setPending([
+      req({
+        params: {
+          options: [
+            yoloRow,
+            { optionId: 'allow-once', name: '允许一次' },
+            { optionId: 'reject-once', name: '拒绝' },
+          ],
+        },
+      }),
+    ])
+    const { container } = render(<ApprovalStrip />)
+    expect(selectedIndex(container)).toBe(0)
+  })
+
+  it('排队请求按各自 options 解析：换请求后不沿用上一个请求的游标', () => {
+    saveDefaultSelectedPermission('reject')
+    setPending([
+      req({
+        requestId: 'r1',
+        params: {
+          options: [
+            { optionId: 'allow-once', name: '允许一次' },
+            { optionId: 'reject-once', name: '拒绝' },
+          ],
+        },
+      }),
+    ])
+    const { container, rerender } = render(<ApprovalStrip />)
+    expect(selectedIndex(container)).toBe(1) // r1 的拒绝行
+    setPending([
+      req({
+        requestId: 'r2',
+        params: { options: [{ optionId: 'allow-once', name: '允许一次' }] },
+      }),
+    ])
+    rerender(<ApprovalStrip />)
+    expect(selectedIndex(container)).toBe(0) // r2 无拒绝行 → 回落 0
+    key('Enter')
+    expect(respond).toHaveBeenCalledWith('r2', 'allow-once', false, undefined)
+  })
+
+  it('设置变更不重排已显示的卡（下一条生效）', () => {
+    setPending([
+      req({
+        params: {
+          options: [
+            { optionId: 'allow-once', name: '允许一次' },
+            { optionId: 'reject-once', name: '拒绝' },
+          ],
+        },
+      }),
+    ])
+    const { container, rerender } = render(<ApprovalStrip />)
+    expect(selectedIndex(container)).toBe(0)
+    saveDefaultSelectedPermission('reject')
+    rerender(<ApprovalStrip />)
+    expect(selectedIndex(container)).toBe(0) // 审批卡还在显示，不强制重排
+    setPending([
+      req({
+        requestId: 'r2',
+        params: {
+          options: [
+            { optionId: 'allow-once', name: '允许一次' },
+            { optionId: 'reject-once', name: '拒绝' },
+          ],
+        },
+      }),
+    ])
+    rerender(<ApprovalStrip />)
+    expect(selectedIndex(container)).toBe(1) // 下一条请求生效
   })
 })

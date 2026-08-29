@@ -15,6 +15,11 @@ import { applyUiSettings } from '../store/settings'
 import { pushToast } from '../store/toast'
 import { useFePrefs } from '../store/historyPins'
 import { CustomModelsPanel } from './CustomModelsPanel'
+import {
+  loadDefaultSelectedPermission,
+  saveDefaultSelectedPermission,
+  type DefaultSelectedPermission,
+} from '../lib/defaultSelectedPermission'
 
 const GROUPS = [
   { key: 'ui', label: 'UI' },
@@ -44,6 +49,18 @@ const PERM_CHOICES: { id: PermissionModeLabel; label: string }[] = [
 const FOLLOW_UP_CHOICES: { id: 'queue' | 'steer'; label: string }[] = [
   { id: 'queue', label: 'queue' },
   { id: 'steer', label: 'steer' },
+]
+
+/** 审批弹窗默认选中行四选一（canonical 与 TUI 一致；顺序对齐设置面板与
+ *  审批弹窗的渲染顺序 YOLO → allow-always → allow-once → reject）。 */
+const DEFAULT_SELECTED_PERMISSION_UI: {
+  id: DefaultSelectedPermission
+  label: string
+}[] = [
+  { id: 'always_allow_all_sessions', label: '始终允许（所有会话）' },
+  { id: 'allow_command_always', label: '始终允许本命令' },
+  { id: 'allow_once', label: '仅允许一次' },
+  { id: 'reject', label: '拒绝' },
 ]
 
 const BOOL_ROWS: {
@@ -436,6 +453,9 @@ function ConsumedSettings({
 function FePrefsSection() {
   const collapseToolGroups = useFePrefs((s) => s.fePrefs.collapseToolGroups)
   const setFePrefs = useFePrefs((s) => s.setFePrefs)
+  const [defaultSelectedPermission, setDefaultSelectedPermission] = useState<
+    DefaultSelectedPermission
+  >(() => loadDefaultSelectedPermission())
   return (
     <section className="border-b border-gn-prompt-border/50 py-1">
       <div className="px-4 pt-2 pb-1 text-[10px] uppercase tracking-wider text-gn-gutter">
@@ -469,6 +489,44 @@ function FePrefsSection() {
           <div className="mt-0.5 text-[10.5px] leading-snug text-gn-gutter">
             折叠 toolcall 分组 · 开：连续 toolcall 折叠成「Read 3 files」分组头，成员隐藏；
             关：分组默认展开、逐条显示。与置顶/待办同一 hub prefs 通道，跨端同步即时生效。
+          </div>
+        </div>
+      </div>
+      <div className="flex items-start gap-3 px-4 py-1.5">
+        <span
+          className="w-48 shrink-0 pt-0.5 font-mono text-[11.5px] text-gn-muted"
+          title="default_selected_permission"
+        >
+          default_selected_permission
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap gap-1">
+            {DEFAULT_SELECTED_PERMISSION_UI.map((c) => {
+              const on = defaultSelectedPermission === c.id
+              return (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => {
+                    saveDefaultSelectedPermission(c.id)
+                    setDefaultSelectedPermission(c.id)
+                  }}
+                  className={`rounded-full border px-2 py-px text-[10.5px] ${
+                    on
+                      ? 'border-gn-green/60 text-gn-green'
+                      : 'border-gn-prompt-border text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
+                  }`}
+                  title={c.id}
+                >
+                  {c.label}
+                </button>
+              )
+            })}
+          </div>
+          <div className="mt-1 text-[10.5px] leading-snug text-gn-gutter">
+            审批弹窗里默认光标落点（问的时候默认选哪一行）。与上面的 permission_mode
+            正交：permission_mode 决定会不会问，这一项决定问的时候默认选哪个。仅保存在本浏览器
+            localStorage，不写入 host 配置，审批卡已在显示时不强制重排（下一条生效）。
           </div>
         </div>
       </div>

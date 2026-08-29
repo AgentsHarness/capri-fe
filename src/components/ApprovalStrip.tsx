@@ -1,10 +1,14 @@
-import { useCallback, useEffect, useReducer, useState } from 'react'
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import { useChatStore } from '../store/chat'
 import { Glyphs } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
 import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS } from '../theme/layout'
 import { onUiSettingsChange, onUiSettingsReady, uiBool } from '../store/settings'
 import type { PendingReq, PermissionScope, ScrollEntry } from '../api/types'
+import {
+  loadDefaultSelectedPermission,
+  resolveInitialSelection,
+} from '../lib/defaultSelectedPermission'
 
 /** One permission option from the request params. `meta` is the ACP
  *  PermissionOption `meta` map (camelCase wire) — the TUI reads
@@ -105,6 +109,13 @@ export function ApprovalStrip() {
     if (kept.length > 0) options = kept // never an empty card
   }
   const hasAlways = options.some(isAlwaysOption)
+  /** 卡上实际渲染的这组选项（过滤后）。用 ref 持有一份，供下面的重置
+   *  effect 在 requestId 变化时解析初始游标（TUI [ui].
+   *  default_selected_permission，FE 侧副本见 src/lib/
+   *  defaultSelectedPermission.ts）——ref 不参与 effect 依赖，设置/选项
+   * 变动不会重排已显示的卡，只有下一条请求生效。 */
+  const displayedRef = useRef(options)
+  displayedRef.current = options
 
   // ── MCP scope (TUI McpScopeState) ─────────────────────────────────
   // Detection mirrors the TUI (acp_handler/permissions.rs
@@ -225,7 +236,7 @@ export function ApprovalStrip() {
 
   // Reset per-request local state.
   useEffect(() => {
-    setSel(0)
+    setSel(resolveInitialSelection(displayedRef.current, loadDefaultSelectedPermission()))
     setParked(false)
     setScopeIdx(0)
     setExpanded(false)

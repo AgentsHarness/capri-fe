@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { SettingsModal } from './SettingsModal'
 import { useChatStore } from '../store/chat'
 import { useToastStore } from '../store/toast'
+import { loadDefaultSelectedPermission } from '../lib/defaultSelectedPermission'
 
 const settingsMock = vi.hoisted(() => ({
   settings: vi.fn(),
@@ -261,5 +262,25 @@ describe('SettingsModal', () => {
     expect(btn().textContent).toContain('on')
     fireEvent.click(btn())
     expect(btn().textContent).toContain('off')
+  })
+
+  it('前端偏好：default_selected_permission 默认高亮 + 点击持久化', async () => {
+    openModal()
+    render(<SettingsModal />)
+    await waitFor(() => expect(screen.getByTitle('default_selected_permission')).not.toBeNull())
+    const pill = (label: string) => screen.getByRole('button', { name: label })
+    // 未设置 → 默认 always_allow_all_sessions 高亮
+    expect(pill('始终允许（所有会话）').className).toContain('border-gn-green')
+    expect(loadDefaultSelectedPermission()).toBe('always_allow_all_sessions')
+    // 点「拒绝」→ 高亮切换 + 持久化
+    fireEvent.click(pill('拒绝'))
+    expect(pill('拒绝').className).toContain('border-gn-green')
+    expect(pill('始终允许（所有会话）').className).not.toContain('border-gn-green')
+    expect(loadDefaultSelectedPermission()).toBe('reject')
+    // 文案讲清与 permission_mode 的正交关系
+    expect(screen.getByText(/与上面的 permission_mode 正交/)).not.toBeNull()
+    // 其它两个选项也在
+    expect(pill('始终允许本命令')).not.toBeNull()
+    expect(pill('仅允许一次')).not.toBeNull()
   })
 })
