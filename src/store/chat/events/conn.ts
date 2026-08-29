@@ -17,7 +17,33 @@ import {
 import {
   busyPlausibleForView,
 } from '../turn'
+import { tailAlreadyTurnEnded } from '../turnLifecycle'
 import { applySessionModelState } from '../model'
+
+/**
+ * 本地真相守卫（spurious ready / host 状态丢失防线）：hub 重连竞态、
+ * 多会话错标、host 重启丢态都可能在本端回合仍在推进时送达 ready 或
+ * 无 busy 的 hello——照单全收会把 conn 打回 ready 并清掉 turnStartedAt
+ * （长工具执行期没有 open 流式指针，恰好是裸奔窗口），状态行随之熄灭
+ * 直到下一个流式事件才恢复。判定「回合仍在本地活跃」：有 open 流式
+ * 指针 / 在途乐观行，或计时器仍在且时间线尾部没有回合终止标记
+ * （turn_end 路径先写标记再收口，见 isTurnEndLine / tailAlreadyTurnEnded
+ * ——真实终态不受守卫影响，照常走 ready）。
+ */
+function turnLiveLocally(s: ChatState): boolean {
+  return (
+    s.openThoughtId != null ||
+    s.openAssistantId != null ||
+    s.pendingOptimisticUserId != null ||
+    // 时间线佐证：本地确有回合内容且尾部没有终止标记。空 entries 上的
+    // turnStartedAt 只能是窗口期灌入的脏计时（本端回合至少有用户消息
+    // 回显）——不挡 ready,照常清理。
+    (s.turnStartedAt != null &&
+      s.entries.length > 0 &&
+      !tailAlreadyTurnEnded(s.entries))
+  )
+}
+
 export function handleConnEvent(
   set: SetState,
   get: () => ChatState,
@@ -45,11 +71,16 @@ export function handleConnEvent(
           ev.sessionId != null &&
           ev.sessionId !== get().sessionId
         if (foreign) {
+          // 本地真相守卫：本端回合仍在活跃时，外来会话的 hello 也不能把
+          // conn 翻回 ready（状态行熄灭）——保持 busy 与本端文案。
+          const liveTurn = turnLiveLocally(get())
           set({
-            conn: ev.ready ? 'ready' : ev.error ? 'error' : 'connecting',
+            conn:
+              ev.error ? 'error' : ev.ready && liveTurn ? 'busy' : ev.ready ? 'ready' : 'connecting',
             // boot 错误只进横幅（下方 setLayerError），statusText 不写
             // 错误文本（stat/composer 不参与）——清空防残留旧文案。
-            statusText: ev.error ? '' : ev.ready ? '就绪' : '启动中…',
+            statusText:
+              ev.error ? '' : ev.ready ? (liveTurn ? get().statusText : '就绪') : '启动中…',
             homeDir: ev.homeDir,
             hostId: ev.hostId,
             hostName: ev.hostName,
@@ -91,11 +122,17 @@ export function handleConnEvent(
             })
         const { saved: permSaved } = consumeAgentInstance(ev.agentStartedAt)
         const permSnap = permissionModeFromSnapshot(ev.permissionMode)
+        // 本地真相守卫：reconnect/hello 竞态下 host 宣告的 ready 不可信
+        // （见 turnLiveLocally）——回合仍在本地活跃时保持 busy 与本端
+        // 流式文案，不写 "就绪"（真实终态由 turn_end 路径收口）。
+        const liveTurn = turnLiveLocally(get())
         set({
-          conn: ev.ready ? 'ready' : ev.error ? 'error' : 'connecting',
+          conn:
+            ev.error ? 'error' : ev.ready && liveTurn ? 'busy' : ev.ready ? 'ready' : 'connecting',
           // boot 错误只进横幅（下方 setLayerError），statusText 不写
           // 错误文本（stat/composer 不参与）——清空防残留旧文案。
-          statusText: ev.error ? '' : ev.ready ? '就绪' : '启动中…',
+          statusText:
+            ev.error ? '' : ev.ready ? (liveTurn ? get().statusText : '就绪') : '启动中…',
           ...(suppressAnchor
             ? {}
             : { sessionId: ev.sessionId, cwd: ev.cwd }),
@@ -204,6 +241,14 @@ export function handleConnEvent(
         // modes（无法归属，宁可保持现状）。
         if (!ev.sessionId && get().sessionId != null) {
           const s = get()
+          if (turnLiveLocally(s)) {
+            // 本地真相守卫：回合仍在本地活跃——不翻 ready、不清计时器、
+            // 不写空闲文案（状态行不熄灭；真实终态由 turn_end 收口）。
+            set({ conn: 'busy', hostId: ev.hostId, hostName: ev.hostName })
+            void get().refreshHosts()
+            void get().refreshGitInfo()
+            break
+          }
           set({
             conn: 'ready',
             statusText: s.awaitingNext ? '待处理' : '就绪',
@@ -226,10 +271,20 @@ export function handleConnEvent(
         // session/load restores a different session model.
         const s = get()
         const modelSnap = applySessionModelState(ev.models, ev.agentInfo)
+        // 本地真相守卫：回合仍在本地活跃（流式指针，或计时器在且时间线
+        // 尾部无回合终止标记）时，ready 不翻转 conn、不清计时器、不写
+        // 空闲文案——hub 重连竞态 / 多会话错标 / host 丢态的 spurious
+        // ready 不能熄灭状态行。真实终态（turn_end 先写标记再收口）到达
+        // 时守卫已为 false，照常走 ready。
+        const liveTurn = turnLiveLocally(s)
         set({
-          conn: 'ready',
-          // Keep "待处理" if a turn just finished; otherwise plain idle.
-          statusText: s.awaitingNext ? '待处理' : '就绪',
+          ...(liveTurn
+            ? { conn: 'busy' as const }
+            : {
+                conn: 'ready' as const,
+                // Keep "待处理" if a turn just finished; otherwise plain idle.
+                statusText: s.awaitingNext ? '待处理' : '就绪',
+              }),
           sessionId: ev.sessionId,
           cwd: ev.cwd,
           hostId: ev.hostId,
@@ -246,11 +301,9 @@ export function handleConnEvent(
           // 旧 loadHistory 灌入的脏计时），否则 turnIsLive() 会把空闲会话
           // 误判成忙、新会话第一条消息被错误排队。本端确有在途回合
           // （流式指针 / 乐观用户行）时保留，多 tab 同会话加载不打断计时。
-          ...(s.openThoughtId == null &&
-          s.openAssistantId == null &&
-          s.pendingOptimisticUserId == null
-            ? { turnStartedAt: undefined, currentPromptId: undefined }
-            : {}),
+          ...(liveTurn
+            ? {}
+            : { turnStartedAt: undefined, currentPromptId: undefined }),
         })
         void get().refreshHosts()
         void get().refreshGitInfo()
