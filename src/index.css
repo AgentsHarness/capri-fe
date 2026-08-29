@@ -127,6 +127,29 @@ body {
   scrollbar-width: thin;
 }
 
+/* ── Scrollback ⇄ composer junction ────────────────────────────────
+   Rows used to end on a hard pixel cut where the scroll viewport meets the
+   prompt area. This band overlays that edge and dissolves the transcript
+   tail into the base surface. It arms only while rows continue BELOW the
+   fold (useJunctionDissolve toggles data-dissolve), so the newest line
+   stays fully readable, and its `right` is inset by the scrollbar gutter so
+   the thumb never fades out from under the reader. An overlay rather than
+   mask-image on the scroll box: masking a scroller costs the compositor
+   fast-scroller path on every wheel tick. */
+.gn-junction-dissolve {
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    color-mix(in srgb, var(--color-gn-bg-base) 62%, transparent) 62%,
+    var(--color-gn-bg-base)
+  );
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+.gn-junction-dissolve[data-dissolve='1'] {
+  opacity: 1;
+}
+
 /* Scrollable region with no visible scrollbar (thought preview). */
 .gn-no-scrollbar {
   scrollbar-width: none;
