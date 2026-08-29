@@ -12,22 +12,6 @@ import type { SessionInfo, WorkspaceGroup } from '../api/types'
  */
 export type SessionGroupKey = 'active' | 'bg' | 'awaiting' | 'idle'
 
-/** Fixed group order: working → running bg → pending → idle. */
-export const GROUP_ORDER: readonly SessionGroupKey[] = [
-  'active',
-  'bg',
-  'awaiting',
-  'idle',
-] as const
-
-/** Recency sort for history sessions (newest first, then by id). */
-export function byRecency(a: SessionInfo, b: SessionInfo): number {
-  return (
-    (b.updatedAt || '').localeCompare(a.updatedAt || '') ||
-    a.sessionId.localeCompare(b.sessionId)
-  )
-}
-
 /**
  * 会话行排序优先级（组内排序主键，越小越靠前）：
  *   0 待处理（host 真·等待输入：权限/提问挂起，需要用户处理）
@@ -74,57 +58,6 @@ export function sessionGroupKey(
   // Never flag the session being viewed right now.
   if (currentSessionId && s.sessionId === currentSessionId) return 'idle'
   return 'idle'
-}
-
-export function groupLabel(key: SessionGroupKey): string {
-  switch (key) {
-    case 'active':
-      return '处理中'
-    case 'bg':
-      return '后台任务'
-    case 'awaiting':
-      return '待处理'
-    case 'idle':
-      return '空闲'
-  }
-}
-
-/** Accent class for a status group header. */
-export function groupAccentClass(key: SessionGroupKey): string {
-  switch (key) {
-    case 'active':
-      return 'text-gn-green'
-    case 'bg':
-      return 'text-gn-orange'
-    case 'awaiting':
-      return 'text-gn-blue'
-    case 'idle':
-      return 'text-gn-muted'
-  }
-}
-
-/**
- * Group history sessions by status bucket (处理中 / 后台任务 / 待处理 / 空闲).
- * Empty buckets are omitted; non-empty groups keep the fixed order.
- */
-export function groupByState(
-  sessions: SessionInfo[],
-  currentSessionId?: string | null,
-): Array<{ key: SessionGroupKey; label: string; items: SessionInfo[] }> {
-  const buckets: Record<SessionGroupKey, SessionInfo[]> = {
-    active: [],
-    bg: [],
-    awaiting: [],
-    idle: [],
-  }
-  for (const s of sessions) {
-    buckets[sessionGroupKey(s, currentSessionId)].push(s)
-  }
-  return GROUP_ORDER.filter((key) => buckets[key].length > 0).map((key) => ({
-    key,
-    label: groupLabel(key),
-    items: [...buckets[key]].sort(byRecency),
-  }))
 }
 
 /**

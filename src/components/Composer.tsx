@@ -1,4 +1,3 @@
-import { loadJSON, saveJSON } from '../lib/storage'
 import {
   useEffect,
   useMemo,
@@ -6,355 +5,61 @@ import {
   useRef,
   useState,
   type ClipboardEvent as ReactClipboardEvent,
-  type PointerEvent as ReactPointerEvent,
 } from 'react'
-import { GripVertical } from 'lucide-react'
 import { useChatStore, formatTurnDuration, stillRunningCue } from '../store/chat'
 import { tailAlreadyTurnEnded } from '../store/chat/turnLifecycle'
 import { pushToast } from '../store/toast'
 import { usePromptQueue } from '../store/promptQueue'
 import { onUiSettingsChange, onUiSettingsReady, uiString } from '../store/settings'
 import { transport } from '../api/client'
-import type { ContentBlock, ScrollEntry } from '../api/types'
+import type { ContentBlock } from '../api/types'
 import {
   Glyphs,
   MONITOR_PULSE_FRAMES,
   MONITOR_PULSE_INTERVAL_MS,
   SPINNER_FRAMES,
   SPINNER_INTERVAL_MS,
-  toolHeader,
 } from '../theme/glyphs'
 import {
   COMPOSER_BODY_PAD_LEFT_PX,
   CONTENT_COLUMN_CLASS,
   COLUMN_PAD_X_CLASS,
-  ICON_COL_CLASS,
 } from '../theme/layout'
 import { IconGlyph } from './IconGlyph'
 import { fmtTok } from '../format'
-import { Accents } from '../theme/accents'
-import { atTokenAt } from '../lib/atToken'
 import { SlashMenu } from './SlashMenu'
 import { FilePickerMenu } from './FilePickerMenu'
+import { isMultilineEnabled, registerModelMenuOpener } from '../commands/registry'
 import {
-  filterSlashCommands,
-  isMultilineEnabled,
-  matchSlash,
-  registerModelMenuOpener,
-  type SlashCommand,
-} from '../commands/registry'
-import { bumpSlashRecency } from '../commands/recency'
-import { setCachedSkills } from '../commands/skills'
-
-/** ── TUI paste-chip port (PromptWidget::handle_paste) ──────────────────
- * Pastes at/above the chip threshold become an atomic `[Pasted: N lines]`
- * element instead of inline text; the full content is stashed and only
- * materialized on expand (enter / double-click / paste-again) or submit.
- */
-const CHIP_MIN_LINES = 4 // TUI: 4, or 2 in compact mode (web has none)
-const CHIP_DISPLAY_BYTES = 10_000
-
-/** TUI MAX_ACTIVITY_SUBJECT_CHARS — wait/tool subject clamp in the status line. */
-const MAX_ACTIVITY_SUBJECT_CHARS = 40
-
-/**
- * Current activity of a busy turn — TUI turn_status.rs activity arm.
- * Priority mirrors the TUI tracker: blocking waits (WaitingReason) first,
- * then thinking, tools, streaming reply.
- *
- * - WaitingReason::Subagent   → "Waiting on subagent…"  (foreground subagent)
- * - WaitingReason::TaskOutput → "Waiting on <subject>…" / "Waiting on task output…"
- * - WaitingReason::TasksComplete → "Waiting on tasks…"  (multiple awaited tasks)
- * - WaitingReason::Sleep      → "Sleeping…"             (Await / Sleep tools)
- */
-function currentActivity(
-  entries: ScrollEntry[],
-): { label: string; color: string; startedAt?: number } | null {
-  // 1) Blocked on a foreground subagent (TUI tracker registers these when
-  //    the task tool is NOT backgrounded). Only reachable while the agent
-  //    itself is idle — thinking/tool/reply branches take precedence later.
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const e = entries[i]
-    if (e.kind === 'subagent' && e.running) {
-      return {
-        label: 'Waiting on subagent…',
-        color: Accents.gray,
-        startedAt: e.startedAt,
-      }
-    }
-  }
-  // 2) Awaiting background task output(s) (get_command_or_subagent_output /
-  //    wait_commands_or_subagents…). One task → subject named (description /
-  //    command, clamped like TUI MAX_ACTIVITY_SUBJECT_CHARS=40); several →
-  //    "Waiting on tasks…".
-  const runningTasks = entries.filter(
-    (e): e is Extract<ScrollEntry, { kind: 'bg_task' }> =>
-      e.kind === 'bg_task' && e.running === true,
-  )
-  if (runningTasks.length === 1) {
-    const subject = (runningTasks[0].command || runningTasks[0].title || '')
-      .trim()
-      .slice(0, MAX_ACTIVITY_SUBJECT_CHARS)
-    return {
-      label: subject
-        ? `Waiting on ${subject}…`
-        : 'Waiting on task output…',
-      color: Accents.gray,
-    }
-  }
-  if (runningTasks.length > 1) {
-    return { label: 'Waiting on tasks…', color: Accents.gray }
-  }
-  // 3) Explicit sleep (TUI blocking_wait_reason: Await / AwaitShell /
-  //    "Await:…" / "Sleep …").
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const e = entries[i]
-    if (e.kind === 'tool' && (e.status === 'pending' || e.status === 'in_progress')) {
-      const title = (e.title || '').trim()
-      if (
-        title === 'Await' ||
-        title === 'AwaitShell' ||
-        title.startsWith('Await:') ||
-        title.startsWith('Sleep ')
-      ) {
-        return {
-          label: 'Sleeping…',
-          color: Accents.gray,
-          startedAt: e.startedAt,
-        }
-      }
-      break // newest running tool only
-    }
-  }
-  // 4) Thinking / tool / streaming reply (newest running entry wins).
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const e = entries[i]
-    if (e.kind === 'thought' && e.streaming) {
-      // TUI turn_status.rs: "Thinking…" (text_secondary).
-      return { label: 'Thinking…', color: Accents.thinkingDefault, startedAt: e.startedAt }
-    }
-    if (e.kind === 'tool' && (e.status === 'pending' || e.status === 'in_progress')) {
-      const verb = toolHeader(e.kindName, false).verb
-      const target = (e.title || e.kindName || '').trim()
-      // TUI turn_status.rs tool style: ask tools ("Ask: …") and tools
-      // with a human description render muted (text_secondary); plain
-      // invocations keep the green accent.
-      const title = (e.title || '').trim()
-      const isAsk = title.startsWith('Ask: ') || title.startsWith('Ask ')
-      const raw = e.raw
-      const rawInput =
-        raw && typeof raw === 'object'
-          ? ((raw as { rawInput?: unknown }).rawInput ??
-            (raw as { raw_input?: unknown }).raw_input)
-          : undefined
-      const desc =
-        rawInput && typeof rawInput === 'object'
-          ? (rawInput as Record<string, unknown>).description
-          : undefined
-      const hasDesc = typeof desc === 'string' && desc.trim() !== ''
-      return {
-        label: `${verb} ${target}`.trim(),
-        color: isAsk || hasDesc ? Accents.gray : Accents.success,
-        // The tool's own start stamp (stamped on live running tools) —
-        // the phase timer counts this entry's duration, not the whole
-        // turn up to now.
-        startedAt: e.startedAt,
-      }
-    }
-    // Streaming reply: the assistant row's `ts` is its response start
-    // (first chunk), so the phase timer is the reply's own duration —
-    // not the whole turn. TUI: current_agent_msg → "Responding…".
-    if (e.kind === 'assistant' && e.streaming) {
-      return { label: 'Responding…', color: Accents.gray, startedAt: e.ts }
-    }
-  }
-  return null
-}
-
-/**
- * Paste chip = text paste chip; image chip = pasted/dropped image behind
- * an `[Image: <name>]` label. Both share the same atomic-label mechanics
- * (prune / caret clamp / whole-chip delete / Enter expand); image chips
- * expand to an inline thumbnail instead of text, and their data leaves
- * as an image ContentBlock on submit.
- */
-type PasteChip = {
-  id: string
-  label: string
-  content: string
-  /** Image chip: label stays in the text; data goes out as an image block. */
-  image?: { data: string; mimeType: string; name: string; size: number }
-  /** Image chip inline thumbnail expanded (Enter / double-click). */
-  expanded?: boolean
-}
-
-/** ── Prompt history (TUI: ↑ on empty input recalls) ────────────────── */
-const HISTORY_KEY = 'acpfe.promptHistory'
-const HISTORY_MAX = 50
-
-type HistoryItem = { text: string; ts: number; shell?: boolean }
-
-function loadPromptHistory(): HistoryItem[] {
-  const arr = loadJSON<unknown>(HISTORY_KEY, [])
-  if (!Array.isArray(arr)) return []
-  const out: HistoryItem[] = []
-  for (const x of arr) {
-    if (x && typeof x.text === 'string' && x.text.trim()) {
-      out.push({
-        text: x.text,
-        ts: typeof x.ts === 'number' ? x.ts : Date.now(),
-        shell: x.shell === true,
-      })
-      if (out.length >= HISTORY_MAX) break
-    }
-  }
-  return out
-}
-
-function savePromptHistory(items: HistoryItem[]): void {
-  saveJSON(HISTORY_KEY, items.slice(0, HISTORY_MAX))
-}
-
-/** ── Image chips (paste / drop) ────────────────────────────────────── */
-function fileToDataUrl(
-  file: File,
-): Promise<{ data: string; mimeType: string }> {
-  return new Promise((resolve, reject) => {
-    const fr = new FileReader()
-    fr.onload = () => {
-      const url = typeof fr.result === 'string' ? fr.result : ''
-      const comma = url.indexOf(',')
-      if (comma === -1) {
-        reject(new Error('unreadable image'))
-        return
-      }
-      // "data:<mime>;base64,<payload>" → mime (payload keeps NO data: prefix,
-      // matching the ContentBlock image contract).
-      const mimeType = url.slice(5, comma).split(';')[0] || file.type || 'image/png'
-      resolve({ data: url.slice(comma + 1), mimeType })
-    }
-    fr.onerror = () => reject(fr.error ?? new Error('image read failed'))
-    fr.readAsDataURL(file)
-  })
-}
-
-function fmtBytes(n: number): string {
-  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`
-  return `${Math.max(1, Math.round(n / 1024))} KB`
-}
-
-/** Bare \r → \n, leaving \r\n pairs intact (PromptWidget::normalize_cr). */
-function normalizeCr(text: string): string {
-  return text.replace(/\r(?!\n)/g, '\n')
-}
-
-/** Content line count — Rust str::lines(): a trailing \n adds no line. */
-function contentLines(text: string): number {
-  const n = text.split('\n').length
-  return text.endsWith('\n') ? n - 1 : n
-}
-
-function utf8Len(text: string): number {
-  return new TextEncoder().encode(text).length
-}
-
-/** Chip label: `[Pasted: N lines]`, or byte size for >10 KB pastes. */
-function pasteChipLabel(cleaned: string): string {
-  const bytes = utf8Len(cleaned)
-  if (bytes > CHIP_DISPLAY_BYTES) {
-    const size =
-      bytes >= 1_000_000
-        ? `${(bytes / 1_000_000).toFixed(1)} MB`
-        : bytes >= 1000
-          ? `${Math.floor(bytes / 1000)} KB`
-          : `${bytes} bytes`
-    return `[Pasted: ${size}]`
-  }
-  const n = contentLines(cleaned)
-  return `[Pasted: ${n} line${n === 1 ? '' : 's'}]`
-}
-
-/** Text range of the chip occurrence containing `pos` (or ending at it). */
-function chipOccurrenceAt(
-  text: string,
-  chips: PasteChip[],
-  pos: number,
-  mode: 'inside' | 'end',
-): { chip: PasteChip; start: number; end: number } | null {
-  for (const chip of chips) {
-    let from = 0
-    for (;;) {
-      const start = text.indexOf(chip.label, from)
-      if (start === -1) break
-      const end = start + chip.label.length
-      if (mode === 'inside' ? pos >= start && pos < end : pos === end) {
-        return { chip, start, end }
-      }
-      from = end
-    }
-  }
-  return null
-}
-
-/**
- * Chip occurrence the caret is on (start edge), inside, or right after
- * (end edge) — TUI paste_element_for_preview + double-click expansion.
- */
-function chipOccurrenceAtCaret(
-  text: string,
-  chips: PasteChip[],
-  pos: number,
-): { chip: PasteChip; start: number; end: number } | null {
-  for (const chip of chips) {
-    let from = 0
-    for (;;) {
-      const start = text.indexOf(chip.label, from)
-      if (start === -1) break
-      const end = start + chip.label.length
-      if (pos >= start && pos <= end) return { chip, start, end }
-      from = end
-    }
-  }
-  return null
-}
-
-/** Expand every chip into its stashed content (submit path).
- *  Image chips keep their `[Image: …]` label in the text — the image
- *  itself travels as a ContentBlock, so the label must survive. */
-function expandChips(text: string, chips: PasteChip[]): string {
-  let out = text
-  for (const chip of chips) {
-    if (chip.image) continue
-    const idx = out.indexOf(chip.label)
-    if (idx !== -1) {
-      out = out.slice(0, idx) + chip.content + out.slice(idx + chip.label.length)
-    }
-  }
-  return out
-}
-
-/**
- * Drop chips whose label no longer appears in the text (user edits).
- * Occurrences are paired to chips in insertion order so a paste-then-edit
- * never leaves a stale chip that hijacks a later identical label.
- */
-function pruneChips(text: string, chips: PasteChip[]): PasteChip[] {
-  const kept: PasteChip[] = []
-  let pos = 0
-  for (const chip of chips) {
-    const idx = text.indexOf(chip.label, pos)
-    if (idx === -1) continue
-    kept.push(chip)
-    pos = idx + chip.label.length
-  }
-  return kept
-}
-
-function chipId(): string {
-  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-    ? crypto.randomUUID()
-    : `chip-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
-}
+  chipId,
+  chipOccurrenceAt,
+  chipOccurrenceAtCaret,
+  contentLines,
+  expandChips,
+  fileToDataUrl,
+  fmtBytes,
+  normalizeCr,
+  pasteChipLabel,
+  pruneChips,
+  utf8Len,
+  CHIP_DISPLAY_BYTES,
+  CHIP_MIN_LINES,
+  type PasteChip,
+} from './composer/pasteChips'
+import {
+  loadPromptHistory,
+  savePromptHistory,
+  HISTORY_MAX,
+  type HistoryItem,
+} from './composer/promptHistory'
+import { currentActivity } from './composer/activity'
+import { useEscLadder } from './composer/useEscLadder'
+import { useModelMenu } from './composer/useModelMenu'
+import { ModelMenu } from './composer/ModelMenu'
+import { QueueStrip } from './composer/QueueStrip'
+import { useQueueNav } from './composer/useQueueNav'
+import { useSlashMenu } from './composer/useSlashMenu'
+import { useAtPicker } from './composer/useAtPicker'
 
 /** ── Composer frame ───────────────────────────────────────────────────
  * Rounded border box (container border + radius) — no font glyphs, no
@@ -429,24 +134,19 @@ export function Composer() {
   const openThoughtId = useChatStore((s) => s.openThoughtId)
   const openAssistantId = useChatStore((s) => s.openAssistantId)
   const models = useChatStore((s) => s.models)
-  const setModel = useChatStore((s) => s.setModel)
 
-  const [modelOpen, setModelOpen] = useState(false)
-  // 模型菜单「设为默认」勾选：切换模型时同时写入 config.toml 默认。
-  const [setAsDefault, setSetAsDefault] = useState(false)
-  const modelRef = useRef<HTMLSpanElement>(null)
-  const modelBtnRef = useRef<HTMLButtonElement>(null)
-  // Fixed-position menu rect so the picker stays inside the viewport on
-  // mobile (absolute + max-h-[320px] was clipped by body { overflow:hidden }
-  // when the composer sat at the bottom edge).
-  const [modelMenuPos, setModelMenuPos] = useState<{
-    bottom: number
-    right: number
-    maxH: number
-    width: number
-  } | null>(null)
   const taRef = useRef<HTMLTextAreaElement>(null)
   const busy = conn === 'busy'
+
+  // ── /model 模型菜单（开关/定位/切换）— composer/useModelMenu.ts ──
+  const modelMenu = useModelMenu()
+  const {
+    modelOpen,
+    setModelOpen,
+    modelMenuPos,
+    modelRef,
+    modelBtnRef,
+  } = modelMenu
 
   // ── 队首去向徽标（follow_up_behavior 对齐）─────────────────────────
   // 队列第一行在「立即发送」左侧标注队首的下一个去向：
@@ -504,67 +204,55 @@ export function Composer() {
   const [histSel, setHistSel] = useState(0)
   const histPanelRef = useRef<HTMLDivElement>(null)
 
-  // ── TUI mid-turn send queue (Enter during a turn → queued) ──
-  const queue = usePromptQueue((s) => s.queue)
-  // queuePanelOpen = composer 内联队列是否展开（不再是弹窗）。顶部 +N
-  // 徽标与标题行共用这个开关。
-  const queuePanelOpen = useChatStore((s) => s.queuePanelOpen)
-  const setQueuePanelOpen = useChatStore((s) => s.setQueuePanelOpen)
-  const queueEditIndex = usePromptQueue((s) => s.editIndex)
-  const queueEditDraft = usePromptQueue((s) => s.editDraft)
-  // Selected queue row (↑↓/j/k)；queueFocus 时快捷键归队列，否则滚动区
-  // 照常吃 j/k（内联条常驻展开时不能把滚动键抢走）。
-  const [queueSel, setQueueSel] = useState(0)
-  const [queueFocus, setQueueFocus] = useState(false)
-  // 左侧抓手拖拽：from = 抓起行，over = 当前落点（都是当前 queue 下标）。
-  const [queueDrag, setQueueDrag] = useState<{ from: number; over: number } | null>(null)
-  const queueDragRef = useRef<{ from: number; over: number } | null>(null)
-  const queuePanelRef = useRef<HTMLDivElement>(null)
-  const queueLenRef = useRef(0)
+  // ── TUI mid-turn send queue (Enter during a turn → queued) —
+  // 选择/焦点/拖拽/键盘操作状态机 — composer/useQueueNav.ts ──
+  const queueNav = useQueueNav()
+  const {
+    queue,
+    setQueuePanelOpen,
+    queueEditIndex,
+    queueSel,
+    setQueueSel,
+    queueFocus,
+    setQueueFocus,
+  } = queueNav
 
-  // ── TUI Esc ladder (prompt.rs try_handle_esc_policy, idle side) ──────
-  // First idle Esc ARMS: a non-empty draft shows "press again to clear"
-  // (second Esc within the TTL clears the buffer); an empty draft arms the
-  // rewind picker (second Esc opens /rewind, first press stays silent
-  // apart from the hint). Any other key disarms. Busy Esc never reaches
-  // this — the cancel flow owns it.
-  const escArmAtRef = useRef(0)
-  const [escHint, setEscHint] = useState<'clear' | 'rewind' | null>(null)
-  const escHintTimerRef = useRef<number | null>(null)
-  const disarmEsc = () => {
-    if (escArmAtRef.current === 0 && escHint == null) return
-    escArmAtRef.current = 0
-    setEscHint(null)
-  }
-  const armEsc = (hint: 'clear' | 'rewind') => {
-    escArmAtRef.current = Date.now()
-    setEscHint(hint)
-    if (escHintTimerRef.current != null) {
-      window.clearTimeout(escHintTimerRef.current)
-    }
-    escHintTimerRef.current = window.setTimeout(() => {
-      escArmAtRef.current = 0
-      setEscHint(null)
-    }, 800)
-  }
-  useEffect(() => {
-    return () => {
-      if (escHintTimerRef.current != null) {
-        window.clearTimeout(escHintTimerRef.current)
-      }
-    }
-  }, [])
+  // ── TUI Esc ladder (prompt.rs try_handle_esc_policy, idle side) —
+  // composer/useEscLadder.ts ──
+  const { escArmAtRef, escHint, disarmEsc, armEsc } = useEscLadder()
 
   // ── TUI shell mode (`! ` prefix; command goes to the agent as a prompt) ──
   const [shellMode, setShellMode] = useState(false)
-  // ── TUI slash command menu (`/` prefix; fuzzy menu + local execution) ──
-  const [slashSel, setSlashSel] = useState(0)
-  /** Menu dismissed (Esc / click outside); re-arms when input clears. */
-  const [slashDismissed, setSlashDismissed] = useState(false)
-  /** Composer chrome frame — outside clicks dismiss the slash menu. */
+  /** Composer chrome frame — outside clicks dismiss the slash menu / @ picker. */
   const composerChromeRef = useRef<HTMLDivElement>(null)
   /** Counter for clipboard images without a filename (TUI `[Image #N]`). */
   const unnamedImgRef = useRef(0)
+
+  // ── TUI slash command menu (`/` prefix) — composer/useSlashMenu.ts ──
+  const {
+    slashOpen,
+    slashMatches,
+    setSlashSel,
+    slashSelClamped,
+    slashList,
+    runSlashCommand,
+    runSlashLine,
+    setSlashDismissed,
+  } = useSlashMenu({
+    text,
+    setText,
+    taRef,
+    composerChromeRef,
+    shellMode,
+    clearChips: () => setChips([]),
+  })
+
+  // /model (no args) opens the composer's own model menu.
+  // setModelOpen 是 useState setter（恒稳定），列入 deps 仅为满足 lint。
+  useEffect(() => {
+    registerModelMenuOpener(() => setModelOpen(true))
+    return () => registerModelMenuOpener(null)
+  }, [setModelOpen])
 
   const pushHistory = (sentText: string, isShell = false) => {
     const t = sentText.trim()
@@ -860,252 +548,32 @@ export function Composer() {
     await submitCurrent()
   }
 
-  // ── TUI slash commands (`/` prefix) ────────────────────────────────
-  // Menu shows while the command word is being typed (no space yet) and
-  // the input starts with "/" — shell mode is mutually exclusive. Busy
-  // does NOT suppress it (commands are local actions).
-  const slashOpen =
-    !shellMode &&
-    !slashDismissed &&
-    text.startsWith('/') &&
-    !text.slice(1).includes(' ')
-  // Agent-advertised commands (ACP available_commands_update) feed the
-  // menu — subscribed here so the list refreshes when they arrive.
-  const agentCommands = useChatStore((s) => s.agentCommands)
-  // Skills join the menu below the commands (TUI 1.0.9 grouping). The
-  // extension list is fetched once per mount; the tick forces the memo
-  // to recompute after the module-wide cache updates.
-  const [skillsTick, setSkillsTick] = useState(0)
-  useEffect(() => {
-    let alive = true
-    void transport
-      .extensions()
-      .then((d) => {
-        if (!alive) return
-        setCachedSkills(Array.isArray(d?.skills) ? d.skills : [])
-        setSkillsTick((t) => t + 1)
-      })
-      .catch(() => {
-        /* offline / no host — menu runs without skills */
-      })
-    return () => {
-      alive = false
-    }
-  }, [])
-  const slashMatches = useMemo(
-    () => (slashOpen ? filterSlashCommands(text, agentCommands) : []),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [slashOpen, text, agentCommands, skillsTick],
-  )
-  const slashList = useMemo(
-    () => slashMatches.map((m) => m.cmd),
-    [slashMatches],
-  )
-  const slashSelClamped = Math.min(slashSel, Math.max(0, slashList.length - 1))
-
-  /** Execute a slash command (menu pick or typed line) — clears the buffer. */
-  const runSlashCommand = async (cmd: SlashCommand, args: string) => {
-    // TUI slash MRU: every execution refreshes the recency score that
-    // orders the bare `/` menu (slash/mru.rs).
-    bumpSlashRecency(cmd.name)
-    setSlashDismissed(true)
-    setText('')
-    setChips([])
-    try {
-      await cmd.run(args)
-    } catch (e) {
-      useChatStore.getState().appendLocalEntry({
-        kind: 'error',
-        text: `/${cmd.name} 执行失败: ${e instanceof Error ? e.message : String(e)}`,
-      })
-    }
-    taRef.current?.focus()
-  }
-
-  /**
-   * Enter on a `/…` line: matched → execute; unknown → error row, the
-   * input stays for editing and is NEVER sent to the agent (TUI).
-   */
-  const runSlashLine = async (input: string) => {
-    const m = matchSlash(input)
-    if (m) {
-      await runSlashCommand(m.cmd, m.args)
-      return
-    }
-    useChatStore.getState().appendLocalEntry({
-      kind: 'error',
-      text: `未知命令: ${input.split(/\s+/)[0]}。输入 /help 查看可用命令`,
-    })
-  }
-
-  // /model (no args) opens the composer's own model menu.
-  useEffect(() => {
-    registerModelMenuOpener(() => setModelOpen(true))
-    return () => registerModelMenuOpener(null)
-  }, [])
-
-  // Re-arm the menu when the input no longer starts with "/" (fresh
-  // slash reopens; Esc/click dismissals survive continued typing).
-  useEffect(() => {
-    if (!text.startsWith('/')) setSlashDismissed(false)
-  }, [text])
-
-  // Click outside the composer chrome dismisses the slash menu.
-  useEffect(() => {
-    if (!slashOpen) return
-    const onDown = (e: MouseEvent) => {
-      if (
-        composerChromeRef.current &&
-        !composerChromeRef.current.contains(e.target as Node)
-      ) {
-        setSlashDismissed(true)
-      }
-    }
-    document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
-  }, [slashOpen])
-
-  // ── TUI @ file picker (fuzzy file search) ───────────────────────────
+  // ── TUI @ file picker (fuzzy file search) — composer/useAtPicker.ts ──
   // Typing `@` (word start) opens the file popover; the token after `@`
   // is the fuzzy query. Matches stream through the store's `fileSearch`
   // state (search_fuzzy_status SSE event) — the change RPC itself only
   // arms the query. Enter/Tab insert `@path ` at the token, Esc/whitespace
   // close. Mutually exclusive with the slash menu (token detection runs
   // only when it's closed) and shell mode.
-  const fileSearch = useChatStore((s) => s.fileSearch)
-  const cwd = useChatStore((s) => s.cwd)
-  const [atOpen, setAtOpen] = useState(false)
-  const [atQuery, setAtQuery] = useState('')
-  const [atSel, setAtSel] = useState(0)
-  const atTokenStartRef = useRef(-1)
-  const atOpeningRef = useRef(false)
-  const atTimerRef = useRef<number | null>(null)
-
-  /** Arm/refresh the engine for `query`; no-op without a workspace. */
-  const atSearch = (query: string) => {
-    if (atTimerRef.current != null) {
-      window.clearTimeout(atTimerRef.current)
-      atTimerRef.current = null
-    }
-    if (query === '') return // engine requires a non-empty query
-    const fire = async () => {
-      let searchId = useChatStore.getState().fileSearch?.searchId
-      if (!searchId) {
-        if (atOpeningRef.current) return
-        atOpeningRef.current = true
-        try {
-          const st = useChatStore.getState()
-          const res = await transport.searchFuzzyOpen(
-            st.cwd ? { cwd: st.cwd } : {},
-          )
-          const sid =
-            res && typeof res === 'object' && typeof res.searchId === 'string'
-              ? res.searchId
-              : undefined
-          if (!sid) return
-          searchId = sid
-          useChatStore.setState({
-            fileSearch: { searchId, matches: [], done: true },
-          })
-        } catch {
-          return // no engine (old host / no workspace) — picker stays empty
-        } finally {
-          atOpeningRef.current = false
-        }
-      }
-      try {
-        await transport.searchFuzzyChange({ searchId, query, limit: 20 })
-      } catch {
-        /* stale searchId or engine hiccup — next keystroke retries */
-      }
-    }
-    // Debounce: the engine owns per-query versioning; this only limits
-    // request spam while typing.
-    atTimerRef.current = window.setTimeout(() => {
-      atTimerRef.current = null
-      void fire()
-    }, 120)
-  }
-
-  /** Tear the engine session down and close the popover. */
-  const closeAtPicker = () => {
-    if (atTimerRef.current != null) {
-      window.clearTimeout(atTimerRef.current)
-      atTimerRef.current = null
-    }
-    const searchId = useChatStore.getState().fileSearch?.searchId
-    useChatStore.setState({ fileSearch: null })
-    if (searchId) void transport.searchFuzzyClose({ searchId }).catch(() => {})
-    atOpeningRef.current = false
-    atTokenStartRef.current = -1
-    setAtOpen(false)
-    setAtQuery('')
-    setAtSel(0)
-  }
-
-  /**
-   * Re-detect the @ token under the caret (text edits AND caret moves —
-   * moving out of the token closes the picker, moving within re-queries).
-   */
-  const detectAtToken = (value: string, caret: number) => {
-    if (shellMode || slashOpen) {
-      if (atOpen) closeAtPicker()
-      return
-    }
-    const tok = atTokenAt(value, caret)
-    if (!tok) {
-      if (atOpen) closeAtPicker()
-      return
-    }
-    // Same token (onChange + onSelect both fire per edit) — nothing to do.
-    if (atOpen && tok.start === atTokenStartRef.current && tok.query === atQuery) {
-      return
-    }
-    atTokenStartRef.current = tok.start
-    setAtOpen(true)
-    setAtQuery(tok.query)
-    setAtSel(0)
-    atSearch(tok.query)
-  }
-
-  /** Insert the picked path in place of the `@token`, caret after it. */
-  const pickAtMatch = (path: string) => {
-    const el = taRef.current
-    const start = atTokenStartRef.current
-    if (start < 0) return
-    const caret = el?.selectionStart ?? text.length
-    const inserted = `@${path} `
-    const next = text.slice(0, start) + inserted + text.slice(caret)
-    setText(next)
-    setChips((cs) => pruneChips(next, cs))
-    setPendingCaret(start + inserted.length)
-    closeAtPicker()
-  }
-
-  // Click outside the composer chrome dismisses the @ picker too.
-  useEffect(() => {
-    if (!atOpen) return
-    const onDown = (e: MouseEvent) => {
-      if (
-        composerChromeRef.current &&
-        !composerChromeRef.current.contains(e.target as Node)
-      ) {
-        closeAtPicker()
-      }
-    }
-    document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [atOpen])
-
-  // Session switch / unmount: the engine session is tied to this
-  // composer's workspace — release it.
-  useEffect(() => {
-    if (atOpen) closeAtPicker()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cwd])
-  useEffect(() => closeAtPicker, [])
-
+  const {
+    fileSearch,
+    atOpen,
+    atQuery,
+    atSel,
+    setAtSel,
+    detectAtToken,
+    pickAtMatch,
+    closeAtPicker,
+  } = useAtPicker({
+    text,
+    setText,
+    setChips,
+    setPendingCaret,
+    taRef,
+    composerChromeRef,
+    shellMode,
+    slashOpen,
+  })
 
   /** Expanded image chips → inline thumbnail row above the textarea. */
   const expandedImgs = useMemo(
@@ -1133,74 +601,6 @@ export function Composer() {
       document.removeEventListener('keydown', onKey)
     }
   }, [histOpen])
-
-  // Keep the queue selection inside the current list (rows drain / get
-  // deleted). New items auto-expand the strip so the message itself is
-  // visible in composer — not just "N queued".
-  useEffect(() => {
-    if (queue.length > queueLenRef.current) setQueuePanelOpen(true)
-    queueLenRef.current = queue.length
-    if (queue.length === 0) setQueueFocus(false)
-    setQueueSel((s) => Math.min(s, Math.max(0, queue.length - 1)))
-  }, [queue.length, setQueuePanelOpen])
-
-  // ── Inline queue keyboard ops (TUI queue.rs): x delete, e/Enter edit,
-  // ↑↓/j/k move the selection, Shift+K/↑ or Ctrl+↑ swap up, Shift+J/↓ or
-  // Ctrl+↓ swap down. Only while the strip is focused (empty-prompt ↑
-  // or a row click) — typing in the composer and scrollback j/k win
-  // otherwise. Capture phase so the scrollback nav keys never see these.
-  useEffect(() => {
-    if (!queueFocus || queueEditIndex != null || queue.length === 0) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.isComposing) return
-      const t = e.target as HTMLElement | null
-      if (
-        !!t &&
-        (t.tagName === 'TEXTAREA' ||
-          t.tagName === 'INPUT' ||
-          t.isContentEditable)
-      ) {
-        return // typing / editing — don't steal keys
-      }
-      if (e.metaKey || e.altKey) return
-      const q = usePromptQueue.getState()
-      const n = q.queue.length
-      if (n === 0) return
-      const sel = Math.min(queueSel, n - 1)
-      let handled = true
-      if (e.key === 'ArrowDown' || e.key === 'j') {
-        setQueueSel(Math.min(n - 1, sel + 1))
-      } else if (e.key === 'ArrowUp' || e.key === 'k') {
-        setQueueSel(Math.max(0, sel - 1))
-      } else if (e.key === 'x' || e.key === 'Delete' || e.key === 'Backspace') {
-        q.removeAt(q.queue[sel].id)
-      } else if (e.key === 'e' || e.key === 'Enter') {
-        q.startEdit(sel)
-      } else if (
-        (e.shiftKey && (e.key === 'J' || e.key === 'ArrowDown')) ||
-        (e.ctrlKey && e.key === 'ArrowDown')
-      ) {
-        // TUI SwapDown binding: Shift+J (queue.rs); Ctrl+↓ also works.
-        q.moveDown(sel)
-        setQueueSel(Math.min(n - 1, sel + 1))
-      } else if (
-        (e.shiftKey && (e.key === 'K' || e.key === 'ArrowUp')) ||
-        (e.ctrlKey && e.key === 'ArrowUp')
-      ) {
-        // TUI SwapUp binding: Shift+K (queue.rs); Ctrl+↑ also works.
-        q.moveUp(sel)
-        setQueueSel(Math.max(0, sel - 1))
-      } else {
-        handled = false
-      }
-      if (handled) {
-        e.preventDefault()
-        e.stopPropagation()
-      }
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [queueFocus, queueEditIndex, queueSel, queue.length])
 
   // TUI queue: server-authoritative drain — the AGENT pops the queue head
   // at turn end (auto-drain) and broadcasts running_prompt_id for
@@ -1230,84 +630,6 @@ export function Composer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rewindOpen])
 
-  // Model picker: close on outside click / Escape; pin to viewport.
-  useEffect(() => {
-    if (!modelOpen) {
-      setModelMenuPos(null)
-      return
-    }
-    const place = () => {
-      const btn = modelBtnRef.current
-      if (!btn) return
-      const r = btn.getBoundingClientRect()
-      const pad = 8
-      const gap = 6
-      const vw = window.innerWidth
-      const vh = window.innerHeight
-      // Open upward from the button; clamp height to free space above.
-      const bottom = Math.max(pad, vh - r.top + gap)
-      const maxH = Math.max(120, Math.min(320, r.top - pad))
-      const width = Math.min(288, vw - pad * 2)
-      // Prefer right-align to the button, then shift so left/right stay in view.
-      let left = r.right - width
-      left = Math.max(pad, Math.min(left, vw - pad - width))
-      const right = vw - left - width
-      setModelMenuPos({ bottom, right, maxH, width })
-    }
-    place()
-    const onDown = (e: MouseEvent) => {
-      if (modelRef.current && !modelRef.current.contains(e.target as Node)) {
-        setModelOpen(false)
-      }
-    }
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setModelOpen(false)
-    }
-    window.addEventListener('resize', place)
-    // Capture scroll from nested scroll parents (scrollback).
-    window.addEventListener('scroll', place, true)
-    window.addEventListener('mousedown', onDown)
-    window.addEventListener('keydown', onKey)
-    return () => {
-      window.removeEventListener('resize', place)
-      window.removeEventListener('scroll', place, true)
-      window.removeEventListener('mousedown', onDown)
-      window.removeEventListener('keydown', onKey)
-    }
-  }, [modelOpen])
-
-  const switchModel = (modelId: string, reasoningEffort?: string) => {
-    setModelOpen(false)
-    void setModel(modelId, reasoningEffort)
-    // 「设为默认」勾选时：写入 config.toml 的 [models] default（+effort），
-    // 与切换动作一起生效（agent 热加载，TUI /model <name> <effort> 语义）。
-    if (setAsDefault) {
-      void transport
-        .setDefaultModel(modelId, reasoningEffort, useChatStore.getState().sessionId)
-        .then(() => pushToast(`已设为默认模型`))
-        .catch((e) => pushToast(`设为默认失败: ${e instanceof Error ? e.message : String(e)}`))
-    }
-  }
-
-  /** Match current caption effort against a menu row (id or wire value). */
-  const effortActive = (opt: { id: string; value: string }) => {
-    const cur = (reasoningEffort || '').trim().toLowerCase()
-    if (!cur) return false
-    return (
-      cur === opt.value.toLowerCase() ||
-      cur === opt.id.toLowerCase() ||
-      cur === opt.value.replace(/_/g, '').toLowerCase()
-    )
-  }
-
-  const modelActive = (m: { modelId: string; name?: string }) => {
-    const cur = (modelName || '').trim().toLowerCase()
-    if (!cur) return false
-    return (
-      cur === m.modelId.toLowerCase() ||
-      (m.name != null && cur === m.name.trim().toLowerCase())
-    )
-  }
   const promptFocused = focused || focusMode === 'prompt'
 
   // ── TUI turn status line (turn_status.rs) ──
@@ -1718,196 +1040,8 @@ export function Composer() {
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [usage, statusText, permissionMode, yoloMode, autoMode, planMode])
 
-  const setQueueDragBoth = (
-    v: { from: number; over: number } | null,
-  ) => {
-    queueDragRef.current = v
-    setQueueDrag(v)
-  }
-  const onQueueGripPointerDown = (
-    i: number,
-    e: ReactPointerEvent<HTMLButtonElement>,
-  ) => {
-    if (queueEditIndex != null) return
-    if (e.button !== 0) return
-    e.preventDefault()
-    e.stopPropagation()
-    e.currentTarget.setPointerCapture(e.pointerId)
-    setQueueDragBoth({ from: i, over: i })
-    setQueueSel(i)
-    setQueueFocus(true)
-  }
-  const onQueueGripPointerMove = (e: ReactPointerEvent<HTMLButtonElement>) => {
-    const drag = queueDragRef.current
-    if (!drag) return
-    const list = queuePanelRef.current
-    if (!list) return
-    let best = drag.from
-    let bestDist = Infinity
-    list.querySelectorAll<HTMLElement>('[data-queue-idx]').forEach((el) => {
-      const r = el.getBoundingClientRect()
-      const idx = Number(el.dataset.queueIdx)
-      if (!Number.isFinite(idx)) return
-      const d = Math.abs(e.clientY - (r.top + r.height / 2))
-      if (d < bestDist) {
-        bestDist = d
-        best = idx
-      }
-    })
-    if (best !== drag.over) setQueueDragBoth({ from: drag.from, over: best })
-  }
-  const onQueueGripPointerUp = () => {
-    const drag = queueDragRef.current
-    if (!drag) return
-    if (drag.from !== drag.over) {
-      usePromptQueue.getState().moveTo(drag.from, drag.over)
-      setQueueSel(drag.over)
-    }
-    setQueueDragBoth(null)
-  }
-
   // ── Inline queue strip：忙时 Enter 只入队，消息正文在 composer 上方。
-  // 每行常驻 立即发送 / 编辑 / 删除；左侧抓手拖拽排序。字号与 status 行一致。
-  const queueRow =
-    queue.length > 0 &&
-    queuePanelOpen && (
-      <div
-        ref={queuePanelRef}
-        className="select-none pb-2 pr-0.5 font-ui text-[13.5px] leading-[1.4]"
-        style={{ paddingLeft: COMPOSER_BODY_PAD_LEFT_PX }}
-      >
-        <div className="gn-no-scrollbar flex max-h-28 flex-col gap-0.5 overflow-y-auto">
-          {queue.map((q, i) => {
-            const editing = queueEditIndex === i
-            const selected = queueFocus && queueSel === i
-            const actionClass =
-              'shrink-0 rounded px-1.5 py-[2px] text-gn-gray hover:bg-gn-bg-highlight hover:text-gn-fg'
-            return (
-              <div
-                key={q.id}
-                data-queue-idx={i}
-                onMouseEnter={() => setQueueSel(i)}
-                onMouseDown={() => {
-                  setQueueSel(i)
-                  setQueueFocus(true)
-                }}
-                className={`flex min-h-5 items-center gap-1.5 rounded py-0.5 ${
-                  selected && !editing ? 'bg-gn-bg-highlight/70' : ''
-                } ${queueDrag?.from === i ? 'opacity-50' : ''} ${
-                  queueDrag && queueDrag.over === i && queueDrag.from !== i
-                    ? 'border-t border-gn-cyan'
-                    : ''
-                }`}
-              >
-                <button
-                  type="button"
-                  disabled={editing}
-                  onPointerDown={(e) => onQueueGripPointerDown(i, e)}
-                  onPointerMove={onQueueGripPointerMove}
-                  onPointerUp={onQueueGripPointerUp}
-                  onPointerCancel={onQueueGripPointerUp}
-                  className={`${ICON_COL_CLASS} cursor-grab text-gn-gray touch-none hover:text-gn-fg active:cursor-grabbing disabled:cursor-default disabled:opacity-40`}
-                  aria-label="拖拽排序"
-                  title="拖拽排序"
-                >
-                  <GripVertical size={13} strokeWidth={2.25} aria-hidden />
-                </button>
-                {editing ? (
-                  <textarea
-                    autoFocus
-                    rows={1}
-                    value={queueEditDraft}
-                    onChange={(e) =>
-                      usePromptQueue.getState().setEditDraft(e.target.value)
-                    }
-                    onKeyDown={(e) => {
-                      if (e.nativeEvent.isComposing) return
-                      if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey) {
-                        e.preventDefault()
-                        e.stopPropagation()
-                        usePromptQueue.getState().saveEdit()
-                      } else if (e.key === 'Escape') {
-                        e.preventDefault()
-                        e.stopPropagation()
-                        usePromptQueue.getState().cancelEdit()
-                      }
-                    }}
-                    className="gn-no-scrollbar min-h-[1.4em] flex-1 resize-none bg-transparent font-ui text-[13.5px] leading-[1.4] text-gn-fg outline-none"
-                    spellCheck={false}
-                  />
-                ) : (
-                  <span
-                    className="min-w-0 flex-1 truncate text-gn-gray"
-                    title={q.degraded ? `发送失败：${q.errorText ?? ''}` : q.text}
-                  >
-                    {q.degraded ? (
-                      <span className="mr-1.5 text-gn-red">失败</span>
-                    ) : null}
-                    {q.text}
-                  </span>
-                )}
-                {editing ? (
-                  <button
-                    type="button"
-                    onClick={() => usePromptQueue.getState().saveEdit()}
-                    className={actionClass}
-                  >
-                    保存
-                  </button>
-                ) : (
-                  <>
-                    {i === 0 && !q.degraded ? (
-                      <span
-                        className={`shrink-0 rounded border px-1 py-px text-[10px] leading-none ${
-                          headSteer
-                            ? 'border-gn-cyan/50 text-gn-cyan'
-                            : 'border-gn-prompt-border/70 text-gn-gutter'
-                        }`}
-                        title={
-                          headSteer
-                            ? 'steer：队首将在运行中回合的下一个工具/模型安全间隙注入（不取消回合）'
-                            : 'queue：队首等当前回合结束后作为下一回合运行'
-                        }
-                      >
-                        {headSteer ? '引导' : '队列'}
-                      </span>
-                    ) : null}
-                    <button
-                      type="button"
-                      onClick={() => void sendQueuedItem(q.id)}
-                      className="shrink-0 rounded px-1.5 py-[2px] text-gn-cyan hover:bg-gn-bg-highlight"
-                      title="立即发送这条"
-                    >
-                      立即发送
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setQueueSel(i)
-                        setQueueFocus(true)
-                        usePromptQueue.getState().startEdit(i)
-                      }}
-                      className={actionClass}
-                    >
-                      编辑
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => usePromptQueue.getState().removeAt(q.id)}
-                      className="shrink-0 rounded px-1.5 py-[2px] text-gn-gray hover:bg-gn-bg-highlight hover:text-gn-red"
-                      aria-label="删除这条排队消息"
-                      title="删除"
-                    >
-                      删除
-                    </button>
-                  </>
-                )}
-              </div>
-            )
-          })}
-        </div>
-      </div>
-    )
+  // 渲染归 composer/QueueStrip.tsx（状态归 useQueueNav）。
 
   // ── TUI Esc ladder hint (prompt.rs "press again to clear") ──
   // Transient row between the status area and the prompt; auto-expires
@@ -2121,7 +1255,7 @@ export function Composer() {
           )}
         </div>
         {/* 内联发送队列（无弹窗）：排队消息正文 + 行内操作。 */}
-        {queueRow}
+        <QueueStrip nav={queueNav} sendQueuedItem={(id) => void sendQueuedItem(id)} headSteer={headSteer} />
         {escHintRow}
         {/* ── TUI follow-up suggestion chips (x.ai/follow_ups, follow_ups.rs) ──
           Turn-end suggestions rendered as a transient row between the
@@ -2743,8 +1877,7 @@ export function Composer() {
                         e.stopPropagation()
                         return
                       }
-                      escArmAtRef.current = 0
-                      setEscHint(null)
+                      disarmEsc()
                       e.preventDefault()
                       e.stopPropagation()
                       if (hasDraft) {
@@ -2866,104 +1999,7 @@ export function Composer() {
                 {modelLabel}
               </button>
               {modelOpen && models.length > 0 && modelMenuPos && (
-                <div
-                  className="pointer-events-auto fixed z-50 overflow-y-auto rounded border border-gn-prompt-border-active bg-gn-bg-base shadow-2xl"
-                  style={{
-                    bottom: modelMenuPos.bottom,
-                    right: modelMenuPos.right,
-                    maxHeight: modelMenuPos.maxH,
-                    width: modelMenuPos.width,
-                  }}
-                >
-                  <div className="sticky top-0 z-10 border-b border-gn-prompt-border bg-gn-bg-dark px-3 py-1.5 text-[11px] font-bold text-gn-fg2">
-                    切换模型
-                  </div>
-                  {models.map((m) => {
-                    const efforts = m.reasoningEfforts ?? []
-                    const active = modelActive(m)
-                    const defEffort =
-                      efforts.find((e) => e.default) ?? efforts[0]
-                    return (
-                      <div
-                        key={m.modelId}
-                        className={`border-b border-gn-prompt-border/40 px-3 py-1.5 ${
-                          active ? 'bg-gn-bg-highlight/60' : ''
-                        }`}
-                      >
-                        <button
-                          type="button"
-                          onClick={() =>
-                            switchModel(
-                              m.modelId,
-                              // Keep current effort when re-picking same model
-                              // if still offered; else fall back to default.
-                              active && reasoningEffort
-                                ? efforts.find(
-                                    (e) =>
-                                      e.value === reasoningEffort ||
-                                      e.id === reasoningEffort,
-                                  )?.value ?? defEffort?.value
-                                : defEffort?.value,
-                            )
-                          }
-                          className="block w-full text-left hover:opacity-90"
-                        >
-                          <span
-                            className={`text-[12px] font-medium ${
-                              active ? 'text-gn-magenta' : 'text-gn-fg'
-                            }`}
-                          >
-                            {m.name || m.modelId}
-                          </span>
-                        </button>
-                        {efforts.length > 0 && (
-                          <div className="mt-1.5 flex flex-wrap gap-1">
-                            {efforts.map((e) => {
-                              const on = active && effortActive(e)
-                              return (
-                                <button
-                                  key={e.id || e.value}
-                                  type="button"
-                                  onClick={() =>
-                                    switchModel(m.modelId, e.value)
-                                  }
-                                  title={
-                                    e.label !== e.value
-                                      ? `${e.label} (${e.value})`
-                                      : e.value
-                                  }
-                                  className={`rounded border px-1.5 py-[2px] text-[10px] leading-none transition-colors ${
-                                    on
-                                      ? 'border-gn-prompt-border-active bg-gn-bg-hover text-gn-magenta'
-                                      : 'border-gn-prompt-border text-gn-muted hover:border-gn-prompt-border-active hover:bg-gn-bg-highlight hover:text-gn-fg'
-                                  }`}
-                                >
-                                  {e.label || e.value}
-                                </button>
-                              )
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })}
-                  <div className="sticky bottom-0 flex items-center gap-2 border-t border-gn-prompt-border bg-gn-bg-dark px-3 py-1.5">
-                    <input
-                      id="set-as-default-model"
-                      type="checkbox"
-                      checked={setAsDefault}
-                      onChange={(e) => setSetAsDefault(e.target.checked)}
-                      className="accent-gn-magenta"
-                    />
-                    <label
-                      htmlFor="set-as-default-model"
-                      className="text-[10.5px] text-gn-muted"
-                      title="切换时同时写入 ~/.grok/config.toml 的 [models] default（+effort），新会话默认使用"
-                    >
-                      设为默认模型（写入 config.toml）
-                    </label>
-                  </div>
-                </div>
+                <ModelMenu models={models} pos={modelMenuPos} menu={modelMenu} />
               )}
             </span>
             <span className="flex min-w-0 items-center truncate">

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isEditToolKind, isFlashEligible, toolFamily } from './toolFamily'
+import { isEditToolKind, toolFamily } from './toolFamily'
 
 describe('toolFamily', () => {
   it('execute 系', () => {
@@ -40,17 +40,11 @@ describe('toolFamily', () => {
   })
 })
 
-describe('isEditToolKind / isFlashEligible', () => {
+describe('isEditToolKind', () => {
   it('edit 家族判定', () => {
     expect(isEditToolKind('edit')).toBe(true)
     expect(isEditToolKind('write_file')).toBe(true)
     expect(isEditToolKind('read')).toBe(false)
     expect(isEditToolKind(undefined)).toBe(false)
-  })
-
-  it('tool / thought 可闪', () => {
-    expect(isFlashEligible('tool')).toBe(true)
-    expect(isFlashEligible('thought')).toBe(true)
-    expect(isFlashEligible('user')).toBe(false)
   })
 })

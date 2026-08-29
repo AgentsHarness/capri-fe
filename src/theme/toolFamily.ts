@@ -63,13 +63,3 @@ export function toolFamily(kindName?: string): ToolFamily {
 export function isEditToolKind(kindName?: string): boolean {
   return toolFamily(kindName) === 'edit'
 }
-
-/** Tools that participate in dense groups (TUI ToolCallBlock::is_groupable). */
-export function isGroupableTool(_kindName?: string): boolean {
-  return true
-}
-
-/** Tools/thoughts eligible for finish-flash accent. */
-export function isFlashEligible(kind: string): boolean {
-  return kind === 'tool' || kind === 'thought'
-}

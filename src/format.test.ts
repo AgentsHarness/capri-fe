@@ -6,36 +6,10 @@ import {
   fmtTok,
   fmtTokBig,
   shortCwd,
-  stripAnsi,
   subagentMeta,
   userMessagePreview,
 } from './format'
 import type { ScrollEntry } from './api/types'
-
-describe('stripAnsi', () => {
-  it('纯文本原样返回', () => {
-    expect(stripAnsi('hello world')).toBe('hello world')
-  })
-
-  it('剥离 SGR 颜色序列', () => {
-    expect(stripAnsi('\x1b[31mred\x1b[0m')).toBe('red')
-    expect(stripAnsi('\x1b[1;32mgreen\x1b[0m normal')).toBe('green normal')
-  })
-
-  it('剥离光标移动 / 私有模式 CSI（含 0x9b 单字节 CSI）', () => {
-    expect(stripAnsi('a\x1b[2Kb\x1b[?25hc')).toBe('abc')
-    expect(stripAnsi('\x9b1Aup')).toBe('up')
-  })
-
-  it('CSI 终止字节后紧跟的字母文本不被误吃', () => {
-    expect(stripAnsi('\x1b[31;42mOKtext')).toBe('OKtext')
-  })
-
-  it('剥离 OSC 窗口标题（BEL 与 ESC\\ 两种终止）', () => {
-    expect(stripAnsi('\x1b]0;title\x07body')).toBe('body')
-    expect(stripAnsi('\x1b]0;title\x1b\\body')).toBe('body')
-  })
-})
 
 describe('fmtTok / fmtTokBig', () => {
   it('千以下原样输出', () => {

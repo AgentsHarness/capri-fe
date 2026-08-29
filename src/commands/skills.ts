@@ -9,7 +9,6 @@
 import type { ExtensionSkill } from '../api/types/extensions'
 
 let cached: ExtensionSkill[] = []
-const listeners = new Set<() => void>()
 
 export function cachedSkills(): ExtensionSkill[] {
   return cached
@@ -17,12 +16,4 @@ export function cachedSkills(): ExtensionSkill[] {
 
 export function setCachedSkills(list: ExtensionSkill[]): void {
   cached = list
-  listeners.forEach((cb) => cb())
-}
-
-export function onSkillsChange(cb: () => void): () => void {
-  listeners.add(cb)
-  return () => {
-    listeners.delete(cb)
-  }
 }

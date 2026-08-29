@@ -68,6 +68,23 @@ function parseSummaryRow(o: Record<string, unknown>, fallbackCwd: string): Works
 }
 
 export const sessionsRpc = {
+  async newSession(this: TransportCore, config: {
+    cwd?: string
+    additionalDirectories?: string[]
+    mcpServers?: unknown[]
+    /** Permission-mode seeds (TUI's yoloMode/autoMode) → session/new `_meta`. */
+    meta?: Record<string, unknown>
+  } = {}) {
+    const res = await this.fetch(this.url('/api/session'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    })
+    const data = await res.json()
+    if (!res.ok || data.ok === false) throw new Error(data.error || 'session failed')
+    return data
+  },
+
   async listSessions(this: TransportCore): Promise<{ sessions: SessionInfo[]; nextCursor?: string; meta?: Record<string, unknown> }> {
     const res = await this.fetch(this.url('/api/sessions'), {
       method: 'POST',
