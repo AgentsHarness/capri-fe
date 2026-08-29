@@ -10,6 +10,7 @@ import {
 } from 'react'
 import { GripVertical } from 'lucide-react'
 import { useChatStore, formatTurnDuration, stillRunningCue } from '../store/chat'
+import { tailAlreadyTurnEnded } from '../store/chat/turnLifecycle'
 import { pushToast } from '../store/toast'
 import { usePromptQueue } from '../store/promptQueue'
 import { onUiSettingsChange, onUiSettingsReady, uiString } from '../store/settings'
@@ -425,6 +426,8 @@ export function Composer() {
   const planMode = useChatStore((s) => s.planMode)
   const focusMode = useChatStore((s) => s.focusMode)
   const turnStartedAt = useChatStore((s) => s.turnStartedAt)
+  const openThoughtId = useChatStore((s) => s.openThoughtId)
+  const openAssistantId = useChatStore((s) => s.openAssistantId)
   const models = useChatStore((s) => s.models)
   const setModel = useChatStore((s) => s.setModel)
 
@@ -1326,6 +1329,20 @@ export function Composer() {
   // at the moment the phase became current — so a mid-turn wait counts
   // from when the last entry ended, not from the turn start.
   const activity = useMemo(() => currentActivity(entries), [entries])
+  // 本地真相兜底（spurious ready / host 状态丢失）：传输侧宣称空闲
+  // （conn ready）但本地仍有活动流或未终止的回合计时——hub 重连竞态 /
+  // 多会话错标 / host 丢态都可能触发。状态行按本地活动显示真实状态，
+  // 不随 conn 熄灭，附注让传输异常可见（服务端守卫见 conn.ts
+  // turnLiveLocally，这里是显示层最后防线）。真实终态时间线必带回合
+  // 终止标记，不会误亮。
+  const localLive =
+    !busy &&
+    conn === 'ready' &&
+    (openThoughtId != null ||
+      openAssistantId != null ||
+      (turnStartedAt != null &&
+        entries.length > 0 &&
+        !tailAlreadyTurnEnded(entries)))
   // Phase identity for anchor tracking: activity label (+ entry stamp)
   // while something runs, else the status text of the wait window. When
   // it changes (a new entry arrived / a new wait began), the anchor is
@@ -1335,9 +1352,11 @@ export function Composer() {
       ? `a:${activity.label}:${activity.startedAt ?? ''}`
       : busy
         ? `w:${statusText}`
-        : recapPending
-          ? 'r:recap'
-          : ''
+        : localLive
+          ? 'l:local'
+          : recapPending
+            ? 'r:recap'
+            : ''
   const lastPhaseKey = useRef('')
   const phaseAnchor = useRef<number | undefined>(undefined)
   if (phaseKey !== lastPhaseKey.current) {
@@ -1346,7 +1365,9 @@ export function Composer() {
   }
   const phaseStart =
     activity?.startedAt ??
-    (busy || recapPending ? (phaseAnchor.current ?? turnStartedAt) : undefined)
+    (busy || recapPending || localLive
+      ? (phaseAnchor.current ?? turnStartedAt)
+      : undefined)
   // [↓] send-to-background (TUI DemoteToBackground): shown while a
   // running execute tool exists — demotes that command to a background
   // task via x.ai/terminal/background (the agent then reports it through
@@ -1377,7 +1398,8 @@ export function Composer() {
     (busy ||
       conn === 'connecting' ||
       recapPending ||
-      idleCueVisible)
+      idleCueVisible ||
+      localLive)
   // 生成速度（状态行总时间右侧）：host 推送的 gen_rate（字符/秒），
   // 只在输出过程中显示——流式期间实时更新，输出结束（工具阶段/回合
   // 结束）host 广播 active:false 清除。
@@ -1988,11 +2010,13 @@ export function Composer() {
                 <span className="inline-flex w-[1.25em] shrink-0 items-center justify-center leading-none text-gn-muted">
                   {SPINNER_FRAMES[spinnerFrame]}
                 </span>
-                {busy ? (
+                {busy || localLive ? (
                   // Busy arm: activity label (colored per activity type) +
                   // phase timer — dynamic, replaces the static statusText.
                   // The no-activity fallback renders the status text; the
                   // cancelling window is red (TUI Cancelling… accent_error).
+                  // localLive（conn 已被 spurious ready 打回但本地仍有活动）
+                  // 显示真实活动并附注 host 状态缺失。
                   <>
                     <span
                       className="truncate"
@@ -2004,11 +2028,19 @@ export function Composer() {
                             : 'var(--color-gn-gray-dim)'),
                       }}
                     >
-                      {activity?.label ?? statusText}
+                      {activity?.label ?? (localLive && !busy ? '回合进行中' : statusText)}
                     </span>
                     {phaseStart != null && (
                       <span className="shrink-0 tabular-nums text-gn-gray">
                         {formatTurnDuration(Date.now() - phaseStart)}
+                      </span>
+                    )}
+                    {localLive && !busy && (
+                      <span
+                        className="shrink-0 text-gn-gutter"
+                        title="host 状态缺失（可能是 hub/host 传输异常）——按本地活动显示真实状态"
+                      >
+                        · host 状态缺失
                       </span>
                     )}
                   </>
