@@ -26,9 +26,6 @@ export const ACCENT_GAP_PX = 12
  */
 export const ICON_COL_INSET_PX = ACCENT_W_PX + ACCENT_GAP_PX // 15
 
-/** Content column max width. */
-export const CONTENT_MAX_W_PX = 960
-
 /**
  * Shared class for scrollback / composer / approval column.
  * Centering via mx-auto — do not use a fixed viewport marginLeft.
@@ -52,9 +49,6 @@ export const COLUMN_PAD_X_CLASS = 'px-4 sm:px-5'
  */
 export const ICON_COL_CLASS =
   'inline-flex h-[1.2em] w-[1.25em] shrink-0 items-center justify-center text-[13px] leading-none select-none'
-
-/** Gap between icon column and verb/label (gap-1.5 = 6px). */
-export const ICON_TEXT_GAP_CLASS = 'gap-1.5'
 
 /** Dense tool/thought header row chrome. */
 export const DENSE_ROW_CLASS =

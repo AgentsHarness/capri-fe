@@ -1,31 +1,6 @@
 import type { ScrollEntry } from './api/types'
 
 /**
- * Strip ANSI/VT escape sequences (colors, cursor moves, SGR) so raw
- * process/PTY output renders as plain text in the web UI (no VTE emulator).
- *
- * Built via `\xNN` escape text inside a RegExp string so the source holds no
- * control-char bytes (oxlint no-control-regex) AND the engine sees proper
- * escapes — raw ESC/BEL bytes embedded via String.fromCharCode are silently
- * dropped by V8's RegExp constructor. Handles CSI (`ESC[` / 0x9b) sequences
- * whose parameters are digits / `;` / `?` and which end in a SINGLE final
- * byte (e.g. SGR `m`, cursor `A`, clear `K`, private `?25h`) — never
- * over-eating plain alphanumeric text that follows; plus OSC
- * (`ESC]…BEL|ESC\`) window titles / hyperlinks.
- */
-export const stripAnsi = (text: string): string => {
-  const re = new RegExp(
-    `(?:\\x1b\\[|\\x9b)[0-9;:?]*[a-zA-Z@]` + // CSI: ESC[ / 0x9b + params → one final byte
-      `|\\x1b\\]` +
-      `[^\\x1b\\x07]*(?:\\x07|\\x1b\\\\)` + // OSC: ESC] … BEL|ESC\
-      `|\\x1b[()][0-9AB]`, // charset designation
-    'g',
-  )
-  return text.replace(re, '')
-}
-
-
-/**
  * TUI context_bar fmt_tokens: "500", "5.2K", "50K", "1.2M" — one decimal
  * below 10, integer above (the top bar and the composer prompt flags share
  * this so the two surfaces never disagree).

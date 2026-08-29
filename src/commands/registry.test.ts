@@ -116,7 +116,7 @@ beforeEach(() => {
   vi.mocked(useChatStore.getState).mockReturnValue(fake as never)
   // registry 的 status() 走 setState；让 setState 真实写入 fake
   vi.mocked(useChatStore.setState).mockImplementation((partial) => {
-    Object.assign(fake, partial as Record<string, unknown>)
+    Object.assign(fake, partial as unknown as Record<string, unknown>)
     return fake as never
   })
   vi.mocked(usePromptQueue.getState).mockReturnValue({
