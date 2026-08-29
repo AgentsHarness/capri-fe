@@ -203,7 +203,15 @@ export function handleConnEvent(
         // Agent hello announces the active session — fetch git state now
         // (git_head_changed is fire-and-forget; a fresh page would miss it).
         if (ev.cwd && !suppressAnchor) {
-          set({ sessionId: ev.sessionId, cwd: ev.cwd })
+          set({
+            sessionId: ev.sessionId,
+            cwd: ev.cwd,
+            // 换到别的会话时先清状态栏分支（旧会话的 ⎇ 不该挂在新视图上），
+            // 下一次 refreshGitInfo 会带回本会话的分支。
+            ...(ev.sessionId && ev.sessionId !== get().sessionId
+              ? { gitInfo: undefined }
+              : {}),
+          })
           // The user is looking at this session now — clear its notice.
           if (ev.sessionId) get().clearCompletedNotice(ev.sessionId)
           void get().refreshGitInfo()

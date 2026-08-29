@@ -130,7 +130,13 @@ export async function loadHistory(
       // live in the top strip only). applyTopTaskProbe replaces the
       // strip contents wholesale (alive filter + additions), so stale
       // entries from a previous session cannot linger.
-      gitInfo: undefined,
+      // NOTE: gitInfo is NOT reset here. continueSession (and the hello
+      // handler) fires refreshGitInfo in parallel with this load, so the
+      // branch usually arrives BEFORE this reset runs — wiping it here
+      // lost the branch with nothing left to restore it, since a resumed
+      // idle session never emits git_head_changed (only a real HEAD change
+      // does). Switches blank it up front instead: continueSession's entry
+      // set and the hello re-anchor.
       // Permission mode is process-global (follows the agent) — do NOT
       // reset it when swapping sessions. loadHistory used to blank the
       // composer badge for the duration of replay, then only restore
