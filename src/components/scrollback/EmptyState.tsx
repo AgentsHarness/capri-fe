@@ -90,7 +90,7 @@ export function EmptyStatePicker() {
         </div>
       </div>
       <div className="mt-6 select-none text-[13px] font-normal tracking-wide text-gn-muted/80">
-        for Grok Build <span className="text-gn-gutter/60">1.0.4</span>
+        for Grok Build <span className="text-gn-gutter/60">1.0.13</span>
       </div>
       <div className="mt-6 text-center">
         <button
