@@ -20,14 +20,19 @@ import { usePromptQueue } from '../store/promptQueue'
 import { bumpSlashRecency } from './recency'
 import { setCachedSkills } from './skills'
 import {
+  escapeSlash,
   filterSlashCommands,
   isMultilineEnabled,
+  isSlashEscaped,
+  isSlashLiteral,
+  literalSlashPayload,
   matchSlash,
   mergedSlashCommands,
   parseBudgetTokens,
   registerMcpPanelOpener,
   registerModelMenuOpener,
   slashCommands,
+  unescapeSlash,
 } from './registry'
 
 interface FakeChat {
@@ -183,6 +188,69 @@ describe('matchSlash', () => {
   it('agent 命令也可匹配', () => {
     fake.agentCommands = [{ name: 'deploy', description: 'deploy' }]
     expect(matchSlash('/deploy --env prod')?.cmd.source).toBe('agent')
+  })
+
+  it('\\/ 转义行不是命令', () => {
+    expect(matchSlash('\\/clear')).toBeNull()
+  })
+})
+
+describe('\\/ 字面量斜杠转义', () => {
+  it('isSlashEscaped：只有 trimStart 后以 \\/ 开头才算', () => {
+    expect(isSlashEscaped('\\/clear')).toBe(true)
+    expect(isSlashEscaped('  \\/etc/hosts')).toBe(true)
+    expect(isSlashEscaped('/clear')).toBe(false)
+    expect(isSlashEscaped('a \\/b')).toBe(false)
+    expect(isSlashEscaped('')).toBe(false)
+  })
+
+  it('unescapeSlash 只去掉行首那一个反斜杠', () => {
+    expect(unescapeSlash('\\/clear all')).toBe('/clear all')
+    expect(unescapeSlash('  \\/x')).toBe('  /x')
+    // 未转义（含普通文本、已发出的原文）原样返回
+    expect(unescapeSlash('/clear')).toBe('/clear')
+    expect(unescapeSlash('hello')).toBe('hello')
+    expect(unescapeSlash('a \\/b')).toBe('a \\/b')
+  })
+
+  it('escapeSlash：幂等，且历史回填后再次 Enter 仍是原文', () => {
+    expect(escapeSlash('/clear')).toBe('\\/clear')
+    expect(escapeSlash('\\/clear')).toBe('\\/clear')
+    expect(escapeSlash('hello')).toBe('hello')
+    expect(escapeSlash('  /x')).toBe('\\/x')
+    // 往返：转义 → 发送 → 记历史 → 回填 → 再发送，命令永不被触发
+    const sent = unescapeSlash('\\/tmp/log 报错是什么')
+    expect(sent).toBe('/tmp/log 报错是什么')
+    const recalled = escapeSlash(sent)
+    expect(isSlashEscaped(recalled)).toBe(true)
+    expect(matchSlash(recalled)).toBeNull()
+    expect(unescapeSlash(recalled)).toBe(sent)
+  })
+})
+
+describe('原文发送判定（\\/ 与行首空格两种写法等价）', () => {
+  it('isSlashLiteral：\\/ 或前导空白 + / 才算，普通草稿不受影响', () => {
+    expect(isSlashLiteral('\\/clear')).toBe(true)
+    expect(isSlashLiteral(' /clear all')).toBe(true)
+    expect(isSlashLiteral('   /x')).toBe(true)
+    expect(isSlashLiteral('  \\/x')).toBe(true)
+    // 首字符就是 / → 走命令路径
+    expect(isSlashLiteral('/clear')).toBe(false)
+    // 不以 / 结尾于 trimStart 之后 → 不是原文写法
+    expect(isSlashLiteral('hello')).toBe(false)
+    expect(isSlashLiteral('  hello')).toBe(false)
+    expect(isSlashLiteral('')).toBe(false)
+  })
+
+  it('literalSlashPayload：剥掉前缀，未命中命令的 /… 行原样保留', () => {
+    expect(literalSlashPayload('\\/clear')).toBe('/clear')
+    expect(literalSlashPayload(' /clear all')).toBe('/clear all')
+    expect(literalSlashPayload('  \\/x')).toBe('/x')
+    // 未知命令行 FE 放行：文本本身不动
+    expect(literalSlashPayload('/tmp/log 是什么')).toBe('/tmp/log 是什么')
+    // 普通消息（含前导空白）保持原样
+    expect(literalSlashPayload('hello')).toBe('hello')
+    expect(literalSlashPayload('  hello')).toBe('  hello')
   })
 })
 

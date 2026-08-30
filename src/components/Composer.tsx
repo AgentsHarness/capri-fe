@@ -29,7 +29,7 @@ import { IconGlyph } from './IconGlyph'
 import { fmtTok } from '../format'
 import { SlashMenu } from './SlashMenu'
 import { FilePickerMenu } from './FilePickerMenu'
-import { isMultilineEnabled, registerModelMenuOpener } from '../commands/registry'
+import { isMultilineEnabled, registerModelMenuOpener, escapeSlash, literalSlashPayload } from '../commands/registry'
 import {
   chipId,
   chipOccurrenceAt,
@@ -231,12 +231,13 @@ export function Composer() {
   // ── TUI slash command menu (`/` prefix) — composer/useSlashMenu.ts ──
   const {
     slashOpen,
+    slashLiteral,
     slashMatches,
     setSlashSel,
     slashSelClamped,
     slashList,
     runSlashCommand,
-    runSlashLine,
+    resolveSlashLine,
     setSlashDismissed,
   } = useSlashMenu({
     text,
@@ -320,13 +321,16 @@ export function Composer() {
   const submitCurrent = async () => {
     const trimmed = text.trim()
     if (!trimmed) return
-    const { expandedText, blocks } = buildBlocks(text, chips)
+    // 原文发送写法（`\/…` / 行首空白 + `/…`）的前缀是 composer 语法，
+    // 发给 agent 前去掉；未命中的 `/…` 行到这里已是纯文本，原样保留。
+    const { expandedText, blocks } = buildBlocks(literalSlashPayload(text), chips)
     setText('')
     setChips([])
     await send(expandedText, blocks)
     // Record history only when the host accepted the prompt (send
-    // swallows transport errors into conn: 'error').
-    if (useChatStore.getState().conn !== 'error') pushHistory(expandedText)
+    // swallows transport errors into conn: 'error'). History keeps the
+    // `\`, so recalling a literal `/…` prompt does not run a command.
+    if (useChatStore.getState().conn !== 'error') pushHistory(escapeSlash(expandedText))
     taRef.current?.focus()
   }
 
@@ -431,7 +435,9 @@ export function Composer() {
         })
         q.setSending(false)
         await sendPromise
-        if (useChatStore.getState().conn !== 'error') pushHistory(item.text)
+        // Re-arm the `\/` escape in history (queued text is already
+        // unescaped; a leading `/` here can only be a literal prompt).
+        if (useChatStore.getState().conn !== 'error') pushHistory(escapeSlash(item.text))
       } catch {
         const active = useChatStore.getState().sessionId
         if (active) usePromptQueue.getState().requeueFront(active, item)
@@ -538,7 +544,7 @@ export function Composer() {
       // （默认展开，可收起为 "N queued"）；回合收口后 agent pop 队首，
       // 收养广播把该条渲染为用户行。RPC 失败 → 行保留 degraded（队列
       // 区红点 + 失败徽标，可手动重发）。
-      const { expandedText, blocks } = buildBlocks(text, chips)
+      const { expandedText, blocks } = buildBlocks(literalSlashPayload(text), chips)
       setText('')
       setChips([])
       void useChatStore.getState().send(expandedText, blocks)
@@ -1342,6 +1348,13 @@ export function Composer() {
               matches={slashMatches}
               onHover={setSlashSel}
               onPick={(cmd) => void runSlashCommand(cmd, '')}
+              onLiteral={() => {
+                // Prepend the escape: `/xyz` → `\/xyz`, caret back at the
+                // end, menu closes (the line no longer starts with "/").
+                setText(`\\${text}`)
+                setPendingCaret(text.length + 1)
+                taRef.current?.focus()
+              }}
             />
           )}
           {/* TUI @ file picker — floats above the composer while an `@`
@@ -1777,19 +1790,22 @@ export function Composer() {
                         }
                       }
                       e.preventDefault()
-                      // TUI slash commands: `/…` input executes locally and
-                      // is NEVER sent to the agent.
-                      if (!shellMode && text.trimStart().startsWith('/')) {
-                        if (slashOpen && slashList.length > 0) {
-                          // Menu is up: Enter picks the highlighted row.
-                          void runSlashCommand(slashList[slashSelClamped], '')
-                        } else {
-                          // Menu closed (space/dismissed) or no match — the
-                          // typed line goes through matchSlash; unknown →
-                          // error row, input kept for editing.
-                          void runSlashLine(text)
+                      // TUI slash commands: a `/…` line that resolves to a
+                      // command runs locally and is NEVER sent to the agent.
+                      // Everything else falls through and goes out as plain
+                      // text: the `\/…` / leading-space literals, and lines
+                      // whose first word matches no command at all (the TUI
+                      // appends an error row there — the FE lets it pass).
+                      if (
+                        !shellMode &&
+                        !slashLiteral &&
+                        text.trimStart().startsWith('/')
+                      ) {
+                        const hit = resolveSlashLine(text)
+                        if (hit) {
+                          void runSlashCommand(hit.cmd, hit.args)
+                          return
                         }
-                        return
                       }
                       void onSubmit()
                       return
@@ -1975,6 +1991,12 @@ export function Composer() {
                 spellCheck={false}
                 className="gn-no-scrollbar min-h-[20px] flex-1 resize-none bg-transparent font-ui text-[13.5px] leading-[1.55] text-gn-fg outline-none placeholder:text-gn-gray"
               />
+              {slashLiteral && (
+                // 转义生效的即时回执：这行不会被当命令执行，Enter 原样发出。
+                <span className="mt-[3px] shrink-0 self-start rounded border border-gn-prompt-border-active px-1 font-mono text-[10px] leading-[14px] text-gn-muted">
+                  原文发送
+                </span>
+              )}
             </div>
 
           {/* Model + flags on the bottom border (断线), right-aligned.

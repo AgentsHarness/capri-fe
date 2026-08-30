@@ -936,11 +936,59 @@ export function mergedSlashCommands(
   return out
 }
 
+/** ── `\/` literal-slash escape ─────────────────────────────────────── */
+
+/** Prefix that turns a `/…` line back into a plain prompt. */
+export const SLASH_ESCAPE = '\\/'
+
+/** True when the line is escaped (`\/help`) — never a command, always text. */
+export function isSlashEscaped(input: string): boolean {
+  return input.trimStart().startsWith(SLASH_ESCAPE)
+}
+
+/** `\/help` → `/help` (no-op for anything else, incl. already-literal text). */
+export function unescapeSlash(input: string): string {
+  if (!isSlashEscaped(input)) return input
+  const lead = input.length - input.trimStart().length
+  return input.slice(0, lead) + input.slice(lead + 1)
+}
+
+/**
+ * Inverse of {@link unescapeSlash} — prompt history stores the escaped
+ * form, so recalling a literal `/…` prompt re-arms the escape instead of
+ * turning the recall into a command run.
+ */
+export function escapeSlash(input: string): string {
+  const t = input.trimStart()
+  if (!t.startsWith('/') || t.startsWith(SLASH_ESCAPE)) return input
+  // Only the backslash is added — `t` already carries the leading "/".
+  return '\\' + t
+}
+
+/**
+ * 「这行是原文，不是命令」的总判定，两种写法等价：
+ * - `\/…` 显式转义；
+ * - 行首空白 + `/…`（Slack 式，空格是全键盘最好按的转义键）。
+ * 只在 trimStart 后仍以 `/` 开头时成立，普通草稿的前导空白不受影响。
+ * 第三种情况不在此列：首词压根不匹配任何命令的行，由调用方直接放行。
+ */
+export function isSlashLiteral(input: string): boolean {
+  if (isSlashEscaped(input)) return true
+  const t = input.trimStart()
+  return t.startsWith('/') && t.length !== input.length
+}
+
+/** 把「原文发送」的写法还原成真正要发给 agent 的文本。 */
+export function literalSlashPayload(input: string): string {
+  const unescaped = unescapeSlash(input)
+  return isSlashLiteral(unescaped) ? unescaped.trimStart() : unescaped
+}
+
 /**
  * Parse "/name args" — exact match on name/aliases (case-insensitive),
  * over the merged local + agent command list.
- * Returns null for "/" alone and for unknown commands (the caller appends
- * an error row and never sends).
+ * Returns null for "/" alone and for unknown commands; the caller then
+ * sends the line to the agent as a plain prompt (FE 放行，TUI 会报错).
  */
 export function matchSlash(
   input: string,
