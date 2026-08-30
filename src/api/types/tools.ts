@@ -167,6 +167,8 @@ export type GitBranch = {
 /** x.ai/git/branches response (rpc/git.rs GitBranchesData, camelCase). */
 export type GitBranchesData = {
   branches: GitBranch[]
+  /** 仓库根（wire `repoRoot`）——非 git 目录时缺省。 */
+  repoRoot?: string
 }
 
 /**

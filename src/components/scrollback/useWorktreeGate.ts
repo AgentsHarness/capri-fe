@@ -4,9 +4,10 @@ import { findField } from '../../api/rpc/core'
 
 /**
  * 空状态「在新 worktree 中开始」的门控探测：判断选中的工作目录是否在
- * git 仓库里。走 transport.gitRepoRoot（host /api/git/repo-root，参数只
- * 带 gitRoot、不依赖活动会话——home 时还没有会话，不能走按会话取 git
- * 信息的那条路）。
+ * git 仓库里。走 transport.gitRepoRoot（host /api/git/repo-root → agent
+ * x.ai/git/git_repo_root，不依赖活动会话——home 时还没有会话，不能走按
+ * 会话取 git 信息的那条路），失败时退到 git/branches 的 repoRoot
+ * （见 probeRepoRoot）。
  *
  * 结果按 cwd 缓存在模块级 Map：同一目录反复进出 home / 重复 render 不
  * 重复发包；cwd 变化自动重新探测；进行中的探测统一为 checking 状态，
@@ -34,20 +35,44 @@ function repoRootFrom(raw: unknown): string | undefined {
   return typeof v === 'string' && v.trim() ? v : undefined
 }
 
-async function probe(cwd: string): Promise<WorktreeGateState> {
-  let result: WorktreeGateState
+/**
+ * 仓库根探测。专用端点 gitRepoRoot 优先；它**报错**时退到 git/branches ———
+ * 后者的响应同样带 repoRoot，且一样不依赖活动会话。
+ *
+ * 兜底不是多余的：旧 host 的 /api/git/repo-root 发的是错的 wire 键（gitRoot
+ * 而非 agent 侧必填的 currentWorkingDirectory），agent 判缺字段回 -32602
+ * "Invalid params"——没有这条兜底，home 的「在新 worktree 中开始」在任何
+ * 未升级的 host 上都会永远灰着。
+ *
+ * 只有「拿到仓库根」才是肯定信号：非 git 目录下 git/branches 是报错而不是
+ * 空列表，所以两个探针都没给出根时，不能据此断言「这里没有仓库」——只能
+ * 报错原因，让入口保持置灰。
+ */
+async function probeRepoRoot(cwd: string): Promise<{ root?: string; error?: string }> {
+  let error: string | undefined
   try {
-    const raw = await transport.gitRepoRoot({ cwd })
-    const root = repoRootFrom(raw)
-    result = root
-      ? { status: 'ready', repoRoot: root }
-      : { status: 'not-repo', reason: NOT_A_GIT_REPO_TEXT }
+    const root = repoRootFrom(await transport.gitRepoRoot({ cwd }))
+    if (root) return { root }
   } catch (e) {
-    result = {
-      status: 'not-repo',
-      reason: e instanceof Error && e.message ? e.message : NOT_A_GIT_REPO_TEXT,
-    }
+    error = e instanceof Error && e.message ? e.message : String(e)
   }
+  try {
+    const root = (await transport.gitBranches({ cwd })).repoRoot?.trim()
+    if (root) return { root }
+  } catch {
+    /* 非仓库或端点不可用：落到下面的结论 */
+  }
+  return error ? { error } : {}
+}
+
+async function probe(cwd: string): Promise<WorktreeGateState> {
+  const { root, error } = await probeRepoRoot(cwd)
+  const result: WorktreeGateState = root
+    ? { status: 'ready', repoRoot: root }
+    : {
+        status: 'not-repo',
+        reason: error ? `${NOT_A_GIT_REPO_TEXT}（探测失败：${error}）` : NOT_A_GIT_REPO_TEXT,
+      }
   gateCache.set(cwd, result)
   return result
 }
