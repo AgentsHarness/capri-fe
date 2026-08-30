@@ -558,6 +558,16 @@ export class LocalTransport {
     const hubSeq = seqs[this.selectedHostId]
     if (typeof hubSeq !== 'number') return
     const mine = this.seq.watermark(this.selectedHostId)
+    // 全新页面（本 tab 一条 live 事件都没收过，水位还是 0）：hub 的 seq 是它
+    // 累计到现在的值，这不是"缺口"。transcript 由 loadHistory 从 host 持久化
+    // 历史重建，此时按 after=0 补拉会把 hub 缓冲整段当 live 事件追加到末尾
+    // ——实测一次就是 169 KB / 从 seq 114020 起的历史条目，用户看到"已完成的
+    // 对话末尾莫名多出一串历史事件"。hub 侧 hello 带 seqs 的用途是「重连的
+    // FE 补自己的缺口」，水位为 0 时只对齐、不补拉。
+    if (mine === 0) {
+      this.seq.resetHost(this.selectedHostId, hubSeq)
+      return
+    }
     // hub 报的 seq 比本地水位低 = host/hub 重启后序号从头计数（hello 的
     // seqs 是权威值）。不重置的话 acceptSequencedEvent 的 `seq <= last`
     // 会把重启后**所有** live 事件静默丢弃，直到序号重新爬过旧水位
@@ -755,12 +765,19 @@ export class LocalTransport {
       if (gen !== this.gen || this.es !== es) return
       this.sseReconnectAttempt = 0
       if (!trackSeq) return
-      // 重连（含首次）：从 hub 缓冲补拉本机缺口（本地 SSE 断线期间
-      // 的事件 hub 已缓冲）。水位为 0 时补全量最近事件。
       const hostId = this.localHostId
-      if (hostId) {
-        void this.seq.gapPull(hostId, this.seq.watermark(hostId), gen)
+      if (!hostId) return
+      const last = this.seq.watermark(hostId)
+      if (last === 0) {
+        // 首次连接（本 tab 还没收过该 host 的事件）：transcript 由
+        // loadHistory 从 host 持久化历史重建，此时按 after=0 补拉会把 hub
+        // 缓冲整段当新事件追加到末尾（实测一次 169 KB、从 seq 114020 起）。
+        // 改成以第一条 live 事件为起点，不回补历史。
+        this.seq.seedFromLive(hostId)
+        return
       }
+      // 重连：从 hub 缓冲补拉本机缺口（本地 SSE 断线期间的事件 hub 已缓冲）。
+      void this.seq.gapPull(hostId, last, gen)
     }
     es.onmessage = (msg) => {
       if (gen !== this.gen || this.es !== es) return

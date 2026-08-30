@@ -41,6 +41,8 @@ export class EventSequencer {
    * must not re-deliver the very events the resync just retired.
    */
   private gapPullEpoch = 0
+  /** seedFromLive 待消费的 host（见 accept 的首条事件对齐）。 */
+  private liveSeedOnly = new Set<string>()
 
   private emit: (ev: AcpEvent) => void
   /** Fetch the hub's buffered events for `hostId` after seq `after`; null = pull failed. */
@@ -82,6 +84,7 @@ export class EventSequencer {
     this.lastSeq.clear()
     this.pendingSeq.clear()
     this.pulling.clear()
+    this.liveSeedOnly.clear()
   }
 
   /**
@@ -111,6 +114,16 @@ export class EventSequencer {
     }
   }
 
+  /**
+   * 声明"这是全新订阅者"：第一条 live 事件就是起点，之前的历史不补。
+   * 用于 transcript 另有来源（loadHistory 从 host 持久化历史重建）的场合
+   * ——水位为 0 时按 after=0 补拉会把 hub 缓冲整段当新事件追加到末尾。
+   * 一次性标记，被第一条事件消费掉。
+   */
+  seedFromLive(hostId: string): void {
+    this.liveSeedOnly.add(hostId)
+  }
+
   accept(ev: SequencedEvent, gen = 0): void {
     const host = ev.hostId
     const seq = ev.seq
@@ -122,6 +135,10 @@ export class EventSequencer {
 
     const last = this.lastSeq.get(host) ?? 0
     if (seq <= last) return
+
+    if (last === 0 && this.liveSeedOnly.delete(host)) {
+      this.lastSeq.set(host, seq - 1)
+    }
 
     let pending = this.pendingSeq.get(host)
     if (!pending) {
