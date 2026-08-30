@@ -324,8 +324,8 @@ export function ExtensionsModal() {
           </button>
         </header>
 
-        {/* Tab bar */}
-        <div className="flex gap-1 border-b border-gn-prompt-border px-2 pt-2">
+        {/* Tab bar — 窄屏可横向滚动，避免 tab 溢出弹窗 */}
+        <div className="gn-no-scrollbar flex gap-1 overflow-x-auto border-b border-gn-prompt-border px-2 pt-2">
           {TABS.map((t) => (
             <button
               key={t.id}
@@ -334,7 +334,7 @@ export function ExtensionsModal() {
                 useChatStore.getState().openExtensions(t.id)
                 setHookHint(undefined)
               }}
-              className={`rounded-t border border-b-0 px-3 py-1.5 text-[12px] ${
+              className={`shrink-0 whitespace-nowrap rounded-t border border-b-0 px-3 py-1.5 text-[12px] ${
                 tab === t.id
                   ? 'border-gn-prompt-border bg-gn-bg-base text-gn-fg'
                   : 'border-transparent text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'

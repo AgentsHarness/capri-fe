@@ -187,7 +187,7 @@ export function SessionInfoModal() {
           {
             label: 'working directory',
             value: (
-              <span className="truncate" title={cwd}>
+              <span className="block truncate" title={cwd}>
                 {shortCwd(cwd, data?.homeDir)}
               </span>
             ),
