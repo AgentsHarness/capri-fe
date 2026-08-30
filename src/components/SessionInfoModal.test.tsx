@@ -8,8 +8,6 @@ vi.mock('../api/client', () => ({
   transport: {
     sessionInfo: vi.fn(),
     sessionInfoExt: vi.fn(),
-    sessionUsage: vi.fn(),
-    sessionShare: vi.fn(),
     status: vi.fn(),
     onEvent: vi.fn(),
   },
@@ -18,7 +16,6 @@ vi.mock('../api/client', () => ({
 const hostMock = vi.mocked(transport.sessionInfo)
 const extMock = vi.mocked(transport.sessionInfoExt)
 const statusMock = vi.mocked(transport.status)
-const usageMock = vi.mocked(transport.sessionUsage)
 
 const HOST = {
   sessionId: 'sess-42',
@@ -38,7 +35,6 @@ beforeEach(() => {
   hostMock.mockReset().mockResolvedValue({ ...HOST })
   extMock.mockReset().mockResolvedValue({})
   statusMock.mockReset().mockResolvedValue({})
-  usageMock.mockReset().mockResolvedValue({})
 })
 
 describe('SessionInfoModal', () => {
@@ -99,6 +95,14 @@ describe('SessionInfoModal', () => {
     await screen.findByText('My session')
   })
 
+  it('header 切换按钮 → closeSessionInfo + 打开 context 弹窗', async () => {
+    render(<SessionInfoModal />)
+    await screen.findByText('My session')
+    fireEvent.click(screen.getByRole('button', { name: 'context →' }))
+    expect(useChatStore.getState().closeSessionInfo).toHaveBeenCalledTimes(1)
+    expect(useChatStore.getState().contextOpen).toBe(true)
+  })
+
   it('Model 行：catalog name 优先于 resolved', async () => {
     extMock.mockResolvedValue({
       model: 'grok-x',
@@ -147,15 +151,5 @@ describe('SessionInfoModal', () => {
     extMock.mockResolvedValue({ context: { used: 500, total: 2000 } } as never)
     render(<SessionInfoModal />)
     await screen.findByText(/500 \/ 2\.0K \(25%\)/)
-  })
-
-  it('footer 刷新 usage：锁定会话，且兼容 {usage:{…}} 嵌套响应', async () => {
-    usageMock.mockResolvedValue({ usage: { totalTokens: 12345 } } as never)
-    render(<SessionInfoModal />)
-    await screen.findByText('My session')
-    fireEvent.click(screen.getByRole('button', { name: '刷新 usage' }))
-    await screen.findByText('usage')
-    expect(screen.getByText('12K')).toBeInTheDocument()
-    expect(usageMock).toHaveBeenCalledWith({ sessionId: 'sess-42' })
   })
 })

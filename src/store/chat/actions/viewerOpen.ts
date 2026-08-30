@@ -3,7 +3,6 @@ import { transport } from '../../../api/client'
 import type { ChatState, SetState } from '../types'
 import { envelopeToEvents } from '../history'
 import {
-  applySubagentViewEvent,
   SUBAGENT_VIEW_PAGE_SIZE,
   subagentViewAppend,
 } from '../subagent'
@@ -119,7 +118,7 @@ export function viewerOpenActions(set: SetState, get: () => ChatState) {
     })
     try {
       // 取最新一页（与 loadHistory 相同的负 offset 分页约定），按存储顺序
-      // （时间正序）回放——同一 applySubagentViewEvent 处理器，live 与
+      // （时间正序）回放——同一 subagentViewAppend 处理器，live 与
       // 回放事件不会出现两套渲染逻辑。
       const r = await transport.loadSessionHistory(childSessionId, cwd, {
         offset: -SUBAGENT_VIEW_PAGE_SIZE,
@@ -162,6 +161,8 @@ export function viewerOpenActions(set: SetState, get: () => ChatState) {
               fetchState: 'loaded',
               loadedCount: r.updates?.length ?? 0,
               totalCount: total,
+              // 绝对最老行号（首拉 = 最新一页）：已加载区 = [start, total)。
+              loadedStart: Math.max(0, total - (r.updates?.length ?? 0)),
             },
           },
         }
@@ -188,10 +189,13 @@ export function viewerOpenActions(set: SetState, get: () => ChatState) {
     const view = s.subagentViews[childSessionId]
     if (!view || view.fetchState === 'loading') return false
     const loaded = view.loadedCount ?? 0
+    // 权威游标 = 绝对最老行号 loadedStart；旧状态（缺字段）按
+    // total - loaded 兜底换算。已加载区 = [loadedStart, totalCount)。
+    const loadedStart =
+      view.loadedStart ??
+      (view.totalCount != null ? Math.max(0, view.totalCount - loaded) : 0)
     // 只有回放填充的视图提供上滑（纯 live 捕获历史已完整，回放会重复）。
-    const hasMore =
-      loaded > 0 && (view.totalCount != null ? loaded < view.totalCount : false)
-    if (!hasMore) return false
+    if (loaded <= 0 || loadedStart <= 0) return false
     const cwd = s.cwd
     if (!cwd) return false
     set({
@@ -201,27 +205,32 @@ export function viewerOpenActions(set: SetState, get: () => ChatState) {
       },
     })
     try {
-      // 分页游标 = 已消耗的包络条数（loadedCount，宿主负 offset 语义）：
-      // 子代理事件流里大量 usage/status 等非 scrollback 包络被过滤，条目
-      // 数 ≠ 包络数，用条目数算 offset 会与已加载页重叠。
+      // 绝对 offset 窗口 [loadedStart-PAGE, loadedStart)，与已加载区严格
+      // 相邻、不重叠（主 scrollback loadMoreHistory 同款）——live 追加
+      // 抬高 totalCount 时负 offset 会整窗前移、与已加载区重叠、同一批
+      // 包络重复回放成重复行。
+      const reqOffset = Math.max(0, loadedStart - SUBAGENT_VIEW_PAGE_SIZE)
+      const reqLimit = loadedStart - reqOffset
       const r = await transport.loadSessionHistory(childSessionId, cwd, {
-        offset: -(loaded + SUBAGENT_VIEW_PAGE_SIZE),
-        limit: SUBAGENT_VIEW_PAGE_SIZE,
+        offset: reqOffset,
+        limit: reqLimit,
       })
-      // 回放前记住旧时间线起点：回放 append 的新（更早）页随后移到前面。
-      const split = get().subagentViews[childSessionId]?.items.length ?? 0
+      // 旧页在隔离数组里回放（主 scrollback loadMoreHistory 的隔离切片同
+      // 款）：不经过现存视图，user_chunk 聚合 / 流切换收口只看本页边界，
+      // 不会改写已加载区条目，再整体前插。
+      let older: ScrollEntry[] = []
       for (const env of r.updates ?? []) {
         const envParams = (env as { params?: { sessionId?: unknown } } | null)
           ?.params
         const envSid = envParams?.sessionId
         if (typeof envSid === 'string' && envSid !== childSessionId) continue
         const events = envelopeToEvents(env)
-        for (const ev of events) applySubagentViewEvent(set, childSessionId, ev)
+        for (const ev of events) older = subagentViewAppend(older, ev)
       }
       const after = get().subagentViews[childSessionId]
       if (!after) return false
-      let oldItems = after.items.slice(0, split)
-      const newItems = after.items.slice(split)
+      let newItems = older
+      let oldItems = after.items
       // 跨页截断缝合：assistant / thought 各半拼回一条（主 scrollback
       // loadMoreHistory 同款）；历史数据缝合后收口，不再停留流式态。
       const lastNew = newItems[newItems.length - 1]
@@ -246,8 +255,13 @@ export function viewerOpenActions(set: SetState, get: () => ChatState) {
       // 更早的页在前拼接；不设条目上限——由用户上滑分页控制（不再丢弃最旧）。
       const merged = [...newItems, ...oldItems]
       const fetched = r.updates?.length ?? 0
-      const total = r.totalCount ?? view.totalCount ?? loaded + fetched
-      const loadedNew = fetched === 0 ? total : Math.min(loaded + fetched, total)
+      const total = r.totalCount ?? view.totalCount ?? loadedStart + fetched
+      // 绝对游标推进：新页最老行 = reqOffset；空页不动游标（hasMore 停）。
+      const newLoadedStart = fetched === 0 ? loadedStart : reqOffset
+      const loadedNew =
+        typeof total === 'number' && total > 0
+          ? Math.max(0, total - newLoadedStart)
+          : loaded + fetched
       set({
         subagentViews: {
           ...s.subagentViews,
@@ -257,10 +271,11 @@ export function viewerOpenActions(set: SetState, get: () => ChatState) {
             fetchState: 'loaded',
             loadedCount: loadedNew,
             totalCount: total,
+            loadedStart: newLoadedStart,
           },
         },
       })
-      return true
+      return fetched > 0
     } catch {
       // 加载失败静默：恢复 loaded，下次上滑/自动补页重试（返回 false 让
       // 自动补页停止，避免无滚动条时无限重试）。

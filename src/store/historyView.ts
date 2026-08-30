@@ -4,7 +4,7 @@ import { create } from 'zustand'
 /**
  * 会话列表展示形态（浏览器本地偏好，不经 hub）：
  * - workspace — 按工作区（cwd）分组，当前默认形态
- * - marked    — 只显示用户标记过的会话：置顶 / 待办（不含已完成）
+ * - marked    — 分类视图：思考中（非空闲会话）+ 置顶 / 待办标记
  */
 
 const VIEW_KEY = 'acpfe.historyView'

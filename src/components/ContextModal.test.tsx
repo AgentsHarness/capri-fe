@@ -144,6 +144,15 @@ describe('ContextModal', () => {
     expect(useChatStore.getState().closeContext).toHaveBeenCalledTimes(2)
   })
 
+  it('header 切换按钮 → closeContext + 打开 session info 弹窗', async () => {
+    extMock.mockResolvedValue({})
+    render(<ContextModal />)
+    await waitFor(() => expect(extMock).toHaveBeenCalled())
+    fireEvent.click(screen.getByRole('button', { name: 'session info →' }))
+    expect(useChatStore.getState().closeContext).toHaveBeenCalledTimes(1)
+    expect(useChatStore.getState().sessionInfoOpen).toBe(true)
+  })
+
   it('关闭后旧请求结果不落地（seq 守卫）', async () => {
     let resolveLater!: (v: unknown) => void
     extMock.mockReturnValue(new Promise((r) => (resolveLater = r)))

@@ -23,6 +23,12 @@ import { contextUrgencyColor } from '../theme/contextColor'
 export function ContextModal() {
   const open = useChatStore((s) => s.contextOpen)
   const close = useChatStore((s) => s.closeContext)
+  const openSessionInfo = useChatStore((s) => s.openSessionInfo)
+  /** 切换到 Session info 弹窗：关掉自己、打开对方（同一事件里原子切换）。 */
+  const switchToSessionInfo = () => {
+    close()
+    openSessionInfo()
+  }
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>()
   const [data, setData] = useState<SessionInfoExt>()
@@ -202,8 +208,16 @@ export function ContextModal() {
           <span className="font-mono text-[13px] font-bold text-gn-fg">/context</span>
           <button
             type="button"
-            onClick={close}
+            onClick={switchToSessionInfo}
             className="ml-auto rounded px-2 py-0.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+            title="切换到 /session-info 弹窗"
+          >
+            session info →
+          </button>
+          <button
+            type="button"
+            onClick={close}
+            className="rounded px-2 py-0.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
           >
             esc
           </button>
@@ -315,12 +329,6 @@ export function ContextModal() {
             </div>
           )}
         </div>
-
-        <footer className="rounded-b border-t border-gn-prompt-border px-4 py-2 text-right">
-          <span className="text-[11px] text-gn-gutter">
-            x.ai/session/info · 与 TUI /context 一致
-          </span>
-        </footer>
       </div>
     </div>
   )

@@ -285,11 +285,20 @@ export type SubagentViewState = {
    */
   fetchState?: 'idle' | 'loading' | 'loaded'
   /**
-   * 已回放的事件条数（宿主包络条数语义）——负 offset 分页游标，与主
-   * scrollback 的 historyLoadedCount 同款。0 = 从未回放过（纯 live 捕获，
-   * 不提供上滑分页，避免与 live 事件重复）。
+   * 已回放的事件条数（宿主包络条数语义，展示/兼容）。权威游标是
+   * loadedStart：已加载区 = [loadedStart, totalCount)（live 追加不改
+   * start）。0 = 从未回放过（纯 live 捕获，不提供上滑分页，避免与
+   * live 事件重复）。
    */
   loadedCount?: number
+  /**
+   * 已加载区在宿主事件时间线上的最老行号（绝对下标，含）。分页一律用
+   * 绝对 offset（与主 scrollback historyLoadedStart 同款）——live 追加
+   * 抬高 totalCount 时负 offset 会整窗前移、与已加载区重叠、同一批包络
+   * 重复回放成重复行。undefined = 尚未回放成功（旧状态按 total - loaded
+   * 兜底换算）。
+   */
+  loadedStart?: number
   /**
    * 宿主侧会话事件总数（session-updates 的 totalCount）；缺失时按
    * loadedCount 兜底 → 拉完一页即认为无更多。
