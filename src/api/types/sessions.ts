@@ -211,6 +211,12 @@ export type RewindConflict = {
  * wire: reverted_files / clean_files / conflicts / prompt_text).
  */
 export type RewindExecuteResult = {
+  /**
+   * 回退目标轮次（agent RewindResponse.target_prompt_index：保留
+   * 0..=target-1 轮）。前端用它做本地即时截断（TUI dispatch_rewind_success
+   * 同款），不依赖 updates.jsonl 的 rewind_marker 异步落盘。
+   */
+  targetPromptIndex?: number
   /** 回退点原文（Composer 恢复用，见 store.rewindExecute）。 */
   promptText?: string
   /** 实际还原（写回或删除）的文件。 */

@@ -6,6 +6,16 @@ vi.mock('../../../api/client', () => ({
   transport: {
     forkSession: vi.fn().mockResolvedValue({ result: { newSessionId: 'fork-1' } }),
     rewindPoints: vi.fn().mockResolvedValue({ points: [{ index: 0 }, { index: 1 }, { index: 2 }] }),
+    rewindExecute: vi.fn().mockResolvedValue({
+      success: true,
+      targetPromptIndex: 1,
+      promptText: 'hi',
+    }),
+    loadSessionHistory: vi.fn().mockResolvedValue({
+      promptStarts: [0],
+      totalCount: 2,
+      updates: [],
+    }),
     gitWorktreeResumeSession: vi
       .fn()
       .mockResolvedValue({ sessionId: 'wt-1', worktreePath: '/wt', effectiveCwd: '/wt/x' }),
@@ -32,6 +42,9 @@ function makeState(patch: Partial<ChatState> = {}): ChatState {
     cwd: '/w',
     conn: 'ready',
     entries: [],
+    scheduledTasks: [],
+    historyTurnIdx: 0,
+    loadHistory: vi.fn().mockResolvedValue(undefined),
     continueSession: vi.fn().mockResolvedValue(undefined),
     refreshSessions: vi.fn().mockResolvedValue(undefined),
     refreshWorkspaces: vi.fn().mockResolvedValue(undefined),
@@ -46,7 +59,7 @@ function bind(state: ChatState) {
   }
   return xaiActions(set, () => state) as Pick<
     ChatState,
-    'forkSession' | 'deleteSession' | 'askBtw' | 'rememberNote'
+    'forkSession' | 'deleteSession' | 'askBtw' | 'rememberNote' | 'rewindExecute'
   >
 }
 
@@ -152,12 +165,18 @@ describe('xaiActions.askBtw', () => {
     expect(pending.kind).toBe('btw')
     expect(pending.question).toBe('翻译一下')
     expect(pending.streaming).toBe(true)
-    expect(pending.open).toBe(false)
+    // 默认展开：FE 没有 TUI 的 inline btw panel，折叠 = 答案不可见。
+    expect(pending.open).toBe(true)
     await p
     // 原位更新：同一条目变为答案，streaming 收口。
     expect(state.entries).toHaveLength(1)
     const done = state.entries[0] as Extract<ChatState['entries'][number], { kind: 'btw' }>
-    expect(done).toMatchObject({ kind: 'btw', answer: '**答案**', streaming: false })
+    expect(done).toMatchObject({
+      kind: 'btw',
+      answer: '**答案**',
+      streaming: false,
+      open: true,
+    })
   })
 
   it('失败 → 错误写进同一区块（open 展开直接可见），不静默', async () => {
@@ -270,5 +289,136 @@ describe('xaiActions.rememberNote', () => {
       kind: 'error',
       text: expect.stringContaining('rewrite failed'),
     })
+  })
+})
+
+describe('xaiActions.rewindExecute', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(transport.rewindExecute as ReturnType<typeof vi.fn>).mockResolvedValue({
+      success: true,
+      targetPromptIndex: 1,
+      promptText: 'hi',
+    })
+    ;(transport.loadSessionHistory as ReturnType<typeof vi.fn>).mockResolvedValue({
+      promptStarts: [0],
+      totalCount: 2,
+      updates: [],
+    })
+  })
+
+  /** 4 条滚动区条目：轮 0 的 user+assistant 与轮 1 的 user+assistant。 */
+  const twoTurns = [
+    { id: 'u0', kind: 'user', text: '第一问' },
+    { id: 'a0', kind: 'assistant', text: '第一答' },
+    { id: 'u1', kind: 'user', text: '第二问' },
+    { id: 'a1', kind: 'assistant', text: '第二答' },
+  ] as ChatState['entries']
+
+  it('成功 → 本地按 target 立即截断，对齐后全量重载（scheduledTasks 暂存跨重载）', async () => {
+    const state = makeState({
+      historyTurnIdx: 0,
+      entries: twoTurns,
+      scheduledTasks: [{ taskId: 't1' } as never],
+    })
+    ;(transport.rewindExecute as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: true,
+      targetPromptIndex: 1,
+    })
+    await bind(state).rewindExecute(1, 'conversation_only')
+    // 轮 1 起的条目被本地截掉，显示立即正确。
+    expect(state.entries.map((e) => e.id)).toEqual(['u0', 'a0'])
+    // 对齐探针（promptStarts=[0] ≤ target 1）通过后才重载，且只重载一次。
+    expect(transport.loadSessionHistory).toHaveBeenCalledTimes(1)
+    expect(state.loadHistory).toHaveBeenCalledWith('s1', '/w')
+    expect(state.scheduledTasks).toHaveLength(1)
+  })
+
+  it('无 targetPromptIndex（旧 agent 响应）→ 跳过探针直接重载（老行为）', async () => {
+    ;(transport.rewindExecute as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: true,
+    })
+    const state = makeState()
+    await bind(state).rewindExecute(1, 'conversation_only')
+    expect(transport.loadSessionHistory).not.toHaveBeenCalled()
+    expect(state.loadHistory).toHaveBeenCalledTimes(1)
+  })
+
+  it('首次探针未对齐（marker 未落盘）→ 退避重试，对齐后才重载', async () => {
+    vi.useFakeTimers()
+    try {
+      ;(transport.rewindExecute as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        success: true,
+        targetPromptIndex: 2,
+      })
+      // 探针 1：未截断（3 轮 > target 2）；探针 2：标记已落盘（2 轮）。
+      ;(transport.loadSessionHistory as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({ promptStarts: [0, 1, 2], totalCount: 9, updates: [] })
+        .mockResolvedValueOnce({ promptStarts: [0, 1], totalCount: 4, updates: [] })
+      const state = makeState({ historyTurnIdx: 0, entries: twoTurns })
+      const p = bind(state).rewindExecute(2, 'conversation_only')
+      await vi.advanceTimersByTimeAsync(250)
+      await p
+      expect(transport.loadSessionHistory).toHaveBeenCalledTimes(2)
+      expect(state.loadHistory).toHaveBeenCalledTimes(1)
+      // 等待期间显示保持本地截断（轮 2 起被删）。
+      expect(state.entries.map((e) => e.id)).toEqual(['u0', 'a0', 'u1', 'a1'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('重试窗口内始终未对齐 → 保留本地截断视图、不重载，状态行提示未就绪', async () => {
+    vi.useFakeTimers()
+    try {
+      ;(transport.rewindExecute as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        success: true,
+        targetPromptIndex: 1,
+      })
+      // 所有探针都返回未截断的历史（marker 始终未落盘 / 会话走 agent 透传）。
+      ;(transport.loadSessionHistory as ReturnType<typeof vi.fn>).mockResolvedValue({
+        promptStarts: [0, 1, 2],
+        totalCount: 9,
+        updates: [],
+      })
+      const state = makeState({ historyTurnIdx: 0, entries: twoTurns })
+      const p = bind(state).rewindExecute(1, 'conversation_only')
+      // 0 + 250 + 500 + 750 = 4 次探针全部未对齐后收口。
+      await vi.advanceTimersByTimeAsync(1500)
+      await p
+      expect(transport.loadSessionHistory).toHaveBeenCalledTimes(4)
+      expect(state.loadHistory).not.toHaveBeenCalled()
+      // 过期页不覆盖本地截断：轮 1 起的条目仍被删掉。
+      expect(state.entries.map((e) => e.id)).toEqual(['u0', 'a0'])
+      expect(state.statusText).toContain('历史刷新未就绪')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('切走会话后响应到达 → 不截断新会话视图、不重载旧会话', async () => {
+    ;(transport.rewindExecute as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: true,
+      targetPromptIndex: 1,
+    })
+    // RPC 期间整体替换状态对象（zustand set → 新快照）：get() 闭包读取
+    // 可变 current，rewindExecute 开头捕获的 s 停留在旧对象——与真实
+    // store 的「旧快照 vs 新状态」一致，会话切换守卫才能生效。bind 的
+    // get 固定绑定参数对象，这里手写同款 set/get。
+    let current = makeState({ entries: twoTurns })
+    const set: SetState = (partial) => {
+      Object.assign(current, typeof partial === 'function' ? partial(current) : partial)
+    }
+    const api = xaiActions(set, () => current) as Pick<ChatState, 'rewindExecute'>
+    const p = api.rewindExecute(1, 'conversation_only')
+    // RPC 返回前用户切走：状态对象换成新会话。
+    current = {
+      ...current,
+      sessionId: 'other',
+      entries: [{ id: 'nx', kind: 'user', text: '新会话' }],
+    }
+    await p
+    expect(current.entries.map((e) => e.id)).toEqual(['nx'])
+    expect(current.loadHistory).not.toHaveBeenCalled()
   })
 })

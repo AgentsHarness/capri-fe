@@ -4,7 +4,82 @@ import type { ChatState, SetState } from '../types'
 import { nid } from '../ids'
 import { appendEntry } from '../entries'
 import { scheduledTaskDeletedText } from '../tasks'
+import { INITIAL_TURNS } from '../history'
 import { pushToast } from '../../toast'
+
+/**
+ * 按 target 轮次本地截断当前滚动区（TUI dispatch_rewind_success 的
+ * remove_from 等价）：保留轮次 0..=target-1 的条目，删掉第 target 个计数
+ * 用户轮起点及其后的全部条目。轮次映射与 fork 同款：窗口最老用户行的
+ * 轮次 = historyTurnIdx，往后逐行 +1；shell 直执行行（!cmd）不经 agent、
+ * 不算轮次。定位不到（target 落在窗口外）→ 不截断，交给对齐重载收敛。
+ */
+function truncateEntriesTo(target: number, set: SetState, get: () => ChatState): void {
+  const st = get()
+  const entries = st.entries
+  if (entries.length === 0) return
+  let cut = -1
+  let run = st.historyTurnIdx ?? 0
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i]
+    if (e.kind === 'user' && !e.isShell) {
+      if (run >= target) {
+        cut = i
+        break
+      }
+      run++
+    }
+  }
+  if (cut < 0) return
+  set({
+    entries: entries.slice(0, cut),
+    // 被截掉的尾部若持有打开态（选中 / 查看器 / 已完成回合），一并清掉
+    // ——对齐重载的成功路径也会重置这些字段，这里只是提前收敛。
+    selectedId: null,
+    openAssistantId: undefined,
+    openThoughtId: undefined,
+    lastCompletedTurn: undefined,
+  })
+}
+
+/** 对齐轮询窗口：最多 4 次探测（0/250/500/750ms），总计约 1.5s。 */
+const REWIND_ALIGN_MAX_ATTEMPTS = 4
+const REWIND_ALIGN_BACKOFF_MS = 250
+
+/**
+ * 等待 host 的 session-updates 视图反映回退截断。host 本地视图按
+ * updates.jsonl 里的 rewind_marker 截断死分支，而标记由 agent 异步落盘
+ * （persist_xai_update_only 只入队不等待）——RPC 返回时可能尚未写入。
+ * 截断成立 ⟺ 存活计数用户轮数（promptStarts.length）≤ target；页面本身
+ * 取最新一轮（与 loadHistory 同参数），promptStarts 恒为全量存活列表。
+ * 无 promptStarts（旧 agent / offset 页）无法验证 → 视为已对齐，恢复老
+ * 行为直接重载。探测失败（网络瞬断）不阻塞，继续下一轮，最终由调用方
+ * 收口。返回 false = 重试窗口内仍未对齐，调用方保留本地截断视图。
+ */
+async function waitRewindAligned(
+  sessionId: string,
+  cwd: string,
+  target: number | undefined,
+  get: () => ChatState,
+): Promise<boolean> {
+  if (target == null) return true
+  for (let attempt = 0; attempt < REWIND_ALIGN_MAX_ATTEMPTS; attempt++) {
+    if (attempt > 0) {
+      await new Promise((resolve) => setTimeout(resolve, REWIND_ALIGN_BACKOFF_MS * attempt))
+    }
+    if (get().sessionId !== sessionId || get().cwd !== cwd) return false
+    try {
+      const page = await transport.loadSessionHistory(sessionId, cwd, {
+        turnIndex: INITIAL_TURNS,
+      })
+      const ps = page.promptStarts
+      if (ps == null || ps.length <= target) return true
+    } catch {
+      // 探针失败：继续下一轮（最后一次失败由调用方按未对齐收口）。
+    }
+  }
+  return false
+}
 
 export function xaiActions(set: SetState, get: () => ChatState) {
   return {
@@ -339,13 +414,38 @@ export function xaiActions(set: SetState, get: () => ChatState) {
       // draft with the rewound prompt, ready to edit / resend. No
       // promptText → the user's original draft comes back untouched.
       if (r.promptText) set({ stashedDraft: r.promptText })
-      // The rewind truncates the conversation tail — reload the current
-      // session's history so the scrollback reflects the rewound state.
-      // Scheduled tasks belong to the same session, so stash them across
-      // the loadHistory reset (which clears per-session state).
-      const keep = get().scheduledTasks
-      await get().loadHistory(s.sessionId, s.cwd)
-      if (keep.length > 0) set({ scheduledTasks: keep })
+      // 先按响应自带的 target_prompt_index 本地截断（TUI
+      // dispatch_rewind_success 的 remove_from 同款）：agent 落
+      // rewind_marker 是异步的（只入队 persistence 通道，不等待落盘），
+      // RPC 返回时 updates.jsonl 里可能还没有标记——紧跟其后的
+      // loadHistory 会读到未截断的整段旧历史（被回退的回合重新画
+      // 出来），且标记落盘后没有 live 事件通知前端再刷新。本地截断
+      // 让显示立即正确、不依赖磁盘；随后只在对齐（host 历史视图已
+      // 按标记截断）后才全量重载收敛状态，过期页绝不覆盖本地截断。
+      const stillCurrent = () =>
+        get().sessionId === s.sessionId && get().cwd === s.cwd
+      const target = r.targetPromptIndex
+      if (target != null && stillCurrent()) {
+        truncateEntriesTo(target, set, get)
+      }
+      const aligned = await waitRewindAligned(s.sessionId, s.cwd, target, get)
+      if (aligned && stillCurrent()) {
+        // The rewind truncates the conversation tail — reload the current
+        // session's history so the scrollback reflects the rewound state.
+        // Scheduled tasks belong to the same session, so stash them across
+        // the loadHistory reset (which clears per-session state).
+        const keep = get().scheduledTasks
+        await get().loadHistory(s.sessionId, s.cwd)
+        if (keep.length > 0) set({ scheduledTasks: keep })
+      } else if (aligned === false && stillCurrent()) {
+        // 重试窗口内标记仍未落盘（或该会话走 agent 透传、宿主不过滤）：
+        // 保留本地截断视图，不拿过期页覆盖；重进会话后显示完整回退结果。
+        set({
+          statusText: `已回退到索引 ${targetIndex}${
+            mode === 'all' ? '（含文件）' : ''
+          }，历史刷新未就绪（重进会话后将显示完整回退结果）`,
+        })
+      }
       // Outcome details (reverted files / conflicts) ride back to the
       // picker so it can surface file-revert feedback (toast / warning).
       return r
