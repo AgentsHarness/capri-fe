@@ -1,6 +1,6 @@
 import type { AcpEvent } from '../../api/types'
 import type { ChatState } from './types'
-import { eventAgentTimestampMs, eventEventId } from './envelopeParse'
+import { eventAgentTimestampMs, replayEventKeys } from './envelopeParse'
 
 /** 会话完成提醒去重窗口：同一会话在此窗口内只通知一次。 */
 export const NOTICE_DEDUP_WINDOW_MS = 30_000
@@ -35,12 +35,6 @@ export const runtime = {
   historySnapTail: undefined as number | undefined,
   /** Stable semantic keys for the envelopes included in the current snapshot. */
   historySnapEventKeys: new Map<string, number>(),
-  /**
-   * 快照信封的 params._meta.eventId 集合（loadHistory 时与
-   * historySnapEventKeys 并行构建）：live↔快照接缝按顶层 eventId 精确
-   * 对账（host attachStreamMeta 提升的字段），比时间戳兜底更准。
-   */
-  historySnapEventIds: new Set<string>(),
 }
 
 /** 缓冲上限：超限丢弃新事件（窗口正常只有几十条，防异常场景膨胀）。 */
@@ -104,15 +98,22 @@ const SNAPSHOT_LIVE_DEDUP_TYPES = new Set([
  * Drop a live/gap-pull event already covered by the just-loaded snapshot.
  * History replay envelopes have no sessionId and must pass; only wire
  * events (hello-path gap-pull after historyLoading falls) are filtered.
+ *
+ * 与 replayHistoryWindowBuffer 同一套：先语义键（带计数），再
+ * agentTimestampMs ≤ snapTail。不用 eventId 集合——N 会在同一会话里撞车，
+ * 刷新后新事件会被静默吞掉。
  */
 export function dropLiveCoveredBySnapshot(ev: AcpEvent): boolean {
   if (!SNAPSHOT_LIVE_DEDUP_TYPES.has(ev.type)) return false
   if ((ev as { sessionId?: string }).sessionId == null) return false
-  // eventId 优先对账：顶层 eventId 命中快照集合 = 已在快照里，无论时间
-  // 戳如何都丢弃（agent 重启后 eventId 计数归零，单靠时间戳会误判）。
-  const eventId = eventEventId(ev)
-  if (eventId != null && runtime.historySnapEventIds.has(eventId)) return true
-  // 未命中回退现有 agentTimestampMs ≤ snapTail 规则（旧 host 无 eventId）。
+  const keys = replayEventKeys(ev)
+  for (const key of keys) {
+    const count = runtime.historySnapEventKeys.get(key) ?? 0
+    if (count > 0) {
+      runtime.historySnapEventKeys.set(key, count - 1)
+      return true
+    }
+  }
   const tail = runtime.historySnapTail
   if (tail == null) return false
   const ts = eventAgentTimestampMs(ev)
@@ -129,7 +130,6 @@ export function clearHistoryWindowBuffer(): void {
   runtime.historyWindowBuffer = []
   runtime.historySnapTail = undefined
   runtime.historySnapEventKeys.clear()
-  runtime.historySnapEventIds.clear()
 }
 
 export function clearContinueSessionTimer() {

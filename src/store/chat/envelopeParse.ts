@@ -91,16 +91,16 @@ function finiteMetaNumber(value: unknown): number | undefined {
 
 /**
  * 回放归一化序号（host msgSeq 契约）：存储信封顶层 `msgSeq`，host 归一化
- * （agentTimestampMs → eventId N → 行号）后的会话内密集名次，0 起。旧
- * host / 回退透传路径不带该键 → undefined（FE 回退现有文件序行为）。
+ * （agentTimestampMs → 文件行号，不读 eventId）后的会话内密集名次，0 起。
+ * 旧 host / 回退透传路径不带该键 → undefined（FE 回退现有文件序行为）。
  */
 export function envelopeMsgSeq(env: unknown): number | undefined {
   return finiteMetaNumber((env as { msgSeq?: unknown })?.msgSeq)
 }
 
 /**
- * 存储信封的 `params._meta.eventId`（host 快照对账用：live↔快照接缝
- * 按它精确去重，见 globals.historySnapEventIds）。
+ * 存储信封的 `params._meta.eventId`。host 仍把它提升到 live 事件顶层
+ * （透传），但 live↔快照接缝不再用它当主键（N 会撞车）。
  */
 export function envelopeEventId(env: unknown): string | undefined {
   const meta = (env as RawEnvelope)?.params?._meta
@@ -110,8 +110,8 @@ export function envelopeEventId(env: unknown): string | undefined {
 
 /**
  * Live-event eventId。host `attachStreamMeta` 把 `params._meta.eventId`
- * 提升为顶层字段；嵌套 `params._meta` / `update._meta` 也接受，让 hub
- * gap-pull 帧同样能对账（与 eventAgentTimestampMs 同款兜底）。
+ * 提升为顶层字段；嵌套 `params._meta` / `update._meta` 也接受。
+ * 接缝去重走语义键 + snapTail，不读这个字段。
  */
 export function eventEventId(ev: unknown): string | undefined {
   if (!ev || typeof ev !== 'object') return undefined
@@ -620,6 +620,7 @@ function envelopeToEventsRaw(e: RawEnvelope): AcpEvent[] {
     case 'user_message_chunk': {
       const chunkMeta = (up._meta ?? up.meta) as Record<string, unknown> | undefined
       if (chunkMeta?.hideFromScrollback === true) return []
+      if (chunkMeta?.hostTurn === true) return []
       const blockMeta = envelopeContentMeta(up)
       if (blockMeta.hideFromScrollback === true) return []
       const parts = contentParts(up.content)
