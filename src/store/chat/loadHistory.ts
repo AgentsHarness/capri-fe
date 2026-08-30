@@ -26,7 +26,6 @@ import {
 import { entryTimestamp } from './entries'
 import {
   envelopeAgentTimestampMs,
-  envelopeEventId,
   envelopeTimestamp,
   eventAgentTimestampMs,
   replayEnvelopeKeys,
@@ -222,10 +221,7 @@ export async function loadHistory(
       // 边界因此覆盖整个快照；无 _meta 的旧日志回退粗粒度写盘戳。
       let snapTail: number | undefined
       runtime.historySnapEventKeys.clear()
-      runtime.historySnapEventIds.clear()
       for (const update of updates) {
-        const eventId = envelopeEventId(update)
-        if (eventId != null) runtime.historySnapEventIds.add(eventId)
         const keyTime =
           envelopeAgentTimestampMs(update) ??
           envelopeTimestamp(update as Parameters<typeof envelopeTimestamp>[0])

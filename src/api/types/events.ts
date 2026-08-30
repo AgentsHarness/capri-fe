@@ -78,7 +78,7 @@ export type AcpEvent =
       agentTimestampMs?: number
       /** 回放归一化序号（host msgSeq，仅历史回放事件携带）。 */
       msgSeq?: number
-      /** host attachStreamMeta 提升的 params._meta.eventId（live↔快照接缝对账）。 */
+      /** host attachStreamMeta 提升的 params._meta.eventId（透传，不当接缝主键）。 */
       eventId?: string
       sessionId?: string
     }
@@ -96,7 +96,7 @@ export type AcpEvent =
       agentTimestampMs?: number
       /** 回放归一化序号（host msgSeq，仅历史回放事件携带）。 */
       msgSeq?: number
-      /** host attachStreamMeta 提升的 params._meta.eventId（live↔快照接缝对账）。 */
+      /** host attachStreamMeta 提升的 params._meta.eventId（透传，不当接缝主键）。 */
       eventId?: string
       streamStartMs?: number
       /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
@@ -154,7 +154,7 @@ export type AcpEvent =
       agentTimestampMs?: number
       /** 回放归一化序号（host msgSeq，仅历史回放事件携带）。 */
       msgSeq?: number
-      /** host attachStreamMeta 提升的 params._meta.eventId（live↔快照接缝对账）。 */
+      /** host attachStreamMeta 提升的 params._meta.eventId（透传，不当接缝主键）。 */
       eventId?: string
       /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
       sessionId?: string

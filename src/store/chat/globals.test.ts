@@ -12,6 +12,7 @@ import {
   dropLiveCoveredBySnapshot,
 } from './globals'
 import type { ChatState } from './types'
+import { replayEventKeys } from './envelopeParse'
 
 const fakeState = (patch: Record<string, unknown>) => patch as unknown as ChatState
 
@@ -127,6 +128,35 @@ describe('dropLiveCoveredBySnapshot', () => {
         agentTimestampMs: 1,
       } as never),
     ).toBe(false)
+  })
+
+  it('复用 eventId 但文本/时间戳都是新的 → 不丢', () => {
+    runtime.historySnapTail = 1000
+    runtime.historySnapEventKeys.set('chunk:{"text":"old","agentTimestampMs":1000}', 1)
+    expect(
+      dropLiveCoveredBySnapshot({
+        type: 'chunk',
+        text: 'brand new',
+        sessionId: 's1',
+        agentTimestampMs: 1001,
+        eventId: 's1-75',
+      } as never),
+    ).toBe(false)
+  })
+
+  it('语义键命中快照（带计数）→ 丢弃，耗尽后不再因同一键丢弃', () => {
+    runtime.historySnapTail = undefined
+    const ev = {
+      type: 'chunk',
+      text: 'same',
+      sessionId: 's1',
+      agentTimestampMs: 50,
+    } as never
+    for (const key of replayEventKeys(ev)) {
+      runtime.historySnapEventKeys.set(key, 1)
+    }
+    expect(dropLiveCoveredBySnapshot(ev)).toBe(true)
+    expect(dropLiveCoveredBySnapshot(ev)).toBe(false)
   })
 })
 

@@ -260,6 +260,15 @@ describe('envelopeToEvents', () => {
       }),
     )
     expect(hidden).toEqual([])
+
+    const hostTurn = envelopeToEvents(
+      env('session/update', {
+        sessionUpdate: 'user_message_chunk',
+        content: { type: 'text', text: 'injected' },
+        _meta: { hostTurn: true },
+      }),
+    )
+    expect(hostTurn).toEqual([])
   })
 
   it('tool_call / plan / usage_update → 事件', () => {
