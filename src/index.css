@@ -158,6 +158,15 @@ body {
   display: none;
 }
 
+/* Composer 浮层（斜杠命令 / @ 文件）选中行底色。裸 gn-selection 在弹层里
+   太抢眼（浅色主题下整行像被涂满），按 SelectionBox 的惯例先与浮层底色
+   混合再用。30% 这档：浅色主题下与浮层底色仍差 ~15 个色阶（不至于看不见），
+   深色主题下只剩一层很薄的抬升，区分交给加粗的命令名与行尾 ↵。
+   两个变量都由 applyTokens 运行时覆写，换主题自动跟随。 */
+.gn-menu-sel {
+  background-color: color-mix(in srgb, var(--color-gn-selection) 30%, var(--color-gn-bg-dark));
+}
+
 /* PromptTime hover swap (short ⇄ full timestamp). The outer .gn-pt span is
    the ONLY hover trigger — group-hover: would also fire on the entry row's
    .group ancestor, expanding the time when hovering anywhere on the entry.

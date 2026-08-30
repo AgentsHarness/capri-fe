@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { FileSearch } from 'lucide-react'
 import type { FileSearchMatch } from '../store/chat'
+import { menuRowClass } from './composer/menuRow'
 
 /**
  * TUI @ file picker popover — floats above the composer while an `@`
@@ -39,13 +40,18 @@ export function FilePickerMenu({
 
   return (
     <div className="absolute bottom-full left-0 right-0 z-40 mb-1 overflow-hidden rounded border border-gn-prompt-border-active bg-gn-bg-dark shadow-2xl">
-      <div className="flex items-center justify-between border-b border-gn-prompt-border px-3 py-1.5">
+      <div className="flex items-center justify-between gap-2 border-b border-gn-prompt-border px-3 py-1.5">
         <span className="text-[11px] font-bold text-gn-fg2">文件</span>
-        <span className="text-[10px] text-gn-muted">
-          {showList && done
-            ? `${matches.length}${total != null && total > matches.length ? ` / ${total}` : ''} 个匹配`
-            : '@ 前缀触发'}
-        </span>
+        {/* 位置/返回数放表头右侧（与斜杠菜单同一处），服务端还有更多时带上
+            总数；没有结果可数时才回落到触发说明。 */}
+        {showList && matches.length > 0 ? (
+          <span className="shrink-0 font-mono text-[10px] text-gn-gray-dim">
+            {Math.min(selected + 1, matches.length)}/{matches.length}
+            {total != null && total > matches.length ? ` 共 ${total}` : ''}
+          </span>
+        ) : (
+          <span className="min-w-0 truncate text-[10px] text-gn-muted">@ 前缀触发</span>
+        )}
       </div>
       <div ref={listRef} className="gn-no-scrollbar max-h-56 overflow-y-auto py-0.5">
         {!showList ? (
@@ -69,21 +75,24 @@ export function FilePickerMenu({
               key={`${m.path}:${i}`}
               type="button"
               data-sel={i === selected ? '1' : '0'}
+              onMouseDown={(e) => e.preventDefault()}
               onMouseEnter={() => onHover(i)}
               onClick={() => onPick(m.path)}
-              className={`block w-full px-3 py-[5px] text-left transition-colors ${
-                i === selected ? 'bg-gn-bg-highlight' : ''
-              }`}
+              className={menuRowClass(i === selected)}
             >
-              <span className="block truncate font-mono text-[12px] text-gn-fg">
+              <span
+                className={`min-w-0 flex-1 truncate font-mono text-[12px] leading-[18px] ${
+                  i === selected ? 'text-gn-fg' : 'text-gn-fg2'
+                }`}
+              >
                 <MatchPath path={m.path} matched={m.matchedIndices} />
               </span>
             </button>
           ))
         )}
       </div>
-      <div className="border-t border-gn-prompt-border px-3 py-[3px] text-[10px] text-gn-muted">
-        ↑/↓ 选择 · Enter/Tab 填入 · Esc 关闭
+      <div className="flex items-center justify-between gap-2 border-t border-gn-prompt-border px-3 py-[3px] text-[10px] text-gn-muted">
+        <span className="min-w-0 truncate">↑/↓ 选择 · Enter/Tab 填入 · Esc 关闭</span>
       </div>
     </div>
   )
