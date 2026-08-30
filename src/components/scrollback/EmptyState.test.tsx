@@ -8,6 +8,7 @@ import { resetWorktreeGateCache } from './useWorktreeGate'
 vi.mock('../../api/client', () => ({
   transport: {
     gitRepoRoot: vi.fn(),
+    gitBranches: vi.fn(),
     gitWorktreeCreate: vi.fn(),
     // historyPins 在模块顶层注册 prefs_changed 监听（chat store 导入链）；
     // 本文件不测 prefs，给个 no-op。
@@ -35,6 +36,7 @@ vi.mock('../DirectoryPickerModal', () => ({
 }))
 
 const repoRootMock = vi.mocked(transport.gitRepoRoot)
+const branchesMock = vi.mocked(transport.gitBranches)
 const wtCreateMock = vi.mocked(transport.gitWorktreeCreate)
 
 describe('EmptyStatePicker', () => {
@@ -42,7 +44,11 @@ describe('EmptyStatePicker', () => {
     useChatStore.setState({ emptyCwd: undefined })
     resetWorktreeGateCache()
     repoRootMock.mockReset()
+    branchesMock.mockReset()
     wtCreateMock.mockReset()
+    // 默认：branches 探针不表态（非仓库目录上 agent 就是报错），让
+    // gitRepoRoot 单独决定门控结果。
+    branchesMock.mockRejectedValue(new Error('-32603 Internal error') as never)
   })
 
   it('渲染 AGENTS / HERNESS 字符画（两段 pre）与引导文案', () => {
@@ -139,6 +145,27 @@ describe('EmptyStatePicker', () => {
       expect(btn.getAttribute('title')).toContain('probe down')
       fireEvent.click(btn)
       expect(wtCreateMock).not.toHaveBeenCalled()
+    })
+
+    it('旧 host：gitRepoRoot 报 Invalid params，gitBranches 给出 repoRoot → 入口仍可用', async () => {
+      useChatStore.setState({ emptyCwd: '/repo' })
+      repoRootMock.mockRejectedValue(new Error('Invalid params') as never)
+      branchesMock.mockResolvedValue({ branches: [], repoRoot: '/repo' } as never)
+      wtCreateMock.mockResolvedValue({
+        status: 'creating',
+        worktreePath: '/repo-wt',
+      } as never)
+      render(<EmptyStatePicker />)
+      const btn = await screen.findByRole('button', { name: /在新 worktree 中开始/ })
+      expect(btn).not.toBeDisabled()
+      fireEvent.click(btn)
+      await waitFor(() => {
+        expect(wtCreateMock).toHaveBeenCalledWith({
+          sourcePath: '/repo',
+          copyMode: 'dirty',
+        })
+        expect(useChatStore.getState().emptyCwd).toBe('/repo-wt')
+      })
     })
 
     it('进行中重复点击不会发第二次请求；失败时原位显示错误并可重试', async () => {
