@@ -6,7 +6,7 @@ import {
   saveStr,
 } from '../../lib/storage'
 import { transport } from '../../api/client'
-import { ensureUiSettings, uiBool, uiSettingsLoaded } from '../settings'
+import { ensureUiSettings, refreshUiSettings, uiBool, uiSettingsLoaded } from '../settings'
 import { isEditToolKind } from '../../theme/toolFamily'
 import type { ChatState, ModeFlags, SetState } from './types'
 
@@ -220,6 +220,18 @@ export function ensureDefaultModeFlags(): Promise<ModeFlags> {
     return {}
   })
   return cachedDefaultFlagsPromise
+}
+
+/**
+ * Re-read `[ui]` for the CURRENT host and re-derive the permission default.
+ * Called on host selection: the eager boot prefetch runs before a host is
+ * chosen (hub mode) and gets cancelled by the setHost abort storm anyway,
+ * and a `[ui]` section cached from another host must not leak across.
+ */
+export function refreshDefaultModeFlags(): Promise<void> {
+  return refreshUiSettings().then((ui) => {
+    if (ui) syncDefaultModeFlagsFromUi(ui)
+  })
 }
 
 /**

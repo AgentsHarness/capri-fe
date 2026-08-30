@@ -187,7 +187,15 @@ export function initChat(
     }
     // Prefetch `[ui]` permission default for maybeReseed / session/new.
     // Do not paint the composer badge from config — wait for the agent echo.
-    void ensureDefaultModeFlags()
+    // hub 模式交给 selectHost：settings 是 host 级的，host 选定之前那次预取
+    // 只会赶上 setHost 的 abort 风暴（实测两次 ERR_ABORTED）。local 模式没有
+    // host 选择这一步，这里自己取，并延到宏任务——StrictMode 的
+    // setup→cleanup→setup 会在同步阶段 disconnect 一次，直接调用必被 abort
+    // （与下面 pinsSyncTimer 同一个理由）。
+    let uiPrefetchTimer: ReturnType<typeof setTimeout> | undefined
+    if (mode !== 'hub') {
+      uiPrefetchTimer = setTimeout(() => void ensureDefaultModeFlags(), 0)
+    }
     // TUI live flip: rematerialize Edit rows when collapsed_edit_blocks
     // arrives (history often replays before GET /api/settings) or when
     // the user toggles it in /settings.
@@ -206,6 +214,7 @@ export function initChat(
     }, 0)
     return () => {
       clearTimeout(pinsSyncTimer)
+      clearTimeout(uiPrefetchTimer)
       unsub()
       unsubMode()
       unsubUi()
