@@ -234,7 +234,8 @@ export type ScrollEntry =
       error?: string
       /** 等待回答中（进行中的可见反馈；脉冲金色 rail）。 */
       streaming?: boolean
-      /** 折叠/展开（默认折叠，TUI BtwBlock default_display_mode Collapsed）。 */
+      /** 折叠/展开（askBtw 建条目时默认展开——FE 没有 TUI 的 inline
+       *  btw panel，答案只在这条区块里；←/→ / click 可折叠）。 */
       open?: boolean
       msgSeq?: number
     }

@@ -118,7 +118,10 @@ export function xaiActions(set: SetState, get: () => ChatState) {
     set({
       entries: [
         ...get().entries,
-        { id, kind: 'btw', question, streaming: true, open: false },
+        // 默认展开：TUI 的 /btw 回答先落在提问框上方的 inline panel，
+        // 收起时才以折叠块进滚动区；FE 没有那块 inline panel，答案只有
+        // 这一条区块——折叠就等于「问完了没显示回答」。←/→ 仍可折叠。
+        { id, kind: 'btw', question, streaming: true, open: true },
       ],
     })
     try {

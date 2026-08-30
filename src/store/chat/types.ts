@@ -687,7 +687,7 @@ export interface ChatUiState {
   toggleThought: (id: string) => void
   /** Expand/collapse long user prompts (←/→ / click). */
   toggleUser: (id: string) => void
-  /** 折叠/展开 btw 侧问区块（←/→ / click；默认折叠，TUI BtwBlock）。 */
+  /** 折叠/展开 btw 侧问区块（←/→ / click；条目默认展开，见 askBtw）。 */
   toggleBtw: (id: string) => void
   /** → expand / ← collapse selected foldable block or group */
   setExpanded: (expanded: boolean) => void
