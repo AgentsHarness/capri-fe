@@ -269,14 +269,14 @@ describe('slash command runs — 会话类', () => {
     expect(fake.memoryFlush).toHaveBeenCalled()
   })
 
-  it('/view-plan（含别名 show-plan / plan-view）：无活动会话与无 plan 提示，有 plan 打开弹窗', () => {
-    // 有会话但无 plan → 提示，不开弹窗。
+  it('/view-plan（含别名 show-plan / plan-view）：有会话即打开弹窗，无会话提示', () => {
+    // 有会话就打开：plan 正文由弹窗自己按优先级取（host plan.md → 审批
+    // 请求 → 滚动区工具输出），命令层不预设「有没有 plan」——TUI 也是先
+    // 开预览再报 no plan。
     run('view-plan')
-    expect(fake.appendLocalEntry).toHaveBeenCalledWith({
-      kind: 'error',
-      text: '当前会话还没有 plan',
-    })
-    expect(fake.openPlanViewer).not.toHaveBeenCalled()
+    expect(fake.openPlanViewer).toHaveBeenCalledTimes(1)
+    expect(fake.planViewerOpen).toBe(true)
+    expect(fake.appendLocalEntry).not.toHaveBeenCalled()
     // 无活动会话 → 提示（/rename /delete 同款写法）。
     fake.sessionId = null
     run('view-plan')
@@ -284,23 +284,20 @@ describe('slash command runs — 会话类', () => {
       kind: 'error',
       text: '查看失败: 无活动会话',
     })
-    expect(fake.openPlanViewer).not.toHaveBeenCalled()
-    // 有 plan → 打开 planViewer（TUI show-plan / plan-view 别名同语义；
-    // run() helper 只认 c.name，别名走 matchSlash 解析）。
+    expect(fake.openPlanViewer).toHaveBeenCalledTimes(1)
+    // 别名同语义（run() helper 只认 c.name，别名走 matchSlash 解析）。
     fake.sessionId = 's1'
-    fake.todos = [{ content: 'x', status: 'pending' }]
     const aliasRun = (alias: string) => {
       const m = matchSlash(`/${alias}`)
       if (!m) throw new Error(`no alias ${alias}`)
       m.cmd.run(m.args)
     }
     aliasRun('show-plan')
-    expect(fake.openPlanViewer).toHaveBeenCalledTimes(1)
-    expect(fake.planViewerOpen).toBe(true)
-    aliasRun('plan-view')
     expect(fake.openPlanViewer).toHaveBeenCalledTimes(2)
-    run('view-plan')
+    aliasRun('plan-view')
     expect(fake.openPlanViewer).toHaveBeenCalledTimes(3)
+    run('view-plan')
+    expect(fake.openPlanViewer).toHaveBeenCalledTimes(4)
   })
 
   it('/plan 已进入 plan 模式 → 提示用 /view-plan（TUI modes.rs 对齐），不改切换语义', () => {

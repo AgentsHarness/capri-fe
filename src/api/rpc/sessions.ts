@@ -262,6 +262,24 @@ export const sessionsRpc = {
     return (data.session ?? data) as SessionInfoDetail
   },
 
+  /**
+   * plan 模式的 plan.md 正文（host 直读 agent 写在会话目录里的同一个文件，
+   * TUI /view-plan 的数据源）。没有 plan 时返回空串；旧 host 无此端点 →
+   * 抛错，调用方回退到滚动区/审批请求里的 plan 正文。
+   */
+  async sessionPlan(this: TransportCore, sessionId: string, cwd: string): Promise<string> {
+    const res = await this.fetch(this.url('/api/session-plan'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, cwd }),
+    })
+    const data = await res.json()
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `session plan failed (${res.status})`)
+    }
+    return typeof data.content === 'string' ? data.content : ''
+  },
+
   async forkSession(this: TransportCore, params: Record<string, unknown> = {}, sessionId?: string) {
     const res = await this.fetch(this.url('/api/session-fork'), {
       method: 'POST',

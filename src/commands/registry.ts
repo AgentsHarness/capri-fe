@@ -562,20 +562,16 @@ export const slashCommands: SlashCommand[] = [
   {
     name: 'view-plan',
     aliases: ['show-plan', 'plan-view'],
-    description: '查看当前会话已保存的 plan（弹窗）',
+    description: '查看当前会话的 plan 正文（弹窗）',
     run: () => {
       const st = useChatStore.getState()
       if (!st.sessionId) {
         err('查看失败: 无活动会话')
         return
       }
-      // The current plan lives in the store's plan-derived todo state
-      // (todos/todoCounts — same source as the status-bar badge; plan
-      // events never land in the scrollback). No host endpoint exists.
-      if (!st.todos || st.todos.length === 0) {
-        err('当前会话还没有 plan')
-        return
-      }
+      // 弹窗自己按优先级取正文（host plan.md → 待应答审批请求 → 滚动区
+      // exit_plan_mode 工具输出），都没有才显示空态/任务清单兜底；这里不
+      // 预设「有没有 plan」的判断——TUI 也是先打开预览再报 no plan。
       st.openPlanViewer()
     },
   },
