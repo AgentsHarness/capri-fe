@@ -7,7 +7,7 @@ import type {
 import type { SetState } from './types'
 import { nid } from './ids'
 import { formatElapsed, imageSrc, toolVerb } from './format'
-import { extractTarget, toolCallIdOf } from './tools'
+import { extractTarget, toolCallIdOf, toolKindName } from './tools'
 import { collapsedEditBlocks } from './modeFlags'
 import { isEditToolKind } from '../../theme/toolFamily'
 
@@ -25,8 +25,16 @@ export function sealSubagentStreaming(items: ScrollEntry[]): ScrollEntry[] {
         streaming: false,
         displayMode: 'collapsed' as const,
         finishedAt: Date.now(),
+        // 与主 scrollback 同款取值顺序：wire elapsedMs（回放原始耗时，
+        // agentTimestampMs - streamStartMs）> 本地 startedAt 计时 >
+        // 既有 elapsed。只看 startedAt 时回放条目的起点是回放时刻，
+        // 收口会算出 ~0ms 的假 "0.0s"。
         elapsed:
-          it.startedAt != null ? formatElapsed(Date.now() - it.startedAt) : it.elapsed,
+          it.elapsedMs != null
+            ? formatElapsed(it.elapsedMs)
+            : it.startedAt != null
+              ? formatElapsed(Date.now() - it.startedAt)
+              : it.elapsed,
       }
     }
     return it
@@ -126,7 +134,14 @@ export function subagentViewAppend(
       const last = items[items.length - 1]
       if (last && last.kind === 'thought' && last.streaming) {
         const next = [...items]
-        next[next.length - 1] = { ...last, text: last.text + text, streaming: true }
+        next[next.length - 1] = {
+          ...last,
+          text: last.text + text,
+          streaming: true,
+          // 耗时随流增长：最后一个 chunk 的 elapsedMs 生效（主 scrollback
+          // streamBufElapsedMs 同款"last chunk wins"）。
+          ...(ev.elapsedMs != null ? { elapsedMs: ev.elapsedMs } : {}),
+        }
         return next
       }
       // 新思考段：先收口前面挂着的流（多段思考/回放防御），再开新条目。
@@ -136,7 +151,11 @@ export function subagentViewAppend(
         text,
         streaming: true,
         displayMode: 'expanded',
-        startedAt: Date.now(),
+        // 回放/带 meta 的 live 事件带服务端原始耗时（wire elapsedMs）；
+        // 无则打本地起点供收口计时（与主 scrollback thought 条目同款）。
+        ...(ev.elapsedMs != null
+          ? { elapsedMs: ev.elapsedMs }
+          : { startedAt: Date.now() }),
       })
     }
     case 'tool_call': {
@@ -231,7 +250,10 @@ export function subagentToolItem(
   prev?: Extract<ScrollEntry, { kind: 'tool' }>,
 ): Extract<ScrollEntry, { kind: 'tool' }> {
   const status = (tc.status as string) || prev?.status || 'pending'
-  const kindName = (tc.kind as string) || prev?.kindName || 'other'
+  // 与主 scrollback 同款优先序：_meta["x.ai/tool"].kind 权威，再顶层
+  // kind（agent 的 todo/plan update 顶层带赝品 kind:"think"，顶层优先
+  // 会把 todo 行渲染成 "Thought"——_meta 恒为 plan）。
+  const kindName = toolKindName(tc, prev?.kindName)
   const running = status === 'pending' || status === 'in_progress'
   return {
     id: prev?.id ?? nid(),

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronRight, Circle, CircleCheck, CircleOff, Pencil, Pin, Plus, Trash2 } from 'lucide-react'
+import { Activity, ChevronRight, Circle, CircleCheck, CircleOff, Pencil, Pin, Plus, Trash2 } from 'lucide-react'
 import { useChatStore } from '../store/chat'
 import type { SessionInfo, WorkspaceSummary } from '../api/types'
 import {
@@ -60,7 +60,7 @@ type MergedGroup = {
 /**
  * 列表分区（两种展示形态共用渲染）：
  * - workspace：按 cwd 分组，key = cwd
- * - marked：按标记类型分组（置顶 / 待办），key = 类型
+ * - marked：按类型分组（思考中 / 置顶 / 待办），key = 类型
  */
 type ListSection = {
   key: string
@@ -68,7 +68,7 @@ type ListSection = {
   sessions: MergedRow[]
   /** 仅 workspace 形态：工作目录全路径（组菜单「新建会话」/ 置顶目录）。 */
   cwd?: string
-  kind: 'workspace' | 'pinned' | 'todo'
+  kind: 'workspace' | 'running' | 'pinned' | 'todo'
 }
 
 /** 组内排序最终 tiebreak：updatedAt 降序，无 updatedAt 排最后。 */
@@ -99,7 +99,7 @@ function liveToRow(s: SessionInfo, fallbackCwd = ''): MergedRow {
 /**
  * 历史会话列表 — 两种展示形态共用：
  * 1. workspace：按工作区（cwd）分组（桌面侧边栏 / 移动端 history 下拉）
- * 2. marked：只显示用户标记的会话（置顶 / 待办）
+ * 2. marked：分类视图（思考中 / 置顶 / 待办）
  *
  * 交互：分组折叠 / "加载更多"+"收起" / 行内重命名 / 行操作菜单
  * （桌面右键、移动端 ⋮）/ 上下文进度条。数据由宿主 sessions_changed
@@ -129,7 +129,7 @@ export function SessionHistoryList() {
   const toggleWorkspacePin = usePins((s) => s.toggleWorkspacePin)
   const toggleSessionPin = usePins((s) => s.toggleSessionPin)
   const setTodoStatus = usePins((s) => s.setTodoStatus)
-  // 展示形态：工作区分组 vs 仅标记任务（见 historyView.ts）。
+  // 展示形态：工作区分组 vs 分类视图（见 historyView.ts）。
   const listMode = useHistoryView((s) => s.mode)
 
   /**
@@ -205,9 +205,14 @@ export function SessionHistoryList() {
   }, [workspaces, sessions, cwd, pinnedWorkspaces, pinnedSessions, completedNotices, todos, toRow])
 
   /**
-   * 标记形态：扁平索引全部已知会话（workspace 摘要 ∪ live roster），
-   * 只保留置顶 / 待办（不含已完成）；同一会话只出现一次，优先级
-   * 置顶 > 待办（置顶行仍可显示待办徽标）。
+   * 标记形态：扁平索引全部已知会话（workspace 摘要 ∪ live roster）。
+   * 三个分类：
+   * - 思考中 — 所有非空闲会话（待处理 / 处理中 / 后台任务运行中），
+   *   与置顶/待办独立：即使未标记也显示，方便一眼盯住进行中的会话；
+   *   与置顶/待办重叠的会话两边都出现（行内仍带各自的标记徽标）。
+   * - 置顶 / 待办 — 只含被标记的会话，同一会话只出现一次，优先级
+   *   置顶 > 待办（置顶行仍可显示待办徽标）；已完成的待办不进列表
+   *   （右键仍可改回待办 / 取消）。
    */
   const markedSections = useMemo((): ListSection[] => {
     const byId = new Map<string, MergedRow>()
@@ -222,6 +227,10 @@ export function SessionHistoryList() {
 
     const pinned: MergedRow[] = []
     const todo: MergedRow[] = []
+    const running: MergedRow[] = []
+    for (const row of byId.values()) {
+      if (sessionGroupKey(row, sessionId) !== 'idle') running.push(row)
+    }
 
     // 以标记集合为驱动：即使摘要列表尚未返回该会话，只要 live 有也能显示。
     // 已完成的待办不进标记列表（右键仍可改回待办 / 取消）。
@@ -243,6 +252,14 @@ export function SessionHistoryList() {
       sortSessionsWithPins(rows, pinnedSessions, completedNotices, byUpdatedDesc, todos)
 
     const sections: ListSection[] = []
+    if (running.length > 0) {
+      sections.push({
+        key: 'marked:running',
+        label: '思考中',
+        kind: 'running',
+        sessions: sortMarked(running),
+      })
+    }
     if (pinned.length > 0) {
       sections.push({
         key: 'marked:pinned',
@@ -260,7 +277,7 @@ export function SessionHistoryList() {
       })
     }
     return sections
-  }, [workspaces, sessions, pinnedSessions, todos, completedNotices, toRow])
+  }, [workspaces, sessions, pinnedSessions, todos, completedNotices, toRow, sessionId])
 
   /** 当前形态下的分区列表（统一渲染入口）。 */
   const sections = useMemo((): ListSection[] => {
@@ -485,7 +502,7 @@ export function SessionHistoryList() {
       )}
       {markedEmpty && (
         <div className="px-3 py-2 text-[11px] leading-relaxed text-gn-muted">
-          没有标记的会话
+          没有标记或运行中的会话
           <span className="mt-0.5 block text-[10px] text-gn-gutter">
             右键会话可置顶或设为待办
           </span>
@@ -498,7 +515,11 @@ export function SessionHistoryList() {
         const rows = g.sessions.slice(0, shown)
         const isWorkspace = g.kind === 'workspace'
         const sectionAccent =
-          g.kind === 'pinned' || g.kind === 'todo' ? 'text-gn-yellow' : 'text-gn-fg'
+          g.kind === 'running'
+            ? 'text-gn-cyan'
+            : g.kind === 'pinned' || g.kind === 'todo'
+              ? 'text-gn-yellow'
+              : 'text-gn-fg'
         return (
           <div key={g.key} className="relative">
             {/* Group header — sticky opaque bar so list rows scroll under
@@ -535,6 +556,11 @@ export function SessionHistoryList() {
                       aria-label="已置顶"
                     >
                       <Pin size={12} strokeWidth={2.5} />
+                    </span>
+                  )}
+                  {g.kind === 'running' && (
+                    <span className="mr-1 inline-block align-[-0.1em]" aria-hidden>
+                      <Activity size={11} strokeWidth={2.5} />
                     </span>
                   )}
                   {g.kind === 'pinned' && (

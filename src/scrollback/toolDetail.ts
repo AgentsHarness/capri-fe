@@ -172,6 +172,20 @@ function unwrapTagged(raw: unknown): { tag: string; body: unknown } | null {
 
 /** Recursively dig for a string field under common names. */
 function digString(v: unknown, ...names: string[]): string | undefined {
+  return digStringSeen(v, new WeakSet(), 0, names)
+}
+
+/**
+ * Cycle-safe dig: the seen-set breaks self-referencing payloads and the
+ * depth cap bounds pathological nesting — both previously overflowed the
+ * stack (RangeError: Maximum call stack size exceeded).
+ */
+function digStringSeen(
+  v: unknown,
+  seen: WeakSet<object>,
+  depth: number,
+  names: string[],
+): string | undefined {
   if (!v) return undefined
   if (typeof v === 'string') return v
   if (Array.isArray(v)) {
@@ -186,9 +200,11 @@ function digString(v: unknown, ...names: string[]): string | undefined {
     return undefined
   }
   if (!isObj(v)) return undefined
+  if (seen.has(v) || depth >= 32) return undefined
+  seen.add(v)
   for (const n of names) {
     if (n in v) {
-      const got = digString(v[n], ...names)
+      const got = digStringSeen(v[n], seen, depth + 1, names)
       if (got != null) return got
       const s = asStr(v[n])
       if (s != null) return s
@@ -196,7 +212,7 @@ function digString(v: unknown, ...names: string[]): string | undefined {
   }
   // one-level unwrap
   const u = unwrapTagged(v)
-  if (u) return digString(u.body, ...names)
+  if (u) return digStringSeen(u.body, seen, depth + 1, names)
   return undefined
 }
 
@@ -369,8 +385,17 @@ function extractReadFile(raw: unknown): {
   media?: 'image' | 'pdf'
 } | null {
   if (!raw) return null
-  const tagged = unwrapTagged(raw)
+  // serde internally-tagged newtype: {"type":"ReadFile","FileContent":{…}}
+  // unwrapTagged 的 type 分支把 tag 定为 "ReadFile" 而 body 仍是整包,
+  // payload 键(FileContent / ImageContent / 错误变体)不会出现在 tag 里
+  // ——先剥掉 type 键,让 payload 键名成为 outer tag,与 externally-
+  // tagged {"Read":{…}} 汇流到同一解析路径。
   let body: unknown = raw
+  if (isObj(raw) && typeof raw.type === 'string') {
+    const { type: _type, ...rest } = raw as Record<string, unknown>
+    if (Object.keys(rest).length === 1) body = rest
+  }
+  const tagged = unwrapTagged(body)
   if (tagged && /read/i.test(tagged.tag)) body = tagged.body
   // Nested FileContent / error variants
   const nested = unwrapTagged(body)
@@ -691,7 +716,7 @@ function extractUseToolOutput(raw: unknown): string | undefined {
         if (n && typeof n.body === 'string') return maybePretty(n.body)
         return (
           digString(b, 'output', 'text', 'content', 'message', 'result') ??
-          maybePretty(JSON.stringify(b, null, 2))
+          maybePretty(safeJson(b))
         )
       }
     }
@@ -709,7 +734,7 @@ function extractUseToolOutput(raw: unknown): string | undefined {
   if (isObj(raw)) {
     return (
       digString(raw, 'output', 'text', 'content', 'result', 'message') ??
-      maybePretty(JSON.stringify(raw, null, 2))
+      maybePretty(safeJson(raw))
     )
   }
   return undefined

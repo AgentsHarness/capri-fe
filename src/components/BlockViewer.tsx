@@ -250,6 +250,92 @@ export function BlockViewer() {
   )
 }
 
+/** 迷你时间线双击可弹全文的条目种类（主 scrollback openViewer 同款
+ *  集合 + image：图片块全文即大图展示）。 */
+const MINI_VIEWABLE_KINDS = new Set([
+  'tool',
+  'thought',
+  'user',
+  'assistant',
+  'error',
+  'plan',
+  'image',
+  'bg_task',
+  'workflow',
+  'subagent',
+])
+
+/**
+ * 单条目全文弹窗（子代理迷你时间线双击复用）：与主 BlockViewer 同一套
+ * viewerChrome + ViewerBody 渲染，但条目来自子代理视图（不在主 entries 里，
+ * 主 viewer 查找不到）。Esc 的 window capture 监听注册晚于外层主子代理
+ * viewer——嵌入打开时按 Esc 由外层优先处理（连同主弹窗一起关），此处的
+ * Esc 只在无外层时兜底；按钮 / 背景点击总是可用。
+ */
+function BlockBodyDialog({ entry, onClose }: { entry: ScrollEntry; onClose: () => void }) {
+  const panelRef = useRef<HTMLDivElement>(null)
+  const { title, subtitle } = viewerChrome(entry)
+
+  useEffect(() => {
+    panelRef.current?.focus()
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopPropagation()
+        onClose()
+      }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [onClose])
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-stretch justify-center bg-black/55 backdrop-blur-[1px]"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose()
+      }}
+    >
+      <div
+        ref={panelRef}
+        tabIndex={-1}
+        className="m-0 flex h-full w-full max-w-[960px] flex-col bg-gn-bg-base shadow-2xl outline-none sm:m-4 sm:h-[calc(100%-2rem)] sm:rounded border border-gn-prompt-border-active sm:border"
+      >
+        <header className="flex shrink-0 items-center gap-2 border-b border-gn-prompt-border bg-gn-bg-dark px-3 py-2 sm:rounded-t">
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-[13px] font-bold text-gn-fg">{title}</div>
+            {subtitle ? (
+              <div className="truncate font-mono text-[11px] text-gn-muted">
+                {subtitle}
+              </div>
+            ) : null}
+          </div>
+          <span className="hidden text-[10px] text-gn-gutter sm:inline">
+            esc close · scroll to read
+          </span>
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex shrink-0 items-center gap-1 rounded border border-transparent px-2 py-1 text-[12px] text-gn-muted hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+            aria-label="Close viewer"
+          >
+            <IconGlyph glyph={Glyphs.ballotX} color="currentColor" />
+            close
+          </button>
+        </header>
+
+        {/* Full content — no truncation (mini 条目不含 subagent，外层滚动)。 */}
+        <div className="gn-scroll min-h-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4">
+          <ViewerBody entry={entry} />
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function viewerChrome(e: ScrollEntry): { title: string; subtitle?: string } {
   if (e.kind === 'tool') {
     const running = e.status === 'pending' || e.status === 'in_progress'
@@ -376,7 +462,7 @@ function ViewerBody({
   now,
 }: {
   entry: ScrollEntry
-  now: number
+  now?: number
 }) {
   if (entry.kind === 'tool' && entry.raw) {
     return (
@@ -500,7 +586,7 @@ function ViewerBody({
     )
   }
   if (entry.kind === 'subagent') {
-    return <SubagentView entry={entry} now={now} />
+    return <SubagentView entry={entry} now={now ?? Date.now()} />
   }
   if (entry.kind === 'workflow') {
     return (
@@ -683,9 +769,10 @@ function SubagentView({
  * 这里走同一条管线——scanGroups + projectDisplayRows → EntryView /
  * GroupHeaderView（内部即 EntryShell + AccentRail(resolveAccent) +
  * Bullet(resolveBullet)，accent 竖条/动词分组头/折叠展开/字体配色全部
- * 与主 scrollback 一致）。选中/折叠用组件内局部状态（expandedGroups
- * 局部化），不接主 store 的 selectEntry/openViewer——mini 条目不在主
- * entries 里，openViewer 会找不到目标。
+ * 与主 scrollback 一致）。选中/折叠/双击全文弹窗用组件内局部状态
+ * （expandedGroups/folds/viewerId 局部化），不接主 store 的
+ * selectEntry/openViewer——mini 条目不在主 entries 里，主 viewer 找不到
+ * 目标，双击用 BlockBodyDialog 在组件内弹同一套全文内容。
  */
 function SubagentTimeline({
   childSid,
@@ -890,7 +977,15 @@ function SubagentTimeline({
     return p
   }
 
-  // 局部动作：折叠写本地 folds；双击不弹主 viewer；选中局部化。缺省值
+  // 双击全文弹窗（局部状态）：mini 条目不在主 entries 里，主 viewer 找
+  // 不到目标——弹窗用 BlockBodyDialog 在组件内渲染同一套全文内容。
+  const [viewerId, setViewerId] = useState<string | null>(null)
+  const viewerEntry = useMemo(() => {
+    const e = viewerId ? renderItems.find((x) => x.id === viewerId) : undefined
+    return e && MINI_VIEWABLE_KINDS.has(e.kind) ? e : undefined
+  }, [viewerId, renderItems])
+
+  // 局部动作：折叠写本地 folds；双击打开局部全文弹窗；选中局部化。缺省值
   // 仍是主 store 动作（EntryView 内部取 actions ?? store），此处全部覆盖。
   const actions: EntryViewActions = useMemo(
     () => ({
@@ -899,7 +994,7 @@ function SubagentTimeline({
         setFolds((m) => new Map(m).set(id, !(m.get(id) ?? false))),
       toggleUser: (id) =>
         setFolds((m) => new Map(m).set(id, !(m.get(id) ?? false))),
-      openViewer: () => {},
+      openViewer: (id) => setViewerId(id),
       selectEntry: (id) => setSelectedId(id),
     }),
     [],
@@ -1038,6 +1133,9 @@ function SubagentTimeline({
           </div>
         )}
       </div>
+      {viewerEntry ? (
+        <BlockBodyDialog entry={viewerEntry} onClose={() => setViewerId(null)} />
+      ) : null}
     </div>
   )
 }

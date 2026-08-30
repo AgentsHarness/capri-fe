@@ -13,7 +13,8 @@ export type EntryViewActions = {
   toggleUser?: (id: string) => void
   /** btw 区块折叠切换（默认主 store toggleBtw）。 */
   toggleBtw?: (id: string) => void
-  /** 全文弹窗查看器（mini 双击不弹主 viewer——条目不在主 entries）。 */
+  /** 全文弹窗查看器（mini 双击打开组件内局部 BlockBodyDialog——条目
+   *  不在主 entries，主 viewer 查找不到；缺省主 store openViewer）。 */
   openViewer?: (id: string) => void
   /** 行选中（mini 局部选中；默认主 store selectEntry）。 */
   selectEntry?: (id: string) => void

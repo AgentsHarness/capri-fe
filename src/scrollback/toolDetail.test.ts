@@ -147,6 +147,50 @@ describe('extractToolDetail — read', () => {
     expect(d).toMatchObject({ kind: 'read', content: 'abc', totalLines: 3 })
   })
 
+  it('serde internally-tagged {"type":"ReadFile","FileContent":{…}} → 内容可解析', () => {
+    // host 实测 wire 形状（grokbuild-issue.md）：rawOutput 为 internally
+    // tagged newtype，payload 键与 type 键平级。
+    const d = detail(
+      {
+        rawInput: { target_file: 'x.ts' },
+        rawOutput: {
+          type: 'ReadFile',
+          FileContent: {
+            content: 'abc',
+            raw_output: 'raw abc',
+            total_lines: 42,
+            offset: 0,
+            limit: 10,
+          },
+        },
+      },
+      'read',
+    )
+    expect(d).toMatchObject({
+      kind: 'read',
+      content: 'raw abc',
+      totalLines: 42,
+      lineStart: 1,
+      lineEnd: 10,
+    })
+  })
+
+  it('internally-tagged ImageContent → media image', () => {
+    const d = detail(
+      { rawInput: { target_file: 'i.png' }, rawOutput: { type: 'ReadFile', ImageContent: { data: 'aGk=' } } },
+      'read',
+    )
+    expect(d).toMatchObject({ kind: 'read', media: 'image' })
+  })
+
+  it('internally-tagged 错误变体 → error', () => {
+    const d = detail(
+      { rawInput: { target_file: 'nope' }, rawOutput: { type: 'ReadFile', FileNotFound: 'no such file' } },
+      'read',
+    )
+    expect(d).toMatchObject({ kind: 'read', error: 'no such file' })
+  })
+
   it('rawOutput 扁平 raw_output → lineStart/lineEnd 由 offset+limit 推导并钳到 totalLines', () => {
     const d = detail(
       { rawInput: { file_path: 'a.ts' }, rawOutput: { raw_output: 'x', total_lines: 100, offset: 10, limit: 30 } },
@@ -452,6 +496,33 @@ describe('extractToolDetail — generic fallback', () => {
   it('failed → error 兜底', () => {
     const d = detail({ status: 'failed' })
     expect(d).toMatchObject({ kind: 'generic', error: 'Failed' })
+  })
+})
+
+describe('循环引用 payload → 不爆栈（digString 防环）', () => {
+  it('name 键自引用对象 → 降级为 [object Object]，不抛 RangeError', () => {
+    const cyc: Record<string, unknown> = { output: {} }
+    cyc.output = cyc
+    const d = detail({ rawOutput: cyc })
+    if (d.kind !== 'generic') throw new Error('expected generic')
+    expect(d.output).toBe('[object Object]')
+  })
+
+  it('unwrapTagged 单键循环包裹链（Text→Bash→回祖先）→ 不爆栈', () => {
+    const a: Record<string, unknown> = {}
+    const b: Record<string, unknown> = { Bash: a }
+    a.Text = b
+    const d = detail({ rawOutput: a })
+    if (d.kind !== 'generic') throw new Error('expected generic')
+    expect(d.output).toBe('[object Object]')
+  })
+
+  it('MCP tagged 循环 body → 不爆栈', () => {
+    const cyc: Record<string, unknown> = { output: {} }
+    cyc.output = cyc
+    const d = detail({ rawInput: { tool_name: 'x' }, rawOutput: { MCP: cyc } }, 'use_tool')
+    if (d.kind !== 'use_tool') throw new Error('expected use_tool')
+    expect(d.output).toBe('[object Object]')
   })
 })
 

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useChatStore } from '../store/chat'
 import { transport } from '../api/client'
-import type { SessionInfoDetail, SessionInfoExt, SessionUsageData } from '../api/types'
+import type { SessionInfoDetail, SessionInfoExt } from '../api/types'
 import { fmtTok, shortCwd } from '../format'
 import { contextUrgencyColor } from '../theme/contextColor'
 
@@ -26,6 +26,12 @@ type AgentExt = Omit<SessionInfoExt, 'context'> & {
 export function SessionInfoModal() {
   const open = useChatStore((s) => s.sessionInfoOpen)
   const close = useChatStore((s) => s.closeSessionInfo)
+  const openContext = useChatStore((s) => s.openContext)
+  /** 切换到 /context 弹窗：关掉自己、打开对方（同一事件里原子切换）。 */
+  const switchToContext = () => {
+    close()
+    openContext()
+  }
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>()
   const [data, setData] = useState<SessionInfoDetail>()
@@ -37,13 +43,6 @@ export function SessionInfoModal() {
   const [shellVersion, setShellVersion] = useState<string>()
   const [showResolved, setShowResolved] = useState(true)
   const [copied, setCopied] = useState(false)
-  // ── x.ai/session/usage + x.ai/share_session（footer 操作）──────────
-  const [usage, setUsage] = useState<SessionUsageData>()
-  const [usageLoading, setUsageLoading] = useState(false)
-  const [usageError, setUsageError] = useState<string>()
-  const [sharing, setSharing] = useState(false)
-  const [shareError, setShareError] = useState<string>()
-  const [shareCopied, setShareCopied] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
   const reqSeq = useRef(0)
 
@@ -86,62 +85,9 @@ export function SessionInfoModal() {
     }
   }, [])
 
-  /** x.ai/session/usage — token 用量（字段防御性解析，缺啥不显示啥）。 */
-  const refreshUsage = useCallback(async () => {
-    setUsageLoading(true)
-    setUsageError(undefined)
-    try {
-      // 与会话信息两个请求同理：显式锁定会话，避免落到 host 活动会话。
-      const raw = await transport.sessionUsage({
-        sessionId: useChatStore.getState().sessionId,
-      })
-      // 真实 agent 把数字包在 {usage:{…}} 一层下，两种结构都接受。
-      const r = (obj(raw.usage) ? raw.usage : raw) as SessionUsageData
-      setUsage({
-        totalTokens: num(r.totalTokens) ?? num(r.total_tokens),
-        inputTokens: num(r.inputTokens) ?? num(r.input_tokens),
-        outputTokens: num(r.outputTokens) ?? num(r.output_tokens),
-        contextSize: num(r.contextSize) ?? num(r.context_size),
-      })
-    } catch (e) {
-      setUsageError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setUsageLoading(false)
-    }
-  }, [])
-
-  /** x.ai/share_session — 从 result 里防御性找分享 URL，找不到提示失败。 */
-  const shareSession = async () => {
-    setSharing(true)
-    setShareError(undefined)
-    try {
-      // 显式锁定会话（同 fetchInfo）。
-      const result = await transport.sessionShare({
-        sessionId: useChatStore.getState().sessionId,
-      })
-      const url = findShareUrl(result)
-      if (!url) {
-        setShareError('分享失败: 响应中没有分享链接（share_url/url/link 字段）')
-        return
-      }
-      await navigator.clipboard.writeText(url)
-      setShareCopied(true)
-      setTimeout(() => setShareCopied(false), 1500)
-      useChatStore.setState({ statusText: `分享链接已复制: ${url}` })
-    } catch (e) {
-      setShareError(`分享失败: ${e instanceof Error ? e.message : String(e)}`)
-    } finally {
-      setSharing(false)
-    }
-  }
-
   useEffect(() => {
     if (!open) return
     setCopied(false)
-    setShareCopied(false)
-    setShareError(undefined)
-    setUsage(undefined)
-    setUsageError(undefined)
     setExt(undefined)
     setExtError(undefined)
     setShellVersion(undefined)
@@ -271,26 +217,6 @@ export function SessionInfoModal() {
           },
         ]
       : []),
-    // x.ai/session/usage（footer 刷新按钮拉取）— 与宿主 context 行互补。
-    ...(usage &&
-    (usage.totalTokens != null ||
-      usage.inputTokens != null ||
-      usage.outputTokens != null)
-      ? [
-          {
-            label: 'usage',
-            value: (
-              <span className="font-mono">
-                {usage.totalTokens != null
-                  ? fmtTok(usage.totalTokens)
-                  : `${fmtTok(usage.inputTokens ?? 0)} in · ${fmtTok(usage.outputTokens ?? 0)} out`}
-                {usage.contextSize != null ? ` / ${fmtTok(usage.contextSize)}` : ''}
-              </span>
-            ),
-            mono: true,
-          },
-        ]
-      : []),
     ...(data?.hostName || data?.hostId
       ? [{ label: 'host', value: [data.hostName, data.hostId].filter(Boolean).join(' · ') }]
       : []),
@@ -324,8 +250,16 @@ export function SessionInfoModal() {
           <span className="font-mono text-[13px] font-bold text-gn-fg">/session-info</span>
           <button
             type="button"
-            onClick={close}
+            onClick={switchToContext}
             className="ml-auto rounded px-2 py-0.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+            title="切换到 /context 弹窗"
+          >
+            context →
+          </button>
+          <button
+            type="button"
+            onClick={close}
+            className="rounded px-2 py-0.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
           >
             esc
           </button>
@@ -357,10 +291,10 @@ export function SessionInfoModal() {
             </div>
           ) : (
             <>
-              {rows.map((r) => (
+              {rows.map((r, i) => (
                 <div
                   key={r.label}
-                  className="flex items-start gap-3 border-b border-gn-prompt-border/50 px-4 py-2"
+                  className={`flex items-start gap-3 px-4 py-2 ${i < rows.length - 1 ? 'border-b border-gn-prompt-border/50' : ''}`}
                 >
                   <span className="w-24 shrink-0 pt-px text-[10px] uppercase tracking-wider text-gn-gutter">
                     {r.label}
@@ -381,37 +315,6 @@ export function SessionInfoModal() {
             </>
           )}
         </div>
-
-        <footer className="rounded-b border-t border-gn-prompt-border px-4 py-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => void refreshUsage()}
-              disabled={usageLoading}
-              className="rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
-              title="x.ai/session/usage — 拉取本次会话的 token 用量"
-            >
-              {usageLoading ? '刷新中…' : '刷新 usage'}
-            </button>
-            <button
-              type="button"
-              onClick={() => void shareSession()}
-              disabled={sharing}
-              className="rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
-              title="x.ai/share_session — 生成分享链接并复制到剪贴板"
-            >
-              {sharing ? '分享中…' : shareCopied ? '✓ 已复制' : '复制分享'}
-            </button>
-            <span className="ml-auto text-[11px] text-gn-gutter">
-              x.ai/session-info · 与 TUI /session-info 一致
-            </span>
-          </div>
-          {(usageError || shareError) && (
-            <div className="mt-1.5 font-mono text-[10.5px] text-gn-red">
-              {usageError ?? shareError}
-            </div>
-          )}
-        </footer>
       </div>
     </div>
   )
@@ -477,28 +380,4 @@ function parseShowResolved(status: unknown): boolean {
   const meta = obj(obj(status)?.authMeta)
   const v = meta?.show_resolved_model ?? meta?.showResolvedModel
   return typeof v === 'boolean' ? v : true
-}
-
-/**
- * 从 x.ai/share_session 的 result 里防御性找分享 URL：浅层 + 一层
- * result/result.result 嵌套，字段名兼容 camelCase / snake_case。
- */
-function findShareUrl(result: unknown): string | undefined {
-  const keys = ['url', 'share_url', 'shareUrl', 'link', 'permalink', 'share_link']
-  const candidates: unknown[] = [result]
-  if (result && typeof result === 'object' && !Array.isArray(result)) {
-    const inner = (result as Record<string, unknown>).result
-    if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
-      candidates.push(inner)
-    }
-  }
-  for (const c of candidates) {
-    if (!c || typeof c !== 'object' || Array.isArray(c)) continue
-    const o = c as Record<string, unknown>
-    for (const k of keys) {
-      const v = o[k]
-      if (typeof v === 'string' && /^https?:\/\//.test(v)) return v
-    }
-  }
-  return undefined
 }

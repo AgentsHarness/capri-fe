@@ -102,7 +102,7 @@ export function SessionListHeader({
         <ModeTab
           active={mode === 'marked'}
           onClick={() => setMode('marked')}
-          title="只显示置顶与待办的会话"
+          title="分类视图：思考中 / 置顶 / 待办"
           mode="marked"
           labeled={labeled}
         >
