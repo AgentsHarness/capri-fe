@@ -43,6 +43,19 @@ export function ensureUiSettings(): Promise<UiSection> {
   return inflight
 }
 
+/**
+ * Force a re-read of `[ui]` — settings are HOST-scoped, so a cached
+ * section belongs to whichever host was selected when it was fetched and
+ * must not survive a host switch. Resolves null (cache left at the previous
+ * host's value) when the fetch fails, so callers can tell "empty config"
+ * apart from "couldn't reach the host".
+ */
+export function refreshUiSettings(): Promise<UiSection | null> {
+  inflight = null
+  const before = cachedUi
+  return ensureUiSettings().then((ui) => (cachedUi === before ? null : ui))
+}
+
 /** Sync accessor — `{}` until ensureUiSettings resolves. */
 export function uiSettings(): UiSection {
   return cachedUi ?? {}

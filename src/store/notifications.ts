@@ -1,4 +1,5 @@
 import { useChatStore } from './chat'
+import { transport } from '../api/client'
 import { pushToast } from './toast'
 import { ensureUiSettings, notificationsSettings, onUiSettingsReady } from './settings'
 import { shouldNotify, systemNotify } from './notifyConfig'
@@ -27,7 +28,16 @@ let runningTasks = new Set<string>()
 export function initUiNotifications(): void {
   if (inited) return
   inited = true
-  void ensureUiSettings()
+  // hub 模式下、host 选定之前的 settings 预取只会被 setHost 的 abort 风暴
+  // 取消（实测每次加载两次 ERR_ABORTED）。selectHost 之后一定会以新 host
+  // 为准重读并触发 onUiSettingsReady，所以这里只在 local 模式或已有 host
+  // 时预热。
+  if (
+    transport.getConnectionMode() !== 'hub' ||
+    useChatStore.getState().selectedHostId
+  ) {
+    void ensureUiSettings()
+  }
   startTitleManager()
 
   // ── approval_required: a permission request just appeared ─────────

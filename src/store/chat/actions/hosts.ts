@@ -12,6 +12,7 @@ import { modelLabel } from '../model'
 import { appendEntry } from '../entries'
 import { pushToast } from '../../toast'
 import { clearSubagentSettleTimer, clearTurnBlipTimer } from '../turn'
+import { refreshDefaultModeFlags } from '../modePersist'
 
 export function hostActions(set: SetState, get: () => ChatState) {
   return {
@@ -184,6 +185,10 @@ export function hostActions(set: SetState, get: () => ChatState) {
     // 切换 host：会话锚点将随 hello 更新，统计条先按新 host 预拉一次
     //（refreshSessionStats 内部按当前 sessionId/cwd 校验，不会串数据）。
     void get().refreshSessionStats()
+    // `[ui]` 设置同样是 host 级的：init 那次预取跑在 host 选定之前，hub
+    // 模式下必然被 setHost 的 abort 风暴取消，而且旧 host 的缓存不能跟着
+    // 切过来——这里以新 host 为准重读一次。
+    void refreshDefaultModeFlags()
   },
 
   renameHost: async (hostId, hostName) => {
