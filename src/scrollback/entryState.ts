@@ -41,7 +41,8 @@ export function entryExpanded(e: ScrollEntry): boolean {
   // and expanded both show body content).
   if (e.kind === 'thought') return thoughtDisplayMode(e) !== 'collapsed'
   if (e.kind === 'session_event') return !!e.open
-  // btw 默认折叠（TUI default_display_mode Collapsed）。
+  // btw 折叠态由条目的 open 决定；askBtw 建条目时默认展开（FE 没有 TUI
+  // 那块 inline panel，答案只在这条区块里）。
   if (e.kind === 'btw') return !!e.open
   // User defaults to collapsed when foldable (TUI default_display_mode).
   if (e.kind === 'user') {
