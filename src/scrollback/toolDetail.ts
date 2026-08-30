@@ -14,7 +14,6 @@ export const READ_LAST = 3
 export const EXEC_FIRST = 2
 export const EXEC_LAST = 3
 export const INLINE_MAX = 10
-export const INLINE_TRUNC = 3
 
 export type DiffLine = {
   kind: 'equal' | 'insert' | 'delete' | 'header' | 'gap'

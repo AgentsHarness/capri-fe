@@ -1,4 +1,4 @@
-import type { AcpEvent } from '../../../api/types'
+import type { AcpEvent, ScrollEntry } from '../../../api/types'
 import type { ChatState, SetState } from '../types'
 import { nid } from '../ids'
 import { imageSrc } from '../format'
@@ -9,6 +9,7 @@ import {
   flushStreamBuf,
   sealAssistantStream,
   sealThought,
+  sealThoughtVisual,
 } from '../stream'
 import {
   adoptLiveTurnStart,
@@ -231,6 +232,8 @@ export function handleUserStreamEvent(
               isCron: classified.isCron || undefined,
               ts,
               expanded: false,
+              // 回放聚合用户行携带首条 chunk 的 msgSeq（live 事件无）。
+              ...(ev.msgSeq != null ? { msgSeq: ev.msgSeq } : {}),
             },
           ],
         })
@@ -338,6 +341,11 @@ export function handleUserStreamEvent(
           ) {
             set({ ...get(), ...sealed })
           }
+          // 同流 thinking → answer：视觉收口思考（指针保留、参与集合
+          // 不动），回答行接管直播——否则上一条 thinking 整段回答期间
+          // 都挂着 "Thinking…"。后续 thinking chunk 由 resume 路径重开。
+          const visuallySealed = sealThoughtVisual(get())
+          if (visuallySealed !== get()) set(visuallySealed)
           appendStreamBuf(set, get, 'assistant', text)
         } else {
           // 空白首包不建空壳——纯换行/空格不是回答。后续真正文再开行。
@@ -357,6 +365,10 @@ export function handleUserStreamEvent(
               ),
             }
           }
+          // 同流 thinking → answer 首包：视觉收口思考（指针保留），回答行
+          // 开新条目——同 Path B，上一条 thinking 不能整段回答期间挂
+          // "Thinking…"。
+          base = sealThoughtVisual(base)
           const id = nid()
           set({
             ...base,
@@ -453,6 +465,32 @@ export function handleUserStreamEvent(
         }
 
         // Existing thought: text goes through the frame coalescing buffer.
+        // 若条目被同流 answer 视觉收口过（sealThoughtVisual），先重新
+        // 打开：新一段思考计时、展开态正文——指针一直活着，续写仍进
+        // 同一条目；不重开的话 rAF flush 会把 liveStream 挂到非流式
+        // 条目上，正文也不会渲染。
+        const openEntry = get().entries.find(
+          (e): e is Extract<ScrollEntry, { kind: 'thought' }> =>
+            e.id === openThoughtId && e.kind === 'thought',
+        )
+        if (openEntry && !openEntry.streaming) {
+          set({
+            ...get(),
+            entries: get().entries.map((e) =>
+              e.id === openThoughtId && e.kind === 'thought'
+                ? {
+                    ...e,
+                    streaming: true,
+                    displayMode: 'expanded',
+                    startedAt: Date.now(),
+                    elapsed: undefined,
+                    elapsedMs: undefined,
+                    finishedAt: undefined,
+                  }
+                : e,
+            ),
+          })
+        }
         appendStreamBuf(set, get, 'thought', text, ev.elapsedMs)
         break
       }

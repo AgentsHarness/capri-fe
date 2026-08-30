@@ -209,6 +209,40 @@ export function QuestionModal() {
           // native button activation never fires.
           if (q?.multiSelect && cur < q.options.length) toggleOption(qi, cur, true)
           break
+        case 'z': {
+          // TUI z (interactions.rs): jump to the freeform line and enter
+          // input mode immediately (no-op effect when the card has none —
+          // every FE card renders the freeform row).
+          setInputActive(true)
+          requestAnimationFrame(() => inputRef.current?.focus())
+          break
+        }
+        case 'y': {
+          // TUI y: copy the focused answer (label + description) so it can
+          // be pasted elsewhere. Plain y only — the freeform input owns
+          // keys while active (handled above).
+          const opt = q?.options[cur]
+          if (opt?.label) {
+            void navigator.clipboard
+              ?.writeText(
+                [opt.label, opt.description].filter(Boolean).join('\n\n'),
+              )
+              .catch(() => {})
+          }
+          break
+        }
+        case '[':
+          // TUI [ / ]: previous / next question (same as Shift+Tab / Tab).
+          setActiveTab((t2) => clampTab(t2 - 1))
+          break
+        case ']':
+          setActiveTab((t2) => clampTab(t2 + 1))
+          break
+        case 'X':
+          // TUI Shift+X: dismiss the whole card — the agent continues
+          // without answers (same cancelled outcome as Esc).
+          void dismissXai(req.requestId)
+          break
         default:
           if (/^[1-9]$/.test(e.key)) {
             const idx = Number(e.key) - 1

@@ -60,7 +60,7 @@ export async function sendPrompt(
     // enqueue 立即 fire-and-forget 发 session/prompt（带 `_meta.promptId`，
     // agent 把它插进权威队列），本地插乐观回显行；RPC 失败（含竞态
     // 409）→ 行保留 degraded + 渲染错误行，手动重发。sendFollowUp /
-    // slash 命令 / sendQueuedHead 竞态下忙时调用 send 也走这里。
+    // slash 命令 / sendQueuedItem 竞态下忙时调用 send 也走这里。
     const live = get()
     sendScope = captureAsyncScope(get, live.sessionId, live.cwd)
     if (live.sessionId && live.historyLoading) {
@@ -68,6 +68,10 @@ export async function sendPrompt(
       return
     }
     if (live.sessionId && turnIsLive(live)) {
+      // 忙时发送（TUI queue 语义）：只入 agent 权威队列——transcript 不
+      // 插乐观行，排队消息由 composer 上方的内联队列区展示（可收起为
+      // "N queued"）。回合收口后 agent pop 队首，queue_changed 带
+      // running_prompt_id → adoptTurn 渲染该条的用户行。
       usePromptQueue.getState().enqueue(
         {
           text: t,
@@ -106,9 +110,14 @@ export async function sendPrompt(
       ts: Date.now(),
       ...(opts?.fromShell ? { isShell: true } : {}),
     }
+    // 降级行手动重发沿用原 promptId：先移除当初忙时渲染的乐观排队行
+    // （行 id = promptId），否则重发后 transcript 出现两条同文用户行。
+    const baseEntries = opts?.promptId
+      ? sealed.entries.filter((e) => !(e.id === promptId && e.kind === 'user'))
+      : sealed.entries
     set({
       ...sealed,
-      entries: [...sealed.entries, userEntry],
+      entries: [...baseEntries, userEntry],
       openAssistantId: undefined,
       openThoughtId: undefined,
       currentStreamStartMs: undefined,

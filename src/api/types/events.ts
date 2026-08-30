@@ -76,6 +76,10 @@ export type AcpEvent =
       streamStartMs?: number
       /** Agent-side timestamp for the chunk. */
       agentTimestampMs?: number
+      /** 回放归一化序号（host msgSeq，仅历史回放事件携带）。 */
+      msgSeq?: number
+      /** host attachStreamMeta 提升的 params._meta.eventId（live↔快照接缝对账）。 */
+      eventId?: string
       sessionId?: string
     }
   | {
@@ -90,6 +94,10 @@ export type AcpEvent =
       turnStartMs?: number
       /** Agent-side timestamp metadata forwarded by the host. */
       agentTimestampMs?: number
+      /** 回放归一化序号（host msgSeq，仅历史回放事件携带）。 */
+      msgSeq?: number
+      /** host attachStreamMeta 提升的 params._meta.eventId（live↔快照接缝对账）。 */
+      eventId?: string
       streamStartMs?: number
       /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
       sessionId?: string
@@ -99,7 +107,7 @@ export type AcpEvent =
    * ({type:'image', data, mimeType} content blocks). `data` is a data URI
    * or bare base64; bare base64 is wrapped with `mimeType` at the store.
    */
-  | { type: 'image'; sessionId?: string; data: string; mimeType?: string; ts?: number; agentTimestampMs?: number; role?: 'user' | 'assistant' }
+  | { type: 'image'; sessionId?: string; data: string; mimeType?: string; ts?: number; agentTimestampMs?: number; msgSeq?: number; eventId?: string; role?: 'user' | 'assistant' }
   | {
       type: 'task_lifecycle'
       /**
@@ -109,6 +117,8 @@ export type AcpEvent =
        * never running, no kill button, no ⠋N / running-bar membership.
        */
       kind: 'started' | 'completed'
+      /** 回放归一化序号（host msgSeq，仅历史回放事件携带）。 */
+      msgSeq?: number
       taskId?: string
       title: string
       command?: string
@@ -124,7 +134,7 @@ export type AcpEvent =
    * Aggregated user message (history replay or live user_chunk).
    * `isCron` matches TUI UserPromptBlock::cron (scheduled /loop fire).
    */
-  | { type: 'user_message'; text: string; ts?: number; isCron?: boolean; sessionId?: string }
+  | { type: 'user_message'; text: string; ts?: number; isCron?: boolean; msgSeq?: number; sessionId?: string }
   | {
       type: 'thought'
       text: string
@@ -142,16 +152,22 @@ export type AcpEvent =
       streamStartMs?: number
       /** Agent-side timestamp of this chunk. */
       agentTimestampMs?: number
+      /** 回放归一化序号（host msgSeq，仅历史回放事件携带）。 */
+      msgSeq?: number
+      /** host attachStreamMeta 提升的 params._meta.eventId（live↔快照接缝对账）。 */
+      eventId?: string
       /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
       sessionId?: string
     }
-  | { type: 'tool_call'; toolCall: ToolCall; sessionId?: string; agentTimestampMs?: number }
-  | { type: 'tool_call_update'; toolCallUpdate: ToolCall; sessionId?: string; agentTimestampMs?: number }
-  | { type: 'plan'; entries: unknown; sessionId?: string; agentTimestampMs?: number }
+  | { type: 'tool_call'; toolCall: ToolCall; sessionId?: string; agentTimestampMs?: number; msgSeq?: number }
+  | { type: 'tool_call_update'; toolCallUpdate: ToolCall; sessionId?: string; agentTimestampMs?: number; msgSeq?: number }
+  | { type: 'plan'; entries: unknown; sessionId?: string; agentTimestampMs?: number; msgSeq?: number }
   /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
   | {
       type: 'usage'
       sessionId?: string
+      /** 回放归一化序号（host msgSeq，仅历史回放事件携带）。 */
+      msgSeq?: number
       used?: number
       size?: number
       cost?: unknown
@@ -189,6 +205,8 @@ export type AcpEvent =
   | {
       type: 'turn_completed'
       sessionId?: string
+      /** 回放归一化序号（host msgSeq，仅历史回放事件携带）。 */
+      msgSeq?: number
       /** Relayed x.ai update (host shape — stop_reason / agent_result / usage). */
       update?: Record<string, unknown>
       /** params._meta from the live/replayed carrier (prompt identity and timestamps). */
@@ -197,6 +215,13 @@ export type AcpEvent =
       stopReason?: string
       /** Normalized agent_result (TurnFailed error text on replay). */
       agentResult?: string
+      /**
+       * Agent-reported wall-clock turn duration (update.elapsed_ms, ms).
+       * Authoritative for the "Worked for" marker — immune to the local
+       * clock skew that Date.now() − turnStartedAt suffers. Absent on old
+       * agents/stored envelopes; callers fall back to local derivation.
+       */
+      elapsedMs?: number
       /** Replay: the closed turn's real start (epoch ms), injected by
           replayUpdates from the envelope meta. */
       turnStartedAt?: number
@@ -268,11 +293,13 @@ export type AcpEvent =
       ok?: boolean
     }
   /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
-  | { type: 'modes_update'; modes?: unknown; sessionId?: string }
-  | { type: 'config_options_update'; configOptions?: unknown }
+  | { type: 'modes_update'; modes?: unknown; sessionId?: string; msgSeq?: number }
+  | { type: 'config_options_update'; configOptions?: unknown; msgSeq?: number }
   | { type: 'commands_update'; commands?: unknown }
   | {
       type: 'session_info'
+      /** 回放归一化序号（host msgSeq，仅历史回放事件携带）。 */
+      msgSeq?: number
       title?: string
       updatedAt?: unknown
       sessionId?: string
@@ -293,6 +320,8 @@ export type AcpEvent =
       Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
   | {
       type: 'session_notification'
+      /** 回放归一化序号（host msgSeq，仅历史回放事件携带）。 */
+      msgSeq?: number
       method?: string
       params?: Record<string, unknown>
       sessionId?: string

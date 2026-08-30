@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Check, FolderTree, ListChecks, RefreshCw } from 'lucide-react'
+import { Check, FolderTree, ListChecks, RefreshCw, Search } from 'lucide-react'
 import { useChatStore } from '../store/chat'
 import { SPINNER_FRAMES } from '../theme/glyphs'
 import { useSessionSpinner } from '../hooks/sessionState'
@@ -14,9 +14,24 @@ import { useHistoryView, type HistoryListMode } from '../store/historyView'
  *   自动刷新仍由列表中央 overlay 表达（见 SessionHistoryList），
  *   头部不出现被动加载指示。
  *
- * 桌面持久侧边栏（~288px）与移动端顶栏 history 下拉共用；控件保持紧凑。
+ * 桌面持久侧边栏（~288px）与移动端顶栏 history 下拉共用；桌面保持
+ * 紧凑图标控件，移动端下拉传 labeled 换成「图标 + 文字」大热区按钮。
  */
-export function SessionListHeader({ alignRight = false }: { alignRight?: boolean }) {
+export function SessionListHeader({
+  alignRight = false,
+  labeled = false,
+  searchOpen = false,
+  onToggleSearch,
+}: {
+  alignRight?: boolean
+  /** 移动端下拉传 true：按钮带文字加大热区，标题/形态切换文字统一
+   *  11px；桌面侧边栏保持紧凑图标。 */
+  labeled?: boolean
+  /** 搜索展开态高亮（配 onToggleSearch 才渲染搜索按钮）。 */
+  searchOpen?: boolean
+  /** 提供时在刷新按钮右侧渲染搜索开关（桌面侧边栏与移动端下拉都传）。 */
+  onToggleSearch?: () => void
+}) {
   const refreshSessions = useChatStore((s) => s.refreshSessions)
   const refreshWorkspaces = useChatStore((s) => s.refreshWorkspaces)
   const workspaceLoading = useChatStore((s) => s.workspaceLoading)
@@ -59,11 +74,16 @@ export function SessionListHeader({ alignRight = false }: { alignRight?: boolean
 
   return (
     <>
-      <span className="shrink-0 text-[10.5px] font-medium uppercase tracking-wide text-gn-gutter">
+      <span
+        className={`shrink-0 font-medium uppercase tracking-wide text-gn-gutter ${
+          labeled ? 'text-[11px]' : 'text-[10.5px]'
+        }`}
+      >
         会话
       </span>
 
-      {/* 展示形态：工作区 | 标记（图标 + 短文案，适配窄侧栏） */}
+      {/* 展示形态：工作区 | 标记（图标 + 短文案，适配窄侧栏）；labeled
+          模式文字与右侧按钮统一 11px。 */}
       <div
         className="inline-flex shrink-0 items-center rounded border border-gn-prompt-border/70 p-px"
         role="group"
@@ -74,6 +94,7 @@ export function SessionListHeader({ alignRight = false }: { alignRight?: boolean
           onClick={() => setMode('workspace')}
           title="按工作区（目录）分组显示全部会话"
           mode="workspace"
+          labeled={labeled}
         >
           <FolderTree size={11} strokeWidth={2.5} aria-hidden />
           目录
@@ -83,45 +104,79 @@ export function SessionListHeader({ alignRight = false }: { alignRight?: boolean
           onClick={() => setMode('marked')}
           title="只显示置顶与待办的会话"
           mode="marked"
+          labeled={labeled}
         >
           <ListChecks size={11} strokeWidth={2.5} aria-hidden />
           标记
         </ModeTab>
       </div>
 
-      {/* 刷新按钮：idle 常驻可点；点击后转圈直到刷新完成，成功显示 ✓
-          约 1.2s 后恢复。ml-auto（alignRight）：移动端下拉头部里控件
-          单独贴右。 */}
+      {/* 刷新 + 搜索按钮组：刷新 idle 常驻可点；点击后转圈直到刷新完成，
+          成功显示 ✓ 约 1.2s 后恢复。搜索按钮（可选）在刷新右侧，点击
+          展开/收起搜索框。ml-auto（alignRight）：移动端下拉头部里控件
+          单独贴右。labeled：移动端下拉用「图标 + 文字」加触控热区，
+          桌面侧边栏保持 19px 纯图标紧凑样式。 */}
       <span
-        className={`inline-flex h-[19px] w-[19px] shrink-0 items-center justify-center ${
+        className={`inline-flex shrink-0 items-center gap-0.5 ${
           alignRight ? 'ml-auto' : ''
         }`}
       >
         {refreshState === 'ok' ? (
           <span
-            className="inline-flex h-[19px] w-[19px] items-center justify-center text-gn-green"
+            className={`inline-flex items-center justify-center text-gn-green ${
+              labeled
+                ? 'min-h-6 gap-1 rounded px-2 text-[11px] leading-none'
+                : 'h-[19px] w-[19px]'
+            }`}
             title="刷新完成"
             aria-label="刷新完成"
           >
-            <Check size={12} strokeWidth={3} />
+            <Check size={labeled ? 13 : 12} strokeWidth={3} />
+            {labeled && '已刷新'}
           </span>
         ) : (
           <button
             type="button"
             onClick={doRefresh}
             disabled={refreshState === 'refreshing'}
-            className="inline-flex h-[19px] w-[19px] items-center justify-center rounded text-gn-gutter transition-colors hover:bg-gn-bg-highlight hover:text-gn-cyan disabled:cursor-default"
+            className={`inline-flex items-center rounded text-gn-gutter transition-colors hover:bg-gn-bg-highlight hover:text-gn-cyan disabled:cursor-default ${
+              labeled
+                ? 'min-h-6 gap-1 px-2 text-[11px] leading-none'
+                : 'h-[19px] w-[19px] justify-center'
+            }`}
             title={refreshState === 'refreshing' ? '正在刷新会话列表' : '刷新会话列表'}
             aria-label={refreshState === 'refreshing' ? '正在刷新会话列表' : '刷新会话列表'}
             aria-live="polite"
           >
             {refreshState === 'refreshing' ? (
-              <span className="text-[11px] leading-none text-gn-muted">
+              <span className="text-[11px] leading-none text-gn-muted" aria-hidden>
                 {SPINNER_FRAMES[spinnerFrame]}
               </span>
             ) : (
-              <RefreshCw size={11} strokeWidth={2.5} />
+              <RefreshCw size={labeled ? 13 : 11} strokeWidth={2.5} />
             )}
+            {labeled && '刷新'}
+          </button>
+        )}
+        {onToggleSearch && (
+          <button
+            type="button"
+            onClick={onToggleSearch}
+            aria-pressed={searchOpen}
+            aria-label={searchOpen ? '关闭会话搜索' : '搜索历史会话'}
+            title={searchOpen ? '关闭会话搜索' : '搜索历史会话'}
+            className={`inline-flex items-center rounded transition-colors ${
+              labeled
+                ? 'min-h-6 gap-1 px-2 text-[11px] leading-none'
+                : 'h-[19px] w-[19px] justify-center'
+            } ${
+              searchOpen
+                ? 'bg-gn-bg-highlight text-gn-cyan'
+                : 'text-gn-gutter hover:bg-gn-bg-highlight hover:text-gn-cyan'
+            }`}
+          >
+            <Search size={labeled ? 13 : 11} strokeWidth={2.5} />
+            {labeled && (searchOpen ? '收起' : '搜索')}
           </button>
         )}
       </span>
@@ -134,12 +189,14 @@ function ModeTab({
   onClick,
   title,
   mode,
+  labeled,
   children,
 }: {
   active: boolean
   onClick: () => void
   title: string
   mode: HistoryListMode
+  labeled?: boolean
   children: React.ReactNode
 }) {
   return (
@@ -149,7 +206,9 @@ function ModeTab({
       title={title}
       aria-pressed={active}
       aria-label={mode === 'workspace' ? '目录视图' : '标记视图'}
-      className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] leading-none transition-colors ${
+      className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 leading-none transition-colors ${
+        labeled ? 'text-[11px]' : 'text-[10px]'
+      } ${
         active
           ? 'bg-gn-bg-highlight text-gn-cyan'
           : 'text-gn-gutter hover:text-gn-fg'

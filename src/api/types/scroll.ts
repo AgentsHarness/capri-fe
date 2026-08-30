@@ -28,6 +28,8 @@ export type ScrollEntry =
        * StickyPrompt / finalizeTurn）——类型上不存在的字段对重构不可见。
        */
       isShell?: boolean
+      /** 回放归一化序号（host msgSeq）：产生该条目的首条信封序号；live 条目无此字段 → 排序/归并回退现有行为。 */
+      msgSeq?: number
       /**
        * Images attached to this prompt (user-sent, echoed back via
        * user_message_chunk image blocks — merged into this row instead of
@@ -42,6 +44,7 @@ export type ScrollEntry =
       streaming?: boolean
       /** Response start time (epoch ms) — TUI right-aligned message timestamp. */
       ts?: number
+      msgSeq?: number
       /** Images embedded in the response (agent_message_chunk image blocks). */
       images?: Array<{ data: string; mimeType?: string }>
     }
@@ -53,6 +56,7 @@ export type ScrollEntry =
       mimeType?: string
       /** Event time (epoch ms). */
       ts?: number
+      msgSeq?: number
     }
   | {
       id: string
@@ -81,6 +85,7 @@ export type ScrollEntry =
        * keeps the real "Thought for Xs" instead of ~0s.
        */
       elapsedMs?: number
+      msgSeq?: number
     }
   | {
       id: string
@@ -104,6 +109,7 @@ export type ScrollEntry =
        *  replay/completed snapshots omit it. */
       startedAt?: number
       finishedAt?: number
+      msgSeq?: number
     }
   | {
       id: string
@@ -111,9 +117,10 @@ export type ScrollEntry =
       text: string
       /** 可执行的恢复动作（当前：传输级错误 → 重启 agent）。 */
       action?: 'restart-agent'
+      msgSeq?: number
     }
-  | { id: string; kind: 'status'; text: string }
-  | { id: string; kind: 'plan'; entries: unknown }
+  | { id: string; kind: 'status'; text: string; msgSeq?: number }
+  | { id: string; kind: 'plan'; entries: unknown; msgSeq?: number }
   | {
       id: string
       kind: 'subagent'
@@ -166,6 +173,7 @@ export type ScrollEntry =
       toolsUsed?: string[]
       /** Errors encountered so far (wire `error_count`, progress). */
       errorCount?: number
+      msgSeq?: number
     }
   | {
       id: string
@@ -175,6 +183,7 @@ export type ScrollEntry =
       detail?: string
       running?: boolean
       finishedAt?: number
+      msgSeq?: number
     }
   | {
       id: string
@@ -198,6 +207,7 @@ export type ScrollEntry =
        * on-demand x.ai/task/list polls.
        */
       output?: string
+      msgSeq?: number
     }
   | {
       id: string
@@ -207,7 +217,8 @@ export type ScrollEntry =
       warning?: boolean
       streaming?: boolean
       open?: boolean
-    }  | { id: string; kind: 'credit_limit'; text: string }
+      msgSeq?: number
+    }  | { id: string; kind: 'credit_limit'; text: string; msgSeq?: number }
   | {
       id: string
       kind: 'group_header'
@@ -217,6 +228,7 @@ export type ScrollEntry =
       label?: string
       /** Verb-run aggregated header — drives running/error accents. */
       verbRun?: { running?: boolean; failed?: boolean; verb?: string }
+      msgSeq?: number
     }
 
 /**

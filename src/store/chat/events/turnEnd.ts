@@ -11,12 +11,15 @@ import {
 } from '../stream'
 import {
   adoptLiveTurnStart,
+  cancellationContextText,
   finalizeTurn,
   promptIdMismatch,
   settleTurnEntries,
   tailAlreadyTurnEnded,
+  tailHasCancellationDetail,
   turnEndMarkerText,
   turnIsLive,
+  wireElapsedMs,
 } from '../turn'
 import { appendEntry } from '../entries'
 export function handleTurnEndEvent(
@@ -111,14 +114,17 @@ export function handleTurnEndEvent(
           // 回合的锚错改成旧回合的开始时间，时长虚高）。
           if (promptIdMismatch((ev as { meta?: unknown }).meta, get().currentPromptId)) break
           adoptLiveTurnStart(set, get, ev)
+          // Agent 墙钟权威时长（1.0.9+ 的 update.elapsed_ms）——"Worked
+          // for" 标记优先用它；缺省回落 finalizeTurn 的本地推导。
+          const railElapsed = wireElapsedMs(upd)
           const railEndTs = get().turnStartedAt
-          finalizeTurn(set, get, stopReason)
+          finalizeTurn(set, get, stopReason, railElapsed)
           if (stopReason === 'error' || stopReason === 'rate_limit') {
             if (!tailAlreadyTurnEnded(get().entries)) {
               const { text, warning } = turnEndMarkerText(
                 stopReason,
                 agentResult,
-                railEndTs != null ? Date.now() - railEndTs : undefined,
+                railElapsed ?? (railEndTs != null ? Date.now() - railEndTs : undefined),
               )
               appendEntry(set, {
                 kind: 'session_event',
@@ -126,6 +132,19 @@ export function handleTurnEndEvent(
                 ...(warning ? { warning } : {}),
               })
             }
+          }
+          // Hook/tool 级取消的结构化原因（_meta.cancellationContext）：
+          // 取消回合的标记行之后补一行细节——没有它 hook 拒绝只会静默
+          // 消失成一句 "Turn cancelled"。无上下文（旧 agent / 用户取消）
+          // 不追加；prompt_complete rail 可能已渲染同文本行，去重。
+          const cancelDetail = cancellationContextText(
+            (ev as { meta?: unknown }).meta ?? upd,
+          )
+          if (
+            cancelDetail &&
+            !tailHasCancellationDetail(get().entries, cancelDetail)
+          ) {
+            appendEntry(set, { kind: 'session_event', text: cancelDetail })
           }
           break
         }
@@ -167,16 +186,26 @@ export function handleTurnEndEvent(
           break
         }
         const elapsedMs =
-          ev.turnStartedAt != null &&
-          ev.endMs != null &&
-          ev.endMs >= ev.turnStartedAt
+          // 信封里持久化的 agent 权威时长（elapsed_ms）优先；旧日志回退
+          // turnStart/endMs 推导（可能跨设备时钟偏差，但只有旧日志会走到）。
+          ev.elapsedMs ??
+          (ev.turnStartedAt != null &&
+            ev.endMs != null &&
+            ev.endMs >= ev.turnStartedAt
             ? ev.endMs - ev.turnStartedAt
-            : undefined
+            : undefined)
         const { text, warning } = turnEndMarkerText(
           stopReason,
           agentResult,
           elapsedMs,
         )
+        // 持久化的取消上下文（信封 _meta.cancellationContext）随历史回放
+        // 一并可见；无该键（旧日志）不追加。response_completed +
+        // turn_completed 同回合双信封时按尾部同文本去重。
+        const cancelDetail = cancellationContextText(ev.meta)
+        const appendCancelDetail =
+          cancelDetail != null &&
+          !tailHasCancellationDetail(settled, cancelDetail)
         set({
           ...sealed,
           openAssistantId: undefined,
@@ -194,6 +223,9 @@ export function handleTurnEndEvent(
               text,
               ...(warning ? { warning } : {}),
             },
+            ...(appendCancelDetail
+              ? [{ id: nid(), kind: 'session_event' as const, text: cancelDetail as string }]
+              : []),
           ],
         })
         break

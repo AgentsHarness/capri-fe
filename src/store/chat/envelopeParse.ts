@@ -90,6 +90,55 @@ function finiteMetaNumber(value: unknown): number | undefined {
 }
 
 /**
+ * 回放归一化序号（host msgSeq 契约）：存储信封顶层 `msgSeq`，host 归一化
+ * （agentTimestampMs → eventId N → 行号）后的会话内密集名次，0 起。旧
+ * host / 回退透传路径不带该键 → undefined（FE 回退现有文件序行为）。
+ */
+export function envelopeMsgSeq(env: unknown): number | undefined {
+  return finiteMetaNumber((env as { msgSeq?: unknown })?.msgSeq)
+}
+
+/**
+ * 存储信封的 `params._meta.eventId`（host 快照对账用：live↔快照接缝
+ * 按它精确去重，见 globals.historySnapEventIds）。
+ */
+export function envelopeEventId(env: unknown): string | undefined {
+  const meta = (env as RawEnvelope)?.params?._meta
+  const id = (meta as { eventId?: unknown } | undefined)?.eventId
+  return typeof id === 'string' && id ? id : undefined
+}
+
+/**
+ * Live-event eventId。host `attachStreamMeta` 把 `params._meta.eventId`
+ * 提升为顶层字段；嵌套 `params._meta` / `update._meta` 也接受，让 hub
+ * gap-pull 帧同样能对账（与 eventAgentTimestampMs 同款兜底）。
+ */
+export function eventEventId(ev: unknown): string | undefined {
+  if (!ev || typeof ev !== 'object') return undefined
+  const e = ev as Record<string, unknown>
+  if (typeof e.eventId === 'string' && e.eventId) return e.eventId
+  const params = e.params
+  if (params && typeof params === 'object' && !Array.isArray(params)) {
+    const p = params as Record<string, unknown>
+    const fromParams = (p._meta as { eventId?: unknown } | undefined)?.eventId
+    if (typeof fromParams === 'string' && fromParams) return fromParams
+    const update = p.update
+    if (update && typeof update === 'object' && !Array.isArray(update)) {
+      const fromUpdate = ((update as Record<string, unknown>)._meta as { eventId?: unknown } | undefined)
+        ?.eventId
+      if (typeof fromUpdate === 'string' && fromUpdate) return fromUpdate
+    }
+  }
+  const update = e.update
+  if (update && typeof update === 'object' && !Array.isArray(update)) {
+    const fromUpdate = ((update as Record<string, unknown>)._meta as { eventId?: unknown } | undefined)
+      ?.eventId
+    if (typeof fromUpdate === 'string' && fromUpdate) return fromUpdate
+  }
+  return undefined
+}
+
+/**
  * Live-event agent timestamp (epoch ms). Host forwards `_meta.agentTimestampMs`
  * as a top-level field on chunk / user_chunk / thought; nested `params._meta`
  * / `update._meta` are accepted so gap-pull frames still compare against
@@ -508,6 +557,15 @@ function imageEvents(
 /** Convert one stored envelope into all renderable events, preserving mixed content blocks. */
 export function envelopeToEvents(env: unknown): AcpEvent[] {
   const e = env as RawEnvelope
+  const events = envelopeToEventsRaw(e)
+  // 契约：条目 msgSeq = 产生该条目的第一条事件的 msgSeq——派生事件统一
+  // 带上信封顶层 msgSeq（多 chunk 聚合的用户行由 replayUpdates 取首条）。
+  const msgSeq = envelopeMsgSeq(e)
+  if (msgSeq == null) return events
+  return events.map((ev) => ({ ...ev, msgSeq }))
+}
+
+function envelopeToEventsRaw(e: RawEnvelope): AcpEvent[] {
   if (!e || (e.method !== 'session/update' && e.method !== '_x.ai/session/update')) {
     return []
   }
@@ -648,18 +706,32 @@ export function completionEndMs(e: RawEnvelope): number | undefined {
  * correct marker — TurnFailed / TurnCancelled / Worked for — instead of a
  * blanket "Turn completed.") plus the completion's agentTimestampMs as the
  * turn's end stamp (replayUpdates injects the real start from the meta).
+ * update.elapsed_ms (1.0.9+ agent) rides along as the authoritative wall-
+ * clock duration; old envelopes omit it and replay falls back to deriving
+ * from the turn-start/end stamps.
  */
 export function turnCompletedEvent(
   up: Record<string, unknown>,
   endMs: number | undefined,
   meta?: unknown,
 ): AcpEvent {
+  const elapsedRaw =
+    typeof up.elapsed_ms === 'number'
+      ? up.elapsed_ms
+      : typeof up.elapsedMs === 'number'
+        ? up.elapsedMs
+        : undefined
   return {
     type: 'turn_completed',
     stopReason: typeof up.stop_reason === 'string' ? up.stop_reason : undefined,
     agentResult:
       typeof up.agent_result === 'string' ? up.agent_result : undefined,
     endMs,
+    ...(typeof elapsedRaw === 'number' &&
+    Number.isFinite(elapsedRaw) &&
+    elapsedRaw >= 0
+      ? { elapsedMs: elapsedRaw }
+      : {}),
     ...(meta && typeof meta === 'object' && !Array.isArray(meta) ? { meta } : {}),
   }
 }

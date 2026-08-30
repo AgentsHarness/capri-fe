@@ -9,9 +9,13 @@ export {
   previousTurnWindow,
   remapTurnIdx,
   countUserMessages,
+  sortEntriesByMsgSeq,
+  mergeEntriesByMsgSeq,
+  findMsgSeqGap,
 } from './historyPage'
 export {
   replayUpdates,
+  applyEntryMsgSeq,
   envelopeTotalTokens,
   historicalTaskEvent,
   type RawEnvelope,

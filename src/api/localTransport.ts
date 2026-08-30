@@ -1,6 +1,7 @@
 import type { AcpEvent } from './types'
 import { loadStr, removeKey, saveStr } from '../lib/storage'
 import type { TransportHandler, TransportMode } from './transport'
+import { EventSequencer, type SequencedEvent } from './liveSequencing'
 import { rpcMixins } from './rpc/mixins'
 
 
@@ -14,8 +15,6 @@ type HubWsFrame =
   | { type: 'ping'; ts?: number }
   | { type: string; [k: string]: unknown }
 
-type SequencedEvent = AcpEvent & { hostId?: string; seq?: number }
-
 /**
  * Default hard timeout for transport fetches. Host-side endpoints are
  * quick operations; 30s covers slow hubs while bounding half-open TCP
@@ -23,12 +22,6 @@ type SequencedEvent = AcpEvent & { hostId?: string; seq?: number }
  * wedge the per-host `pulling` slot) forever.
  */
 const DEFAULT_FETCH_TIMEOUT_MS = 30_000
-
-/**
- * 每个 host 的乱序等待缓冲上限。超限即认赔（推进水位放出已有事件），
- * 防止一个补不回来的缺口把 live 通道永久憋死并无界占用内存。
- */
-const PENDING_SEQ_CAP = 2000
 
 /** 无 DecompressionStream 环境（旧浏览器）压缩帧会被丢弃——只告警一次。 */
 let warnedNoDecompression = false
@@ -83,24 +76,16 @@ export class LocalTransport {
   /** 本地 SSE 的重连定时器/退避计数（与 hub WS 路径互不干扰）。 */
   private sseReconnectTimer: ReturnType<typeof setTimeout> | null = null
   private sseReconnectAttempt = 0
-  /** Last event seq seen per host (the highest contiguous seq emitted). */
-  private lastSeq = new Map<string, number>()
-  /** Sequenced live/pulled events waiting for the missing predecessor. */
-  private pendingSeq = new Map<string, Map<number, SequencedEvent>>()
-  /** In-flight gap pulls per host (dedupe). */
-  private pulling = new Map<string, Promise<void>>()
   /**
-   * Abort controllers of in-flight gap pulls only (a subset of `inflight`):
-   * a resync must stop the per-hole pulls without killing unrelated
-   * host-level requests the way abortInflight() would.
+   * Per-host 事件排序 + 缺口补拉引擎（见 liveSequencing.ts）。emit 经
+   * transport 的 host 过滤与 lastLiveAt 记账；补拉的 HTTP 侧在
+   * pullEvents（apiBase/fetch 归 transport）。
    */
-  private gapPullAborts = new Set<AbortController>()
-  /**
-   * Bumped on every resync (and sequencing reset). Gap-pull responses
-   * fetched under an older epoch are discarded — an already-resolved fetch
-   * must not re-deliver the very events the resync just retired.
-   */
-  private gapPullEpoch = 0
+  private seq = new EventSequencer(
+    (ev) => this.emit(ev),
+    (hostId, after, signal) => this.pullEvents(hostId, after, signal),
+    (gen) => gen === this.gen,
+  )
   /**
    * Abort controllers of every in-flight fetch (gap pulls included), so
    * disconnect()/setHost()/setAccessToken() can settle them all — a
@@ -524,18 +509,9 @@ export class LocalTransport {
     if (this.es || this.ws) this.connect()
   }
 
-  /** Abort every in-flight gap pull and invalidate their results (epoch). */
-  private stopGapPulls(): void {
-    this.gapPullEpoch += 1
-    for (const ac of this.gapPullAborts) ac.abort()
-    this.gapPullAborts.clear()
-  }
 
   private resetSequencing() {
-    this.stopGapPulls()
-    this.lastSeq.clear()
-    this.pendingSeq.clear()
-    this.pulling.clear()
+    this.seq.reset()
   }
 
   private abortInflight() {
@@ -574,125 +550,25 @@ export class LocalTransport {
     return u.toString()
   }
 
-  private async gapPull(hostId: string, after: number, gen = this.gen): Promise<void> {
-    const active = this.pulling.get(hostId)
-    if (active) return active
-    if (gen !== this.gen) return
-
-    const epoch = this.gapPullEpoch
-    const ac = new AbortController()
-    this.gapPullAborts.add(ac)
-    const pull = this.performGapPull(hostId, after, gen, epoch, ac.signal)
-    this.pulling.set(hostId, pull)
-    void pull.finally(() => {
-      this.gapPullAborts.delete(ac)
-      if (this.pulling.get(hostId) !== pull) return
-      this.pulling.delete(hostId)
-      // Stale (resynced / re-sequenced) pulls never re-arm: the resync's
-      // full rebuild supersedes the hole they were chasing.
-      if (
-        gen === this.gen &&
-        epoch === this.gapPullEpoch &&
-        (this.lastSeq.get(hostId) ?? 0) > after
-      ) {
-        this.ensureGapPull(hostId, gen)
-      }
-    }).catch(() => {
-      /* performGapPull handles transport failures; keep cleanup defensive. */
-    })
-    return pull
-  }
-
-  private async performGapPull(
+  /**
+   * hub 缓冲补拉的 HTTP 侧（gapPull 的传输回调）：拉取 host 缺口之后的
+   * 事件；返回 null = 拉取失败（调用方按"离线"处理，下一个 live 事件
+   * 或 hello 会重试）。gen/epoch 校验归 EventSequencer。
+   */
+  private async pullEvents(
     hostId: string,
     after: number,
-    gen: number,
-    epoch: number,
     signal: AbortSignal,
-  ) {
-    try {
-      const qs = `?host=${encodeURIComponent(hostId)}&after=${after}`
-      const res = await this.fetch(`${this.apiBase()}/api/events${qs}`, {}, { signal })
-      if (!res.ok || gen !== this.gen || epoch !== this.gapPullEpoch) return
-      const body = (await res.json()) as { events?: SequencedEvent[] }
-      for (const ev of body.events || []) {
-        if (gen !== this.gen || epoch !== this.gapPullEpoch) return
-        this.acceptSequencedEvent(ev, gen)
-      }
-      // A response may contain a later event without the beginning of the
-      // requested range. Keep it buffered; a subsequent live event retries
-      // from the still-missing contiguous sequence.
-      this.drainSequenced(hostId, gen)
-    } catch {
-      /* offline; the next live event or hello re-triggers the pull */
-    }
+  ): Promise<SequencedEvent[] | null> {
+    const qs = `?host=${encodeURIComponent(hostId)}&after=${after}`
+    const res = await this.fetch(`${this.apiBase()}/api/events${qs}`, {}, { signal })
+    if (!res.ok) return null
+    const body = (await res.json()) as { events?: SequencedEvent[] }
+    return body.events || []
   }
 
   private acceptSequencedEvent(ev: SequencedEvent, gen = this.gen): void {
-    const host = ev.hostId
-    const seq = ev.seq
-    if (!host || typeof seq !== 'number' || !Number.isSafeInteger(seq) || seq <= 0) {
-      this.emit(ev)
-      return
-    }
-    if (gen !== this.gen) return
-
-    const last = this.lastSeq.get(host) ?? 0
-    if (seq <= last) return
-
-    let pending = this.pendingSeq.get(host)
-    if (!pending) {
-      pending = new Map<number, SequencedEvent>()
-      this.pendingSeq.set(host, pending)
-    }
-    // A future event must wait for every predecessor. In particular, seq=8
-    // must not advance lastSeq and make the later gap pull discard seq=6/7.
-    if (!pending.has(seq)) pending.set(seq, ev)
-    // 缺口补不回来时（前驱在 hub 缓冲里已过期 / host 侧永久丢失）pending
-    // 会无界增长，最终把整条 live 通道憋死。超过上限就认赔：把水位推到
-    // 最小待决序号之前，让 drainSequenced 立刻按序放出已有事件（丢几条
-    // 事件远好过之后所有事件都出不来）。
-    if (pending.size > PENDING_SEQ_CAP) {
-      let firstPending = Infinity
-      for (const k of pending.keys()) {
-        if (k < firstPending) firstPending = k
-      }
-      if (Number.isFinite(firstPending)) this.lastSeq.set(host, firstPending - 1)
-    }
-    this.drainSequenced(host, gen)
-    this.ensureGapPull(host, gen)
-  }
-
-  private ensureGapPull(host: string, gen: number): void {
-    if (gen !== this.gen) return
-    const pending = this.pendingSeq.get(host)
-    if (!pending || pending.size === 0) return
-    const last = this.lastSeq.get(host) ?? 0
-    // O(n) 循环而不是 Math.min(...pending.keys())：pendingSeq 由缺口大小
-    // 决定，长时间缺前驱时条目可以很多，展开成实参会触碰引擎的实参上限
-    // 直接抛 RangeError。
-    let firstPending = Infinity
-    for (const k of pending.keys()) {
-      if (k < firstPending) firstPending = k
-    }
-    if (firstPending > last + 1) {
-      void this.gapPull(host, last, gen)
-    }
-  }
-
-  private drainSequenced(host: string, gen: number): void {
-    if (gen !== this.gen) return
-    const pending = this.pendingSeq.get(host)
-    if (!pending) return
-    let last = this.lastSeq.get(host) ?? 0
-    while (pending.has(last + 1)) {
-      const ev = pending.get(last + 1)!
-      pending.delete(last + 1)
-      last += 1
-      this.lastSeq.set(host, last)
-      this.emit(ev)
-    }
-    if (pending.size === 0) this.pendingSeq.delete(host)
+    this.seq.accept(ev, gen)
   }
 
   private reconcileSeq(seqs?: Record<string, number>) {
@@ -702,28 +578,16 @@ export class LocalTransport {
     if (this.isLocalDirect() && this.selectedHostId === this.localHostId) return
     const hubSeq = seqs[this.selectedHostId]
     if (typeof hubSeq !== 'number') return
-    const mine = this.lastSeq.get(this.selectedHostId) ?? 0
+    const mine = this.seq.watermark(this.selectedHostId)
     // hub 报的 seq 比本地水位低 = host/hub 重启后序号从头计数（hello 的
     // seqs 是权威值）。不重置的话 acceptSequencedEvent 的 `seq <= last`
     // 会把重启后**所有** live 事件静默丢弃，直到序号重新爬过旧水位
     // ——用户看到的是「连着但永远不更新」，只能刷新页面。
     if (hubSeq < mine) {
-      this.resetHostSequencing(this.selectedHostId, hubSeq)
+      this.seq.resetHost(this.selectedHostId, hubSeq)
       return
     }
-    if (hubSeq > mine) void this.gapPull(this.selectedHostId, mine)
-  }
-
-  /** 序号回退（host 重启）：把该 host 的水位对齐到权威值并丢弃陈旧 pending。 */
-  private resetHostSequencing(hostId: string, seq: number): void {
-    this.lastSeq.set(hostId, seq)
-    const pending = this.pendingSeq.get(hostId)
-    if (pending) {
-      for (const k of pending.keys()) {
-        if (k <= seq) pending.delete(k)
-      }
-      if (pending.size === 0) this.pendingSeq.delete(hostId)
-    }
+    if (hubSeq > mine) void this.seq.gapPull(this.selectedHostId, mine, this.gen)
   }
 
   /**
@@ -741,19 +605,11 @@ export class LocalTransport {
    */
   private handleResyncFrame(fromSeq: unknown, gen: number): void {
     if (gen !== this.gen) return
-    this.stopGapPulls()
-    this.pendingSeq.clear()
-    this.pulling.clear()
     const seq =
       typeof fromSeq === 'number' && Number.isSafeInteger(fromSeq) && fromSeq > 0
         ? fromSeq
         : 0
-    const host = this.selectedHostId
-    if (host && seq > 0) {
-      const cur = this.lastSeq.get(host) ?? 0
-      // 只前进不回退：回退水位会让已按序放出的事件重复投递。
-      if (seq - 1 > cur) this.lastSeq.set(host, seq - 1)
-    }
+    this.seq.resync(this.selectedHostId, seq)
     this.emit({ type: 'resync', fromSeq: seq })
   }
 
@@ -916,10 +772,10 @@ export class LocalTransport {
       this.sseReconnectAttempt = 0
       if (!trackSeq) return
       // 重连（含首次）：从 hub 缓冲补拉本机缺口（本地 SSE 断线期间
-      // 的事件 hub 已缓冲）。lastSeq 为 0 时补全量最近事件。
+      // 的事件 hub 已缓冲）。水位为 0 时补全量最近事件。
       const hostId = this.localHostId
       if (hostId) {
-        void this.gapPull(hostId, this.lastSeq.get(hostId) ?? 0, gen)
+        void this.seq.gapPull(hostId, this.seq.watermark(hostId), gen)
       }
     }
     es.onmessage = (msg) => {

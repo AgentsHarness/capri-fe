@@ -12,6 +12,8 @@ import { usePromptQueue } from '../store/promptQueue'
 import { THEMES, useThemeStore } from '../store/theme'
 import type { ThemeId } from '../theme/tokens'
 import type { AgentCommand } from '../api/types'
+import { slashRecencyScore } from './recency'
+import { cachedSkills } from './skills'
 
 export type SlashCommand = {
   name: string
@@ -22,8 +24,10 @@ export type SlashCommand = {
    * Command origin. Local commands omit it; agent-advertised commands
    * (ACP `available_commands_update`) set `'agent'` so the menu can tag
    * them and their `run` sends the raw `/name args` line to the agent.
+   * Skills (GET /api/extensions) set `'skill'` — the menu sinks them
+   * below the commands (TUI 1.0.9 grouping).
    */
-  source?: 'local' | 'agent'
+  source?: 'local' | 'agent' | 'skill'
   run: (args: string) => void | Promise<void>
 }
 
@@ -292,13 +296,64 @@ export const slashCommands: SlashCommand[] = [
   },
   {
     name: 'fork',
-    description: '派生当前会话',
-    run: () => void useChatStore.getState().forkSession(),
+    description: '派生当前会话（--worktree 在隔离 git worktree 中派生）',
+    argHint: '[--worktree|--no-worktree]',
+    run: (args) => {
+      // TUI parse_fork_args parity: leading flags only; an unknown bareword
+      // starts the directive — the FE has no first-prompt channel for a
+      // fork, so reject it instead of silently ignoring the text.
+      let worktree: boolean | undefined
+      let rest = args.trimStart()
+      for (;;) {
+        const m = rest.match(/^(\S+)\s*([\s\S]*)$/)
+        if (!m) break
+        const [, flag, after] = m
+        if (flag === '--worktree') {
+          if (worktree === false) {
+            err('--worktree 与 --no-worktree 互斥')
+            return
+          }
+          if (worktree === true) {
+            err('--worktree 重复指定')
+            return
+          }
+          worktree = true
+        } else if (flag === '--no-worktree') {
+          if (worktree === true) {
+            err('--worktree 与 --no-worktree 互斥')
+            return
+          }
+          if (worktree === false) {
+            err('--no-worktree 重复指定')
+            return
+          }
+          worktree = false
+        } else {
+          break
+        }
+        rest = after.trimStart()
+      }
+      if (rest) {
+        err('FE 暂不支持 fork 首条提示；请先 fork，再在新会话中发送该内容')
+        return
+      }
+      void useChatStore.getState().forkSession(worktree === undefined ? {} : { worktree })
+    },
   },
   {
     name: 'recap',
     description: '生成「我在哪」摘要',
     run: () => void useChatStore.getState().requestRecap(),
+  },
+  {
+    name: 'search',
+    aliases: ['find', 'grep'],
+    description: '搜索工作区文件内容（结果按文件分组，复制 路径:行号）',
+    argHint: '[pattern]',
+    run: (args) => {
+      // With args: open the modal mid-search on the pattern (TUI /search).
+      useChatStore.getState().openContentSearch(args.trim())
+    },
   },
   {
     name: 'session-info',
@@ -563,7 +618,6 @@ export function mergedSlashCommands(
   agentCommandsOverride?: AgentCommand[],
 ): SlashCommand[] {
   const agentCommands = agentCommandsOverride ?? useChatStore.getState().agentCommands
-  if (agentCommands.length === 0) return slashCommands
   const claimed = new Set<string>()
   for (const c of slashCommands) {
     claimed.add(c.name.toLowerCase())
@@ -583,6 +637,30 @@ export function mergedSlashCommands(
       source: 'agent',
       // TUI semantics: the raw `/name args` line is passed through to the
       // agent as a user prompt — the agent parses the slash command itself.
+      run: (args) => {
+        const trimmed = args.trim()
+        sendPrompt(trimmed ? `/${name} ${trimmed}` : `/${name}`)
+      },
+    })
+  }
+  // Skills sink below the commands (TUI slash/mod.rs MenuGroup: Command <
+  // BundledSkill < OtherSkill — "there can be far more of them than fit on
+  // screen"). Invoked the same way as agent commands: the `/name args`
+  // line goes to the agent as a prompt. If the agent already advertises a
+  // skill as an ACP command, that entry wins (claimed-dedupe).
+  for (const sk of cachedSkills()) {
+    const name = (sk?.name ?? '').trim()
+    if (!name) continue
+    const key = name.toLowerCase()
+    if (claimed.has(key)) continue
+    claimed.add(key)
+    out.push({
+      name,
+      description:
+        sk.enabled === false
+          ? `技能（${sk.scope || 'skill'}，已停用）`
+          : `技能${sk.scope ? ` · ${sk.scope}` : ''}`,
+      source: 'skill',
       run: (args) => {
         const trimmed = args.trim()
         sendPrompt(trimmed ? `/${name} ${trimmed}` : `/${name}`)
@@ -627,7 +705,30 @@ export function filterSlashCommands(
 ): SlashMatch[] {
   const q = input.slice(1).split(/\s/)[0].trim().toLowerCase()
   const commands = mergedSlashCommands(agentCommands)
-  if (!q) return commands.map((cmd) => ({ cmd, score: 0 }))
+  if (!q) {
+    // TUI bare-`/` menu key (slash/mod.rs MenuKey): group first (commands
+    // < skills), then recency (commands only — "nothing ranks skills"),
+    // then name. Stable sort with the list index as the final tiebreak so
+    // never-used commands keep their registry order.
+    const now = Date.now()
+    return commands
+      .map((cmd, idx) => ({ cmd, idx }))
+      .sort((a, b) => {
+        const aSkill = a.cmd.source === 'skill' ? 1 : 0
+        const bSkill = b.cmd.source === 'skill' ? 1 : 0
+        if (aSkill !== bSkill) return aSkill - bSkill
+        if (aSkill === 0) {
+          const ra = slashRecencyScore(a.cmd.name, now)
+          const rb = slashRecencyScore(b.cmd.name, now)
+          if (ra !== rb) return rb - ra
+        } else {
+          const na = a.cmd.name.localeCompare(b.cmd.name)
+          if (na !== 0) return na
+        }
+        return a.idx - b.idx
+      })
+      .map(({ cmd }) => ({ cmd, score: 0 }))
+  }
   const out: SlashMatch[] = []
   for (const cmd of commands) {
     const name = cmd.name
@@ -647,8 +748,14 @@ export function filterSlashCommands(
     else score = 4
     out.push({ cmd, score })
   }
+  // Ranked matches: score first, then recency (TUI fuzzy sort puts MRU
+  // right after the match score), then name.
+  const now = Date.now()
   out.sort(
-    (a, b) => a.score - b.score || a.cmd.name.localeCompare(b.cmd.name),
+    (a, b) =>
+      a.score - b.score ||
+      slashRecencyScore(b.cmd.name, now) - slashRecencyScore(a.cmd.name, now) ||
+      a.cmd.name.localeCompare(b.cmd.name),
   )
   return out
 }

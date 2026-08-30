@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionInfo, WorkspaceGroup } from '../api/types'
 import {
-  GROUP_ORDER,
-  byRecency,
-  groupAccentClass,
-  groupByState,
-  groupLabel,
   groupWorkspaces,
   repoNameFromCwd,
   sanitizeTitle,
@@ -47,7 +42,7 @@ describe('sessionSortRank', () => {
   })
 })
 
-describe('sessionGroupKey / groupByState', () => {
+describe('sessionGroupKey', () => {
   it('分桶优先级：awaiting > active > bg > idle', () => {
     expect(
       sessionGroupKey(session({ sessionId: 'a', status: { state: 'awaiting' } })),
@@ -66,35 +61,6 @@ describe('sessionGroupKey / groupByState', () => {
   it('当前正在查看不影响分桶：active 会话仍在处理中组（currentSessionId 分支实际只兜 idle）', () => {
     const s = session({ sessionId: 'me', status: { state: 'active' } })
     expect(sessionGroupKey(s, 'me')).toBe('active')
-  })
-
-  it('groupByState：空桶省略、顺序固定、组内按最新活动降序', () => {
-    const sessions: SessionInfo[] = [
-      session({ sessionId: 'old-idle', updatedAt: '2024-01-01T00:00:00Z' }),
-      session({ sessionId: 'new-idle', updatedAt: '2025-01-01T00:00:00Z' }),
-      session({ sessionId: 'working', status: { state: 'active' } }),
-    ]
-    const groups = groupByState(sessions)
-    expect(groups.map((g) => g.key)).toEqual(['active', 'idle'])
-    expect(groups[0]?.items.map((s) => s.sessionId)).toEqual(['working'])
-    expect(groups[1]?.items.map((s) => s.sessionId)).toEqual(['new-idle', 'old-idle'])
-  })
-
-  it('组标签与配色齐全（四个桶）', () => {
-    for (const key of GROUP_ORDER) {
-      expect(groupLabel(key)).toBeTruthy()
-      expect(groupAccentClass(key)).toMatch(/^text-/)
-    }
-    expect(groupLabel('awaiting')).toBe('待处理')
-  })
-})
-
-describe('byRecency', () => {
-  it('updatedAt 新的在前；无时间戳垫底；同级用 sessionId', () => {
-    const a = session({ sessionId: 'a', updatedAt: '2024-01-01T00:00:00Z' })
-    const b = session({ sessionId: 'b', updatedAt: '2025-01-01T00:00:00Z' })
-    expect(byRecency(a, b)).toBeGreaterThan(0)
-    expect([a, b].sort(byRecency).map((s) => s.sessionId)).toEqual(['b', 'a'])
   })
 })
 

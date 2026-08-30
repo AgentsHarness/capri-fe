@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { blendColor, pulseBrightness, waveBrightness } from './wave'
+import { blendColor, waveBrightness } from './wave'
 
 describe('waveBrightness', () => {
   it('sin² 波形 ∈ [0,1]，相位随行偏移', () => {
@@ -21,13 +21,6 @@ describe('waveBrightness', () => {
 
   it('waveRows <= 1 时按 1 兜底', () => {
     expect(waveBrightness(0, 0, 0)).toBe(waveBrightness(0, 0, 1))
-  })
-})
-
-describe('pulseBrightness', () => {
-  it('sin² 脉冲；共享 tick', () => {
-    expect(pulseBrightness(0)).toBe(0)
-    expect(pulseBrightness(1)).toBeCloseTo(Math.sin(0.08) ** 2)
   })
 })
 

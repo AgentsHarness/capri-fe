@@ -1,4 +1,4 @@
-import type { ToolCall } from '../../api/types'
+import type { ScrollEntry, ToolCall } from '../../api/types'
 import type { ChatState } from './types'
 import { nonBlankStr, wireTaskId } from './util'
 
@@ -200,6 +200,28 @@ export function toolCallIdOf(tc: ToolCall): string | undefined {
 }
 
 /**
+ * Agent 扩展 tool-call 分类（tool_call `_meta["x.ai/tool"].kind`，
+ * 1.0.9+ 起新增 `active_agent_message` 等，版本号之外的前向值都容忍）。
+ * 官方顶层 `kind` 对这些调用恒为 `other`，扩展分类只用于动词渲染。
+ */
+export function xaiToolKind(tc: ToolCall): string | undefined {
+  const meta = tc._meta as Record<string, unknown> | undefined
+  const xai = meta?.['x.ai/tool']
+  if (!xai || typeof xai !== 'object' || Array.isArray(xai)) return undefined
+  const k = (xai as Record<string, unknown>).kind
+  return typeof k === 'string' && k ? k : undefined
+}
+
+/**
+ * tool_call 行的分类名：扩展分类（x.ai/tool.kind）优先于官方顶层 kind
+ * ——`active_agent_message` 的顶层 kind 恒为 `other`，取官方值会把新
+ * 调用渲染成泛型 "Ran"。更新路径的 merged 对象同款优先序。
+ */
+export function toolKindName(tc: ToolCall, fallback: string | undefined): string {
+  return xaiToolKind(tc) || (tc.kind as string) || fallback || 'other'
+}
+
+/**
  * When a suppressed get_task_output completes, fold its Result.output into
  * the matching bg_task entry so dblclick viewer has the log without a
  * separate "Ran other" row.
@@ -287,6 +309,70 @@ export function bashOutputText(bash: Record<string, unknown>): string | undefine
     return bash.output
   }
   return undefined
+}
+
+/**
+ * Content fingerprint used to attribute an update that carries no
+ * toolCallId. Completion updates omit rawInput entirely, so the only
+ * discriminators on the wire are the Bash rawOutput.command and the
+ * write/edit diff path; earlier rename updates carry rawInput instead.
+ */
+export function anonToolKey(tc: ToolCall): string | undefined {
+  const cmd =
+    nonBlankStr(bashRawOutput(tc)?.command) ??
+    nonBlankStr(toolRawInput(tc)?.command)
+  if (cmd) return `cmd:${cmd}`
+  const ri = toolRawInput(tc)
+  const path =
+    nonBlankStr(ri?.path) ??
+    nonBlankStr(ri?.filePath) ??
+    nonBlankStr(ri?.file_path) ??
+    diffContentPath(tc)
+  return path ? `path:${path}` : undefined
+}
+
+function diffContentPath(tc: ToolCall): string | undefined {
+  const content = (tc as { content?: unknown }).content
+  if (!Array.isArray(content)) return undefined
+  for (const c of content) {
+    if (!c || typeof c !== 'object') continue
+    if ((c as { type?: unknown }).type !== 'diff') continue
+    const p = nonBlankStr((c as { path?: unknown }).path)
+    if (p) return p
+  }
+  return undefined
+}
+
+/**
+ * Routing target for a tool_call_update whose toolCallId is empty. Some
+ * OpenAI/responses-compatible endpoints hand back function calls with no
+ * call_id, and the agent relays that blank key verbatim, so nothing can be
+ * looked up in toolIndex — the row sat at "Running" until the turn-end
+ * settle (minutes for a long agentic turn). Claim the oldest unclaimed
+ * anonymous row instead; `exact` says whether the content fingerprint
+ * identified it, which is what makes merging raw safe.
+ */
+export function findAnonToolTarget(
+  entries: ScrollEntry[],
+  tc: ToolCall,
+): { entryId: string; exact: boolean } | undefined {
+  const candidates = entries.filter(
+    (e) =>
+      e.kind === 'tool' &&
+      !e.toolCallId &&
+      (e.status === 'pending' || e.status === 'in_progress'),
+  )
+  const first = candidates[0]
+  if (!first) return undefined
+  const key = anonToolKey(tc)
+  if (key) {
+    for (const e of candidates) {
+      if (e.kind === 'tool' && e.raw && anonToolKey(e.raw) === key) {
+        return { entryId: e.id, exact: true }
+      }
+    }
+  }
+  return { entryId: first.id, exact: false }
 }
 
 /**

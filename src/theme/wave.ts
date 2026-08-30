@@ -1,5 +1,5 @@
 /**
- * Ports of xai-grok-pager-render theme::wave_brightness / pulse_brightness
+ * Ports of xai-grok-pager-render theme::wave_brightness
  * and entry_renderer WAVE_SPEED / appearance animation defaults.
  */
 
@@ -29,12 +29,6 @@ export function waveBrightness(
   const phase = (row / rowsPerWave) * 2 * Math.PI
   const t = tick * speed
   const sinVal = Math.sin(t + phase)
-  return sinVal * sinVal
-}
-
-/** Temporal pulse (bullet icons) — all elements share the same tick. */
-export function pulseBrightness(tick: number, speed: number = 0.08): number {
-  const sinVal = Math.sin(tick * speed)
   return sinVal * sinVal
 }
 

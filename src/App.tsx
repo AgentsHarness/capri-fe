@@ -14,6 +14,7 @@ import { ApprovalStrip } from './components/ApprovalStrip'
 import { PlanApproval } from './components/PlanApproval'
 import { CancelPanel } from './components/CancelPanel'
 import { QuestionModal } from './components/QuestionModal'
+import { FolderTrustCard } from './components/FolderTrustCard'
 import { DiffReviewModal } from './components/DiffReviewModal'
 import { MemoryModal } from './components/MemoryModal'
 import { McpPanel } from './components/McpPanel'
@@ -25,6 +26,7 @@ import { SessionInfoModal } from './components/SessionInfoModal'
 import { ContextModal } from './components/ContextModal'
 import { UsageModal } from './components/UsageModal'
 import { RewindPicker } from './components/RewindPicker'
+import { ContentSearchModal } from './components/ContentSearchModal'
 import { WorkflowPanel } from './components/WorkflowPanel'
 import { ToastStack } from './components/ToastStack'
 import { registerMcpPanelOpener } from './commands/registry'
@@ -227,6 +229,7 @@ function AppShell({ onLogout }: { onLogout: () => void }) {
       </div>
       <BlockViewer />
       <QuestionModal />
+      <FolderTrustCard />
       <DiffReviewModal />
       <MemoryModal />
       <McpPanel open={mcpOpen} onClose={() => setMcpOpen(false)} />
@@ -237,6 +240,7 @@ function AppShell({ onLogout }: { onLogout: () => void }) {
       <ContextModal />
       <UsageModal />
       <RewindPicker />
+      <ContentSearchModal />
       <WorkflowPanel />
       <ToastStack />
     </div>

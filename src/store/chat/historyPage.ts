@@ -1,4 +1,5 @@
 import type { ScrollEntry } from '../../api/types'
+import { envelopeMsgSeq } from './envelopeParse'
 // ── history envelope replay ───────────────────────────────────────
 //
 // A stored update is the JSONL envelope {timestamp, method, params} with
@@ -118,4 +119,61 @@ export function countUserMessages(entries: ScrollEntry[]): number {
   let n = 0
   for (const e of entries) if (e.kind === 'user') n++
   return n
+}
+
+/**
+ * 回放条目按 msgSeq 稳定排序：全部条目都带 msgSeq 时返回排序副本，否则
+ * 原数组返回（任一端缺 msgSeq → 完全保持现有行为，不排序）。
+ */
+export function sortEntriesByMsgSeq<T extends ScrollEntry>(entries: T[]): T[] {
+  for (const e of entries) if (e.msgSeq == null) return entries
+  return [...entries].sort((a, b) => a.msgSeq! - b.msgSeq!)
+}
+
+/**
+ * 旧页（older，前插）与已加载区（newer）按 msgSeq 归并：两侧各自有序
+ * （页内按回放序），两指针稳定归并，等值取前页。任一侧有条目缺 msgSeq
+ * → 返回 null，调用方回退现有拼接行为（旧页整段在前）。
+ */
+export function mergeEntriesByMsgSeq<T extends ScrollEntry>(
+  older: T[],
+  newer: T[],
+): T[] | null {
+  for (const e of older) if (e.msgSeq == null) return null
+  for (const e of newer) if (e.msgSeq == null) return null
+  const out: T[] = []
+  let i = 0
+  let j = 0
+  while (i < older.length && j < newer.length) {
+    if (older[i]!.msgSeq! <= newer[j]!.msgSeq!) out.push(older[i++])
+    else out.push(newer[j++])
+  }
+  while (i < older.length) out.push(older[i++])
+  while (j < newer.length) out.push(newer[j++])
+  return out
+}
+
+/**
+ * 页内 msgSeq 连续性自检（loadHistory 专用）：页来自 turnIndex 切片，
+ * msgSeq 会话内密集，正常必须连续。返回断裂描述；null = 连续 / 纯旧页
+ * （全部信封不带 msgSeq 的回退路径不检测）。
+ */
+export function findMsgSeqGap(updates: unknown[]): string | null {
+  let expected: number | undefined
+  for (let i = 0; i < updates.length; i++) {
+    const seq = envelopeMsgSeq(updates[i])
+    if (seq == null) {
+      if (expected != null) return `第 ${i} 条缺失 msgSeq`
+      continue
+    }
+    if (expected == null) {
+      expected = seq
+      continue
+    }
+    if (seq !== expected + 1) {
+      return `第 ${i} 条 msgSeq=${seq}，期望 ${expected + 1}`
+    }
+    expected = seq
+  }
+  return null
 }

@@ -108,6 +108,13 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
   closeRewind: () => set({ rewindOpen: false }),
   stashedDraft: null,
   setStashedDraft: (text) => set({ stashedDraft: text }),
+  // Global Ctrl+C ladder (useScrollbackKeys): the Composer mirrors its
+  // local draft length here; clearComposerDraft bumps the nonce the
+  // Composer watches to clear its buffer.
+  composerDraftLen: 0,
+  composerClearNonce: 0,
+  clearComposerDraft: () =>
+    set((s) => ({ composerClearNonce: s.composerClearNonce + 1 })),
   cancelPanelOpen: false,
   openCancelPanel: () => set({ cancelPanelOpen: true }),
   closeCancelPanel: () => set({ cancelPanelOpen: false }),
@@ -140,7 +147,7 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
   modeBanner: null,
   showModeBanner: (text) => set({ modeBanner: text }),
   clearModeBanner: () => set({ modeBanner: null }),
-  queuePanelOpen: false,
+  queuePanelOpen: true,
   setQueuePanelOpen: (open) =>
     set({
       queuePanelOpen:
@@ -173,6 +180,19 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
   settingsOpen: false,
   openSettings: () => set({ settingsOpen: true }),
   closeSettings: () => set({ settingsOpen: false }),
+
+  // Content search modal (TUI /search panel).
+  contentSearchOpen: false,
+  contentSearchPrefill: '',
+  openContentSearch: (query) =>
+    set({ contentSearchOpen: true, contentSearchPrefill: query ?? '' }),
+  closeContentSearch: () =>
+    set({ contentSearchOpen: false, contentSearchPrefill: '' }),
+
+  // @ file picker engine state (TUI fuzzy file search) — the Composer
+  // owns the open/change/close lifecycle; only the status event and the
+  // lifecycle write it.
+  fileSearch: null,
 
   init: () => initChat(set, get, api),
   ...hostActions(set, get),

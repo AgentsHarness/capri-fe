@@ -10,10 +10,12 @@ import {
   absorbBashOutputIntoBgTask,
   absorbTaskOutputIntoBgTask,
   extractTarget,
+  findAnonToolTarget,
   isOrphanBashStreamUpdate,
   shouldSuppressToolFromScrollback,
   suppressedToolIds,
   toolCallIdOf,
+  toolKindName,
 } from '../tools'
 import {
   sealAssistantStream,
@@ -22,6 +24,73 @@ import {
 import {
   busyPlausibleForView,
 } from '../turn'
+/**
+ * Route a tool_call_update that carries no toolCallId.
+ *
+ * Some OpenAI/responses-compatible gateways omit call_id on function calls
+ * and the agent relays that blank key verbatim, so nothing can be looked up
+ * in toolIndex — dropping these updates left the row at "Running" until the
+ * turn-end settle (a 6-minute agentic turn showed every command block
+ * spinning the whole time). Claim an unclaimed anonymous row instead.
+ *
+ * raw is only merged when the content fingerprint identified the row:
+ * pasting call A's output onto call B's row in a parallel batch is real
+ * corrupted content, while settling status on a guessed row is not.
+ */
+function applyAnonToolUpdate(
+  set: SetState,
+  get: () => ChatState,
+  tc: ToolCall,
+): void {
+  const target = findAnonToolTarget(get().entries, tc)
+  if (!target) return
+  const { entryId, exact } = target
+  const existing = get().entries.find((e) => e.id === entryId)
+  if (existing?.kind !== 'tool') return
+  const status = typeof tc.status === 'string' ? tc.status : ''
+  const terminal = status === 'completed' || status === 'failed'
+  if (!exact && !terminal) return
+  const merged: ToolCall = exact ? { ...(existing.raw || {}), ...tc } : tc
+  if (
+    exact &&
+    (shouldSuppressToolFromScrollback(merged) || isOrphanBashStreamUpdate(merged))
+  ) {
+    // Late classification (is_background / TaskOutput only in this update):
+    // the log belongs on the bg_task row. A blank id cannot enter
+    // suppressedToolIds, but removing the entry takes it out of the claim
+    // candidates, so later updates route elsewhere on their own.
+    set({ entries: get().entries.filter((e) => e.id !== entryId) })
+    absorbTaskOutputIntoBgTask(get, set, merged)
+    absorbBashOutputIntoBgTask(get, set, merged)
+    return
+  }
+  const nextStatus = status || existing.status
+  const running = nextStatus === 'pending' || nextStatus === 'in_progress'
+  const kindName = toolKindName(merged, existing.kindName)
+  set({
+    // A running tool settling opens the wait-for-next-token window (TUI
+    // Waiting(Model)) — same cue as the id-routed path.
+    ...(terminal ? { statusText: 'Waiting for response…' } : {}),
+    entries: get().entries.map((e) =>
+      e.id !== entryId || e.kind !== 'tool'
+        ? e
+        : {
+            ...e,
+            status: nextStatus,
+            verb: toolVerb(exact ? kindName : e.kindName, running),
+            ...(exact
+              ? {
+                  raw: merged,
+                  kindName,
+                  title: extractTarget(merged) || e.title,
+                }
+              : {}),
+            ...(terminal ? { finishedAt: Date.now() } : {}),
+          },
+    ),
+  })
+}
+
 export function handleToolEvent(
   set: SetState,
   get: () => ChatState,
@@ -61,7 +130,7 @@ export function handleToolEvent(
           break
         }
         const status = (tc.status as string) || 'pending'
-        const kindName = (tc.kind as string) || 'other'
+        const kindName = toolKindName(tc, undefined)
         const running = status === 'pending' || status === 'in_progress'
         const title = extractTarget(tc) || (tc.title as string) || kindName
         const id = nid()
@@ -142,7 +211,10 @@ export function handleToolEvent(
         if (ev.sessionId && ev.sessionId !== get().sessionId) break
         const tc = ev.toolCallUpdate || {}
         const toolCallId = toolCallIdOf(tc)
-        if (!toolCallId) break
+        if (!toolCallId) {
+          applyAnonToolUpdate(set, get, tc)
+          break
+        }
         if (suppressedToolIds.has(toolCallId)) {
           // Final TaskOutput / Bash stream — fold log into bg_task.
           absorbTaskOutputIntoBgTask(get, set, tc)
@@ -215,7 +287,7 @@ export function handleToolEvent(
               const mergedRaws = [...(e.mergedRaws ?? [])]
               mergedRaws[mergedIdx] = { ...mergedRaws[mergedIdx], ...tc }
               const status = (tc.status as string) || e.status
-              const kindName = (tc.kind as string) || e.kindName || 'other'
+              const kindName = toolKindName(tc, e.kindName)
               const running = status === 'pending' || status === 'in_progress'
               const finishedAt =
                 wasRunningBefore && !running ? Date.now() : e.finishedAt
@@ -230,7 +302,7 @@ export function handleToolEvent(
             }
             const merged: ToolCall = { ...(e.raw || {}), ...tc }
             const status = (merged.status as string) || e.status
-            const kindName = (merged.kind as string) || e.kindName || 'other'
+            const kindName = toolKindName(merged, e.kindName)
             const running = status === 'pending' || status === 'in_progress'
             const wasRunning =
               e.status === 'pending' || e.status === 'in_progress'

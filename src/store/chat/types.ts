@@ -23,6 +23,7 @@ import type { McpListServer } from '../../api/client'
 import type {
   ConnState,
   ExtensionsTab,
+  FileSearchState,
   FocusMode,
   McpInitProgress,
   McpServerInfo,
@@ -35,6 +36,8 @@ import type {
 export type {
   ConnState,
   ExtensionsTab,
+  FileSearchState,
+  FileSearchMatch,
   FocusMode,
   McpInitProgress,
   McpServerInfo,
@@ -43,6 +46,18 @@ export type {
   ViewerTask,
   WorkflowRun,
 } from './typesPublic'
+
+/**
+ * forkSession 选项：
+ * - targetPromptIndex — 按轮截断（agent ForkSessionRequest.target_prompt_index，
+ *   0-based 含端点：副本保留第 0..=k 轮）。缺省 = 完整副本。
+ * - worktree — TUI /fork --worktree：经 x.ai/git/worktree/resume_session 在
+ *   新 git worktree 中派生（全量历史，无截断）。
+ */
+export type ForkSessionOpts = {
+  targetPromptIndex?: number
+  worktree?: boolean
+}
 
 /**
  * 一条分层错误（hub / host 层横幅数据源）。
@@ -57,36 +72,91 @@ export type LayerErr = {
   at: number
 }
 
-export type ChatState = {
-  entries: ScrollEntry[]
+// ── ChatState 域拆分 ──────────────────────────────────────────────────
+// ChatState 不再是单一大接口：字段按域拆成下面的 10 个接口，再用交集
+// 组合（结构等价于原单接口，运行时零变化）。域与 store/chat 的切片模块
+// 对应（见 barrel chat.ts 注释）：
+//   ChatConnState        conn/events/conn、actions/hosts —— 连接与 host
+//   ChatTimelineState    stream、entries、tools —— 滚动区时间线与流式
+//   ChatHistoryState     loadHistory/loadMoreHistory/historyPage —— 会话列表与历史分页
+//   ChatTurnState        turn/turnLifecycle/turnStatus —— 回合生命周期与统计
+//   ChatModeState        modeFlags/modeApply/modePersist、actions/cancel —— 权限/模式/取消
+//   ChatAgentExtState    events/ext*、subagent*、tasks —— x.ai/* 扩展状态
+//   ChatMcpState         tools、events（mcp 状态）—— MCP
+//   ChatGoalWorkflowState actions/goal —— 目标与工作流
+//   ChatUiState          actions/viewer*、各 modal 可见性 —— 视图与面板
+//   ChatActions          actions/*、send、sessionLoad —— 动作入口
+// 新增字段先找域再落位；一个字段只属于一个域（跨域读写照旧允许——
+// set/get 仍是整店视角——但声明归属让切片的读写范围在类型上可查）。
+
+/** 连接与 host：连接状态、hub/local 模式、host 注册表、当前会话身份、分层错误。 */
+export interface ChatConnState {
   conn: ConnState
   statusText: string
-  /**
-   * /recap 已发出、等待 session_recap 返回。记录发起会话的 id——只有
-   * 该会话处于活动状态时才显示等待指示（切换会话后不残留），事件
-   * 返回/失败/会话复位时清空。
-   */
-  recapPendingFor?: string
-  /**
-   * 按会话缓存最近一次 recap 摘要：recap 事件是 display-only、不进
-   * 持久化历史，跨会话期间到达的摘要若直接进当前滚动区会污染视图、
-   * 切回原会话时又因 loadHistory 重建而丢失——这里按会话存，切回时
-   * 按生成时间就近回填（覆盖写，只留最新）。回填前检查滚动区是否
-   * 已有同文本条目，保证同一视图内不重复；每次重建后都会重新回填。
-   */
-  recapCache: Record<string, { text: string; at: number }>
+  /** 连接模式：local（本机 capri-host，锁定本机，无 host 切换）/ hub（跨源 hub，可切换 host）。 */
+  mode: 'local' | 'hub'
+  hostId?: string
+  hostName?: string
+  hosts: HostInfo[]
+  /** Selected host (hub mode): API calls + event filtering target. */
+  selectedHostId?: string
   sessionId?: string
   /** Active session workspace dir (hello/ready; TUI status-bar path). */
   cwd?: string
   /** Host user home dir — for "~/…" path shortening. */
   homeDir?: string
-  hostId?: string
-  hostName?: string
-  hosts: HostInfo[]
-  /** 连接模式：local（本机 capri-host，锁定本机，无 host 切换）/ hub（跨源 hub，可切换 host）。 */
-  mode: 'local' | 'hub'
-  /** Selected host (hub mode): API calls + event filtering target. */
-  selectedHostId?: string
+  /** Session title (top prompt border caption). */
+  sessionTitle?: string
+  /**
+   * 分层错误栈：hub（中继/配对/token/离线）与 host（进程/boot/通道）
+   * 各最多一条，同层新错误覆盖旧的；agent 回合级错误不进这里（它是
+   * 会话时间线的一部分，由 scrollback 错误行承担）。横幅（ErrorBanner）
+   * 从两层中选一条展示；恢复事件（ready/busy/新回合/重连成功）按层
+   * 清除。error > warning，同级取 at 较新。
+   */
+  layerErrors: { hub?: LayerErr; host?: LayerErr }
+  /** 写入/清除某一层的错误（undefined = 清除该层）。 */
+  setLayerError: (layer: 'hub' | 'host', err: LayerErr | undefined) => void
+}
+
+/** 时间线与流式：滚动区条目、流式缓冲指针、乐观插入的用户行。 */
+export interface ChatTimelineState {
+  entries: ScrollEntry[]
+  toolIndex: Record<string, string> // toolCallId -> entry id
+  // streaming pointers
+  openAssistantId?: string
+  openThoughtId?: string
+  /** Agent-side stream identity shared by interleaved assistant/thought chunks. */
+  currentStreamStartMs?: number
+  /**
+   * Live streaming text, kept OUT of `entries`.
+   *
+   * Pipeline: SSE → streamBuf (rAF) → liveStream → flushLiveStream → entry.text
+   *
+   * Invariant (thought + assistant): during streaming, sealed base text
+   * in the entry is empty (or only previously sealed content if resuming).
+   * ALL in-flight stream text lives here. First chunk creates the entry
+   * with `text: ''` + `streaming: true` and seeds liveStream; later chunks
+   * append via rAF into liveStream only. Flushed into the entry
+   * (entry.text += liveStream.text) at seal / turn end; consumers that
+   * render entry text (Scrollback, BlockViewer) use `liveText ?? e.text`
+   * while the entry is streaming.
+   */
+  liveStream: { entryId: string; text: string; elapsedMs?: number } | null
+  /**
+   * User row id inserted optimistically by send(). Live user_chunk echoes
+   * absorb into this row instead of appending a second UserPromptBlock.
+   */
+  pendingOptimisticUserId?: string
+  /**
+   * id of the user row created by the most recent send() — page_flip_on_send
+   * (Scrollback) scrolls this row to the top of the viewport.
+   */
+  lastSentPromptId?: string
+}
+
+/** 会话列表与历史分页：workspace 摘要、历史时间线分页游标、空状态工作目录。 */
+export interface ChatHistoryState {
   /** Historical sessions for the history picker (from session/list). */
   sessions: SessionInfo[]
   /** Session summaries bucketed by workspace（workspace-list-recent，按需分页加载）。 */
@@ -106,21 +176,7 @@ export type ChatState = {
    * 端点不可用时的降级展示也是 full（但不改写偏好）。
    */
   workspaceListMode: 'recent' | 'full'
-  /**
-   * 空状态（无活动会话）时用户选/输入的工作目录；发送消息时用它
-   * 创建新会话（空串 = 宿主默认目录）。resetSessionState 清空。
-   */
-  emptyCwd?: string
-  /**
-   * 按 host 记忆空状态工作目录：`emptyCwd` 是"当前 host"的取值，
-   * 切换 host 时从这里取该 host 自己的目录，绝不沿用别的 host 的路径
-   * （同一路径在不同 host 上是不同的文件系统）。
-   */
-  emptyCwdByHost?: Record<string, string>
   historyOpen: boolean
-  /** Desktop (lg+) persistent sidebar collapsed state — toggled by the TopBar collapse icon. */
-  sidebarCollapsed: boolean
-  toggleSidebar: () => void
   historyLoading: boolean
   /** Bumped when a history load finishes; Scrollback re-follows the bottom. */
   historyLoadedAt?: number
@@ -155,31 +211,21 @@ export type ChatState = {
   historyPromptStarts?: number[]
   /** historyPromptStarts 中「最老已加载轮次」的下标；每往前加载一轮减 1；0 = 无更早轮次。 */
   historyTurnIdx: number
-  usage?: { used?: number; size?: number }
   /**
-   * 当前会话的聚合统计（POST /api/session-stats 响应；composer 状态条
-   * 数据源）。会话切换/回合终态后刷新；无会话或失败为 undefined。
+   * 空状态（无活动会话）时用户选/输入的工作目录；发送消息时用它
+   * 创建新会话（空串 = 宿主默认目录）。resetSessionState 清空。
    */
-  sessionStats?: import('../../api/types').SessionStats
-  pending: PendingReq[]
-  modes?: unknown
+  emptyCwd?: string
   /**
-   * Slash commands advertised by the agent (ACP `available_commands_update`
-   * → host `commands_update`). The slash menu merges them after the local
-   * registry (local names win on collision); invoking one sends the raw
-   * `/name args` line as a user message (TUI PassThrough semantics).
+   * 按 host 记忆空状态工作目录：`emptyCwd` 是"当前 host"的取值，
+   * 切换 host 时从这里取该 host 自己的目录，绝不沿用别的 host 的路径
+   * （同一路径在不同 host 上是不同的文件系统）。
    */
-  agentCommands: AgentCommand[]
-  /**
-   * 分层错误栈：hub（中继/配对/token/离线）与 host（进程/boot/通道）
-   * 各最多一条，同层新错误覆盖旧的；agent 回合级错误不进这里（它是
-   * 会话时间线的一部分，由 scrollback 错误行承担）。横幅（ErrorBanner）
-   * 从两层中选一条展示；恢复事件（ready/busy/新回合/重连成功）按层
-   * 清除。error > warning，同级取 at 较新。
-   */
-  layerErrors: { hub?: LayerErr; host?: LayerErr }
-  /** 写入/清除某一层的错误（undefined = 清除该层）。 */
-  setLayerError: (layer: 'hub' | 'host', err: LayerErr | undefined) => void
+  emptyCwdByHost?: Record<string, string>
+}
+
+/** 回合生命周期与统计：当前/上一回合锚点、速率、recap、token 用量。 */
+export interface ChatTurnState {
   /** Turn start (epoch ms) for the TUI "Worked for Xs" completion marker. */
   turnStartedAt?: number
   /**
@@ -216,12 +262,97 @@ export type ChatState = {
    * (session is idle and waiting for the next user prompt).
    */
   awaitingNext: boolean
-  /** Session title (top prompt border caption). */
-  sessionTitle?: string
-  /** Current model label for prompt info line (TUI model_name). */
-  modelName?: string
-  /** Reasoning effort suffix, e.g. "high". */
-  reasoningEffort?: string
+  /**
+   * /recap 已发出、等待 session_recap 返回。记录发起会话的 id——只有
+   * 该会话处于活动状态时才显示等待指示（切换会话后不残留），事件
+   * 返回/失败/会话复位时清空。
+   */
+  recapPendingFor?: string
+  /**
+   * 按会话缓存最近一次 recap 摘要：recap 事件是 display-only、不进
+   * 持久化历史，跨会话期间到达的摘要若直接进当前滚动区会污染视图、
+   * 切回原会话时又因 loadHistory 重建而丢失——这里按会话存，切回时
+   * 按生成时间就近回填（覆盖写，只留最新）。回填前检查滚动区是否
+   * 已有同文本条目，保证同一视图内不重复；每次重建后都会重新回填。
+   */
+  recapCache: Record<string, { text: string; at: number }>
+  usage?: { used?: number; size?: number }
+  /**
+   * 当前会话的聚合统计（POST /api/session-stats 响应；composer 状态条
+   * 数据源）。会话切换/回合终态后刷新；无会话或失败为 undefined。
+   */
+  sessionStats?: import('../../api/types').SessionStats
+}
+
+/** 权限与模式：待审批请求、yolo/auto/plan 模式、取消回合面板与偏好。 */
+export interface ChatModeState {
+  pending: PendingReq[]
+  modes?: unknown
+  /** Permission mode from x.ai/yolo_mode_changed (TUI permission banner). */
+  permissionMode?: string
+  yoloMode?: boolean
+  autoMode?: boolean
+  /**
+   * Local plan-mode flag (Shift+Tab cycle / /plan). Driven by the host's
+   * toggle-plan-mode result when available; otherwise kept local and
+   * nudged by yolo_mode_changed / modes_update payloads.
+   */
+  planMode: boolean
+  /** /plan — enter plan mode only (no-op while already in plan). */
+  togglePlanMode: () => Promise<void>
+  /** Shift+Tab mode cycle: Normal → Plan → Auto → Always-approve → Normal. */
+  cycleMode: () => Promise<void>
+  /** /auto — toggle auto permission mode (normal ↔ auto, plan ↔ plan·auto). */
+  setAutoMode: () => Promise<void>
+  /** /always — toggle always-approve (normal ↔ always, plan ↔ plan·always). */
+  setAlwaysApproveMode: () => Promise<void>
+  /** POST /api/permissions-reset — forget remembered permission rules. */
+  resetPermissions: () => Promise<void>
+  /** Transient "Switched to mode: X" banner (TUI notices.rs mode_switch_banner). */
+  modeBanner: string | null
+  showModeBanner: (text: string) => void
+  clearModeBanner: () => void
+  /**
+   * Cancel-turn panel (TUI CancelTurnPanel): Esc / [stop] while busy opens
+   * it instead of cancelling immediately — only when the current turn has
+   * running subagents AND no saved preference (see cancelSubagentsPref).
+   * While open it owns the keyboard (1-4 / ↑↓ / Enter confirm, Esc =
+   * keep running, Ctrl+C = direct cancel).
+   */
+  cancelPanelOpen: boolean
+  openCancelPanel: () => void
+  closeCancelPanel: () => void
+  /**
+   * Saved cancel-turn preference (TUI `cancel_subagents_on_turn_cancel`):
+   * true = cancel running subagents with the turn, false = keep them
+   * running, null = ask via the panel (only when subagents are running).
+   * With a saved preference the panel never opens — Esc / [stop] act
+   * directly per it. Persisted to localStorage acpfe.cancelSubagentsOnTurnCancel.
+   */
+  cancelSubagentsPref: boolean | null
+  setCancelSubagentsPref: (stop: boolean) => void
+  /** True when at least one subagent of the current turn is still running
+   *  (scrollback `subagent` entries via subagentIndex; TUI subagent_sessions). */
+  hasRunningSubagent: () => boolean
+  /**
+   * Esc / [stop] flow (TUI dispatch_cancel_turn): saved preference → cancel
+   * per it; no preference + running subagents → open the cancel panel;
+   * otherwise cancel the turn directly (nothing to prompt about).
+   */
+  requestCancelTurn: () => Promise<void>
+  /** Cancel the running turn — cancel panel options 1 / 3 / 4 (+ Ctrl+C). */
+  cancelTurn: (opts?: {
+    /** Also cancel every running subagent (panel "Stop running" / "Always stop"). */
+    cancelSubagents?: boolean
+    /** Legacy: additionally kill every running bg_task (incl. top strip). */
+    stopTasks?: boolean
+    /** Empty the composer send queue. */
+    clearQueue?: boolean
+  }) => Promise<void>
+}
+
+/** x.ai/* 扩展状态：转发请求、subagent / 后台任务索引、followUps、模型目录、git 信息。 */
+export interface ChatAgentExtState {
   // ── x.ai/* extension state ────────────────────────────────────────
   /** Forwarded agent → client x.ai/* requests (ask_user_question, exit_plan_mode…). */
   xaiRequests: PendingReq[]
@@ -282,23 +413,14 @@ export type ChatState = {
   clearCompletedNotice: (sessionId: string) => void
   /** Record a different session's turn completion: ✓ badge + notify. */
   noteSessionCompleted: (sessionId: string) => void
-  /** Git head from x.ai/git_head_changed (TUI status-bar branch). */
-  gitInfo?: { branch?: string | null; isWorktree?: boolean; mainRepo?: string | null }
-  /** Permission mode from x.ai/yolo_mode_changed (TUI permission banner). */
-  yoloMode?: boolean
-  autoMode?: boolean
-  permissionMode?: string
-  /** MCP server statuses from x.ai/mcp/server_status (TUI MCP panel). */
-  mcpServers: McpServerInfo[]
-  /** Bumped on mcp tools_changed / servers_updated so panels can refresh. */
-  mcpVersion: number
   /**
-   * MCP init progress (x.ai/mcp/init_progress → mcp_init_progress) — the
-   * aggregate connected/total counts the TUI status bar shows as
-   * `MCP (connected/total)` while initializing. Undefined = no init in
-   * flight. Reset on session switches, replaced on every progress event.
+   * Scheduled tasks (/loop) of the active session — TUI tasks pane
+   * "调度任务" section. Fed by scheduled_task_created / fired / deleted
+   * (both the session_notification tag carrier and standalone SSE events;
+   * upserted by taskId so the dual paths dedupe). Cleared on session
+   * switch / new session.
    */
-  mcpInit?: McpInitProgress
+  scheduledTasks: ScheduledTask[]
   /**
    * Turn-end suggestion chips (`x.ai/follow_ups`) — TUI FollowUps state.
    * Rendered by the Composer above the input, never as scrollback rows
@@ -313,27 +435,84 @@ export type ChatState = {
    * re-delivery, a newer id replaces.
    */
   followUpsResponseId?: string
+  /**
+   * Slash commands advertised by the agent (ACP `available_commands_update`
+   * → host `commands_update`). The slash menu merges them after the local
+   * registry (local names win on collision); invoking one sends the raw
+   * `/name args` line as a user message (TUI PassThrough semantics).
+   */
+  agentCommands: AgentCommand[]
+  /** Git head from x.ai/git_head_changed (TUI status-bar branch). */
+  gitInfo?: { branch?: string | null; isWorktree?: boolean; mainRepo?: string | null }
   // ── model catalog (agentInfo._meta.modelState.availableModels) ─────
   models: ModelOption[]
+  /** Current model label for prompt info line (TUI model_name). */
+  modelName?: string
+  /** Reasoning effort suffix, e.g. "high". */
+  reasoningEffort?: string
   /** Memory files from memory_files (TUI memory modal). */
   memoryFiles?: { name: string; path?: string; size?: number; updatedAt?: unknown; source?: string }[]
-  /** Memory modal visibility (TUI /memory). */
-  memoryOpen: boolean
-  openMemory: () => void
-  closeMemory: () => void
-  /** Goal state from goal_updated (TUI goal panel). */
-  goalState?: Record<string, unknown>
   /** Todo counts from plan updates (TUI status-bar todo badge). */
   todoCounts?: TodoCounts
   /** Todo items from plan updates (clickable badge panel). */
   todos?: TodoItem[]
-  /** Diff review payloads from diff_review (TUI diff-review modal). */
-  diffReview?: unknown[]
-  /** Diff review modal visibility — notification path only (the request
-   *  path is driven by the x.ai/diff_review entry in xaiRequests). */
-  diffReviewOpen: boolean
-  openDiffReview: () => void
-  closeDiffReview: () => void
+}
+
+/** MCP：server 状态、init 进度与管理端点动作。 */
+export interface ChatMcpState {
+  /** MCP server statuses from x.ai/mcp/server_status (TUI MCP panel). */
+  mcpServers: McpServerInfo[]
+  /** Bumped on mcp tools_changed / servers_updated so panels can refresh. */
+  mcpVersion: number
+  /**
+   * MCP init progress (x.ai/mcp/init_progress → mcp_init_progress) — the
+   * aggregate connected/total counts the TUI status bar shows as
+   * `MCP (connected/total)` while initializing. Undefined = no init in
+   * flight. Reset on session switches, replaced on every progress event.
+   */
+  mcpInit?: McpInitProgress
+  // ── MCP management (TUI /mcps modal; host endpoints may be unsupported —
+  //    every method rethrows so the panel renders the failure inline) ──
+  /** GET /api/mcp/list — configured servers (host reads config.toml). */
+  mcpList: () => Promise<McpListServer[]>
+  /** POST /api/mcp-toggle — enable/disable a server. */
+  mcpToggle: (name: string, enabled: boolean) => Promise<void>
+  /** POST /api/mcp-toggle-tool — enable/disable one tool of a server. */
+  mcpToggleTool: (serverName: string, toolName: string, enabled: boolean) => Promise<void>
+  /** POST /api/mcp-add — add a stdio server. */
+  mcpAdd: (server: {
+    name: string
+    command: string
+    args?: string[]
+    env?: Record<string, string>
+  }) => Promise<void>
+  /** POST /api/mcp-remove — remove a server. */
+  mcpRemove: (name: string) => Promise<void>
+  /** POST /api/mcp-auth-trigger — OAuth trigger; returns url/code when offered. */
+  mcpAuthTrigger: (name: string) => Promise<{ url?: string; code?: string; message?: string }>
+}
+
+/** 目标与工作流：goal 跟踪状态与 /workflows 运行面板（控制端点在 host 侧）。 */
+export interface ChatGoalWorkflowState {
+  /** Goal state from goal_updated (TUI goal panel). */
+  goalState?: Record<string, unknown>
+  /**
+   * goal_updated receive time — elapsed fallback when the wire carries
+   * neither elapsed_ms nor started_at (defensive chain).
+   */
+  goalReceivedAt?: number
+  /** /goal detail panel visibility (GoalChip dropdown; /goal opens it). */
+  goalPanelOpen: boolean
+  setGoalPanelOpen: (open: boolean) => void
+  // ── goal mode (TUI /goal) — HOST-ENGINE control ───────────────────
+  // The host owns the goal tracker and /api/goal/* endpoints (the wire
+  // defines goal_updated notifications but NO goal control methods, so
+  // the engine lives host-side, not in prompts).
+  goalSet: (objective: string, tokenBudget?: number) => void
+  goalStatus: () => void
+  goalPause: () => void
+  goalResume: () => void
+  goalClear: () => void
   /** Workflow runs keyed by run_id (TUI workflows pane). */
   workflowRuns: Record<string, WorkflowRun>
   /**
@@ -342,68 +521,35 @@ export type ChatState = {
    */
   selectedWorkflowRunId?: string
   setSelectedWorkflowRunId: (id: string | undefined) => void
-  /** /goal detail panel visibility (GoalChip dropdown; /goal opens it). */
-  goalPanelOpen: boolean
-  setGoalPanelOpen: (open: boolean) => void
-  /**
-   * goal_updated receive time — elapsed fallback when the wire carries
-   * neither elapsed_ms nor started_at (defensive chain).
-   */
-  goalReceivedAt?: number
   /** /workflows run-dashboard modal visibility. */
   workflowPanelOpen: boolean
   setWorkflowPanelOpen: (open: boolean) => void
-  /** Bumped on hooks_changed / plugins_changed so modals can refresh. */
-  hooksVersion: number
-  // ── extensions modal (TUI /hooks /plugins /skills /marketplace) ──────
-  extensionsOpen: boolean
-  extensionsTab: ExtensionsTab
-  openExtensions: (tab: ExtensionsTab) => void
-  closeExtensions: () => void
-  /** Settings modal (TUI F2 / /settings) — read-only config.toml view + effective permission default. */
-  settingsOpen: boolean
-  openSettings: () => void
-  closeSettings: () => void
-  // streaming pointers
-  openAssistantId?: string
-  openThoughtId?: string
-  /** Agent-side stream identity shared by interleaved assistant/thought chunks. */
-  currentStreamStartMs?: number
-  /**
-   * Live streaming text, kept OUT of `entries`.
-   *
-   * Pipeline: SSE → streamBuf (rAF) → liveStream → flushLiveStream → entry.text
-   *
-   * Invariant (thought + assistant): during streaming, sealed base text
-   * in the entry is empty (or only previously sealed content if resuming).
-   * ALL in-flight stream text lives here. First chunk creates the entry
-   * with `text: ''` + `streaming: true` and seeds liveStream; later chunks
-   * append via rAF into liveStream only. Flushed into the entry
-   * (entry.text += liveStream.text) at seal / turn end; consumers that
-   * render entry text (Scrollback, BlockViewer) use `liveText ?? e.text`
-   * while the entry is streaming.
-   */
-  liveStream: { entryId: string; text: string; elapsedMs?: number } | null
-  /**
-   * User row id inserted optimistically by send(). Live user_chunk echoes
-   * absorb into this row instead of appending a second UserPromptBlock.
-   */
-  pendingOptimisticUserId?: string
-  /**
-   * id of the user row created by the most recent send() — page_flip_on_send
-   * (Scrollback) scrolls this row to the top of the viewport.
-   */
-  lastSentPromptId?: string
-  toolIndex: Record<string, string> // toolCallId -> entry id
+  // ── workflow control (TUI /workflows p/r/x) — same protocol gap: no
+  // wire method for workflow control, so pause/resume/stop go through
+  // the prompt path with a local optimistic row update first.
+  workflowControl: (runId: string, action: 'pause' | 'resume' | 'stop') => void
+  /** "Save script" — local-only clipboard copy of the run's script payload. */
+  saveWorkflowScript: (runId: string) => Promise<void>
+}
+
+/** 视图与面板：焦点/选择/展开、block viewer、各 modal 可见性、Composer 草稿与队列。 */
+export interface ChatUiState {
+  /** Desktop (lg+) persistent sidebar collapsed state — toggled by the TopBar collapse icon. */
+  sidebarCollapsed: boolean
+  toggleSidebar: () => void
   /** TUI focus: Tab toggles prompt ↔ scrollback */
   focusMode: FocusMode
+  setFocus: (mode: FocusMode) => void
   /** Selected entry id (or synthetic `gh_<anchorId>` group header) */
   selectedId: string | null
+  selectEntry: (id: string | null) => void
+  selectDelta: (delta: number) => void
   /**
    * Manually expanded verb / truncation groups, keyed by the first entry id
    * of the run (TUI expanded_groups).
    */
   expandedGroups: ReadonlySet<string>
+  toggleGroupExpansion: (anchorId: string) => void
   /**
    * Block viewer (TUI OpenBlockViewer): entry id currently shown fullscreen.
    * Enter / double-click open; Esc closes. Independent of inline expand.
@@ -415,10 +561,49 @@ export type ChatState = {
    * with viewerEntryId.
    */
   viewerTask?: ViewerTask
+  /** Open TUI block viewer for entry (Enter / double-click). */
+  openViewer: (id?: string | null) => void
+  /**
+   * Open the block viewer for a task by id — used by the top task strip
+   * and history-replay rows. Live rows (bgTaskIndex) keep the
+   * entry-backed viewer; everything else gets a session-scoped task view
+   * whose log is reconstructed by the host (pagination-independent).
+   */
+  openTaskViewer: (taskId: string, opts?: Partial<ViewerTask>) => void
+  closeViewer: () => void
+  /**
+   * On-demand fetch of a subagent session's stored updates (block viewer
+   * timeline, TUI replay_inherited_updates 同款): reads the child
+   * session's updates.jsonl via the host's session-updates endpoint
+   * (same cwd as the parent) and replays the envelopes through the same
+   * view processor as live events. No-op unless the view exists and is
+   * idle with an empty timeline.
+   */
+  fetchSubagentView: (childSessionId: string) => Promise<void>
+  /**
+   * 上滑加载子代理时间线更早的一页（负 offset 分页，主 scrollback
+   * loadMoreHistory 同款）：新页 prepend 到时间线前面，跨页截断的
+   * assistant/thought 缝合。仅回放填充的视图（loadedCount > 0）提供——
+   * 纯 live 捕获的视图历史从 spawn 起已完整，回放会与 live 重复。
+   * 返回 true = 加载成功（可能还有更多），false = 无更多/失败。
+   */
+  loadMoreSubagentView: (childSessionId: string) => Promise<boolean>
   /** /session-info modal visibility (TUI session-info command). */
   sessionInfoOpen: boolean
+  /** Open / close the /session-info modal. */
+  openSessionInfo: () => void
+  closeSessionInfo: () => void
+  /**
+   * TUI /session-info: fetch session details (POST /api/session-info) and
+   * append them to the scrollback as a read-only text block (kind 'status')
+   * — the TUI pushes a plain text block into the scrollback, no modal.
+   */
+  showSessionInfo: () => Promise<void>
   /** /context modal visibility (TUI context command — context breakdown). */
   contextOpen: boolean
+  /** Open / close the /context detail modal. */
+  openContext: () => void
+  closeContext: () => void
   /** /usage modal visibility — 宿主侧 token 用量聚合 + billing credits。 */
   usageOpen: boolean
   openUsage: () => void
@@ -433,14 +618,6 @@ export type ChatState = {
   /** /timestamps — right-aligned prompt timestamps in the scrollback. */
   showTimestamps: boolean
   toggleTimestamps: () => void
-  /**
-   * Scheduled tasks (/loop) of the active session — TUI tasks pane
-   * "调度任务" section. Fed by scheduled_task_created / fired / deleted
-   * (both the session_notification tag carrier and standalone SSE events;
-   * upserted by taskId so the dual paths dedupe). Cleared on session
-   * switch / new session.
-   */
-  scheduledTasks: ScheduledTask[]
   /** /rewind picker modal visibility (TUI /rewind). */
   rewindOpen: boolean
   openRewind: () => void
@@ -454,85 +631,74 @@ export type ChatState = {
   stashedDraft: string | null
   setStashedDraft: (text: string | null) => void
   /**
-   * Cancel-turn panel (TUI CancelTurnPanel): Esc / [stop] while busy opens
-   * it instead of cancelling immediately — only when the current turn has
-   * running subagents AND no saved preference (see cancelSubagentsPref).
-   * While open it owns the keyboard (1-4 / ↑↓ / Enter confirm, Esc =
-   * keep running, Ctrl+C = direct cancel).
+   * Live composer draft length, mirrored from the Composer's local buffer
+   * for the GLOBAL key handler (useScrollbackKeys Ctrl+C ladder: draft
+   * cleared before a running turn is cancelled). Write-only mirror —
+   * nothing subscribes to it, so per-keystroke updates cost no renders.
    */
-  cancelPanelOpen: boolean
-  openCancelPanel: () => void
-  closeCancelPanel: () => void
+  composerDraftLen: number
   /**
-   * Saved cancel-turn preference (TUI `cancel_subagents_on_turn_cancel`):
-   * true = cancel running subagents with the turn, false = keep them
-   * running, null = ask via the panel (only when subagents are running).
-   * With a saved preference the panel never opens — Esc / [stop] act
-   * directly per it. Persisted to localStorage acpfe.cancelSubagentsOnTurnCancel.
+   * Global Ctrl+C "clear the draft first" custody: the key handler bumps
+   * this nonce; the Composer watches it and clears its local buffer
+   * (text + chips). Kept as a nonce so repeated clears always fire.
    */
-  cancelSubagentsPref: boolean | null
-  setCancelSubagentsPref: (stop: boolean) => void
-  /** True when at least one subagent of the current turn is still running
-   *  (scrollback `subagent` entries via subagentIndex; TUI subagent_sessions). */
-  hasRunningSubagent: () => boolean
-  /**
-   * Esc / [stop] flow (TUI dispatch_cancel_turn): saved preference → cancel
-   * per it; no preference + running subagents → open the cancel panel;
-   * otherwise cancel the turn directly (nothing to prompt about).
-   */
-  requestCancelTurn: () => Promise<void>
-  /** Transient "Switched to mode: X" banner (TUI notices.rs mode_switch_banner). */
-  modeBanner: string | null
-  showModeBanner: (text: string) => void
-  clearModeBanner: () => void
-  /** Composer queue dropdown visibility (TUI queue pane). */
+  composerClearNonce: number
+  clearComposerDraft: () => void
+  /** Composer 内联队列是否展开（无弹窗；顶部 +N / 「N queued」共用）。 */
   queuePanelOpen: boolean
   /** Accepts a plain value or a functional updater (queue pill toggle). */
   setQueuePanelOpen: (open: boolean | ((v: boolean) => boolean)) => void
+  /** Memory modal visibility (TUI /memory). */
+  memoryOpen: boolean
+  openMemory: () => void
+  closeMemory: () => void
+  /** Diff review payloads from diff_review (TUI diff-review modal). */
+  diffReview?: unknown[]
+  /** Diff review modal visibility — notification path only (the request
+   *  path is driven by the x.ai/diff_review entry in xaiRequests). */
+  diffReviewOpen: boolean
+  openDiffReview: () => void
+  closeDiffReview: () => void
+  /** Bumped on hooks_changed / plugins_changed so modals can refresh. */
+  hooksVersion: number
+  // ── extensions modal (TUI /hooks /plugins /skills /marketplace) ──────
+  extensionsOpen: boolean
+  extensionsTab: ExtensionsTab
+  openExtensions: (tab: ExtensionsTab) => void
+  closeExtensions: () => void
+  /** Settings modal (TUI F2 / /settings) — read-only config.toml view + effective permission default. */
+  settingsOpen: boolean
+  openSettings: () => void
+  closeSettings: () => void
+  // ── content search modal (TUI /search panel; /api/search/content) ────
+  contentSearchOpen: boolean
+  /** Prefill for the query input — `/search foo` opens mid-search. */
+  contentSearchPrefill: string
+  openContentSearch: (query?: string) => void
+  closeContentSearch: () => void
+  // ── @ file picker engine state (TUI fuzzy file search) ───────────────
   /**
-   * Local plan-mode flag (Shift+Tab cycle / /plan). Driven by the host's
-   * toggle-plan-mode result when available; otherwise kept local and
-   * nudged by yolo_mode_changed / modes_update payloads.
+   * Live fuzzy file-search session feeding the Composer's @ popover.
+   * Null = closed. Matches arrive via the `search_fuzzy_status` SSE event
+   * (each generation carries the full snapshot); the searchId guards
+   * stale sessions. The Composer owns open/change/close lifecycle.
    */
-  planMode: boolean
-  /** Cancel the running turn — cancel panel options 1 / 3 / 4 (+ Ctrl+C). */
-  cancelTurn: (opts?: {
-    /** Also cancel every running subagent (panel "Stop running" / "Always stop"). */
-    cancelSubagents?: boolean
-    /** Legacy: additionally kill every running bg_task (incl. top strip). */
-    stopTasks?: boolean
-    /** Empty the composer send queue. */
-    clearQueue?: boolean
-  }) => Promise<void>
-  /** /plan — enter plan mode only (no-op while already in plan). */
-  togglePlanMode: () => Promise<void>
-  /** Shift+Tab mode cycle: Normal → Plan → Auto → Always-approve → Normal. */
-  cycleMode: () => Promise<void>
-  /** /auto — toggle auto permission mode (normal ↔ auto, plan ↔ plan·auto). */
-  setAutoMode: () => Promise<void>
-  /** /always — toggle always-approve (normal ↔ always, plan ↔ plan·always). */
-  setAlwaysApproveMode: () => Promise<void>
-  /** POST /api/permissions-reset — forget remembered permission rules. */
-  resetPermissions: () => Promise<void>
+  fileSearch: FileSearchState | null
+  toggleTool: (id: string) => void
+  toggleThought: (id: string) => void
+  /** Expand/collapse long user prompts (←/→ / click). */
+  toggleUser: (id: string) => void
+  /** → expand / ← collapse selected foldable block or group */
+  setExpanded: (expanded: boolean) => void
+  /**
+   * Inline fold toggle for selected (←/→/click path). Not the viewer.
+   * Kept for Space / group headers; tools use setExpanded via arrows/click.
+   */
+  toggleSelected: () => void
+}
 
-  // ── goal mode (TUI /goal) — HOST-ENGINE control ───────────────────
-  // The host owns the goal tracker and /api/goal/* endpoints (the wire
-  // defines goal_updated notifications but NO goal control methods, so
-  // the engine lives host-side, not in prompts).
-  goalSet: (objective: string, tokenBudget?: number) => void
-  goalStatus: () => void
-  goalPause: () => void
-  goalResume: () => void
-  goalClear: () => void
-  // ── workflow control (TUI /workflows p/r/x) — same protocol gap: no
-  // wire method for workflow control, so pause/resume/stop go through
-  // the prompt path with a local optimistic row update first.
-  workflowControl: (runId: string, action: 'pause' | 'resume' | 'stop') => void
-  /** "Save script" — local-only clipboard copy of the run's script payload. */
-  saveWorkflowScript: (runId: string) => Promise<void>
-  /** Memory system — /flush: ask the host to persist session knowledge. */
-  memoryFlush: () => Promise<void>
-
+/** 动作入口：init / send / 会话管理 / host 管理 / 事件分发等顶层动作。 */
+export interface ChatActions {
   init: () => () => void
   send: (
     text: string,
@@ -540,6 +706,7 @@ export type ChatState = {
     opts?: { fromShell?: boolean; promptId?: string },
   ) => Promise<void>
   cancel: () => Promise<void>
+  handleEvent: (ev: AcpEvent) => void
   /**
    * Append a LOCAL-ONLY scrollback entry (shell mode output, etc.) —
    * rendered like a normal row but never sent to the agent. Kind is
@@ -579,8 +746,16 @@ export type ChatState = {
   dismissNotice: () => void
   /** x.ai/recap — fire-and-forget "where was I" summary. */
   requestRecap: () => Promise<void>
-  /** x.ai/session/fork — fork the current session. */
-  forkSession: (opts?: Record<string, unknown>) => Promise<void>
+  /**
+   * Fork the current session (x.ai/session/fork; TUI /fork). On success the
+   * FE switches to the forked session (TUI switches to the peer agent) and
+   * refreshes the session lists.
+   * - `targetPromptIndex` — fork keeps turns 0..=k (0-based, inclusive;
+   *   agent ForkSessionRequest.target_prompt_index). Omitted → full copy.
+   * - `worktree` — TUI /fork --worktree: derive in a fresh git worktree via
+   *   x.ai/git/worktree/resume_session (full history; no truncation).
+   */
+  forkSession: (opts?: ForkSessionOpts) => Promise<void>
   /** x.ai/session/rename. */
   renameSession: (title: string) => Promise<void>
   /** x.ai/subagent/cancel. */
@@ -689,81 +864,20 @@ export type ChatState = {
   stopTopTaskPolling: () => void
   /** Switch the active session to a historical one and load its tail. */
   continueSession: (sessionId: string, cwd: string) => Promise<void>
-  handleEvent: (ev: AcpEvent) => void
-  toggleTool: (id: string) => void
-  toggleThought: (id: string) => void
-  /** Expand/collapse long user prompts (←/→ / click). */
-  toggleUser: (id: string) => void
-  setFocus: (mode: FocusMode) => void
-  selectEntry: (id: string | null) => void
-  selectDelta: (delta: number) => void
-  /** → expand / ← collapse selected foldable block or group */
-  setExpanded: (expanded: boolean) => void
-  /**
-   * Inline fold toggle for selected (←/→/click path). Not the viewer.
-   * Kept for Space / group headers; tools use setExpanded via arrows/click.
-   */
-  toggleSelected: () => void
-  /** Open TUI block viewer for entry (Enter / double-click). */
-  openViewer: (id?: string | null) => void
-  /**
-   * Open the block viewer for a task by id — used by the top task strip
-   * and history-replay rows. Live rows (bgTaskIndex) keep the
-   * entry-backed viewer; everything else gets a session-scoped task view
-   * whose log is reconstructed by the host (pagination-independent).
-   */
-  openTaskViewer: (taskId: string, opts?: Partial<ViewerTask>) => void
-  closeViewer: () => void
-  /**
-   * On-demand fetch of a subagent session's stored updates (block viewer
-   * timeline, TUI replay_inherited_updates 同款): reads the child
-   * session's updates.jsonl via the host's session-updates endpoint
-   * (same cwd as the parent) and replays the envelopes through the same
-   * view processor as live events. No-op unless the view exists and is
-   * idle with an empty timeline.
-   */
-  fetchSubagentView: (childSessionId: string) => Promise<void>
-  /**
-   * 上滑加载子代理时间线更早的一页（负 offset 分页，主 scrollback
-   * loadMoreHistory 同款）：新页 prepend 到时间线前面，跨页截断的
-   * assistant/thought 缝合。仅回放填充的视图（loadedCount > 0）提供——
-   * 纯 live 捕获的视图历史从 spawn 起已完整，回放会与 live 重复。
-   * 返回 true = 加载成功（可能还有更多），false = 无更多/失败。
-   */
-  loadMoreSubagentView: (childSessionId: string) => Promise<boolean>
-  toggleGroupExpansion: (anchorId: string) => void
-  /** Open / close the /session-info modal. */
-  openSessionInfo: () => void
-  closeSessionInfo: () => void
-  /** Open / close the /context detail modal. */
-  openContext: () => void
-  closeContext: () => void
-  /**
-   * TUI /session-info: fetch session details (POST /api/session-info) and
-   * append them to the scrollback as a read-only text block (kind 'status')
-   * — the TUI pushes a plain text block into the scrollback, no modal.
-   */
-  showSessionInfo: () => Promise<void>
-  // ── MCP management (TUI /mcps modal; host endpoints may be unsupported —
-  //    every method rethrows so the panel renders the failure inline) ──
-  /** GET /api/mcp/list — configured servers (host reads config.toml). */
-  mcpList: () => Promise<McpListServer[]>
-  /** POST /api/mcp-toggle — enable/disable a server. */
-  mcpToggle: (name: string, enabled: boolean) => Promise<void>
-  /** POST /api/mcp-toggle-tool — enable/disable one tool of a server. */
-  mcpToggleTool: (serverName: string, toolName: string, enabled: boolean) => Promise<void>
-  /** POST /api/mcp-add — add a stdio server. */
-  mcpAdd: (server: {
-    name: string
-    command: string
-    args?: string[]
-    env?: Record<string, string>
-  }) => Promise<void>
-  /** POST /api/mcp-remove — remove a server. */
-  mcpRemove: (name: string) => Promise<void>
-  /** POST /api/mcp-auth-trigger — OAuth trigger; returns url/code when offered. */
-  mcpAuthTrigger: (name: string) => Promise<{ url?: string; code?: string; message?: string }>
+  /** Memory system — /flush: ask the host to persist session knowledge. */
+  memoryFlush: () => Promise<void>
 }
+
+export type ChatState = ChatConnState &
+  ChatTimelineState &
+  ChatHistoryState &
+  ChatTurnState &
+  ChatModeState &
+  ChatAgentExtState &
+  ChatMcpState &
+  ChatGoalWorkflowState &
+  ChatUiState &
+  ChatActions
 
 export type SetState = (
   partial:

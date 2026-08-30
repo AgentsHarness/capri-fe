@@ -68,6 +68,23 @@ function parseSummaryRow(o: Record<string, unknown>, fallbackCwd: string): Works
 }
 
 export const sessionsRpc = {
+  async newSession(this: TransportCore, config: {
+    cwd?: string
+    additionalDirectories?: string[]
+    mcpServers?: unknown[]
+    /** Permission-mode seeds (TUI's yoloMode/autoMode) → session/new `_meta`. */
+    meta?: Record<string, unknown>
+  } = {}) {
+    const res = await this.fetch(this.url('/api/session'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    })
+    const data = await res.json()
+    if (!res.ok || data.ok === false) throw new Error(data.error || 'session failed')
+    return data
+  },
+
   async listSessions(this: TransportCore): Promise<{ sessions: SessionInfo[]; nextCursor?: string; meta?: Record<string, unknown> }> {
     const res = await this.fetch(this.url('/api/sessions'), {
       method: 'POST',
@@ -577,10 +594,18 @@ export const sessionsRpc = {
     offset?: number
     includeContent?: boolean
   }): Promise<unknown> {
+    // Agent hard-validates the paging window (session_search.rs
+    // validate_search_window, 2026-08 sync): limit 1..=100, offset <=
+    // 1000 — out-of-range returns invalid_params. Clamp here so every
+    // caller stays on the safe side.
     const body: Record<string, unknown> = { query: opts.query }
     if (opts.cwd) body.cwd = opts.cwd
-    if (opts.limit !== undefined) body.limit = opts.limit
-    if (opts.offset !== undefined) body.offset = opts.offset
+    if (opts.limit !== undefined) {
+      body.limit = Math.min(Math.max(1, Math.floor(opts.limit)), 100)
+    }
+    if (opts.offset !== undefined) {
+      body.offset = Math.max(0, Math.min(Math.floor(opts.offset), 1000))
+    }
     if (opts.includeContent !== undefined) body.includeContent = opts.includeContent
     return unwrapExtResult(await xaiCall(this, '/api/session/search', body))
   },

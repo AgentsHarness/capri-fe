@@ -17,6 +17,8 @@ vi.mock('../store/promptQueue', () => ({
 
 import { useChatStore } from '../store/chat'
 import { usePromptQueue } from '../store/promptQueue'
+import { bumpSlashRecency } from './recency'
+import { setCachedSkills } from './skills'
 import {
   filterSlashCommands,
   isMultilineEnabled,
@@ -114,7 +116,7 @@ beforeEach(() => {
   vi.mocked(useChatStore.getState).mockReturnValue(fake as never)
   // registry 的 status() 走 setState；让 setState 真实写入 fake
   vi.mocked(useChatStore.setState).mockImplementation((partial) => {
-    Object.assign(fake, partial as Record<string, unknown>)
+    Object.assign(fake, partial as unknown as Record<string, unknown>)
     return fake as never
   })
   vi.mocked(usePromptQueue.getState).mockReturnValue({
@@ -158,8 +160,11 @@ describe('matchSlash', () => {
 })
 
 describe('mergedSlashCommands', () => {
-  it('无 agent 命令 → 本地列表', () => {
-    expect(mergedSlashCommands([])).toBe(slashCommands)
+  it('无 agent 命令 → 本地列表内容一致（skills 仍会追加，不再返回同一引用）', () => {
+    const merged = mergedSlashCommands([])
+    for (const c of slashCommands) {
+      expect(merged.find((m) => m.name === c.name)).toBe(c)
+    }
   })
 
   it('agent 命令追加；与本地名/别名冲突时跳过', () => {
@@ -236,6 +241,30 @@ describe('slash command runs — 会话类', () => {
     expect(fake.memoryFlush).toHaveBeenCalled()
     run('workflows')
     expect(fake.setWorkflowPanelOpen).toHaveBeenCalledWith(true)
+  })
+
+  it('/fork 参数（TUI parse_fork_args 对齐）：--worktree / --no-worktree / 互斥 / directive 拒绝', () => {
+    run('fork', '')
+    expect(fake.forkSession).toHaveBeenLastCalledWith({})
+    run('fork', '--worktree')
+    expect(fake.forkSession).toHaveBeenLastCalledWith({ worktree: true })
+    run('fork', '  --no-worktree  ')
+    expect(fake.forkSession).toHaveBeenLastCalledWith({ worktree: false })
+    const callsBefore = fake.forkSession.mock.calls.length
+    run('fork', '--worktree --no-worktree')
+    expect(fake.appendLocalEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'error', text: expect.stringContaining('互斥') }),
+    )
+    run('fork', '--worktree --worktree')
+    expect(fake.appendLocalEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'error', text: expect.stringContaining('重复') }),
+    )
+    // 未知 bareword 视作 directive 开头（TUI 语义），FE 无首条提示通道 → 拒绝。
+    run('fork', 'investigate the bug')
+    expect(fake.appendLocalEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'error', text: expect.stringContaining('首条提示') }),
+    )
+    expect(fake.forkSession.mock.calls.length).toBe(callsBefore)
   })
 
   it('扩展命令 /hooks /plugins /skills /marketplace', () => {
@@ -544,5 +573,47 @@ describe('/help', () => {
       kind: 'session_event',
       text: expect.stringContaining('/new / /clear'),
     })
+  })
+})
+describe('slash 菜单 recency + skills 分组（TUI 1.0.9 对齐）', () => {
+  it('skills 追加在 agent 命令之后，source 为 skill；与已有名冲突时跳过', () => {
+    setCachedSkills([
+      { name: 'zskill', scope: 'project' },
+      { name: 'deploy' }, // 与上面用例注入的 agent 命令无关，但可能与本地冲突
+      { name: 'model' }, // 与本地命令冲突 → 跳过
+    ])
+    const merged = mergedSlashCommands([{ name: 'deploy', description: 'd' }])
+    const skill = merged.find((c) => c.name === 'zskill')
+    expect(skill).toMatchObject({ name: 'zskill', source: 'skill' })
+    expect(merged.filter((c) => c.name === 'model')).toHaveLength(1)
+    expect(merged.filter((c) => c.name === 'deploy')).toHaveLength(1)
+    // skills 在 agent 命令之后
+    expect(merged.findIndex((c) => c.name === 'zskill')).toBeGreaterThan(
+      merged.findIndex((c) => c.name === 'deploy'),
+    )
+    skill!.run('arg')
+    expect(fake.send).toHaveBeenCalledWith('/zskill arg')
+    setCachedSkills([])
+  })
+
+  it('bare / 菜单：最近使用的命令排前，skills 沉底并按字母序', () => {
+    setCachedSkills([
+      { name: 'zskill' },
+      { name: 'askill' },
+    ])
+    bumpSlashRecency('model')
+    const rows = filterSlashCommands('/')
+    const names = rows.map((r) => r.cmd.name)
+    const modelIdx = names.indexOf('model')
+    const settingsIdx = names.indexOf('settings')
+    expect(modelIdx).toBeGreaterThan(-1)
+    // 用过的 model 排在未用的 settings 之前（同组内 recency 优先）
+    expect(modelIdx).toBeLessThan(settingsIdx)
+    // skills 在所有命令之后，且按字母序
+    const aIdx = names.indexOf('askill')
+    const zIdx = names.indexOf('zskill')
+    expect(aIdx).toBeGreaterThan(settingsIdx)
+    expect(zIdx).toBeGreaterThan(aIdx)
+    setCachedSkills([])
   })
 })

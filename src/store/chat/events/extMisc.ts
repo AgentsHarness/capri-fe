@@ -1,4 +1,5 @@
 import type { AcpEvent, AgentCommand } from '../../../api/types'
+import type { FileSearchMatch } from '../typesPublic'
 import { applyQueueChanged } from '../../promptQueue'
 import type { ChatState, SetState } from '../types'
 import { runtime } from '../globals'
@@ -10,6 +11,8 @@ import {
   promptIdMismatch,
   tailAlreadyTurnEnded,
   turnEndMarkerText,
+  cancellationContextText,
+  tailHasCancellationDetail,
 } from '../turn'
 import { applySessionModelState } from '../model'
 import { appendEntry } from '../entries'
@@ -147,6 +150,8 @@ export function handleExtMiscEvent(
         // 守卫 + 幂等 settle）；失败/取消标记是本 rail 的职责（done 对
         // error/rate_limit 不追加标记），收口后按 tailAlreadyTurnEnded
         // 去重补渲染（TUI viewer 的 stop_reason 映射同款）。
+        // cancellationContext（1.0.9+ agent 顶层新增）：hook/tool 级取消
+        // 原因，取消标记后补一行细节；旧 agent 无该键，静默跳过。
         const railEndTs = s.turnStartedAt
         finalizeTurn(set, get, stopReason)
         if (
@@ -166,6 +171,16 @@ export function handleExtMiscEvent(
               ...(warning ? { warning } : {}),
             })
           }
+        }
+        // cancellationContext（1.0.9+ agent 顶层新增）：hook/tool 级取消
+        // 原因，取消标记后补一行细节；旧 agent 无该键，静默跳过。
+        // turn_completed rail 同回合也会渲染同文本行，按尾部去重。
+        const cancelDetail = cancellationContextText(p)
+        if (
+          cancelDetail &&
+          !tailHasCancellationDetail(get().entries, cancelDetail)
+        ) {
+          appendEntry(set, { kind: 'session_event', text: cancelDetail })
         }
         break
       }
@@ -242,6 +257,50 @@ export function handleExtMiscEvent(
         appendEntry(set, {
           kind: 'status',
           text: `扩展通知: ${ev.method ?? 'x.ai/*'}`,
+        })
+        break
+      }
+      case 'search_fuzzy_status': {
+        // @ file-picker engine stream (workspace run_fuzzy_notifications,
+        // forwarded by the host as this typed event): {sessionId, searchId,
+        // matches: [{path, score, matchedIndices}], total, done,
+        // generation}. Each generation carries the FULL match snapshot —
+        // replace wholesale. Feeds only the Composer popover; no
+        // scrollback row (the TUI shows this inside its /search panel).
+        // A searchId that isn't the picker's current session is stale and
+        // dropped; when the picker is closed (fileSearch null) the event
+        // is dropped too.
+        const cur = get().fileSearch
+        if (!cur) break
+        const p = (ev.params ?? {}) as Record<string, unknown>
+        const searchId = typeof p.searchId === 'string' ? p.searchId : ''
+        if (!searchId || searchId !== cur.searchId) break
+        const matches: FileSearchMatch[] = []
+        if (Array.isArray(p.matches)) {
+          for (const m of p.matches) {
+            if (m == null || typeof m !== 'object') continue
+            const o = m as Record<string, unknown>
+            if (typeof o.path !== 'string' || !o.path) continue
+            matches.push({
+              path: o.path,
+              ...(typeof o.score === 'number' ? { score: o.score } : {}),
+              ...(Array.isArray(o.matchedIndices)
+                ? {
+                    matchedIndices: o.matchedIndices.filter(
+                      (x): x is number => typeof x === 'number',
+                    ),
+                  }
+                : {}),
+            })
+          }
+        }
+        set({
+          fileSearch: {
+            ...cur,
+            matches,
+            done: p.done === true,
+            ...(typeof p.total === 'number' ? { total: p.total } : {}),
+          },
         })
         break
       }
@@ -384,6 +443,27 @@ export function handleExtMiscEvent(
             kind: 'session_event',
             text,
             warning: sev === 'error' || sev === 'critical',
+          })
+        }
+        break
+      }
+      case 'session_interjection': {
+        // x.ai/session/interjection (typed carrier for interjection.rs's
+        // broadcast_interjection): the agent injected a queued follow-up
+        // (or an explicit x.ai/interject) into the running turn at a safe
+        // gap. Wire params: {sessionId, text, interjectionId?}. Rendered
+        // as a session_event row so the user sees WHERE their steer landed
+        // (TUI shows the injected text inline); no optimistic local row —
+        // the broadcast is the single source (the pager dedupes its own
+        // echo by interjectionId, which the FE never mints).
+        const p = (ev.params ?? {}) as Record<string, unknown>
+        const text = typeof p.text === 'string' ? p.text.trim() : ''
+        if (!text) break
+        const sid = (ev as { sessionId?: string }).sessionId
+        if (!sid || sid === get().sessionId) {
+          appendEntry(set, {
+            kind: 'session_event',
+            text: `已插话（steer）: ${text}`,
           })
         }
         break
