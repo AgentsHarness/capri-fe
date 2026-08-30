@@ -389,6 +389,7 @@ export const sessionsRpc = {
       )
     }
     // RewindResponse detail fields (snake_case or camelCase on the wire):
+    //   target_prompt_index — 回退目标轮次（本地即时截断用）
     //   prompt_text    — 回退点的 prompt 原文（Composer 恢复用）
     //   reverted_files — 实际还原（写回/删除）的文件
     //   clean_files    — 本就干净的文件
@@ -415,7 +416,13 @@ export const sessionsRpc = {
         conflictType: String(c.conflict_type ?? c.conflictType ?? ''),
       }))
       .filter((c) => c.path)
+    let rawTarget: number | undefined
+    if (typeof o.target_prompt_index === 'number') rawTarget = o.target_prompt_index
+    else if (typeof o.targetPromptIndex === 'number') rawTarget = o.targetPromptIndex
     return {
+      ...(rawTarget != null && Number.isFinite(rawTarget)
+        ? { targetPromptIndex: rawTarget }
+        : {}),
       ...(rawPrompt && rawPrompt.trim() ? { promptText: rawPrompt } : {}),
       ...(strArr('reverted_files', 'revertedFiles')
         ? { revertedFiles: strArr('reverted_files', 'revertedFiles') }
