@@ -99,6 +99,8 @@ export function toolHasExpandableBody(
         return !!(d.content || d.citations.length || d.error)
       case 'use_tool':
         return d.args.length > 0 || !!d.output || !!d.error
+      case 'search_tool':
+        return d.results.length > 0 || !!d.error
       case 'generic':
         return d.inputArgs.length > 0 || !!d.output || !!d.error
     }

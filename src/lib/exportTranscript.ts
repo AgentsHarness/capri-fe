@@ -146,8 +146,11 @@ function toolSummaryLine(e: Extract<ScrollEntry, { kind: 'tool' }>): string {
   const failed = e.status === 'failed' || e.status === 'error'
   const { verb } = toolHeader(e.kindName, false)
   const extra = e.raw
-    ? toolHeaderExtra(e.raw, e.kindName, failed, e.mergedRaws)
+    ? toolHeaderExtra(e.raw, e.kindName, failed, e.mergedRaws, { status: e.status })
     : null
+  // TUI export for a subagent message row is the bare sentence itself
+  // (`SentMessagePresentation::title()`), with no `Verb: ` prefix.
+  if (extra?.bare) return `- ${extra.bare}`
   let target = extra?.target ?? e.title ?? ''
   let suffix = extra?.suffix
   const detail = e.raw ? extractToolDetail(e.raw, e.kindName) : null

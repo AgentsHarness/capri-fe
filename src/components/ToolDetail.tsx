@@ -11,11 +11,14 @@ import {
   INLINE_MAX,
   READ_FIRST,
   READ_LAST,
+  discoveredToolAction,
   extractToolDetail,
   truncateLines,
   type DiffLine,
   type ToolDetail as Detail,
 } from '../scrollback/toolDetail'
+import { mcpTitleizeSegment, pathForSurface } from '../scrollback/toolPaths'
+import { useChatStore } from '../store/chat'
 import { IconGlyph } from './IconGlyph'
 import { fmtBytes } from '../format'
 import { Ansi } from './Ansi'
@@ -27,6 +30,9 @@ import { Ansi } from './Ansi'
  * Keep small (≤250) so mobile DOM stays light — load-more adds one page at a time.
  */
 const VIEWER_PAGE_LINES = 200
+
+/** TUI web_search `MAX_INLINE_SOURCES` — domains shown before "+N more". */
+const MAX_INLINE_SOURCES = 3
 
 function MoreLinesButton({
   total,
@@ -102,6 +108,8 @@ function DetailBody({ d, full }: { d: Detail; full: boolean }) {
       return <FetchBody d={d} full={full} />
     case 'web_search':
       return <WebSearchBody d={d} full={full} />
+    case 'search_tool':
+      return <SearchToolBody d={d} />
     case 'use_tool':
       return <UseToolBody d={d} full={full} />
     case 'generic':
@@ -265,7 +273,10 @@ function ReadBody({
     }
     return <MetaLine>(image)</MetaLine>
   }
-  if (d.media === 'pdf') return <MetaLine>(pdf)</MetaLine>
+  if (d.media === 'pdf') {
+    // TUI header suffix carries the page count; the body has nothing to show.
+    return <MetaLine>{d.pages != null ? `(${d.pages} pages)` : '(pdf)'}</MetaLine>
+  }
   if (d.empty) return <MetaLine>(empty)</MetaLine>
   if (!d.content) return <MetaLine>(no content)</MetaLine>
 
@@ -503,6 +514,9 @@ function DiffRow({ line, gutterW }: { line: DiffLine; gutterW: number }) {
 // ── search ───────────────────────────────────────────────────────────
 
 function SearchBody({ d }: { d: Extract<Detail, { kind: 'search' }> }) {
+  // TUI `make_relative_path`: grep result paths are stored cwd-relative.
+  const cwd = useChatStore((s) => s.historyCwd ?? s.cwd)
+  const rel = (p: string) => pathForSurface(p, 'expanded', { cwd })
   if (d.error) return <ErrorLine text={d.error} />
 
   const modeLabel =
@@ -534,7 +548,7 @@ function SearchBody({ d }: { d: Extract<Detail, { kind: 'search' }> }) {
             className="px-2 font-mono text-[12px]"
             style={{ color: 'var(--color-gn-path)' }}
           >
-            {fm.path}
+            {rel(fm.path)}
           </div>
           {fm.matches.map((m, j) => (
             <div key={j} className="flex px-2 font-mono text-[12px] leading-[1.4]">
@@ -556,7 +570,7 @@ function SearchBody({ d }: { d: Extract<Detail, { kind: 'search' }> }) {
             className="px-2 font-mono text-[12px]"
             style={{ color: 'var(--color-gn-path)' }}
           >
-            {p}
+            {rel(p)}
           </div>
         ))}
     </div>
@@ -613,6 +627,9 @@ function WebSearchBody({
   full: boolean
 }) {
   if (d.error) return <ErrorLine text={d.error} />
+  // TUI sources_line: deduplicated domains, first 3 inline, rest counted.
+  const shown = d.sites.slice(0, MAX_INLINE_SOURCES)
+  const remaining = Math.max(0, d.sites.length - MAX_INLINE_SOURCES)
   return (
     <div className="space-y-1">
       {d.content ? (
@@ -620,6 +637,13 @@ function WebSearchBody({
       ) : (
         <MetaLine>(no content)</MetaLine>
       )}
+      {shown.length > 0 ? (
+        <div className="px-1 text-[12px] text-gn-muted">
+          {'  '}Sources:{' '}
+          <span className="text-gn-fg">{shown.join(', ')}</span>
+          {remaining > 0 ? ` (+${remaining} more)` : ''}
+        </div>
+      ) : null}
       {d.citations.length > 0 ? (
         <div className="space-y-0.5 px-1">
           {d.citations.map((c, i) => (
@@ -629,6 +653,32 @@ function WebSearchBody({
           ))}
         </div>
       ) : null}
+    </div>
+  )
+}
+
+// ── search tool discovery ────────────────────────────────────────────
+
+/**
+ * TUI SearchToolCallBlock body: numbered rows of `Action  Server`, both halves
+ * title-cased, server ghosted. The action drops the trusted `server__` prefix.
+ */
+function SearchToolBody({ d }: { d: Extract<Detail, { kind: 'search_tool' }> }) {
+  if (d.error) return <ErrorLine text={d.error} />
+  if (!d.results.length) return <MetaLine>(no results)</MetaLine>
+  return (
+    <div className="space-y-0.5 py-0.5">
+      {d.results.map((t, i) => (
+        <div key={`${t.name}-${i}`} className="px-2 font-mono text-[12px] leading-[1.4]">
+          <span className="mr-2 text-gn-muted">{i + 1}.</span>
+          <span className="font-bold text-gn-fg">
+            {mcpTitleizeSegment(discoveredToolAction(t))}
+          </span>
+          {t.server ? (
+            <span className="ml-2 text-gn-gray-dim">{mcpTitleizeSegment(t.server)}</span>
+          ) : null}
+        </div>
+      ))}
     </div>
   )
 }

@@ -83,6 +83,8 @@ export const EntryView = memo(function EntryView({
   const storeSelectEntry = useChatStore((s) => s.selectEntry)
   const cancelSubagent = useChatStore((s) => s.cancelSubagent)
   const killTask = useChatStore((s) => s.killTask)
+  // 工具行路径打印基准目录（TUI path_for_tool_surface 的 cwd）。
+  const sessionCwd = useChatStore((s) => s.historyCwd ?? s.cwd)
   const toggleTool = actions?.toggleTool ?? storeToggleTool
   const toggleThought = actions?.toggleThought ?? storeToggleThought
   const toggleUser = actions?.toggleUser ?? storeToggleUser
@@ -170,6 +172,7 @@ export const EntryView = memo(function EntryView({
     thoughtText,
     bodyRef,
     inMini: actions != null,
+    cwd: sessionCwd,
   }
 
   if (e.kind === 'user') return <UserEntry e={e} chrome={chrome} />

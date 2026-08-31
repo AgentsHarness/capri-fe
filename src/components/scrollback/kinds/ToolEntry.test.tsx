@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { render } from '@testing-library/react'
-import type { AcpEvent, ToolCall } from '../../../api/types'
+import type { AcpEvent, ScrollEntry, ToolCall } from '../../../api/types'
 import { useChatStore } from '../../../store/chat'
 import { clearSuppressedTools } from '../../../store/chat/tools'
 import { EntryView } from '../EntryView'
@@ -111,5 +111,124 @@ describe('匿名工具行的渲染（store → DOM）', () => {
     expect(headerText(r.container)).not.toContain('SKILL.md')
     expect(headerText(r.container)).not.toContain('Read')
     r.unmount()
+  })
+})
+
+/** 直接构造 tool 条目（跳过 store），验证 TUI 行头复刻规则。 */
+function toolEntry(
+  over: Partial<Extract<ScrollEntry, { kind: 'tool' }>> & {
+    rawInput: Record<string, unknown>
+    /** wire 上的 tool_call title（宿主 stamped，如 "Skill: deploy"）。 */
+    rawTitle?: string
+  },
+): ScrollEntry {
+  const { rawInput, rawTitle, ...rest } = over
+  return {
+    id: `t-${Math.random().toString(36).slice(2, 8)}`,
+    kind: 'tool',
+    title: rawTitle ?? (rawInput.path as string) ?? (rawInput.tool_name as string) ?? '',
+    verb: 'v',
+    status: 'completed',
+    ...rest,
+    raw: { toolCallId: 'x', title: rawTitle, rawInput } as never,
+  } as ScrollEntry
+}
+
+function renderHeader(e: ScrollEntry): string {
+  const r = render(
+    <EntryView e={e} selected={false} pendingFreeze={false} now={Date.now()} />,
+  )
+  const text = headerText(r.container)
+  r.unmount()
+  return text
+}
+
+describe('TUI 行头复刻（surface / 名词改写）', () => {
+  beforeEach(() => {
+    useChatStore.setState({ cwd: '/Users/benin/ccwork/acp-fe', historyCwd: undefined })
+  })
+
+  it('折叠 read 行只显示文件名，不打印目录', () => {
+    const text = renderHeader(
+      toolEntry({
+        kindName: 'read',
+        rawInput: { path: '/Users/benin/ccwork/acp-fe/src/scrollback/toolDetail.ts' },
+      }),
+    )
+    expect(text).toMatch(/Read\s*toolDetail\.ts/)
+    expect(text).not.toContain('/Users/benin')
+    expect(text).not.toContain('src/scrollback')
+  })
+
+  it('行内展开 → cwd 相对路径', () => {
+    const text = renderHeader(
+      toolEntry({
+        kindName: 'read',
+        expanded: true,
+        rawInput: { path: '/Users/benin/ccwork/acp-fe/src/scrollback/toolDetail.ts' },
+      }),
+    )
+    expect(text).toContain('src/scrollback/toolDetail.ts')
+    expect(text).not.toContain('/Users/benin')
+  })
+
+  it('cwd 外的路径 → 规范化绝对路径（不硬凑相对）', () => {
+    const text = renderHeader(
+      toolEntry({
+        kindName: 'read',
+        rawInput: { path: '/etc/./hosts' },
+      }),
+    )
+    expect(text).toMatch(/Read\s*hosts/)
+  })
+
+  it('MCP 调用行 → Server 名词 + Action', () => {
+    const text = renderHeader(
+      toolEntry({ kindName: 'mcp', rawInput: { tool_name: 'linear__save_issue' } }),
+    )
+    expect(text).toMatch(/Linear\s*Save Issue/)
+    expect(text).not.toContain('Ran')
+  })
+
+  it('子代理消息行 → 整句标题，无 verb 前缀', () => {
+    const text = renderHeader(
+      toolEntry({
+        kindName: 'active_agent_message',
+        rawTitle: 'Sending message to subagent',
+        status: 'completed',
+        rawInput: { message: 'hi' },
+      }),
+    )
+    expect(text).toBe('Sent message to subagent')
+  })
+
+  it('Skill 工具调用行 → "Skill: name" 拆成名词与内容', () => {
+    const text = renderHeader(
+      toolEntry({
+        kindName: 'skill',
+        rawTitle: 'Skill: deploy',
+        rawInput: { skill: 'deploy', variant: 'Skill' },
+      }),
+    )
+    expect(text).toMatch(/Skill\s*deploy/)
+    expect(text).not.toContain('Ran')
+  })
+
+  it('write 工具 → Creating 名词（TUI with_prefix("Creating ")）', () => {
+    const text = renderHeader(
+      toolEntry({ kindName: 'write', rawInput: { file_path: '/x/y/new.ts' } }),
+    )
+    expect(text).toMatch(/Creating\s*new\.ts/)
+  })
+
+  it('workflows/*.rhai → "Editing workflow {stem}"', () => {
+    const text = renderHeader(
+      toolEntry({
+        kindName: 'edit',
+        rawInput: { file_path: '/x/.grok/workflows/review-changes.rhai' },
+      }),
+    )
+    expect(text).toMatch(/Editing workflow\s*review-changes/)
+    expect(text).not.toContain('.rhai')
   })
 })
