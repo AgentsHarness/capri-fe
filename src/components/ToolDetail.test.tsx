@@ -111,9 +111,26 @@ describe('ToolDetail — read', () => {
     expect(c4.textContent).toContain('(pdf)')
   })
 
-  it('图片内容 → (image) 占位（content 缺失时）', () => {
+  it('图片 base64 内容 → 渲染 <img>（wire mime 包装成 data URI）', () => {
+    // 1x1 PNG，真实 base64，长度足以通过 readImageSrc 校验
+    const png =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
     const { container } = renderDetail(
-      { rawInput: { path: 'a.png' }, rawOutput: { Read: { ImageContent: { data: 'z' } } } },
+      {
+        rawInput: { path: 'a.png' },
+        rawOutput: { Read: { ImageContent: { data: png, mime_type: 'image/png' } } },
+      },
+      'read',
+    )
+    const img = container.querySelector('img')
+    expect(img).not.toBeNull()
+    expect(img!.getAttribute('src')).toBe(`data:image/png;base64,${png}`)
+    expect(container.textContent).not.toContain('(image)')
+  })
+
+  it('图片内容缺失/无效 → (image) 占位（content 缺失时）', () => {
+    const { container } = renderDetail(
+      { rawInput: { path: 'a.png' }, rawOutput: { Read: { ImageContent: {} } } },
       'read',
     )
     expect(container.textContent).toContain('(image)')

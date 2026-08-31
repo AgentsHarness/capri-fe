@@ -177,12 +177,23 @@ describe('extractToolDetail — read', () => {
     })
   })
 
-  it('internally-tagged ImageContent → media image', () => {
+  it('internally-tagged ImageContent → media image + base64 内容', () => {
     const d = detail(
-      { rawInput: { target_file: 'i.png' }, rawOutput: { type: 'ReadFile', ImageContent: { data: 'aGk=' } } },
+      {
+        rawInput: { target_file: 'i.png' },
+        rawOutput: {
+          type: 'ReadFile',
+          ImageContent: { data: 'aGk=', mime_type: 'image/png' },
+        },
+      },
       'read',
     )
-    expect(d).toMatchObject({ kind: 'read', media: 'image' })
+    expect(d).toMatchObject({
+      kind: 'read',
+      media: 'image',
+      content: 'aGk=',
+      imageMime: 'image/png',
+    })
   })
 
   it('internally-tagged 错误变体 → error', () => {
@@ -226,13 +237,13 @@ describe('extractToolDetail — read', () => {
       { rawInput: { path: 'a.png' }, rawOutput: { Read: { ImageContent: { data: 'z' } } } },
       'read',
     )
-    expect(d2).toMatchObject({ media: 'image' })
+    expect(d2).toMatchObject({ media: 'image', content: 'z' })
 
     const d3 = detail(
       { rawInput: { path: 'a.png' }, rawOutput: { Read: { Image: { data: 'z' } } } },
       'read',
     )
-    expect(d3).toMatchObject({ media: 'image' })
+    expect(d3).toMatchObject({ media: 'image', content: 'z' })
 
     const d4 = detail(
       { rawInput: { path: 'a.pdf' }, rawOutput: { Read: { Pdf: { data: 'z' } } } },
