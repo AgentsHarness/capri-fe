@@ -42,6 +42,13 @@ export type EntryViewProps = {
    */
   patch?: Partial<ScrollEntry>
   /**
+   * 相邻独立 image 行的组级 gallery 点击回调（主 scrollback 聚合容器
+   * 传入；稳定引用由调用方保证）。缺省 → ImageEntry 退回 openViewer。
+   */
+  onOpenImage?: (entryId: string) => void
+  /** 关闭本行的 hover/选中框（图片画廊组：框由组容器统一绘制）。 */
+  noFrame?: boolean
+  /**
    * 主 scrollback 的合并流式滚动固定：流式思考期间挂到思考 body 元素上，
    * 由父组件统一固定（每帧一次布局读写）；迷你 scrollback 不传 → 条目
    * 自己固定。恒为稳定引用（useRef 对象），memo 比较只做引用相等。
@@ -63,6 +70,8 @@ export type EntryChrome = {
     denseNext: boolean
     densePrev: boolean
     inGroup: boolean
+    /** 关闭本行的 hover/选中框（图片画廊组：框由组容器统一绘制）。 */
+    noFrame?: boolean
     /** 整块单击折叠；缺省则单击只选中。 */
     onFold?: () => void
   }
@@ -80,6 +89,12 @@ export type EntryChrome = {
   liveText: string | undefined
   thoughtText: string | undefined
   bodyRef: { current: HTMLDivElement | null }
+  /**
+   * 相邻图片画廊：主 scrollback 聚合连续的独立 image 行后传入——点击
+   * 某张图打开组级 lightbox（按 entry id 定位组内索引）。缺省（迷你
+   * scrollback）退回 openViewer。
+   */
+  onOpenImage?: (entryId: string) => void
   /** 迷你 scrollback（子代理弹窗）：消息操作行隐藏会话级动作（fork）。 */
   inMini: boolean
   /** 会话工作目录（historyCwd ?? cwd）——工具行路径按 surface 打印时用作

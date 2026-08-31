@@ -25,26 +25,28 @@ export function ImageEntry({
   e: Extract<ScrollEntry, { kind: 'image' }>
   chrome: EntryChrome
 }) {
-  const { shell, openViewer } = chrome
+  const { shell, openViewer, onOpenImage } = chrome
   // Standalone image entry (no open assistant / user row to attach to):
-  // centered large image + mimeType caption; click → fullscreen viewer.
+  // uniform thumbnail (h-24) — consecutive image rows are wrapped by
+  // Scrollback in one bottom-aligned gallery. Hover/selected frame is the
+  // entry's SelectionBox (scrollback-column width, constant) — no
+  // thumbnail-level outline. Click opens the group lightbox via
+  // onOpenImage (‹ › navigation), or the block viewer as fallback (mini).
   return (
     <EntryShell {...shell}>
-      <figure className="flex flex-col items-center gap-1 py-1.5">
-        <img
-          src={e.data}
-          alt={e.mimeType ? `image (${e.mimeType})` : 'image'}
-          loading="lazy"
-          onClick={() => openViewer(e.id)}
-          title="点击放大查看"
-          className="max-h-[55vh] w-auto max-w-full cursor-zoom-in rounded border border-gn-prompt-border object-contain"
-        />
-        {e.mimeType ? (
-          <figcaption className="font-mono text-[11px] text-gn-muted">
-            {e.mimeType}
-          </figcaption>
-        ) : null}
-      </figure>
+      <img
+        src={e.data}
+        alt={e.mimeType ? `image (${e.mimeType})` : 'image'}
+        loading="lazy"
+        data-no-fold
+        onClick={(ev) => {
+          ev.stopPropagation()
+          if (onOpenImage) onOpenImage(e.id)
+          else openViewer(e.id)
+        }}
+        title="点击放大查看"
+        className="h-24 max-w-[45%] cursor-zoom-in rounded border border-gn-prompt-border object-contain"
+      />
     </EntryShell>
   )
 }
