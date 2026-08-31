@@ -17,7 +17,7 @@ import {
   type DiffLine,
   type ToolDetail as Detail,
 } from '../scrollback/toolDetail'
-import { mcpTitleizeSegment, pathForSurface } from '../scrollback/toolPaths'
+import { makeRelativePath, mcpTitleizeSegment } from '../scrollback/toolPaths'
 import { useChatStore } from '../store/chat'
 import { IconGlyph } from './IconGlyph'
 import { fmtBytes } from '../format'
@@ -516,7 +516,7 @@ function DiffRow({ line, gutterW }: { line: DiffLine; gutterW: number }) {
 function SearchBody({ d }: { d: Extract<Detail, { kind: 'search' }> }) {
   // TUI `make_relative_path`: grep result paths are stored cwd-relative.
   const cwd = useChatStore((s) => s.historyCwd ?? s.cwd)
-  const rel = (p: string) => pathForSurface(p, 'expanded', { cwd })
+  const rel = (p: string) => makeRelativePath(p, cwd)
   if (d.error) return <ErrorLine text={d.error} />
 
   const modeLabel =

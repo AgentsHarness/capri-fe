@@ -348,6 +348,22 @@ describe('toolHeaderExtra — TUI 路径 surface', () => {
     })
   })
 
+  it('搜索范围就是会话目录本身 → 省略 " in path"（TUI filter(p != ".")）', () => {
+    expect(
+      hep({ rawInput: { pattern: 'foo', path: '/me/pro' }, }, 'search', {
+        surface: 'collapsed',
+        cwd: '/me/pro',
+      }),
+    ).toEqual({ target: '"foo"', suffix: ' (no matches)' })
+    // 折叠面也不能把范围塌成 basename
+    expect(
+      hep({ rawInput: { pattern: 'foo', path: '/me/pro/src' } }, 'search', {
+        surface: 'collapsed',
+        cwd: '/me/pro',
+      }),
+    ).toEqual({ target: '"foo" in src', suffix: ' (no matches)' })
+  })
+
   it('search_tool → query + "(N results)"，计数只在折叠面出现', () => {
     const st = {
       rawInput: { variant: 'SearchTool', query: 'linear create', limit: 5 },
