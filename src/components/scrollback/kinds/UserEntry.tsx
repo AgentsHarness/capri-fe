@@ -9,6 +9,7 @@ import { Glyphs } from '../../../theme/glyphs'
 import { Bullet, EntryShell } from '../EntryShell'
 import { InlineImages } from '../InlineImages'
 import { PromptTime } from '../PromptTime'
+import { ViewButton } from '../ViewButton'
 import type { EntryChrome } from '../chrome'
 
 export function UserEntry({
@@ -18,12 +19,13 @@ export function UserEntry({
   e: Extract<ScrollEntry, { kind: 'user' }>
   chrome: EntryChrome
 }) {
-  const { shell, onHeaderClick, onHeaderDblClick, toggleUser, openViewer } = chrome
+  const { shell, toggleUser, openViewer } = chrome
   // UserPromptBlock: full-width bg_light band, accent_user ❯ prefix
   // (↻ for is_cron scheduled /loop fires), continuation indent, optional
   // collapse to 3 visual lines + " …".
   const foldable = userIsFoldable(e.text)
   const expanded = entryExpanded(e)
+  const showView = foldable && expanded
   const { text: body, truncated } = expanded
     ? { text: e.text, truncated: false }
     : collapseUserText(e.text, USER_COLLAPSED_MAX_LINES)
@@ -32,9 +34,6 @@ export function UserEntry({
     ? 'color-mix(in srgb, var(--color-gn-bg-highlight) 70%, var(--color-gn-bg-hover))'
     : 'var(--color-gn-bg-highlight)'
   const lines = body.split('\n')
-  // Collapse chevron sits at the right edge; the time overlay shifts left
-  // of it so the two never cover each other.
-  const chevronShown = foldable && (shell.selected || shell.hovered) && !expanded
   // TUI: is_bash → "$ " (command color), is_cron → "↻  ", else prompt_arrow.
   // Shell-mode submissions carry the isShell marker from the store's send().
   const isShell = e.isShell === true
@@ -44,27 +43,23 @@ export function UserEntry({
     : 'var(--color-gn-accent-user)'
   return (
     <EntryShell {...shell} bandBg={band}>
+      <div className="relative">
       <button
         type="button"
         onClick={(ev) => {
           ev.stopPropagation()
-          onHeaderClick(() => {
-            shell.onSelect()
-            if (foldable) toggleUser(e.id)
-          })
-        }}
-        onDoubleClick={(ev) => {
-          ev.stopPropagation()
-          ev.preventDefault()
-          onHeaderDblClick()
+          shell.onSelect()
+          if (foldable) toggleUser(e.id)
         }}
         className="group relative flex w-full min-w-0 items-start gap-1.5 py-[11px] text-left font-ui text-[13.5px] leading-[1.35]"
         title={
           isShell
-            ? 'shell command · click fold · dblclick / enter view'
+            ? 'shell command · click fold · 查看 / enter view'
             : e.isCron
-              ? 'scheduled task · click fold · dblclick / enter view'
-              : 'click fold · dblclick / enter view'
+              ? 'scheduled task · click fold · 查看 / enter view'
+              : foldable
+                ? 'click fold · 查看 / enter view'
+                : '查看 / enter view'
         }
       >
         {/* Same icon column as tool/thought bullets so ❯ / ↻ / ◆ / › line up.
@@ -88,18 +83,15 @@ export function UserEntry({
             <span className="sr-only"> (collapsed, expand with →)</span>
           )}
         </div>
-        {/* TUI right-aligned prompt time (scrollback_pane show_timestamps);
-            absolute overlay: hover expansion never reflows the message. */}
-        <PromptTime ts={e.ts} className="top-[14.5px]" shiftRight={chevronShown} />
-        {chevronShown && (
-          <span
-            className="ml-1 shrink-0 self-start text-[12px] text-gn-gray-dim"
-            aria-hidden
-          >
-            {Glyphs.chevron}
-          </span>
-        )}
+        <PromptTime ts={e.ts} className="top-[14.5px]" />
       </button>
+      <ViewButton
+        visible={showView}
+        compact
+        onOpen={() => openViewer(e.id)}
+        className="absolute right-1 bottom-2 z-[1]"
+      />
+      </div>
       {/* User-sent images (echoed back / attached): thumbnails under the
           prompt text, aligned with the text column (icon col + gap). */}
       {e.images?.length ? (

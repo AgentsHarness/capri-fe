@@ -24,6 +24,8 @@ import {
 import {
   busyPlausibleForView,
 } from '../turn'
+import { claimPendingToolHooks } from '../hookAttach'
+import { hookRoutingOf } from '../hookRouting'
 /**
  * Route a tool_call_update that carries no toolCallId.
  *
@@ -135,6 +137,51 @@ export function handleToolEvent(
         const title = extractTarget(tc) || (tc.title as string) || kindName
         const id = nid()
 
+        // 回放分页边界：该 call 的 rich update 先于 tool_call 到达并已按
+        // 「未知 id 当作新行」建过行（loadHistory 新页先回放、loadMoreHistory
+        // 旧页后回放时，调用与结果可能被拆到两次抓取）——此时再无条件新建
+        // 一行，会把同一 call 渲染成「有内容 + 无内容」两条（旧页行只有
+        // tool_call/元数据、没有 rawOutput）。id 已知且已有行 → 按 update
+        // 合并语义并入既有行（保留先到 update 的 rawOutput，补齐标题等）。
+        if (toolCallId && get().toolIndex[toolCallId]) {
+          const existingId = get().toolIndex[toolCallId]
+          const plug = get().entries.find((e) => e.id === existingId)
+          if (plug?.kind === 'tool') {
+            // 合并编辑行（collapsed_edit_blocks）：子调用走 update 槽位
+            // 语义（mergedRaws 保持行自己的首个调用在 raw 上）。
+            if (plug.mergedRaws?.length) {
+              get().handleEvent({ type: 'tool_call_update', toolCallUpdate: tc } as AcpEvent)
+              break
+            }
+            const merged: ToolCall = { ...(plug.raw || {}), ...tc }
+            const status = (tc.status as string) || plug.status
+            const kindName = toolKindName(merged, plug.kindName)
+            const running = status === 'pending' || status === 'in_progress'
+            set({
+              ...sealed,
+              conn: 'busy',
+              awaitingNext: false,
+              openAssistantId: undefined,
+              openThoughtId: undefined,
+              currentStreamStartMs: undefined,
+              toolIndex: { ...get().toolIndex },
+              entries: get().entries.map((e) =>
+                e.kind === 'tool' && e.id === existingId
+                  ? {
+                      ...e,
+                      status,
+                      kindName,
+                      verb: toolVerb(kindName, running),
+                      title: extractTarget(merged) || e.title,
+                      raw: merged,
+                    }
+                  : e,
+              ),
+            })
+            break
+          }
+        }
+
         // TUI [ui] collapsed_edit_blocks=true: edits render as one-line
         // +N/-M diffstats (collapsed) and back-to-back same-file edits
         // merge into one row (default false = diffs expanded, no merge).
@@ -149,6 +196,19 @@ export function handleToolEvent(
             const toolIndex = { ...get().toolIndex }
             // Route the new call's updates into the merged row.
             if (toolCallId) toolIndex[toolCallId] = prev.id
+            const mergedEntry: ScrollEntry = {
+              ...prev,
+              mergedRaws: [...(prev.mergedRaws ?? []), tc],
+              status,
+              verb: toolVerb(kindName, running),
+            }
+            // Same claim rule as a fresh row: a queued pre_tool_use batch for
+            // this file's edit belongs to the merged row.
+            const claimed = claimPendingToolHooks(
+              [...sealed.entries.slice(0, -1), mergedEntry],
+              mergedEntry,
+              hookRoutingOf(get()).pendingToolHooks,
+            )
             set({
               ...sealed,
               conn: 'busy',
@@ -157,15 +217,8 @@ export function handleToolEvent(
               openThoughtId: undefined,
               currentStreamStartMs: undefined,
               toolIndex,
-              entries: [
-                ...sealed.entries.slice(0, -1),
-                {
-                  ...prev,
-                  mergedRaws: [...(prev.mergedRaws ?? []), tc],
-                  status,
-                  verb: toolVerb(kindName, running),
-                },
-              ],
+              entries: claimed.entries,
+              pendingToolHooks: claimed.pending,
             })
             break
           }
@@ -189,6 +242,13 @@ export function handleToolEvent(
         }
         const toolIndex = { ...get().toolIndex }
         if (toolCallId) toolIndex[toolCallId] = id
+        // A pre_tool_use batch is announced before this row existed — the row
+        // claims whatever the queue holds for its function name now.
+        const claimed = claimPendingToolHooks(
+          [...sealed.entries, entry],
+          entry,
+          hookRoutingOf(get()).pendingToolHooks,
+        )
         set({
           ...sealed,
           // 回合确实在跑（envelope 归属的 tool_call 可信）：busy 事件可能
@@ -202,7 +262,8 @@ export function handleToolEvent(
           openThoughtId: undefined,
           currentStreamStartMs: undefined,
           toolIndex,
-          entries: [...sealed.entries, entry],
+          entries: claimed.entries,
+          pendingToolHooks: claimed.pending,
         })
         break
       }

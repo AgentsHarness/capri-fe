@@ -1,6 +1,7 @@
 import type { ScrollEntry } from '../../../api/types'
 import { subagentMeta } from '../../../format'
 import { Bullet, EntryShell } from '../EntryShell'
+import { ViewButton } from '../ViewButton'
 import type { EntryChrome } from '../chrome'
 
 export function SubagentEntry({
@@ -10,7 +11,9 @@ export function SubagentEntry({
   e: Extract<ScrollEntry, { kind: 'subagent' }>
   chrome: EntryChrome
 }) {
-  const { shell, bullet, onHeaderDblClick, cancelSubagent } = chrome
+  const { shell, bullet, openViewer, cancelSubagent } = chrome
+  // 整行单击直接弹全文查看器（原「先选中再点查看」的展开流程取消）。
+  const rowShell = { ...shell, onSelect: () => openViewer(e.id) }
   const label =
     e.status === 'started'
       ? 'Agent'
@@ -20,15 +23,9 @@ export function SubagentEntry({
           ? 'Agent cancelled'
           : 'Agent failed'
   return (
-    <EntryShell {...shell}>
+    <EntryShell {...rowShell}>
       <div
         className={`flex items-center gap-1.5 ${shell.dense ? 'py-0' : 'py-[2px]'} text-[13px] leading-[1.35]`}
-        title="dblclick / enter · view subagent"
-        onDoubleClick={(ev) => {
-          ev.stopPropagation()
-          ev.preventDefault()
-          onHeaderDblClick()
-        }}
       >
         <Bullet color={bullet.color} animated={bullet.animated} />
         <span
@@ -49,17 +46,19 @@ export function SubagentEntry({
           <span className="text-[11px] text-gn-gutter truncate">{e.detail}</span>
         )}
         {e.running && e.subagentId && (
-          <button
-            type="button"
-            onClick={(ev) => {
-              ev.stopPropagation()
-              void cancelSubagent(e.subagentId!)
-            }}
-            className="ml-auto shrink-0 rounded border border-gn-red/40 px-1.5 py-0.5 text-[10.5px] text-gn-red hover:bg-gn-diff-del-bg"
-            title="x.ai/subagent/cancel"
-          >
-            cancel
-          </button>
+          <div className="ml-auto flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              onClick={(ev) => {
+                ev.stopPropagation()
+                void cancelSubagent(e.subagentId!)
+              }}
+              className="shrink-0 rounded border border-gn-red/40 px-1.5 py-0.5 text-[10.5px] text-gn-red hover:bg-gn-diff-del-bg"
+              title="x.ai/subagent/cancel"
+            >
+              cancel
+            </button>
+          </div>
         )}
       </div>
     </EntryShell>
@@ -73,7 +72,8 @@ export function WorkflowEntry({
   e: Extract<ScrollEntry, { kind: 'workflow' }>
   chrome: EntryChrome
 }) {
-  const { shell, bullet, onHeaderDblClick } = chrome
+  const { shell, bullet, openViewer } = chrome
+  const showView = shell.selected
   const label =
     e.status === 'running'
       ? 'Workflow'
@@ -88,12 +88,6 @@ export function WorkflowEntry({
     <EntryShell {...shell}>
       <div
         className={`flex items-center gap-1.5 ${shell.dense ? 'py-0' : 'py-[2px]'} text-[13px] leading-[1.35]`}
-        title="dblclick / enter · view workflow"
-        onDoubleClick={(ev) => {
-          ev.stopPropagation()
-          ev.preventDefault()
-          onHeaderDblClick()
-        }}
       >
         <Bullet color={bullet.color} animated={bullet.animated} />
         <span
@@ -105,6 +99,11 @@ export function WorkflowEntry({
         <span className="min-w-0 truncate font-mono text-[12.5px] text-gn-muted">
           {e.title}
         </span>
+        <ViewButton
+          visible={showView}
+          onOpen={() => openViewer(e.id)}
+          className="ml-auto"
+        />
       </div>
     </EntryShell>
   )
@@ -117,9 +116,10 @@ export function BgTaskEntry({
   e: Extract<ScrollEntry, { kind: 'bg_task' }>
   chrome: EntryChrome
 }) {
-  const { shell, bullet, onHeaderDblClick, killTask } = chrome
+  const { shell, bullet, openViewer, killTask } = chrome
+  const showView = shell.selected
   // TUI: "Task started: {description|command}" — bold "Task", name is primary.
-  // Double-click / Enter → block viewer with live stdout (TUI OpenBlockViewer).
+  // 「查看」/ Enter → block viewer with live stdout (TUI OpenBlockViewer).
   // Dense-aware inner padding: dense rows pack at 0 gap like tool rows
   // (EntryShell dense spacing), so consecutive task rows don't leave an
   // uneven 4px seam (visible in history pairs: started + completed).
@@ -132,13 +132,7 @@ export function BgTaskEntry({
   return (
     <EntryShell {...shell}>
       <div
-        className={`flex cursor-pointer items-center gap-1.5 ${shell.dense ? 'py-0' : 'py-[2px]'} text-[13px] leading-[1.35]`}
-        title="dblclick / enter · view stdout"
-        onDoubleClick={(ev) => {
-          ev.stopPropagation()
-          ev.preventDefault()
-          onHeaderDblClick()
-        }}
+        className={`flex items-center gap-1.5 ${shell.dense ? 'py-0' : 'py-[2px]'} text-[13px] leading-[1.35]`}
       >
         <Bullet color={bullet.color} animated={bullet.animated} />
         <span
@@ -156,18 +150,23 @@ export function BgTaskEntry({
             {e.detail}
           </span>
         )}
-        {e.running && e.taskId && (
-          <button
-            type="button"
-            onClick={(ev) => {
-              ev.stopPropagation()
-              void killTask(e.taskId!)
-            }}
-            className="ml-auto shrink-0 rounded border border-gn-red/40 px-1.5 py-0.5 text-[10.5px] text-gn-red hover:bg-gn-diff-del-bg"
-            title="x.ai/task/kill"
-          >
-            kill
-          </button>
+        {(showView || (e.running && e.taskId)) && (
+          <div className="ml-auto flex shrink-0 items-center gap-1">
+            <ViewButton visible={showView} onOpen={() => openViewer(e.id)} />
+            {e.running && e.taskId && (
+              <button
+                type="button"
+                onClick={(ev) => {
+                  ev.stopPropagation()
+                  void killTask(e.taskId!)
+                }}
+                className="shrink-0 rounded border border-gn-red/40 px-1.5 py-0.5 text-[10.5px] text-gn-red hover:bg-gn-diff-del-bg"
+                title="x.ai/task/kill"
+              >
+                kill
+              </button>
+            )}
+          </div>
         )}
       </div>
     </EntryShell>

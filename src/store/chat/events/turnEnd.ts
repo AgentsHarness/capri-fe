@@ -12,6 +12,7 @@ import {
 import {
   adoptLiveTurnStart,
   cancellationContextText,
+  eventPromptId,
   finalizeTurn,
   promptIdMismatch,
   settleTurnEntries,
@@ -22,6 +23,7 @@ import {
   wireElapsedMs,
 } from '../turn'
 import { appendEntry } from '../entries'
+import { appendTurnMarker } from './notifHooks'
 export function handleTurnEndEvent(
   set: SetState,
   get: () => ChatState,
@@ -126,11 +128,17 @@ export function handleTurnEndEvent(
                 agentResult,
                 railElapsed ?? (railEndTs != null ? Date.now() - railEndTs : undefined),
               )
-              appendEntry(set, {
-                kind: 'session_event',
-                text,
-                ...(warning ? { warning } : {}),
-              })
+              appendTurnMarker(
+                set,
+                get,
+                {
+                  id: nid(),
+                  kind: 'session_event',
+                  text,
+                  ...(warning ? { warning } : {}),
+                },
+                eventPromptId((ev as { meta?: unknown }).meta ?? upd),
+              )
             }
           }
           // Hook/tool 级取消的结构化原因（_meta.cancellationContext）：
@@ -206,6 +214,7 @@ export function handleTurnEndEvent(
         const appendCancelDetail =
           cancelDetail != null &&
           !tailHasCancellationDetail(settled, cancelDetail)
+        const endingPromptId = eventPromptId(ev.meta ?? (ev as { update?: unknown }).update)
         set({
           ...sealed,
           openAssistantId: undefined,
@@ -215,19 +224,24 @@ export function handleTurnEndEvent(
           // Idle until the next user message — lets the turn-status line
           // show the still-running cue after a replayed history load.
           awaitingNext: true,
-          entries: [
-            ...settled,
-            {
-              id: nid(),
-              kind: 'session_event',
-              text,
-              ...(warning ? { warning } : {}),
-            },
-            ...(appendCancelDetail
-              ? [{ id: nid(), kind: 'session_event' as const, text: cancelDetail as string }]
-              : []),
-          ],
+          entries: settled,
         })
+        // 标记行（连同挂起的 stop 批次）落在收口之后，取消细节再跟在标记后。
+        appendTurnMarker(
+          set,
+          get,
+          {
+            id: nid(),
+            kind: 'session_event',
+            text,
+            ...(warning ? { warning } : {}),
+            ...(endingPromptId ? { promptId: endingPromptId } : {}),
+          },
+          endingPromptId,
+        )
+        if (appendCancelDetail) {
+          appendEntry(set, { kind: 'session_event', text: cancelDetail as string })
+        }
         break
       }
       case 'cancelled': {

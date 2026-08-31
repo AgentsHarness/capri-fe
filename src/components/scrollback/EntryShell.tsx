@@ -1,3 +1,6 @@
+import { useRef } from 'react'
+import type { MouseEvent as ReactMouseEvent } from 'react'
+import type { LucideIcon } from 'lucide-react'
 import type { ScrollEntry } from '../../api/types'
 import { AccentRail } from '../AccentRail'
 import { IconGlyph } from '../IconGlyph'
@@ -8,6 +11,16 @@ import { resolveAccent } from '../../theme/accents'
 import { Glyphs } from '../../theme/glyphs'
 import { ACCENT_GAP_PX, ACCENT_W_PX } from '../../theme/layout'
 import { HOVER_BG } from './constants'
+
+/**
+ * 整块单击不折叠的嵌套交互：链接、按钮、表单，以及自行处理点击的
+ * 图片缩略图（`data-no-fold`）。它们的语义优先于「单击折叠」。
+ */
+const NO_FOLD_SELECTOR =
+  'a[href], button, input, select, textarea, [role="button"], [data-no-fold]'
+
+/** 按下到抬起的指针位移超过该值视为选词拖拽，不算单击。 */
+const DRAG_THRESHOLD_PX = 6
 
 /** 条目外壳：accent 竖条 + 选区/悬浮框 + 内容列（主 scrollback 与迷你
  *  scrollback 共用；hover/选中由调用方传入，mini 用组件内局部状态）。 */
@@ -33,6 +46,7 @@ export function EntryShell({
    * so the elevated strip matches TUI BlockBackground::Light + accent_bg.
    */
   bandBg,
+  onFold,
 }: {
   e: ScrollEntry
   selected: boolean
@@ -47,6 +61,8 @@ export function EntryShell({
   denseNext?: boolean
   densePrev?: boolean
   bandBg?: string
+  /** 整块单击折叠（标题行之外的正文/留白同样生效）。 */
+  onFold?: () => void
 }) {
   // Accent color follows hover/selected; height follows content only.
   const opts = accentOpts(e, selected, pendingFreeze, now, hovered, inGroup)
@@ -71,6 +87,20 @@ export function EntryShell({
   const py = dense ? 'py-0' : isUser ? 'py-0' : 'py-[2px]'
   const contentPy = dense ? 'py-0' : isUser ? 'py-0' : 'py-0.5'
 
+  const downAt = useRef<{ x: number; y: number } | null>(null)
+  const blockHit = (ev: ReactMouseEvent<HTMLDivElement>) => {
+    if (ev.defaultPrevented) return false
+    const el = ev.target instanceof Element ? ev.target : null
+    const control = el?.closest(NO_FOLD_SELECTOR)
+    // 只排除块内嵌套控件；祖先上的交互元素不算（否则整块永远点不动）。
+    if (control && ev.currentTarget.contains(control)) return false
+    const d = downAt.current
+    if (d && Math.hypot(ev.clientX - d.x, ev.clientY - d.y) > DRAG_THRESHOLD_PX) {
+      return false
+    }
+    return true
+  }
+
   return (
     <div
       data-entry-id={e.id}
@@ -78,7 +108,14 @@ export function EntryShell({
       data-streaming={'streaming' in e && e.streaming ? '1' : undefined}
       role="option"
       aria-selected={selected}
-      onClick={onSelect}
+      onClick={(ev) => {
+        if (onFold && blockHit(ev)) onFold()
+        else onSelect()
+      }}
+      onMouseDown={(ev) => {
+        downAt.current =
+          ev.button === 0 ? { x: ev.clientX, y: ev.clientY } : null
+      }}
       onMouseEnter={() => onHover(true)}
       onMouseLeave={() => onHover(false)}
       // Tracks: accent + gap + content. Selection compact height === entry;
@@ -119,5 +156,29 @@ export function Bullet({
 }) {
   return (
     <IconGlyph glyph={glyph} color={color} animated={animated} className={className} />
+  )
+}
+
+/**
+ * Shared fixed icon column for row-level status marks: 16px wide, one line box
+ * tall (1.35em of the parent text), 13px glyph centred. Same left track as
+ * `Bullet`, so a row's text starts at the same x whichever status icon it
+ * carries, and the mark stays centred on the first line when the text wraps.
+ */
+export function RowIcon({
+  Icon,
+  color,
+}: {
+  Icon: LucideIcon
+  color: string
+}) {
+  return (
+    <span
+      className="flex h-[1.35em] w-4 shrink-0 items-center justify-center"
+      style={{ color }}
+      aria-hidden
+    >
+      <Icon size={13} strokeWidth={2} />
+    </span>
   )
 }

@@ -6,6 +6,7 @@ import type { DisplayRow } from '../../scrollback/verbGroup'
 import { Accents, resolveBullet } from '../../theme/accents'
 import { Glyphs } from '../../theme/glyphs'
 import { Bullet, EntryShell } from './EntryShell'
+import { HookCountSuffix } from './kinds/HookRuns'
 
 export type GroupHeaderViewProps = {
   row: Extract<DisplayRow, { type: 'group_header' }>
@@ -104,6 +105,9 @@ export const GroupHeaderView = memo(function GroupHeaderView({
         >
           {row.label.text}
         </span>
+        {row.label.hookCounts ? (
+          <HookCountSuffix counts={row.label.hookCounts} shape="labeled" />
+        ) : null}
       </button>
     </EntryShell>
   )

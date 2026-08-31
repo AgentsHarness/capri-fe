@@ -9,6 +9,7 @@ import { usePromptQueue } from '../store/promptQueue'
 import type { ScrollEntry, TopTask } from '../api/types'
 import { useSessionSpinner } from '../hooks/sessionState'
 import { TodoMark, CheckMarkIcon } from './todoMark'
+import { ViewButton } from './scrollback/ViewButton'
 import { fmtTok, fmtElapsedCompact, filterRunningEntries, subagentMeta, type RunningEntry } from '../format'
 import type { TodoItem } from '../store/chat'
 
@@ -699,8 +700,8 @@ export function RunningChip({
  * Sticky task panel (TUI `tasks` pane under the status bar).
  *
  * Two sections:
- *  - 「运行中」— live bg_tasks / subagents / workflows (double-click opens
- *    the block viewer, kill/cancel buttons) — the original strip, kept
+ *  - 「运行中」— live bg_tasks / subagents / workflows (click / 「查看」
+ *    opens the block viewer, kill/cancel buttons) — the original strip, kept
  *    verbatim;
  *  - 「调度任务」— /loop scheduled tasks (prompt summary, interval,
  *    nextFireAt, delete button).
@@ -747,11 +748,10 @@ export function RunningTasksBar({
                 className="group flex min-h-6 cursor-pointer items-center gap-1.5 py-[2px] text-[12px] leading-snug hover:bg-gn-bg-highlight"
                 title={
                   t.restored
-                    ? '恢复的运行中任务（宿主探活确认仍在运行；由 TUI 进程持有，无法在此 kill）· dblclick 查看日志'
-                    : 'dblclick 查看日志'
+                    ? '恢复的运行中任务（宿主探活确认仍在运行；由 TUI 进程持有，无法在此 kill）· 点击查看日志'
+                    : '点击查看日志'
                 }
-                onDoubleClick={(ev) => {
-                  ev.preventDefault()
+                onClick={() => {
                   openTaskViewer(t.taskId, {
                     title: t.title,
                     command: t.command,
@@ -785,17 +785,25 @@ export function RunningTasksBar({
                     {t.command}
                   </span>
                 )}
+                <ViewButton
+                  visible
+                  compact
+                  onOpen={() =>
+                    openTaskViewer(t.taskId, {
+                      title: t.title,
+                      command: t.command,
+                      outputFile: t.outputFile,
+                    })
+                  }
+                />
               </div>
             ))}
             {running.map((e) => (
               <div
                 key={e.id}
                 className="group flex min-h-6 cursor-pointer items-center gap-1.5 py-[2px] text-[12px] leading-snug hover:bg-gn-bg-highlight"
-                title="dblclick · view stdout"
-                onDoubleClick={(ev) => {
-                  ev.preventDefault()
-                  openViewer(e.id)
-                }}
+                title="点击查看日志"
+                onClick={() => openViewer(e.id)}
               >
                 <span
                   className="shrink-0 font-mono text-[11px] text-gn-accent-running"
@@ -823,6 +831,7 @@ export function RunningTasksBar({
                     {e.detail}
                   </span>
                 )}
+                <ViewButton visible compact onOpen={() => openViewer(e.id)} />
                 {e.kind === 'subagent' && e.subagentId && (
                   <button
                     type="button"

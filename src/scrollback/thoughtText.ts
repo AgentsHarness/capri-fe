@@ -3,7 +3,7 @@
  *
  * While a thought streams we render only the newest lines so per-flush
  * DOM cost stays flat as the body grows (full text lives in the store /
- * the dblclick viewer). After finish, the truncated mode shows head +
+ * the block viewer). After finish, the truncated mode shows head +
  * "…" + tail (TUI render_truncated).
  */
 import { Glyphs } from '../theme/glyphs'

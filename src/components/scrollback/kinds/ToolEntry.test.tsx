@@ -231,4 +231,29 @@ describe('TUI 行头复刻（surface / 名词改写）', () => {
     expect(text).toMatch(/Editing workflow\s*review-changes/)
     expect(text).not.toContain('.rhai')
   })
+
+  it('括号 suffix 紧跟路径，不被 flex-1 顶到行尾', () => {
+    const r = render(
+      <EntryView
+        e={toolEntry({
+          kindName: 'search',
+          rawInput: { pattern: 'foo' },
+        })}
+        selected={false}
+        pendingFreeze={false}
+        now={Date.now()}
+      />,
+    )
+    const btn = r.container.querySelector('button')
+    expect(btn?.textContent).toContain('(no matches)')
+    const suffix = [...(btn?.querySelectorAll('span') ?? [])].find((s) =>
+      (s.textContent ?? '').includes('(no matches)'),
+    )
+    expect(suffix).toBeTruthy()
+    expect(suffix!.className).not.toMatch(/\bml-auto\b/)
+    // 路径容器是 suffix 的前一个兄弟；flex-1 会把中间空档撑开、() 靠右。
+    const path = suffix!.previousElementSibling
+    expect(path?.className ?? '').not.toMatch(/\bflex-1\b/)
+    r.unmount()
+  })
 })

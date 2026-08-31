@@ -69,8 +69,17 @@ export type {
   PendingReq,
 } from './types/events'
 export type {
+  BtwHistoryRecord,
   ScrollEntry,
   SubagentStatus,
   SubagentViewState,
   WorkflowStatus,
 } from './types/scroll'
+export type {
+  HookCounts,
+  HookGroup,
+  HookRun,
+  HookRunStatus,
+  HookSuffixPart,
+  ToolHookData,
+} from './types/hooks'

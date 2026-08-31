@@ -10,6 +10,7 @@ import { thoughtDisplayMode } from './thoughtMode'
 import { userIsFoldable } from './userText'
 import { FINISH_FLASH_MS } from '../theme/wave'
 import { Glyphs } from '../theme/glyphs'
+import { hookGroupsHaveContent, toolHooksHaveContent } from './hookRuns'
 
 export function entryRunning(e: ScrollEntry): boolean {
   if (e.kind === 'assistant') return !!e.streaming
@@ -41,6 +42,8 @@ export function entryExpanded(e: ScrollEntry): boolean {
   // and expanded both show body content).
   if (e.kind === 'thought') return thoughtDisplayMode(e) !== 'collapsed'
   if (e.kind === 'session_event') return !!e.open
+  // LifecycleEventBlock default_display_mode = Collapsed.
+  if (e.kind === 'lifecycle') return !!e.expanded
   // btw 折叠态由条目的 open 决定；askBtw 建条目时默认展开（FE 没有 TUI
   // 那块 inline panel，答案只在这条区块里）。
   if (e.kind === 'btw') return !!e.open
@@ -58,12 +61,17 @@ export function entryExpanded(e: ScrollEntry): boolean {
 /** TUI BlockContent::is_foldable — can cycle collapse/expand. */
 export function entryFoldable(e: ScrollEntry): boolean {
   if (e.kind === 'tool') {
-    // Match TUI: only foldable when there is expanded body content.
+    // TUI: block.is_foldable() || hook_data.has_content().
+    if (toolHooksHaveContent(e.hooks)) return true
     if (!e.raw) return false
     return toolHasExpandableBody(e.raw, e.kindName)
   }
   if (e.kind === 'thought') return !e.streaming && !!e.text
-  if (e.kind === 'session_event') return !!e.recap
+  // Recap body, or a turn marker carrying stop-hook runs (TUI
+  // SessionEventBlock::is_foldable).
+  if (e.kind === 'session_event')
+    return !!e.recap || hookGroupsHaveContent(e.stopHooks)
+  if (e.kind === 'lifecycle') return true
   // 有待展开的内容（答案或错误）才可折叠；请求进行中无正文可看。
   if (e.kind === 'btw') return !e.streaming && (!!e.answer || !!e.error)
   if (e.kind === 'user') return userIsFoldable(e.text)
@@ -129,6 +137,7 @@ export function entryAtMinFold(e: ScrollEntry): boolean {
     return !e.expanded
   }
   if (e.kind === 'session_event') return !e.open
+  if (e.kind === 'lifecycle') return !e.expanded
   // btw 同款：折叠 = 最小形态。
   if (e.kind === 'btw') return !e.open
   // group_header.collapse === expanded (synthetic); min fold = not expanded
@@ -138,7 +147,12 @@ export function entryAtMinFold(e: ScrollEntry): boolean {
 
 /** Header-style blocks get collapsed bg_dark selection fill (scrollback_pane). */
 export function isHeaderStyleBlock(e: ScrollEntry): boolean {
-  return e.kind === 'tool' || e.kind === 'thought' || e.kind === 'group_header'
+  return (
+    e.kind === 'tool' ||
+    e.kind === 'thought' ||
+    e.kind === 'group_header' ||
+    e.kind === 'lifecycle'
+  )
 }
 
 /**
@@ -153,6 +167,7 @@ export function expandableGlyph(e: ScrollEntry, active: boolean): string | null 
     e.kind !== 'tool' &&
     e.kind !== 'thought' &&
     e.kind !== 'session_event' &&
+    e.kind !== 'lifecycle' &&
     e.kind !== 'btw' &&
     e.kind !== 'subagent' &&
     e.kind !== 'workflow' &&

@@ -2,9 +2,25 @@
 /** GET /api/extensions — one hook row. */
 export type ExtensionHook = {
   name: string
-  command?: string
+  /** TUI HookEvent wire name (e.g. "pre_tool_use"). */
   event?: string
+  /** Handler type ("command" | "http") — TUI HookHandlerType. */
+  handlerType?: string
+  /** Raw matcher pattern from config; absent = matches all tools. */
+  matcher?: string
+  command?: string
+  /** HTTP handler URL (command hooks use `command` instead). */
+  url?: string
+  timeoutMs?: number
+  /** Definition file directory — the web modal's grouping key (TUI sourceDir). */
+  sourceDir?: string
+  /** Disabled via ~/.grok/disabled-hooks (TUI `[disabled]` badge). */
+  disabled?: boolean
+  /** Managed-policy enforced — disable refused (TUI `[policy]` badge). */
+  pinned?: boolean
+  /** Legacy local-scan fields (host fallback path only). */
   enabled?: boolean
+  source?: string
 }
 
 /** GET /api/extensions — one plugin row. */

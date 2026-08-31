@@ -25,7 +25,8 @@ export function viewerOpenActions(set: SetState, get: () => ChatState) {
       e.kind !== 'plan' &&
       e.kind !== 'bg_task' &&
       e.kind !== 'subagent' &&
-      e.kind !== 'workflow'
+      e.kind !== 'workflow' &&
+      e.kind !== 'btw'
     ) {
       return
     }
