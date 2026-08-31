@@ -181,6 +181,36 @@ describe('TopBar', () => {
     expect(useChatStore.getState().switchHost).toHaveBeenCalledWith('h1')
   })
 
+  it('host 列表行显示实时状态（思考中/待处理/启动中/空闲）', () => {
+    resetChat({
+      mode: 'hub',
+      hostName: 'H1',
+      selectedHostId: 'h1',
+      hosts: [
+        { hostId: 'h1', hostName: 'H1', online: true, busy: true },
+        { hostId: 'h2', hostName: 'H2', online: true, busy: false, pendingCount: 2 },
+        { hostId: 'h3', hostName: 'H3', online: true, booting: true },
+        { hostId: 'h4', hostName: 'H4', online: true, busy: false, pendingCount: 0 },
+        { hostId: 'h5', hostName: 'H5', online: false, busy: true },
+        { hostId: 'h6', hostName: 'H6', online: true }, // 旧 hub 无状态字段
+      ],
+      conn: 'ready',
+    })
+    const { container } = render(<TopBar />)
+    fireEvent.click(screen.getByTitle(/右键可管理/))
+    expect(screen.getByText('思考中')).not.toBeNull()
+    expect(screen.getByText('待处理')).not.toBeNull()
+    expect(screen.getByText('启动中')).not.toBeNull()
+    expect(screen.getByText('空闲')).not.toBeNull()
+    // 离线 host 与旧 hub host 不显示状态文字（also title 不带状态）
+    expect(container.textContent).not.toContain('h5 · 思考中')
+    expect(container.textContent).not.toContain('h6 · 空闲')
+    // 思考中行：蓝色呼吸点
+    const dots = container.querySelectorAll('span.h-1\\.5')
+    expect(dots[0]?.className).toContain('bg-gn-blue')
+    expect(dots[0]?.className).toContain('animate-pulse')
+  })
+
   it('conn error → error 标签；layerErrors → ⚠ 异常', () => {
     const { rerender } = render(<TopBar />)
     expect(screen.getByText('Localhost')).not.toBeNull()
