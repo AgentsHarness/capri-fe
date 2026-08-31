@@ -16,6 +16,7 @@
 
 import type { ScrollEntry } from '../api/types'
 import { toolFamily } from '../theme/toolFamily'
+import { readPathOf, skillNameFromPath } from './toolDetail'
 import { thoughtDisplayMode } from './thoughtMode'
 
 /** Eager verb-fold kinds (ToolCallBlock::verb_group_kind). */
@@ -91,6 +92,9 @@ export function verbGroupKind(e: ScrollEntry): VerbGroupKind | null {
   if (fam === 'never') {
     if (k === 'list_dir' || k === 'listdir' || k === 'ls' || k === 'list') return 'dir'
     if (k === 'search' || k === 'grep' || k === 'glob' || k === 'find') return 'search'
+    // TUI ReadToolCallBlock::is_skill_read — reads of `SKILL.md` group as
+    // skills ("Read 2 skills"), not plain files.
+    if (skillNameFromPath(e.raw ? readPathOf(e.raw) : e.title)) return 'skill'
     return 'file' // read
   }
   if (k === 'websearch' || k === 'web_search' || k === 'x_search') return 'web_search'

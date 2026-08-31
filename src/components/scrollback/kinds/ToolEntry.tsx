@@ -41,6 +41,12 @@ export function ToolEntry({
   const headerExtra = e.raw
     ? toolHeaderExtra(e.raw, e.kindName, failed, e.mergedRaws)
     : null
+  // TUI ReadToolCallBlock skill reads: header renders as "Skill {name}" —
+  // no Read verb, no path, no range suffix.
+  const skill = headerExtra?.skill
+  const displayVerb = skill ? 'Skill' : verb
+  const target = skill ?? headerExtra?.target ?? e.title
+  const suffix = skill ? undefined : headerExtra?.suffix
 
   return (
     <EntryShell {...shell}>
@@ -69,20 +75,20 @@ export function ToolEntry({
           className="shrink-0 font-bold"
           style={{ color: verbColor }}
         >
-          {verb}
+          {displayVerb}
         </span>
         <span
           className="min-w-0 truncate font-mono text-[12.5px] leading-[1.35]"
           style={{ color: targetColor }}
         >
-          {headerExtra?.target ?? e.title}
+          {target}
         </span>
-        {headerExtra?.suffix ? (
+        {suffix ? (
           <span
             className="min-w-0 truncate text-[12px] leading-[1.35]"
             style={{ color: detailColor }}
           >
-            {headerExtra.suffix}
+            {suffix}
           </span>
         ) : null}
         {running && (

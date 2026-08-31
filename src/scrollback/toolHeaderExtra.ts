@@ -5,7 +5,14 @@
 import type { ToolCall } from '../api/types'
 import { extractToolDetail } from './toolDetail'
 
-export type ToolHeaderExtra = { target: string; suffix?: string }
+export type ToolHeaderExtra = {
+  target: string
+  suffix?: string
+  /** Skill name when the row is a `SKILL.md` read — row header renders
+   *  "Skill {name}" (TUI ReadToolCallBlock skill reads). Export keeps the
+   *  path via `target`/`suffix` (TUI tool_summary same). */
+  skill?: string
+}
 
 export function toolHeaderExtra(
   raw: ToolCall,
@@ -28,7 +35,11 @@ export function toolHeaderExtra(
         if (d.empty) suffix += ' (empty)'
         if (d.media === 'image') suffix += ' (image)'
         if (d.media === 'pdf') suffix += ' (pdf)'
-        return { target: d.path, suffix: suffix || undefined }
+        return {
+          target: d.path,
+          suffix: suffix || undefined,
+          ...(d.skill ? { skill: d.skill } : {}),
+        }
       }
       case 'execute':
         return {
