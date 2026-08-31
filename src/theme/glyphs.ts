@@ -69,6 +69,9 @@ export function toolHeader(
   if (k === 'move' || k === 'rename') return { verb: running ? 'Moving' : 'Moved', pathish: true }
   if (k === 'search' || k === 'grep' || k === 'glob')
     return { verb: running ? 'Searching' : 'Searched', pathish: false }
+  // MCP 工具发现（TUI SearchToolCallBlock "Search Tools {query}"）。
+  if (k === 'search_tool' || k === 'integration_search')
+    return { verb: running ? 'Searching' : 'Searched', pathish: false }
   if (k === 'execute' || k === 'bash' || k === 'shell' || k === 'run' || k === 'command')
     return { verb: running ? 'Running' : 'Run', pathish: false }
   if (k === 'fetch' || k === 'webfetch')

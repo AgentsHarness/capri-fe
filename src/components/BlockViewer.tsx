@@ -27,7 +27,7 @@ import { IconGlyph } from './IconGlyph'
 import { TodoMark } from './todoMark'
 import { fmtBytes, fmtTok } from '../format'
 import { contextUrgencyColor } from '../theme/contextColor'
-import { extractToolDetail } from '../scrollback/toolDetail'
+import { toolHeaderExtra } from '../scrollback/toolHeaderExtra'
 import { mergeLiveText } from '../scrollback/liveText'
 import { useSessionSpinner } from '../hooks/sessionState'
 import {
@@ -74,6 +74,8 @@ export function BlockViewer() {
   const entries = useChatStore((s) => s.entries)
   const liveStream = useChatStore((s) => s.liveStream)
   const closeViewer = useChatStore((s) => s.closeViewer)
+  // 工具行路径打印基准目录（fullscreen surface 的相对/规范化解析）。
+  const sessionCwd = useChatStore((s) => s.historyCwd ?? s.cwd)
   const refreshTaskOutput = useChatStore((s) => s.refreshTaskOutput)
   const panelRef = useRef<HTMLDivElement>(null)
   const bodyScrollRef = useRef<HTMLDivElement>(null)
@@ -167,7 +169,7 @@ export function BlockViewer() {
         title: subChrome.label,
         subtitle: (active as Extract<ScrollEntry, { kind: 'subagent' }>).title,
       }
-    : viewerChrome(active)
+    : viewerChrome(active, sessionCwd)
 
   return (
     <div
@@ -274,7 +276,8 @@ const MINI_VIEWABLE_KINDS = new Set([
  */
 function BlockBodyDialog({ entry, onClose }: { entry: ScrollEntry; onClose: () => void }) {
   const panelRef = useRef<HTMLDivElement>(null)
-  const { title, subtitle } = viewerChrome(entry)
+  const sessionCwd = useChatStore((s) => s.historyCwd ?? s.cwd)
+  const { title, subtitle } = viewerChrome(entry, sessionCwd)
 
   useEffect(() => {
     panelRef.current?.focus()
@@ -336,33 +339,26 @@ function BlockBodyDialog({ entry, onClose }: { entry: ScrollEntry; onClose: () =
   )
 }
 
-function viewerChrome(e: ScrollEntry): { title: string; subtitle?: string } {
+function viewerChrome(e: ScrollEntry, cwd?: string): { title: string; subtitle?: string } {
   if (e.kind === 'tool') {
     const running = e.status === 'pending' || e.status === 'in_progress'
+    const failed = e.status === 'failed' || e.status === 'error'
     const { verb } = toolHeader(e.kindName, running)
-    let subtitle = e.title
     if (e.raw) {
-      try {
-        const d = extractToolDetail(e.raw, e.kindName)
-        if (d.kind === 'read') {
-          if (d.skill) {
-            // TUI skill reads: header "Skill {name}"（无 Read 动词、无路径）。
-            return { title: 'Skill', subtitle: d.skill }
-          }
-          subtitle = d.path
-        } else if (d.kind === 'execute')
-          subtitle = d.command || d.description || e.title
-        else if (d.kind === 'edit') subtitle = d.path
-        else if (d.kind === 'search') subtitle = d.pattern
-        else if (d.kind === 'list_dir') subtitle = d.path
-        else if (d.kind === 'fetch') subtitle = d.url
-        else if (d.kind === 'web_search') subtitle = d.query
-        else if (d.kind === 'use_tool') subtitle = d.toolName
-      } catch {
-        /* keep title */
+      // Fullscreen surface: same rule set as the row header, only the path
+      // paint differs (normalized absolute path, no collapsed suffixes).
+      const extra = toolHeaderExtra(e.raw, e.kindName, failed, e.mergedRaws, {
+        surface: 'fullscreen',
+        cwd,
+        status: e.status,
+      })
+      if (extra?.bare) return { title: extra.bare }
+      if (extra) {
+        const sub = `${extra.head ?? ''}${extra.target ?? ''}`
+        return { title: extra.verb ?? verb, subtitle: sub || e.title }
       }
     }
-    return { title: verb, subtitle }
+    return { title: verb, subtitle: e.title }
   }
   if (e.kind === 'thought') {
     return {

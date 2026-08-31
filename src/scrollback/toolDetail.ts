@@ -7,6 +7,7 @@
  */
 
 import type { ToolCall } from '../api/types'
+import { splitMcpToolName, uniqueDomains, workflowScriptName } from './toolPaths'
 
 /** Truncation windows matching TUI defaults. */
 export const READ_FIRST = 5
@@ -34,6 +35,14 @@ export type SearchFile = {
 
 export type KvPair = { key: string; value: string }
 
+/** One tool surfaced by `search_tool` (TUI DiscoveredTool). */
+export type DiscoveredTool = {
+  name: string
+  server: string
+  description: string
+  score: number
+}
+
 export type ToolDetail =
   | {
       kind: 'read'
@@ -48,6 +57,8 @@ export type ToolDetail =
       error?: string
       empty?: boolean
       media?: 'image' | 'pdf'
+      /** PDF page count (TUI header suffix "(N pages)"). */
+      pages?: number
     }
   | {
       kind: 'execute'
@@ -63,6 +74,9 @@ export type ToolDetail =
       path: string
       /** Creating / write tool */
       creating?: boolean
+      /** Workflow script stem — TUI shows "Editing/Creating workflow {name}"
+       *  instead of the `.rhai` path. */
+      workflow?: string
       lines: DiffLine[]
       insertions: number
       deletions: number
@@ -103,12 +117,27 @@ export type ToolDetail =
       query: string
       content?: string
       citations: string[]
+      /** Deduplicated citation domains (TUI "(N sites)" + Sources line). */
+      sites: string[]
       error?: string
       label?: string
     }
   | {
+      kind: 'search_tool'
+      query: string
+      limit?: number
+      /** Wire `result_count` — TUI header suffix "(N results)". */
+      resultCount: number
+      results: DiscoveredTool[]
+      error?: string
+    }
+  | {
       kind: 'use_tool'
       toolName: string
+      /** MCP qualified name split + titleized: `linear__save_issue` →
+       *  server "Linear", action "Save Issue" (TUI header_line). */
+      server: string
+      action: string
       args: KvPair[]
       output?: string
       error?: string
@@ -117,6 +146,10 @@ export type ToolDetail =
       kind: 'generic'
       name: string
       summary?: string
+      /** TUI OtherToolCallBlock header split: `Label: content` renders the
+       *  part before the first ": " as the bold label. */
+      label?: string
+      content?: string
       output?: string
       error?: string
       /** Flattened rawInput fields when nothing better is available. */
@@ -420,6 +453,7 @@ function extractReadFile(raw: unknown): {
   limit?: number
   error?: string
   media?: 'image' | 'pdf'
+  pages?: number
 } | null {
   if (!raw) return null
   // serde internally-tagged newtype: {"type":"ReadFile","FileContent":{…}}
@@ -438,8 +472,19 @@ function extractReadFile(raw: unknown): {
   const nested = unwrapTagged(body)
   if (nested) {
     const tag = nested.tag
-    if (/ImageContent|image/i.test(tag)) return { media: 'image' }
-    if (/Pdf/i.test(tag)) return { media: 'pdf' }
+    // PdfPageImages 必须先判：它的 tag 含 "image" 子串，先判 image 会把
+    // PDF 误判成图片（TUI 的两个变体是 ImageContent / PdfPageImages）。
+    if (/Pdf/i.test(tag)) {
+      const b = isObj(nested.body) ? nested.body : undefined
+      const pages =
+        b && typeof b.total_pages === 'number'
+          ? b.total_pages
+          : b && typeof b.totalPages === 'number'
+            ? b.totalPages
+            : undefined
+      return { media: 'pdf', pages }
+    }
+    if (/^Image(Content)?$/.test(tag)) return { media: 'image' }
     // NOTE: ImageContent 必须先于 FileContent/content 判定——后者含
     // "content" 子串，先判会吞掉图片标签（media 永远为空）。
     if (/FileContent|content/i.test(tag) && isObj(nested.body)) {
@@ -729,6 +774,63 @@ function extractEditHunks(tc: ToolCall): { lines: DiffLine[]; ins: number; del: 
   return { lines: [], ins: 0, del: 0 }
 }
 
+// ── search tool discovery (MCP) ──────────────────────────────────────
+
+/** TUI `parse_search_tool_results`: grouped `{results:[{server,tools:[…]}]}`.
+ *  The legacy flat per-tool shape yields no rows, same as the TUI. */
+function parseSearchToolResults(content: string): DiscoveredTool[] {
+  let val: unknown
+  try {
+    val = JSON.parse(content)
+  } catch {
+    return []
+  }
+  if (!isObj(val) || !Array.isArray(val.results)) return []
+  const out: DiscoveredTool[] = []
+  for (const group of val.results) {
+    if (!isObj(group)) continue
+    const server = typeof group.server === 'string' ? group.server : ''
+    const tools = group.tools
+    if (!Array.isArray(tools)) continue
+    for (const t of tools) {
+      if (!isObj(t) || typeof t.tool_name !== 'string') continue
+      out.push({
+        name: t.tool_name,
+        server,
+        description: typeof t.description === 'string' ? t.description : '',
+        score: typeof t.score === 'number' ? t.score : 0,
+      })
+    }
+  }
+  return out
+}
+
+function extractSearchTool(raw: unknown): {
+  resultCount: number
+  results: DiscoveredTool[]
+} {
+  const tagged = unwrapTagged(raw)
+  let body: unknown = tagged && /search/i.test(tagged.tag) ? tagged.body : raw
+  if (!isObj(body)) return { resultCount: 0, results: [] }
+  const resultCount =
+    typeof body.result_count === 'number'
+      ? body.result_count
+      : typeof body.resultCount === 'number'
+        ? body.resultCount
+        : 0
+  const content = typeof body.content === 'string' ? body.content : undefined
+  return { resultCount, results: content ? parseSearchToolResults(content) : [] }
+}
+
+/** TUI `discovered_tool_action`: drop the trusted `server__` prefix. */
+export function discoveredToolAction(tool: DiscoveredTool): string {
+  if (tool.server && tool.name.startsWith(tool.server)) {
+    const rest = tool.name.slice(tool.server.length)
+    if (rest.startsWith('__')) return rest.slice(2)
+  }
+  return tool.name
+}
+
 // ── use tool ─────────────────────────────────────────────────────────
 
 function extractUseToolArgs(ri: Record<string, unknown> | undefined): KvPair[] {
@@ -869,6 +971,7 @@ export function extractToolDetail(tc: ToolCall, kindName?: string): ToolDetail {
       error,
       empty: content === '',
       media: rf?.media,
+      pages: rf?.pages,
     }
   }
 
@@ -880,11 +983,13 @@ export function extractToolDetail(tc: ToolCall, kindName?: string): ToolDetail {
       kind === 'write' ||
       kind === 'create' ||
       /creat|write|new file/i.test(title)
+    const workflow = workflowScriptName(path)
     if (isFail) {
       return {
         kind: 'edit',
         path,
         creating,
+        workflow,
         lines: [],
         insertions: 0,
         deletions: 0,
@@ -896,9 +1001,29 @@ export function extractToolDetail(tc: ToolCall, kindName?: string): ToolDetail {
       kind: 'edit',
       path,
       creating,
+      workflow,
       lines,
       insertions: ins,
       deletions: del,
+    }
+  }
+
+  // ── search_tool (MCP tool discovery) ──
+  if (
+    variant === 'SearchTool' ||
+    kind === 'search_tool' ||
+    kind === 'integration_search'
+  ) {
+    const query =
+      rawField(ri, 'query') || title.replace(/^Search tools:\s*/i, '').replace(/^"|"$/g, '')
+    const st = extractSearchTool(raw)
+    return {
+      kind: 'search_tool',
+      query,
+      limit: ri && typeof ri.limit === 'number' ? ri.limit : undefined,
+      resultCount: st.resultCount,
+      results: st.results,
+      error: isFail ? 'Search failed' : undefined,
     }
   }
 
@@ -936,6 +1061,7 @@ export function extractToolDetail(tc: ToolCall, kindName?: string): ToolDetail {
         query,
         content,
         citations,
+        sites: uniqueDomains(citations),
         error: isFail ? 'Web search failed' : undefined,
         label: variant === 'XSearch' ? 'X Search' : undefined,
       }
@@ -1025,12 +1151,15 @@ export function extractToolDetail(tc: ToolCall, kindName?: string): ToolDetail {
   if (kind === 'mcp' || kind === 'use_tool' || variant === 'UseTool') {
     const toolName =
       rawField(ri, 'tool_name', 'toolName', 'name') || title
+    const { server, action } = splitMcpToolName(toolName)
     const args = extractUseToolArgs(ri)
     const output =
       contentText(tc) || extractUseToolOutput(raw) || undefined
     return {
       kind: 'use_tool',
       toolName,
+      server,
+      action,
       args,
       output,
       error: isFail ? 'Tool failed' : undefined,
@@ -1042,10 +1171,14 @@ export function extractToolDetail(tc: ToolCall, kindName?: string): ToolDetail {
     contentText(tc) ||
     extractUseToolOutput(raw) ||
     (typeof raw === 'string' ? raw : raw != null ? safeJson(raw) : undefined)
+  const name = title || kind
+  const colon = name.indexOf(': ')
   return {
     kind: 'generic',
-    name: title || kind,
+    name,
     summary: title,
+    label: colon > 0 ? name.slice(0, colon) : undefined,
+    content: colon > 0 ? name.slice(colon + 2) : undefined,
     output,
     error: isFail ? contentText(tc) || 'Failed' : undefined,
     inputArgs: flattenArgs(ri, new Set(['variant'])),

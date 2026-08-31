@@ -78,4 +78,7 @@ export type EntryChrome = {
   bodyRef: { current: HTMLDivElement | null }
   /** 迷你 scrollback（子代理弹窗）：消息操作行隐藏会话级动作（fork）。 */
   inMini: boolean
+  /** 会话工作目录（historyCwd ?? cwd）——工具行路径按 surface 打印时用作
+   *  相对基准（TUI path_for_tool_surface 的 cwd）。 */
+  cwd?: string
 }
