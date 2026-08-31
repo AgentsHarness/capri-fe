@@ -57,6 +57,10 @@ export type ToolDetail =
       error?: string
       empty?: boolean
       media?: 'image' | 'pdf'
+      /** Image read: wire mime (e.g. image/png) — used to wrap bare base64. */
+      imageMime?: string
+      /** Image read: wire uri (file path / object URL) — http(s) fallback src. */
+      imageUri?: string
       /** PDF page count (TUI header suffix "(N pages)"). */
       pages?: number
     }
@@ -453,6 +457,8 @@ function extractReadFile(raw: unknown): {
   limit?: number
   error?: string
   media?: 'image' | 'pdf'
+  imageMime?: string
+  imageUri?: string
   pages?: number
 } | null {
   if (!raw) return null
@@ -484,7 +490,22 @@ function extractReadFile(raw: unknown): {
             : undefined
       return { media: 'pdf', pages }
     }
-    if (/^Image(Content)?$/.test(tag)) return { media: 'image' }
+    if (/^Image(Content)?$/.test(tag)) {
+      // Wire carries the payload itself (base64 `data`, `mime_type`, optional
+      // `uri`) — keep it so ReadBody can render the real image instead of
+      // falling back to the "(image)" placeholder.
+      const b = isObj(nested.body) ? nested.body : undefined
+      return {
+        media: 'image',
+        content: b
+          ? asStr(b.data) ?? asStr(b.content) ?? asStr(b.raw_output)
+          : undefined,
+        imageMime: b
+          ? asStr(b.mime_type) ?? asStr(b.mimeType) ?? asStr(b.mime)
+          : undefined,
+        imageUri: b ? asStr(b.uri) : undefined,
+      }
+    }
     // NOTE: ImageContent 必须先于 FileContent/content 判定——后者含
     // "content" 子串，先判会吞掉图片标签（media 永远为空）。
     if (/FileContent|content/i.test(tag) && isObj(nested.body)) {
@@ -971,6 +992,8 @@ export function extractToolDetail(tc: ToolCall, kindName?: string): ToolDetail {
       error,
       empty: content === '',
       media: rf?.media,
+      imageMime: rf?.imageMime,
+      imageUri: rf?.imageUri,
       pages: rf?.pages,
     }
   }

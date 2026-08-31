@@ -240,18 +240,20 @@ function StdoutPanel({
 /**
  * Turn read-tool image content (data URI or bare base64) into a usable
  * <img> src; undefined when the content is not image-shaped (→ the
- * existing "(image)" text fallback).
+ * existing "(image)" text fallback). Bare base64 is wrapped with the wire
+ * mime when one is present (image/png default).
  */
-function readImageSrc(content?: string): string | undefined {
+function readImageSrc(content?: string, mime?: string): string | undefined {
   const c = content?.trim()
   if (!c) return undefined
   if (c.startsWith('data:')) return c
   // Stray "image/png;base64,…" prefix without the data: scheme.
   const m = c.match(/^([\w.+-]+\/[\w.+-]+);base64,(.+)$/)
   if (m) return `data:${m[1]};base64,${m[2]}`
-  // Long base64-shaped payload → wrap with image/png.
+  // Long base64-shaped payload → wrap (mime from the wire, default image/png).
   if (c.length > 64 && /^[A-Za-z0-9+/=\s]+$/.test(c)) {
-    return `data:image/png;base64,${c.replace(/\s+/g, '')}`
+    const mimeOk = mime && /^[\w.+-]+\/[\w.+-]+$/.test(mime) ? mime : 'image/png'
+    return `data:${mimeOk};base64,${c.replace(/\s+/g, '')}`
   }
   return undefined
 }
@@ -268,7 +270,9 @@ function ReadBody({
   const [visible, setVisible] = useState(VIEWER_PAGE_LINES)
   if (d.error) return <ErrorLine text={d.error} />
   if (d.media === 'image') {
-    const src = readImageSrc(d.content)
+    const src =
+      readImageSrc(d.content, d.imageMime) ??
+      (d.imageUri && /^https?:\/\//i.test(d.imageUri) ? d.imageUri : undefined)
     if (src) {
       // Real image preview (base64 / data URI content) — no max-h clip
       // like text panels; the image caps itself at 55vh.
