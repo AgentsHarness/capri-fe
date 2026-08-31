@@ -370,50 +370,129 @@ describe('scanGroups / projectDisplayRows — thought 参与截断密度', () =>
 
 describe('scanGroups — subagent（task）与密集段的边界', () => {
   const bash = (n: number) => Array.from({ length: n }, () => tool({ kindName: 'execute' }))
-  const subagent = (running = false): ScrollEntry => ({
-    id: 'sa1',
+  const subagent = (
+    running = false,
+    over: Partial<Extract<ScrollEntry, { kind: 'subagent' }>> = {},
+  ): ScrollEntry => ({
+    id: `sa${Math.random().toString(36).slice(2, 8)}`,
     kind: 'subagent',
     title: 'task',
     status: running ? 'started' : 'completed',
     running,
+    ...over,
   })
 
-  it('纯 subagent run 不成组：密集段跨越 task 连续折叠', () => {
+  it('纯 subagent run 成组（TUI folds=members>=1），截断段在 verb 认领处断开', () => {
     const entries = [...bash(12), subagent(), ...bash(12)]
     const spans = scanGroups(entries, new Set())
-    expect(spans).toHaveLength(1)
+    expect(spans).toHaveLength(3)
     expect(spans[0]).toMatchObject({
-      range: { start: 0, end: 25 },
-      kind: { type: 'truncation', participants: 25, hidden: 15 },
+      range: { start: 0, end: 12 },
+      kind: { type: 'truncation', participants: 12, hidden: 2 },
+    })
+    expect(spans[1]).toMatchObject({
+      range: { start: 12, end: 13 },
+      kind: { type: 'verb', members: 1 },
+    })
+    expect(spans[2]).toMatchObject({
+      range: { start: 13, end: 25 },
+      kind: { type: 'truncation', participants: 12, hidden: 2 },
     })
   })
 
-  it('task 之后的低密度段随同一组折叠（不再因 task 断开重新够阈值）', () => {
+  it('task 把前后 execute 截断段劈开：后段不够阈值则保持平铺', () => {
     const entries = [...bash(12), subagent(), ...bash(5)]
     const spans = scanGroups(entries, new Set())
-    expect(spans).toHaveLength(1)
-    expect(spans[0].kind).toEqual({ type: 'truncation', participants: 18, hidden: 8 })
+    expect(spans).toHaveLength(2)
+    expect(spans[0].kind).toEqual({ type: 'truncation', participants: 12, hidden: 2 })
+    expect(spans[1].kind).toEqual({ type: 'verb', members: 1 })
     const rows = projectDisplayRows(entries, spans)
-    expect(rows).toHaveLength(11) // header + 10 可见尾部（含原位的 task 行）
+    // 前段 truncation: header + 10 可见尾部；verb 头 1 行；后段 5 条 execute 平铺
+    expect(rows).toHaveLength(1 + 10 + 1 + 5)
+    expect(rows.filter((r) => r.type === 'entry' && r.entry.kind === 'subagent')).toHaveLength(0)
   })
 
-  it('孤立 task 保持自身条目行，不退化成 1 成员裸 header', () => {
+  it('孤立 task 折成 1 成员 verb 头（TUI：第一条即出 header，避免第二条跳变）', () => {
     const entries = [subagent()]
     const spans = scanGroups(entries, new Set())
-    expect(spans).toHaveLength(0)
+    expect(spans).toHaveLength(1)
+    expect(spans[0].kind).toEqual({ type: 'verb', members: 1 })
     const rows = projectDisplayRows(entries, spans)
     expect(rows).toHaveLength(1)
-    expect(rows[0]).toMatchObject({ type: 'entry', entry: { kind: 'subagent' } })
+    expect(rows[0]).toMatchObject({ type: 'group_header' })
+    if (rows[0].type !== 'group_header') throw new Error('expected group header')
+    expect(rows[0].label.text).toBe('Ran 1 subagent')
   })
 
-  it('夹在 Read run 中的 task 照旧并入 verb 组（toolMembers ≥ 1）', () => {
-    const entries = [...Array.from({ length: 5 }, () => tool({ kindName: 'read' })), subagent(true), ...Array.from({ length: 5 }, () => tool({ kindName: 'read' }))]
+  it('夹在 Read run 中的 task 并入同一 verb 组', () => {
+    const entries = [
+      ...Array.from({ length: 5 }, () => tool({ kindName: 'read' })),
+      subagent(true),
+      ...Array.from({ length: 5 }, () => tool({ kindName: 'read' })),
+    ]
     const spans = scanGroups(entries, new Set())
     expect(spans).toHaveLength(1)
     expect(spans[0].kind).toEqual({ type: 'verb', members: 11 })
     expect(verbGroupLabel(entries, spans[0])).toMatchObject({
       text: 'Reading 10 files, Running 1 subagent',
     })
+  })
+
+  it('折叠 thought 认领进纯 subagent run：组内隐藏，展开后与 Agent 同组', () => {
+    const entries = [
+      subagent(true, { title: 'review:a' }),
+      subagent(true, { title: 'review:b' }),
+      subagent(true, { title: 'review:c' }),
+      subagent(true, { title: 'review:d' }),
+      thought({ text: 'launched' }),
+      { id: 'a1', kind: 'assistant', text: 'ok' } as ScrollEntry,
+    ]
+    const collapsed = scanGroups(entries, new Set())
+    expect(collapsed).toHaveLength(1)
+    expect(collapsed[0]).toMatchObject({
+      range: { start: 0, end: 5 },
+      kind: { type: 'verb', members: 4 },
+    })
+    expect(verbGroupLabel(entries, collapsed[0])).toMatchObject({
+      text: 'Running 4 subagents',
+    })
+    const folded = projectDisplayRows(entries, collapsed)
+    expect(folded).toHaveLength(2)
+    expect(folded[0].type).toBe('group_header')
+    expect(folded[1]).toMatchObject({ type: 'entry', index: 5 })
+
+    const opened = scanGroups(entries, new Set([entries[0].id]))
+    const rows = projectDisplayRows(entries, opened)
+    expect(rows.map((r) => (r.type === 'entry' ? r.entry.kind : 'header'))).toEqual([
+      'header',
+      'subagent',
+      'subagent',
+      'subagent',
+      'subagent',
+      'thought',
+      'assistant',
+    ])
+  })
+
+  it('尾部流式 thought 不认领（TUI trailing transparent 在 run 外），收口后才折进去', () => {
+    const agents = [
+      subagent(true, { title: 'a' }),
+      subagent(true, { title: 'b' }),
+    ]
+    const live = [...agents, thought({ text: 'live', streaming: true })]
+    const liveSpans = scanGroups(live, new Set())
+    expect(liveSpans).toHaveLength(1)
+    expect(liveSpans[0].range).toEqual({ start: 0, end: 2 })
+    const liveRows = projectDisplayRows(live, liveSpans)
+    expect(liveRows.map((r) => (r.type === 'entry' ? r.entry.kind : 'header'))).toEqual([
+      'header',
+      'thought',
+    ])
+
+    const sealed = [...agents, thought({ text: 'done' })]
+    const sealedSpans = scanGroups(sealed, new Set())
+    expect(sealedSpans[0].range).toEqual({ start: 0, end: 3 })
+    expect(projectDisplayRows(sealed, sealedSpans)).toHaveLength(1)
   })
 })
 

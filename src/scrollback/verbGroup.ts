@@ -2,8 +2,10 @@
  * TUI verb-group + truncation fold port
  * (xai-grok-pager scrollback/state/verb_group.rs + groups.rs).
  *
- * Verb runs: consecutive collapsed non-destructive tools fold into one
- * "Read 3 files, Searched 2 patterns" header.
+ * Verb runs: consecutive collapsed non-destructive tools and subagent
+ * rows fold into one "Read 3 files, Ran 2 subagents" header. Sealed
+ * collapsed thoughts claim into the run (hidden when folded) but never
+ * count toward the member threshold.
  * Truncation: long dense collapsed-groupable runs — tools AND sealed
  * collapsed thoughts (thought-tool-thought alternation included) — hide
  * the oldest rows behind one header. The header label counts the WHOLE
@@ -222,7 +224,7 @@ function nounOf(vg: VerbGroupKind, count: number): string {
 
 // ── Scan ───────────────────────────────────────────────────────────────
 
-type RunScan = { members: number; toolMembers: number; end: number; stop: number }
+type RunScan = { members: number; end: number; stop: number }
 
 function scanRunForward(
   entries: ScrollEntry[],
@@ -235,14 +237,12 @@ function scanRunForward(
   if (step0.kind !== 'member' && step0.kind !== 'thought') return null
 
   let members = 0
-  let toolMembers = 0
   let end = start
   let i = start
   while (i < entries.length) {
     const step = runStep(entries[i], showThinking)
     if (step.kind === 'member') {
       members += 1
-      if (step.vg !== 'subagent') toolMembers += 1
       end = i + 1
     } else if (step.kind === 'thought') {
       end = i + 1
@@ -253,7 +253,7 @@ function scanRunForward(
     }
     i += 1
   }
-  return { members, toolMembers, end, stop: i }
+  return { members, end, stop: i }
 }
 
 /**
@@ -302,10 +302,11 @@ export function scanGroups(
         i += 1
         continue
       }
-      if (scan.members < 1 || scan.toolMembers < 1) {
-        // 无工具成员的 run（纯 subagent）不成组：孤 task 保持自身行、
-        // 落给 truncation 参与密度——否则它会把密集段劈成两半（task
-        // 之后各自重新够阈值），自己还退化成 1 成员的裸 header。
+      // TUI RunScan::folds: members >= 1（verb_group.rs）。纯 subagent
+      // 也折——紧凑的 "Running N subagents" 头优于 N 条独立行，且第一
+      // 个成员到达即出 header，避免第二条进来时从单行跳成组头。thought
+      // 认领进 run 但不计数，纯思考 walk（标签会空）永不折。
+      if (scan.members < 1) {
         i = scan.stop
         continue
       }
