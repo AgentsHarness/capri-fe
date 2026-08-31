@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import type { ScrollEntry } from '../../../api/types'
 import type { EntryChrome } from '../chrome'
-import { SubagentEntry } from './TaskEntries'
+import { SubagentEntry, BgTaskEntry } from './TaskEntries'
 
 // AccentRail 依赖 ResizeObserver / matchMedia（jsdom 均未实现）。
 class ROStub {
@@ -13,17 +13,19 @@ class ROStub {
 window.ResizeObserver = ROStub as unknown as typeof ResizeObserver
 window.matchMedia = window.matchMedia ?? (() => ({ matches: false })) as never
 
-/** 最小 chrome：SubagentEntry 只消费 shell.selected / openViewer /
- *  cancelSubagent；其余字段给安全默认值。 */
+/** 最小 chrome：TaskEntries 各渲染器只消费 shell.selected / openViewer /
+ *  cancelSubagent / killTask；其余字段给安全默认值。 */
 function makeChrome(
   e: ScrollEntry,
   openViewer = vi.fn(),
   cancelSubagent = vi.fn(),
+  killTask = vi.fn(),
+  selected = false,
 ): EntryChrome {
   return {
     shell: {
       e,
-      selected: false,
+      selected,
       hovered: false,
       onHover: () => {},
       onSelect: () => {},
@@ -44,7 +46,7 @@ function makeChrome(
     toggleUser: () => {},
     toggleBtw: () => {},
     cancelSubagent,
-    killTask: () => {},
+    killTask,
     liveText: undefined,
     thoughtText: undefined,
     bodyRef: { current: null },
@@ -90,6 +92,65 @@ describe('SubagentEntry — 整行单击弹查看器', () => {
     render(<SubagentEntry e={e} chrome={makeChrome(e, openViewer, cancelSubagent)} />)
     fireEvent.click(screen.getByRole('button', { name: /cancel/ }))
     expect(cancelSubagent).toHaveBeenCalledWith('sub-1')
+    expect(openViewer).not.toHaveBeenCalled()
+  })
+})
+
+const bgTaskEntry = (
+  o: Partial<Extract<ScrollEntry, { kind: 'bg_task' }>> & { id: string },
+): Extract<ScrollEntry, { kind: 'bg_task' }> =>
+  ({
+    kind: 'bg_task',
+    status: 'completed',
+    title: 'npm run build',
+    ...o,
+  }) as Extract<ScrollEntry, { kind: 'bg_task' }>
+
+describe('BgTaskEntry — 与 Agent 行同形态', () => {
+  it('单击行任意处直接 openViewer（同样不需要先选中再点查看）', () => {
+    const e = bgTaskEntry({ id: 'bg1' })
+    const openViewer = vi.fn()
+    const { container } = render(
+      <BgTaskEntry e={e} chrome={makeChrome(e, openViewer)} />,
+    )
+    fireEvent.click(container.querySelector('[data-entry-id="bg1"]')!)
+    expect(openViewer).toHaveBeenCalledWith('bg1')
+  })
+
+  it('不渲染「查看」按钮（选中态也不出现）', () => {
+    const e = bgTaskEntry({ id: 'bg1' })
+    const closed = render(<BgTaskEntry e={e} chrome={makeChrome(e, vi.fn())} />)
+    const sel = render(
+      <BgTaskEntry
+        e={e}
+        chrome={makeChrome(e, vi.fn(), vi.fn(), vi.fn(), true)}
+      />,
+    )
+    for (const { container } of [closed, sel]) {
+      const hasViewBtn = [...container.querySelectorAll('button')].some((b) =>
+        /查看/.test(b.textContent ?? ''),
+      )
+      expect(hasViewBtn).toBe(false)
+    }
+  })
+
+  it('运行中的行点 kill：只终止任务，不弹查看器', () => {
+    const e = bgTaskEntry({
+      id: 'bg1',
+      status: 'started',
+      running: true,
+      taskId: 't-1',
+    })
+    const openViewer = vi.fn()
+    const killTask = vi.fn()
+    render(
+      <BgTaskEntry
+        e={e}
+        chrome={makeChrome(e, openViewer, vi.fn(), killTask)}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /kill/ }))
+    expect(killTask).toHaveBeenCalledWith('t-1')
     expect(openViewer).not.toHaveBeenCalled()
   })
 })
