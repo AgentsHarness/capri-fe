@@ -34,6 +34,8 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
   }
   return {
     entries: [],
+  pendingToolHooks: [],
+  pendingStopHooks: undefined,
   liveStream: null,
   currentStreamStartMs: undefined,
   lastCompletedTurn: undefined,

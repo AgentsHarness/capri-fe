@@ -2,7 +2,8 @@ import { memo, useEffect, useRef, useState } from 'react'
 import type { ScrollEntry } from '../../api/types'
 import { useChatStore } from '../../store/chat'
 import { accentOpts } from '../../scrollback/accentOpts'
-import { entryFlashActive, expandableGlyph } from '../../scrollback/entryState'
+import { entryFlashActive, entryFoldable, expandableGlyph } from '../../scrollback/entryState'
+import { hookGroupsHaveContent } from '../../scrollback/hookRuns'
 import { mergeLiveText } from '../../scrollback/liveText'
 import { resolveBullet } from '../../theme/accents'
 import { DENSE_ROW_CLASS, HEADER_ROW_CLASS } from '../../theme/layout'
@@ -14,6 +15,7 @@ import {
   ErrorEntry,
   GroupHeaderEntry,
   ImageEntry,
+  LifecycleEntry,
   PlanEntry,
   SessionEventEntry,
   StatusEntry,
@@ -79,6 +81,8 @@ export const EntryView = memo(function EntryView({
   const storeToggleThought = useChatStore((s) => s.toggleThought)
   const storeToggleUser = useChatStore((s) => s.toggleUser)
   const storeToggleBtw = useChatStore((s) => s.toggleBtw)
+  const storeToggleLifecycle = useChatStore((s) => s.toggleLifecycle)
+  const storeToggleSessionEvent = useChatStore((s) => s.toggleSessionEvent)
   const storeOpenViewer = useChatStore((s) => s.openViewer)
   const storeSelectEntry = useChatStore((s) => s.selectEntry)
   const cancelSubagent = useChatStore((s) => s.cancelSubagent)
@@ -89,30 +93,28 @@ export const EntryView = memo(function EntryView({
   const toggleThought = actions?.toggleThought ?? storeToggleThought
   const toggleUser = actions?.toggleUser ?? storeToggleUser
   const toggleBtw = actions?.toggleBtw ?? storeToggleBtw
+  const toggleLifecycle = actions?.toggleLifecycle ?? storeToggleLifecycle
+  const toggleSessionEvent = actions?.toggleSessionEvent ?? storeToggleSessionEvent
   const openViewer = actions?.openViewer ?? storeOpenViewer
   const selectEntry = actions?.selectEntry ?? storeSelectEntry
   const onSelect = () => selectEntry(e.id)
-  // Distinguish single-click (fold) vs double-click (viewer): defer single
-  // until after the double-click window so dblclick doesn't also toggle.
-  const clickTimer = useRef<number | null>(null)
-  const clearClickTimer = () => {
-    if (clickTimer.current != null) {
-      window.clearTimeout(clickTimer.current)
-      clickTimer.current = null
-    }
-  }
-  useEffect(() => () => clearClickTimer(), [])
-  const onHeaderClick = (action: () => void) => {
-    clearClickTimer()
-    clickTimer.current = window.setTimeout(() => {
-      clickTimer.current = null
-      action()
-    }, 220)
-  }
-  const onHeaderDblClick = () => {
-    clearClickTimer()
-    openViewer(e.id)
-  }
+  // 整块单击折叠：标题行以外的正文/留白同样生效。「查看」是独立 button，
+  // 不走这条路径。流式思考 / 无可折叠正文的 kind 不挂 onFold（点击只选中）。
+  const foldAction = !entryFoldable(e)
+    ? undefined
+    : e.kind === 'tool'
+      ? () => toggleTool(e.id)
+      : e.kind === 'thought'
+        ? () => toggleThought(e.id)
+        : e.kind === 'user'
+          ? () => toggleUser(e.id)
+          : e.kind === 'btw'
+            ? () => toggleBtw(e.id)
+            : e.kind === 'lifecycle'
+              ? () => toggleLifecycle(e.id)
+              : e.kind === 'session_event' && hookGroupsHaveContent(e.stopHooks)
+                ? () => toggleSessionEvent(e.id)
+                : undefined
   const [hovered, setHovered] = useState(false)
   const opts = accentOpts(e, selected, pendingFreeze, now, hovered)
   const bullet = resolveBullet(opts)
@@ -147,6 +149,7 @@ export const EntryView = memo(function EntryView({
     denseNext,
     densePrev,
     inGroup,
+    onFold: foldAction,
   }
   // One-line tool/thought chrome: center bullet with text (not baseline — ⌄/◆).
   // Icon col pins text-[13px] so em-box is stable across user/tool rows.
@@ -159,8 +162,6 @@ export const EntryView = memo(function EntryView({
     caret,
     bulletGlyph,
     rowBtn,
-    onHeaderClick,
-    onHeaderDblClick,
     openViewer,
     toggleTool,
     toggleThought,
@@ -187,6 +188,7 @@ export const EntryView = memo(function EntryView({
   if (e.kind === 'workflow') return <WorkflowEntry e={e} chrome={chrome} />
   if (e.kind === 'bg_task') return <BgTaskEntry e={e} chrome={chrome} />
   if (e.kind === 'session_event') return <SessionEventEntry e={e} chrome={chrome} />
+  if (e.kind === 'lifecycle') return <LifecycleEntry e={e} chrome={chrome} />
   if (e.kind === 'credit_limit') return <CreditLimitEntry e={e} chrome={chrome} />
   if (e.kind === 'btw') return <BtwEntry e={e} chrome={chrome} />
   if (e.kind === 'group_header') return <GroupHeaderEntry e={e} chrome={chrome} />

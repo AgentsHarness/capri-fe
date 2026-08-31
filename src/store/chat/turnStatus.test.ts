@@ -196,6 +196,8 @@ describe('turnMarker / turnEndMarkerText / isTurnEndLine', () => {
     expect(isTurnEndLine({ id: 'e', kind: 'session_event', text: 'Turn completed.' })).toBe(true)
     expect(isTurnEndLine({ id: 'e', kind: 'session_event', text: 'Turn cancelled by user in 2.0s.' })).toBe(true)
     expect(isTurnEndLine({ id: 'e', kind: 'session_event', text: 'Turn failed: boom' })).toBe(true)
+    expect(isTurnEndLine({ id: 'e', kind: 'session_event', text: 'Turn blocked by a hook in 1.0s.' })).toBe(true)
+    expect(isTurnEndLine({ id: 'e', kind: 'session_event', text: 'Agent was unable to make progress. Turn ended in 2.0s.' })).toBe(true)
     expect(isTurnEndLine({ id: 'e', kind: 'session_event', text: 'Worked for 5.0s' })).toBe(true)
     expect(isTurnEndLine({ id: 'e', kind: 'session_event', text: '2 commands still running' })).toBe(true)
     expect(isTurnEndLine({ id: 'e', kind: 'session_event', text: 'recap' })).toBe(false)

@@ -237,7 +237,7 @@ export function tailHasCancellationDetail(
  * TUI "Worked for Xs" marker entry. `elapsedMs` undefined → plain
  * "Turn completed." (TUI TurnCompleted with no elapsed).
  */
-export function turnMarker(elapsedMs: number | undefined): ScrollEntry {
+export function turnMarker(elapsedMs: number | undefined): Extract<ScrollEntry, { kind: 'session_event' }> {
   return {
     id: nid(),
     kind: 'session_event',
@@ -293,6 +293,10 @@ export function isTurnEndLine(e: ScrollEntry): boolean {
     (e.text === 'Turn completed.' ||
       e.text.startsWith('Turn cancelled') ||
       e.text.startsWith('Turn failed') ||
+      // 与 isTurnTerminalMarker 同集：hook 拒绝（HookDenied）与 halt
+      // 标记（TUI session_event.rs message() 文本）也是收口行。
+      e.text.startsWith('Turn blocked by a hook') ||
+      e.text.startsWith('Agent was unable to make progress') ||
       e.text.startsWith('Worked for ') ||
       e.text.endsWith(' still running'))
   )

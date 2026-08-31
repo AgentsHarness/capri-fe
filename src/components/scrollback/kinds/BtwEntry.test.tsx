@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
 import type { ScrollEntry } from '../../../api/types'
 import type { EntryChrome } from '../chrome'
 import { BtwEntry } from './MiscEntries'
@@ -13,10 +13,13 @@ class ROStub {
 window.ResizeObserver = ROStub as unknown as typeof ResizeObserver
 window.matchMedia = window.matchMedia ?? (() => ({ matches: false })) as never
 
-/** 最小 chrome：BtwEntry 只消费 shell / bullet / onHeaderClick /
- *  onHeaderDblClick / toggleBtw；其余字段给安全默认值。 */
-function makeChrome(e: ScrollEntry, selected = true): EntryChrome {
-  return {
+/** 最小 chrome：BtwEntry 只消费 shell / bullet / toggleBtw；其余字段给安全默认值。 */
+function makeChrome(
+  e: ScrollEntry,
+  selected = true,
+): EntryChrome & { openViewer: ReturnType<typeof vi.fn> } {
+  const openViewer = vi.fn()
+  const chrome = {
     shell: {
       e,
       selected,
@@ -34,9 +37,7 @@ function makeChrome(e: ScrollEntry, selected = true): EntryChrome {
     caret: null,
     bulletGlyph: undefined,
     rowBtn: '',
-    onHeaderClick: () => {},
-    onHeaderDblClick: () => {},
-    openViewer: () => {},
+    openViewer,
     toggleTool: () => {},
     toggleThought: () => {},
     toggleUser: () => {},
@@ -47,7 +48,8 @@ function makeChrome(e: ScrollEntry, selected = true): EntryChrome {
     thoughtText: undefined,
     bodyRef: { current: null },
     inMini: false,
-  } as EntryChrome
+  } as EntryChrome & { openViewer: ReturnType<typeof vi.fn> }
+  return chrome
 }
 
 const btw = (
@@ -100,5 +102,18 @@ describe('BtwEntry', () => {
       />,
     )
     expect(screen.getByText('等待回答…')).toBeInTheDocument()
+  })
+
+  it('展开显示「查看」，点击调 openViewer；折叠态无「查看」', () => {
+    const e = btw({ answer: '两步', open: true })
+    const chrome = makeChrome(e)
+    const { unmount } = render(<BtwEntry e={e} chrome={chrome} />)
+    fireEvent.click(screen.getByRole('button', { name: '查看' }))
+    expect(chrome.openViewer).toHaveBeenCalledWith('b1')
+    unmount()
+
+    const folded = btw({ open: false })
+    render(<BtwEntry e={folded} chrome={makeChrome(folded)} />)
+    expect(screen.queryByRole('button', { name: '查看' })).not.toBeInTheDocument()
   })
 })

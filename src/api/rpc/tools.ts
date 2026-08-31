@@ -1,6 +1,6 @@
 import type { TransportCore } from '../transport'
 import { findArrayField, findField, findObjectField, unwrapExtResult, xaiCall } from './core'
-import type { AgentSkill, CustomModelConfig, WorkflowInfo } from '../types'
+import type { AgentSkill, CustomModelConfig, ExtensionHook, WorkflowInfo } from '../types'
 import type { ExtensionsPayload, McpListServer, McpToolInfo, SettingsPatch, SettingsPayload, TerminalOutput } from '../transport'
 
 export const toolsRpc = {
@@ -406,10 +406,58 @@ export const toolsRpc = {
     return unwrapExtResult(await xaiCall(this, '/api/plugins/notify-updates', opts))
   },
 
-  async hooksList(this: TransportCore, opts: { sessionId?: string } = {}): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/hooks/list', opts))
+  /**
+   * POST /api/hooks/list — the agent's LIVE hook registry
+   * (x.ai/hooks/list, the same source as the TUI /hooks modal): hooks
+   * mirroring the TUI HookInfo shape plus projectTrusted / loadErrors.
+   * The host fills the active session; on agent failure it falls back to
+   * the local disk scan (legacy fields only) without an error.
+   */
+  async hooksList(this: TransportCore, opts: { sessionId?: string } = {}): Promise<{
+    hooks: ExtensionHook[]
+    projectTrusted?: boolean
+    loadErrors?: string[]
+  }> {
+    const result = (await unwrapExtResult(
+      await xaiCall(this, '/api/hooks/list', opts),
+    )) as Record<string, unknown>
+    const hooks = (findArrayField(result, 'hooks') as Record<string, unknown>[])
+      .filter((h): h is Record<string, unknown> => !!h && typeof h === 'object')
+      .map((h) => ({
+        name: typeof h.name === 'string' ? h.name : '',
+        ...(typeof h.event === 'string' && h.event ? { event: h.event } : {}),
+        ...(typeof h.handlerType === 'string' && h.handlerType ? { handlerType: h.handlerType } : {}),
+        ...(typeof h.matcher === 'string' && h.matcher ? { matcher: h.matcher } : {}),
+        ...(typeof h.command === 'string' && h.command ? { command: h.command } : {}),
+        ...(typeof h.url === 'string' && h.url ? { url: h.url } : {}),
+        ...(typeof h.timeoutMs === 'number' && h.timeoutMs > 0 ? { timeoutMs: h.timeoutMs } : {}),
+        ...(typeof h.sourceDir === 'string' && h.sourceDir ? { sourceDir: h.sourceDir } : {}),
+        ...(typeof h.disabled === 'boolean' ? { disabled: h.disabled } : {}),
+        ...(typeof h.pinned === 'boolean' ? { pinned: h.pinned } : {}),
+        // Legacy local-scan fields ride the fallback payload.
+        ...(typeof h.enabled === 'boolean' ? { enabled: h.enabled } : {}),
+        ...(typeof h.source === 'string' && h.source ? { source: h.source } : {}),
+      }))
+      .filter((h) => h.name)
+    return {
+      hooks,
+      ...(typeof result.projectTrusted === 'boolean'
+        ? { projectTrusted: result.projectTrusted }
+        : {}),
+      ...(Array.isArray(result.loadErrors)
+        ? { loadErrors: (result.loadErrors as unknown[]).map(String) }
+        : {}),
+    }
   },
 
+  /**
+   * POST /api/hooks/action — forward a hooks management action to the
+   * agent (x.ai/hooks/action, {action:{type:"reload"}}). A reload makes
+   * the agent re-discover ~/.grok/hooks mid-session without a restart;
+   * the agent broadcasts hooks_changed afterwards, which auto-refreshes
+   * an open extensions modal (hooksVersion bump). Host merge: sessionId
+   * + action; the active session is filled when absent.
+   */
   async hooksAction(this: TransportCore, opts: { sessionId?: string; action: unknown }): Promise<unknown> {
     return unwrapExtResult(await xaiCall(this, '/api/hooks/action', opts))
   },

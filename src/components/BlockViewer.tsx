@@ -20,6 +20,7 @@ import { formatTurnDuration, planTodos, useChatStore, type ViewerTask } from '..
 import type { ScrollEntry } from '../api/types'
 import { subagentMeta } from '../format'
 import { ToolDetail } from './ToolDetail'
+import { HookGroupsDetail } from './scrollback/kinds/HookRuns'
 import { Markdown } from './Markdown'
 import { Ansi } from './Ansi'
 import { Glyphs, SPINNER_FRAMES, toolHeader } from '../theme/glyphs'
@@ -27,6 +28,7 @@ import { IconGlyph } from './IconGlyph'
 import { TodoMark } from './todoMark'
 import { fmtBytes, fmtTok } from '../format'
 import { contextUrgencyColor } from '../theme/contextColor'
+import { Accents } from '../theme/accents'
 import { toolHeaderExtra } from '../scrollback/toolHeaderExtra'
 import { mergeLiveText } from '../scrollback/liveText'
 import { useSessionSpinner } from '../hooks/sessionState'
@@ -252,7 +254,7 @@ export function BlockViewer() {
   )
 }
 
-/** 迷你时间线双击可弹全文的条目种类（主 scrollback openViewer 同款
+/** 迷你时间线点「查看」可弹全文的条目种类（主 scrollback openViewer 同款
  *  集合 + image：图片块全文即大图展示）。 */
 const MINI_VIEWABLE_KINDS = new Set([
   'tool',
@@ -262,13 +264,14 @@ const MINI_VIEWABLE_KINDS = new Set([
   'error',
   'plan',
   'image',
+  'btw',
   'bg_task',
   'workflow',
   'subagent',
 ])
 
 /**
- * 单条目全文弹窗（子代理迷你时间线双击复用）：与主 BlockViewer 同一套
+ * 单条目全文弹窗（子代理迷你时间线「查看」复用）：与主 BlockViewer 同一套
  * viewerChrome + ViewerBody 渲染，但条目来自子代理视图（不在主 entries 里，
  * 主 viewer 查找不到）。Esc 的 window capture 监听注册晚于外层主子代理
  * viewer——嵌入打开时按 Esc 由外层优先处理（连同主弹窗一起关），此处的
@@ -371,6 +374,7 @@ function viewerChrome(e: ScrollEntry, cwd?: string): { title: string; subtitle?:
   if (e.kind === 'image') return { title: 'Image', subtitle: e.mimeType }
   if (e.kind === 'error') return { title: 'Error' }
   if (e.kind === 'plan') return { title: 'Plan' }
+  if (e.kind === 'btw') return { title: '/btw', subtitle: e.question }
   if (e.kind === 'bg_task') {
     const verb =
       e.status === 'started'
@@ -472,6 +476,7 @@ function ViewerBody({
         kindName={entry.kindName}
         full
         mergedRaws={entry.mergedRaws}
+        hooks={entry.hooks}
         className="mt-0"
       />
     )
@@ -510,6 +515,47 @@ function ViewerBody({
   }
   if (entry.kind === 'image') {
     return <ViewerImages images={[{ data: entry.data, mimeType: entry.mimeType }]} />
+  }
+  if (entry.kind === 'btw') {
+    // same content as the scrollback block's expanded form: golden header +
+    // error / markdown answer / waiting hint.
+    return (
+      <div className="space-y-2">
+        <div
+          className="text-[13.5px] font-bold leading-[1.35] break-words"
+          style={{ color: Accents.plan }}
+        >
+          /btw {entry.question}
+        </div>
+        {entry.error ? (
+          <div
+            className="whitespace-pre-wrap break-words text-[13px] leading-[1.45]"
+            style={{ color: Accents.error }}
+          >
+            {entry.error}
+          </div>
+        ) : entry.answer ? (
+          <Markdown source={entry.answer} />
+        ) : entry.streaming ? (
+          <div className="text-[12.5px] text-gn-muted">等待回答…</div>
+        ) : null}
+      </div>
+    )
+  }
+  if (entry.kind === 'lifecycle') {
+    return <HookGroupsDetail groups={[{ event: entry.event, runs: entry.runs }]} />
+  }
+  if (entry.kind === 'session_event') {
+    return (
+      <div className="space-y-2">
+        <div className="whitespace-pre-wrap break-words text-[13.5px] leading-relaxed text-gn-fg font-ui">
+          {entry.text}
+        </div>
+        {entry.stopHooks?.length ? (
+          <HookGroupsDetail groups={entry.stopHooks} />
+        ) : null}
+      </div>
+    )
   }
   if (entry.kind === 'plan') {
     // Same structured todo list as the scrollback block (TUI todo pane).
@@ -970,6 +1016,12 @@ function SubagentTimeline({
           ...(!running && e.streaming ? { streaming: false } : {}),
         } as Partial<ScrollEntry>
         cache.set(key, p)
+      } else if (
+        (e.kind === 'session_event' || e.kind === 'btw') &&
+        v != null
+      ) {
+        p = { open: v } as Partial<ScrollEntry>
+        cache.set(key, p)
       } else if (v != null) {
         p = { expanded: v } as Partial<ScrollEntry>
         cache.set(key, p)
@@ -978,7 +1030,7 @@ function SubagentTimeline({
     return p
   }
 
-  // 双击全文弹窗（局部状态）：mini 条目不在主 entries 里，主 viewer 找
+  // 「查看」全文弹窗（局部状态）：mini 条目不在主 entries 里，主 viewer 找
   // 不到目标——弹窗用 BlockBodyDialog 在组件内渲染同一套全文内容。
   const [viewerId, setViewerId] = useState<string | null>(null)
   const viewerEntry = useMemo(() => {
@@ -986,7 +1038,7 @@ function SubagentTimeline({
     return e && MINI_VIEWABLE_KINDS.has(e.kind) ? e : undefined
   }, [viewerId, renderItems])
 
-  // 局部动作：折叠写本地 folds；双击打开局部全文弹窗；选中局部化。缺省值
+  // 局部动作：折叠写本地 folds；「查看」打开局部全文弹窗；选中局部化。缺省值
   // 仍是主 store 动作（EntryView 内部取 actions ?? store），此处全部覆盖。
   const actions: EntryViewActions = useMemo(
     () => ({
@@ -994,6 +1046,10 @@ function SubagentTimeline({
       toggleThought: (id) =>
         setFolds((m) => new Map(m).set(id, !(m.get(id) ?? false))),
       toggleUser: (id) =>
+        setFolds((m) => new Map(m).set(id, !(m.get(id) ?? false))),
+      toggleLifecycle: (id) =>
+        setFolds((m) => new Map(m).set(id, !(m.get(id) ?? false))),
+      toggleSessionEvent: (id) =>
         setFolds((m) => new Map(m).set(id, !(m.get(id) ?? false))),
       openViewer: (id) => setViewerId(id),
       selectEntry: (id) => setSelectedId(id),

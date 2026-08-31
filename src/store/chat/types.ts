@@ -19,6 +19,10 @@ import type {
   WorkspaceGroup,
 } from '../../api/types'
 import type { McpListServer } from '../../api/client'
+import type {
+  PendingStopHooks,
+  PendingToolHook,
+} from './hookAttach'
 
 import type {
   ConnState,
@@ -123,6 +127,20 @@ export interface ChatConnState {
 export interface ChatTimelineState {
   entries: ScrollEntry[]
   toolIndex: Record<string, string> // toolCallId -> entry id
+  /**
+   * Tool-hook batches (`pre_tool_use` / `post_tool_use`) whose tool row has
+   * not been created yet. The wire announces the hook before the `tool_call`
+   * envelope, so the batch waits here and is claimed by the row that matches
+   * its `tool_name`. Cleared with the turn.
+   */
+  pendingToolHooks: PendingToolHook[]
+  /**
+   * Turn-end (`stop` family) batches held for the turn's terminal marker —
+   * they arrive while the turn is still open, so the marker line folds them in
+   * (`stop  [hooks: 2]`) instead of getting a row of their own. TUI
+   * `AgentView::pending_stop_hooks`.
+   */
+  pendingStopHooks?: PendingStopHooks
   // streaming pointers
   openAssistantId?: string
   openThoughtId?: string
@@ -552,7 +570,7 @@ export interface ChatUiState {
   toggleGroupExpansion: (anchorId: string) => void
   /**
    * Block viewer (TUI OpenBlockViewer): entry id currently shown fullscreen.
-   * Enter / double-click open; Esc closes. Independent of inline expand.
+   * Enter / 「查看」按钮打开；Esc 关闭。与行内折叠独立。
    */
   viewerEntryId: string | null
   /**
@@ -561,7 +579,7 @@ export interface ChatUiState {
    * with viewerEntryId.
    */
   viewerTask?: ViewerTask
-  /** Open TUI block viewer for entry (Enter / double-click). */
+  /** Open TUI block viewer for entry (Enter / 「查看」). */
   openViewer: (id?: string | null) => void
   /**
    * Open the block viewer for a task by id — used by the top task strip
@@ -689,6 +707,10 @@ export interface ChatUiState {
   toggleUser: (id: string) => void
   /** 折叠/展开 btw 侧问区块（←/→ / click；条目默认展开，见 askBtw）。 */
   toggleBtw: (id: string) => void
+  /** 折叠/展开 lifecycle hook 行（TUI LifecycleEventBlock，默认折叠）。 */
+  toggleLifecycle: (id: string) => void
+  /** 折叠/展开 session_event（recap 或带 stop-hook 的回合标记）。 */
+  toggleSessionEvent: (id: string) => void
   /** → expand / ← collapse selected foldable block or group */
   setExpanded: (expanded: boolean) => void
   /**

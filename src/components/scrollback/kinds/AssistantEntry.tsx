@@ -7,6 +7,7 @@ import { Markdown } from '../../Markdown'
 import { EntryShell } from '../EntryShell'
 import { InlineImages } from '../InlineImages'
 import { PromptTime } from '../PromptTime'
+import { ViewButton } from '../ViewButton'
 import type { EntryChrome } from '../chrome'
 
 /** 「已复制」反馈展示时长。 */
@@ -40,7 +41,7 @@ export function AssistantEntry({
   e: Extract<ScrollEntry, { kind: 'assistant' }>
   chrome: EntryChrome
 }) {
-  const { shell, liveText, onHeaderDblClick, openViewer, inMini } = chrome
+  const { shell, liveText, openViewer, inMini } = chrome
   // liveText = liveStream delta/suffix for this entry only (not a full
   // replacement). Additive merge works for both store shapes:
   // entry.text '' + live full stream, or base + later chunks in liveStream.
@@ -145,24 +146,15 @@ export function AssistantEntry({
   const rowBtn =
     'inline-flex h-6 items-center gap-1 rounded border border-transparent px-1.5 text-[11px] transition-colors'
   const hasContent = displayText.trim() !== '' || (e.images?.length ?? 0) > 0
-  // 操作行只跟选中态走：点选任意 assistant 消息即显示，取消选中即隐藏；
-  // 流式期间不显示；迷你 scrollback 只留复制（fork 作用于主会话，
-  // 弹窗内不提供）。
+  // 操作行只跟选中态走：点选即显示复制/Fork，取消选中即隐藏。
+  // 流式期间不显示；迷你 scrollback 只留复制（fork 作用于主会话）。
   const showActions = !streamActive && hasContent && shell.selected
   return (
     <EntryShell {...shell}>
       {/* Reserve the short-form time's width (TUI ts_reserved=10 cols; sm:
           only — the time itself is hidden on mobile) so text never runs
           under it; the hover expansion still overlays content by design. */}
-      <div
-        className="group relative min-w-0 sm:pr-9"
-        title="dblclick / enter · view"
-        onDoubleClick={(ev) => {
-          ev.stopPropagation()
-          ev.preventDefault()
-          onHeaderDblClick()
-        }}
-      >
+      <div className="group relative min-w-0 sm:pr-9">
         <div ref={mdBoxRef} className="min-w-0">
           <Markdown source={displayText} streaming={streamActive} />
         </div>
@@ -176,18 +168,14 @@ export function AssistantEntry({
             />
           </div>
         ) : null}
-        {/* 消息操作行：默认仅每轮最后一条 assistant 常显（中间消息选中
-            才显）；流式期间不显示；迷你 scrollback 只留复制（fork 作用于
-            主会话，弹窗内不提供）。点击/双击不落到行选中/查看器。 */}
+        {/* 消息操作行：选中才出现（悬停不出「查看」）。流式期间不显示；
+            迷你 scrollback 只留复制（fork 作用于主会话，弹窗内不提供）。 */}
         {showActions && (
           <div
             className="mt-1.5 flex flex-wrap items-center gap-1"
             onClick={(ev) => ev.stopPropagation()}
-            onDoubleClick={(ev) => {
-              ev.stopPropagation()
-              ev.preventDefault()
-            }}
           >
+            <ViewButton visible compact onOpen={() => openViewer(e.id)} />
             <button
               type="button"
               onClick={() => void copyMessage()}

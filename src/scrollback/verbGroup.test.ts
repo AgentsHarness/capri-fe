@@ -458,6 +458,28 @@ describe('verbGroupLabel / truncationLabel', () => {
     })
   })
 
+  it('成员带 hook runs → 组头聚合 labeled 计数；hook failed 也标 failed', () => {
+    const entries = [
+      tool({
+        kindName: 'read',
+        hooks: {
+          pre: [{ name: 'h', status: { type: 'failed', error: 'x' } }],
+        },
+      }),
+      tool({
+        kindName: 'read',
+        hooks: { post: [{ name: 'h2', status: { type: 'success' } }] },
+      }),
+    ]
+    const span = scanGroups(entries, new Set())[0]
+    expect(verbGroupLabel(entries, span)).toEqual({
+      text: 'Read 2 files',
+      running: false,
+      failed: true,
+      hookCounts: { success: 1, blocked: 0, failed: 1 },
+    })
+  })
+
   it('truncationLabel 盘点整组（全组计数，不再只数 hidden 前缀）', () => {
     const entries = Array.from({ length: 13 }, () => tool({ kindName: 'execute' }))
     const span = scanGroups(entries, new Set())[0]

@@ -1,4 +1,5 @@
 import type { ToolCall } from './tools'
+import type { HookGroup, HookRun, ToolHookData } from './hooks'
 
 /**
  * Scrollback entry kinds — TUI RenderBlock surface + FE plan/status.
@@ -104,6 +105,13 @@ export type ScrollEntry =
        * The renderer shows the combined diffstat and each diff body.
        */
       mergedRaws?: ToolCall[]
+      /**
+       * Hook runs gated by this tool call (TUI `ToolCallHookData`), split by
+       * execution phase. Folded: they add a `[hooks: 2/1]` count to the end
+       * of the header line; expanded: they render under a `───` separator
+       * after the tool body. A row whose only content is hooks still folds.
+       */
+      hooks?: ToolHookData
       /** Activity start (epoch ms) — stamped on live running tools for
        *  the turn status line's phase timer (TUI tracker started_at);
        *  replay/completed snapshots omit it. */
@@ -217,6 +225,32 @@ export type ScrollEntry =
       warning?: boolean
       streaming?: boolean
       open?: boolean
+      /**
+       * Turn-end hook runs (`stop` / `stop_failure` / `stop_cancelled`) folded
+       * into a turn-terminal marker (TUI `SessionEventBlock::stop_hooks`):
+       * rendered right-justified on the marker line as `stop  [hooks: 2]`,
+       * with per-hook detail on expand. Only terminal events ever carry these.
+       */
+      stopHooks?: HookGroup[]
+      /** The prompt turn a terminal marker belongs to (TUI block prompt_id) —
+       *  gates which stop batches may merge into it. */
+      promptId?: string
+      msgSeq?: number
+    }
+  | {
+      id: string
+      kind: 'lifecycle'
+      /**
+       * Lifecycle hook event (TUI `LifecycleEventBlock`) — a row that looks
+       * like a tool call but is not one: `session_start`, `session_end`,
+       * `user_prompt_submit`, or a `stop` batch that could not be folded into
+       * a turn marker. The event name IS the header, so the expanded detail
+       * never repeats it as a section title.
+       */
+      event: string
+      runs: HookRun[]
+      /** Fold flag (TUI default_display_mode = Collapsed). */
+      expanded?: boolean
       msgSeq?: number
     }  | { id: string; kind: 'credit_limit'; text: string; msgSeq?: number }
   | {
@@ -321,6 +355,18 @@ export type SubagentStatus = 'started' | 'completed' | 'failed' | 'cancelled'
 export type WorkflowStatus = 'running' | 'done' | 'failed' | 'cancelled' | 'paused'
 
 /**
- * Scrollback entry kinds — TUI RenderBlock surface + FE plan/status.
- * finishedAt (epoch ms) drives the EntryRenderer finish-flash window.
+ * /btw 侧问的回放记录（host 从 agent 落盘的 btw_history.jsonl 读出，随
+ * session-updates 响应附带；见 acp-host SessionBtw）。不占 msgSeq 空间，
+ * afterMsgSeq 是插入锚点：askedAt 之前最近一条信封的 msgSeq（-1 = 置顶）。
  */
+export type BtwHistoryRecord = {
+  btwSessionId: string
+  /** epoch ms。 */
+  askedAt: number
+  question: string
+  answer?: string
+  error?: string
+  success: boolean
+  model?: string
+  afterMsgSeq: number
+}

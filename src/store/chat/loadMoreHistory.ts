@@ -2,6 +2,7 @@ import { transport } from '../../api/client'
 import type { ChatState, SetState } from './types'
 import { flushLiveStream, flushStreamBuf, sealThought } from './stream'
 import { settleTurnEntries } from './turnLifecycle'
+import { spliceBtwEntries } from './btwReplay'
 import { captureAsyncScope, isAsyncScopeCurrent } from './globals'
 import {
   MAX_AUTO_FETCH_ENTRIES,
@@ -259,11 +260,15 @@ export async function loadMoreHistory(
       // stuck on a historical page boundary. Skipped only for true local
       // live turns (see liveLocal above).
       // 前插旧页与已加载区按 msgSeq 归并；任一端缺 msgSeq 完全保持现有
-      // 拼接行为（旧页整段在前，不归并）。
-      const merged = mergeEntriesByMsgSeq(newEntries, oldEntries) ?? [
-        ...newEntries,
-        ...oldEntries,
-      ]
+      // 拼接行为（旧页整段在前，不归并）。/btw 回放记录随本页窗口附带，
+      // 按锚点缝进合并结果（稳定 id 去重，重入页不重复）。
+      const merged = spliceBtwEntries(
+        mergeEntriesByMsgSeq(newEntries, oldEntries) ?? [
+          ...newEntries,
+          ...oldEntries,
+        ],
+        r.btw ?? [],
+      )
       // 回放后 openAssistantId/liveStream 常被「本页半截 assistant」填上，
       // 不代表真 live。历史分页一律 settle + conn ready；本端发送中则
       // 整段跳过，避免打掉正在流的条目 / 未合并的 liveStream。

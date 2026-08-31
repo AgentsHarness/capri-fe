@@ -6,13 +6,17 @@ import type { EntryChrome } from '../chrome'
 import { AssistantEntry } from './AssistantEntry'
 
 /** 最小 chrome：AssistantEntry 只消费 shell.selected / openViewer /
- *  onHeaderDblClick / liveText / inMini；其余字段给安全默认值。 */
-function makeChrome(e: ScrollEntry, selected = true): EntryChrome {
+ *  liveText / inMini；其余字段给安全默认值。 */
+function makeChrome(
+  e: ScrollEntry,
+  selected = true,
+  hovered = false,
+): EntryChrome {
   return {
     shell: {
       e,
       selected,
-      hovered: false,
+      hovered,
       onHover: () => {},
       onSelect: () => {},
       pendingFreeze: false,
@@ -26,9 +30,7 @@ function makeChrome(e: ScrollEntry, selected = true): EntryChrome {
     caret: null,
     bulletGlyph: undefined,
     rowBtn: '',
-    onHeaderClick: () => {},
-    onHeaderDblClick: () => {},
-    openViewer: () => {},
+    openViewer: vi.fn(),
     toggleTool: () => {},
     toggleThought: () => {},
     toggleUser: () => {},
@@ -84,9 +86,25 @@ describe('AssistantEntry — 消息级 Fork', () => {
     expect(forkSession).toHaveBeenCalledWith({ targetPromptIndex: 7 })
   })
 
-  it('未选中行不显示操作行（showActions 跟选中态走）', () => {
+  it('未选中行不显示操作行（悬停也不出「查看」）', () => {
     const e = entry({ id: 'a0', kind: 'assistant', text: 'reply' })
     render(<AssistantEntry e={asAssistant(e)} chrome={makeChrome(e, false)} />)
+    expect(screen.queryByRole('button', { name: /Fork/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /查看/ })).not.toBeInTheDocument()
+  })
+
+  it('选中行显示「查看」；点击打开查看器', () => {
+    const e = entry({ id: 'a0', kind: 'assistant', text: 'reply' })
+    const chrome = makeChrome(e, true)
+    render(<AssistantEntry e={asAssistant(e)} chrome={chrome} />)
+    fireEvent.click(screen.getByRole('button', { name: /查看/ }))
+    expect(chrome.openViewer).toHaveBeenCalledWith('a0')
+  })
+
+  it('未选中只悬停不显示「查看」', () => {
+    const e = entry({ id: 'a0', kind: 'assistant', text: 'reply' })
+    render(<AssistantEntry e={asAssistant(e)} chrome={makeChrome(e, false, true)} />)
+    expect(screen.queryByRole('button', { name: /查看/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Fork/ })).not.toBeInTheDocument()
   })
 })

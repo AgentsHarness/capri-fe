@@ -14,6 +14,7 @@ import { formatTurnDuration } from './format'
 import { clearSuppressedTools } from './tools'
 import { clearStreamBuf, flushLiveStream, sealThought } from './stream'
 import { settleTurnEntries } from './turn'
+import { spliceBtwEntries } from './btwReplay'
 import {
   INITIAL_TURN_LIMIT,
   INITIAL_TURNS,
@@ -265,9 +266,14 @@ export async function loadHistory(
       const sortedEntries = sortEntriesByMsgSeq(stampedEntries)
       // 已结束的回合：settle + 清流式指针。仍 open（真·进行中）时保留
       // open*，但 liveStream 已 flush，文本不会丢。
-      const entries = replayMeta.turnOpen
-        ? sortedEntries
-        : settleTurnEntries(sortedEntries)
+      // /btw 回放记录：host 初始页按窗口附带（btw_history.jsonl），按锚点
+      // 缝进时间线；本页窗口之外的锚点随更早页加载（loadMoreHistory）。
+      const entries = spliceBtwEntries(
+        replayMeta.turnOpen
+          ? sortedEntries
+          : settleTurnEntries(sortedEntries),
+        r.btw ?? [],
+      )
       // 按轮次模式：还有更早轮次 ⟺ 游标 > 0；按条数兜底：loadedStart > 0。
       const hasMore = turnBased
         ? turnIdx > 0

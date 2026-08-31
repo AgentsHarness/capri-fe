@@ -12,6 +12,14 @@ import {
   sealThought,
 } from './stream'
 import { isTurnEndLine, turnIsLive, turnMarker } from './turnStatus'
+import {
+  clearPendingToolHooks,
+  hookRoutingOf,
+  hookRoutingPatch,
+  withTurnTerminalMarker,
+  type HookRouting,
+} from './hookRouting'
+import { lifecycleEntry } from './hookAttach'
 
 /** Selectable row ids in display order (entries + synthetic group headers). */
 export type StreamBufKind = 'thought' | 'assistant'
@@ -62,6 +70,27 @@ export function finalizeTurn(
     // 收口前把 liveStream 文本并入对应条目（流式期间文本在 liveStream，
     // 回合终态必须落回 entry.text；flushLiveStream 同时清空 liveStream）。
     const flushed = flushLiveStream(s)
+    // 标记行落下时才折叠 stop 批次（`stop  [hooks: 2]` 挂在标记行右侧）。
+    // 失败/取消回合的标记由 turnEnd / extMisc rail 补，stash 保留给那个
+    // rail 折叠；shell/无输出回合确定没有标记，下面立即出清。
+    // 等不到工具行的工具批次一律作废（被抑制的管道工具 / 分页边界孤儿）。
+    const noMarkerYet: HookRouting = clearPendingToolHooks(hookRoutingOf(s))
+    let folded: { entries: ScrollEntry[]; routing: HookRouting }
+    if (marker) {
+      folded = withTurnTerminalMarker(noMarkerYet, marker, s.currentPromptId)
+    } else if (!failedTurn && s.pendingStopHooks?.groups.length) {
+      // TUI push_turn_terminal_marker(None)：本端确定不出标记的成功回合
+      // （shell `!` 回合、无输出回合）立即把 stash 出清为 standalone
+      // lifecycle 行，运行画面不滞留到下一回合的批次或标记才出现。
+      // 失败/取消回合这里保留——marker 由 rail 在收口后补，还要折叠它。
+      const groups = s.pendingStopHooks.groups
+      folded = {
+        entries: groups.map((g) => lifecycleEntry(g.event, g.runs)),
+        routing: { ...noMarkerYet, pendingStopHooks: undefined },
+      }
+    } else {
+      folded = { entries: [], routing: noMarkerYet }
+    }
     return {
       conn: 'ready',
       // Blue "待处理" until the next user message.
@@ -84,9 +113,10 @@ export function finalizeTurn(
       // here is stale — drop it (TUI drain_permission_queue).
       pending: [],
       liveStream: null,
+      ...hookRoutingPatch(folded.routing),
       entries: [
         ...settleTurnEntries(flushed.entries),
-        ...(marker ? [marker] : []),
+        ...folded.entries,
       ],
     }
   })

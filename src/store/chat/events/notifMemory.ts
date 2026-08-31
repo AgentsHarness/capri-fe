@@ -217,22 +217,9 @@ export function handleNotifMemory(
             break
           }
           // ── hooks / plugins (TUI hook annotations on tool blocks) ────
-          case 'hook_annotation': {
-            const msg = typeof fields.message === 'string' ? fields.message : ''
-            if (msg.trim()) appendEntry(set, { kind: 'session_event', text: msg })
-            break
-          }
-          case 'hook_execution': {
-            const f = fields as Record<string, unknown>
-            const evName = typeof f.event_name === 'string' ? f.event_name : ''
-            const tool = typeof f.tool_name === 'string' ? f.tool_name : ''
-            const runs = Array.isArray(f.runs) ? f.runs.length : 0
-            appendEntry(set, {
-              kind: 'session_event',
-              text: `🪝 ${evName}${tool ? ` for ${tool}` : ''}${runs ? ` (${runs} 条运行)` : ''}`,
-            })
-            break
-          }
+          // hook_annotation / hook_execution live in ./notifHooks — the
+          // structured batches attach to tool rows / lifecycle rows instead
+          // of becoming their own session-event line.
           case 'hooks_changed':
           case 'plugins_changed':
             // No modal in the web UI; bump the version so future panels

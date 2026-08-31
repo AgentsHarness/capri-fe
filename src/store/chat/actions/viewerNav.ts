@@ -6,6 +6,7 @@ import {
   thoughtModeStepUp,
   type ThoughtDisplayMode,
 } from '../../../scrollback/thoughtMode'
+import { hookGroupsHaveContent } from '../../../scrollback/hookRuns'
 import { currentCollapseToolGroups } from '../../historyPins'
 import type { ChatState, SetState } from '../types'
 import { selectableRowIds } from '../turn'
@@ -48,6 +49,26 @@ export function viewerNavActions(set: SetState, get: () => ChatState) {
     set({
       entries: get().entries.map((e) =>
         e.id === id && e.kind === 'btw' ? { ...e, open: !e.open } : e,
+      ),
+      selectedId: id,
+      focusMode: 'scrollback',
+    })
+  },
+
+  toggleLifecycle: (id) => {
+    set({
+      entries: get().entries.map((e) =>
+        e.id === id && e.kind === 'lifecycle' ? { ...e, expanded: !e.expanded } : e,
+      ),
+      selectedId: id,
+      focusMode: 'scrollback',
+    })
+  },
+
+  toggleSessionEvent: (id) => {
+    set({
+      entries: get().entries.map((e) =>
+        e.id === id && e.kind === 'session_event' ? { ...e, open: !e.open } : e,
       ),
       selectedId: id,
       focusMode: 'scrollback',
@@ -176,7 +197,20 @@ export function viewerNavActions(set: SetState, get: () => ChatState) {
       })
       return
     }
-    if (entry.kind === 'session_event' && entry.recap) {
+    if (entry.kind === 'lifecycle') {
+      if (!!entry.expanded === expanded) return
+      set({
+        entries: entries.map((e) =>
+          e.id === selectedId && e.kind === 'lifecycle' ? { ...e, expanded } : e,
+        ),
+        focusMode: 'scrollback',
+      })
+      return
+    }
+    if (
+      entry.kind === 'session_event' &&
+      (entry.recap || hookGroupsHaveContent(entry.stopHooks))
+    ) {
       set({
         entries: entries.map((e) =>
           e.id === selectedId && e.kind === 'session_event'
@@ -203,7 +237,12 @@ export function viewerNavActions(set: SetState, get: () => ChatState) {
     else if (e.kind === 'thought') get().toggleThought(e.id)
     else if (e.kind === 'user') get().setExpanded(!e.expanded)
     else if (e.kind === 'btw') get().toggleBtw(e.id)
-    else if (e.kind === 'session_event' && e.recap) get().setExpanded(!e.open)
+    else if (e.kind === 'lifecycle') get().toggleLifecycle(e.id)
+    else if (
+      e.kind === 'session_event' &&
+      (e.recap || hookGroupsHaveContent(e.stopHooks))
+    )
+      get().toggleSessionEvent(e.id)
     else {
       const idx = entries.findIndex((x) => x.id === selectedId)
       const spans = scanGroups(entries, expandedGroups, {

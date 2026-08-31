@@ -199,7 +199,7 @@ export const sessionsRpc = {
     }
   },
 
-  async loadSessionHistory(this: TransportCore, 
+  async loadSessionHistory(this: TransportCore,
     sessionId: string,
     cwd: string,
     opts: { offset?: number; limit?: number; turnIndex?: number } = {},
@@ -209,6 +209,11 @@ export const sessionsRpc = {
     updates?: unknown[]
     /** 所有 user 回合的起始行号索引（turnIndex 模式返回；导航/定位用）。 */
     promptStarts?: number[]
+    /**
+     * /btw 侧问回放记录（host 本地归一化路径从 btw_history.jsonl 读出，
+     * 按页窗口切片；agent 透传路径不带）。仅本地回放路径可用。
+     */
+    btw?: import('../types/scroll').BtwHistoryRecord[]
   }> {
     const res = await this.fetch(this.url('/api/session-updates'), {
       method: 'POST',

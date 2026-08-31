@@ -4,6 +4,7 @@ import { streamThoughtBody, truncatedThoughtLines } from '../../../scrollback/th
 import { Accents } from '../../../theme/accents'
 import { Glyphs } from '../../../theme/glyphs'
 import { Bullet, EntryShell } from '../EntryShell'
+import { HeaderWithView } from '../ViewButton'
 import type { EntryChrome } from '../chrome'
 
 export function ThoughtEntry({
@@ -19,13 +20,14 @@ export function ThoughtEntry({
     caret,
     bulletGlyph,
     rowBtn,
-    onHeaderClick,
-    onHeaderDblClick,
     toggleThought,
     thoughtText,
     bodyRef,
+    openViewer,
   } = chrome
   const mode = thoughtDisplayMode(e)
+  // 流式（未收口）也出「查看」——正文只渲染有界尾部，全文在查看器里 live 滚动。
+  const showView = e.streaming || mode !== 'collapsed'
   // 流式思考展开正文（live 可见），收口后按 displayMode 折叠/展开——
   // 主 scrollback 与子代理弹窗共用同一行为。
   const showBody = e.streaming || mode !== 'collapsed'
@@ -35,23 +37,18 @@ export function ThoughtEntry({
   const truncated = mode === 'truncated' && !e.streaming
   return (
     <EntryShell {...shell}>
-      <button
-        type="button"
-        onClick={(ev) => {
-          ev.stopPropagation()
+      <HeaderWithView
+        className={rowBtn}
+        title="click fold · 查看 / enter view"
+        onFold={() => {
           if (e.streaming) {
             shell.onSelect()
             return
           }
-          onHeaderClick(() => toggleThought(e.id))
+          toggleThought(e.id)
         }}
-        onDoubleClick={(ev) => {
-          ev.stopPropagation()
-          ev.preventDefault()
-          onHeaderDblClick()
-        }}
-        className={rowBtn}
-        title="click fold · dblclick / enter view"
+        viewVisible={showView}
+        onOpen={() => openViewer(e.id)}
       >
         <Bullet
           color={bullet.color}
@@ -70,7 +67,7 @@ export function ThoughtEntry({
             )}
           </>
         )}
-      </button>
+      </HeaderWithView>
       {showBody && (
         <div
           ref={bodyRef}

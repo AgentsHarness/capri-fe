@@ -102,17 +102,48 @@ describe('entryExpanded / entryFoldable / entryAtMinFold', () => {
     expect(entryAtMinFold(th({ displayMode: 'collapsed' }))).toBe(true)
   })
 
-  it('tool：foldable 需有 raw 且 raw 有可展开体', () => {
-    const tool = (raw?: ToolCall): ScrollEntry => ({
+  it('tool：foldable 需有 raw 且 raw 有可展开体；仅 hooks 也可折', () => {
+    const tool = (raw?: ToolCall, over: Partial<Extract<ScrollEntry, { kind: 'tool' }>> = {}): ScrollEntry => ({
       id: 't',
       kind: 'tool',
       title: 't',
       verb: 'v',
       raw,
+      ...over,
     })
     expect(entryFoldable(tool())).toBe(false)
     expect(entryFoldable(tool({ kind: 'execute' }))).toBe(false)
     expect(entryFoldable(tool({ kind: 'execute', content: 'out' }))).toBe(true)
+    expect(
+      entryFoldable(
+        tool(undefined, {
+          hooks: { pre: [{ name: 'h', status: { type: 'success', elapsedMs: 1 } }] },
+        }),
+      ),
+    ).toBe(true)
+  })
+
+  it('lifecycle 默收可折；session_event 有 stopHooks 也可折', () => {
+    const life: ScrollEntry = {
+      id: 'l',
+      kind: 'lifecycle',
+      event: 'session_start',
+      runs: [{ name: 'h', status: { type: 'success', elapsedMs: 1 } }],
+    }
+    expect(entryFoldable(life)).toBe(true)
+    expect(entryExpanded(life)).toBe(false)
+    expect(entryAtMinFold(life)).toBe(true)
+    expect(entryExpanded({ ...life, expanded: true })).toBe(true)
+
+    const marker: ScrollEntry = {
+      id: 'm',
+      kind: 'session_event',
+      text: 'Worked for 1.0s',
+      stopHooks: [{ event: 'stop', runs: [{ name: 'h', status: { type: 'success' } }] }],
+    }
+    expect(entryFoldable(marker)).toBe(true)
+    expect(entryFoldable({ id: 's', kind: 'session_event', text: 'Worked for 1.0s' })).toBe(false)
+    expect(entryFoldable({ id: 'r', kind: 'session_event', text: 'sum', recap: true })).toBe(true)
   })
 
   it('group_header：collapse 字段即展开态', () => {
@@ -153,10 +184,13 @@ describe('entryFlashActive', () => {
 })
 
 describe('isHeaderStyleBlock', () => {
-  it('tool / thought / group_header 为头部样式块', () => {
+  it('tool / thought / group_header / lifecycle 为头部样式块', () => {
     expect(isHeaderStyleBlock({ id: 't', kind: 'tool', title: 't', verb: 'v' })).toBe(true)
     expect(isHeaderStyleBlock({ id: 'th', kind: 'thought', text: 'x' })).toBe(true)
     expect(isHeaderStyleBlock({ id: 'g', kind: 'group_header', count: 1 })).toBe(true)
+    expect(
+      isHeaderStyleBlock({ id: 'l', kind: 'lifecycle', event: 'session_start', runs: [] }),
+    ).toBe(true)
     expect(isHeaderStyleBlock({ id: 'u', kind: 'user', text: 'x' })).toBe(false)
   })
 })
