@@ -1,8 +1,14 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ScrollEntry } from '../../api/types'
 import { userMessagePreview } from '../../format'
 import { useChatStore } from '../../store/chat'
-import { displayRowKey, isDensePackableRow, spanContaining } from '../../scrollback/verbGroup'
+import {
+  displayRowKey,
+  isDensePackableRow,
+  spanContaining,
+  type DisplayRow,
+} from '../../scrollback/verbGroup'
+import { SelectionBox } from '../SelectionBox'
 import { SPINNER_FRAMES } from '../../theme/glyphs'
 import { COLUMN_PAD_X_CLASS, CONTENT_COLUMN_CLASS } from '../../theme/layout'
 import { UserMessageNav, type UserMessageNavItem } from '../UserMessageNav'
@@ -10,6 +16,7 @@ import { WorkspaceBar } from '../TopBar'
 import { EmptyStatePicker } from './EmptyState'
 import { EntryView } from './EntryView'
 import { GroupHeaderView } from './GroupHeaderView'
+import { ImageLightbox, type InlineImage } from './InlineImages'
 import { StickyPrompt } from './StickyPrompt'
 import { TOUCH_UP_SWIPE_PX } from './constants'
 import { useDisplayRows, useStreamingThoughtId } from './useDisplayRows'
@@ -124,6 +131,14 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
   const streamingThoughtId = useStreamingThoughtId(entries)
   const now = useFinishFlash(entries)
   const pendingFreeze = pending.length > 0
+  // 图片画廊预览（组级 lightbox）：key 定位打开的组，index 为该组内偏移。
+  const [imgPreview, setImgPreview] = useState<{
+    key: string
+    images: InlineImage[]
+    index: number
+  } | null>(null)
+  // 图片画廊组级 hover 框（跨 scrollback 内容列宽度的 SelectionBox）。
+  const [imgHoverKey, setImgHoverKey] = useState<string | null>(null)
 
   useFollowScroll(
     boxRef,
@@ -466,45 +481,166 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
           // picker instead.
           <EmptyStatePicker />
         )}
-        {displayRows.map((row, i) => {
-          const dense = isDensePackableRow(row)
-          const densePrev = i > 0 && isDensePackableRow(displayRows[i - 1])
-          const denseNext =
-            i < displayRows.length - 1 && isDensePackableRow(displayRows[i + 1])
-          if (row.type === 'group_header') {
-            return (
-              <GroupHeaderView
-                key={displayRowKey(row)}
-                row={row}
-                selected={row.id === selectedId && focusMode === 'scrollback'}
-                pendingFreeze={pendingFreeze}
-                now={now}
-                onToggle={() => toggleGroupExpansion(row.span.anchorId)}
-                dense={dense}
-                densePrev={densePrev}
-                denseNext={denseNext}
-              />
-            )
-          }
-          return (
-            <EntryView
-              key={displayRowKey(row)}
-              e={row.entry}
-              selected={row.entry.id === selectedId && focusMode === 'scrollback'}
-              pendingFreeze={pendingFreeze}
-              now={now}
-              inGroup={spanContaining(spans, row.index) != null}
-              dense={dense}
-              densePrev={densePrev}
-              denseNext={denseNext}
-              streamBodyRef={
-                row.entry.kind === 'thought' && row.entry.id === streamingThoughtId
-                  ? streamBodyRef
-                  : undefined
+        {/* 连续独立 image 行聚合为一个画廊组：等高 flex 行（items-end）、
+            点击任意一张打开组级 lightbox（‹ › / ← → 组内切换）。组内每张
+            图仍是独立 EntryView（各自 accent/选中/查看器），聚合只做横向
+            对齐与预览共享，不改间距语义（image 本就不参与 dense 打包）。 */}
+        {(() => {
+          const items: Array<
+            | { kind: 'row'; row: DisplayRow; i: number }
+            | {
+                kind: 'imgGroup'
+                key: string
+                rows: Array<{
+                  row: Extract<DisplayRow, { type: 'entry' }>
+                  i: number
+                }>
+                images: InlineImage[]
+                onOpenImage: (entryId: string) => void
               }
-            />
-          )
-        })}
+          > = []
+          for (let i = 0; i < displayRows.length; i++) {
+            const row = displayRows[i]
+            const isImg = row.type === 'entry' && row.entry.kind === 'image'
+            const last = items[items.length - 1]
+            if (isImg && last && last.kind === 'imgGroup') {
+              last.rows.push({
+                row: row as Extract<DisplayRow, { type: 'entry' }>,
+                i,
+              })
+              continue
+            }
+            if (isImg) {
+              const first = row as Extract<DisplayRow, { type: 'entry' }>
+              const rows = [{ row: first, i }]
+              const images = rows.map(({ row: r }) => {
+                const e = r.entry as Extract<ScrollEntry, { kind: 'image' }>
+                return { data: e.data, mimeType: e.mimeType }
+              })
+              const key = `ig_${row.entry.id}`
+              items.push({
+                kind: 'imgGroup',
+                key,
+                rows,
+                images,
+                onOpenImage: (entryId: string) => {
+                  const idx = rows.findIndex(({ row: r }) => r.entry.id === entryId)
+                  if (idx >= 0) setImgPreview({ key, images, index: idx })
+                },
+              })
+              continue
+            }
+            items.push({ kind: 'row', row, i })
+          }
+          return items.map((item) => {
+            if (item.kind === 'row') {
+              const { row, i } = item
+              const dense = isDensePackableRow(row)
+              const densePrev = i > 0 && isDensePackableRow(displayRows[i - 1])
+              const denseNext =
+                i < displayRows.length - 1 &&
+                isDensePackableRow(displayRows[i + 1])
+              if (row.type === 'group_header') {
+                return (
+                  <GroupHeaderView
+                    key={displayRowKey(row)}
+                    row={row}
+                    selected={row.id === selectedId && focusMode === 'scrollback'}
+                    pendingFreeze={pendingFreeze}
+                    now={now}
+                    onToggle={() => toggleGroupExpansion(row.span.anchorId)}
+                    dense={dense}
+                    densePrev={densePrev}
+                    denseNext={denseNext}
+                  />
+                )
+              }
+              return (
+                <EntryView
+                  key={displayRowKey(row)}
+                  e={row.entry}
+                  selected={row.entry.id === selectedId && focusMode === 'scrollback'}
+                  pendingFreeze={pendingFreeze}
+                  now={now}
+                  inGroup={spanContaining(spans, row.index) != null}
+                  dense={dense}
+                  densePrev={densePrev}
+                  denseNext={denseNext}
+                  streamBodyRef={
+                    row.entry.kind === 'thought' &&
+                    row.entry.id === streamingThoughtId
+                      ? streamBodyRef
+                      : undefined
+                  }
+                />
+              )
+            }
+            return (
+              <Fragment key={item.key}>
+                <div
+                  className="relative flex flex-wrap items-end gap-1.5"
+                  onMouseEnter={() => setImgHoverKey(item.key)}
+                  onMouseLeave={() =>
+                    setImgHoverKey((k) => (k === item.key ? null : k))
+                  }
+                >
+                  {/* 组级 hover/选中外框：横跨 scrollback 内容列宽度、尺寸恒定
+                      （SelectionBox left/right 外扩 12px；组内各行关闭各自窄框
+                      via noFrame）。选中优先于 hover。 */}
+                  {imgHoverKey === item.key ||
+                  item.rows.some(
+                    ({ row }) =>
+                      row.entry.id === selectedId &&
+                      focusMode === 'scrollback',
+                  ) ? (
+                    <SelectionBox
+                      variant={
+                        item.rows.some(
+                          ({ row }) =>
+                            row.entry.id === selectedId &&
+                            focusMode === 'scrollback',
+                        )
+                          ? 'selected'
+                          : 'hover'
+                      }
+                    />
+                  ) : null}
+                  {item.rows.map(({ row, i }) => {
+                    const dense = isDensePackableRow(row)
+                    const densePrev = i > 0 && isDensePackableRow(displayRows[i - 1])
+                    const denseNext =
+                      i < displayRows.length - 1 &&
+                      isDensePackableRow(displayRows[i + 1])
+                    return (
+                      <EntryView
+                        key={displayRowKey(row)}
+                        e={row.entry}
+                        selected={
+                          row.entry.id === selectedId && focusMode === 'scrollback'
+                        }
+                        pendingFreeze={pendingFreeze}
+                        now={now}
+                        inGroup={spanContaining(spans, row.index) != null}
+                        dense={dense}
+                        densePrev={densePrev}
+                        denseNext={denseNext}
+                        onOpenImage={item.onOpenImage}
+                        noFrame
+                      />
+                    )
+                  })}
+                </div>
+                {imgPreview && imgPreview.key === item.key ? (
+                  <ImageLightbox
+                    images={item.images}
+                    index={imgPreview.index}
+                    onClose={() => setImgPreview(null)}
+                  />
+                ) : null}
+              </Fragment>
+            )
+          })
+        })()}
         </div>
       </div>
       <div ref={bottomRef} />
