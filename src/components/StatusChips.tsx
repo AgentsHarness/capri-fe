@@ -9,7 +9,6 @@ import { usePromptQueue } from '../store/promptQueue'
 import type { ScrollEntry, TopTask } from '../api/types'
 import { useSessionSpinner } from '../hooks/sessionState'
 import { TodoMark, CheckMarkIcon } from './todoMark'
-import { ViewButton } from './scrollback/ViewButton'
 import { fmtTok, fmtElapsedCompact, filterRunningEntries, subagentMeta, type RunningEntry } from '../format'
 import type { TodoItem } from '../store/chat'
 
@@ -98,7 +97,10 @@ export function TodoChip({
   // never a floating overlay — while the chip itself stays aligned in
   // the bar row.
   const btnRef = useRef<HTMLButtonElement>(null)
-  const hostRef = useRef<HTMLElement | null>(null)
+  // Host 定位必须在点击后的同一帧完成：useLayoutEffect 在绘制前同步执行，
+  // setHost 触发的重渲染也在该帧内完成；若只写进 ref（不触发渲染），面板
+  // 要等下一次无关的状态更新才会出现。
+  const [host, setHost] = useState<HTMLElement | null>(null)
   let total = 0
   let completed = 0
   let objective = ''
@@ -112,9 +114,9 @@ export function TodoChip({
   }
   const expandable = !!todos && todos.length > 0
   // Locate the sticky bar wrapper once the panel is about to open.
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open || !expandable) return
-    hostRef.current = btnRef.current?.closest<HTMLElement>('.sticky') ?? null
+    setHost(btnRef.current?.closest<HTMLElement>('.sticky') ?? null)
   }, [open, expandable])
   if (!(total > 0)) return null
   return (
@@ -137,7 +139,7 @@ export function TodoChip({
           <CheckMarkIcon />
         </span>
       </button>
-      {open && expandable && hostRef.current
+      {open && expandable && host
         ? createPortal(
             <div
               id="todo-inline-panel"
@@ -169,7 +171,7 @@ export function TodoChip({
                 ))}
               </div>
             </div>,
-            hostRef.current,
+            host,
           )
         : null}
     </>
@@ -700,8 +702,8 @@ export function RunningChip({
  * Sticky task panel (TUI `tasks` pane under the status bar).
  *
  * Two sections:
- *  - 「运行中」— live bg_tasks / subagents / workflows (click / 「查看」
- *    opens the block viewer, kill/cancel buttons) — the original strip, kept
+ *  - 「运行中」— live bg_tasks / subagents / workflows (click opens the
+ *    block viewer, kill/cancel buttons) — the original strip, kept
  *    verbatim;
  *  - 「调度任务」— /loop scheduled tasks (prompt summary, interval,
  *    nextFireAt, delete button).
@@ -785,17 +787,6 @@ export function RunningTasksBar({
                     {t.command}
                   </span>
                 )}
-                <ViewButton
-                  visible
-                  compact
-                  onOpen={() =>
-                    openTaskViewer(t.taskId, {
-                      title: t.title,
-                      command: t.command,
-                      outputFile: t.outputFile,
-                    })
-                  }
-                />
               </div>
             ))}
             {running.map((e) => (
@@ -831,7 +822,6 @@ export function RunningTasksBar({
                     {e.detail}
                   </span>
                 )}
-                <ViewButton visible compact onOpen={() => openViewer(e.id)} />
                 {e.kind === 'subagent' && e.subagentId && (
                   <button
                     type="button"
