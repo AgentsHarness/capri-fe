@@ -214,6 +214,25 @@ export function pathForSurface(
   return displayPath
 }
 
+/**
+ * TUI tracker `make_relative_path`: strip the cwd prefix from a stored path,
+ * yielding `.` for the session directory itself. Used at ingest for list_dir
+ * scopes and grep result paths — distinct from `pathForSurface('expanded')`,
+ * which falls back to the absolute path when there is no relative tail.
+ */
+export function makeRelativePath(path: string, cwd?: string): string {
+  if (!cwd || !path) return path
+  const norm = path.replace(/\\/g, '/')
+  const base = cwd.replace(/\\/g, '/').replace(/\/+$/, '')
+  if (!base) return path
+  if (norm === base) return '.'
+  if (norm.startsWith(`${base}/`)) {
+    const rel = norm.slice(base.length + 1)
+    return rel === '' ? '.' : rel
+  }
+  return path
+}
+
 /** Convenience: paint according to the chosen surface, no-op on empty. */
 export function paintToolPath(
   path: string,

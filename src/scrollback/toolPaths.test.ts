@@ -3,6 +3,7 @@ import {
   extractDomain,
   mcpTitleizeSegment,
   normalizeLexically,
+  makeRelativePath,
   pathBasename,
   pathForSurface,
   resolveToolPathTarget,
@@ -123,6 +124,17 @@ describe('pathForSurface', () => {
       }),
     ).toBe('/Users/me/project/src/main.rs')
     expect(pathForSurface('/x/./y.rs', 'raw')).toBe('/x/./y.rs')
+  })
+})
+
+describe('makeRelativePath', () => {
+  it('剥会话目录前缀；命中目录本身 → "."（区别于 expanded 面）', () => {
+    expect(makeRelativePath('/me/pro/src', '/me/pro')).toBe('src')
+    expect(makeRelativePath('/me/pro', '/me/pro')).toBe('.')
+    expect(makeRelativePath('/me/pro/', '/me/pro')).toBe('.')
+    expect(makeRelativePath('/other/x', '/me/pro')).toBe('/other/x')
+    expect(makeRelativePath('/me/pro/src')).toBe('/me/pro/src')
+    expect(pathForSurface('/me/pro', 'expanded', { cwd: '/me/pro' })).toBe('/me/pro')
   })
 })
 

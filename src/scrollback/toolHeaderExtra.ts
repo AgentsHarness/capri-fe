@@ -18,7 +18,12 @@
  */
 import type { ToolCall } from '../api/types'
 import { extractToolDetail } from './toolDetail'
-import { pathForSurface, splitPathHeadTail, type ToolPathPaint } from './toolPaths'
+import {
+  makeRelativePath,
+  pathForSurface,
+  splitPathHeadTail,
+  type ToolPathPaint,
+} from './toolPaths'
 
 export type ToolHeaderExtra = {
   /** Row target — omitted only for `bare` sentence rows. */
@@ -199,7 +204,12 @@ export function toolHeaderExtra(
         const trivial = d.pattern === '' || d.pattern === '.'
         let target = trivial && d.glob ? d.glob : d.pattern ? JSON.stringify(d.pattern) : '""'
         if (!trivial && d.glob) target += ` in ${d.glob}`
-        if (d.path) target += ` in ${paintPath(d.path)}`
+        // TUI stores the search scope cwd-relative (`make_relative_path`) and
+        // drops it entirely when the scope is the session directory itself.
+        if (d.path) {
+          const scope = makeRelativePath(d.path, paint.cwd)
+          if (scope !== '.') target += ` in ${scope}`
+        }
         // Match summary — TUI match_summary(), per output mode.
         const files = d.fileMatches.length
         let summary: string
@@ -230,10 +240,7 @@ export function toolHeaderExtra(
         const suffix = !failed && n > 0 ? ` (${n} entr${n === 1 ? 'y' : 'ies'})` : undefined
         // TUI stores list_dir paths already cwd-relative (`make_relative_path`)
         // and never basenames them — a directory row shows the directory.
-        const painted = pathForSurface(d.path, 'expanded', {
-          cwd: paint.cwd,
-          home: paint.home,
-        })
+        const painted = makeRelativePath(d.path, paint.cwd)
         const { head, tail } = splitPathHeadTail(painted)
         return { target: tail || painted, head: head || undefined, suffix }
       }
