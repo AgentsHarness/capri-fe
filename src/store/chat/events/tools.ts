@@ -52,9 +52,23 @@ function applyAnonToolUpdate(
   const status = typeof tc.status === 'string' ? tc.status : ''
   const terminal = status === 'completed' || status === 'failed'
   if (!exact && !terminal) return
-  const merged: ToolCall = exact ? { ...(existing.raw || {}), ...tc } : tc
+  // 非 exact（无指纹可判）的终态更新默认只收状态、不合并 raw——并行
+  // 批次里把 A 的输出贴到 B 的行上是真实的数据污染。但当候选行只剩
+  // 一条（串行匿名调用，前面的行已收口出列）时归属无歧义：终态富更新
+  // （含 rawOutput 的 read 收口等）必须把 raw 并进来，否则 read 行永远
+  // 只有标题没有内容（qwen 网关空 toolCallId 场景）。
+  const anonCandidates = get().entries.filter(
+    (e) =>
+      e.kind === 'tool' &&
+      !e.toolCallId &&
+      (e.status === 'pending' || e.status === 'in_progress'),
+  )
+  const applyRaw = exact || (terminal && anonCandidates.length === 1)
+  // 合并而不是替换：富更新（rawOutput/content）不带 title/rawInput，整体
+  // 替换会让行头读不到路径（readPathOf 只认 raw.rawInput），标题丢文件名。
+  const merged: ToolCall = applyRaw ? { ...(existing.raw || {}), ...tc } : tc
   if (
-    exact &&
+    applyRaw &&
     (shouldSuppressToolFromScrollback(merged) || isOrphanBashStreamUpdate(merged))
   ) {
     // Late classification (is_background / TaskOutput only in this update):
@@ -79,8 +93,8 @@ function applyAnonToolUpdate(
         : {
             ...e,
             status: nextStatus,
-            verb: toolVerb(exact ? kindName : e.kindName, running),
-            ...(exact
+            verb: toolVerb(applyRaw ? kindName : e.kindName, running),
+            ...(applyRaw
               ? {
                   raw: merged,
                   kindName,

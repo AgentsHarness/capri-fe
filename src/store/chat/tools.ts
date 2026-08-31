@@ -327,6 +327,8 @@ export function anonToolKey(tc: ToolCall): string | undefined {
     nonBlankStr(ri?.path) ??
     nonBlankStr(ri?.filePath) ??
     nonBlankStr(ri?.file_path) ??
+    nonBlankStr(ri?.target_file) ??
+    nonBlankStr(ri?.targetFile) ??
     diffContentPath(tc)
   return path ? `path:${path}` : undefined
 }

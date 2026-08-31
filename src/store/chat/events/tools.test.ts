@@ -98,11 +98,13 @@ describe('tool_call_update 空 toolCallId 认领', () => {
     expect(tool(0)?.status).toBe('completed')
   })
 
-  it('认不到 command 时按最早未收口行只收状态，不合并 raw', () => {
+  it('认不到 command 时只剩一条未收口行 → 终态富更新合并 raw（qwen 空 id 场景）', () => {
     const { feed, tool } = makeStore()
     feed({ type: 'tool_call', toolCall: callStart(LS) } as AcpEvent)
     const raw0 = (tool() as { raw: ToolCall }).raw
-    // 列表型工具的终态 update 不带 command/path（只有 rawOutput.Content）。
+    // 列表型工具的终态 update 不带 command/path（只有 rawOutput.Content）；
+    // 候选行只有这一条 → 归属无歧义，raw 必须并进来（readfile 的 rawOutput
+    // 依赖这条路径落行，否则回放显示 no content）。
     feed({
       type: 'tool_call_update',
       toolCallUpdate: {
@@ -113,7 +115,10 @@ describe('tool_call_update 空 toolCallId 认领', () => {
       },
     } as unknown as AcpEvent)
     expect(tool()).toMatchObject({ status: 'completed', verb: 'Run' })
-    expect((tool() as { raw: ToolCall }).raw).toBe(raw0)
+    expect((tool() as { raw: ToolCall }).raw).not.toBe(raw0)
+    expect(
+      ((tool() as { raw: ToolCall }).raw?.rawOutput as Record<string, unknown>)?.Content,
+    ).toBeTruthy()
   })
 
   it('无未收口匿名行时不凭空造行', () => {
