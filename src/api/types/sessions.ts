@@ -4,6 +4,12 @@ export type HostInfo = {
   hostName: string
   online: boolean
   ready?: boolean
+  /** Hub registry realtime flag: any session has a turn in flight. */
+  busy?: boolean
+  /** Hub registry realtime flag: agent process has not finished booting. */
+  booting?: boolean
+  /** Hub registry realtime count: pending client requests (permits / questions). */
+  pendingCount?: number
   local?: boolean
   /** Hub registry liveness timestamp (hub mode). */
   lastSeen?: string
