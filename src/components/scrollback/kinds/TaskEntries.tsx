@@ -117,9 +117,10 @@ export function BgTaskEntry({
   chrome: EntryChrome
 }) {
   const { shell, bullet, openViewer, killTask } = chrome
-  const showView = shell.selected
+  // 整行单击直接弹全文查看器（与 Agent 行同一形态，不需要先选中再点查看）。
+  const rowShell = { ...shell, onSelect: () => openViewer(e.id) }
   // TUI: "Task started: {description|command}" — bold "Task", name is primary.
-  // 「查看」/ Enter → block viewer with live stdout (TUI OpenBlockViewer).
+  // 整行单击 / Enter → block viewer with live stdout (TUI OpenBlockViewer).
   // Dense-aware inner padding: dense rows pack at 0 gap like tool rows
   // (EntryShell dense spacing), so consecutive task rows don't leave an
   // uneven 4px seam (visible in history pairs: started + completed).
@@ -130,7 +131,7 @@ export function BgTaskEntry({
         ? 'completed'
         : 'failed'
   return (
-    <EntryShell {...shell}>
+    <EntryShell {...rowShell}>
       <div
         className={`flex items-center gap-1.5 ${shell.dense ? 'py-0' : 'py-[2px]'} text-[13px] leading-[1.35]`}
       >
@@ -150,22 +151,19 @@ export function BgTaskEntry({
             {e.detail}
           </span>
         )}
-        {(showView || (e.running && e.taskId)) && (
+        {e.running && e.taskId && (
           <div className="ml-auto flex shrink-0 items-center gap-1">
-            <ViewButton visible={showView} onOpen={() => openViewer(e.id)} />
-            {e.running && e.taskId && (
-              <button
-                type="button"
-                onClick={(ev) => {
-                  ev.stopPropagation()
-                  void killTask(e.taskId!)
-                }}
-                className="shrink-0 rounded border border-gn-red/40 px-1.5 py-0.5 text-[10.5px] text-gn-red hover:bg-gn-diff-del-bg"
-                title="x.ai/task/kill"
-              >
-                kill
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={(ev) => {
+                ev.stopPropagation()
+                void killTask(e.taskId!)
+              }}
+              className="shrink-0 rounded border border-gn-red/40 px-1.5 py-0.5 text-[10.5px] text-gn-red hover:bg-gn-diff-del-bg"
+              title="x.ai/task/kill"
+            >
+              kill
+            </button>
           </div>
         )}
       </div>
