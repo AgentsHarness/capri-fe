@@ -88,4 +88,28 @@ describe('匿名工具行的渲染（store → DOM）', () => {
     // 终态 update 的 rawOutput 合并进了行（折叠展开时可见日志）。
     expect((done as { raw?: ToolCall }).raw?.rawOutput).toBeTruthy()
   })
+
+  it('SKILL.md 读取 → 行头 "Skill {name}"，不显示 Read 动词与文件路径', () => {
+    const feed = useChatStore.getState().handleEvent
+    feed({
+      type: 'tool_call',
+      toolCall: {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'tc-skill',
+        title: 'read_file',
+        kind: 'read',
+        rawInput: { target_file: '/Users/benin/.grok/skills/deploy/SKILL.md' },
+      },
+    } as unknown as AcpEvent)
+    const entry = useChatStore.getState().entries[0]
+    expect(entry?.kind).toBe('tool')
+    const r = render(
+      <EntryView e={entry!} selected={false} pendingFreeze={false} now={Date.now()} />,
+    )
+    // span 之间没有空白字符，textContent 是 "Skill" + "deploy" 的拼接。
+    expect(headerText(r.container)).toMatch(/Skill\s*deploy/)
+    expect(headerText(r.container)).not.toContain('SKILL.md')
+    expect(headerText(r.container)).not.toContain('Read')
+    r.unmount()
+  })
 })

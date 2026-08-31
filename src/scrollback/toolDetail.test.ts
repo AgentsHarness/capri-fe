@@ -3,6 +3,8 @@ import type { ToolCall } from '../api/types'
 import {
   contentText,
   extractToolDetail,
+  readPathOf,
+  skillNameFromPath,
   type DiffLine,
   type KvPair,
 } from './toolDetail'
@@ -248,6 +250,37 @@ describe('extractToolDetail — read', () => {
       'read',
     )
     expect(d2).toMatchObject({ kind: 'read', content: '', empty: true })
+  })
+
+  it('SKILL.md 读取 → skill 字段（父目录名）；普通读取无 skill', () => {
+    const d = detail(
+      { rawInput: { path: '/x/skills/deploy/SKILL.md' }, rawOutput: { Read: { FileContent: { content: 'y' } } } },
+      'read',
+    )
+    expect(d).toMatchObject({ kind: 'read', path: '/x/skills/deploy/SKILL.md', skill: 'deploy' })
+
+    const plain = detail({ rawInput: { path: '/x/skills/deploy/README.md' }, rawOutput: {} }, 'read')
+    expect(plain).toMatchObject({ kind: 'read', skill: undefined })
+  })
+
+  it('readPathOf：camel/snake rawInput 优先，title 兜底', () => {
+    expect(readPathOf(tc({ rawInput: { path: '/a/b.ts' } }))).toBe('/a/b.ts')
+    expect(readPathOf(tc({ rawInput: { file_path: '/a/b.ts' } }))).toBe('/a/b.ts')
+    expect(readPathOf(tc({ rawInput: { filePath: '/a/b.ts' } }))).toBe('/a/b.ts')
+    expect(readPathOf(tc({ rawInput: { path: '/a/b.ts' }, title: 'Read `/a/b.ts`' }))).toBe('/a/b.ts')
+    expect(readPathOf(tc({ title: 'Read `/a/b.ts`' }))).toBe('Read `/a/b.ts`')
+    expect(readPathOf(tc({}))).toBe('')
+  })
+
+  it('skillNameFromPath：仅基名 SKILL.md 且需有父目录；容忍标题反引号包裹与反斜杠', () => {
+    expect(skillNameFromPath('/x/.grok/skills/deploy/SKILL.md')).toBe('deploy')
+    expect(skillNameFromPath('skills/deploy/SKILL.md')).toBe('deploy')
+    expect(skillNameFromPath('Read `/x/skills/deploy/SKILL.md`')).toBe('deploy')
+    expect(skillNameFromPath('C:\\x\\skills\\deploy\\SKILL.md')).toBe('deploy')
+    expect(skillNameFromPath('/x/README.md')).toBeUndefined()
+    expect(skillNameFromPath('SKILL.md')).toBeUndefined()
+    expect(skillNameFromPath('/SKILL.md')).toBeUndefined()
+    expect(skillNameFromPath('/x/skills/deploy/SKILL.md/')).toBe('deploy')
   })
 })
 

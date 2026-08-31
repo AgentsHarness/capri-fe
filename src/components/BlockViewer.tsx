@@ -344,8 +344,13 @@ function viewerChrome(e: ScrollEntry): { title: string; subtitle?: string } {
     if (e.raw) {
       try {
         const d = extractToolDetail(e.raw, e.kindName)
-        if (d.kind === 'read') subtitle = d.path
-        else if (d.kind === 'execute')
+        if (d.kind === 'read') {
+          if (d.skill) {
+            // TUI skill reads: header "Skill {name}"（无 Read 动词、无路径）。
+            return { title: 'Skill', subtitle: d.skill }
+          }
+          subtitle = d.path
+        } else if (d.kind === 'execute')
           subtitle = d.command || d.description || e.title
         else if (d.kind === 'edit') subtitle = d.path
         else if (d.kind === 'search') subtitle = d.pattern

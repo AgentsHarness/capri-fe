@@ -38,6 +38,9 @@ export type ToolDetail =
   | {
       kind: 'read'
       path: string
+      /** Skill name when the read targets `SKILL.md` (TUI skill reads render
+       *  as "Skill {name}" instead of "Read {path}"). */
+      skill?: string
       lineStart?: number
       lineEnd?: number
       totalLines?: number
@@ -145,6 +148,40 @@ function rawField(ri: Record<string, unknown> | undefined, ...keys: string[]): s
     }
   }
   return undefined
+}
+
+/**
+ * Read-target path of a tool call: rawInput path keys (camelCase or
+ * snake_case wire), else the display title. Same precedence the read
+ * detail branch uses.
+ */
+export function readPathOf(tc: ToolCall): string {
+  const ri = (tc.rawInput ?? (tc as { raw_input?: unknown }).raw_input) as
+    | Record<string, unknown>
+    | undefined
+  const p =
+    ri && typeof ri === 'object' && !Array.isArray(ri)
+      ? rawField(ri, 'file_path', 'target_file', 'path', 'filePath', 'targetFile')
+      : undefined
+  return p || tc.title || ''
+}
+
+/**
+ * Skill name when a read target is a skill definition (`SKILL.md`),
+ * mirroring xai-grok-tools `skill_name_from_path`: the parent directory
+ * name (`/skills/deploy/SKILL.md` → `deploy`). `undefined` for non-
+ * SKILL.md paths or bare `SKILL.md` with no parent. TUI detection is
+ * purely basename-based, so any `SKILL.md` read counts, not only skills
+ * under a skills directory.
+ */
+export function skillNameFromPath(path: string): string | undefined {
+  let p = path.trim()
+  // Host tool_call_update title shape: "Read `/x/SKILL.md`".
+  const wrapped = p.match(/^Read\s+`(.+)`$/)
+  if (wrapped) p = wrapped[1]
+  const parts = p.replace(/\\/g, '/').split('/').filter((s) => s !== '')
+  if (parts.length < 2 || parts[parts.length - 1] !== 'SKILL.md') return undefined
+  return parts[parts.length - 2]
 }
 
 function rawBool(ri: Record<string, unknown> | undefined, ...keys: string[]): boolean {
@@ -799,8 +836,7 @@ export function extractToolDetail(tc: ToolCall, kindName?: string): ToolDetail {
 
   // ── read ──
   if (kind === 'read' || kind === 'file') {
-    const path =
-      rawField(ri, 'file_path', 'target_file', 'path', 'filePath', 'targetFile') || title
+    const path = readPathOf(tc)
     const rf = extractReadFile(raw)
     let lineStart: number | undefined
     let lineEnd: number | undefined
@@ -825,6 +861,7 @@ export function extractToolDetail(tc: ToolCall, kindName?: string): ToolDetail {
     return {
       kind: 'read',
       path,
+      skill: skillNameFromPath(path),
       lineStart,
       lineEnd,
       totalLines: rf?.totalLines,

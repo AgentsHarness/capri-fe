@@ -32,6 +32,18 @@ describe('toolHeaderExtra — read', () => {
     const d = he({ rawInput: { path: 'x' }, rawOutput: {} }, 'read')
     expect(d).toEqual({ target: 'x' })
   })
+
+  it('SKILL.md 读取 → skill 字段（行头换 "Skill {name}"，target/suffix 仍为路径，导出对齐 TUI tool_summary）', () => {
+    const d = he(
+      { rawInput: { target_file: '/x/.grok/skills/deploy/SKILL.md' }, rawOutput: { Read: { FileContent: { content: 'x', total_lines: 100, offset: 0, limit: 10 } } } },
+      'read',
+    )
+    expect(d).toEqual({
+      target: '/x/.grok/skills/deploy/SKILL.md',
+      suffix: ' (1-10 of 100)',
+      skill: 'deploy',
+    })
+  })
 })
 
 describe('toolHeaderExtra — execute', () => {
