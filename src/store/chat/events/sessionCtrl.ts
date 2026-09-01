@@ -49,6 +49,12 @@ export function handleSessionCtrlEvent(
           params: ev.params,
           ...(evSid ? { sessionId: evSid } : {}),
         }
+        // 带明确会话归属的请求只属于那个会话。顶层 sid 已由 initChat 过滤，
+        // 这里补的是「host 只把 sid 放在 params 里」的那种形状（见
+        // continueSession 注释）——不拦就会把别的会话的权限/问题卡画到当前
+        // 视图。空状态（sessionId 未锚定）下带 sid 的行同样丢弃，与
+        // partitionPendingRequests 的语义一致；无 sid 的 legacy 行照常放行。
+        if (evSid && evSid !== get().sessionId) break
         if (method.startsWith('x.ai/')) {
           // Only interactive extension requests get UI; everything else is
           // answered immediately so the agent never hangs on a timeout.

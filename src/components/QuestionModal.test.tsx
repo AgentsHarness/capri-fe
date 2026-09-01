@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { useChatStore } from '../store/chat'
 import { applyToolsetSettings, ensureToolsetSettings } from '../store/settings'
 import { QuestionModal } from './QuestionModal'
@@ -113,5 +113,86 @@ describe('QuestionModal timeout 呈现', () => {
     renderCard({ deadlineAt: 1000 }) // 早已过期
     await waitFor(() => expect(screen.getByText('本会话提问超时 45 秒后自动放弃')).not.toBeNull())
     expect(screen.queryByText(/倒计时/)).toBeNull()
+  })
+})
+describe('QuestionModal 键盘选择 + 提交', () => {
+  beforeEach(() => {
+    respondXaiMock.mockClear()
+    dismissXaiMock.mockClear()
+  })
+
+  const twoOptions = {
+    questions: [
+      {
+        question: 'Q?',
+        options: [
+          { label: 'A', description: 'opt A' },
+          { label: 'B', description: 'opt B' },
+        ],
+      },
+    ],
+  }
+
+  it('最后一题按 Enter → 提交刚选中的那一项（不是上一次渲染的旧选择）', async () => {
+    renderCard(twoOptions)
+    await waitFor(() => expect(screen.getByText('Q?')).not.toBeNull())
+    fireEvent.keyDown(window, { key: 'Enter' })
+    await waitFor(() =>
+      expect(respondXaiMock).toHaveBeenCalledWith('r1', {
+        outcome: 'accepted',
+        answers: { 'Q?': ['A'] },
+      }),
+    )
+  })
+
+  it('最后一题按数字键 → 提交该项', async () => {
+    renderCard(twoOptions)
+    await waitFor(() => expect(screen.getByText('Q?')).not.toBeNull())
+    fireEvent.keyDown(window, { key: '2' })
+    await waitFor(() =>
+      expect(respondXaiMock).toHaveBeenCalledWith('r1', {
+        outcome: 'accepted',
+        answers: { 'Q?': ['B'] },
+      }),
+    )
+  })
+
+  it('多题：第一题 Enter 只前进到下一题，最后一题才提交（含各题选择）', async () => {
+    renderCard({
+      questions: [
+        { question: 'Q1?', options: [{ label: 'A1' }, { label: 'A2' }] },
+        { question: 'Q2?', options: [{ label: 'B1' }, { label: 'B2' }] },
+      ],
+    })
+    await waitFor(() => expect(screen.getByText('Q1?')).not.toBeNull())
+    fireEvent.keyDown(window, { key: 'Enter' })
+    expect(respondXaiMock).not.toHaveBeenCalled()
+    // 前进到第二题，聚焦第 2 项后 Enter → 提交两题
+    fireEvent.keyDown(window, { key: 'j' })
+    fireEvent.keyDown(window, { key: 'Enter' })
+    await waitFor(() =>
+      expect(respondXaiMock).toHaveBeenCalledWith('r1', {
+        outcome: 'accepted',
+        answers: { 'Q1?': ['A1'], 'Q2?': ['B2'] },
+      }),
+    )
+  })
+
+  it('多选卡片：Space 切换不提交，提交按钮走当前选择', async () => {
+    renderCard({
+      questions: [
+        { question: 'M?', multiSelect: true, options: [{ label: 'X' }, { label: 'Y' }] },
+      ],
+    })
+    await waitFor(() => expect(screen.getByText('M?')).not.toBeNull())
+    fireEvent.keyDown(window, { key: ' ' })
+    expect(respondXaiMock).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '提交' }))
+    await waitFor(() =>
+      expect(respondXaiMock).toHaveBeenCalledWith('r1', {
+        outcome: 'accepted',
+        answers: { 'M?': ['X'] },
+      }),
+    )
   })
 })

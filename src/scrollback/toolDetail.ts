@@ -395,11 +395,11 @@ function flattenArgs(obj: Record<string, unknown> | undefined, skip: Set<string>
 }
 
 function kindOf(tc: ToolCall, kindName?: string): string {
-  return (kindName || tc.kind || 'other').toLowerCase()
+  return (asStr(kindName) || asStr(tc.kind) || 'other').toLowerCase()
 }
 
 function failed(tc: ToolCall): boolean {
-  const s = (tc.status || '').toLowerCase()
+  const s = (asStr(tc.status) || '').toLowerCase()
   return s === 'failed' || s === 'error'
 }
 
@@ -918,7 +918,7 @@ export function extractToolDetail(tc: ToolCall, kindName?: string): ToolDetail {
   const kind = kindOf(tc, kindName)
   const ri = isObj(tc.rawInput) ? tc.rawInput : undefined
   const raw = tc.rawOutput
-  const title = tc.title || ''
+  const title = asStr(tc.title) || ''
   const isFail = failed(tc)
   const variant = rawField(ri, 'variant')
 

@@ -36,8 +36,19 @@ export function hostActions(set: SetState, get: () => ChatState) {
         } else if (sel && sel.online && cur?.id === 'host-offline') {
           get().setLayerError('hub', undefined)
         }
+        if (sel) return
+        // 当前 host 已被外部删除（另一标签页 unpair / hub 侧清理）：它不在
+        // 列表里，上面的离线横幅分支根本不会触发，不清掉选择就会一直顶着
+        // 一个不存在的 host、要手动刷页才能恢复。落回下方重新挑选。
+        removeKey('capri-fe.host')
+        set({ selectedHostId: undefined })
+        // 一台都不剩时没有可连的 host（下面也挑不出 pick），整份落到空状态；
+        // 还有别的 host 时交给 switchHost 自己做全套视图复位。
+        if (hosts.length === 0) {
+          set({ hostId: undefined, hostName: undefined })
+          get().resetToEmpty()
+        }
       }
-      if (s.selectedHostId) return
       // First selection. 本机页面直连 capri-host 时 localHostId 有值：
       // 优先选本机（API 走 isLocalDirect 近路），不要被上次调试留下的
       // 远程 host（capri-fe.host）拐走——localhost 开发会表现为
@@ -273,6 +284,13 @@ export function hostActions(set: SetState, get: () => ChatState) {
   },
 
   setModel: async (modelId, reasoningEffort) => {
+    // 会话未锚定（空状态 / 切换窗口期）时拒绝切换：请求不带 sessionId
+    // 会被 host 落到它自身的 active 会话（可能不是当前视图），切换因此
+    // 失去会话隔离。提示先开始/恢复会话。
+    if (!get().sessionId) {
+      pushToast('请先开始或恢复一个会话，再切换模型')
+      return
+    }
     const prevName = get().modelName
     const prevEffort = get().reasoningEffort
     try {

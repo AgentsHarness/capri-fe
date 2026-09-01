@@ -153,11 +153,11 @@ export function QuestionModal() {
   const clampTab = (t: number) => Math.min(Math.max(0, t), Math.max(0, questions.length - 1))
 
   /** Labels chosen per question (free-form becomes "Other" + notes). */
-  const buildAnswers = () => {
+  const buildAnswers = (sel: Record<number, Set<number>> = selected) => {
     const answers: Record<string, string[]> = {}
     const annotations: Record<string, { preview?: string; notes?: string }> = {}
     questions.forEach((q, qi) => {
-      const set = selected[qi] ?? new Set<number>()
+      const set = sel[qi] ?? new Set<number>()
       const labels = [...set].map((oi) => q.options[oi]?.label).filter(Boolean)
       const notes = (freeform[qi] ?? '').trim()
       if (notes) {
@@ -176,8 +176,14 @@ export function QuestionModal() {
     return { answers, annotations }
   }
 
-  const submitAccepted = () => {
-    const { answers, annotations } = buildAnswers()
+  /**
+   * `nextSelected` carries the choice made in this very key event: React
+   * state updates land on the next render, so buildAnswers() would otherwise
+   * read the pre-keystroke selection (the last question then submits the
+   * previous pick — or nothing at all).
+   */
+  const submitAccepted = (nextSelected?: Record<number, Set<number>>) => {
+    const { answers, annotations } = buildAnswers(nextSelected ?? selected)
     if (Object.keys(answers).length === 0) return
     void respondXai(req!.requestId, {
       outcome: 'accepted',
@@ -261,11 +267,12 @@ export function QuestionModal() {
               toggleOption(qi, cur, true)
             } else {
               // Single: select + advance; the last question submits.
-              setSelected((prev) => ({ ...prev, [qi]: new Set([cur]) }))
+              const nextSelected = { ...selected, [qi]: new Set([cur]) }
+              setSelected(nextSelected)
               if (qi < questions.length - 1) {
                 setActiveTab(qi + 1)
               } else {
-                submitAccepted()
+                submitAccepted(nextSelected)
               }
             }
           }
@@ -317,11 +324,12 @@ export function QuestionModal() {
               if (q.multiSelect) {
                 toggleOption(qi, idx, true)
               } else {
-                setSelected((prev) => ({ ...prev, [qi]: new Set([idx]) }))
+                const nextSelected = { ...selected, [qi]: new Set([idx]) }
+                setSelected(nextSelected)
                 if (qi < questions.length - 1) {
                   setActiveTab(qi + 1)
                 } else {
-                  submitAccepted()
+                  submitAccepted(nextSelected)
                 }
               }
             }
@@ -508,7 +516,7 @@ export function QuestionModal() {
         {isLast ? (
           <button
             type="button"
-            onClick={submitAccepted}
+            onClick={() => submitAccepted()}
             className="min-h-9 rounded border border-gn-magenta/50 bg-gn-bg-highlight px-4 py-1 text-[12.5px] font-semibold text-gn-fg hover:bg-gn-bg-hover"
           >
             提交

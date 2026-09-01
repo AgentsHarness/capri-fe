@@ -1,6 +1,9 @@
 # 区域 06 大组件二 测试笔记（BlockViewer / ApprovalStrip / McpPanel / GitPanel / Markdown / ToolDetail）
 
 【McpPanel.tsx:511】bug: 工具启停按钮传参疑似错误——`onClick` 调 `toggleTool(s.name, t.name, t.enabled !== false)` 传的是**当前** enabled 状态而非翻转值。点击「禁用」（enabled=true）实际调用 `mcpToggleTool(server, tool, true)`，乐观更新把状态写成原值（无变化），statusText 显示「已启用工具」（McpPanel.tsx:197）。与服务器级 `toggleServer(s.name, !enabled)`（:168）的翻转语义不一致；若 host 端按「目标状态」语义处理，该按钮将完全失效。疑似应为 `t.enabled === false`（期望的新状态）。
+→ 已确认并修复（现 McpPanel.tsx:566 改为 `t.enabled === false`）：host 端 `/api/mcp/toggle-tool` 按目标状态语义处理，此前该按钮确实是完全失效的空操作。用例已改为双向断言（禁用→false / 启用→true）。
+
+【McpPanel.tsx:627】安全（低危）: MCP 认证链接 `href={authResult.url}` 是全仓唯一绕过 react-markdown `defaultUrlTransform` 协议过滤的裸 `<a href>`（Markdown.tsx 的链接走 react-markdown，`javascript:` 等协议会被清空）。已修：`authServer` 写入 authResult 前用 `/^https?:\/\//i` 白名单过滤，非 http(s) 的 URL 不落进 `url` 字段，卡片落到「已触发认证流程」兜底文案。
 
 【Markdown.tsx:274】疑问: markdown 中 data URI 图片（`![alt](data:image/png;base64,...)`）——react-markdown 默认 urlTransform 过滤掉 `data:` 协议，自定义 img 组件收到的 src 为 undefined，渲染出**无 src 的 `<img>`**（测试实证：`<img alt="alt text" class="...">` 无 src 属性；http(s) 正常）。若历史回放/滚动内容里出现 data-URI 图片的 markdown，将静默无法显示。
 

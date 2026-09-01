@@ -116,8 +116,10 @@ export function ToolEntry({
               </span>
             </span>
             {suffix ? (
+              // 失败后缀（如 ` (Tool ... failed: <长错误>)`）与目标列同规则：
+              // min-w-0 允许收缩 + truncate 行内省略，绝不把行撑出内容列。
               <span
-                className="shrink-0 text-[12px] leading-[1.35]"
+                className="min-w-0 truncate text-[12px] leading-[1.35]"
                 style={{ color: detailColor }}
               >
                 {suffix}

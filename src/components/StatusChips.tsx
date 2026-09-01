@@ -9,6 +9,7 @@ import { usePromptQueue } from '../store/promptQueue'
 import type { ScrollEntry, TopTask } from '../api/types'
 import { useSessionSpinner } from '../hooks/sessionState'
 import { TodoMark, CheckMarkIcon } from './todoMark'
+import { InlineAction } from './InlineAction'
 import { fmtTok, fmtElapsedCompact, filterRunningEntries, subagentMeta, type RunningEntry } from '../format'
 import type { TodoItem } from '../store/chat'
 
@@ -589,52 +590,42 @@ export function GoalChip({
         </div>
         {/* ── goal controls — HOST ENGINE (capri-host goal.go /api/goal/*,
             TUI /goal parity; see chat.ts goalSet docs). */}
-        <div className="flex flex-wrap items-center gap-1 border-t border-gn-prompt-border px-3 py-2">
-          <button
-            type="button"
-            onClick={() => goalStatus()}
-            className="rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg"
+        <div className="flex flex-wrap items-center gap-2 border-t border-gn-prompt-border px-3 py-1.5">
+          <InlineAction
+            label="状态"
+            tone="neutral"
             title="查询当前自主目标状态"
-          >
-            状态
-          </button>
-          <button
-            type="button"
+            onRun={() => goalStatus()}
+          />
+          <InlineAction
+            label="暂停"
+            tone="neutral"
             disabled={!active}
-            onClick={() => goalPause()}
-            className="rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40"
             title="暂停当前自主目标"
-          >
-            暂停
-          </button>
-          <button
-            type="button"
+            onRun={() => goalPause()}
+          />
+          <InlineAction
+            label="恢复"
+            tone="neutral"
             disabled={!paused}
-            onClick={() => goalResume()}
-            className="rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40"
             title="恢复当前自主目标"
-          >
-            恢复
-          </button>
-          <button
-            type="button"
-            onClick={() => goalClear()}
-            className="rounded border border-gn-red/40 px-2 py-0.5 text-[11px] text-gn-red opacity-80 hover:bg-gn-diff-del-bg hover:opacity-100"
+            onRun={() => goalResume()}
+          />
+          <InlineAction
+            label="清除"
             title="清除当前自主目标"
-          >
-            清除
-          </button>
-          <button
-            type="button"
-            onClick={() => {
+            onRun={() => goalClear()}
+          />
+          <InlineAction
+            label="工作流 ↗"
+            tone="plan"
+            className="ml-auto"
+            title="打开 /workflows 工作流运行面板"
+            onRun={() => {
               setOpen(false)
               setWorkflowPanelOpen(true)
             }}
-            className="ml-auto rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-plan hover:bg-gn-bg-highlight"
-            title="打开 /workflows 工作流运行面板"
-          >
-            工作流 ↗
-          </button>
+          />
         </div>
         {/* ── action feedback: live status line（hub/host 错误只在顶部横幅）── */}
         <div className="border-t border-gn-prompt-border px-3 py-1.5 font-mono text-[10.5px]">
@@ -823,30 +814,18 @@ export function RunningTasksBar({
                   </span>
                 )}
                 {e.kind === 'subagent' && e.subagentId && (
-                  <button
-                    type="button"
-                    onClick={(ev) => {
-                      ev.stopPropagation()
-                      void cancelSubagent(e.subagentId!)
-                    }}
-                    className="shrink-0 rounded border border-gn-red/40 px-1.5 py-0.5 text-[10.5px] text-gn-red opacity-80 hover:bg-gn-diff-del-bg hover:opacity-100"
+                  <InlineAction
+                    label="cancel"
                     title="x.ai/subagent/cancel"
-                  >
-                    cancel
-                  </button>
+                    onRun={() => void cancelSubagent(e.subagentId!)}
+                  />
                 )}
                 {e.kind === 'bg_task' && e.taskId && (
-                  <button
-                    type="button"
-                    onClick={(ev) => {
-                      ev.stopPropagation()
-                      void killTask(e.taskId!)
-                    }}
-                    className="shrink-0 rounded border border-gn-red/40 px-1.5 py-0.5 text-[10.5px] text-gn-red opacity-80 hover:bg-gn-diff-del-bg hover:opacity-100"
+                  <InlineAction
+                    label="kill"
                     title="x.ai/task/kill"
-                  >
-                    kill
-                  </button>
+                    onRun={() => void killTask(e.taskId!)}
+                  />
                 )}
               </div>
             ))}
@@ -887,17 +866,11 @@ export function RunningTasksBar({
                     {formatScheduledFire(t.nextFireAt)}
                   </span>
                 )}
-                <button
-                  type="button"
-                  onClick={(ev) => {
-                    ev.stopPropagation()
-                    void deleteScheduledTask(t.taskId)
-                  }}
-                  className="shrink-0 rounded border border-gn-red/40 px-1.5 py-0.5 text-[10.5px] text-gn-red opacity-80 hover:bg-gn-diff-del-bg hover:opacity-100"
+                <InlineAction
+                  label="delete"
                   title="x.ai/scheduler/delete"
-                >
-                  delete
-                </button>
+                  onRun={() => void deleteScheduledTask(t.taskId)}
+                />
               </div>
             ))}
           </>

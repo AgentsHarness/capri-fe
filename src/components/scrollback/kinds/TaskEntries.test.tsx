@@ -94,6 +94,20 @@ describe('SubagentEntry — 整行单击弹查看器', () => {
     expect(cancelSubagent).toHaveBeenCalledWith('sub-1')
     expect(openViewer).not.toHaveBeenCalled()
   })
+
+  it('cancel 是 [cancel] 纯文本，无外边框（不把行高撑起来）', () => {
+    const e = subagentEntry({
+      id: 'sa1',
+      status: 'started',
+      running: true,
+      subagentId: 'sub-1',
+    })
+    render(<SubagentEntry e={e} chrome={makeChrome(e)} />)
+    const btn = screen.getByRole('button', { name: /cancel/ })
+    expect(btn.textContent).toBe('[cancel]')
+    expect(btn.className).not.toMatch(/border/)
+    expect(btn.className).not.toMatch(/py-/)
+  })
 })
 
 const bgTaskEntry = (
@@ -152,5 +166,19 @@ describe('BgTaskEntry — 与 Agent 行同形态', () => {
     fireEvent.click(screen.getByRole('button', { name: /kill/ }))
     expect(killTask).toHaveBeenCalledWith('t-1')
     expect(openViewer).not.toHaveBeenCalled()
+  })
+
+  it('kill 是 [kill] 纯文本，无外边框（不把行高撑起来）', () => {
+    const e = bgTaskEntry({
+      id: 'bg1',
+      status: 'started',
+      running: true,
+      taskId: 't-1',
+    })
+    render(<BgTaskEntry e={e} chrome={makeChrome(e)} />)
+    const btn = screen.getByRole('button', { name: /kill/ })
+    expect(btn.textContent).toBe('[kill]')
+    expect(btn.className).not.toMatch(/border/)
+    expect(btn.className).not.toMatch(/py-/)
   })
 })

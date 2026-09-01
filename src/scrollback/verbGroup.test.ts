@@ -668,6 +668,21 @@ describe('groupingSignature', () => {
       groupingSignature([thought({ text: '' })]),
     )
   })
+
+  it('kindName 变化进入签名（tool_call_update 后到的分类要重扫分组）', () => {
+    // 同一行、expanded/status 都没变，只有分类变了
+    expect(groupingSignature([tool({ id: 'same1', kindName: 'other' })])).not.toBe(
+      groupingSignature([tool({ id: 'same1', kindName: 'read' })]),
+    )
+    // 与 status / expanded 互不遮蔽（无分隔符时 'a'+'b' 与 'ab'+'' 会撞签名）
+    expect(groupingSignature([tool({ id: 's', status: 'completed', kindName: 'read' })])).not.toBe(
+      groupingSignature([tool({ id: 's', status: 'completedX', kindName: '' })]),
+    )
+    // 非字符串 kindName（被污染的 wire）不得让签名抛
+    expect(() =>
+      groupingSignature([tool({ id: 's', kindName: 42 as unknown as string })]),
+    ).not.toThrow()
+  })
 })
 
 describe('isDensePackable / displayRowKey', () => {
