@@ -4,6 +4,7 @@ import {
   Boxes,
   GitBranch,
   History,
+  Palette,
   Plus,
   Puzzle,
   Settings,
@@ -694,6 +695,7 @@ export function TopBar({
                   className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
                   title={themeExpanded ? '收起主题选项' : '展开主题选项'}
                 >
+                  <Palette size={14} strokeWidth={2} aria-hidden />
                   <span className="min-w-0 flex-1">theme</span>
                   <span className="shrink-0 text-gn-gutter" aria-hidden>
                     {themeExpanded ? '▴' : '▾'}
