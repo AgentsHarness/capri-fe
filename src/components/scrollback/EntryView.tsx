@@ -89,6 +89,8 @@ export const EntryView = memo(function EntryView({
   const storeToggleSessionEvent = useChatStore((s) => s.toggleSessionEvent)
   const storeOpenViewer = useChatStore((s) => s.openViewer)
   const storeSelectEntry = useChatStore((s) => s.selectEntry)
+  // lite 工具正文补全（mini 由 actions 覆盖成子代理视图版）。
+  const storeFillToolBodies = useChatStore((s) => s.fillToolEntryDetail)
   const cancelSubagent = useChatStore((s) => s.cancelSubagent)
   const killTask = useChatStore((s) => s.killTask)
   // 工具行路径打印基准目录（TUI path_for_tool_surface 的 cwd）。
@@ -101,6 +103,7 @@ export const EntryView = memo(function EntryView({
   const toggleSessionEvent = actions?.toggleSessionEvent ?? storeToggleSessionEvent
   const openViewer = actions?.openViewer ?? storeOpenViewer
   const selectEntry = actions?.selectEntry ?? storeSelectEntry
+  const fillToolBodies = actions?.fillToolBodies ?? storeFillToolBodies
   const onSelect = () => selectEntry(e.id)
   // 整块单击折叠：标题行以外的正文/留白同样生效。「查看」是独立 button，
   // 不走这条路径。流式思考 / 无可折叠正文的 kind 不挂 onFold（点击只选中）。
@@ -169,6 +172,7 @@ export const EntryView = memo(function EntryView({
     rowBtn,
     openViewer,
     toggleTool,
+    fillToolBodies,
     toggleThought,
     toggleUser,
     toggleBtw,

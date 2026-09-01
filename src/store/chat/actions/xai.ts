@@ -5,6 +5,7 @@ import { nid } from '../ids'
 import { appendEntry } from '../entries'
 import { scheduledTaskDeletedText } from '../tasks'
 import { INITIAL_TURNS } from '../history'
+import { noteHistoryProjection } from '../historyFill'
 import { pushToast } from '../../toast'
 
 /**
@@ -69,9 +70,15 @@ async function waitRewindAligned(
     }
     if (get().sessionId !== sessionId || get().cwd !== cwd) return false
     try {
+      // 探针只要 promptStarts（回合起点索引），恒传 detail=meta：与 lite
+      // 开关无关——没有工具正文可拉，整页 updates 是纯浪费。旧 host 不认识
+      // 该档 → 回 full 页 + 不回 projected，顺手把这个 host 标记为不支持
+      // 投影（lite 就此停用）。
       const page = await transport.loadSessionHistory(sessionId, cwd, {
         turnIndex: INITIAL_TURNS,
+        detail: 'meta',
       })
+      noteHistoryProjection(get, true, page)
       const ps = page.promptStarts
       if (ps == null || ps.length <= target) return true
     } catch {

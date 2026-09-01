@@ -2,6 +2,7 @@ import type { ScrollEntry } from '../../../api/types'
 import { transport } from '../../../api/client'
 import type { ChatState, SetState } from '../types'
 import { envelopeToEvents } from '../history'
+import { fillEntryRange, historyDetailParam, noteHistoryProjection } from '../historyFill'
 import {
   SUBAGENT_VIEW_PAGE_SIZE,
   subagentViewAppend,
@@ -31,6 +32,8 @@ export function viewerOpenActions(set: SetState, get: () => ChatState) {
       return
     }
     if (e.kind === 'tool' && !e.raw && !e.title) return
+    // 「查看」= 展开全文：lite 裁掉的正文在这里按需补回（非 lite 行 no-op）。
+    if (e.kind === 'tool') void fillEntryRange(set, get, target)
     if (e.kind === 'bg_task' && e.taskId) {
       // Live rows (bgTaskIndex) keep the entry-backed viewer + live poll.
       // Replay display rows are NOT in the index — open the task viewer
@@ -120,11 +123,15 @@ export function viewerOpenActions(set: SetState, get: () => ChatState) {
     try {
       // 取最新一页（与 loadHistory 相同的负 offset 分页约定），按存储顺序
       // （时间正序）回放——同一 subagentViewAppend 处理器，live 与
-      // 回放事件不会出现两套渲染逻辑。
+      // 回放事件不会出现两套渲染逻辑。lite 开关同样生效（子代理整页往往
+      // 全是工具正文，是裁字节的大头）。
+      const detail = historyDetailParam(get)
       const r = await transport.loadSessionHistory(childSessionId, cwd, {
         offset: -SUBAGENT_VIEW_PAGE_SIZE,
         limit: SUBAGENT_VIEW_PAGE_SIZE,
+        ...(detail ? { detail } : {}),
       })
+      noteHistoryProjection(get, detail != null, r)
       // 先独立回放出一条基线（磁盘权威），再与现有 live 条目合并：
       // - 回放有内容 → 用它重建视图（丢弃 pre-loading 的 live 子集，避免重复/乱序）
       // - 回放为空（子代理会话无落盘 / 宿主未找到该子代理）→ 保留现有 live
@@ -212,10 +219,13 @@ export function viewerOpenActions(set: SetState, get: () => ChatState) {
       // 包络重复回放成重复行。
       const reqOffset = Math.max(0, loadedStart - SUBAGENT_VIEW_PAGE_SIZE)
       const reqLimit = loadedStart - reqOffset
+      const detail = historyDetailParam(get)
       const r = await transport.loadSessionHistory(childSessionId, cwd, {
         offset: reqOffset,
         limit: reqLimit,
+        ...(detail ? { detail } : {}),
       })
+      noteHistoryProjection(get, detail != null, r)
       // 旧页在隔离数组里回放（主 scrollback loadMoreHistory 的隔离切片同
       // 款）：不经过现存视图，user_chunk 聚合 / 流切换收口只看本页边界，
       // 不会改写已加载区条目，再整体前插。

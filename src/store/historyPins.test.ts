@@ -17,6 +17,9 @@ vi.mock('../api/client', () => ({
     getPrefs: vi.fn(async () => ({ prefs: {} })),
     putPrefs: vi.fn(async () => ({})),
     prefsOrigin: vi.fn((): string => ''),
+    // liteReplay 的默认值按部署模式现取（hub 开 / local 关）——本文件一律
+    // 按 local 测，模式相关的断言在 liteReplay.test.ts 里。
+    getConnectionMode: vi.fn((): string => 'local'),
   },
 }))
 
@@ -31,7 +34,7 @@ beforeEach(async () => {
     pinnedWorkspaces: new Set<string>(),
     pinnedSessions: new Set<string>(),
     todos: {},
-    fePrefs: { collapseToolGroups: true },
+    fePrefs: { collapseToolGroups: true, liteReplay: false },
   })
   vi.mocked(transport.prefsOrigin).mockReturnValue('')
   // 跑完上一个测试遗留的防抖推送，把模块级 dirty 标记收敛回干净，
@@ -62,7 +65,10 @@ describe('本地置顶/待办', () => {
 
   it('setFePrefs 局部合并', () => {
     usePins.getState().setFePrefs({ collapseToolGroups: false })
-    expect(usePins.getState().fePrefs).toEqual({ collapseToolGroups: false })
+    expect(usePins.getState().fePrefs).toEqual({
+      collapseToolGroups: false,
+      liteReplay: false,
+    })
   })
 
   it('变更经 500ms 防抖合并为一次 hub 回写', async () => {

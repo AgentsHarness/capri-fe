@@ -67,10 +67,34 @@ export type HistoryPins = {
 export type FePrefs = {
   /** scrollback 中 toolcall 分组默认折叠（false = 分组默认展开）。 */
   collapseToolGroups: boolean
+  /**
+   * 精简回放：历史分页请求带 detail=lite，host 只裁工具正文，展开时再
+   * 按需补全。默认值随部署模式而变（见 defaultLiteReplay）——hub 模式
+   * 整页历史要跨源走 hub，默认开；local 直连本机，默认关。
+   */
+  liteReplay: boolean
+}
+
+/**
+ * liteReplay 默认值按部署模式取（不是硬编码字符串比较：模式由
+ * transport.detectMode 判定，见 api/localTransport.ts）。可选调用：单测里
+ * 常见的精简 transport mock 没带这个方法，一律按 local 默认（关）。
+ */
+function defaultLiteReplay(): boolean {
+  return transport.getConnectionMode?.() === 'hub'
 }
 
 function defaultFePrefs(): FePrefs {
-  return { collapseToolGroups: true }
+  return { collapseToolGroups: true, liteReplay: defaultLiteReplay() }
+}
+
+/**
+ * fePrefs → 落盘/上推的文档：未被显式选过的 liteReplay 不写出去——它是
+ * 按当前模式现算的默认值，写死就会把「本端模式下的默认」变成「所有端的
+ * 显式偏好」（同一 hub 下 local / hub 两端各自默认不同）。
+ */
+function fePrefsToDoc(p: FePrefs): FePrefsDoc {
+  return liteReplayChosen ? { ...p } : { collapseToolGroups: p.collapseToolGroups }
 }
 
 function toStringSet(v: unknown): Set<string> {
@@ -86,11 +110,22 @@ function toTodoMap(v: unknown): Record<string, TodoStatus> {
   return out
 }
 
+/**
+ * liteReplay 是否被「显式选过」（文档带该键 / 用户在设置里 toggle）。
+ * 默认值取决于部署模式，而建店发生在 transport.detectMode 之前（那时模式
+ * 还是初始的 local），所以未显式选过的值不作数——读取时按当前模式现算
+ * （见 currentLiteReplay / useLiteReplay），避免把「启动时的猜测」固化成
+ * 用户偏好。
+ */
+let liteReplayChosen = false
+
 /** hub 文档中的 fePrefs 段 → 内存态（缺省字段按默认值）。 */
 function fromFePrefsDoc(v: unknown): FePrefs {
   const d = v && typeof v === 'object' && !Array.isArray(v) ? (v as FePrefsDoc) : {}
+  if (typeof d.liteReplay === 'boolean') liteReplayChosen = true
   return {
     collapseToolGroups: d.collapseToolGroups !== false,
+    liteReplay: typeof d.liteReplay === 'boolean' ? d.liteReplay : defaultLiteReplay(),
   }
 }
 
@@ -135,7 +170,7 @@ function persist(pins: HistoryPins): void {
     pinnedWorkspaces: [...pins.pinnedWorkspaces],
     pinnedSessions: [...pins.pinnedSessions],
     todos: pins.todos,
-    fePrefs: pins.fePrefs,
+    fePrefs: fePrefsToDoc(pins.fePrefs),
   })
 }
 
@@ -147,7 +182,7 @@ function toWire(p: HistoryPins): HubPrefsDoc {
     pinnedWorkspaces: [...p.pinnedWorkspaces],
     pinnedSessions: [...p.pinnedSessions],
     todos: p.todos,
-    fePrefs: p.fePrefs,
+    fePrefs: fePrefsToDoc(p.fePrefs),
   }
 }
 
@@ -282,6 +317,7 @@ function replayOps(base: HistoryPins, ops: PrefsOp[]): HistoryPins {
         break
       }
       case 'fePrefs':
+        if (typeof op.patch.liteReplay === 'boolean') liteReplayChosen = true
         next = { ...next, fePrefs: { ...next.fePrefs, ...op.patch } }
         break
     }
@@ -489,6 +525,7 @@ export const usePins = create<HubPrefsState>(() => {
       }),
     setFePrefs: (patch) =>
       usePins.setState((s) => {
+        if (typeof patch.liteReplay === 'boolean') liteReplayChosen = true
         const fePrefs = { ...s.fePrefs, ...patch }
         persist({ ...s, fePrefs })
         recordOp({ kind: 'fePrefs', patch })
@@ -562,6 +599,24 @@ export function useFePrefs<T>(selector: (s: HubPrefsState) => T): T {
 /** 非 hook 同步读取（store action / 纯函数路径，选中态计算等）。 */
 export function currentCollapseToolGroups(): boolean {
   return usePins.getState().fePrefs.collapseToolGroups
+}
+
+/**
+ * 非 hook 同步读取「精简回放」生效值：文档没带过该键时按当前部署模式现算
+ * （hub 开 / local 关）——建店早于 transport.detectMode，存下来的默认值不作数。
+ */
+export function currentLiteReplay(): boolean {
+  const s = usePins.getState().fePrefs.liteReplay
+  return liteReplayChosen ? s : defaultLiteReplay()
+}
+
+/** 响应式读取（hub 广播 / 本地 toggle 后即时重渲染）。 */
+export function useLiteReplay(): boolean {
+  return usePins((s) => currentLiteReplaySelector(s.fePrefs.liteReplay))
+}
+
+function currentLiteReplaySelector(stored: boolean): boolean {
+  return liteReplayChosen ? stored : defaultLiteReplay()
 }
 
 /**

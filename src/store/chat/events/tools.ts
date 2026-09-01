@@ -26,6 +26,7 @@ import {
 } from '../turn'
 import { claimPendingToolHooks } from '../hookAttach'
 import { hookRoutingOf } from '../hookRouting'
+import { liteAfterLiveBody } from '../historyFill'
 /**
  * Route a tool_call_update that carries no toolCallId.
  *
@@ -84,6 +85,7 @@ function applyAnonToolUpdate(
                   raw: merged,
                   kindName,
                   title: extractTarget(merged) || e.title,
+                  ...liteAfterLiveBody(e, merged, { kindName }),
                 }
               : {}),
             ...(terminal ? { finishedAt: Date.now() } : {}),
@@ -173,6 +175,7 @@ export function handleToolEvent(
                       verb: toolVerb(kindName, running),
                       title: extractTarget(merged) || e.title,
                       raw: merged,
+                      ...liteAfterLiveBody(e, merged, { kindName }),
                     }
                   : e,
               ),
@@ -358,6 +361,11 @@ export function handleToolEvent(
                 verb: toolVerb(kindName, running),
                 mergedRaws,
                 finishedAt,
+                // 合并行：主 raw 与本格子调用都算候选，任一还欠正文就不撤占位。
+                ...liteAfterLiveBody(e, e.raw ?? {}, {
+                  kindName,
+                  candidates: [e.raw ?? {}, mergedRaws[mergedIdx]],
+                }),
               }
             }
             const merged: ToolCall = { ...(e.raw || {}), ...tc }
@@ -382,6 +390,7 @@ export function handleToolEvent(
               title: extractTarget(merged) || e.title,
               raw: merged,
               finishedAt,
+              ...liteAfterLiveBody(e, merged, { kindName }),
               ...(becameEdit
                 ? { expanded: !collapsedEditBlocks() }
                 : {}),

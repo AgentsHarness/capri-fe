@@ -111,7 +111,11 @@ export async function continueSession(
       try {
         loaded = await transport.sessionResume({ sessionId, cwd })
       } catch {
-        loaded = await transport.loadSession(sessionId, cwd)
+        // resume 不可用才回退 session/load，并要求 agent 不要再整段重放历史
+        // （noReplay → host 丢弃派生自 session/update 的重放通知）：整段重放
+        // 既被 historyLoading 窗口丢掉，又会在 host 的 EventSequencer 里
+        // 制造 seq 空洞憋住后续 live 事件。边界事件仍照常透传。
+        loaded = await transport.loadSession(sessionId, cwd, { noReplay: true })
       }
       // The user may have switched host / opened another session while we
       // were loading — never write this session's data into that view.
