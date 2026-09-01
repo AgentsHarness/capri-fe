@@ -317,13 +317,14 @@ function liteMarkPresent(lite: unknown): boolean {
   )
 }
 
+/** 值本身（含其子树）里是否还留着 lite 占位。 */
+export function liteStubIn(v: unknown): boolean {
+  return v != null && omittedUnder(v) != null
+}
+
 /** rawOutput / content 里是否还留着占位（不看 `_meta.lite` 标记）。 */
 function bodyHasLiteStub(tc: ToolCall): boolean {
-  for (const v of [tc.rawOutput, tc.content]) {
-    if (v == null) continue
-    if (omittedUnder(v) != null) return true
-  }
-  return false
+  return [tc.rawOutput, tc.content].some(liteStubIn)
 }
 
 /**
@@ -331,11 +332,11 @@ function bodyHasLiteStub(tc: ToolCall): boolean {
  * grep 的正文都由它出，content 里的摘要块只是同一份输出的另一种形状）；
  * 没有 rawOutput 时才看 content（edit 的 Diff 块就走这条路）。
  * 与 toolBodyOmitted 的差别就在覆盖面：后者任一占位即算裁过（管空态措辞），
- * 这里回答「用户展开能不能看到正文」（管撤不撤 live 续写行的占位）。
+ * 这里回答「用户展开能不能看到正文」（管占位显示、以及补全还要不要跑）。
  */
 export function toolBodyStillOwed(tc: ToolCall): boolean {
-  if (tc.rawOutput != null) return omittedUnder(tc.rawOutput) != null
-  return tc.content != null && omittedUnder(tc.content) != null
+  if (tc.rawOutput != null) return liteStubIn(tc.rawOutput)
+  return liteStubIn(tc.content)
 }
 
 /**

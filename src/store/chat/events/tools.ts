@@ -85,7 +85,7 @@ function applyAnonToolUpdate(
                   raw: merged,
                   kindName,
                   title: extractTarget(merged) || e.title,
-                  ...liteAfterLiveBody(e, merged, { kindName }),
+                  ...liteAfterLiveBody(e, merged),
                 }
               : {}),
             ...(terminal ? { finishedAt: Date.now() } : {}),
@@ -175,7 +175,7 @@ export function handleToolEvent(
                       verb: toolVerb(kindName, running),
                       title: extractTarget(merged) || e.title,
                       raw: merged,
-                      ...liteAfterLiveBody(e, merged, { kindName }),
+                      ...liteAfterLiveBody(e, merged),
                     }
                   : e,
               ),
@@ -363,7 +363,6 @@ export function handleToolEvent(
                 finishedAt,
                 // 合并行：主 raw 与本格子调用都算候选，任一还欠正文就不撤占位。
                 ...liteAfterLiveBody(e, e.raw ?? {}, {
-                  kindName,
                   candidates: [e.raw ?? {}, mergedRaws[mergedIdx]],
                 }),
               }
@@ -390,7 +389,7 @@ export function handleToolEvent(
               title: extractTarget(merged) || e.title,
               raw: merged,
               finishedAt,
-              ...liteAfterLiveBody(e, merged, { kindName }),
+              ...liteAfterLiveBody(e, merged),
               ...(becameEdit
                 ? { expanded: !collapsedEditBlocks() }
                 : {}),

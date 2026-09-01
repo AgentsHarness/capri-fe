@@ -1,7 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ReactNode, RefObject } from 'react'
 import { createPortal } from 'react-dom'
-import { SPINNER_FRAMES } from '../theme/glyphs'
+import { Glyphs, SPINNER_FRAMES } from '../theme/glyphs'
+import {
+  flushScheduledPageFills,
+  liteFillSummary,
+} from '../store/chat/historyFill'
 import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS } from '../theme/layout'
 import { contextUrgencyColor } from '../theme/contextColor'
 import { useChatStore } from '../store/chat'
@@ -315,6 +319,52 @@ function goalTodoItems(
     out.push({ content, status })
   }
   return out
+}
+
+/**
+ * 精简回放（lite）的工具正文补全进度 —— TopBar 里放在 context 左边。
+ *
+ * 只在还有 lite 行欠着正文时出现：全部补齐、或本页本来就是全量（开关关 /
+ * 旧 host）都不渲染。数字 = 还欠正文的行数。
+ *  - ◇N 后台补全还在排队（点一下 = 不等 idle，立刻发出）
+ *  - ⠿N 正在拉（braille spinner，与 ⠋N 任务计数同一套帧）
+ *  - ✗N 上一轮拉失败，转警告色；展开任意一行或点这里都会重试
+ */
+export function LiteFillChip() {
+  const summary = useChatStore(liteFillSummary)
+  const busy = useChatStore((s) => s.liteFillBusy ?? 0)
+  const [pending, loading, failed] = summary.split('.').map((n) => Number(n) || 0)
+  const active = busy > 0 || loading > 0
+  const spinnerFrame = useSessionSpinner(active)
+  if (!summary) return null
+  const count = pending + loading + failed
+  const glyph = active
+    ? SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length]
+    : failed > 0
+      ? Glyphs.ballotX
+      : Glyphs.diamondHollow
+  return (
+    <button
+      type="button"
+      onClick={flushScheduledPageFills}
+      className={`shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums hover:bg-gn-bg-highlight ${
+        failed > 0 ? 'text-gn-warning' : 'text-gn-gray-dim'
+      }`}
+      title={
+        active
+          ? `正在补全精简回放裁掉的工具正文 · 还有 ${count} 行`
+          : failed > 0
+            ? `${failed} 行工具正文补全失败 · 点击重试`
+            : `${count} 行工具正文还是精简内容 · 点击立即补全`
+      }
+      aria-label={`精简回放：${count} 行工具正文待补全`}
+    >
+      <span className="mr-1 inline-block" aria-hidden>
+        {glyph}
+      </span>
+      {count}
+    </button>
+  )
 }
 
 /** TUI goal_detail budget_color semantics: >80% error, ≥50% warning, else success. */

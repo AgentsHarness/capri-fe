@@ -236,8 +236,13 @@ export interface ChatHistoryState {
    * 旧 host / 无可裁内容）。
    */
   historyProjected?: SessionHistoryProjected
-  /** 本页被裁掉的总字节数（projected 生效时带）；后台补全的预算闸门数据源。 */
+  /** 本页被裁掉的总字节数（projected 生效时带）。 */
   historyOmittedBytes?: number
+  /**
+   * 在途的后台正文补全请求数（TopBar 的 lite 进度图标用）。每个请求落地时
+   * 自减，切会话时由 loadHistory 归零。
+   */
+  liteFillBusy?: number
   /**
    * 空状态（无活动会话）时用户选/输入的工作目录；发送消息时用它
    * 创建新会话（空串 = 宿主默认目录）。resetSessionState 清空。

@@ -17,8 +17,9 @@ export function stateLabel(key: SessionGroupKey): string {
 }
 
 /**
- * Shared braille spinner state for any "active" rows (same cadence as busy).
- * Returns 0 while nothing is active so the interval only runs when needed.
+ * Shared braille spinner frame counter (same cadence as busy). 会话行的
+ * 「处理中」已改用 CSS 自转图标，这里只喂仍需字符帧的加载提示。
+ * Returns 0 while `anyActive` is false so the interval only runs when needed.
  */
 export function useSessionSpinner(anyActive: boolean): number {
   const [spinnerFrame, setSpinnerFrame] = useState(0)
