@@ -84,6 +84,9 @@ export default function App() {
       // 内嵌前端直连 capri-host 时记录本机 hostId：hub 模式下选中本机，
       // API 请求直连本地，不绕 hub 中继。
       transport.setLocalHostId(localHostId ?? null)
+      // 远程站：按 hub 下发的 port 探测 127.0.0.1，命中则优先本机近路。
+      if (mode === 'hub') await transport.discoverLocalHost()
+      if (cancelled) return
       const r = await transport.probeAccess()
       if (cancelled) return
       if (r === 'need_token') {
@@ -116,6 +119,7 @@ export default function App() {
       modeDetectPromise = Promise.resolve({ mode, hubUrl, localHostId })
       transport.setConnectionMode(mode, hubUrl)
       transport.setLocalHostId(localHostId ?? null)
+      if (mode === 'hub') await transport.discoverLocalHost()
       const r = await transport.probeAccess()
       if (r === 'ok') {
         setPhase('ready')

@@ -112,3 +112,28 @@ describe('handleConnEvent — ready 的本地真相守卫', () => {
     expect(s.turnStartedAt).toBeUndefined()
   })
 })
+
+describe('handleConnEvent — hub hello 用注册表快照选 host', () => {
+  const hello = (
+    over: Partial<Extract<AcpEvent, { type: 'hello' }>> = {},
+  ): AcpEvent => ({ type: 'hello', service: 'hub', ...over }) as AcpEvent
+
+  it('hello 带 hosts → refreshHosts 直接收快照，不自己再 GET', () => {
+    const { set, get, state } = makeStore({})
+    handleConnEvent(set, get, hello({ hosts: [{ hostId: 'h1' } as never], defaultHostId: 'h1' }))
+    expect(state().conn).toBe('ready')
+    expect(get().refreshHosts).toHaveBeenCalledTimes(1)
+    expect(get().refreshHosts).toHaveBeenCalledWith({
+      hosts: [{ hostId: 'h1' }],
+      defaultHostId: 'h1',
+    })
+  })
+
+  it('hello 不带 hosts（老 hub）→ 照旧无参 refreshHosts(发 GET)', () => {
+    const { set, get, state } = makeStore({})
+    handleConnEvent(set, get, hello({}))
+    expect(state().conn).toBe('ready')
+    expect(get().refreshHosts).toHaveBeenCalledTimes(1)
+    expect(get().refreshHosts).toHaveBeenCalledWith(undefined)
+  })
+})

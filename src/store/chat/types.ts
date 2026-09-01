@@ -866,7 +866,9 @@ export interface ChatActions {
   resetToEmpty: () => void
   /** 空状态工作目录（用户输入/选择）；发送消息时用于创建新会话。 */
   setEmptyCwd: (cwd: string) => void
-  refreshHosts: () => Promise<void>
+  /** Refresh the host registry (+ auto-select). snap 来自 hub 的 WS hello
+   *  快照（含 defaultHostId）时跳过 GET /api/hosts，省一次跨网往返。 */
+  refreshHosts: (snap?: { hosts: HostInfo[]; defaultHostId?: string }) => Promise<void>
   /** Switch the target host (hub mode); resets per-host UI state. */
   switchHost: (hostId: string) => Promise<void>
   /** 修改已配对 host 的展示名（hub 管理端点；成功后刷新注册表）。返回是否成功。 */
@@ -884,8 +886,14 @@ export interface ChatActions {
   /** History picker: fetch session list and open the overlay. */
   openHistory: () => Promise<void>
   closeHistory: () => void
-  /** Load a historical session's updates; the host replays them via SSE. */
-  loadHistory: (sessionId: string, cwd: string) => Promise<void>
+  /** Load a historical session's updates; the host replays them via SSE.
+   *  opts.awaitBeforeReplay：回放应用前等待的探活 promise（并行切会话时
+   *  由 continueSession 传入任务探活，防止「仍在跑任务」的 started 行悬空）。 */
+  loadHistory: (
+    sessionId: string,
+    cwd: string,
+    opts?: { awaitBeforeReplay?: Promise<void> },
+  ) => Promise<void>
   /** Fetch the next older page of the active history and prepend it.
    *  chainedPages：内部续翻计数（零 user 页自动续翻，见实现），调用方
    *  不传。 */

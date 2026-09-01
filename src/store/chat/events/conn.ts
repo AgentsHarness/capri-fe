@@ -56,7 +56,12 @@ export function handleConnEvent(
         if (ev.service === 'hub') {
           set({ conn: 'ready', statusText: '就绪' })
           if (ev.hosts) set({ hosts: ev.hosts })
-          void get().refreshHosts()
+          // hello 帧已携带注册表快照（含 defaultHostId）：直接跑选 host
+          // 逻辑，不再重复 GET /api/hosts（打开页面省一趟跨网往返；
+          // 快照至多旧几毫秒，hosts_changed 会持续修正）。
+          void get().refreshHosts(
+            ev.hosts ? { hosts: ev.hosts, defaultHostId: ev.defaultHostId } : undefined,
+          )
           break
         }
         // Stale/foreign hello：快照宣告的会话不是当前视图锚定的会话

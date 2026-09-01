@@ -26,6 +26,7 @@ import {
 } from './StatusChips'
 import { filterRunningEntries, shortCwd } from '../format'
 import type { HostInfo } from '../api/types'
+import { transport } from '../api/client'
 import { hostState, hostStateLabel, type HostState } from '../lib/hostState'
 import {
   AddHostModal,
@@ -34,6 +35,11 @@ import {
   RenameHostModal,
   RestartAgentModal,
 } from './HostActions'
+
+/** Hub 模式下列表行的通路标记：能打 127.0.0.1 近路的是「本机」，其余经 Hub。 */
+function hostRouteLabel(hostId: string, localHostId: string | null): '本机' | 'Hub' {
+  return localHostId != null && hostId === localHostId ? '本机' : 'Hub'
+}
 
 /** 菜单打开位置边缘夹取：菜单宽 ~184px、高 ~80px，贴着视口边缘。 */
 function clampMenuPos(x: number, y: number): { x: number; y: number } {
@@ -395,6 +401,13 @@ export function TopBar({
                   const current = h.hostId === selectedHostId
                   const state = hostState(h)
                   const stateLabel = hostStateLabel(state)
+                  // 每次渲染读 transport：discoverLocalHost / refreshHosts 后
+                  // hosts 更新会带动重绘，通路标记随之刷新。
+                  const route = hostRouteLabel(h.hostId, transport.getLocalHostId())
+                  const routeHint =
+                    route === '本机'
+                      ? '选中后 API/SSE 直连本机 127.0.0.1'
+                      : '经 Hub 中继'
                   return (
                     <div
                       key={h.hostId}
@@ -416,9 +429,9 @@ export function TopBar({
                         title={
                           h.online
                             ? stateLabel
-                              ? `切换到 ${h.hostName}（${stateLabel}，右键可管理）`
-                              : `切换到 ${h.hostName}（右键可管理）`
-                            : `${h.hostName}（离线）`
+                              ? `切换到 ${h.hostName}（${stateLabel} · ${routeHint}，右键可管理）`
+                              : `切换到 ${h.hostName}（${routeHint}，右键可管理）`
+                            : `${h.hostName}（离线 · ${routeHint}）`
                         }
                       >
                         <span
@@ -428,6 +441,11 @@ export function TopBar({
                           <div className="truncate text-gn-fg">
                             {h.hostName}
                             {current && <span className="ml-1.5 text-[10px] text-gn-cyan">当前</span>}
+                            <span
+                              className={`ml-1.5 text-[10px] ${route === '本机' ? 'text-gn-green' : 'text-gn-gutter'}`}
+                            >
+                              {route}
+                            </span>
                           </div>
                           <div className="truncate font-mono text-[10px] text-gn-muted">
                             {h.hostId}

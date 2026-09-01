@@ -129,6 +129,15 @@ describe('refreshHosts 选中 host 失效', () => {
     )
     expect(state.resetToEmpty).not.toHaveBeenCalled()
   })
+
+  it('带 hub hello 快照调用 → 直接用快照选 host，不再 GET listHosts', async () => {
+    const list = transport.listHosts as ReturnType<typeof vi.fn>
+    const state = makeState({ selectedHostId: undefined })
+    await bind(state).refreshHosts({ hosts: [host('b')], defaultHostId: 'b' })
+    expect(list).not.toHaveBeenCalled()
+    expect(state.switchHost).toHaveBeenCalledWith('b')
+    expect(state.hosts.map((h) => h.hostId)).toEqual(['b'])
+  })
 })
 
 describe('setModel 会话隔离守卫', () => {
