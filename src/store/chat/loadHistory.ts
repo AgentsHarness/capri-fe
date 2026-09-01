@@ -427,7 +427,20 @@ export async function loadHistory(
       const queuePullSentAt = Date.now()
       // 精简回放的后台补全（契约 [E]）：首帧渲染已落，idle 期按同一窗口再拉
       // 一份 detail=full，只把工具正文填回现有行（无预算闸门，失败静默）。
-      schedulePageFill(set, get, r, { turnIndex: INITIAL_TURNS })
+      // 窗口固定为本页实际拉的 [loadedStart, loadedStart+fetched)（msgSeq/行号
+      // 空间与 lite 请求同源）——不再用 turnIndex:1 重拉：active 会话里两次
+      // 请求之间新开一轮会让 turnIndex 窗口漂移，full 页的工具行对不上本页。
+      // 仅本地归一化路径（信封带顶层 msgSeq）有该坐标；透传回退整页无 msgSeq、
+      // 区间补算不出窗口，回退 turnIndex 整轮（候选判定不要求坐标）。
+      const pageIsLocal = (r.updates ?? []).some(
+        (env) => typeof (env as { msgSeq?: unknown }).msgSeq === 'number',
+      )
+      schedulePageFill(
+        set,
+        get,
+        r,
+        pageIsLocal ? { offset: loadedStart, limit: fetched } : { turnIndex: INITIAL_TURNS },
+      )
       void transport
         .queueStatus(sessionId, cwd)
         .then((qr) => {

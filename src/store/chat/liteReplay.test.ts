@@ -371,7 +371,7 @@ describe('只填工具正文的补全', () => {
     expect(load).toHaveBeenCalledTimes(3)
   })
 
-  it('当前轮后台自动补全：首帧后 idle 期发 detail=full，只填正文', async () => {
+  it('当前轮后台自动补全：首帧后 idle 期发 detail=full（固定 lite 窗口），只填正文', async () => {
     const load = vi
       .mocked(transport.loadSessionHistory)
       .mockResolvedValueOnce(litePage({ omittedBytes: 1200 }))
@@ -383,7 +383,9 @@ describe('只填工具正文的补全', () => {
     // jsdom 没有 requestIdleCallback → setTimeout(0) 兜底，转一轮宏任务。
     await new Promise((r) => setTimeout(r, 5))
 
-    expect(load).toHaveBeenLastCalledWith(SID, CWD, { turnIndex: 1, detail: 'full' })
+    // 补全窗口 = lite 页实际拉的 [loadedStart, +fetched)，不是动态 turnIndex
+    // （active 会话里新开一轮会让 turnIndex 窗口漂移，full 页对不上本页行）。
+    expect(load).toHaveBeenLastCalledWith(SID, CWD, { offset: 0, limit: 5, detail: 'full' })
     const after = useChatStore.getState().entries
     expect(after.map((e) => e.id)).toEqual(before.map((e) => e.id))
     expect(after.filter((e) => e.kind !== 'tool')).toEqual(
@@ -404,7 +406,8 @@ describe('只填工具正文的补全', () => {
     await new Promise((r) => setTimeout(r, 5))
     const full = fullCalls()
     expect(full).toHaveLength(1)
-    expect(full[0]?.[2]).toMatchObject({ turnIndex: 1, detail: 'full' })
+    // 窗口 = lite 页实际拉的 [loadedStart, +fetched)，不再用动态 turnIndex。
+    expect(full[0]?.[2]).toMatchObject({ offset: 0, limit: 5, detail: 'full' })
     expect(toolEntry()!.liteState).toBe('filled')
     expect(toolEntryLitePending(toolEntry()!)).toBe(false)
     // 在途计数随请求落地归零（顶部进度图标的 spinner 数据源）。
