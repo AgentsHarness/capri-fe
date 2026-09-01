@@ -7,7 +7,7 @@ import type {
 import type { SetState } from './types'
 import { nid } from './ids'
 import { formatElapsed, imageSrc, toolVerb } from './format'
-import { extractTarget, toolCallIdOf, toolKindName } from './tools'
+import { extractTarget, resolveAnonToolUpdate, toolCallIdOf, toolKindName } from './tools'
 import { collapsedEditBlocks } from './modeFlags'
 import { isEditToolKind } from '../../theme/toolFamily'
 
@@ -183,19 +183,22 @@ export function subagentViewAppend(
       const sealed = sealSubagentStreaming(items)
       const tc = ev.toolCallUpdate || {}
       const toolCallId = toolCallIdOf(tc)
-      if (toolCallId) {
-        const idx = sealed.findIndex(
-          (it) => it.kind === 'tool' && it.toolCallId === toolCallId,
-        )
-        if (idx >= 0) {
-          const existing = sealed[idx]
-          if (existing.kind === 'tool') {
-            // 与主 scrollback 相同：update 的字段合并进 raw，标题/动词重算。
-            const merged: ToolCall = { ...(existing.raw || {}), ...tc }
-            const next = [...sealed]
-            next[idx] = subagentToolItem(merged, existing)
-            return next
-          }
+      if (!toolCallId) {
+        // 空 toolCallId（qwen 等 OpenAI 兼容网关不给 call_id）：走与主
+        // scrollback 同一套归属判定，否则三件套的每条 update 都新起一行。
+        return applyAnonToolUpdateToView(sealed, tc)
+      }
+      const idx = sealed.findIndex(
+        (it) => it.kind === 'tool' && it.toolCallId === toolCallId,
+      )
+      if (idx >= 0) {
+        const existing = sealed[idx]
+        if (existing.kind === 'tool') {
+          // 与主 scrollback 相同：update 的字段合并进 raw，标题/动词重算。
+          const merged: ToolCall = { ...(existing.raw || {}), ...tc }
+          const next = [...sealed]
+          next[idx] = subagentToolItem(merged, existing)
+          return next
         }
       }
       // 未找到对应条目（回放分页边界）：按首次 tool_call 追加。
@@ -243,6 +246,30 @@ export function subagentViewAppend(
   }
 }
 
+/**
+ * 空 toolCallId 的 update 并到既有匿名行上：归属与能否合并 raw 由
+ * resolveAnonToolUpdate 决定（与主 scrollback 同一规则）。认不到行就原样
+ * 返回——凭一条终态 update 造行会留下只有输出、没有标题的垃圾行。
+ */
+function applyAnonToolUpdateToView(
+  items: ScrollEntry[],
+  tc: ToolCall,
+): ScrollEntry[] {
+  const target = resolveAnonToolUpdate(items, tc)
+  if (!target) return items
+  const idx = items.findIndex((it) => it.id === target.entryId)
+  const existing = idx >= 0 ? items[idx] : undefined
+  if (existing?.kind !== 'tool') return items
+  if (!target.exact && !target.terminal) return items
+  const src: ToolCall = target.applyRaw
+    ? { ...(existing.raw || {}), ...tc }
+    : // 并行多候选：只收状态，update 的 rawOutput 不落这条行。
+      { ...(existing.raw || {}), status: tc.status }
+  const next = [...items]
+  next[idx] = subagentToolItem(src, existing)
+  return next
+}
+
 /** 从 ToolCall 构造主 scrollback 同款的 tool 条目（title/verb/status/raw，
  *  与 handleEvent 的 tool_call / tool_call_update 分支同构）。 */
 export function subagentToolItem(
@@ -259,7 +286,9 @@ export function subagentToolItem(
     id: prev?.id ?? nid(),
     kind: 'tool',
     toolCallId: toolCallIdOf(tc) ?? prev?.toolCallId,
-    title: extractTarget(tc) || (tc.title as string) || kindName,
+    // 主 scrollback 同款取值：终态 update 的 title 是空串，直接取会把
+    // 已有的 "Read `path`" 洗成 kindName —— 空标题回退到上一版标题。
+    title: extractTarget(tc) || (tc.title as string) || prev?.title || kindName,
     verb: toolVerb(kindName, running),
     status,
     kindName,

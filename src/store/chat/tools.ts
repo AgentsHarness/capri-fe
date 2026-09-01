@@ -358,12 +358,7 @@ export function findAnonToolTarget(
   entries: ScrollEntry[],
   tc: ToolCall,
 ): { entryId: string; exact: boolean } | undefined {
-  const candidates = entries.filter(
-    (e) =>
-      e.kind === 'tool' &&
-      !e.toolCallId &&
-      (e.status === 'pending' || e.status === 'in_progress'),
-  )
+  const candidates = anonOpenToolRows(entries)
   const first = candidates[0]
   if (!first) return undefined
   const key = anonToolKey(tc)
@@ -375,6 +370,41 @@ export function findAnonToolTarget(
     }
   }
   return { entryId: first.id, exact: false }
+}
+
+/** 可被匿名更新认领的行：没有 toolCallId 且尚未收口的 tool 行。 */
+function anonOpenToolRows(entries: ScrollEntry[]): ScrollEntry[] {
+  return entries.filter(
+    (e) =>
+      e.kind === 'tool' &&
+      !e.toolCallId &&
+      (e.status === 'pending' || e.status === 'in_progress'),
+  )
+}
+
+/**
+ * Full routing decision for a blank-toolCallId update — shared by the main
+ * scrollback and the subagent view so both attribute (and refuse to merge)
+ * identically.
+ *
+ * `applyRaw`: the content fingerprint identified the row, or a terminal
+ * update lands while exactly one anonymous row is still open (serial calls —
+ * attribution is unambiguous, and read rows lose their rawOutput otherwise).
+ * With several open rows a non-exact update only settles status: pasting
+ * call A's output onto call B's row is real data corruption.
+ */
+export function resolveAnonToolUpdate(
+  entries: ScrollEntry[],
+  tc: ToolCall,
+):
+  | { entryId: string; exact: boolean; terminal: boolean; applyRaw: boolean }
+  | undefined {
+  const target = findAnonToolTarget(entries, tc)
+  if (!target) return undefined
+  const status = typeof tc.status === 'string' ? tc.status : ''
+  const terminal = status === 'completed' || status === 'failed'
+  const sole = anonOpenToolRows(entries).length === 1
+  return { ...target, terminal, applyRaw: target.exact || (terminal && sole) }
 }
 
 /**
