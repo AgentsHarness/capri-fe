@@ -21,7 +21,11 @@ export async function sendPrompt(
   opts?: { fromShell?: boolean; promptId?: string }
 ): Promise<void> {
     const t = text.trim()
-    if (!t) return
+    // Image-only prompts (Composer thumbnails, no text) are sendable —
+    // the images are the content. Without image blocks an empty prompt
+    // is a no-op.
+    const hasImages = blocks?.some((b) => b.type === 'image') ?? false
+    if (!t && !hasImages) return
     // 空状态（无活动会话）：发送消息即开始新对话 — 先用空状态选择的
     // 工作目录创建会话（目录留空 → 宿主默认），POST /api/session 响应
     // 携带 sessionId，锚定后直接发送本条消息。

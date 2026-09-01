@@ -18,7 +18,6 @@ import { EntryView } from './EntryView'
 import { GroupHeaderView } from './GroupHeaderView'
 import { ImageLightbox, type InlineImage } from './InlineImages'
 import { StickyPrompt } from './StickyPrompt'
-import { TOUCH_UP_SWIPE_PX } from './constants'
 import { useDisplayRows, useStreamingThoughtId } from './useDisplayRows'
 import { useFinishFlash } from './useFinishFlash'
 import { useFollowScroll } from './useFollowScroll'
@@ -73,9 +72,12 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
 
   const { wsBarH, wsBarElRef, workspaceRef } = useWorkspaceBar()
   const {
-    scrollSnapshotRef,
     pendingRevealRef,
-    captureScrollSnapshot,
+    captureScrollPosition,
+    ensureScrollPositionCaptured,
+    cancelScrollSettle,
+    isProgrammaticScroll,
+    settleScrollAnchor,
     restoreScrollAfterPrepend,
     settleFitOrKeep,
     revealPrependedTurn,
@@ -147,6 +149,7 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
     lastScrollTopRef,
     streamBodyRef,
     scheduleUpdatePinned,
+    settleScrollAnchor,
     entries,
     displayRows.length,
   )
@@ -156,20 +159,22 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
   useJunctionDissolve(boxRef, contentRef, junctionDissolveRef)
 
   const {
-    touchStartYRef,
-    touchYRef,
+    pagingModeRef,
+    onPagingScroll,
+    onPagingTouchStart,
+    onPagingTouchMove,
+    onPagingTouchEnd,
     maybeLoadOlderHistory,
-    markCooldown,
-    rearmPaging,
   } = useHistoryPaging(
     boxRef,
-    followRef,
     entries,
     historyHasMore,
     historyLoadingMore,
+    historyPrependedAt,
     loadMoreHistory,
-    captureScrollSnapshot,
-    scrollSnapshotRef,
+    captureScrollPosition,
+    ensureScrollPositionCaptured,
+    cancelScrollSettle,
   )
 
   // Cache user entry elements (rebuilt on entry changes; positions shift on
@@ -177,23 +182,23 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
   // useLayoutEffect: settle scroll FIRST so pin measurement sees the final
   // viewport.
   //
-  // Host path (historyPrependedAt): 扩窗 + fit-or-keep（短轮展示 / 长轮不跳）。
+  // Host path (historyPrependedAt): 按手势来源落位 —— 'keep'（滚轮/触摸拉
+  //   出来的）只把视口钉回原行，'reveal'（点击）才短轮顶对齐 / 长轮不跳。
   // Local path (expandAnchorId): 强制 height-delta（本地溢出分支）。
-  // pendingRevealRef: 扩窗后 DOM 齐了再 settleFitOrKeep。
+  // pendingRevealRef: DOM 齐了再 settleFitOrKeep。
   // historyLoadedAt: 贴底后立刻量钉选（与 scroll 同帧，避免 rAF 读到旧 scrollTop）。
   const handledPrependedAtRef = useRef(0)
   const handledLoadedAtRef = useRef(0)
   useLayoutEffect(() => {
-    let settled = false
     if (
       historyPrependedAt &&
       handledPrependedAtRef.current !== historyPrependedAt
     ) {
       handledPrependedAtRef.current = historyPrependedAt
-      settled = true
-      revealPrependedTurn(historyAnchorId)
+      const mode = pagingModeRef.current
+      pagingModeRef.current = 'keep'
+      revealPrependedTurn(historyAnchorId, mode)
     } else if (expandAnchorId) {
-      settled = true
       restoreScrollAfterPrepend(expandAnchorId)
       setExpandAnchorId(null)
     } else if (pendingRevealRef.current) {
@@ -203,24 +208,20 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
       if (box && el instanceof HTMLElement) {
         pendingRevealRef.current = null
         settleFitOrKeep(box, el, pending.anchorId)
-        settled = true
       }
     }
     // Session/history switch: pin to bottom BEFORE measuring sticky so the
     // first paint already has the correct pin (long last-turn markdown).
     if (historyLoadedAt && handledLoadedAtRef.current !== historyLoadedAt) {
       handledLoadedAtRef.current = historyLoadedAt
+      // 旧会话的行锚点对新会话没有意义。
+      cancelScrollSettle()
       followRef.current = true
       const box = boxRef.current
       if (box) {
         box.scrollTop = box.scrollHeight
         lastScrollTopRef.current = box.scrollTop
       }
-    }
-    if (settled) {
-      // Gate paging before updatePinned: reveal lands near the top and
-      // would otherwise immediately re-fire maybeLoadOlderHistory.
-      markCooldown()
     }
     const box = boxRef.current
     const map = new Map<string, HTMLElement>()
@@ -241,10 +242,11 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
     historyAnchorId,
     historyLoadedAt,
     expandAnchorId,
+    cancelScrollSettle,
+    pagingModeRef,
     restoreScrollAfterPrepend,
     revealPrependedTurn,
     settleFitOrKeep,
-    markCooldown,
     pendingRevealRef,
     userEls,
   ])
@@ -305,8 +307,8 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
       ref={boxRef}
       className="gn-scroll relative min-h-0 flex-1 overflow-y-auto overscroll-contain outline-none"
       data-scrollback-box=""
-      // overflow-anchor: none — browser scroll anchoring fights our manual
-      // height-delta restore on prepend (double-apply → viewport jump).
+      // overflow-anchor: none — 翻页后的位置恢复由 useScrollRestore 按行锚
+      // 点单点确定地完成，不允许浏览器再叠一层原生锚定（double-apply → 视口跳）。
       style={{ scrollbarGutter: 'stable', overflowAnchor: 'none' }}
       tabIndex={0}
       role="listbox"
@@ -322,58 +324,22 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
         // 流式/高度增长就不再贴底。滚回真正底部（dist<4）才恢复跟随。
         const prevTop = lastScrollTopRef.current
         lastScrollTopRef.current = t.scrollTop
+        // 我们自己写 scrollTop 引发的那一次不算用户手势：既不放跟随，
+        // 也不终止翻页锚点看门狗。
+        if (!isProgrammaticScroll(t)) {
+          cancelScrollSettle()
+          onPagingScroll()
+        }
         if (t.scrollTop < prevTop && dist >= 4) {
           followRef.current = false
         } else if (dist < 4) {
           followRef.current = true
         }
         scheduleUpdatePinned()
-        // Near the top of a loaded history: fetch the next older page.
-        // Re-arm when the user scrolls away from the top region so one
-        // visit to the top loads exactly one page (no cascade).
-        if (t.scrollTop < 80) {
-          maybeLoadOlderHistory()
-        } else {
-          rearmPaging()
-        }
       }}
-      onWheel={(e) => {
-        // Wheel-up near top: page older history. Also when scrollTop===0
-        // (no overflow → no scroll events) so a trackpad flick still loads.
-        // Use the same 80px top band as onScroll — collapsed tool runs
-        // often leave only a few px of headroom; requiring scrollTop<=0
-        // missed those.
-        if (e.deltaY < 0) {
-          const top = boxRef.current?.scrollTop ?? 0
-          if (top < 80) maybeLoadOlderHistory()
-        }
-      }}
-      onTouchStart={(e) => {
-        const y = e.touches[0]?.clientY ?? null
-        touchStartYRef.current = y
-        touchYRef.current = y
-      }}
-      onTouchMove={(e) => {
-        const y = e.touches[0]?.clientY
-        if (y != null) touchYRef.current = y
-      }}
-      onTouchEnd={() => {
-        const start = touchStartYRef.current
-        const end = touchYRef.current
-        touchStartYRef.current = null
-        touchYRef.current = null
-        // Finger dragged down = scroll up (older history); with no
-        // scrollbar this gesture is the only way to page.
-        if (
-          start != null &&
-          end != null &&
-          end > start + TOUCH_UP_SWIPE_PX &&
-          boxRef.current &&
-          boxRef.current.scrollTop <= 0
-        ) {
-          maybeLoadOlderHistory()
-        }
-      }}
+      onTouchStart={onPagingTouchStart}
+      onTouchMove={onPagingTouchMove}
+      onTouchEnd={onPagingTouchEnd}
     >
       {/* Workspace + git status bar — sticky header of the scrollback. Sits
           outside the fade-in wrapper so it's always present while history
@@ -408,16 +374,19 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
           disabled={historyLoadingMore}
           onClick={(ev) => {
             ev.stopPropagation()
-            // Explicit click: never swallowed by the prepend cooldown.
-            maybeLoadOlderHistory(true)
+            // Explicit click: never swallowed by the prepend cooldown, and
+            // the loaded turn is revealed (顶对齐) instead of just kept.
+            maybeLoadOlderHistory('reveal')
           }}
-          className="mx-auto block w-full py-1.5 text-center text-[11px] text-gn-gutter select-none transition-colors hover:text-gn-muted disabled:cursor-default disabled:hover:text-gn-gutter"
+          // 恒定单行高度：三态文案（含整句错误）换行会挪动下方内容，
+          // 给翻页恢复注入无关的 scrollHeight 差。
+          className="mx-auto block h-7 w-full truncate px-3 text-center font-mono text-[11px] leading-7 text-gn-gutter select-none transition-colors hover:text-gn-muted disabled:cursor-default disabled:hover:text-gn-gutter"
           title={
             historyLoadingMore
               ? undefined
               : historyLoadError
                 ? historyLoadError
-                : '点击或向上滚动加载更早历史'
+                : '点击或在顶部继续向上拉动加载更早历史'
           }
         >
           {historyLoadingMore ? (
@@ -430,7 +399,7 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
           ) : historyLoadError ? (
             <span className="text-gn-red">{historyLoadError} · 点击重试</span>
           ) : (
-            '↑ 点击或向上滚动加载上一轮'
+            '↑ 点击或在顶部上拉加载上一轮'
           )}
         </button>
       )}

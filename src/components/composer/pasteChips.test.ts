@@ -17,6 +17,13 @@ const textChip = (id: string, label: string, content: string): PasteChip => ({
   content,
 })
 
+const imageChip = (id: string, label: string): PasteChip => ({
+  id,
+  label,
+  content: '',
+  image: { data: 'd', mimeType: 'image/png', name: 'i.png', size: 1 },
+})
+
 describe('normalizeCr', () => {
   it('裸 \r → \n，\r\n 保留', () => {
     expect(normalizeCr('a\r\nb\rc')).toBe('a\r\nb\nc')
@@ -68,17 +75,9 @@ describe('chipOccurrenceAt / chipOccurrenceAtCaret', () => {
 })
 
 describe('expandChips', () => {
-  it('文本 chip 展开为暂存内容，image chip 标签保留', () => {
-    const chips = [
-      textChip('1', '[A]', 'alpha'),
-      {
-        id: '2',
-        label: '[Img]',
-        content: '',
-        image: { data: 'd', mimeType: 'image/png', name: 'i.png', size: 1 },
-      },
-    ]
-    expect(expandChips('x [A] y [Img]', chips)).toBe('x alpha y [Img]')
+  it('文本 chip 展开为暂存内容，image chip 不占文本', () => {
+    const chips = [textChip('1', '[A]', 'alpha'), imageChip('2', '[Img]')]
+    expect(expandChips('x [A]', chips)).toBe('x alpha')
   })
 
   it('标签已被编辑掉时保持原样', () => {
@@ -102,6 +101,27 @@ describe('pruneChips', () => {
     expect(pruneChips('[A] [B]', [a, a2, b]).map((c) => c.id)).toEqual(['1', '3'])
     // 全部被删
     expect(pruneChips('gone', [a, b])).toEqual([])
+  })
+
+  it('image chip 不锚定文本：标签不在 buffer 里也保留', () => {
+    const a = textChip('1', '[A]', 'aa')
+    const img = imageChip('2', '[Img]')
+    expect(pruneChips('edit [A]', [a, img]).map((c) => c.id)).toEqual(['1', '2'])
+    expect(pruneChips('no labels at all', [a, img]).map((c) => c.id)).toEqual([
+      '2',
+    ])
+  })
+})
+
+describe('chipOccurrenceAt / chipOccurrenceAtCaret 不匹配 image chip', () => {
+  const chips = [textChip('1', '[A]', 'aa'), imageChip('2', '[Img]')]
+
+  it('image chip 的标签即使出现在文本中也不会被当作 chip', () => {
+    const text = 'x[A]y[Img]z' // [Img] 占 5..10
+    expect(chipOccurrenceAt(text, chips, 7, 'inside')).toBeNull()
+    expect(chipOccurrenceAt(text, chips, 10, 'end')).toBeNull()
+    expect(chipOccurrenceAtCaret(text, chips, 8)).toBeNull()
+    expect(chipOccurrenceAt(text, chips, 2, 'inside')?.chip.id).toBe('1')
   })
 })
 

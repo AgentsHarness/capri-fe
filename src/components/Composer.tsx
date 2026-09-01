@@ -26,6 +26,7 @@ import {
   COLUMN_PAD_X_CLASS,
 } from '../theme/layout'
 import { IconGlyph } from './IconGlyph'
+import { X } from 'lucide-react'
 import { fmtTok } from '../format'
 import { SlashMenu } from './SlashMenu'
 import { FilePickerMenu } from './FilePickerMenu'
@@ -37,7 +38,6 @@ import {
   contentLines,
   expandChips,
   fileToDataUrl,
-  fmtBytes,
   normalizeCr,
   pasteChipLabel,
   pruneChips,
@@ -267,9 +267,10 @@ export function Composer() {
   }
 
   /**
-   * Build the wire blocks for the current buffer: the text block (paste
-   * chips expanded, `[Image: …]` labels retained — TUI keeps the image
-   * marker in the prompt) followed by image blocks in chip order.
+   * Build the wire blocks for the current buffer: the text block (text
+   * chips expanded) followed by image blocks in chip order. Image chips
+   * never occupy the buffer — the text block carries only what the user
+   * typed, and each image travels as its own ContentBlock.
    */
   const buildBlocks = (
     textValue: string,
@@ -277,12 +278,7 @@ export function Composer() {
   ): { expandedText: string; blocks: ContentBlock[] } => {
     const expandedText = expandChips(textValue, chipList)
     const blocks: ContentBlock[] = [{ type: 'text', text: expandedText }]
-    // pruneChips pairs labels to chips in document order — image blocks
-    // follow the text in the same order the labels appear.
-    for (const c of pruneChips(
-      expandedText,
-      chipList.filter((ch) => ch.image),
-    )) {
+    for (const c of chipList) {
       if (c.image) {
         blocks.push({ type: 'image', data: c.image.data, mimeType: c.image.mimeType })
       }
@@ -290,19 +286,21 @@ export function Composer() {
     return { expandedText, blocks }
   }
 
-  /** Insert `[Image: …]` chips for pasted/dropped files at `pos`. */
-  const insertImageChips = async (files: File[], pos: number) => {
-    const labels: string[] = []
+  /**
+   * Add pasted/dropped files as always-expanded image chips — the
+   * thumbnail row above the textarea, no `[Image: …]` label in the
+   * buffer. The label is kept on the chip as a display fallback
+   * (queue row text for image-only prompts).
+   */
+  const insertImageChips = async (files: File[]) => {
     const newChips: PasteChip[] = []
     for (const f of files) {
       try {
         const { data, mimeType } = await fileToDataUrl(f)
         const name = f.name.trim() || String(++unnamedImgRef.current)
-        const label = `[Image: ${name}]`
-        labels.push(label)
         newChips.push({
           id: chipId(),
-          label,
+          label: `[Image: ${name}]`,
           content: '',
           image: { data, mimeType, name, size: f.size },
         })
@@ -310,17 +308,14 @@ export function Composer() {
         // Unreadable file — skip (rare).
       }
     }
-    if (labels.length === 0) return
-    const joined = labels.join('')
-    setText((t) => t.slice(0, pos) + joined + t.slice(pos))
+    if (newChips.length === 0) return
     setChips((cs) => [...cs, ...newChips])
-    setPendingCaret(pos + joined.length)
   }
 
   /** Send the current buffer as an agent prompt (submit / Ctrl+Enter). */
   const submitCurrent = async () => {
     const trimmed = text.trim()
-    if (!trimmed) return
+    if (!trimmed && !chips.some((c) => c.image)) return
     // 原文发送写法（`\/…` / 行首空白 + `/…`）的前缀是 composer 语法，
     // 发给 agent 前去掉；未命中的 `/…` 行到这里已是纯文本，原样保留。
     const { expandedText, blocks } = buildBlocks(literalSlashPayload(text), chips)
@@ -430,7 +425,16 @@ export function Composer() {
       if (!usePromptQueue.getState().queue.some((x) => x.id === item.id)) return
       q.removeAt(item.id)
       try {
-        const sendPromise = useChatStore.getState().send(item.text, item.blocks, {
+        // Resend the wire text from the blocks (image-only rows stash
+        // `[Image: …]` display labels in item.text — never to the agent).
+        const firstBlock = item.blocks[0]
+        // ContentBlock has an open `{ type: string; … }` arm — cast after
+        // the discriminant check to get the string-typed text.
+        const resendText =
+          firstBlock && firstBlock.type === 'text'
+            ? (firstBlock as { type: 'text'; text: string }).text
+            : item.text
+        const sendPromise = useChatStore.getState().send(resendText, item.blocks, {
           promptId: item.id,
         })
         q.setSending(false)
@@ -527,8 +531,10 @@ export function Composer() {
     const q = usePromptQueue.getState()
     if (q.sending) return
     const trimmed = text.trim()
-    if (!trimmed) {
-      // Double-Enter: empty input + Enter → send the queue head now.
+    // Image-only prompts are sendable: the images are the content (no
+    // `[Image: …]` text in the buffer). Empty input with no images still
+    // means Double-Enter → send the queue head now.
+    if (!trimmed && !chips.some((c) => c.image)) {
       if (q.queue.length > 0) void sendQueuedItem()
       return
     }
@@ -545,9 +551,16 @@ export function Composer() {
       // 收养广播把该条渲染为用户行。RPC 失败 → 行保留 degraded（队列
       // 区红点 + 失败徽标，可手动重发）。
       const { expandedText, blocks } = buildBlocks(literalSlashPayload(text), chips)
+      // Queue-row display text: the buffer holds no `[Image: …]` markers,
+      // so image-only prompts fall back to the joined labels (display
+      // only — the wire blocks carry the images).
+      const queueText =
+        expandedText !== ''
+          ? expandedText
+          : chips.filter((c) => c.image).map((c) => c.label).join('')
       setText('')
       setChips([])
-      void useChatStore.getState().send(expandedText, blocks)
+      void useChatStore.getState().send(queueText, blocks)
       taRef.current?.focus()
       return
     }
@@ -581,11 +594,8 @@ export function Composer() {
     slashOpen,
   })
 
-  /** Expanded image chips → inline thumbnail row above the textarea. */
-  const expandedImgs = useMemo(
-    () => chips.filter((c) => c.image && c.expanded),
-    [chips],
-  )
+  /** Always-expanded image chips → thumbnail row above the textarea. */
+  const imageChips = useMemo(() => chips.filter((c) => c.image), [chips])
 
   // Close the recall panel on outside click or Escape. Queue 已内联进
   // composer，不再有弹窗可关。
@@ -813,17 +823,9 @@ export function Composer() {
   }, [focusMode])
 
   /** Inline a chip's stashed content at its label range (TUI expand_element).
-   *  Image chips toggle their inline thumbnail instead — the label stays
-   *  in the text and the image travels as a ContentBlock on submit. */
+   *  Image chips never carry a label in the buffer — they are always
+   *  expanded as thumbnails and removed with the X button instead. */
   const expandChipAt = (at: { chip: PasteChip; start: number; end: number }) => {
-    if (at.chip.image) {
-      setChips((cs) =>
-        cs.map((c) =>
-          c.id === at.chip.id ? { ...c, expanded: !c.expanded } : c,
-        ),
-      )
-      return
-    }
     setText((t) => t.slice(0, at.start) + at.chip.content + t.slice(at.end))
     setChips((cs) => cs.filter((c) => c.id !== at.chip.id))
     setPendingCaret(at.start + at.chip.content.length)
@@ -837,6 +839,7 @@ export function Composer() {
    */
   const partiallyOverlapsChip = (start: number, end: number) =>
     chips.some((c) => {
+      if (c.image) return false // image chips are not text-anchored
       let from = 0
       for (;;) {
         const i = text.indexOf(c.label, from)
@@ -855,9 +858,11 @@ export function Composer() {
    * expands it instead of duplicating (repaste-to-expand).
    */
   const onPaste = (e: ReactClipboardEvent<HTMLTextAreaElement>) => {
-    // TUI image paste: clipboard items with image/* types (screenshots,
-    // copied images) become `[Image: …]` chips. When images are present
-    // they win over any coexisting text (browser copies often carry both).
+    // Image paste: clipboard items with image/* types (screenshots,
+    // copied images) become always-expanded thumbnails above the
+    // textarea — no `[Image: …]` label enters the buffer. When images
+    // are present they win over any coexisting text (browser copies
+    // often carry both).
     const imageFiles: File[] = []
     for (const item of Array.from(e.clipboardData.items)) {
       if (item.kind === 'file' && item.type.startsWith('image/')) {
@@ -867,8 +872,7 @@ export function Composer() {
     }
     if (imageFiles.length > 0) {
       e.preventDefault()
-      const el = taRef.current
-      void insertImageChips(imageFiles, el ? el.selectionStart : text.length)
+      void insertImageChips(imageFiles)
       return
     }
     const raw = e.clipboardData.getData('text')
@@ -931,6 +935,7 @@ export function Composer() {
   const preview = useMemo(() => {
     if (!promptFocused || chips.length === 0) return null
     for (const chip of chips) {
+      if (chip.image) continue // image chips are always expanded, never in text
       let from = 0
       for (;;) {
         const start = text.indexOf(chip.label, from)
@@ -940,6 +945,7 @@ export function Composer() {
       }
     }
     for (const chip of chips) {
+      if (chip.image) continue
       let from = 0
       for (;;) {
         const start = text.indexOf(chip.label, from)
@@ -1372,11 +1378,13 @@ export function Composer() {
               onPick={pickAtMatch}
             />
           )}
-          {/* Expanded image chips — inline thumbnails above the textarea
-              (TUI Enter expands `[Image #N]` to the rendered image). */}
-          {expandedImgs.length > 0 && (
-            <div className="flex flex-wrap items-end gap-2 px-3 pb-1">
-              {expandedImgs.map((c) => (
+          {/* Image chips — always-expanded thumbnails above the textarea
+              (paste/drop lands here directly; X removes the image).
+              pt clears the chrome's 4px top padding plus the remove button's
+              -top-1.5 overflow so neither rides the border. */}
+          {imageChips.length > 0 && (
+            <div className="flex flex-wrap items-end gap-2 px-3 pt-2.5 pb-1">
+              {imageChips.map((c) => (
                 <div key={c.id} className="group relative">
                   <img
                     src={`data:${c.image!.mimeType};base64,${c.image!.data}`}
@@ -1386,16 +1394,12 @@ export function Composer() {
                   <button
                     type="button"
                     onClick={() =>
-                      setChips((cs) =>
-                        cs.map((x) =>
-                          x.id === c.id ? { ...x, expanded: false } : x,
-                        ),
-                      )
+                      setChips((cs) => cs.filter((x) => x.id !== c.id))
                     }
-                    className="absolute -right-1.5 -top-1.5 rounded-full bg-gn-bg-dark px-1 text-[9px] leading-[1.3] text-gn-gray opacity-0 transition-opacity group-hover:opacity-100 hover:text-gn-red"
-                    title="折叠"
+                    className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-gn-bg-dark text-gn-gray shadow transition-colors hover:text-gn-red"
+                    title="移除图片"
                   >
-                    {Glyphs.ballotX}
+                    <X size={10} strokeWidth={2.5} aria-hidden />
                   </button>
                   <div
                     className="max-w-24 truncate text-[9.5px] leading-tight text-gn-muted"
@@ -1940,8 +1944,7 @@ export function Composer() {
                     // broken reference. TUI takes a path here.
                     return
                   }
-                  const t = taRef.current
-                  void insertImageChips(files, t ? t.selectionStart : text.length)
+                  void insertImageChips(files)
                 }}
                 onSelect={() => {
                   // Mirror the live caret (selectionchange) for the preview.
@@ -2042,50 +2045,32 @@ export function Composer() {
           </div>
 
           {/* Paste preview overlay (TUI render_preview_overlay) — floats
-              above the prompt frame while the caret is on/after a chip:
-              text chips show first/last 3 lines with a ⋮ separator; image
-              chips show the thumbnail + name + size, hint in the footer. */}
+              above the prompt frame while the caret is on/after a text
+              chip: first/last 3 lines with a ⋮ separator + expand hint.
+              Image chips are always expanded, so no preview is needed. */}
           {preview &&
-            (preview.chip.image ? (
+            previewLines && (
               <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-1 w-[75%] -translate-x-1/2 overflow-hidden rounded border border-gn-prompt-border-active bg-gn-bg-dark shadow-2xl">
-                <div className="flex flex-col items-center gap-1 px-2 py-2">
-                  <img
-                    src={`data:${preview.chip.image.mimeType};base64,${preview.chip.image.data}`}
-                    alt={preview.chip.image.name}
-                    className="max-h-32 w-auto max-w-full rounded border border-gn-prompt-border object-contain"
-                  />
-                  <div className="max-w-full truncate text-[10.5px] text-gn-fg2">
-                    {preview.chip.image.name} · {fmtBytes(preview.chip.image.size)}
-                  </div>
+                <div className="gn-no-scrollbar max-h-44 overflow-y-auto py-0.5">
+                  {previewLines.map((line, i) => (
+                    <div
+                      key={i}
+                      className={`truncate px-2 font-mono text-[11.5px] leading-[1.5] ${
+                        line.startsWith('⋮ (')
+                          ? 'text-gn-gray-dim'
+                          : 'text-gn-fg'
+                      }`}
+                    >
+                      {line || ' '}
+                    </div>
+                  ))}
                 </div>
                 <div className="border-t border-gn-prompt-border/60 px-2 py-[3px] text-[10px] text-gn-muted">
-                  {preview.onChip ? 'enter' : 'double-click'} to expand
+                  {preview.onChip ? 'enter' : 'paste again'} or double-click to
+                  expand
                 </div>
               </div>
-            ) : (
-              previewLines && (
-                <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-1 w-[75%] -translate-x-1/2 overflow-hidden rounded border border-gn-prompt-border-active bg-gn-bg-dark shadow-2xl">
-                  <div className="gn-no-scrollbar max-h-44 overflow-y-auto py-0.5">
-                    {previewLines.map((line, i) => (
-                      <div
-                        key={i}
-                        className={`truncate px-2 font-mono text-[11.5px] leading-[1.5] ${
-                          line.startsWith('⋮ (')
-                            ? 'text-gn-gray-dim'
-                            : 'text-gn-fg'
-                        }`}
-                      >
-                        {line || ' '}
-                      </div>
-                    ))}
-                  </div>
-                  <div className="border-t border-gn-prompt-border/60 px-2 py-[3px] text-[10px] text-gn-muted">
-                    {preview.onChip ? 'enter' : 'paste again'} or double-click to
-                    expand
-                  </div>
-                </div>
-              )
-            ))}
+            )}
         </div>
 
       </div>

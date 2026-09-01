@@ -44,6 +44,7 @@ export function InlineImages({
             src={img.data}
             alt={img.mimeType ? `image (${img.mimeType})` : 'image'}
             loading="lazy"
+            decoding="async"
             data-no-fold
             onClick={(ev) => {
               ev.stopPropagation()
@@ -51,9 +52,11 @@ export function InlineImages({
               else onOpen()
             }}
             title="点击放大查看"
+            // 两种 size 都封顶高度：图片解码是异步的，未封顶的原始比例
+            // 会在 prepend 的旧轮次里把行撑高，把刚恢复好的视口再挪一次。
             className={
               size === 'assistant'
-                ? 'max-w-[65%] cursor-zoom-in rounded border border-gn-prompt-border'
+                ? 'max-h-[60vh] max-w-[65%] cursor-zoom-in rounded border border-gn-prompt-border object-contain'
                 : 'h-24 max-w-[45%] cursor-zoom-in rounded border border-gn-prompt-border object-contain'
             }
           />
