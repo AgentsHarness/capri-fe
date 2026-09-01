@@ -75,7 +75,8 @@ export async function loadHistory(
   set: SetState,
   get: () => ChatState,
   sessionId: string,
-  cwd: string
+  cwd: string,
+  opts: { awaitBeforeReplay?: Promise<void> } = {},
 ): Promise<void> {
     const loadSid = sessionId
     const scope = captureAsyncScope(get, sessionId, cwd)
@@ -214,6 +215,13 @@ export async function loadHistory(
       // 能力回显：请求过 lite 却没回 projected = 旧 host（本页就是全量，
       // 条目自然不带 lite 字段），停用该 host 的 lite。
       noteHistoryProjection(get, detail != null, r)
+      // 并行切会话（continueSession）：快照 fetch 与任务探活同时发出，
+      // 但回放应用必须等探活结果（replayUpdates 跳过仍在跑任务的
+      // started 行）。探活失败已被调用方内部消化，await 不会抛。
+      if (opts.awaitBeforeReplay) {
+        await opts.awaitBeforeReplay
+        if (staleLoad()) return
+      }
       promptStarts = r.promptStarts
       turnIdx =
         promptStarts && promptStarts.length > 0

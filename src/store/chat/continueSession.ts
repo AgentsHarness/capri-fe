@@ -88,6 +88,9 @@ export async function continueSession(
       }
       return snap
     }
+    // 并行快照的句柄提级到 try 外：失败收口（catch）要等它收尾，
+    // 避免并行中已回放的内容覆盖「加载失败」态。
+    let historyP: Promise<void> | undefined
     try {
       // 1) Make this session the active one (session/load or focus-if-busy);
       // 2) load its tail. Models come from the HTTP response — more reliable
@@ -97,26 +100,28 @@ export async function continueSession(
       // client), so loading a session must leave the agent's global mode
       // untouched — sending a per-session seed would rewrite the global
       // state on every switch. Display follows the agent (global copy).
-      // 方案 A：切会话优先走 session/resume——agent 不重放历史（load
-      // 会经 SSE 全量重放整段会话，而重放本就被 historyLoading 丢弃，
-      // 纯浪费：带宽、Broadcast 缓冲 drop、hub 上行）。resume 失败
-      // （旧 agent 不支持 / 方法不存在等）回退 session/load，行为与
-      // 旧版完全一致（含重放 + 多 tab peer 门控）。
-      let loaded: {
-        models?: unknown
-        modes?: unknown
-        configOptions?: unknown
-        busy?: boolean
-      }
-      try {
-        loaded = await transport.sessionResume({ sessionId, cwd })
-      } catch {
-        // resume 不可用才回退 session/load，并要求 agent 不要再整段重放历史
-        // （noReplay → host 丢弃派生自 session/update 的重放通知）：整段重放
-        // 既被 historyLoading 窗口丢掉，又会在 host 的 EventSequencer 里
-        // 制造 seq 空洞憋住后续 live 事件。边界事件仍照常透传。
-        loaded = await transport.loadSession(sessionId, cwd, { noReplay: true })
-      }
+      // ── 并行切会话（2026-09 性能）：resume（经 agent）、任务探活、
+      // 历史快照三个请求没有数据依赖，一并发出——总耗时从三趟串行
+      // 跨网往返降到一趟多（三者 RTT 相同）。三个 promise 都不向外抛：
+      // resume 失败在内部回退 loadSession；探活与快照各自内部收口。
+      const resumeP = (async () => {
+        try {
+          return await transport.sessionResume({ sessionId, cwd })
+        } catch {
+          // resume 不可用才回退 session/load，并要求 agent 不要再整段重放历史
+          // （noReplay → host 丢弃派生自 session/update 的重放通知）：整段重放
+          // 既被 historyLoading 窗口丢掉，又会在 host 的 EventSequencer 里
+          // 制造 seq 空洞憋住后续 live 事件。边界事件仍照常透传。
+          return await transport.loadSession(sessionId, cwd, { noReplay: true })
+        }
+      })()
+      // 探活必须先于历史回放的应用（replayUpdates 跳过仍在跑任务的
+      // started 行）：作为 awaitBeforeReplay 传给 loadHistory，与快照的
+      // 网络往返重叠，回放应用仍严格等探活完成。
+      const tasksP = get().replayRunningTasks(sessionId, cwd)
+      historyP = get().loadHistory(sessionId, cwd, { awaitBeforeReplay: tasksP })
+
+      const loaded = await resumeP
       // The user may have switched host / opened another session while we
       // were loading — never write this session's data into that view.
       if (myGen !== runtime.sessionSwitchGen || !isAsyncScopeCurrent(get, scope)) return
@@ -146,8 +151,8 @@ export async function continueSession(
       // (that state lives in the top task strip only — see replayUpdates).
       // Probing first closes the window where the newest page would
       // otherwise render a dangling started row with no completion.
-      await get().replayRunningTasks(sessionId, cwd)
-      await get().loadHistory(sessionId, cwd)
+      // 已与 resume / 快照 fetch 并行发出（见上方），快照回放内等待其完成。
+      await historyP
       if (myGen !== runtime.sessionSwitchGen || !isAsyncScopeCurrent(get, scope)) return
       // 权限模式是进程级全局状态（跟随 agent 广播），store 中即最新值，
       // 无需按会话恢复；plan 按会话从副本补充（权威是 replay 的
@@ -226,6 +231,10 @@ export async function continueSession(
       }, 500)
     } catch (e) {
       if (myGen !== runtime.sessionSwitchGen || !isAsyncScopeCurrent(get, scope)) return
+      // 并行请求可能仍在飞：先等快照/探活收尾（内部错误已各自收口，
+      // 成功则已回放内容），下面的失败收口再统一覆盖——否则它们的
+      // 回放结果会在失败态落下之后才写入，覆盖「加载失败」。
+      await historyP?.catch(() => {})
       const msg = e instanceof Error ? e.message : String(e)
       // 加载失败：从加载态收口为失败态——scrollback 中央加载提示转为
       // "加载失败 + 原因"（historyLoadError，见 Scrollback 覆盖层），

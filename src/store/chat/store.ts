@@ -236,7 +236,7 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
   /** Dismiss the top error/status banner (user acknowledged the message). */
   dismissNotice: () => set({ layerErrors: {} }),
 
-  loadHistory: (sessionId, cwd) => loadSessionHistory(set, get, sessionId, cwd),
+  loadHistory: (sessionId, cwd, opts) => loadSessionHistory(set, get, sessionId, cwd, opts),
 
   // ── 精简回放（lite）正文补全 ───────────────────────────────────────
   // 展开入口与占位行上的重试都收敛到这两个动作（实现在 historyFill.ts）。

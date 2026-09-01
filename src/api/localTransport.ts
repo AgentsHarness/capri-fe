@@ -214,12 +214,22 @@ export class LocalTransport {
   }
 
   /**
-   * 当前是否应直连本机：hub 模式 + 选中了本机 host。localHostId 只在
-   * detectMode 直连探测成功时设置——页面 origin 本身返回了「单 host +
-   * local:true」的 /api/hosts 和带 hostId 的 /api/status，即页面就托管在
-   * 本机 capri-host 上，无需再按页面 hostname 判断：localhost / 127.x /
-   * 局域网 IP（如 192.168.1.6）访问同一台机器的内嵌前端都成立，按
-   * hostname 过滤会把局域网地址误判为远程，白白绕 hub 中继。
+   * 本机 HTTP 直连 base（如 http://127.0.0.1:8765）。远程站发现本机
+   * host 后写入；空串表示跟页面同源（Vite 代理 / 内嵌前端）。
+   */
+  setLocalBase(base: string) {
+    this.base = base.replace(/\/$/, '')
+  }
+
+  getLocalBase(): string {
+    return this.base
+  }
+
+  /**
+   * 当前是否应直连本机：hub 模式 + 选中了本机 host。localHostId 来自：
+   * - detectMode：页面 origin 本身就是本机 capri-host（单 host + local:true）
+   * - discoverLocalHost：远程站按 hub 下发的 port 探测 127.0.0.1 成功
+   * 不按页面 hostname 过滤，避免局域网 IP 访问内嵌前端被误判为远程。
    */
   private isLocalDirect(): boolean {
     return (
@@ -227,6 +237,83 @@ export class LocalTransport {
       this.localHostId != null &&
       this.selectedHostId === this.localHostId
     )
+  }
+
+  private pageIsLoopback(): boolean {
+    const h = location.hostname
+    return h === 'localhost' || h === '127.0.0.1' || h === '::1'
+  }
+
+  /**
+   * 远程站（非 loopback 页面）按 hub 登记的 port 探测本机
+   * `http://127.0.0.1:<port>/api/hosts`：命中且 hostId 对得上则写入
+   * localBase + localHostId，后续选中该 host 时 API/SSE 走本机近路。
+   * 已在 loopback 页面且已有 localHostId 时跳过（Vite/内嵌前端已够用）。
+   * 返回发现到的 localHostId，未找到则 null。
+   */
+  async discoverLocalHost(
+    hosts?: Array<{ hostId: string; port?: number; online?: boolean }>,
+  ): Promise<string | null> {
+    if (this.mode !== 'hub') return this.localHostId
+    if (this.pageIsLoopback() && this.localHostId) return this.localHostId
+
+    let list = hosts
+    if (!list) {
+      try {
+        const res = await this.fetch(`${this.apiBase()}/api/hosts`, {}, { hubLevel: true })
+        if (!res.ok) return this.localHostId
+        const data = (await res.json().catch(() => ({}))) as {
+          hosts?: Array<{ hostId: string; port?: number; online?: boolean }>
+        }
+        list = data.hosts ?? []
+      } catch {
+        return this.localHostId
+      }
+    }
+
+    type Cand = { hostId: string; port: number }
+    const candidates: Cand[] = []
+    const seen = new Set<number>()
+    for (const h of list) {
+      const port = h.port
+      if (typeof port !== 'number' || port < 1 || port > 65535) continue
+      if (seen.has(port)) continue
+      seen.add(port)
+      candidates.push({ hostId: h.hostId, port })
+    }
+    // 旧 hub/host 尚未下发 port：仍试默认 8765，hostId 以本机应答为准。
+    if (candidates.length === 0) candidates.push({ hostId: '', port: 8765 })
+
+    for (const c of candidates) {
+      const base = `http://127.0.0.1:${c.port}`
+      const ac = new AbortController()
+      const timer = setTimeout(() => ac.abort(), 800)
+      try {
+        const res = await fetch(`${base}/api/hosts`, { signal: ac.signal })
+        if (!res.ok) continue
+        const data = (await res.json().catch(() => ({}))) as {
+          hosts?: Array<{ hostId?: string; local?: boolean }>
+          authRequired?: boolean
+        }
+        const local =
+          data.hosts?.length === 1 && data.hosts[0]?.local === true
+            ? data.hosts[0]
+            : null
+        if (!local?.hostId) continue
+        if (c.hostId && local.hostId !== c.hostId) continue
+        this.base = base
+        this.localHostId = local.hostId
+        this.localAuthRequired = data.authRequired === true
+        // 若 live 已连上，补开本机 SSE 近路。
+        this.syncLocalSSE()
+        return local.hostId
+      } catch {
+        /* probe miss — try next port */
+      } finally {
+        clearTimeout(timer)
+      }
+    }
+    return this.localHostId
   }
 
   /**
@@ -265,7 +352,7 @@ export class LocalTransport {
       return { mode: 'local', hubUrl: '' }
     }
     const data = (await res.json().catch(() => ({}))) as {
-      hosts?: Array<{ local?: boolean }>
+      hosts?: Array<{ local?: boolean; hostId?: string }>
       defaultHostId?: string
       authRequired?: boolean
     }
@@ -275,22 +362,24 @@ export class LocalTransport {
       this.localAuthRequired = false
       return { mode: 'hub', hubUrl: this.base }
     }
-    // 必须在 /api/status 之前记下：status 本身也受 FE_TOKEN 门禁，
-    // 刷新后 allowDetectAuth 仍是 false，不带已存 token 会 401，
-    // 下面 catch 就会把配了 HUB_URL 的 host 盲判成 local。
+    // 必须在 /api/status 之前记下：默认 mode 仍是 local，fetch 会按
+    // isLocalRequest 剥掉 Bearer；只有 localAuthRequired（或显式
+    // auth:true）才会保留已存 FE_TOKEN。曾把 status 与 hosts 并行，
+    // 导致 status 在本标志置位前发出 → 401 → 盲判 local。
     this.localAuthRequired = data.authRequired === true
     // capri-host 直连：模式由 host 配置决定（HUB_URL 环境变量）；
     // 顺带记录本机 hostId，供 hub 模式下选中本机时 API 直连本地。
     try {
-      const st = (await (
-        await this.fetch(
-          `${this.base}/api/status`,
-          {},
-          { auth: this.allowDetectAuth || this.localAuthRequired, hubLevel: true },
-        )
-      ).json()) as { mode?: string; hubUrl?: string; hostId?: string }
-      if (st.mode === 'hub')
-        return { mode: 'hub', hubUrl: st.hubUrl || this.base, localHostId: st.hostId }
+      const stRes = await this.fetch(
+        `${this.base}/api/status`,
+        {},
+        { auth: this.allowDetectAuth || this.localAuthRequired, hubLevel: true },
+      )
+      if (stRes.ok) {
+        const st = (await stRes.json()) as { mode?: string; hubUrl?: string; hostId?: string }
+        if (st.mode === 'hub')
+          return { mode: 'hub', hubUrl: st.hubUrl || this.base, localHostId: st.hostId }
+      }
     } catch {
       /* fall through to local */
     }
