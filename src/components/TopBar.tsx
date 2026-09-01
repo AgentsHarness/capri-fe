@@ -18,6 +18,7 @@ import { SessionSearchBox } from './SessionSearchBox'
 import {
   ContextChip,
   GoalChip,
+  LiteFillChip,
   McpChip,
   QueueBadge,
   RunningChip,
@@ -206,6 +207,8 @@ export function WorkspaceBar({
           />
           <GoalChip goalState={goalState} contextUsed={usage?.used} />
           {onOpenMcp && <McpChip onOpen={onOpenMcp} />}
+          {/* 精简回放的正文补全进度（只在有 lite 行欠着正文时出现）。 */}
+          <LiteFillChip />
           <ContextChip
             used={usage?.used}
             size={

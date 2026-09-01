@@ -5,11 +5,13 @@ import { usePins } from '../historyPins'
 import { useChatStore } from '../chat'
 import { runtime, clearContinueSessionTimer } from './globals'
 import {
-  FILL_BUDGET_BYTES,
   applyToolBodies,
   extractToolBodies,
+  flushScheduledPageFills,
+  liteFillSummary,
   resetLiteCapability,
   resetToolFillCache,
+  toolEntryLiteOmitted,
   toolEntryLitePending,
   toolEntryNeedsFill,
 } from './historyFill'
@@ -139,8 +141,7 @@ function litePage(over: Partial<SessionHistoryPage> = {}): SessionHistoryPage {
     totalCount: 5,
     hasMore: false,
     projected: 'lite',
-    // 默认给一个超预算的值：后台自动补全被闸门拦掉，补全由用例自己触发。
-    omittedBytes: FILL_BUDGET_BYTES + 1,
+    omittedBytes: 4096,
     ...over,
   }
 }
@@ -219,7 +220,7 @@ describe('detail 请求档位与 host 能力回显', () => {
     expect(toolEntryNeedsFill(e!)).toBe(true)
     expect(toolEntryLitePending(e!)).toBe(true)
     expect(useChatStore.getState().historyProjected).toBe('lite')
-    expect(useChatStore.getState().historyOmittedBytes).toBe(FILL_BUDGET_BYTES + 1)
+    expect(useChatStore.getState().historyOmittedBytes).toBe(4096)
   })
 
   it('旧 host 不回 projected：本次按 full 渲染、零占位残留，并停用该 host 的 lite', async () => {
@@ -391,14 +392,142 @@ describe('只填工具正文的补全', () => {
     expect(toolEntry()!.liteState).toBe('filled')
   })
 
-  it('预算闸门：预估整页正文 > 2MB 时不后台补全（退回纯按需加载）', async () => {
+  // 预算闸门已按需求去掉：被裁最多的正是带后台任务 / 长流式输出的会话，
+  // 拦下来只会让它们整轮退化成逐条手点。
+  it('被裁正文再大也照补：omittedBytes 超 2MB 仍发后台 detail=full', async () => {
+    vi.mocked(transport.loadSessionHistory)
+      .mockResolvedValueOnce(litePage({ omittedBytes: 6 * 1024 * 1024 }))
+      .mockResolvedValue(fullPage())
+    await useChatStore.getState().loadHistory(SID, CWD)
+    expect(toolEntryLitePending(toolEntry()!)).toBe(true)
+
+    await new Promise((r) => setTimeout(r, 5))
+    const full = fullCalls()
+    expect(full).toHaveLength(1)
+    expect(full[0]?.[2]).toMatchObject({ turnIndex: 1, detail: 'full' })
+    expect(toolEntry()!.liteState).toBe('filled')
+    expect(toolEntryLitePending(toolEntry()!)).toBe(false)
+    // 在途计数随请求落地归零（顶部进度图标的 spinner 数据源）。
+    expect(useChatStore.getState().liteFillBusy ?? 0).toBe(0)
+  })
+
+  it('更早轮翻页：lite 页按同一 offset/limit 窗口排队一份 detail=full', async () => {
     const load = vi
       .mocked(transport.loadSessionHistory)
-      .mockResolvedValue(litePage({ omittedBytes: FILL_BUDGET_BYTES + 1 }))
+      .mockResolvedValueOnce(litePage())
+      .mockResolvedValue(litePage({ updates: litePage().updates?.slice(0, 3) }))
     await useChatStore.getState().loadHistory(SID, CWD)
+    // 丢掉首页排的那份整轮补全，只看翻页这一发。
+    resetToolFillCache()
+    useChatStore.setState({
+      historySessionId: SID,
+      historyCwd: CWD,
+      historyHasMore: true,
+      historyLoadedStart: 3,
+      historyTotalCount: 3,
+      historyLoadedCount: 1,
+      historyPromptStarts: [0, 3],
+    })
+    load.mockClear()
+
+    await useChatStore.getState().loadMoreHistory()
+    expect(load).toHaveBeenCalledWith(SID, CWD, { offset: 0, limit: 3, detail: 'lite' })
     await new Promise((r) => setTimeout(r, 5))
-    expect(load).toHaveBeenCalledTimes(1)
+
+    const full = fullCalls()
+    expect(full).toHaveLength(1)
+    expect(full[0]?.[2]).toMatchObject({ offset: 0, limit: 3, detail: 'full' })
+  })
+
+  it('排队中的补全可以立刻催发（点顶部进度图标），已发出的不重复', async () => {
+    vi.mocked(transport.loadSessionHistory)
+      .mockResolvedValueOnce(litePage())
+      .mockResolvedValue(fullPage())
+    await useChatStore.getState().loadHistory(SID, CWD)
+    expect(fullCalls()).toHaveLength(0)
+
+    flushScheduledPageFills()
+    await new Promise((r) => setTimeout(r, 5))
+    expect(fullCalls()).toHaveLength(1)
+
+    // 队列已空：再催一次不会多发。
+    flushScheduledPageFills()
+    await new Promise((r) => setTimeout(r, 5))
+    expect(fullCalls()).toHaveLength(1)
+  })
+
+  // 活跃会话里重连 / 自动选 host 近路 / pending 同步都会 bump 全局代际，
+  // 后台补全不能因此作废（串行队列还会把等待窗口拉到秒级）——认条目归属。
+  it('代际被无关流程推进（重连 / 自动选 host）后，排队中的后台补照样落地', async () => {
+    vi.mocked(transport.loadSessionHistory)
+      .mockResolvedValueOnce(litePage())
+      .mockResolvedValue(fullPage())
+    await useChatStore.getState().loadHistory(SID, CWD)
     expect(toolEntryLitePending(toolEntry()!)).toBe(true)
+
+    runtime.sessionSwitchGen += 1
+    flushScheduledPageFills()
+    await new Promise((r) => setTimeout(r, 5))
+
+    expect(fullCalls()).toHaveLength(1)
+    expect(toolEntry()!.liteState).toBe('filled')
+    expect(toolEntryLitePending(toolEntry()!)).toBe(false)
+  })
+
+  // 同一条判别反过来：请求**在途期间**视图被整批重建（新 id）→ 迟到的正文
+  // 必须整包丢弃，不能写进陌生行。（重建发生在发请求之前不算竞态：那时候选
+  // 就是重建后的那批行，填的是同一会话同一窗口的正确正文。）
+  it('补全在途时条目被重建 → 迟到的结果整包丢弃', async () => {
+    let resolveFetch!: (p: SessionHistoryPage) => void
+    vi.mocked(transport.loadSessionHistory)
+      .mockResolvedValueOnce(litePage())
+      .mockImplementationOnce(
+        () => new Promise<SessionHistoryPage>((r) => {
+          resolveFetch = r
+        }),
+      )
+    await useChatStore.getState().loadHistory(SID, CWD)
+    const before = useChatStore.getState().entries
+
+    flushScheduledPageFills()
+    await new Promise((r) => setTimeout(r, 0)) // 让 fillToolBodies 真的把请求发出去
+
+    useChatStore.setState({
+      entries: before.map((e) => ({ ...e, id: `rebuilt-${e.id}` })),
+    })
+    resolveFetch(fullPage())
+    await new Promise((r) => setTimeout(r, 5))
+
+    expect(fullCalls()).toHaveLength(1)
+    const after = useChatStore.getState().entries
+    expect(after.every((e) => e.kind !== 'tool' || e.liteState === undefined)).toBe(true)
+    const rebuilt = after.find((e) => e.kind === 'tool')!
+    expect(toolEntryLitePending(rebuilt)).toBe(true)
+  })
+
+  it('进度读数：只看行欠不欠正文——未补报数、补齐空串', async () => {
+    vi.mocked(transport.loadSessionHistory)
+      .mockResolvedValueOnce(litePage())
+      .mockResolvedValue(fullPage())
+    await useChatStore.getState().loadHistory(SID, CWD)
+    // 裁过、还没补 → 1 行待补。
+    expect(liteFillSummary(useChatStore.getState())).toBe('1.0.0')
+
+    flushScheduledPageFills()
+    await new Promise((r) => setTimeout(r, 5))
+    // 补齐 → 图标消失。
+    expect(liteFillSummary(useChatStore.getState())).toBe('')
+
+    // 旗标与行状态不同步（最新一页是全量、上滑翻出的旧页是 lite）时以行为准：
+    // 带着 liteOmitted 的行仍然报数，图标不会因为旗标是另一页而消失。
+    const owed = useChatStore
+      .getState()
+      .entries.find((e) => e.kind === 'tool') as Extract<ScrollEntry, { kind: 'tool' }>
+    useChatStore.setState({
+      historyProjected: undefined,
+      entries: [{ ...owed, liteState: undefined, liteOmitted: 4096 }],
+    })
+    expect(liteFillSummary(useChatStore.getState())).toBe('1.0.0')
   })
 
   it('host 透传回退（整页无 msgSeq）：不显示死占位，但整轮补全仍回填正文', async () => {
@@ -643,8 +772,12 @@ describe('live 事件续写被裁的工具行', () => {
     expect(toolEntryLitePending(toolEntry()!)).toBe(true)
   }
 
-  it('live 带回真实正文：占位撤除、标记抹掉、按 filled 记账', async () => {
-    await loadLite()
+  it('live 带回正文：占位让位给正文，但账没结清（content 还裁着）', async () => {
+    vi.mocked(transport.loadSessionHistory)
+      .mockResolvedValueOnce(litePage())
+      .mockResolvedValue(fullPage())
+    await useChatStore.getState().loadHistory(SID, CWD)
+    expect(toolEntryLitePending(toolEntry()!)).toBe(true)
 
     feed({
       toolCallId: 'c1',
@@ -654,14 +787,29 @@ describe('live 事件续写被裁的工具行', () => {
 
     const e = toolEntry()!
     expect((e.raw?.rawOutput as { Bash: { output: string } }).Bash.output).toBe('live 终态')
-    expect(e.liteState).toBe('filled')
-    expect(e.liteOmitted).toBeUndefined()
+    // 有可见正文 → 占位不再盖上去。
     expect(toolEntryLitePending(e)).toBe(false)
-    expect(toolEntryNeedsFill(e)).toBe(false)
-    // `_meta.lite` 抹掉了；content 里那份重复正文的摘要块仍让渲染层保守地
-    // 报「已省略」而非假空态——那是裁过的事实，不影响 rawOutput 正常出正文。
-    expect((e.raw?._meta as { lite?: unknown }).lite).toBeUndefined()
     expect(toolBodyStillOwed(e.raw!)).toBe(false)
+    // 但 content 那份仍裁着 → 不记 filled、liteOmitted 留着，补全照旧会跑。
+    expect(e.liteState).toBeUndefined()
+    expect(e.liteOmitted).toBe(1200)
+    expect(toolEntryLiteOmitted(e)).toBe(true)
+
+    flushScheduledPageFills()
+    await new Promise((r) => setTimeout(r, 5))
+    const f = toolEntry()!
+    expect(f.liteState).toBe('filled')
+    // liteOmitted 按设计不清零（它是"这一页裁过多少"的事实），账靠 liteState 结。
+    expect(toolEntryLiteOmitted(f)).toBe(false)
+    // content 从快照补回；live 那份 rawOutput 一个字没被动过。
+    expect(f.raw?.content as unknown[]).toEqual([
+      { type: 'content', content: { type: 'text', text: '$ ls -al' } },
+    ])
+    expect((f.raw?.rawOutput as { Bash: { output: string } }).Bash.output).toBe('live 终态')
+    expect((f.raw?._meta as { lite?: unknown }).lite).toBeUndefined()
+    // 只在 live 之后、补全之前：content 仍裁着 → 标记保留（渲染层据此把空
+    // 正文报成「已省略」而不是假空态），但占位已经让位给正文。
+    expect((e.raw?._meta as { lite?: { omitted?: number } }).lite?.omitted).toBeGreaterThan(0)
   })
 
   it('状态-only 的 live 更新不撤占位（正文仍然欠着）', async () => {
@@ -683,7 +831,7 @@ describe('live 事件续写被裁的工具行', () => {
       rawOutput: { Bash: { output: 'live 终态', exit_code: 0 } },
     })
 
-    // 快照里是旧一帧的终态：行已记 filled → 区间补全压根不该发请求。
+    // 快照补全照旧会跑（content 那半还欠着），但 live 已有的载体不许被覆盖。
     vi.mocked(transport.loadSessionHistory).mockResolvedValue(
       fullPage({
         updates: [
@@ -711,7 +859,7 @@ describe('live 事件续写被裁的工具行', () => {
     useChatStore.getState().toggleTool(toolEntry()!.id)
     await new Promise((r) => setTimeout(r, 5))
 
-    expect(fullCalls()).toHaveLength(0)
+    expect(fullCalls().length).toBeGreaterThan(0)
     const e = toolEntry()!
     expect((e.raw?.rawOutput as { Bash: { output: string } }).Bash.output).toBe('live 终态')
     expect(toolEntryLitePending(e)).toBe(false)
@@ -719,34 +867,37 @@ describe('live 事件续写被裁的工具行', () => {
 
   it('edit 行只有 content Diff 被裁：live 的 rawOutput 不顶掉欠着的正文', async () => {
     usePins.getState().setFePrefs({ liteReplay: true })
-    vi.mocked(transport.loadSessionHistory).mockResolvedValue({
-      ...litePage(),
-      updates: [
-        env(1, {
-          sessionUpdate: 'tool_call',
-          toolCallId: 'c2',
-          kind: 'edit',
-          status: 'in_progress',
-          title: 'edit a.ts',
-          rawInput: { path: 'a.ts' },
-          content: [{ type: 'diff', omitted: 4096 }],
-          _meta: { lite: { omitted: 4096, fields: ['content'] } },
-        }),
-      ],
-      omittedBytes: FILL_BUDGET_BYTES + 1,
-    })
+    // 后台补全失败（闸门已去掉，这一发一定会发出去）：让行停在 lite 形状上，
+    // 用例只看 live 合并的行为。
+    vi.mocked(transport.loadSessionHistory)
+      .mockResolvedValueOnce({
+        ...litePage(),
+        updates: [
+          env(1, {
+            sessionUpdate: 'tool_call',
+            toolCallId: 'c2',
+            kind: 'edit',
+            status: 'in_progress',
+            title: 'edit a.ts',
+            rawInput: { path: 'a.ts' },
+            content: [{ type: 'diff', omitted: 4096 }],
+            _meta: { lite: { omitted: 4096, fields: ['content'] } },
+          }),
+        ],
+      })
+      .mockRejectedValue(new Error('不该在本用例里补回正文'))
     await useChatStore.getState().loadHistory(SID, CWD)
 
     feed({ toolCallId: 'c2', status: 'completed', rawOutput: { ok: true } })
 
-    // live 只回了个空壳 rawOutput：主载体谈不上"欠"，但渲染出来仍是空态
-    // （edit 的正文是 content 里的 Diff 块，还裁着）→ 占位必须留着，
-    // 否则这行既没正文又没了拉取入口。
+    // rawOutput 已是可显示的实体（不再"欠"）→ 占位让位；但 content 的 Diff
+    // 块还裁着 → 不记 filled、liteOmitted 留着，补全候选仍含这一行，
+    // 图标也仍然报数（欠账没结清）。
     const e = toolEntry()!
     expect(toolBodyStillOwed(e.raw!)).toBe(false)
-    expect(detailIsEmpty(extractToolDetail(e.raw!, e.kindName))).toBe(true)
-    expect(toolEntryLitePending(e)).toBe(true)
+    expect(toolEntryLitePending(e)).toBe(false)
     expect(e.liteState).toBeUndefined()
-    expect(toolEntryNeedsFill(e)).toBe(true)
+    expect(toolEntryLiteOmitted(e)).toBe(true)
+    expect(liteFillSummary(useChatStore.getState())).toBe('1.0.0')
   })
 })

@@ -336,9 +336,11 @@ body {
 }
 
 /* Prefer reduced motion: AccentRail freezes wave via prefers-reduced-motion
-   is handled in JS by still painting solid when frozen; CSS pulse suppressed. */
+   is handled in JS by still painting solid when frozen; CSS pulse/spin
+   suppressed (会话行的「处理中」加载图标靠 animate-spin 自转). */
 @media (prefers-reduced-motion: reduce) {
-  .animate-pulse {
+  .animate-pulse,
+  .animate-spin {
     animation: none !important;
   }
 }

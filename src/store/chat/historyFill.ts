@@ -2,14 +2,12 @@ import type { ScrollEntry, SessionHistoryPage, ToolCall } from '../../api/types'
 import { transport } from '../../api/client'
 import { isEditToolKind } from '../../theme/toolFamily'
 import {
-  detailIsEmpty,
-  extractToolDetail,
+  liteStubIn,
   toolBodyStillOwed,
 } from '../../scrollback/toolDetail'
 import { currentLiteReplay } from '../historyPins'
 import type { ChatState, SetState } from './types'
 import { captureAsyncScope, isAsyncScopeCurrent, runtime } from './globals'
-import { INITIAL_TURNS } from './historyPage'
 import { type RawEnvelope } from './envelopeParse'
 import { toolCallIdOf } from './tools'
 
@@ -25,9 +23,6 @@ import { toolCallIdOf } from './tools'
 // - 零结构变化：不增删条目、不改顺序、正文之外的字段一律不动；
 // - 切会话作废：结果回来后先过 scope / sessionSwitchGen 校验，整包丢弃。
 
-/** 后台补全的预算闸门：整页被裁正文超过这个字节数就不自动补（契约 [E]）。 */
-export const FILL_BUDGET_BYTES = 2 * 1024 * 1024
-
 /**
  * host 对 `detail` 的能力（契约 [B]）：请求过投影但响应没带 `projected`
  * = 旧 host 不认识该字段 → 停用这个 host 的 lite（按 host 记；切回支持的
@@ -39,8 +34,13 @@ const liteUnsupportedHosts = new Set<string>()
 const fillInflight = new Map<string, Promise<void>>()
 const fillSettled = new Set<string>()
 
-/** 待触发的后台补全句柄（idle 或 setTimeout(0)）。 */
-let idleHandle: number | null = null
+/**
+ * 待触发的后台补全（每页一个，键 = 窗口键）：idle 期才发，且串行排队——
+ * 上滑连翻多页时不会同时压出多份整窗全量。
+ */
+const pendingPageFills = new Map<string, { handle: number; run: () => void }>()
+const bgQueued = new Set<string>()
+let bgChain: Promise<void> = Promise.resolve()
 
 /** 一个补全窗口：offset/limit（更早轮 / 上滑翻页）或 turnIndex（当前轮）。 */
 export type FillWindow =
@@ -95,9 +95,13 @@ export function toolEntryNeedsFill(
 
 /**
  * 占位行是否该显示（补全成功后一律不再显示，即使 liteOmitted 仍留着）。
- * 必须与 toolEntryNeedsFill 一样要求补全坐标：没有 msgSeq 区间就没有任何
- * 可点的拉取路径（host 走 _x.ai/session/updates 透传回退时整页无 msgSeq），
- * 显示出来就是一个永远拿不回正文的死按钮。
+ * 三条都得满足：
+ *  - 有补全坐标：没有 [msgSeq, msgSeqEnd]（host 走 _x.ai/session/updates
+ *    透传回退时整页无 msgSeq）就没有任何可点的拉取路径，显示出来是个永远
+ *    拿不回正文的死按钮；
+ *  - 确实还没有可显示的正文（toolBodyStillOwed）：live 事件续写进来的正文
+ *    不能被占位层盖住——这种行留着 liteOmitted 让补全继续跑，把剩下的载体
+ *    填齐，但占位让位给正文。
  */
 export function toolEntryLitePending(
   e: ScrollEntry,
@@ -107,7 +111,8 @@ export function toolEntryLitePending(
     !!e.liteOmitted &&
     e.liteState !== 'filled' &&
     e.msgSeq != null &&
-    e.msgSeqEnd != null
+    e.msgSeqEnd != null &&
+    toolBodyStillOwed(e.raw ?? {})
   )
 }
 
@@ -123,38 +128,58 @@ export function toolEntryLiteOmitted(e: ScrollEntry): boolean {
 }
 
 /**
- * live 事件把真实正文并进了这条 lite 行之后该怎么记账。
- *
- * 裁过的历史行在忙会话里会被 live 事件续写：不撤占位的话，已经到达的正文
- * 一直盖在「已省略 N 字节」下面；更糟的是随后按 [msgSeq, msgSeqEnd] 触发的
- * 快照补全拉的是历史全量，会把更新的 live 终态写回去并标 filled。
- * 判据是「合并后还欠不欠可显示正文」（toolBodyStillOwed），不是「这条
- * update 带没带 rawOutput」：状态-only 的更新不撤占位。记 filled 之后
- * applyToolBodies 会跳过该行，迟到的快照再也覆盖不到 live 正文。
+ * live 事件把真实正文并进了这条 lite 行之后的结账：所有被裁过的载体都不剩
+ * 占位了，就把这行记成 filled 并抹掉 `_meta.lite`（图标少一格、占位与补全
+ * 候选都到此为止）。只补上部分载体时不动任何字段——占位的隐藏由
+ * toolEntryLitePending 按「还有没有可显示正文」判定，`liteOmitted` 留着，
+ * 补全照旧会跑把剩下的填齐（`fillRaw` 保证它不覆盖 live 带来的那份）。
  *
  * candidates = 合并后可能仍带占位的全部 raw（主 raw + 合并行的子槽位）。
- * 已不欠正文时返回的 raw 会抹掉 `_meta.lite`，渲染层据此不再当占位。
- * kindName 传合并后重算的那个：正文判据按 kind 分支，拿旧值（或拿不到）
- * 会把 edit 行当 generic 处理——generic 有 inputArgs 就判「非空」。
+ * 这里绝不调正文解析器：它在 live 事件通路（handleToolEvent）上，一次抛错
+ * 会打断整条工具事件链 —— 判据一律走形状识别（liteStubIn）。
  */
 export function liteAfterLiveBody(
   e: Extract<ScrollEntry, { kind: 'tool' }>,
   mergedRaw: ToolCall,
-  opts: { kindName?: string; candidates?: ToolCall[] } = {},
+  opts: { candidates?: ToolCall[] } = {},
 ): Partial<Extract<ScrollEntry, { kind: 'tool' }>> {
-  if (!e.liteOmitted && e.liteState == null) return {}
-  if (!e.raw) return {}
-  if ((opts.candidates ?? [mergedRaw]).some(toolBodyStillOwed)) return {}
-  const probe = clearLiteMark(mergedRaw)
-  // 主载体补上了但渲染仍是空态 = 真正缺的那部分在别处（edit 的正文是
-  // content 的 Diff 块，live 只回了个 rawOutput），占位不能撤——撤了就是
-  // 一个既没正文又没了拉取入口的死行。
-  if (detailIsEmpty(extractToolDetail(probe, opts.kindName ?? e.kindName))) return {}
+  if (!e.liteOmitted || e.liteState === 'filled') return {}
+  if ((opts.candidates ?? [mergedRaw]).some((r) => liteStubIn(r.rawOutput) || liteStubIn(r.content))) {
+    return {}
+  }
   return {
-    raw: probe,
+    raw: clearLiteMark(mergedRaw),
     liteOmitted: undefined,
     liteState: 'filled' as const,
   }
+}
+
+/**
+ * 顶部进度图标的读数（给 zustand 选择器用）。返回定长字符串而不是对象：
+ * 选择器按引用比较，返回新对象会让每次 store 变化都重渲染。
+ *
+ * 判据只看「还有没有工具行欠着正文」（lite 裁过且未 filled），不去看
+ * `historyProjected`：那个旗标记的是**最新一页**的回显，而滚动区里同时躺着
+ * 好几页——首页是全量、上滑翻出的旧页是 lite（或反之）时两者会不同步，
+ * 图标就会在该显示的时候不显示。开关关掉后重进会话，条目根本不带
+ * liteOmitted，自然也就没有图标。
+ *
+ * `''` = 不显示（没有欠正文的行）。`pending.loading.failed` = 排队中 /
+ * 正在拉 / 拉失败可重试的行数。
+ */
+export function liteFillSummary(s: ChatState): string {
+  let pending = 0
+  let loading = 0
+  let failed = 0
+  for (const e of s.entries ?? []) {
+    if (e.kind !== 'tool' || !e.liteOmitted || e.liteOmitted <= 0) continue
+    if (e.liteState === 'filled') continue
+    if (e.liteState === 'loading') loading++
+    else if (e.liteState === 'error') failed++
+    else pending++
+  }
+  if (pending + loading + failed === 0) return ''
+  return `${pending}.${loading}.${failed}`
 }
 
 /** 补全窗口的去重键（会话 + 闭区间；turnIndex 与 offset 空间分开记）。 */
@@ -170,6 +195,7 @@ function windowKey(sid: string, win: FillWindow): string {
  */
 export function resetToolFillCache(): void {
   cancelScheduledFill()
+  bgQueued.clear()
   fillInflight.clear()
   fillSettled.clear()
 }
@@ -235,8 +261,12 @@ export function clearLiteMark(raw: ToolCall): ToolCall {
  */
 function fillRaw(raw: ToolCall | undefined, body: ToolBody): ToolCall {
   const next: ToolCall = { ...(raw ?? {}) }
-  if (body.hasRawOutput) next.rawOutput = body.rawOutput
-  if (body.hasContent) next.content = body.content
+  // live-owned：这个载体上已经有一份不带占位的真实正文（live 事件续写进来的），
+  // 而快照那一帧可能更旧 —— 不许覆盖。只有该键缺失或仍是占位时才填。
+  const owned = (key: 'rawOutput' | 'content') =>
+    key in next && !liteStubIn((next as Record<string, unknown>)[key])
+  if (body.hasRawOutput && !owned('rawOutput')) next.rawOutput = body.rawOutput
+  if (body.hasContent && !owned('content')) next.content = body.content
   return clearLiteMark(next)
 }
 
@@ -321,6 +351,13 @@ function readTarget(get: () => ChatState, target: FillTarget): ScrollEntry[] {
   return (s.subagentViews ?? {})[sid]?.items ?? []
 }
 
+/** 这一批条目 id 是否还在目标视图里（视图被重建过就是全新一批 id）。 */
+function rowsStillOwned(get: () => ChatState, target: FillTarget, ids: Set<string>): boolean {
+  const have = new Set(readTarget(get, target).map((e) => e.id))
+  for (const id of ids) if (!have.has(id)) return false
+  return true
+}
+
 function writeTarget(
   set: SetState,
   get: () => ChatState,
@@ -347,8 +384,9 @@ export type FillRequest = {
   win: FillWindow
   target?: FillTarget
   /**
-   * 后台自动补全：不打 loading、失败静默。仍然走同一区间去重（否则窗口里
-   * 每行各发一次整轮请求），但不写 settled——用户手势的按需拉取要能重试。
+   * 后台自动补全：不打行内 loading、失败静默，也不写 settled（用户手势的
+   * 按需拉取要能重试）。同窗口的重复由 schedulePageFill 的排队键挡住，
+   * 所以这里不必再过 fillInflight。
    */
   background?: boolean
   entryIds?: string[]
@@ -371,8 +409,10 @@ export function fillToolBodies(
   const ids = candidateIds(
     items,
     req.background ? undefined : req.entryIds,
-    // turnIndex 窗口补整轮，行内坐标可有可无；offset 区间窗必须有坐标。
-    req.win.turnIndex == null,
+    // 后台补全的窗口由调用方给定（同一页的 turnIndex 或 offset/limit），正文
+    // 按 toolCallId 回填 → 不要求行内有坐标（host 透传回退的整页就没有坐标，
+    // 那种页照样能补）。只有用户手势的区间补需要坐标来算窗口。
+    req.win.turnIndex == null && !req.background,
   )
   if (ids.size === 0) return Promise.resolve()
   if (!req.background) {
@@ -386,16 +426,30 @@ export function fillToolBodies(
 
   const scope = captureAsyncScope(get, req.sessionId, req.cwd)
   const genAtStart = runtime.sessionSwitchGen
-  const stale = () =>
+  const viewGone = () =>
     genAtStart !== runtime.sessionSwitchGen ||
     !isAsyncScopeCurrent(get, scope) ||
     get().sessionId !== req.sessionId ||
     get().cwd !== req.cwd
+  // 后台补全不能被全局代际抖动否决：活跃会话里重连、自动选 host 近路、
+  // pending 同步都会 bump sessionSwitchGen，而这跟「这一页的条目还在不在」
+  // 毫无关系，串行队列又会把等待窗口拉长到秒级——一律按代际作废的结果就是
+  // 忙会话永远补不上。改成认条目归属：发起会话没变 + 要填的那些行还在原视图
+  // 里，就照填（行被重建过 → id 全新一批 → 整包丢弃）。
+  const stale = req.background
+    ? () =>
+        get().sessionId !== req.sessionId ||
+        get().cwd !== req.cwd ||
+        !rowsStillOwned(get, target, ids)
+    : viewGone
   const relabel = (state: 'loading' | 'error') => {
     if (stale()) return
     writeTarget(set, get, target, markLiteState(readTarget(get, target), ids, state))
   }
 
+  // 顶部进度图标的在途计数：只记后台补全（用户手势的行内 spinner 由
+  // liteState='loading' 带出来，不用重复计）。
+  if (req.background) set((s) => ({ liteFillBusy: (s.liteFillBusy ?? 0) + 1 }))
   const run = (async () => {
     if (!req.background) relabel('loading')
     let page: SessionHistoryPage
@@ -424,6 +478,11 @@ export function fillToolBodies(
     // 的手势被 settled 挡掉，永远不再重试。
     if (!req.background) fillSettled.add(key)
   })()
+  if (req.background) {
+    void run.finally(() =>
+      set((s) => ({ liteFillBusy: Math.max(0, (s.liteFillBusy ?? 1) - 1) })),
+    )
+  }
   if (!req.background) {
     fillInflight.set(key, run)
     void run.finally(() => fillInflight.delete(key))
@@ -507,32 +566,58 @@ export function fillLiteWindow(
 }
 
 /**
- * 当前轮首帧渲染后的后台补全（契约 [E]）：整轮再拉一次 `detail=full`，只
- * 把工具正文填回现有行。预算闸门按 host 回显的 omittedBytes 估算（超了就不
- * 补，退回纯按需加载）；失败静默、不改 UI。
+ * 一页 lite 渲染完后的后台补全（契约 [E]）：按**同一窗口**再拉一次
+ * detail=full，只把工具正文填回已经渲染好的行。当前轮与上滑翻出来的更早轮
+ * 都走这里。
+ *
+ * 不设预算闸门：host 真把这一页裁过（projected=lite）就补。被裁最多的恰恰是
+ * 带后台任务 / 长流式输出的会话，闸门只会让它们整轮退化成逐条手点；传输成本
+ * 由窗口本身和 hub 侧 gzip 负责，未压缩的 omittedBytes 不是依据。
+ *
+ * 一页一个任务：idle 期触发 + 全局串行排队（连翻多页时不会同时压出多份整窗
+ * 全量）；失败静默——行仍是 lite 占位，点开或点顶部进度图标都能再要一次。
  */
-export function scheduleCurrentTurnFill(
+export function schedulePageFill(
   set: SetState,
   get: () => ChatState,
-  page: Pick<SessionHistoryPage, 'projected' | 'omittedBytes'> | undefined,
+  page: Pick<SessionHistoryPage, 'projected'> | undefined,
+  win: FillWindow,
 ): void {
-  cancelScheduledFill()
   if (page?.projected !== 'lite') return
-  const omitted = page.omittedBytes
-  if (omitted != null && omitted > FILL_BUDGET_BYTES) return
   const sessionId = get().sessionId
   const cwd = get().cwd
   if (!sessionId || !cwd) return
-  idleHandle = runWhenIdle(() => {
-    idleHandle = null
-    if (get().sessionId !== sessionId || get().cwd !== cwd) return
-    void fillToolBodies(set, get, {
-      sessionId,
-      cwd,
-      win: { turnIndex: INITIAL_TURNS },
-      background: true,
-    })
-  })
+  const key = windowKey(sessionId, win)
+  if (pendingPageFills.has(key) || bgQueued.has(key)) return
+  const stale = () => get().sessionId !== sessionId || get().cwd !== cwd
+  const run = () => {
+    pendingPageFills.delete(key)
+    if (stale()) return
+    bgQueued.add(key)
+    // 每个任务自己吞掉异常：一个 reject 会顺着 bgChain 传下去，之后所有
+    // .then 都被跳过 —— 那正是「某次补全炸了以后回放再也不补」的机制。
+    bgChain = bgChain
+      .then(() =>
+        stale() ? undefined : fillToolBodies(set, get, { sessionId, cwd, win, background: true }),
+      )
+      .catch((e) => {
+        if (import.meta.env.DEV) console.warn('[capri lite] 后台补全任务异常：', e)
+      })
+      .finally(() => bgQueued.delete(key))
+  }
+  pendingPageFills.set(key, { handle: runWhenIdle(run), run })
+}
+
+/**
+ * 立刻发出所有排队中的后台补全（顶部进度图标上点一下 = 不等 idle）。
+ * 已经在途的不受影响，只补还没发的。
+ */
+export function flushScheduledPageFills(): void {
+  const w = window as IdleWindow
+  const waiting = [...pendingPageFills.values()]
+  pendingPageFills.clear()
+  for (const { handle } of waiting) cancelIdleTask(w, handle)
+  for (const { run } of waiting) run()
 }
 
 type IdleWindow = Window & {
@@ -547,12 +632,17 @@ function runWhenIdle(cb: () => void): number {
   return setTimeout(cb, 0) as unknown as number
 }
 
-/** 取消待触发的后台补全（切会话 / 下一次快照加载前）。 */
+function cancelIdleTask(w: IdleWindow, handle: number): void {
+  if (typeof w.cancelIdleCallback === 'function') w.cancelIdleCallback(handle)
+  else clearTimeout(handle as unknown as ReturnType<typeof setTimeout>)
+}
+
+/**
+ * 取消所有待触发的后台补全（切会话 / 重建快照前）。已经排进队列的任务不
+ * 撤销——它们在真正发请求前会过 stale()，代际一变就自我作废。
+ */
 export function cancelScheduledFill(): void {
-  if (idleHandle == null) return
-  const h = idleHandle
-  idleHandle = null
   const w = window as IdleWindow
-  if (typeof w.cancelIdleCallback === 'function') w.cancelIdleCallback(h)
-  else clearTimeout(h as unknown as ReturnType<typeof setTimeout>)
+  for (const { handle } of pendingPageFills.values()) cancelIdleTask(w, handle)
+  pendingPageFills.clear()
 }

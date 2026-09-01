@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Activity, ChevronRight, Circle, CircleCheck, CircleOff, Pencil, Pin, Plus, Trash2 } from 'lucide-react'
+import { ChevronRight, Circle, CircleCheck, CircleOff, Pencil, Pin, Plus, Trash2 } from 'lucide-react'
 import { useChatStore } from '../store/chat'
 import type { SessionInfo, WorkspaceSummary } from '../api/types'
 import {
@@ -471,21 +471,14 @@ export function SessionHistoryList() {
     void deleteSession(sessionId, cwd || '')
   }
 
-  // Shared braille spinner for any "active" rows (same cadence as busy).
-  const anyActive = useMemo(
-    () =>
-      sections.some((g) =>
-        g.sessions.some((s) => sessionGroupKey(s, sessionId) === 'active'),
-      ),
-    [sections, sessionId],
-  )
   // 空列表且正在拉取：中央显示与 scrollback 一致的加载态（唯一加载
   // 指示；旧数据仍在时列表直接保留，刷新无提示）。标记形态下 sections
   // 空是正常的空态（置顶/待办本就少），不显示"加载会话…"。
   const centeredLoading =
     listMode === 'workspace' && sections.length === 0 && workspaceLoading
+  // braille 帧只喂这两处加载提示；行内「处理中」已换成 CSS 自转的图标。
   const spinnerFrame = useSessionSpinner(
-    anyActive || centeredLoading || workspaceRecentLoadingMore,
+    centeredLoading || workspaceRecentLoadingMore,
   )
 
   // 标记形态空态：未加载中且没有可显示的标记会话。
@@ -543,37 +536,27 @@ export function SessionHistoryList() {
                 className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 px-3 py-1 text-left hover:bg-gn-bg-highlight"
                 title={isWorkspace ? g.cwd : g.label}
               >
-                <span className="shrink-0 text-gn-gutter" aria-hidden>
+                {/* flex + items-center：IconGlyph 的 1.25em 盒是 inline-flex，
+                    放进普通行盒会按基线排（下半部被 descender 占住）→ 手机端
+                    看起来图标比组名高。当作 flex 项处理，图标与文字同轴。 */}
+                <span className="flex shrink-0 items-center text-gn-gutter" aria-hidden>
                   <IconGlyph glyph={isCollapsed ? Glyphs.chevron : Glyphs.chevronDown} />
                 </span>
                 <span
-                  className={`min-w-0 truncate text-[10.5px] font-medium tracking-wide ${sectionAccent}`}
+                  className={`flex min-w-0 items-center gap-1 text-[10.5px] font-medium tracking-wide ${sectionAccent}`}
                 >
                   {isWorkspace && g.cwd && pinnedWorkspaces.has(g.cwd) && (
                     <span
-                      className="mr-1 inline-block align-[-0.1em] text-gn-yellow"
+                      className="shrink-0 text-gn-yellow"
                       title="已置顶此工作目录"
                       aria-label="已置顶"
                     >
                       <Pin size={12} strokeWidth={2.5} />
                     </span>
                   )}
-                  {g.kind === 'running' && (
-                    <span className="mr-1 inline-block align-[-0.1em]" aria-hidden>
-                      <Activity size={11} strokeWidth={2.5} />
-                    </span>
-                  )}
-                  {g.kind === 'pinned' && (
-                    <span className="mr-1 inline-block align-[-0.1em]" aria-hidden>
-                      <Pin size={11} strokeWidth={2.5} />
-                    </span>
-                  )}
-                  {g.kind === 'todo' && (
-                    <span className="mr-1 inline-block align-[-0.1em]" aria-hidden>
-                      <Circle size={11} strokeWidth={2.5} />
-                    </span>
-                  )}
-                  {g.label}
+                  {/* 标记视角的三个分组不再带图标——组名（思考中 / 置顶 /
+                      待办）本身就是分类，行内也各有状态与标记图标。 */}
+                  <span className="min-w-0 truncate">{g.label}</span>
                 </span>
                 <span className="shrink-0 text-[10px] tabular-nums text-gn-gutter">
                   {g.sessions.length}
@@ -600,11 +583,47 @@ export function SessionHistoryList() {
               <>
                 {rows.map((s) => {
                   const active = s.sessionId === sessionId
-                  // Row icon follows live state: 处理中 spinner / 后台任务
-                  // ◇ + bg badge / 待处理 blue diamond / 空闲 hollow ◇.
+                  // Row icon follows live state: 处理中 spinner / 待处理
+                  // blue diamond / 后台任务 bg 徽标；空闲与仅 bg 的行留空位。
                   const key = sessionGroupKey(s, sessionId)
                   const state = key === 'active' ? 'active' : 'idle'
                   const pending = key === 'awaiting'
+                  const completed = completedNotices[s.sessionId] != null
+                  // 置顶/待办徽标默认占掉行首的状态列（原来空心菱形的位置）；
+                  // 状态本身要占那一格时（spinner / 待处理菱形 / 完成 ✓）徽标
+                  // 退回标题前，两者不同时挤一格。
+                  const markIcons = (
+                    <>
+                      {pinnedSessions.has(s.sessionId) && (
+                        <span
+                          className="shrink-0 text-gn-yellow"
+                          title="已置顶此会话"
+                          aria-label="已置顶"
+                        >
+                          <Pin size={12} strokeWidth={2.5} />
+                        </span>
+                      )}
+                      {todos[s.sessionId] === 'todo' && (
+                        <span
+                          className="shrink-0 text-gn-yellow"
+                          title="待办：还有事没做完"
+                          aria-label="待办"
+                        >
+                          <Circle size={12} strokeWidth={2.5} />
+                        </span>
+                      )}
+                      {todos[s.sessionId] === 'completed' && (
+                        <span
+                          className="shrink-0 text-gn-green"
+                          title="待办已完成"
+                          aria-label="已完成"
+                        >
+                          <CircleCheck size={12} strokeWidth={2.5} />
+                        </span>
+                      )}
+                    </>
+                  )
+                  const stateInLeading = completed || state === 'active' || pending
                   const renaming = renamingId === s.sessionId
                   const contextPct = sessionContextPct(s)
                   return (
@@ -630,22 +649,27 @@ export function SessionHistoryList() {
                       className={`group flex w-full cursor-pointer select-none items-center gap-2 px-3 py-2 text-left hover:bg-gn-bg-highlight ${active ? 'bg-gn-bg-highlight' : ''}`}
                       title={`${s.title || 'New Chat'} · ${stateLabel(key)}${s.cwd ? ` · ${s.cwd}` : ''}`}
                     >
-                      {completedNotices[s.sessionId] != null ? (
-                        // 完成提醒替换状态图标：✓ 取代菱形/spinner
-                        // （该会话跑完待查看，状态本身已无新意）。
-                        <span
-                          className="inline-flex w-[1.25em] shrink-0 items-center justify-center font-mono text-[12px] leading-none text-gn-green"
-                          title="该会话已完成，等待查看"
-                          aria-label="已完成待查看"
-                        >
-                          ✓
-                        </span>
+                      {stateInLeading ? (
+                        completed ? (
+                          // 完成提醒替换状态图标：✓ 取代菱形/spinner
+                          // （该会话跑完待查看，状态本身已无新意）。
+                          <span
+                            className="inline-flex w-[1.25em] shrink-0 items-center justify-center font-mono text-[12px] leading-none text-gn-green"
+                            title="该会话已完成，等待查看"
+                            aria-label="已完成待查看"
+                          >
+                            ✓
+                          </span>
+                        ) : (
+                          <SessionStateIcon
+                            state={state}
+                            pending={pending}
+                          />
+                        )
                       ) : (
-                        <SessionStateIcon
-                          state={state}
-                          pending={pending}
-                          spinnerFrame={spinnerFrame}
-                        />
+                        <span className="inline-flex min-w-[1.25em] shrink-0 items-center justify-center gap-0.5">
+                          {markIcons}
+                        </span>
                       )}
                       <span className="min-w-0 flex-1">
                         {renaming ? (
@@ -675,33 +699,7 @@ export function SessionHistoryList() {
                           />
                         ) : (
                           <span className="flex min-w-0 items-center gap-1">
-                            {pinnedSessions.has(s.sessionId) && (
-                              <span
-                                className="shrink-0 text-gn-yellow"
-                                title="已置顶此会话"
-                                aria-label="已置顶"
-                              >
-                                <Pin size={12} strokeWidth={2.5} />
-                              </span>
-                            )}
-                            {todos[s.sessionId] === 'todo' && (
-                              <span
-                                className="shrink-0 text-gn-yellow"
-                                title="待办：还有事没做完"
-                                aria-label="待办"
-                              >
-                                <Circle size={12} strokeWidth={2.5} />
-                              </span>
-                            )}
-                            {todos[s.sessionId] === 'completed' && (
-                              <span
-                                className="shrink-0 text-gn-green"
-                                title="待办已完成"
-                                aria-label="已完成"
-                              >
-                                <CircleCheck size={12} strokeWidth={2.5} />
-                              </span>
-                            )}
+                            {stateInLeading ? markIcons : null}
                             <span
                               className={`block min-w-0 flex-1 truncate text-[12px] ${s.title ? (active ? 'text-gn-cyan' : 'text-gn-fg') : 'text-gn-muted'}`}
                             >
@@ -738,7 +736,7 @@ export function SessionHistoryList() {
                         </span>
                       )}
                       {active && (
-                        <span className="shrink-0 text-[9px] text-gn-cyan">当前</span>
+                        <span className="shrink-0 text-[11px] text-gn-cyan">当前</span>
                       )}
                       {/* Context-window mini gauge (TUI context_pct), when the
                           session list carries contextUsed/contextSize. */}

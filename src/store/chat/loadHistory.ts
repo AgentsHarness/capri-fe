@@ -29,7 +29,7 @@ import {
   historyDetailParam,
   noteHistoryProjection,
   resetToolFillCache,
-  scheduleCurrentTurnFill,
+  schedulePageFill,
 } from './historyFill'
 import { entryTimestamp } from './entries'
 import {
@@ -118,6 +118,7 @@ export async function loadHistory(
       historyAnchorId: undefined,
       historyProjected: undefined,
       historyOmittedBytes: undefined,
+      liteFillBusy: 0,
       entries: [],
       liveStream: null,
       currentStreamStartMs: undefined,
@@ -424,10 +425,9 @@ export async function loadHistory(
       // 旧快照等下一次广播。adoption 返回值忽略：历史回放已渲染过该
       // 回合的用户行，这里只应用镜像更新，绝不重复 adoptTurn。
       const queuePullSentAt = Date.now()
-      // 精简回放的当前轮后台补全（契约 [E]）：首帧渲染已落，idle 期再拉
-      // 一份 detail=full，只把工具正文填回现有行；omittedBytes 超预算就
-      // 不补（退回纯按需加载），失败静默。
-      scheduleCurrentTurnFill(set, get, r)
+      // 精简回放的后台补全（契约 [E]）：首帧渲染已落，idle 期按同一窗口再拉
+      // 一份 detail=full，只把工具正文填回现有行（无预算闸门，失败静默）。
+      schedulePageFill(set, get, r, { turnIndex: INITIAL_TURNS })
       void transport
         .queueStatus(sessionId, cwd)
         .then((qr) => {
