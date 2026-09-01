@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { hostActions } from './hosts'
 import type { HostInfo } from '../../../api/types'
 import type { ChatState, SetState } from '../types'
@@ -7,6 +7,8 @@ vi.mock('../../../api/client', () => ({
   transport: {
     listHosts: vi.fn().mockResolvedValue({ hosts: [], defaultHostId: undefined }),
     getLocalHostId: vi.fn(() => undefined),
+    getLocalBase: vi.fn(() => ''),
+    discoverLocalHost: vi.fn().mockResolvedValue(null),
     getConnectionMode: vi.fn(() => 'hub'),
     // historyPins 在模块加载期就订阅事件流
     onEvent: vi.fn(() => vi.fn()),
@@ -137,6 +139,58 @@ describe('refreshHosts 选中 host 失效', () => {
     expect(list).not.toHaveBeenCalled()
     expect(state.switchHost).toHaveBeenCalledWith('b')
     expect(state.hosts.map((h) => h.hostId)).toEqual(['b'])
+  })
+})
+
+describe('首次自动选 host：本机近路 vs 记忆选择', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(transport.getConnectionMode as ReturnType<typeof vi.fn>).mockReturnValue('hub')
+    ;(transport.listHosts as ReturnType<typeof vi.fn>).mockResolvedValue({ hosts: [] })
+    saveStr(HOST_KEY, 'vps')
+  })
+  afterEach(() => {
+    // 别让本机/近路的桩值串到后面的 describe。
+    ;(transport.getLocalHostId as ReturnType<typeof vi.fn>).mockReturnValue(undefined)
+    ;(transport.getLocalBase as ReturnType<typeof vi.fn>).mockReturnValue('')
+  })
+
+  const LOCAL = host('mba', { local: true })
+  const REMOTE = host('vps')
+
+  function bindFirst(state: ChatState) {
+    const set: SetState = (partial) => {
+      Object.assign(state, typeof partial === 'function' ? partial(state) : partial)
+    }
+    return hostActions(set, () => state) as Pick<ChatState, 'refreshHosts'>
+  }
+
+  it('远程站探出的 127.0.0.1 近路不顶掉记住的在线 Hub 节点', async () => {
+    ;(transport.getLocalHostId as ReturnType<typeof vi.fn>).mockReturnValue('mba')
+    ;(transport.getLocalBase as ReturnType<typeof vi.fn>).mockReturnValue(
+      'http://127.0.0.1:8765',
+    )
+    const state = makeState({ selectedHostId: undefined })
+    await bindFirst(state).refreshHosts({ hosts: [LOCAL, REMOTE] })
+    expect(state.switchHost).toHaveBeenCalledWith('vps')
+  })
+
+  it('页面本身跑在本机 host 上（无近路 base）→ 本机优先，不被残留记忆拐走', async () => {
+    ;(transport.getLocalHostId as ReturnType<typeof vi.fn>).mockReturnValue('mba')
+    ;(transport.getLocalBase as ReturnType<typeof vi.fn>).mockReturnValue('')
+    const state = makeState({ selectedHostId: undefined })
+    await bindFirst(state).refreshHosts({ hosts: [LOCAL, REMOTE] })
+    expect(state.switchHost).toHaveBeenCalledWith('mba')
+  })
+
+  it('近路场景下记忆指向离线 host → 落回本机而非连一个死的', async () => {
+    ;(transport.getLocalHostId as ReturnType<typeof vi.fn>).mockReturnValue('mba')
+    ;(transport.getLocalBase as ReturnType<typeof vi.fn>).mockReturnValue(
+      'http://127.0.0.1:8765',
+    )
+    const state = makeState({ selectedHostId: undefined })
+    await bindFirst(state).refreshHosts({ hosts: [LOCAL, host('vps', { online: false })] })
+    expect(state.switchHost).toHaveBeenCalledWith('mba')
   })
 })
 

@@ -51,15 +51,21 @@ export class LocalTransport {
    * hub 模式下选中该 host 时，API 请求直连本机（base），不绕 hub 中继。
    */
   private localHostId: string | null = null
+  /**
+   * 远程站探测到的本机近路 origin（如 http://127.0.0.1:8765），空串表示
+   * 本机就是页面 origin。仅 isLocalDirect 时参与路由，见 directBase()。
+   */
+  private localBase = ''
   /** Shared secret for hub FE_TOKEN (Authorization / WS ?token=). */
   private accessToken: string
   /** A token entered this session may be used to authenticate mode detection. */
   private allowDetectAuth = false
   /**
-   * 本机 origin（this.base）是否要求 FE_TOKEN。来自直连 /api/hosts 的
-   * authRequired。EventSource 不能设 Authorization，只有本机真的要
-   * token 时才把密钥放进 /events?token=，避免把 hub token 泄漏到
-   * 开放本机的 URL / 代理日志里。
+   * 本机 origin（directBase()：localBase 命中时是 127.0.0.1，否则页面
+   * origin）是否要求 FE_TOKEN。来自直连 /api/hosts 的 authRequired。
+   * EventSource 不能设 Authorization，只有本机真的要 token 时才把密钥
+   * 放进 /events?token=，避免把 hub token 泄漏到开放本机的 URL / 代理
+   * 日志里。
    */
   private localAuthRequired = false
   private intentionalClose = false
@@ -215,14 +221,18 @@ export class LocalTransport {
 
   /**
    * 本机 HTTP 直连 base（如 http://127.0.0.1:8765）。远程站发现本机
-   * host 后写入；空串表示跟页面同源（Vite 代理 / 内嵌前端）。
+   * host 后写入；空串表示本机就是页面 origin（Vite 代理 / 内嵌前端）。
+   * 只作「选中本机 host 时」的近路，绝不覆盖 this.base——base 是 hub 的
+   * 地址（同源部署时 hubUrl 为空、apiBase() 回落到 base），一旦被改写成
+   * 127.0.0.1，listHosts / ws-ticket / prefs / /ws/fe 全都会打到本机
+   * capri-host，host 列表就只剩本机、也切不到 Hub 中继的节点了。
    */
   setLocalBase(base: string) {
-    this.base = base.replace(/\/$/, '')
+    this.localBase = base.replace(/\/$/, '')
   }
 
   getLocalBase(): string {
-    return this.base
+    return this.localBase
   }
 
   /**
@@ -237,6 +247,11 @@ export class LocalTransport {
       this.localHostId != null &&
       this.selectedHostId === this.localHostId
     )
+  }
+
+  /** 本机直连用的 base：发现到的 127.0.0.1 近路优先，否则页面 origin。 */
+  private directBase(): string {
+    return this.mode === 'hub' && this.localBase ? this.localBase : this.base
   }
 
   private pageIsLoopback(): boolean {
@@ -301,7 +316,7 @@ export class LocalTransport {
             : null
         if (!local?.hostId) continue
         if (c.hostId && local.hostId !== c.hostId) continue
-        this.base = base
+        this.localBase = base
         this.localHostId = local.hostId
         this.localAuthRequired = data.authRequired === true
         // 若 live 已连上，补开本机 SSE 近路。
@@ -447,7 +462,7 @@ export class LocalTransport {
     // 但选中本机 host 时直连本地（不绕 hub 中继，省一跳网络往返）。
     // local 模式：同源本机，绝不带 ?host=（避免 hostId=local 混淆）。
     const local = this.isLocalDirect()
-    const base = local ? this.base : this.apiBase()
+    const base = local ? this.directBase() : this.apiBase()
     const qs =
       !local && this.mode === 'hub' && this.selectedHostId
         ? `?host=${encodeURIComponent(this.selectedHostId)}`
@@ -483,7 +498,7 @@ export class LocalTransport {
     if (!this.isLocalDirect()) return false
     try {
       const target = new URL(input, location.href)
-      const local = new URL(this.base || location.href, location.href)
+      const local = new URL(this.directBase() || location.href, location.href)
       return target.origin === local.origin
     } catch {
       return false
@@ -567,7 +582,7 @@ export class LocalTransport {
    * when the local origin itself requires FE_TOKEN.
    */
   private liveSseURL(): string {
-    const path = `${this.base}/events`
+    const path = `${this.directBase()}/events`
     if (this.accessToken && this.localAuthRequired) {
       return `${path}?token=${encodeURIComponent(this.accessToken)}`
     }
