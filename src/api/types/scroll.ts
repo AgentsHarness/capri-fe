@@ -1,4 +1,5 @@
 import type { ToolCall } from './tools'
+import type { HookGroup, HookRun, ToolHookData } from './hooks'
 
 /**
  * Scrollback entry kinds — TUI RenderBlock surface + FE plan/status.
@@ -104,6 +105,13 @@ export type ScrollEntry =
        * The renderer shows the combined diffstat and each diff body.
        */
       mergedRaws?: ToolCall[]
+      /**
+       * Hook runs gated by this tool call (TUI `ToolCallHookData`), split by
+       * execution phase. Folded: they add a `[hooks: 2/1]` count to the end
+       * of the header line; expanded: they render under a `───` separator
+       * after the tool body. A row whose only content is hooks still folds.
+       */
+      hooks?: ToolHookData
       /** Activity start (epoch ms) — stamped on live running tools for
        *  the turn status line's phase timer (TUI tracker started_at);
        *  replay/completed snapshots omit it. */
@@ -217,8 +225,54 @@ export type ScrollEntry =
       warning?: boolean
       streaming?: boolean
       open?: boolean
+      /**
+       * Turn-end hook runs (`stop` / `stop_failure` / `stop_cancelled`) folded
+       * into a turn-terminal marker (TUI `SessionEventBlock::stop_hooks`):
+       * rendered right-justified on the marker line as `stop  [hooks: 2]`,
+       * with per-hook detail on expand. Only terminal events ever carry these.
+       */
+      stopHooks?: HookGroup[]
+      /** The prompt turn a terminal marker belongs to (TUI block prompt_id) —
+       *  gates which stop batches may merge into it. */
+      promptId?: string
+      msgSeq?: number
+    }
+  | {
+      id: string
+      kind: 'lifecycle'
+      /**
+       * Lifecycle hook event (TUI `LifecycleEventBlock`) — a row that looks
+       * like a tool call but is not one: `session_start`, `session_end`,
+       * `user_prompt_submit`, or a `stop` batch that could not be folded into
+       * a turn marker. The event name IS the header, so the expanded detail
+       * never repeats it as a section title.
+       */
+      event: string
+      runs: HookRun[]
+      /** Fold flag (TUI default_display_mode = Collapsed). */
+      expanded?: boolean
       msgSeq?: number
     }  | { id: string; kind: 'credit_limit'; text: string; msgSeq?: number }
+  | {
+      id: string
+      kind: 'btw'
+      /**
+       * 原始问题（TUI BtwBlock.question）——折叠头一行 "/btw <question>"。
+       * 独立 kind 而非复用 assistant：btw 答案不该被 /copy 抄走、也
+       * 不该被回合收口逻辑当作助手回复处理。
+       */
+      question: string
+      /** 答案（agent 返回的 markdown 文本；Markdown 组件渲染）。 */
+      answer?: string
+      /** 请求失败信息（错误态在区块内直接可见）。 */
+      error?: string
+      /** 等待回答中（进行中的可见反馈；脉冲金色 rail）。 */
+      streaming?: boolean
+      /** 折叠/展开（askBtw 建条目时默认展开——FE 没有 TUI 的 inline
+       *  btw panel，答案只在这条区块里；←/→ / click 可折叠）。 */
+      open?: boolean
+      msgSeq?: number
+    }
   | {
       id: string
       kind: 'group_header'
@@ -265,11 +319,20 @@ export type SubagentViewState = {
    */
   fetchState?: 'idle' | 'loading' | 'loaded'
   /**
-   * 已回放的事件条数（宿主包络条数语义）——负 offset 分页游标，与主
-   * scrollback 的 historyLoadedCount 同款。0 = 从未回放过（纯 live 捕获，
-   * 不提供上滑分页，避免与 live 事件重复）。
+   * 已回放的事件条数（宿主包络条数语义，展示/兼容）。权威游标是
+   * loadedStart：已加载区 = [loadedStart, totalCount)（live 追加不改
+   * start）。0 = 从未回放过（纯 live 捕获，不提供上滑分页，避免与
+   * live 事件重复）。
    */
   loadedCount?: number
+  /**
+   * 已加载区在宿主事件时间线上的最老行号（绝对下标，含）。分页一律用
+   * 绝对 offset（与主 scrollback historyLoadedStart 同款）——live 追加
+   * 抬高 totalCount 时负 offset 会整窗前移、与已加载区重叠、同一批包络
+   * 重复回放成重复行。undefined = 尚未回放成功（旧状态按 total - loaded
+   * 兜底换算）。
+   */
+  loadedStart?: number
   /**
    * 宿主侧会话事件总数（session-updates 的 totalCount）；缺失时按
    * loadedCount 兜底 → 拉完一页即认为无更多。
@@ -292,6 +355,18 @@ export type SubagentStatus = 'started' | 'completed' | 'failed' | 'cancelled'
 export type WorkflowStatus = 'running' | 'done' | 'failed' | 'cancelled' | 'paused'
 
 /**
- * Scrollback entry kinds — TUI RenderBlock surface + FE plan/status.
- * finishedAt (epoch ms) drives the EntryRenderer finish-flash window.
+ * /btw 侧问的回放记录（host 从 agent 落盘的 btw_history.jsonl 读出，随
+ * session-updates 响应附带；见 acp-host SessionBtw）。不占 msgSeq 空间，
+ * afterMsgSeq 是插入锚点：askedAt 之前最近一条信封的 msgSeq（-1 = 置顶）。
  */
+export type BtwHistoryRecord = {
+  btwSessionId: string
+  /** epoch ms。 */
+  askedAt: number
+  question: string
+  answer?: string
+  error?: string
+  success: boolean
+  model?: string
+  afterMsgSeq: number
+}

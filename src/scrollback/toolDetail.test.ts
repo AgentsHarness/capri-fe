@@ -3,6 +3,8 @@ import type { ToolCall } from '../api/types'
 import {
   contentText,
   extractToolDetail,
+  readPathOf,
+  skillNameFromPath,
   type DiffLine,
   type KvPair,
 } from './toolDetail'
@@ -147,6 +149,61 @@ describe('extractToolDetail — read', () => {
     expect(d).toMatchObject({ kind: 'read', content: 'abc', totalLines: 3 })
   })
 
+  it('serde internally-tagged {"type":"ReadFile","FileContent":{…}} → 内容可解析', () => {
+    // host 实测 wire 形状（grokbuild-issue.md）：rawOutput 为 internally
+    // tagged newtype，payload 键与 type 键平级。
+    const d = detail(
+      {
+        rawInput: { target_file: 'x.ts' },
+        rawOutput: {
+          type: 'ReadFile',
+          FileContent: {
+            content: 'abc',
+            raw_output: 'raw abc',
+            total_lines: 42,
+            offset: 0,
+            limit: 10,
+          },
+        },
+      },
+      'read',
+    )
+    expect(d).toMatchObject({
+      kind: 'read',
+      content: 'raw abc',
+      totalLines: 42,
+      lineStart: 1,
+      lineEnd: 10,
+    })
+  })
+
+  it('internally-tagged ImageContent → media image + base64 内容', () => {
+    const d = detail(
+      {
+        rawInput: { target_file: 'i.png' },
+        rawOutput: {
+          type: 'ReadFile',
+          ImageContent: { data: 'aGk=', mime_type: 'image/png' },
+        },
+      },
+      'read',
+    )
+    expect(d).toMatchObject({
+      kind: 'read',
+      media: 'image',
+      content: 'aGk=',
+      imageMime: 'image/png',
+    })
+  })
+
+  it('internally-tagged 错误变体 → error', () => {
+    const d = detail(
+      { rawInput: { target_file: 'nope' }, rawOutput: { type: 'ReadFile', FileNotFound: 'no such file' } },
+      'read',
+    )
+    expect(d).toMatchObject({ kind: 'read', error: 'no such file' })
+  })
+
   it('rawOutput 扁平 raw_output → lineStart/lineEnd 由 offset+limit 推导并钳到 totalLines', () => {
     const d = detail(
       { rawInput: { file_path: 'a.ts' }, rawOutput: { raw_output: 'x', total_lines: 100, offset: 10, limit: 30 } },
@@ -180,13 +237,13 @@ describe('extractToolDetail — read', () => {
       { rawInput: { path: 'a.png' }, rawOutput: { Read: { ImageContent: { data: 'z' } } } },
       'read',
     )
-    expect(d2).toMatchObject({ media: 'image' })
+    expect(d2).toMatchObject({ media: 'image', content: 'z' })
 
     const d3 = detail(
       { rawInput: { path: 'a.png' }, rawOutput: { Read: { Image: { data: 'z' } } } },
       'read',
     )
-    expect(d3).toMatchObject({ media: 'image' })
+    expect(d3).toMatchObject({ media: 'image', content: 'z' })
 
     const d4 = detail(
       { rawInput: { path: 'a.pdf' }, rawOutput: { Read: { Pdf: { data: 'z' } } } },
@@ -204,6 +261,37 @@ describe('extractToolDetail — read', () => {
       'read',
     )
     expect(d2).toMatchObject({ kind: 'read', content: '', empty: true })
+  })
+
+  it('SKILL.md 读取 → skill 字段（父目录名）；普通读取无 skill', () => {
+    const d = detail(
+      { rawInput: { path: '/x/skills/deploy/SKILL.md' }, rawOutput: { Read: { FileContent: { content: 'y' } } } },
+      'read',
+    )
+    expect(d).toMatchObject({ kind: 'read', path: '/x/skills/deploy/SKILL.md', skill: 'deploy' })
+
+    const plain = detail({ rawInput: { path: '/x/skills/deploy/README.md' }, rawOutput: {} }, 'read')
+    expect(plain).toMatchObject({ kind: 'read', skill: undefined })
+  })
+
+  it('readPathOf：camel/snake rawInput 优先，title 兜底', () => {
+    expect(readPathOf(tc({ rawInput: { path: '/a/b.ts' } }))).toBe('/a/b.ts')
+    expect(readPathOf(tc({ rawInput: { file_path: '/a/b.ts' } }))).toBe('/a/b.ts')
+    expect(readPathOf(tc({ rawInput: { filePath: '/a/b.ts' } }))).toBe('/a/b.ts')
+    expect(readPathOf(tc({ rawInput: { path: '/a/b.ts' }, title: 'Read `/a/b.ts`' }))).toBe('/a/b.ts')
+    expect(readPathOf(tc({ title: 'Read `/a/b.ts`' }))).toBe('Read `/a/b.ts`')
+    expect(readPathOf(tc({}))).toBe('')
+  })
+
+  it('skillNameFromPath：仅基名 SKILL.md 且需有父目录；容忍标题反引号包裹与反斜杠', () => {
+    expect(skillNameFromPath('/x/.grok/skills/deploy/SKILL.md')).toBe('deploy')
+    expect(skillNameFromPath('skills/deploy/SKILL.md')).toBe('deploy')
+    expect(skillNameFromPath('Read `/x/skills/deploy/SKILL.md`')).toBe('deploy')
+    expect(skillNameFromPath('C:\\x\\skills\\deploy\\SKILL.md')).toBe('deploy')
+    expect(skillNameFromPath('/x/README.md')).toBeUndefined()
+    expect(skillNameFromPath('SKILL.md')).toBeUndefined()
+    expect(skillNameFromPath('/SKILL.md')).toBeUndefined()
+    expect(skillNameFromPath('/x/skills/deploy/SKILL.md/')).toBe('deploy')
   })
 })
 
@@ -452,6 +540,33 @@ describe('extractToolDetail — generic fallback', () => {
   it('failed → error 兜底', () => {
     const d = detail({ status: 'failed' })
     expect(d).toMatchObject({ kind: 'generic', error: 'Failed' })
+  })
+})
+
+describe('循环引用 payload → 不爆栈（digString 防环）', () => {
+  it('name 键自引用对象 → 降级为 [object Object]，不抛 RangeError', () => {
+    const cyc: Record<string, unknown> = { output: {} }
+    cyc.output = cyc
+    const d = detail({ rawOutput: cyc })
+    if (d.kind !== 'generic') throw new Error('expected generic')
+    expect(d.output).toBe('[object Object]')
+  })
+
+  it('unwrapTagged 单键循环包裹链（Text→Bash→回祖先）→ 不爆栈', () => {
+    const a: Record<string, unknown> = {}
+    const b: Record<string, unknown> = { Bash: a }
+    a.Text = b
+    const d = detail({ rawOutput: a })
+    if (d.kind !== 'generic') throw new Error('expected generic')
+    expect(d.output).toBe('[object Object]')
+  })
+
+  it('MCP tagged 循环 body → 不爆栈', () => {
+    const cyc: Record<string, unknown> = { output: {} }
+    cyc.output = cyc
+    const d = detail({ rawInput: { tool_name: 'x' }, rawOutput: { MCP: cyc } }, 'use_tool')
+    if (d.kind !== 'use_tool') throw new Error('expected use_tool')
+    expect(d.output).toBe('[object Object]')
   })
 })
 

@@ -4,6 +4,7 @@
 - 审查基线：`acp-fe` @ `main`（db959a5，worktree `acp-fe-review-main`）
 - 对比对象：Grok Build TUI（`xai-grok-pager` / `xai-grok-markdown` / `xai-grok-shell`，`ccwork/grok-build`）+ 官方用户指南 `~/.grok/docs/user-guide/`（01–24 全量）
 - 方法：TUI 侧按用户指南 24 章 + pager/shell 源码（views/、scrollback/blocks/、markdown crate）梳理功能面；FE 侧通读 `src/` 全部组件与 store（约 44k 行）；逐功能 1:1 对照，关键差异已在源码中二次验证
+- 后续：本报告是 2026-08-13 的快照，基线较旧，条目状态会随提交漂移。2026-08-30 对其中若干条目做过逐项复核，并已把可执行的部分拆成带 file:line 现状与验收门槛的任务书，见 [`task-briefs/`](task-briefs/README.md)（含已完成项的提交号）
 
 ---
 

@@ -14,6 +14,7 @@ import { formatTurnDuration } from './format'
 import { clearSuppressedTools } from './tools'
 import { clearStreamBuf, flushLiveStream, sealThought } from './stream'
 import { settleTurnEntries } from './turn'
+import { spliceBtwEntries } from './btwReplay'
 import {
   INITIAL_TURN_LIMIT,
   INITIAL_TURNS,
@@ -26,7 +27,6 @@ import {
 import { entryTimestamp } from './entries'
 import {
   envelopeAgentTimestampMs,
-  envelopeEventId,
   envelopeTimestamp,
   eventAgentTimestampMs,
   replayEnvelopeKeys,
@@ -130,7 +130,13 @@ export async function loadHistory(
       // live in the top strip only). applyTopTaskProbe replaces the
       // strip contents wholesale (alive filter + additions), so stale
       // entries from a previous session cannot linger.
-      gitInfo: undefined,
+      // NOTE: gitInfo is NOT reset here. continueSession (and the hello
+      // handler) fires refreshGitInfo in parallel with this load, so the
+      // branch usually arrives BEFORE this reset runs — wiping it here
+      // lost the branch with nothing left to restore it, since a resumed
+      // idle session never emits git_head_changed (only a real HEAD change
+      // does). Switches blank it up front instead: continueSession's entry
+      // set and the hello re-anchor.
       // Permission mode is process-global (follows the agent) — do NOT
       // reset it when swapping sessions. loadHistory used to blank the
       // composer badge for the duration of replay, then only restore
@@ -216,10 +222,7 @@ export async function loadHistory(
       // 边界因此覆盖整个快照；无 _meta 的旧日志回退粗粒度写盘戳。
       let snapTail: number | undefined
       runtime.historySnapEventKeys.clear()
-      runtime.historySnapEventIds.clear()
       for (const update of updates) {
-        const eventId = envelopeEventId(update)
-        if (eventId != null) runtime.historySnapEventIds.add(eventId)
         const keyTime =
           envelopeAgentTimestampMs(update) ??
           envelopeTimestamp(update as Parameters<typeof envelopeTimestamp>[0])
@@ -263,9 +266,14 @@ export async function loadHistory(
       const sortedEntries = sortEntriesByMsgSeq(stampedEntries)
       // 已结束的回合：settle + 清流式指针。仍 open（真·进行中）时保留
       // open*，但 liveStream 已 flush，文本不会丢。
-      const entries = replayMeta.turnOpen
-        ? sortedEntries
-        : settleTurnEntries(sortedEntries)
+      // /btw 回放记录：host 初始页按窗口附带（btw_history.jsonl），按锚点
+      // 缝进时间线；本页窗口之外的锚点随更早页加载（loadMoreHistory）。
+      const entries = spliceBtwEntries(
+        replayMeta.turnOpen
+          ? sortedEntries
+          : settleTurnEntries(sortedEntries),
+        r.btw ?? [],
+      )
       // 按轮次模式：还有更早轮次 ⟺ 游标 > 0；按条数兜底：loadedStart > 0。
       const hasMore = turnBased
         ? turnIdx > 0

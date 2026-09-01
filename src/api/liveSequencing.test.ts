@@ -48,6 +48,41 @@ describe('EventSequencer', () => {
     expect(emitted.map((e) => e.seq)).toEqual([1])
   })
 
+  it('seedFromLive：全新订阅者以首条事件为起点，不 after=0 回补整段缓冲', async () => {
+    const { seq, emitted, pull } = makeSeq()
+    seq.seedFromLive('h')
+    seq.accept(ev(114020), GEN)
+    await flush()
+    expect(emitted.map((e) => e.seq)).toEqual([114020])
+    expect(pull).not.toHaveBeenCalled()
+    // 水位已对齐：之前的历史事件不再冒出来
+    seq.accept(ev(5), GEN)
+    expect(emitted.map((e) => e.seq)).toEqual([114020])
+  })
+
+  it('seedFromLive 是一次性的：对齐后真缺口照常补拉', async () => {
+    const { seq, emitted, pull } = makeSeq(async () => [ev(114022)])
+    seq.seedFromLive('h')
+    seq.accept(ev(114021), GEN)
+    expect(emitted.map((e) => e.seq)).toEqual([114021])
+    // 跳过 114022 → 下一帧 114023 造成真缺口
+    seq.accept(ev(114023), GEN)
+    await flush()
+    expect(pull).toHaveBeenCalledWith('h', 114021, expect.any(AbortSignal))
+    expect(emitted.map((e) => e.seq)).toEqual([114021, 114022, 114023])
+  })
+
+  it('reset 清掉未消费的 seedFromLive 标记', async () => {
+    const { seq, emitted, pull } = makeSeq()
+    seq.seedFromLive('h')
+    seq.reset()
+    seq.accept(ev(114020), GEN)
+    await flush()
+    // 标记已失效 → 回到默认策略（水位 0 视为流起点，补拉 after=0）
+    expect(emitted).toEqual([])
+    expect(pull).toHaveBeenCalledWith('h', 0, expect.any(AbortSignal))
+  })
+
   it('缺口触发补拉，补拉结果按序合并', async () => {
     // seq 2 缺失：收到 3 时触发 after=1 的补拉？不——水位 0，缺口是 1..2，
     // 补拉 after=0。补拉返回 [2]（1 仍缺）→ 放不出；live 送达 1 后 1..3 全出。

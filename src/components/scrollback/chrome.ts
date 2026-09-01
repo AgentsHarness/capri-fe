@@ -11,7 +11,14 @@ export type EntryViewActions = {
   toggleThought?: (id: string) => void
   /** 用户行折叠切换（默认主 store toggleUser）。 */
   toggleUser?: (id: string) => void
-  /** 全文弹窗查看器（mini 双击不弹主 viewer——条目不在主 entries）。 */
+  /** btw 区块折叠切换（默认主 store toggleBtw）。 */
+  toggleBtw?: (id: string) => void
+  /** Lifecycle hook 行折叠（默认主 store toggleLifecycle）。 */
+  toggleLifecycle?: (id: string) => void
+  /** 带 stop-hook 的回合标记折叠（默认主 store toggleSessionEvent）。 */
+  toggleSessionEvent?: (id: string) => void
+  /** 全文弹窗查看器（mini 点「查看」打开组件内局部 BlockBodyDialog——条目
+   *  不在主 entries，主 viewer 查找不到；缺省主 store openViewer）。 */
   openViewer?: (id: string) => void
   /** 行选中（mini 局部选中；默认主 store selectEntry）。 */
   selectEntry?: (id: string) => void
@@ -56,17 +63,18 @@ export type EntryChrome = {
     denseNext: boolean
     densePrev: boolean
     inGroup: boolean
+    /** 整块单击折叠；缺省则单击只选中。 */
+    onFold?: () => void
   }
   bullet: BulletPaint
   caret: string | null
   bulletGlyph: string | undefined
   rowBtn: string
-  onHeaderClick: (action: () => void) => void
-  onHeaderDblClick: () => void
   openViewer: (id: string) => void
   toggleTool: (id: string) => void
   toggleThought: (id: string) => void
   toggleUser: (id: string) => void
+  toggleBtw: (id: string) => void
   cancelSubagent: (id: string) => void
   killTask: (id: string) => void
   liveText: string | undefined
@@ -74,4 +82,7 @@ export type EntryChrome = {
   bodyRef: { current: HTMLDivElement | null }
   /** 迷你 scrollback（子代理弹窗）：消息操作行隐藏会话级动作（fork）。 */
   inMini: boolean
+  /** 会话工作目录（historyCwd ?? cwd）——工具行路径按 surface 打印时用作
+   *  相对基准（TUI path_for_tool_surface 的 cwd）。 */
+  cwd?: string
 }

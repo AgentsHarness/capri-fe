@@ -1,7 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { transport } from '../../api/client'
 import { useChatStore } from '../../store/chat'
 import { EmptyStatePicker } from './EmptyState'
+import { resetWorktreeGateCache } from './useWorktreeGate'
+
+vi.mock('../../api/client', () => ({
+  transport: {
+    gitRepoRoot: vi.fn(),
+    gitBranches: vi.fn(),
+    gitWorktreeCreate: vi.fn(),
+    // historyPins 在模块顶层注册 prefs_changed 监听（chat store 导入链）；
+    // 本文件不测 prefs，给个 no-op。
+    onEvent: vi.fn(() => () => {}),
+  },
+}))
 
 vi.mock('../DirectoryPickerModal', () => ({
   DirectoryPickerModal: ({
@@ -22,9 +35,20 @@ vi.mock('../DirectoryPickerModal', () => ({
   ),
 }))
 
+const repoRootMock = vi.mocked(transport.gitRepoRoot)
+const branchesMock = vi.mocked(transport.gitBranches)
+const wtCreateMock = vi.mocked(transport.gitWorktreeCreate)
+
 describe('EmptyStatePicker', () => {
   beforeEach(() => {
     useChatStore.setState({ emptyCwd: undefined })
+    resetWorktreeGateCache()
+    repoRootMock.mockReset()
+    branchesMock.mockReset()
+    wtCreateMock.mockReset()
+    // 默认：branches 探针不表态（非仓库目录上 agent 就是报错），让
+    // gitRepoRoot 单独决定门控结果。
+    branchesMock.mockRejectedValue(new Error('-32603 Internal error') as never)
   })
 
   it('渲染 AGENTS / HERNESS 字符画（两段 pre）与引导文案', () => {
@@ -66,5 +90,161 @@ describe('EmptyStatePicker', () => {
     expect(
       container.querySelector('[data-testid="dir-modal"]')?.getAttribute('data-open'),
     ).toBe('false')
+  })
+
+  describe('「在新 worktree 中开始」', () => {
+    it('emptyCwd 为空 → 完全不渲染入口，也不发探测请求', () => {
+      render(<EmptyStatePicker />)
+      expect(
+        screen.queryByRole('button', { name: /在新 worktree 中开始/ }),
+      ).toBeNull()
+      expect(repoRootMock).not.toHaveBeenCalled()
+      expect(wtCreateMock).not.toHaveBeenCalled()
+    })
+
+    it('emptyCwd 在 git 仓库中 → 渲染可用入口；点击调 gitWorktreeCreate 并把返回路径写进 emptyCwd', async () => {
+      useChatStore.setState({ emptyCwd: '/repo' })
+      repoRootMock.mockResolvedValue({ gitRoot: '/repo' } as never)
+      wtCreateMock.mockResolvedValue({
+        status: 'creating',
+        sessionId: 's1',
+        worktreePath: '/repo-wt',
+      } as never)
+      render(<EmptyStatePicker />)
+      const btn = await screen.findByRole('button', { name: /在新 worktree 中开始/ })
+      expect(btn).not.toBeDisabled()
+      expect(repoRootMock).toHaveBeenCalledWith({ cwd: '/repo' })
+      fireEvent.click(btn)
+      await waitFor(() => {
+        expect(wtCreateMock).toHaveBeenCalledWith({
+          sourcePath: '/repo',
+          copyMode: 'dirty',
+        })
+        expect(useChatStore.getState().emptyCwd).toBe('/repo-wt')
+        expect(useChatStore.getState().statusText).toContain('worktree')
+      })
+    })
+
+    it('gitRepoRoot 返回空（非 git 仓库）→ 入口置灰且不可点击，title 说明原因', async () => {
+      useChatStore.setState({ emptyCwd: '/plain-dir' })
+      repoRootMock.mockResolvedValue({} as never)
+      render(<EmptyStatePicker />)
+      const btn = await screen.findByRole('button', { name: /在新 worktree 中开始/ })
+      expect(btn).toBeDisabled()
+      expect(btn.getAttribute('title')).toBe('该目录不是 git 仓库')
+      fireEvent.click(btn)
+      expect(wtCreateMock).not.toHaveBeenCalled()
+    })
+
+    it('gitRepoRoot 抛错 → 入口置灰且不可点击', async () => {
+      useChatStore.setState({ emptyCwd: '/probe-err' })
+      repoRootMock.mockRejectedValue(new Error('probe down') as never)
+      render(<EmptyStatePicker />)
+      const btn = await screen.findByRole('button', { name: /在新 worktree 中开始/ })
+      expect(btn).toBeDisabled()
+      expect(btn.getAttribute('title')).toContain('probe down')
+      fireEvent.click(btn)
+      expect(wtCreateMock).not.toHaveBeenCalled()
+    })
+
+    it('旧 host：gitRepoRoot 报 Invalid params，gitBranches 给出 repoRoot → 入口仍可用', async () => {
+      useChatStore.setState({ emptyCwd: '/repo' })
+      repoRootMock.mockRejectedValue(new Error('Invalid params') as never)
+      branchesMock.mockResolvedValue({ branches: [], repoRoot: '/repo' } as never)
+      wtCreateMock.mockResolvedValue({
+        status: 'creating',
+        worktreePath: '/repo-wt',
+      } as never)
+      render(<EmptyStatePicker />)
+      const btn = await screen.findByRole('button', { name: /在新 worktree 中开始/ })
+      expect(btn).not.toBeDisabled()
+      fireEvent.click(btn)
+      await waitFor(() => {
+        expect(wtCreateMock).toHaveBeenCalledWith({
+          sourcePath: '/repo',
+          copyMode: 'dirty',
+        })
+        expect(useChatStore.getState().emptyCwd).toBe('/repo-wt')
+      })
+    })
+
+    it('进行中重复点击不会发第二次请求；失败时原位显示错误并可重试', async () => {
+      useChatStore.setState({ emptyCwd: '/repo' })
+      repoRootMock.mockResolvedValue({ gitRoot: '/repo' } as never)
+      wtCreateMock.mockRejectedValueOnce(new Error('暂无活动会话'))
+      wtCreateMock.mockResolvedValueOnce({
+        status: 'creating',
+        worktreePath: '/repo-wt',
+      } as never)
+      render(<EmptyStatePicker />)
+      const btn = await screen.findByRole('button', { name: /在新 worktree 中开始/ })
+      // 第一次点击：失败 → 原位错误 + 重试
+      fireEvent.click(btn)
+      expect(await screen.findByText('暂无活动会话')).toBeInTheDocument()
+      expect(wtCreateMock).toHaveBeenCalledTimes(1)
+      // 重试成功 → emptyCwd 写回；中间不再有额外请求
+      fireEvent.click(screen.getByText('重试'))
+      await waitFor(() => expect(useChatStore.getState().emptyCwd).toBe('/repo-wt'))
+      expect(wtCreateMock).toHaveBeenCalledTimes(2)
+    })
+
+    it('进行中按钮禁用：悬而未决时第二次点击不发请求', async () => {
+      useChatStore.setState({ emptyCwd: '/repo' })
+      repoRootMock.mockResolvedValue({ gitRoot: '/repo' } as never)
+      let resolveCreate!: (v: unknown) => void
+      wtCreateMock.mockReturnValueOnce(
+        new Promise((r) => {
+          resolveCreate = r
+        }) as never,
+      )
+      render(<EmptyStatePicker />)
+      const btn = await screen.findByRole('button', { name: /在新 worktree 中开始/ })
+      fireEvent.click(btn)
+      // 进行中：按钮换成「正在创建 worktree…」且禁用
+      expect(
+        screen.getByRole('button', { name: /正在创建 worktree/ }),
+      ).toBeDisabled()
+      fireEvent.click(btn)
+      fireEvent.click(screen.getByRole('button', { name: /正在创建 worktree/ }))
+      await waitFor(() => expect(wtCreateMock).toHaveBeenCalledTimes(1))
+      resolveCreate({ status: 'creating', worktreePath: '/repo-wt' })
+      await waitFor(() => expect(useChatStore.getState().emptyCwd).toBe('/repo-wt'))
+      expect(wtCreateMock).toHaveBeenCalledTimes(1)
+    })
+
+    it('填入自定义 worktree 路径 → 随请求带上 worktreePath；留空不带', async () => {
+      useChatStore.setState({ emptyCwd: '/repo' })
+      repoRootMock.mockResolvedValue({ gitRoot: '/repo' } as never)
+      wtCreateMock.mockResolvedValue({ status: 'creating', worktreePath: '/wt/x' } as never)
+      render(<EmptyStatePicker />)
+      const btn = await screen.findByRole('button', { name: /在新 worktree 中开始/ })
+      fireEvent.change(screen.getByPlaceholderText(/worktree 路径/), {
+        target: { value: '/wt/x' },
+      })
+      fireEvent.click(btn)
+      await waitFor(() =>
+        expect(wtCreateMock).toHaveBeenCalledWith({
+          sourcePath: '/repo',
+          worktreePath: '/wt/x',
+          copyMode: 'dirty',
+        }),
+      )
+    })
+
+    it('同 cwd 不重复探测（结果按 cwd 缓存）；cwd 变化重新探测', async () => {
+      useChatStore.setState({ emptyCwd: '/repo' })
+      repoRootMock.mockResolvedValue({ gitRoot: '/repo' } as never)
+      const { rerender } = render(<EmptyStatePicker />)
+      await screen.findByRole('button', { name: /在新 worktree 中开始/ })
+      rerender(<EmptyStatePicker />)
+      await screen.findByRole('button', { name: /在新 worktree 中开始/ })
+      expect(repoRootMock).toHaveBeenCalledTimes(1)
+      // cwd 变化 → 重新探测新目录
+      useChatStore.setState({ emptyCwd: '/repo2' })
+      repoRootMock.mockResolvedValue({ gitRoot: '/repo2' } as never)
+      rerender(<EmptyStatePicker />)
+      await waitFor(() => expect(repoRootMock).toHaveBeenCalledWith({ cwd: '/repo2' }))
+      expect(repoRootMock).toHaveBeenCalledTimes(2)
+    })
   })
 })

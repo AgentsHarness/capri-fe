@@ -144,6 +144,15 @@ describe('ContextModal', () => {
     expect(useChatStore.getState().closeContext).toHaveBeenCalledTimes(2)
   })
 
+  it('header 切换按钮 → closeContext + 打开 session info 弹窗', async () => {
+    extMock.mockResolvedValue({})
+    render(<ContextModal />)
+    await waitFor(() => expect(extMock).toHaveBeenCalled())
+    fireEvent.click(screen.getByRole('button', { name: 'session info →' }))
+    expect(useChatStore.getState().closeContext).toHaveBeenCalledTimes(1)
+    expect(useChatStore.getState().sessionInfoOpen).toBe(true)
+  })
+
   it('关闭后旧请求结果不落地（seq 守卫）', async () => {
     let resolveLater!: (v: unknown) => void
     extMock.mockReturnValue(new Promise((r) => (resolveLater = r)))
@@ -159,6 +168,30 @@ describe('ContextModal', () => {
     await waitFor(() => {
       expect(second.queryByText('暂无上下文明细（会话未就绪或宿主未返回 context）')).toBeInTheDocument()
     })
+  })
+
+  it('锁定当前会话：sessionId 随请求带上（否则 host 填活动会话）', async () => {
+    useChatStore.setState({ sessionId: 'sess-42' })
+    extMock.mockResolvedValue({ model: 'grok' })
+    render(<ContextModal />)
+    await waitFor(() =>
+      expect(extMock).toHaveBeenCalledWith({ sessionId: 'sess-42' }),
+    )
+  })
+
+  it('footer 统计行：Turns · Tool calls · Compactions', async () => {
+    extMock.mockResolvedValue({
+      context: {
+        used: 60_000,
+        total: 100_000,
+        usagePct: 60,
+        turnCount: 5,
+        toolCallCount: 12,
+        compactionCount: 1,
+      },
+    })
+    render(<ContextModal />)
+    await screen.findByText(/Turns: 5 · Tool calls: 12 · Compactions: 1/)
   })
 
   it('usageCategories 非数组 → 忽略', async () => {

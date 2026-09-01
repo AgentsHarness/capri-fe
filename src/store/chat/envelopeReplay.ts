@@ -60,6 +60,42 @@ function isReplayAgentStream(kind: string | undefined): boolean {
   return kind === 'agent_message_chunk' || kind === 'agent_thought_chunk'
 }
 
+/** agent UserRunTurnTracker：连续 user run + promptIndex；幽灵 run 不计。 */
+type userRunTurnTracker = {
+  seenMarker: boolean
+  inUser: boolean
+  hasCurrentPI: boolean
+  currentRunPI: number
+}
+
+function newUserRunTurnTracker(): userRunTurnTracker {
+  return { seenMarker: false, inUser: false, hasCurrentPI: false, currentRunPI: 0 }
+}
+
+function trackerOnUserChunk(
+  t: userRunTurnTracker,
+  promptIndex: number | undefined,
+): { newRun: boolean; counts: boolean } {
+  const hasPI = promptIndex != null
+  if (hasPI) t.seenMarker = true
+  const counts = !t.seenMarker || hasPI
+  let newRun = !t.inUser
+  if (t.inUser && (t.seenMarker || hasPI)) {
+    newRun = hasPI !== t.hasCurrentPI || (hasPI && promptIndex !== t.currentRunPI)
+  }
+  if (newRun) {
+    t.hasCurrentPI = hasPI
+    t.currentRunPI = hasPI ? promptIndex! : 0
+  }
+  t.inUser = true
+  return { newRun, counts }
+}
+
+function trackerOnNonUser(t: userRunTurnTracker): void {
+  t.inUser = false
+  t.hasCurrentPI = false
+}
+
 /**
  * Storage order is normally the agent order, but a late flush can append
  * envelopes after the turn they belong to. Two shapes are relocated:
@@ -196,14 +232,7 @@ export function replayUpdates(
   let userAfterEnd = false
   // Model id of the last replayed user_message_chunk (page-local).
   let prevReplayModelId: string | undefined
-  // promptIndex of the last replayed user_message_chunk (page-local) —
-  // the agent's authoritative user-message boundary stamp. Storage can
-  // persist a short-lived (e.g. cancelled) turn's user echo AFTER its own
-  // turn_completed, so two independent user messages can end up adjacent
-  // in a history page. Replay must split on the promptIndex change (the
-  // agent's own replay rule: a change, including unmarked ↔ marked,
-  // opens a new run) instead of blindly concatenating them into one row.
-  let prevReplayPromptIdx: number | undefined
+  const userRun = newUserRunTurnTracker()
   // Newest envelope's session-accumulated token count of this page; the
   // usage event is fired once after the loop (last envelope wins).
   let pageMetaUsed: number | undefined
@@ -242,37 +271,41 @@ export function replayUpdates(
     // buffered user row flushes, so it renders above the first message
     // of the new model.
     const rawUp = (env as RawEnvelope).params?.update
+    let skipUserText = false
     if (rawUp?.sessionUpdate === 'user_message_chunk') {
       const chunkMeta = rawUp._meta as Record<string, unknown> | undefined
-      // User-message boundary: flush the buffered previous message when
-      // this chunk's promptIndex differs. Both-undefined (old logs
-      // without the stamp) keeps the legacy single-run aggregation —
-      // backward compatible.
-      const pidx =
-        typeof chunkMeta?.promptIndex === 'number' &&
-        Number.isFinite(chunkMeta.promptIndex)
-          ? chunkMeta.promptIndex
-          : undefined
-      if (prevReplayPromptIdx !== pidx) {
-        // Flush BEFORE the model-switch line below so the switch note
-        // renders above the NEW message's row, below the flushed one.
+      if (chunkMeta?.hostTurn === true) {
         flushUser()
-        prevReplayPromptIdx = pidx
-      }
-      const mid =
-        typeof chunkMeta?.modelId === 'string' && chunkMeta.modelId
-          ? chunkMeta.modelId
-          : undefined
-      if (mid) {
-        if (prevReplayModelId && prevReplayModelId !== mid) {
-          getStore().appendLocalEntry({
-            kind: 'session_event',
-            text: `模型已从 ${modelDisplayName(getStore, prevReplayModelId)} 切换到 ${modelDisplayName(getStore, mid)}`,
-            warning: true,
-          })
+        trackerOnNonUser(userRun)
+        skipUserText = true
+      } else {
+        const pidx =
+          typeof chunkMeta?.promptIndex === 'number' &&
+          Number.isFinite(chunkMeta.promptIndex)
+            ? chunkMeta.promptIndex
+            : undefined
+        const { newRun, counts } = trackerOnUserChunk(userRun, pidx)
+        if (newRun) flushUser()
+        skipUserText = newRun && !counts
+        if (!skipUserText) {
+          const mid =
+            typeof chunkMeta?.modelId === 'string' && chunkMeta.modelId
+              ? chunkMeta.modelId
+              : undefined
+          if (mid) {
+            if (prevReplayModelId && prevReplayModelId !== mid) {
+              getStore().appendLocalEntry({
+                kind: 'session_event',
+                text: `模型已从 ${modelDisplayName(getStore, prevReplayModelId)} 切换到 ${modelDisplayName(getStore, mid)}`,
+                warning: true,
+              })
+            }
+            prevReplayModelId = mid
+          }
         }
-        prevReplayModelId = mid
       }
+    } else {
+      trackerOnNonUser(userRun)
     }
     // History replay shows stored task lifecycle events as display-only
     // informational lines (envelopeToEvent) — never captured into the
@@ -364,6 +397,7 @@ export function replayUpdates(
       }
     }
     if (ev.type === 'user_message') {
+      if (skipUserText) continue
       // Aggregate consecutive chunks of one user turn; keep cron if any
       // chunk (or the framed full text) is a scheduled-task inject.
       if (sawTurnEnd) userAfterEnd = true

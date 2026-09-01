@@ -24,6 +24,7 @@ import { GitPanel } from './components/GitPanel'
 import { BlockViewer } from './components/BlockViewer'
 import { SessionInfoModal } from './components/SessionInfoModal'
 import { ContextModal } from './components/ContextModal'
+import { PlanViewerModal } from './components/PlanViewerModal'
 import { UsageModal } from './components/UsageModal'
 import { RewindPicker } from './components/RewindPicker'
 import { ContentSearchModal } from './components/ContentSearchModal'
@@ -238,6 +239,7 @@ function AppShell({ onLogout }: { onLogout: () => void }) {
       <GitPanel open={gitOpen} onClose={() => setGitOpen(false)} />
       <SessionInfoModal />
       <ContextModal />
+      <PlanViewerModal />
       <UsageModal />
       <RewindPicker />
       <ContentSearchModal />

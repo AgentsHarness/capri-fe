@@ -199,7 +199,7 @@ export const sessionsRpc = {
     }
   },
 
-  async loadSessionHistory(this: TransportCore, 
+  async loadSessionHistory(this: TransportCore,
     sessionId: string,
     cwd: string,
     opts: { offset?: number; limit?: number; turnIndex?: number } = {},
@@ -209,6 +209,11 @@ export const sessionsRpc = {
     updates?: unknown[]
     /** 所有 user 回合的起始行号索引（turnIndex 模式返回；导航/定位用）。 */
     promptStarts?: number[]
+    /**
+     * /btw 侧问回放记录（host 本地归一化路径从 btw_history.jsonl 读出，
+     * 按页窗口切片；agent 透传路径不带）。仅本地回放路径可用。
+     */
+    btw?: import('../types/scroll').BtwHistoryRecord[]
   }> {
     const res = await this.fetch(this.url('/api/session-updates'), {
       method: 'POST',
@@ -260,6 +265,24 @@ export const sessionsRpc = {
     // /api/sessions (data.sessions). Unwrap so the fields land on the
     // SessionInfoDetail shape.
     return (data.session ?? data) as SessionInfoDetail
+  },
+
+  /**
+   * plan 模式的 plan.md 正文（host 直读 agent 写在会话目录里的同一个文件，
+   * TUI /view-plan 的数据源）。没有 plan 时返回空串；旧 host 无此端点 →
+   * 抛错，调用方回退到滚动区/审批请求里的 plan 正文。
+   */
+  async sessionPlan(this: TransportCore, sessionId: string, cwd: string): Promise<string> {
+    const res = await this.fetch(this.url('/api/session-plan'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, cwd }),
+    })
+    const data = await res.json()
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `session plan failed (${res.status})`)
+    }
+    return typeof data.content === 'string' ? data.content : ''
   },
 
   async forkSession(this: TransportCore, params: Record<string, unknown> = {}, sessionId?: string) {
@@ -389,6 +412,7 @@ export const sessionsRpc = {
       )
     }
     // RewindResponse detail fields (snake_case or camelCase on the wire):
+    //   target_prompt_index — 回退目标轮次（本地即时截断用）
     //   prompt_text    — 回退点的 prompt 原文（Composer 恢复用）
     //   reverted_files — 实际还原（写回/删除）的文件
     //   clean_files    — 本就干净的文件
@@ -415,7 +439,13 @@ export const sessionsRpc = {
         conflictType: String(c.conflict_type ?? c.conflictType ?? ''),
       }))
       .filter((c) => c.path)
+    let rawTarget: number | undefined
+    if (typeof o.target_prompt_index === 'number') rawTarget = o.target_prompt_index
+    else if (typeof o.targetPromptIndex === 'number') rawTarget = o.targetPromptIndex
     return {
+      ...(rawTarget != null && Number.isFinite(rawTarget)
+        ? { targetPromptIndex: rawTarget }
+        : {}),
       ...(rawPrompt && rawPrompt.trim() ? { promptText: rawPrompt } : {}),
       ...(strArr('reverted_files', 'revertedFiles')
         ? { revertedFiles: strArr('reverted_files', 'revertedFiles') }

@@ -241,4 +241,36 @@ describe('replayUpdates', () => {
     expect(handled[0]).toMatchObject({ text: '第一条' })
     expect(handled[2]).toMatchObject({ text: '继续' })
   })
+
+  it('hostTurn 注入不画用户行，且结束当前 user run', () => {
+    const handled: unknown[] = []
+    const getStore = () =>
+      ({ handleEvent: (ev: unknown) => handled.push(ev), appendLocalEntry: () => {}, topTasks: [] }) as unknown as ChatState
+    replayUpdates(getStore as never, [
+      env('user_message_chunk', { content: 'A' }),
+      env('user_message_chunk', { content: 'injected', _meta: { hostTurn: true } }),
+      env('user_message_chunk', { content: 'B' }),
+      env('agent_message_chunk', { content: 'ok' }),
+    ])
+    const users = handled.filter((h) => (h as { type?: string }).type === 'user_message')
+    expect(users).toEqual([
+      expect.objectContaining({ text: 'A' }),
+      expect.objectContaining({ text: 'B' }),
+    ])
+  })
+
+  it('见过 promptIndex 之后的无标记 user run 不画用户行', () => {
+    const handled: unknown[] = []
+    const getStore = () =>
+      ({ handleEvent: (ev: unknown) => handled.push(ev), appendLocalEntry: () => {}, topTasks: [] }) as unknown as ChatState
+    replayUpdates(getStore as never, [
+      env('user_message_chunk', { content: 'A', _meta: { promptIndex: 0 } }),
+      env('agent_message_chunk', { content: 'a1' }),
+      env('user_message_chunk', { content: 'phantom' }),
+      env('agent_message_chunk', { content: 'p1' }),
+      env('user_message_chunk', { content: 'B', _meta: { promptIndex: 1 } }),
+    ])
+    const users = handled.filter((h) => (h as { type?: string }).type === 'user_message')
+    expect(users.map((h) => (h as { text?: string }).text)).toEqual(['A', 'B'])
+  })
 })

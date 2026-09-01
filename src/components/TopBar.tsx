@@ -27,6 +27,7 @@ import {
 } from './StatusChips'
 import { filterRunningEntries, shortCwd } from '../format'
 import type { HostInfo } from '../api/types'
+import { hostState, hostStateLabel, type HostState } from '../lib/hostState'
 import {
   AddHostModal,
   DeleteHostModal,
@@ -41,6 +42,29 @@ function clampMenuPos(x: number, y: number): { x: number; y: number } {
     x: Math.max(4, Math.min(x, window.innerWidth - 188)),
     y: Math.max(4, Math.min(y, window.innerHeight - 136)),
   }
+}
+
+/** Host 列表行的实时状态点配色（离线/旧 hub 无状态字段 → 沿用绿/灰）。 */
+function hostDotClass(h: HostInfo): string {
+  switch (hostState(h)) {
+    case 'thinking':
+      return 'bg-gn-blue animate-pulse'
+    case 'pending':
+      return 'bg-gn-orange'
+    case 'booting':
+      return 'bg-gn-yellow'
+    case 'idle':
+      return 'bg-gn-green'
+    default:
+      return h.online ? 'bg-gn-green' : 'bg-gn-muted'
+  }
+}
+
+const HOST_STATE_TEXT_CLASS: Record<HostState, string> = {
+  thinking: 'text-gn-cyan',
+  pending: 'text-gn-orange',
+  booting: 'text-gn-yellow',
+  idle: 'text-gn-green1',
 }
 
 /**
@@ -372,6 +396,8 @@ export function TopBar({
                   : [{ hostId: hostId || 'local', hostName: hostName || 'Local Host', online: true }]
                 ).map((h) => {
                   const current = h.hostId === selectedHostId
+                  const state = hostState(h)
+                  const stateLabel = hostStateLabel(state)
                   return (
                     <div
                       key={h.hostId}
@@ -392,19 +418,28 @@ export function TopBar({
                         className={`flex w-full items-center gap-2 px-3 py-2 pr-9 text-left text-[12px] hover:bg-gn-bg-highlight ${current ? 'bg-gn-bg-highlight' : ''}`}
                         title={
                           h.online
-                            ? `切换到 ${h.hostName}（右键可管理）`
+                            ? stateLabel
+                              ? `切换到 ${h.hostName}（${stateLabel}，右键可管理）`
+                              : `切换到 ${h.hostName}（右键可管理）`
                             : `${h.hostName}（离线）`
                         }
                       >
                         <span
-                          className={`h-1.5 w-1.5 shrink-0 rounded-full ${h.online ? 'bg-gn-green' : 'bg-gn-muted'}`}
+                          className={`h-1.5 w-1.5 shrink-0 rounded-full ${hostDotClass(h)}`}
                         />
                         <div className="min-w-0 flex-1">
                           <div className="truncate text-gn-fg">
                             {h.hostName}
                             {current && <span className="ml-1.5 text-[10px] text-gn-cyan">当前</span>}
                           </div>
-                          <div className="truncate font-mono text-[10px] text-gn-muted">{h.hostId}</div>
+                          <div className="truncate font-mono text-[10px] text-gn-muted">
+                            {h.hostId}
+                            {stateLabel && (
+                              <span className={`ml-1.5 ${state ? HOST_STATE_TEXT_CLASS[state] : ''}`}>
+                                {stateLabel}
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </button>
                       {/* 行内 ⋮ 菜单图标：移动端（无右键）的主要入口，桌面端悬停可见。 */}

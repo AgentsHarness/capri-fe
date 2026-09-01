@@ -127,12 +127,44 @@ body {
   scrollbar-width: thin;
 }
 
+/* ── Scrollback ⇄ composer junction ────────────────────────────────
+   Rows used to end on a hard pixel cut where the scroll viewport meets the
+   prompt area. This band overlays that edge and dissolves the transcript
+   tail into the base surface. It arms only while rows continue BELOW the
+   fold (useJunctionDissolve toggles data-dissolve), so the newest line
+   stays fully readable, and its `right` is inset by the scrollbar gutter so
+   the thumb never fades out from under the reader. An overlay rather than
+   mask-image on the scroll box: masking a scroller costs the compositor
+   fast-scroller path on every wheel tick. */
+.gn-junction-dissolve {
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    color-mix(in srgb, var(--color-gn-bg-base) 62%, transparent) 62%,
+    var(--color-gn-bg-base)
+  );
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+.gn-junction-dissolve[data-dissolve='1'] {
+  opacity: 1;
+}
+
 /* Scrollable region with no visible scrollbar (thought preview). */
 .gn-no-scrollbar {
   scrollbar-width: none;
 }
 .gn-no-scrollbar::-webkit-scrollbar {
   display: none;
+}
+
+/* Composer 浮层（斜杠命令 / @ 文件）选中行底色。裸 gn-selection 在弹层里
+   太抢眼（浅色主题下整行像被涂满），按 SelectionBox 的惯例先与浮层底色
+   混合再用。30% 这档：浅色主题下与浮层底色仍差 ~15 个色阶（不至于看不见），
+   深色主题下只剩一层很薄的抬升，区分交给加粗的命令名与行尾 ↵。
+   两个变量都由 applyTokens 运行时覆写，换主题自动跟随。 */
+.gn-menu-sel {
+  background-color: color-mix(in srgb, var(--color-gn-selection) 30%, var(--color-gn-bg-dark));
 }
 
 /* PromptTime hover swap (short ⇄ full timestamp). The outer .gn-pt span is

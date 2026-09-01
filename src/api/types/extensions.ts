@@ -2,9 +2,25 @@
 /** GET /api/extensions — one hook row. */
 export type ExtensionHook = {
   name: string
-  command?: string
+  /** TUI HookEvent wire name (e.g. "pre_tool_use"). */
   event?: string
+  /** Handler type ("command" | "http") — TUI HookHandlerType. */
+  handlerType?: string
+  /** Raw matcher pattern from config; absent = matches all tools. */
+  matcher?: string
+  command?: string
+  /** HTTP handler URL (command hooks use `command` instead). */
+  url?: string
+  timeoutMs?: number
+  /** Definition file directory — the web modal's grouping key (TUI sourceDir). */
+  sourceDir?: string
+  /** Disabled via ~/.grok/disabled-hooks (TUI `[disabled]` badge). */
+  disabled?: boolean
+  /** Managed-policy enforced — disable refused (TUI `[policy]` badge). */
+  pinned?: boolean
+  /** Legacy local-scan fields (host fallback path only). */
   enabled?: boolean
+  source?: string
 }
 
 /** GET /api/extensions — one plugin row. */
@@ -18,15 +34,27 @@ export type ExtensionPlugin = {
 }
 
 /** GET /api/extensions — one skill row (path = SKILL.md location). */
-
-
-/** GET /api/extensions — one skill row (path = SKILL.md location). */
 export type ExtensionSkill = {
   name: string
   scope?: string
   path?: string
   /** Optional enable state — skills without it stay visible under any filter. */
   enabled?: boolean
+}
+
+/**
+ * POST /api/workflows/list (x.ai/workflows/list) — one workflow catalog
+ * entry. Mirrors the shell's `WorkflowListing`
+ * (xai-grok-shell/src/session/workflow/registry.rs) and the pager's
+ * `WorkflowInfo` (extensions_modal.rs): name / description always present;
+ * when_to_use and path are skipped on the wire when absent.
+ */
+export type WorkflowInfo = {
+  name: string
+  description: string
+  when_to_use?: string
+  source: string
+  path?: string
 }
 
 /**

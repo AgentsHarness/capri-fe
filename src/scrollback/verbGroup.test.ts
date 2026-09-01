@@ -44,6 +44,21 @@ describe('verbGroupKind / labelKind', () => {
     expect(verbGroupKind(tool({ kindName: 'list' }))).toBe('dir')
   })
 
+  it('SKILL.md 读取归入 skill（TUI is_skill_read）', () => {
+    const skillRead = (over: Partial<Extract<ScrollEntry, { kind: 'tool' }>> = {}) =>
+      tool({
+        kindName: 'read',
+        title: '/x/skills/deploy/SKILL.md',
+        raw: { rawInput: { path: '/x/skills/deploy/SKILL.md' } } as never,
+        ...over,
+      })
+    expect(verbGroupKind(skillRead())).toBe('skill')
+    // raw 缺失时 title 兜底
+    expect(verbGroupKind(tool({ kindName: 'read', title: '/x/skills/deploy/SKILL.md' }))).toBe('skill')
+    expect(verbGroupKind(tool({ kindName: 'read', title: '/x/skills/deploy/README.md' }))).toBe('file')
+    expect(labelKind(skillRead())).toBe('skill')
+  })
+
   it('web 系 / memory / integration / skill / subagent', () => {
     expect(verbGroupKind(tool({ kindName: 'web_search' }))).toBe('web_search')
     expect(verbGroupKind(tool({ kindName: 'fetch' }))).toBe('web_fetch')
@@ -413,6 +428,22 @@ describe('verbGroupLabel / truncationLabel', () => {
     })
   })
 
+  it('SKILL.md 读取连续命中 → "Read 2 skills"（区别于文件）', () => {
+    const skillRead = (title: string) =>
+      tool({ kindName: 'read', title, raw: { rawInput: { path: title } } as never })
+    const entries = [
+      skillRead('/x/.grok/skills/deploy/SKILL.md'),
+      skillRead('/x/.grok/skills/commit/SKILL.md'),
+      tool({ kindName: 'read', title: '/x/src/main.ts', raw: { rawInput: { path: '/x/src/main.ts' } } as never }),
+    ]
+    const span = scanGroups(entries, new Set())[0]
+    expect(verbGroupLabel(entries, span)).toEqual({
+      text: 'Read 2 skills, Read 1 file',
+      running: false,
+      failed: false,
+    })
+  })
+
   it('running → 进行时；有失败 → 追加 · N failed', () => {
     const entries = [
       tool({ kindName: 'read', status: 'in_progress' }),
@@ -424,6 +455,28 @@ describe('verbGroupLabel / truncationLabel', () => {
       text: 'Reading 2 files, Searching 1 pattern · 1 failed',
       running: true,
       failed: true,
+    })
+  })
+
+  it('成员带 hook runs → 组头聚合 labeled 计数；hook failed 也标 failed', () => {
+    const entries = [
+      tool({
+        kindName: 'read',
+        hooks: {
+          pre: [{ name: 'h', status: { type: 'failed', error: 'x' } }],
+        },
+      }),
+      tool({
+        kindName: 'read',
+        hooks: { post: [{ name: 'h2', status: { type: 'success' } }] },
+      }),
+    ]
+    const span = scanGroups(entries, new Set())[0]
+    expect(verbGroupLabel(entries, span)).toEqual({
+      text: 'Read 2 files',
+      running: false,
+      failed: true,
+      hookCounts: { success: 1, blocked: 0, failed: 1 },
     })
   })
 

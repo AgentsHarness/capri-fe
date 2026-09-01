@@ -535,19 +535,48 @@ export class LocalTransport {
     return path
   }
 
-  private liveWsURL(): string {
+  private liveWsURL(ticket?: string | null): string {
     const httpBase = this.apiBase() || `${location.protocol}//${location.host}`
     const u = new URL(httpBase, location.href)
     u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:'
     u.pathname = '/ws/fe'
     const params = new URLSearchParams()
-    if (this.accessToken) params.set('token', this.accessToken)
+    if (ticket) {
+      // 首选单次短效 ticket：长期 FE_TOKEN 进 query 会落到 hub 与中间代理
+      // 的 access log 里。hub 侧 feAuth 的顺序是 Bearer 头 → ?ticket= →
+      // 兼容旧版 ?token=。
+      params.set('ticket', ticket)
+    } else if (this.accessToken) {
+      params.set('token', this.accessToken)
+    }
     // Ask the hub to flate-compress events frames; the browser
     // DecompressionStream API decodes them.
     if (typeof DecompressionStream !== 'undefined') params.set('c', '1')
     u.search = params.toString()
     u.hash = ''
     return u.toString()
+  }
+
+  /**
+   * 向 hub 换一个单次使用的 WS ticket（TTL 2 分钟）。拿不到（老 hub 无此
+   * 端点、请求失败、被 disconnect 取消）就返回 null，调用方退回 ?token=，
+   * 所以不要求 hub 与 FE 同版本上线。
+   * hubLevel：ticket 属于 hub 级请求，不能被切 host 的 abort 风暴取消。
+   */
+  private async wsTicket(): Promise<string | null> {
+    if (!this.accessToken) return null
+    try {
+      const res = await this.fetch(
+        `${this.apiBase()}/api/ws-ticket`,
+        { method: 'POST' },
+        { hubLevel: true },
+      )
+      if (!res.ok) return null
+      const data = (await res.json().catch(() => ({}))) as { ticket?: unknown }
+      return typeof data.ticket === 'string' && data.ticket ? data.ticket : null
+    } catch {
+      return null
+    }
   }
 
   /**
@@ -579,6 +608,16 @@ export class LocalTransport {
     const hubSeq = seqs[this.selectedHostId]
     if (typeof hubSeq !== 'number') return
     const mine = this.seq.watermark(this.selectedHostId)
+    // 全新页面（本 tab 一条 live 事件都没收过，水位还是 0）：hub 的 seq 是它
+    // 累计到现在的值，这不是"缺口"。transcript 由 loadHistory 从 host 持久化
+    // 历史重建，此时按 after=0 补拉会把 hub 缓冲整段当 live 事件追加到末尾
+    // ——实测一次就是 169 KB / 从 seq 114020 起的历史条目，用户看到"已完成的
+    // 对话末尾莫名多出一串历史事件"。hub 侧 hello 带 seqs 的用途是「重连的
+    // FE 补自己的缺口」，水位为 0 时只对齐、不补拉。
+    if (mine === 0) {
+      this.seq.resetHost(this.selectedHostId, hubSeq)
+      return
+    }
     // hub 报的 seq 比本地水位低 = host/hub 重启后序号从头计数（hello 的
     // seqs 是权威值）。不重置的话 acceptSequencedEvent 的 `seq <= last`
     // 会把重启后**所有** live 事件静默丢弃，直到序号重新爬过旧水位
@@ -679,7 +718,7 @@ export class LocalTransport {
     // 模式显式决定 live stream：hub → WS /ws/fe；local → SSE /events。
     // 不再"先试 WS 再降级"——local 模式永远不发起 WS。
     if (this.mode === 'hub') {
-      this.connectWS(gen)
+      void this.connectWS(gen)
       // 双连接：选中本机 host 时附加本地 SSE 近路（本机事件唯一来源）。
       this.syncLocalSSE()
     } else {
@@ -702,10 +741,15 @@ export class LocalTransport {
     }
   }
 
-  private connectWS(gen: number) {
+  private async connectWS(gen: number) {
+    if (gen !== this.gen) return
+    const ticket = await this.wsTicket()
+    // 等 ticket 期间可能已经换代（connect/disconnect）或主动断开：放弃这次
+    // 连接，换到的 ticket 不消费，2 分钟后由 hub 的清理协程回收。
+    if (gen !== this.gen || this.intentionalClose) return
     let ws: WebSocket
     try {
-      ws = new WebSocket(this.liveWsURL())
+      ws = new WebSocket(this.liveWsURL(ticket))
     } catch {
       // 构造失败（非法 URL 等）：hub 模式没有 SSE 兜底，定时重试 WS。
       if (gen !== this.gen) return
@@ -714,7 +758,7 @@ export class LocalTransport {
       this.reconnectTimer = setTimeout(() => {
         this.reconnectTimer = null
         if (gen !== this.gen || this.intentionalClose) return
-        this.connectWS(gen)
+        void this.connectWS(gen)
       }, delay)
       return
     }
@@ -752,7 +796,7 @@ export class LocalTransport {
       this.reconnectTimer = setTimeout(() => {
         this.reconnectTimer = null
         if (gen !== this.gen || this.intentionalClose) return
-        this.connectWS(gen)
+        void this.connectWS(gen)
       }, delay)
     }
 
@@ -771,12 +815,19 @@ export class LocalTransport {
       if (gen !== this.gen || this.es !== es) return
       this.sseReconnectAttempt = 0
       if (!trackSeq) return
-      // 重连（含首次）：从 hub 缓冲补拉本机缺口（本地 SSE 断线期间
-      // 的事件 hub 已缓冲）。水位为 0 时补全量最近事件。
       const hostId = this.localHostId
-      if (hostId) {
-        void this.seq.gapPull(hostId, this.seq.watermark(hostId), gen)
+      if (!hostId) return
+      const last = this.seq.watermark(hostId)
+      if (last === 0) {
+        // 首次连接（本 tab 还没收过该 host 的事件）：transcript 由
+        // loadHistory 从 host 持久化历史重建，此时按 after=0 补拉会把 hub
+        // 缓冲整段当新事件追加到末尾（实测一次 169 KB、从 seq 114020 起）。
+        // 改成以第一条 live 事件为起点，不回补历史。
+        this.seq.seedFromLive(hostId)
+        return
       }
+      // 重连：从 hub 缓冲补拉本机缺口（本地 SSE 断线期间的事件 hub 已缓冲）。
+      void this.seq.gapPull(hostId, last, gen)
     }
     es.onmessage = (msg) => {
       if (gen !== this.gen || this.es !== es) return

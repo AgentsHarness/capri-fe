@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { SettingsModal } from './SettingsModal'
 import { useChatStore } from '../store/chat'
 import { useToastStore } from '../store/toast'
+import { loadDefaultSelectedPermission } from '../lib/defaultSelectedPermission'
 
 const settingsMock = vi.hoisted(() => ({
   settings: vi.fn(),
@@ -49,9 +50,14 @@ beforeEach(() => {
   vi.mocked(transport.settings).mockResolvedValue({
     ui: { ...uiData },
   })
-  vi.mocked(transport.updateSettings).mockImplementation(async (patch) => ({
-    ui: { ...uiData, ...patch },
-  }))
+  vi.mocked(transport.updateSettings).mockImplementation(async (patch) => {
+    // toolset 键独立回显，不混入 [ui]。
+    const { toolset, ...uiPatch } = patch
+    return {
+      ui: { ...uiData, ...uiPatch },
+      ...(toolset ? { toolset: { ask_user_question: { ...toolset.ask_user_question } } } : {}),
+    }
+  })
   vi.mocked(transport.listCustomModels).mockResolvedValue([])
 })
 
@@ -178,6 +184,39 @@ describe('SettingsModal', () => {
     })
   })
 
+  it('follow_up pills：默认 queue 高亮；点击 patch follow_up_behavior 并回显选中', async () => {
+    openModal()
+    render(<SettingsModal />)
+    await waitFor(() => expect(screen.getByText('follow_up_behavior')).not.toBeNull())
+    const queueBtn = () => screen.getByText('queue')
+    const steerBtn = () => screen.getByText('steer')
+    // 未配置（agent 默认 queue）→ queue 高亮
+    expect(queueBtn().className).toContain('border-gn-green')
+    expect(steerBtn().className).not.toContain('border-gn-green')
+    fireEvent.click(steerBtn())
+    await waitFor(() => {
+      expect(transport.updateSettings).toHaveBeenCalledWith({ follow_up_behavior: 'steer' })
+    })
+    // mock 回显 patch → 选中态切到 steer，不再弹回
+    await waitFor(() => expect(steerBtn().className).toContain('border-gn-green'))
+  })
+
+  it('follow_up 更新失败 → toast 展示 host 错误，选中态不跳变', async () => {
+    vi.mocked(transport.updateSettings).mockRejectedValue(
+      new Error('不允许的设置项 follow_up_behavior'),
+    )
+    openModal()
+    render(<SettingsModal />)
+    await waitFor(() => expect(screen.getByText('steer')).not.toBeNull())
+    const queueBtn = () => screen.getByText('queue')
+    fireEvent.click(screen.getByText('steer'))
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts[0]?.text).toBe('不允许的设置项 follow_up_behavior')
+    })
+    // setData 未发生 → 仍停留在原选中态（queue）
+    expect(queueBtn().className).toContain('border-gn-green')
+  })
+
   it('加载失败 → 错误 + 重试', async () => {
     vi.mocked(transport.settings).mockRejectedValueOnce(new Error('net down')).mockResolvedValueOnce({
       ui: { ...uiData },
@@ -228,5 +267,68 @@ describe('SettingsModal', () => {
     expect(btn().textContent).toContain('on')
     fireEvent.click(btn())
     expect(btn().textContent).toContain('off')
+  })
+
+it('前端偏好：default_selected_permission 默认高亮 + 点击持久化', async () => {
+    openModal()
+    render(<SettingsModal />)
+    await waitFor(() => expect(screen.getByTitle('default_selected_permission')).not.toBeNull())
+    const pill = (label: string) => screen.getByRole('button', { name: label })
+    // 未设置 → 默认 always_allow_all_sessions 高亮
+    expect(pill('始终允许（所有会话）').className).toContain('border-gn-green')
+    expect(loadDefaultSelectedPermission()).toBe('always_allow_all_sessions')
+    // 点「拒绝」→ 高亮切换 + 持久化
+    fireEvent.click(pill('拒绝'))
+    expect(pill('拒绝').className).toContain('border-gn-green')
+    expect(pill('始终允许（所有会话）').className).not.toContain('border-gn-green')
+    expect(loadDefaultSelectedPermission()).toBe('reject')
+    // 文案讲清与 permission_mode 的正交关系
+    expect(screen.getByText(/与上面的 permission_mode 正交/)).not.toBeNull()
+    // 其它两个选项也在
+    expect(pill('始终允许本命令')).not.toBeNull()
+    expect(pill('仅允许一次')).not.toBeNull()
+  })
+
+  it('timeout_enabled 开关 patch toolset 并回显', async () => {
+    vi.mocked(transport.settings).mockResolvedValue({
+      ui: { ...uiData },
+      toolset: { ask_user_question: { timeout_enabled: true, timeout_secs: 60 } },
+    })
+    openModal()
+    render(<SettingsModal />)
+    const toggle = () => screen.getByTitle(/提问卡片超时是否武装/)
+    await waitFor(() => expect(toggle()).not.toBeNull())
+    expect(toggle().textContent).toContain('on')
+    fireEvent.click(toggle())
+    await waitFor(() => {
+      expect(transport.updateSettings).toHaveBeenCalledWith({
+        toolset: { ask_user_question: { timeout_enabled: false } },
+      })
+    })
+    // mock 回显 → 开关落到 off
+    await waitFor(() => expect(toggle().textContent).toContain('off'))
+  })
+
+  it('timeout_secs 输入 Enter 提交；非法值不提交', async () => {
+    vi.mocked(transport.settings).mockResolvedValue({
+      ui: { ...uiData },
+      toolset: { ask_user_question: { timeout_enabled: true, timeout_secs: 60 } },
+    })
+    openModal()
+    render(<SettingsModal />)
+    const inputEl = (await screen.findByPlaceholderText('1800（默认 30 分钟）')) as HTMLInputElement
+    expect(inputEl.value).toBe('60')
+    fireEvent.change(inputEl, { target: { value: '123' } })
+    fireEvent.keyDown(inputEl, { key: 'Enter' })
+    await waitFor(() => {
+      expect(transport.updateSettings).toHaveBeenCalledWith({
+        toolset: { ask_user_question: { timeout_secs: 123 } },
+      })
+    })
+    // 非法值（0）→ 本地拦截，不发 patch
+    fireEvent.change(inputEl, { target: { value: '0' } })
+    fireEvent.keyDown(inputEl, { key: 'Enter' })
+    fireEvent.blur(inputEl)
+    expect(transport.updateSettings).toHaveBeenCalledTimes(1)
   })
 })

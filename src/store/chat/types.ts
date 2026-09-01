@@ -19,6 +19,10 @@ import type {
   WorkspaceGroup,
 } from '../../api/types'
 import type { McpListServer } from '../../api/client'
+import type {
+  PendingStopHooks,
+  PendingToolHook,
+} from './hookAttach'
 
 import type {
   ConnState,
@@ -123,6 +127,20 @@ export interface ChatConnState {
 export interface ChatTimelineState {
   entries: ScrollEntry[]
   toolIndex: Record<string, string> // toolCallId -> entry id
+  /**
+   * Tool-hook batches (`pre_tool_use` / `post_tool_use`) whose tool row has
+   * not been created yet. The wire announces the hook before the `tool_call`
+   * envelope, so the batch waits here and is claimed by the row that matches
+   * its `tool_name`. Cleared with the turn.
+   */
+  pendingToolHooks: PendingToolHook[]
+  /**
+   * Turn-end (`stop` family) batches held for the turn's terminal marker —
+   * they arrive while the turn is still open, so the marker line folds them in
+   * (`stop  [hooks: 2]`) instead of getting a row of their own. TUI
+   * `AgentView::pending_stop_hooks`.
+   */
+  pendingStopHooks?: PendingStopHooks
   // streaming pointers
   openAssistantId?: string
   openThoughtId?: string
@@ -552,7 +570,7 @@ export interface ChatUiState {
   toggleGroupExpansion: (anchorId: string) => void
   /**
    * Block viewer (TUI OpenBlockViewer): entry id currently shown fullscreen.
-   * Enter / double-click open; Esc closes. Independent of inline expand.
+   * Enter / 「查看」按钮打开；Esc 关闭。与行内折叠独立。
    */
   viewerEntryId: string | null
   /**
@@ -561,7 +579,7 @@ export interface ChatUiState {
    * with viewerEntryId.
    */
   viewerTask?: ViewerTask
-  /** Open TUI block viewer for entry (Enter / double-click). */
+  /** Open TUI block viewer for entry (Enter / 「查看」). */
   openViewer: (id?: string | null) => void
   /**
    * Open the block viewer for a task by id — used by the top task strip
@@ -593,12 +611,6 @@ export interface ChatUiState {
   /** Open / close the /session-info modal. */
   openSessionInfo: () => void
   closeSessionInfo: () => void
-  /**
-   * TUI /session-info: fetch session details (POST /api/session-info) and
-   * append them to the scrollback as a read-only text block (kind 'status')
-   * — the TUI pushes a plain text block into the scrollback, no modal.
-   */
-  showSessionInfo: () => Promise<void>
   /** /context modal visibility (TUI context command — context breakdown). */
   contextOpen: boolean
   /** Open / close the /context detail modal. */
@@ -608,6 +620,11 @@ export interface ChatUiState {
   usageOpen: boolean
   openUsage: () => void
   closeUsage: () => void
+  /** /view-plan modal visibility (TUI view-plan command — plan preview). */
+  planViewerOpen: boolean
+  /** Open / close the /view-plan plan viewer modal. */
+  openPlanViewer: () => void
+  closePlanViewer: () => void
   /**
    * Sticky running-tasks bar under the top bar (TUI tasks pane). Toggled
    * by the ⠋N chip and the composer's idle still-running cue — shared so
@@ -688,6 +705,12 @@ export interface ChatUiState {
   toggleThought: (id: string) => void
   /** Expand/collapse long user prompts (←/→ / click). */
   toggleUser: (id: string) => void
+  /** 折叠/展开 btw 侧问区块（←/→ / click；条目默认展开，见 askBtw）。 */
+  toggleBtw: (id: string) => void
+  /** 折叠/展开 lifecycle hook 行（TUI LifecycleEventBlock，默认折叠）。 */
+  toggleLifecycle: (id: string) => void
+  /** 折叠/展开 session_event（recap 或带 stop-hook 的回合标记）。 */
+  toggleSessionEvent: (id: string) => void
   /** → expand / ← collapse selected foldable block or group */
   setExpanded: (expanded: boolean) => void
   /**
@@ -746,6 +769,11 @@ export interface ChatActions {
   dismissNotice: () => void
   /** x.ai/recap — fire-and-forget "where was I" summary. */
   requestRecap: () => Promise<void>
+  /**
+   * x.ai/btw — 旁路小话（/btw）：busy 中也直接发出、不占 prompt 队列；
+   * 结果以 btw 滚动区块呈现（按发起会话绑定，切走会话不残留）。
+   */
+  askBtw: (question: string) => Promise<void>
   /**
    * Fork the current session (x.ai/session/fork; TUI /fork). On success the
    * FE switches to the forked session (TUI switches to the peer agent) and
@@ -866,6 +894,8 @@ export interface ChatActions {
   continueSession: (sessionId: string, cwd: string) => Promise<void>
   /** Memory system — /flush: ask the host to persist session knowledge. */
   memoryFlush: () => Promise<void>
+  /** Memory system — /remember: send a raw note to the agent's LLM rewriter. */
+  rememberNote: (rawText: string) => Promise<void>
 }
 
 export type ChatState = ChatConnState &

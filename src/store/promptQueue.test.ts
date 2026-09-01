@@ -1,7 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ContentBlock } from '../api/types'
 import { transport } from '../api/client'
-import { applyQueueChanged, usePromptQueue, type QueuedPrompt } from './promptQueue'
+import {
+  applyQueueChanged,
+  DELETED_ROWS_MAX,
+  usePromptQueue,
+  type QueuedPrompt,
+} from './promptQueue'
+import { useToastStore } from './toast'
 
 vi.mock('../api/client', () => ({
   transport: {
@@ -30,6 +36,7 @@ beforeEach(() => {
     queue: [],
     sending: false,
     drainedIds: new Set(),
+    deletedRows: new Map(),
     editIndex: null,
     editDraft: '',
     sessionId: undefined,
@@ -275,5 +282,92 @@ describe('applyQueueChanged（权威快照广播）', () => {
     const st = usePromptQueue.getState()
     expect(st.queue.map((q) => q.id)).toEqual(['a'])
     expect(st.queues['s2']?.map((q) => q.id)).toEqual(['x1'])
+  })
+})
+
+describe('删除晚于出队的竞态（remove/clear 没赶上 agent pop 队首）', () => {
+  beforeEach(() => useToastStore.setState({ toasts: [] }))
+  const toastTexts = () => useToastStore.getState().toasts.map((t) => t.text)
+
+  it('removeAt 登记被删行正文（竞态识别的依据）', () => {
+    usePromptQueue.setState({ queue: [row('p1', 'a', { version: 1 })], sessionId: 's' })
+    usePromptQueue.getState().removeAt('p1')
+    expect(usePromptQueue.getState().deletedRows.get('p1')).toMatchObject({
+      id: 'p1',
+      text: 'a',
+    })
+  })
+
+  it('已删行被收养开跑：仍出用户行 + 提示删除未生效，且只提示一次', () => {
+    usePromptQueue.setState({ queue: [row('p1', '排队消息二')], sessionId: 's1' })
+    usePromptQueue.getState().removeAt('p1')
+    const adoption = applyQueueChanged({ runningPromptId: 'p1', entries: [] }, 's1')
+    expect(adoption).toMatchObject({ id: 'p1', text: '排队消息二' })
+    expect(usePromptQueue.getState().queue).toEqual([])
+    expect(toastTexts()).toHaveLength(1)
+    expect(toastTexts()[0]).toContain('删除未生效')
+    expect(toastTexts()[0]).toContain('排队消息二')
+    // 同一回合的后续广播（含带 entries 的快照）不得重复提示
+    applyQueueChanged({ runningPromptId: 'p1' }, 's1')
+    applyQueueChanged({ runningPromptId: 'p1', entries: [] }, 's1')
+    expect(toastTexts()).toHaveLength(1)
+  })
+
+  it('清空后队首照旧开跑：同样收养 + 提示', () => {
+    usePromptQueue.setState({
+      queue: [row('p1', 'one'), row('p2', 'two')],
+      sessionId: 's1',
+    })
+    usePromptQueue.getState().clear()
+    const adoption = applyQueueChanged({ runningPromptId: 'p1' }, 's1')
+    expect(adoption?.id).toBe('p1')
+    expect(toastTexts()[0]).toContain('删除未生效')
+  })
+
+  it('普通收养（未删除过）不出提示', () => {
+    usePromptQueue.setState({ queue: [row('p1', 'run me')], sessionId: 's1' })
+    const adoption = applyQueueChanged({ runningPromptId: 'p1' }, 's1')
+    expect(adoption?.text).toBe('run me')
+    expect(toastTexts()).toEqual([])
+  })
+
+  it('无删除登记的 drain（旧 host 已跑完的 settlePromptRow）不得被复活收养', () => {
+    usePromptQueue.setState({
+      queue: [],
+      drainedIds: new Set(['p1']),
+      sessionId: 's1',
+    })
+    expect(applyQueueChanged({ runningPromptId: 'p1' }, 's1')).toBeNull()
+    expect(toastTexts()).toEqual([])
+  })
+
+  it('非活跃会话的竞态广播：不收养、不提示（切回由历史回放渲染）', () => {
+    usePromptQueue.setState({ queue: [row('p1', 'a')], sessionId: 's1' })
+    usePromptQueue.getState().removeAt('p1')
+    usePromptQueue.getState().switchSession('s2')
+    expect(applyQueueChanged({ runningPromptId: 'p1' }, 's1')).toBeNull()
+    expect(toastTexts()).toEqual([])
+  })
+
+  it('requeueFront 放回镜像即撤销登记，之后开跑不误报', () => {
+    usePromptQueue.setState({ queue: [row('p1', 'a')], sessionId: 's1' })
+    usePromptQueue.getState().removeAt('p1')
+    usePromptQueue.getState().requeueFront('s1', row('p1', 'a'))
+    expect(usePromptQueue.getState().deletedRows.has('p1')).toBe(false)
+    const adoption = applyQueueChanged({ runningPromptId: 'p1' }, 's1')
+    expect(adoption?.id).toBe('p1')
+    expect(toastTexts()).toEqual([])
+  })
+
+  it('删除登记有界（最旧的先淘汰）', () => {
+    const many = Array.from({ length: DELETED_ROWS_MAX + 5 }, (_, i) =>
+      row(`p${i}`, `m${i}`),
+    )
+    usePromptQueue.setState({ queue: many, sessionId: 's1' })
+    usePromptQueue.getState().clear()
+    const st = usePromptQueue.getState()
+    expect(st.deletedRows.size).toBe(DELETED_ROWS_MAX)
+    expect(st.deletedRows.has('p0')).toBe(false)
+    expect(st.deletedRows.has(`p${many.length - 1}`)).toBe(true)
   })
 })

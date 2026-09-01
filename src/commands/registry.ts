@@ -11,9 +11,17 @@ import { useChatStore, type ExtensionsTab } from '../store/chat'
 import { usePromptQueue } from '../store/promptQueue'
 import { THEMES, useThemeStore } from '../store/theme'
 import type { ThemeId } from '../theme/tokens'
-import type { AgentCommand } from '../api/types'
+import type { AgentCommand, ContentBlock } from '../api/types'
+import {
+  imagineInstruction,
+  imagineUsageMessage,
+  imagineVideoInstruction,
+  imagineVideoUsageMessage,
+} from './imagine'
 import { slashRecencyScore } from './recency'
 import { cachedSkills } from './skills'
+import { fmtBytes } from '../format'
+import { renderTranscript, safeExportFilename } from '../lib/exportTranscript'
 
 export type SlashCommand = {
   name: string
@@ -59,29 +67,91 @@ function setMultilineEnabled(on: boolean): void {
   saveBool(MULTILINE_KEY, on)
 }
 
-/** /hooks /plugins /skills /marketplace — extensions modal on its tab. */
+/** /hooks /plugins /skills /marketplace /workflows — extensions modal on its tab. */
 function openExtensionsCmd(tab: ExtensionsTab) {
   useChatStore.getState().openExtensions(tab)
 }
 
+// ── /workflow（TUI slash/commands/workflow.rs + shell resolve 对齐）────
+// 单复数是两个命令：/workflow（复数带 s 是目录浏览）是操作命令——
+// `runs` 打开运行面板；pause/resume/stop/save 复用 store 的
+// workflowControl / saveWorkflowScript；其余形式（launch、裸调用）原文
+// 透传给 shell（TUI PassThrough），busy 时由 sendPrompt 进队列。
+// Shell 接受的 manage op（xai-grok-shell slash_commands.rs resolve）：
+// `/workflow pause|resume|stop|save [run]` 与倒序 `/workflow <run> pause`
+// （op 大小写不敏感）；`runs` 仅在无附加参数时是 op，带参数时仍是
+// 名为 runs 的 workflow 的 launch。
+const WORKFLOW_MANAGE_OPS = new Set(['pause', 'resume', 'stop', 'save'])
+type WorkflowManageOp = 'pause' | 'resume' | 'stop' | 'save'
+
+/** run handle 按 runId 或名称匹配（TUI 建议填充的是 run.name）。 */
+function findWorkflowRun(handle: string) {
+  const q = handle.toLowerCase()
+  return Object.values(useChatStore.getState().workflowRuns).find(
+    (r) => r.runId.toLowerCase() === q || r.name.toLowerCase() === q,
+  )
+}
+
+/** 缺少/未知 run handle 时给中文提示，不猜一个 run（TUI manage_run_items
+ *  只把本会话已知的 run 列入建议）。 */
+function workflowRunMissingHint(handle: string | undefined) {
+  const runs = Object.values(useChatStore.getState().workflowRuns)
+  if (handle) {
+    err(
+      runs.length > 0
+        ? `未找到工作流运行「${handle}」。当前运行: ${runs.map((r) => r.name).join('、')}`
+        : `未找到工作流运行「${handle}」（当前会话没有运行记录）`,
+    )
+    return
+  }
+  err(
+    runs.length > 0
+      ? `用法: /workflow pause|resume|stop|save <运行 ID 或名称>。当前运行: ${runs
+          .map((r) => r.name)
+          .join('、')}`
+      : '用法: /workflow pause|resume|stop|save <运行 ID 或名称> — 当前会话没有运行记录，先用 /workflow <名称> 启动一个 workflow',
+  )
+}
+
+function runWorkflowControl(op: WorkflowManageOp, handle: string) {
+  const st = useChatStore.getState()
+  if (!handle) {
+    workflowRunMissingHint(undefined)
+    return
+  }
+  const run = findWorkflowRun(handle)
+  if (!run) {
+    workflowRunMissingHint(handle)
+    return
+  }
+  if (op === 'save') {
+    void st.saveWorkflowScript(run.runId)
+    return
+  }
+  st.workflowControl(run.runId, op)
+}
+
 /**
  * Send a prompt to the agent now, or queue it while a turn is running
- * (TUI mid-turn queue semantics — same as /loop).
+ * (TUI mid-turn queue semantics — same as /loop). `blocks` overrides the
+ * wire content (e.g. /imagine 的 image_gen 指令块) while the scrollback
+ * keeps `text`; undefined → a plain text block from `text`.
  */
-function sendPrompt(text: string) {
+function sendPrompt(text: string, blocks?: ContentBlock[]) {
   const st = useChatStore.getState()
   if (st.conn === 'busy') {
     // Tag with the active session so the queue never drains into another.
     usePromptQueue.getState().enqueue(
       {
         text,
-        blocks: [{ type: 'text', text }],
+        blocks: blocks && blocks.length > 0 ? blocks : [{ type: 'text', text }],
       },
       st.sessionId ?? '',
     )
     return
   }
-  void st.send(text)
+  if (blocks && blocks.length > 0) void st.send(text, blocks)
+  else void st.send(text)
 }
 
 /**
@@ -96,6 +166,37 @@ export function parseBudgetTokens(raw: string): number | undefined {
   if (!Number.isFinite(n) || n < 0) return undefined
   const mult = m[2] ? (m[2].toLowerCase() === 'k' ? 1_000 : 1_000_000) : 1
   return Math.round(n * mult)
+}
+
+// ── /loop（TUI slash/commands/loop_cmd.rs 语义移植）─────────────────
+// 只把形如 `^\d+[smhd]$` 且数字非 0 的首 token 当 interval（仅用于即时
+// 回执预览）；不匹配时整串都是 prompt，留给 agent 推导真实调度。
+// `/loop` 不再自造中文指令：原文 `/loop <args>` 透传给 host，由 shell
+// 的 PROMPT_COMMANDS 通道（gate: Scheduler）拦截并展开。
+const LOOP_INTERVAL_RE = /^([1-9]\d*)([smhd])$/
+
+function isLoopIntervalToken(token: string): boolean {
+  const m = LOOP_INTERVAL_RE.exec(token)
+  if (!m) return false
+  // TUI rejects tokens that overflow u64; mirror with safe-integer check.
+  return Number.isSafeInteger(Number(m[1]))
+}
+
+function parseLoopArgs(args: string): { interval?: string; promptText: string } {
+  const trimmed = args.trim()
+  const sp = trimmed.search(/\s/)
+  const first = sp === -1 ? trimmed : trimmed.slice(0, sp)
+  const rest = sp === -1 ? '' : trimmed.slice(sp + 1).trim()
+  if (rest && isLoopIntervalToken(first)) return { interval: first, promptText: rest }
+  return { promptText: trimmed }
+}
+
+/** "5m" → "5 分钟"（回执文案用，中文无单复数区分）。 */
+function loopIntervalToHuman(token: string): string {
+  const m = LOOP_INTERVAL_RE.exec(token)
+  if (!m) return token
+  const unit = { s: '秒', m: '分钟', h: '小时', d: '天' }[m[2] as 's' | 'm' | 'h' | 'd']
+  return `${Number(m[1])} ${unit}`
 }
 
 /**
@@ -346,6 +447,21 @@ export const slashCommands: SlashCommand[] = [
     run: () => void useChatStore.getState().requestRecap(),
   },
   {
+    name: 'btw',
+    description: '旁路提问：不打断当前回合，答案以独立区块展示',
+    argHint: '<question>',
+    run: (args) => {
+      const q = args.trim()
+      if (!q) {
+        err('用法: /btw <问题>，例如 /btw 这个改动会影响哪些文件')
+        return
+      }
+      // 与 /loop 不同：busy 中也必须立即发出（旁路问题不占 prompt 队列、
+      // 不排队）——走 store 的 askBtw 直发 x.ai/btw。
+      void useChatStore.getState().askBtw(q)
+    },
+  },
+  {
     name: 'search',
     aliases: ['find', 'grep'],
     description: '搜索工作区文件内容（结果按文件分组，复制 路径:行号）',
@@ -357,8 +473,8 @@ export const slashCommands: SlashCommand[] = [
   },
   {
     name: 'session-info',
-    description: '查看当前会话信息（入滚动区）',
-    run: () => void useChatStore.getState().showSessionInfo(),
+    description: '查看当前会话信息（弹窗：ID/模型/上下文/回合等）',
+    run: () => void useChatStore.getState().openSessionInfo(),
   },
   {
     name: 'context',
@@ -368,38 +484,96 @@ export const slashCommands: SlashCommand[] = [
   {
     name: 'loop',
     description: '创建定时任务',
-    argHint: '[interval] [prompt...]',
+    argHint: '[interval] <prompt>',
     run: (args) => {
-      const sp = args.search(/\s/)
-      const interval = (sp === -1 ? args : args.slice(0, sp)).trim()
-      const promptText = (sp === -1 ? '' : args.slice(sp + 1)).trim()
-      if (!interval || !promptText) {
-        err('用法: /loop [间隔] [提示词...]，例如 /loop 5m 检查测试状态')
+      const trimmed = args.trim()
+      const { interval, promptText } = parseLoopArgs(trimmed)
+      if (!promptText) {
+        err('用法: /loop [间隔] [提示词...]，例如 /loop 5m 检查测试状态；不写间隔时 agent 会询问运行频率')
         return
       }
-      // The FE cannot call agent tools directly — the interval is passed
-      // through verbatim and the agent creates the scheduler task.
-      const text = `请创建一个定时任务（用 scheduler_create 工具）：每 ${interval} 执行一次：${promptText}`
-      const st = useChatStore.getState()
-      if (st.conn === 'busy') {
-        // Mid-turn: queue like any Enter prompt; auto-sends at turn end.
-        // Tag with the active session so it never drains into another.
-        usePromptQueue.getState().enqueue(
-          {
-            text,
-            blocks: [{ type: 'text', text }],
-          },
-          st.sessionId ?? '',
-        )
+      // 原文透传（TUI PROMPT_COMMANDS 通道）：shell 收到以 /loop 开头的
+      // prompt 会拦截并展开成 loop_schedule_instruction（scheduler gate
+      // 通过时），fire mode 由 host 决定。与 agent 广播命令的 pass-through
+      // run 一致——busy 时由 sendPrompt 走 prompt 队列。
+      note(
+        interval
+          ? `已请求定时任务：每 ${loopIntervalToHuman(interval)} · ${promptText}（实际调度以 agent 创建的 scheduler_create 为准）`
+          : `已请求定时任务：调度中… · ${promptText}（agent 会确认运行频率并创建 scheduler_create）`,
+      )
+      sendPrompt(`/loop ${trimmed}`)
+    },
+  },
+  // ── /imagine（TUI slash/commands/imagine.rs 语义移植）─────────────
+  // shell 把 imagine / imagine-video 烧成 PAGER_COMMAND_KEYS 保留名
+  // （xai-grok-shell slash_commands.rs:487-597），agent 不广播、同名
+  // skill 也占用不了——只能本地实现。指令文本复刻自 xai-grok-tools-api
+  // 的 imagine_instruction / imagine_video_instruction（见 imagine.ts，
+  // agent 侧改名需同步）。TUI 效果：显示文本是用户敲的
+  // `/imagine <描述>`，发给模型的是指令块——send 的 text/blocks 分离
+  // 与 InjectSkill 的 display_text/prompt_blocks 同构。工具可用性由
+  // agent 侧决定（无 image_gen 或档位受限时 agent 会直接说明）。
+  {
+    name: 'imagine',
+    description: '根据文字描述生成图片',
+    argHint: '<description>',
+    run: (args) => {
+      const prompt = args.trim()
+      if (!prompt) {
+        note(imagineUsageMessage())
         return
       }
-      void st.send(text)
+      sendPrompt(`/imagine ${prompt}`, [
+        { type: 'text', text: imagineInstruction(prompt) },
+      ])
+    },
+  },
+  {
+    name: 'imagine-video',
+    description: '根据文字描述生成视频（从一张源图开始）',
+    argHint: '<description>',
+    run: (args) => {
+      const prompt = args.trim()
+      if (!prompt) {
+        note(imagineVideoUsageMessage())
+        return
+      }
+      sendPrompt(`/imagine-video ${prompt}`, [
+        { type: 'text', text: imagineVideoInstruction(prompt) },
+      ])
     },
   },
   {
     name: 'plan',
-    description: '进入计划模式（plan 中再次执行无效，Shift+Tab 退出）',
-    run: () => void useChatStore.getState().togglePlanMode(),
+    description: '进入计划模式（已进入时提示用 /view-plan，Shift+Tab 退出）',
+    run: () => {
+      const st = useChatStore.getState()
+      // TUI dispatch_enter_plan_mode parity: re-running /plan while
+      // already in plan (incl. the plan·auto / plan·always overlays) is
+      // a no-op with a "use /view-plan" toast — the flag check mirrors
+      // store togglePlanMode's own guard.
+      if (st.planMode === true || st.permissionMode === 'plan') {
+        status('已在 plan 模式，用 /view-plan 查看当前 plan')
+        return
+      }
+      void st.togglePlanMode()
+    },
+  },
+  {
+    name: 'view-plan',
+    aliases: ['show-plan', 'plan-view'],
+    description: '查看当前会话的 plan 正文（弹窗）',
+    run: () => {
+      const st = useChatStore.getState()
+      if (!st.sessionId) {
+        err('查看失败: 无活动会话')
+        return
+      }
+      // 弹窗自己按优先级取正文（host plan.md → 待应答审批请求 → 滚动区
+      // exit_plan_mode 工具输出），都没有才显示空态/任务清单兜底；这里不
+      // 预设「有没有 plan」的判断——TUI 也是先打开预览再报 no plan。
+      st.openPlanViewer()
+    },
   },
   {
     name: 'copy',
@@ -418,6 +592,61 @@ export const slashCommands: SlashCommand[] = [
         status('已复制最近一条回复到剪贴板')
       } catch (e) {
         status(`复制失败: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    },
+  },
+  {
+    name: 'export',
+    description: '导出当前会话为 Markdown（无参数复制到剪贴板，带文件名下载）',
+    argHint: '[filename]',
+    run: async (args) => {
+      const st = useChatStore.getState()
+      if (!st.sessionId) {
+        err('没有可导出的会话')
+        return
+      }
+      // FE 历史是分页加载的：只导出已加载部分，文件头/末尾如实标注
+      // 可能还有未上翻加载的更早历史（TUI 服务端全量 transcript 在
+      // Web 端不可得，host 亦无 export 端点——纯前端实现）。
+      const md = renderTranscript(
+        st.entries,
+        {
+          sessionId: st.sessionId,
+          cwd: st.cwd,
+          title: st.sessionTitle,
+          modelName: st.modelName,
+          historyLoadedStart: st.historyLoadedStart,
+          historyHasMore: st.historyHasMore,
+        },
+        st.liveStream,
+      )
+      if (!md) {
+        err('没有可导出的对话内容')
+        return
+      }
+      const filename = args.trim()
+      if (!filename) {
+        try {
+          await navigator.clipboard.writeText(md)
+          status('已复制会话转录到剪贴板')
+        } catch (e) {
+          status(`复制失败: ${e instanceof Error ? e.message : String(e)}`)
+        }
+        return
+      }
+      try {
+        const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = safeExportFilename(filename)
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        URL.revokeObjectURL(url)
+        status(`已导出为 ${a.download}（${fmtBytes(blob.size)}）`)
+      } catch (e) {
+        status(`导出失败: ${e instanceof Error ? e.message : String(e)}`)
       }
     },
   },
@@ -514,10 +743,44 @@ export const slashCommands: SlashCommand[] = [
       void st.goalSet(objective, budget)
     },
   },
+  // ── workflow（TUI /workflow 单数 + /workflows 复数语义）──────────────
+  {
+    name: 'workflow',
+    description: '启动已保存的 workflow、查看运行列表、管理运行（pause/resume/stop/save）',
+    argHint: '<名称> [--agent-budget N] [--effort LEVEL] [args] | runs | pause|resume|stop|save [名称]',
+    run: (args) => {
+      const trimmed = args.trim()
+      // `/workflow runs`：精确 op（大小写不敏感，TUI workflow.rs run）→
+      // 打开运行面板。带附加参数时不拦截（shell 当作名为 runs 的 launch）。
+      if (trimmed.toLowerCase() === 'runs') {
+        useChatStore.getState().setWorkflowPanelOpen(true)
+        return
+      }
+      const tokens = trimmed.split(/\s+/).filter(Boolean)
+      const [first, second] = tokens
+      const firstOp = first && WORKFLOW_MANAGE_OPS.has(first.toLowerCase())
+        ? (first.toLowerCase() as WorkflowManageOp)
+        : undefined
+      if (firstOp) {
+        // op 前置：run handle 取整段剩余文本（shell 的 run_id 允许空格）。
+        runWorkflowControl(firstOp, tokens.slice(1).join(' '))
+        return
+      }
+      // 倒序形式 `/workflow <run> pause`（shell second_is_final_op，必须
+      // 恰好两个 token，否则仍是 launch）。
+      if (tokens.length === 2 && second && WORKFLOW_MANAGE_OPS.has(second.toLowerCase())) {
+        runWorkflowControl(second.toLowerCase() as WorkflowManageOp, first)
+        return
+      }
+      // launch 与裸调用（文本概览由 shell 给）：原样透传，与 TUI
+      // PassThrough("/workflow [args]") 一致；busy 时 sendPrompt 进队列。
+      sendPrompt(trimmed ? `/workflow ${trimmed}` : '/workflow')
+    },
+  },
   {
     name: 'workflows',
-    description: '打开工作流运行面板',
-    run: () => useChatStore.getState().setWorkflowPanelOpen(true),
+    description: '浏览已安装的 workflow 目录',
+    run: () => openExtensionsCmd('workflows'),
   },
   // ── memory system (TUI /memory /flush /dream /remember) ────────────
   {
@@ -528,10 +791,10 @@ export const slashCommands: SlashCommand[] = [
     run: (args) => {
       const a = args.trim().toLowerCase()
       if (a === 'on' || a === 'off') {
-        // No wire toggle for memory in the web FE — route through the
-        // agent prompt path (architecture limitation: the FE cannot call
-        // agent tools directly).
-        sendPrompt(a === 'on' ? '请开启记忆' : '请关闭记忆')
+        // 走 session 内置 slash 通道：human prompt 以 / 开头时由 agent
+        // 侧解析为 BuiltinAction::MemoryToggle（与 TUI 键入 /memory on
+        // 同路径），无需 ext 端点。
+        sendPrompt(`/memory ${a}`)
         return
       }
       // No args → browse modal (cached memory_files list, read-only).
@@ -547,10 +810,10 @@ export const slashCommands: SlashCommand[] = [
     name: 'dream',
     description: '执行记忆整合（consolidation）',
     run: () => {
-      // No wire method for consolidation — prompt-path only (see /memory).
-      // The host's /api/memory-rewrite endpoint exists for a future direct
-      // call; the FE currently cannot invoke it meaningfully.
-      sendPrompt('请执行记忆整合（memory consolidation）')
+      // 走 session 内置 /dream slash 命令（BuiltinAction::Dream →
+      // run_dream_slash_command）。memory ext 只暴露 flush/rewrite，没有
+      // consolidation 端点——发字面命令与 TUI 键入 /dream 同路径。
+      sendPrompt('/dream')
     },
   },
   {
@@ -563,7 +826,10 @@ export const slashCommands: SlashCommand[] = [
         err('用法: /remember <笔记内容>，例如 /remember 暂存部署使用 eu-west 集群')
         return
       }
-      sendPrompt(`请记住：${note}（写入记忆）`)
+      // POST /api/memory-rewrite → _x.ai/memory/rewrite：LLM 改写不落盘
+      // （host 无保存端点，TUI 的落盘是本地文件写入），结果作为滚动区
+      // 反馈呈现。
+      void useChatStore.getState().rememberNote(note)
     },
   },
   // ── MCP 管理（TUI /mcps）────────────────────────────────────────────
@@ -670,11 +936,59 @@ export function mergedSlashCommands(
   return out
 }
 
+/** ── `\/` literal-slash escape ─────────────────────────────────────── */
+
+/** Prefix that turns a `/…` line back into a plain prompt. */
+export const SLASH_ESCAPE = '\\/'
+
+/** True when the line is escaped (`\/help`) — never a command, always text. */
+export function isSlashEscaped(input: string): boolean {
+  return input.trimStart().startsWith(SLASH_ESCAPE)
+}
+
+/** `\/help` → `/help` (no-op for anything else, incl. already-literal text). */
+export function unescapeSlash(input: string): string {
+  if (!isSlashEscaped(input)) return input
+  const lead = input.length - input.trimStart().length
+  return input.slice(0, lead) + input.slice(lead + 1)
+}
+
+/**
+ * Inverse of {@link unescapeSlash} — prompt history stores the escaped
+ * form, so recalling a literal `/…` prompt re-arms the escape instead of
+ * turning the recall into a command run.
+ */
+export function escapeSlash(input: string): string {
+  const t = input.trimStart()
+  if (!t.startsWith('/') || t.startsWith(SLASH_ESCAPE)) return input
+  // Only the backslash is added — `t` already carries the leading "/".
+  return '\\' + t
+}
+
+/**
+ * 「这行是原文，不是命令」的总判定，两种写法等价：
+ * - `\/…` 显式转义；
+ * - 行首空白 + `/…`（Slack 式，空格是全键盘最好按的转义键）。
+ * 只在 trimStart 后仍以 `/` 开头时成立，普通草稿的前导空白不受影响。
+ * 第三种情况不在此列：首词压根不匹配任何命令的行，由调用方直接放行。
+ */
+export function isSlashLiteral(input: string): boolean {
+  if (isSlashEscaped(input)) return true
+  const t = input.trimStart()
+  return t.startsWith('/') && t.length !== input.length
+}
+
+/** 把「原文发送」的写法还原成真正要发给 agent 的文本。 */
+export function literalSlashPayload(input: string): string {
+  const unescaped = unescapeSlash(input)
+  return isSlashLiteral(unescaped) ? unescaped.trimStart() : unescaped
+}
+
 /**
  * Parse "/name args" — exact match on name/aliases (case-insensitive),
  * over the merged local + agent command list.
- * Returns null for "/" alone and for unknown commands (the caller appends
- * an error row and never sends).
+ * Returns null for "/" alone and for unknown commands; the caller then
+ * sends the line to the agent as a plain prompt (FE 放行，TUI 会报错).
  */
 export function matchSlash(
   input: string,

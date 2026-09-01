@@ -1,12 +1,18 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import type { McpListServer, McpToolInfo } from '../api/transport'
 
 // ── store / api client mock ──
 const h = vi.hoisted(() => {
   const chatState: Record<string, unknown> = {}
+  /**
+   * 订阅者集合：让 setStore 能推动已挂载的面板重渲染（mcpVersion 自增
+   * → 重取列表这类"活 store"行为必须可测）。
+   */
+  const listeners = new Set<() => void>()
   return {
     chatState,
+    listeners,
     setStateSpy: vi.fn(),
     transport: {
       mcpCall: vi.fn(),
@@ -15,12 +21,23 @@ const h = vi.hoisted(() => {
   }
 })
 
-vi.mock('../store/chat', () => ({
-  useChatStore: Object.assign(
-    (sel: (s: unknown) => unknown) => sel(h.chatState),
+vi.mock('../store/chat', async () => {
+  const { useSyncExternalStore } = await vi.importActual<typeof import('react')>('react')
+  const subscribe = (fn: () => void) => {
+    h.listeners.add(fn)
+    return () => {
+      h.listeners.delete(fn)
+    }
+  }
+  const useChatStore = Object.assign(
+    (sel: (s: Record<string, unknown>) => unknown) =>
+      // Selectors return store fields (stable refs), so the raw field is a
+      // valid getSnapshot value.
+      useSyncExternalStore(subscribe, () => sel(h.chatState)),
     { getState: () => h.chatState, setState: h.setStateSpy },
-  ),
-}))
+  )
+  return { useChatStore }
+})
 
 vi.mock('../api/client', () => ({
   transport: h.transport,
@@ -36,7 +53,10 @@ const mcpRemove = vi.fn()
 const mcpAuthTrigger = vi.fn()
 
 function setStore(patch: Record<string, unknown>) {
-  Object.assign(h.chatState, patch)
+  act(() => {
+    Object.assign(h.chatState, patch)
+    for (const l of [...h.listeners]) l()
+  })
 }
 
 const tools: McpToolInfo[] = [
@@ -49,6 +69,7 @@ beforeEach(() => {
   setStore({
     mcpServers: [],
     mcpInit: undefined,
+    mcpVersion: 0,
     mcpList,
     mcpToggle,
     mcpToggleTool,
@@ -94,9 +115,57 @@ describe('McpPanel — 打开/关闭与状态区', () => {
     expect(mcpList).toHaveBeenCalled()
   })
 
-  it('事件流为空 → 占位提示', async () => {
+  it('没有任何服务器 → 只留一处准确空态（不再甩锅状态推送）', async () => {
     renderPanel()
-    expect(await screen.findByText('尚未收到服务器状态通知')).not.toBeNull()
+    expect(await screen.findByText('没有已配置的服务器')).not.toBeNull()
+    expect(screen.queryByText(/尚未收到服务器状态通知/)).toBeNull()
+    // 上半区无内容时整块（含标题）不渲染，不与下半区重复空态
+    expect(screen.queryByText('服务器状态')).toBeNull()
+  })
+
+  it('仅 list 有数据（事件流没推过状态）→ 计数与状态区都有内容', async () => {
+    mcpList.mockResolvedValue([
+      { name: 'fs', source: 'local', status: 'ready', tools: [] },
+      { name: 'gh', source: 'managed', authRequired: true },
+    ] as McpListServer[])
+    const { container } = renderPanel()
+    expect(await screen.findByText('2 个服务器')).not.toBeNull()
+    expect(screen.queryByText(/尚未收到服务器状态通知/)).toBeNull()
+    // 上半区吃的是合并行：每行在状态区与管理区各出现一次
+    expect((await screen.findAllByText('gh')).length).toBeGreaterThanOrEqual(2)
+    // 事件流没有 status 时，list 的 authRequired 推导出行状态
+    expect(container.textContent).toContain('needs_auth · managed')
+    expect(container.textContent).toContain('ready · local')
+  })
+
+  it('authRequired / setupRequired → 行上有可见标识', async () => {
+    mcpList.mockResolvedValue([
+      { name: 'gh', authRequired: true },
+      { name: 'linear', setupRequired: true },
+      { name: 'fs', status: 'ready' },
+    ] as McpListServer[])
+    const { container } = renderPanel()
+    expect((await screen.findAllByText('gh')).length).toBeGreaterThan(0)
+    // 状态区 + 管理区各一枚徽标，且只有这两枚（fs 行无 flag）
+    expect(screen.getAllByText('需要认证')).toHaveLength(2)
+    expect(screen.getAllByText('需要配置')).toHaveLength(2)
+    // 「为什么看不到工具」在工具区也有解释
+    expect(container.textContent).toContain('无工具信息（需要认证后才会拉取工具）')
+    expect(container.textContent).toContain('无工具信息（需要配置后才会拉取工具）')
+  })
+
+  it('工具数为 0 与「无工具信息」区分；后者退回 agent toolCount', async () => {
+    mcpList.mockResolvedValue([
+      { name: 'empty', enabled: true, tools: [] },
+      { name: 'counted', enabled: true, toolCount: 3 },
+      { name: 'silent', enabled: true },
+    ] as McpListServer[])
+    const { container } = renderPanel()
+    expect((await screen.findAllByText('empty')).length).toBeGreaterThan(0)
+    expect(container.textContent).toContain('工具 (0)')
+    expect(container.textContent).toContain('该服务器没有工具')
+    expect(container.textContent).toContain('工具 (3)')
+    expect(container.textContent).toContain('无工具信息')
   })
 
   it('mcpInit 连接中显示进度条；连接完成隐藏', async () => {
@@ -121,7 +190,7 @@ describe('McpPanel — 打开/关闭与状态区', () => {
     renderPanel()
     expect(await screen.findByText('host dead')).not.toBeNull()
     fireEvent.click(screen.getByRole('button', { name: '刷新列表' }))
-    expect(await screen.findByText('没有已配置的服务器（或 host 尚未实现 /api/mcp/list）')).not.toBeNull()
+    expect(await screen.findByText('没有已配置的服务器')).not.toBeNull()
   })
 
   it('Esc 关闭', async () => {
@@ -129,6 +198,53 @@ describe('McpPanel — 打开/关闭与状态区', () => {
     render(<McpPanel open onClose={onClose} />)
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(onClose).toHaveBeenCalled()
+  })
+})
+
+describe('McpPanel — mcpVersion 重取列表', () => {
+  it('mcpVersion 自增（tools_changed / servers_updated）→ 重取', async () => {
+    renderPanel()
+    await waitFor(() => expect(mcpList).toHaveBeenCalledTimes(1))
+    setStore({ mcpVersion: 1 })
+    await waitFor(() => expect(mcpList).toHaveBeenCalledTimes(2))
+  })
+
+  it('重取后列表内容真的更新', async () => {
+    mcpList.mockResolvedValueOnce([{ name: 'one' }] as McpListServer[])
+    renderPanel()
+    expect((await screen.findAllByText('one')).length).toBeGreaterThan(0)
+    mcpList.mockResolvedValueOnce([{ name: 'two', status: 'ready' }] as McpListServer[])
+    setStore({ mcpVersion: 2 })
+    expect((await screen.findAllByText('two')).length).toBeGreaterThan(0)
+    expect(screen.queryByText('one')).toBeNull()
+  })
+
+  it('mcpVersion 不变 → 其它 store 更新不会触发多余请求', async () => {
+    renderPanel()
+    await waitFor(() => expect(mcpList).toHaveBeenCalledTimes(1))
+    setStore({ mcpServers: [{ name: 'fs', status: 'ready' }] })
+    await new Promise((r) => setTimeout(r, 20))
+    expect(mcpList).toHaveBeenCalledTimes(1)
+  })
+
+  it('迟到的旧响应不覆盖新结果（reqSeq 守卫）', async () => {
+    setStore({ mcpVersion: 0 })
+    let releaseFirst: (v: McpListServer[]) => void = () => {}
+    mcpList
+      .mockImplementationOnce(
+        () =>
+          new Promise<McpListServer[]>((res) => {
+            releaseFirst = res
+          }),
+      )
+      .mockResolvedValueOnce([{ name: 'fresh', status: 'ready' }] as McpListServer[])
+    const { container } = renderPanel()
+    await waitFor(() => expect(mcpList).toHaveBeenCalledTimes(1))
+    setStore({ mcpVersion: 1 })
+    expect((await screen.findAllByText('fresh')).length).toBeGreaterThan(0)
+    releaseFirst([{ name: 'stale', status: 'error' }] as McpListServer[])
+    await waitFor(() => expect(mcpList).toHaveBeenCalledTimes(2))
+    expect(container.textContent).not.toContain('stale')
   })
 })
 
@@ -157,10 +273,28 @@ describe('McpPanel — 管理操作', () => {
     expect(container.textContent).toContain('multi')
   })
 
+  it('事件流 status 优先于 list status（状态区与管理区都用事件流的）', async () => {
+    setStore({
+      mcpServers: [{ name: 'fs', status: 'error', reason: 'spawn failed' }],
+    })
+    mcpList.mockResolvedValue([
+      { name: 'fs', status: 'ready', source: 'local', toolCount: 4, authRequired: true },
+    ] as McpListServer[])
+    const { container } = renderPanel()
+    expect((await screen.findAllByText('fs')).length).toBeGreaterThanOrEqual(2)
+    // 事件流的 error 覆盖 list 的 ready（连 authRequired 推导也不越权）
+    expect(container.textContent).toContain('error · local')
+    expect(container.textContent).not.toContain('ready')
+    expect(screen.getAllByText('spawn failed')).toHaveLength(1)
+    // 列表侧补充字段仍然合并进来
+    expect(container.textContent).toContain('需要认证')
+    expect(container.textContent).toContain('工具 (4)')
+  })
+
   it('无工具信息降级文案', async () => {
     mcpList.mockResolvedValue([{ name: 'fs', enabled: true }] as McpListServer[])
     const { container } = renderPanel()
-    expect(await screen.findByText('fs')).not.toBeNull()
+    expect((await screen.findAllByText('fs')).length).toBeGreaterThan(0)
     expect(container.textContent).toContain('无工具信息')
   })
 

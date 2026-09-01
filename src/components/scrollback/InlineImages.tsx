@@ -2,7 +2,8 @@
  * Inline images for a conversation row. `size` selects the layout:
  * assistant rows get wide images (max 65%), user rows small thumbnails
  * (max-h-24, hover scale). Click opens the block viewer for the owning
- * entry — the full-size view with byte/mime meta lives there.
+ * entry — the full-size view with byte/mime meta lives there. `data-no-fold`
+ * keeps that click out of the block's fold-toggle (see EntryShell).
  */
 export function InlineImages({
   images,
@@ -26,7 +27,11 @@ export function InlineImages({
           src={img.data}
           alt={img.mimeType ? `image (${img.mimeType})` : 'image'}
           loading="lazy"
-          onClick={onOpen}
+          data-no-fold
+          onClick={(ev) => {
+            ev.stopPropagation()
+            onOpen()
+          }}
           title="点击放大查看"
           className={
             size === 'assistant'

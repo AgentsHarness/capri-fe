@@ -85,7 +85,11 @@ export const gitRpc = {
         ...(typeof b.commit === 'string' && b.commit ? { commit: b.commit } : {}),
       }))
       .filter((b) => b.name)
-    return { branches }
+    // wire 同时带 repoRoot（非 git 目录时缺省）——home 的 worktree 门控
+    // 拿它当 gitRepoRoot 不可用时的兜底探针。
+    const o = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+    const repoRoot = typeof o.repoRoot === 'string' && o.repoRoot ? o.repoRoot : undefined
+    return repoRoot ? { branches, repoRoot } : { branches }
   },
 
   async gitCheckout(this: TransportCore, opts: { cwd?: string; branch: string; create?: boolean }): Promise<unknown> {

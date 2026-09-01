@@ -17,6 +17,7 @@ import { useFinishFlash } from './useFinishFlash'
 import { useFollowScroll } from './useFollowScroll'
 import { useHistoryPaging } from './useHistoryPaging'
 import { useLoadChrome } from './useLoadChrome'
+import { useJunctionDissolve } from './useJunctionDissolve'
 import { useScrollRestore } from './useScrollRestore'
 import { useStickyPin } from './useStickyPin'
 import { useWorkspaceBar } from './useWorkspaceBar'
@@ -53,6 +54,8 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
   const boxRef = useRef<HTMLDivElement>(null)
   /** Fade wrapper around history rows — ResizeObserver target for stick-to-bottom. */
   const contentRef = useRef<HTMLDivElement>(null)
+  /** Dissolve band over the scrollback's bottom edge (composer junction). */
+  const junctionDissolveRef = useRef<HTMLDivElement>(null)
   const followRef = useRef(true)
   // Last scrollTop seen, to tell "user scrolled UP" (unfollow, no matter
   // how small the distance — a sub-80px scroll must not keep following)
@@ -132,6 +135,10 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
     entries,
     displayRows.length,
   )
+
+  // 交界处溶解带（composer junction）——滚动位置翻转只改 band 的
+  // data-dissolve，绝不进 React state（否则整棵 entry 树跟着重渲）。
+  useJunctionDissolve(boxRef, contentRef, junctionDissolveRef)
 
   const {
     touchStartYRef,
@@ -502,6 +509,14 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
       </div>
       <div ref={bottomRef} />
     </div>
+    {/* 交界处溶解带：视口底缘的转录尾不再被硬切一刀，化进底色。
+        武装条件（下方还有内容）与 right 的滚动条槽宽度由
+        useJunctionDissolve 直接写在这个元素上。 */}
+    <div
+      ref={junctionDissolveRef}
+      aria-hidden
+      className="gn-junction-dissolve pointer-events-none absolute inset-x-0 bottom-0 z-[2] h-7"
+    />
     <UserMessageNav
       items={userNavItems}
       activeId={navActiveId}

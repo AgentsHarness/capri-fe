@@ -20,14 +20,19 @@ import { usePromptQueue } from '../store/promptQueue'
 import { bumpSlashRecency } from './recency'
 import { setCachedSkills } from './skills'
 import {
+  escapeSlash,
   filterSlashCommands,
   isMultilineEnabled,
+  isSlashEscaped,
+  isSlashLiteral,
+  literalSlashPayload,
   matchSlash,
   mergedSlashCommands,
   parseBudgetTokens,
   registerMcpPanelOpener,
   registerModelMenuOpener,
   slashCommands,
+  unescapeSlash,
 } from './registry'
 
 interface FakeChat {
@@ -38,6 +43,8 @@ interface FakeChat {
   cwd: string | null
   sessionTitle: string | null
   entries: Array<Record<string, unknown>>
+  historyLoadedStart?: number
+  historyHasMore?: boolean
   statusText?: string
   agentCommands: Array<{ name: string; description: string; argHint?: string }>
   appendLocalEntry: ReturnType<typeof vi.fn>
@@ -55,9 +62,16 @@ interface FakeChat {
   renameSession: ReturnType<typeof vi.fn>
   forkSession: ReturnType<typeof vi.fn>
   requestRecap: ReturnType<typeof vi.fn>
-  showSessionInfo: ReturnType<typeof vi.fn>
+  askBtw: ReturnType<typeof vi.fn>
+  openSessionInfo: ReturnType<typeof vi.fn>
+  sessionInfoOpen?: boolean
   openContext: ReturnType<typeof vi.fn>
   togglePlanMode: ReturnType<typeof vi.fn>
+  openPlanViewer: ReturnType<typeof vi.fn>
+  planViewerOpen?: boolean
+  planMode: boolean
+  permissionMode?: string
+  todos?: Array<Record<string, unknown>>
   toggleTimestamps: ReturnType<typeof vi.fn>
   setAlwaysApproveMode: ReturnType<typeof vi.fn>
   setAutoMode: ReturnType<typeof vi.fn>
@@ -69,6 +83,10 @@ interface FakeChat {
   goalSet: ReturnType<typeof vi.fn>
   openMemory: ReturnType<typeof vi.fn>
   memoryFlush: ReturnType<typeof vi.fn>
+  rememberNote: ReturnType<typeof vi.fn>
+  workflowRuns: Record<string, { runId: string; name: string; status?: string }>
+  workflowControl: ReturnType<typeof vi.fn>
+  saveWorkflowScript: ReturnType<typeof vi.fn>
 }
 
 let fake: FakeChat
@@ -98,9 +116,19 @@ beforeEach(() => {
     renameSession: vi.fn(),
     forkSession: vi.fn(),
     requestRecap: vi.fn(),
-    showSessionInfo: vi.fn(),
+    askBtw: vi.fn(),
+    sessionInfoOpen: false,
+    // 真实 store 里 openSessionInfo 就是置 sessionInfoOpen；fake 同步语义。
+    openSessionInfo: vi.fn(() => {
+      fake.sessionInfoOpen = true
+    }),
     openContext: vi.fn(),
     togglePlanMode: vi.fn(),
+    openPlanViewer: vi.fn(() => {
+      fake.planViewerOpen = true
+    }),
+    planMode: false,
+    todos: [],
     toggleTimestamps: vi.fn(),
     setAlwaysApproveMode: vi.fn(),
     setAutoMode: vi.fn(),
@@ -112,6 +140,10 @@ beforeEach(() => {
     goalSet: vi.fn(),
     openMemory: vi.fn(),
     memoryFlush: vi.fn(),
+    rememberNote: vi.fn(),
+    workflowRuns: {},
+    workflowControl: vi.fn(),
+    saveWorkflowScript: vi.fn(() => Promise.resolve()),
   } as FakeChat
   vi.mocked(useChatStore.getState).mockReturnValue(fake as never)
   // registry 的 status() 走 setState；让 setState 真实写入 fake
@@ -156,6 +188,69 @@ describe('matchSlash', () => {
   it('agent 命令也可匹配', () => {
     fake.agentCommands = [{ name: 'deploy', description: 'deploy' }]
     expect(matchSlash('/deploy --env prod')?.cmd.source).toBe('agent')
+  })
+
+  it('\\/ 转义行不是命令', () => {
+    expect(matchSlash('\\/clear')).toBeNull()
+  })
+})
+
+describe('\\/ 字面量斜杠转义', () => {
+  it('isSlashEscaped：只有 trimStart 后以 \\/ 开头才算', () => {
+    expect(isSlashEscaped('\\/clear')).toBe(true)
+    expect(isSlashEscaped('  \\/etc/hosts')).toBe(true)
+    expect(isSlashEscaped('/clear')).toBe(false)
+    expect(isSlashEscaped('a \\/b')).toBe(false)
+    expect(isSlashEscaped('')).toBe(false)
+  })
+
+  it('unescapeSlash 只去掉行首那一个反斜杠', () => {
+    expect(unescapeSlash('\\/clear all')).toBe('/clear all')
+    expect(unescapeSlash('  \\/x')).toBe('  /x')
+    // 未转义（含普通文本、已发出的原文）原样返回
+    expect(unescapeSlash('/clear')).toBe('/clear')
+    expect(unescapeSlash('hello')).toBe('hello')
+    expect(unescapeSlash('a \\/b')).toBe('a \\/b')
+  })
+
+  it('escapeSlash：幂等，且历史回填后再次 Enter 仍是原文', () => {
+    expect(escapeSlash('/clear')).toBe('\\/clear')
+    expect(escapeSlash('\\/clear')).toBe('\\/clear')
+    expect(escapeSlash('hello')).toBe('hello')
+    expect(escapeSlash('  /x')).toBe('\\/x')
+    // 往返：转义 → 发送 → 记历史 → 回填 → 再发送，命令永不被触发
+    const sent = unescapeSlash('\\/tmp/log 报错是什么')
+    expect(sent).toBe('/tmp/log 报错是什么')
+    const recalled = escapeSlash(sent)
+    expect(isSlashEscaped(recalled)).toBe(true)
+    expect(matchSlash(recalled)).toBeNull()
+    expect(unescapeSlash(recalled)).toBe(sent)
+  })
+})
+
+describe('原文发送判定（\\/ 与行首空格两种写法等价）', () => {
+  it('isSlashLiteral：\\/ 或前导空白 + / 才算，普通草稿不受影响', () => {
+    expect(isSlashLiteral('\\/clear')).toBe(true)
+    expect(isSlashLiteral(' /clear all')).toBe(true)
+    expect(isSlashLiteral('   /x')).toBe(true)
+    expect(isSlashLiteral('  \\/x')).toBe(true)
+    // 首字符就是 / → 走命令路径
+    expect(isSlashLiteral('/clear')).toBe(false)
+    // 不以 / 结尾于 trimStart 之后 → 不是原文写法
+    expect(isSlashLiteral('hello')).toBe(false)
+    expect(isSlashLiteral('  hello')).toBe(false)
+    expect(isSlashLiteral('')).toBe(false)
+  })
+
+  it('literalSlashPayload：剥掉前缀，未命中命令的 /… 行原样保留', () => {
+    expect(literalSlashPayload('\\/clear')).toBe('/clear')
+    expect(literalSlashPayload(' /clear all')).toBe('/clear all')
+    expect(literalSlashPayload('  \\/x')).toBe('/x')
+    // 未知命令行 FE 放行：文本本身不动
+    expect(literalSlashPayload('/tmp/log 是什么')).toBe('/tmp/log 是什么')
+    // 普通消息（含前导空白）保持原样
+    expect(literalSlashPayload('hello')).toBe('hello')
+    expect(literalSlashPayload('  hello')).toBe('  hello')
   })
 })
 
@@ -214,7 +309,7 @@ describe('filterSlashCommands', () => {
 })
 
 describe('slash command runs — 会话类', () => {
-  it('/new /resume /compact /rewind /fork /recap /session-info /context /plan /timestamps /settings /flush /workflows', () => {
+  it('/new /resume /compact /rewind /fork /recap /session-info /context /plan /timestamps /settings /flush', () => {
     run('new')
     expect(fake.newSession).toHaveBeenCalled()
     run('resume')
@@ -228,7 +323,8 @@ describe('slash command runs — 会话类', () => {
     run('recap')
     expect(fake.requestRecap).toHaveBeenCalled()
     run('session-info')
-    expect(fake.showSessionInfo).toHaveBeenCalled()
+    expect(fake.openSessionInfo).toHaveBeenCalled()
+    expect(fake.sessionInfoOpen).toBe(true)
     run('context')
     expect(fake.openContext).toHaveBeenCalled()
     run('plan')
@@ -239,8 +335,53 @@ describe('slash command runs — 会话类', () => {
     expect(fake.openSettings).toHaveBeenCalled()
     run('flush')
     expect(fake.memoryFlush).toHaveBeenCalled()
-    run('workflows')
-    expect(fake.setWorkflowPanelOpen).toHaveBeenCalledWith(true)
+  })
+
+  it('/view-plan（含别名 show-plan / plan-view）：有会话即打开弹窗，无会话提示', () => {
+    // 有会话就打开：plan 正文由弹窗自己按优先级取（host plan.md → 审批
+    // 请求 → 滚动区工具输出），命令层不预设「有没有 plan」——TUI 也是先
+    // 开预览再报 no plan。
+    run('view-plan')
+    expect(fake.openPlanViewer).toHaveBeenCalledTimes(1)
+    expect(fake.planViewerOpen).toBe(true)
+    expect(fake.appendLocalEntry).not.toHaveBeenCalled()
+    // 无活动会话 → 提示（/rename /delete 同款写法）。
+    fake.sessionId = null
+    run('view-plan')
+    expect(fake.appendLocalEntry).toHaveBeenCalledWith({
+      kind: 'error',
+      text: '查看失败: 无活动会话',
+    })
+    expect(fake.openPlanViewer).toHaveBeenCalledTimes(1)
+    // 别名同语义（run() helper 只认 c.name，别名走 matchSlash 解析）。
+    fake.sessionId = 's1'
+    const aliasRun = (alias: string) => {
+      const m = matchSlash(`/${alias}`)
+      if (!m) throw new Error(`no alias ${alias}`)
+      m.cmd.run(m.args)
+    }
+    aliasRun('show-plan')
+    expect(fake.openPlanViewer).toHaveBeenCalledTimes(2)
+    aliasRun('plan-view')
+    expect(fake.openPlanViewer).toHaveBeenCalledTimes(3)
+    run('view-plan')
+    expect(fake.openPlanViewer).toHaveBeenCalledTimes(4)
+  })
+
+  it('/plan 已进入 plan 模式 → 提示用 /view-plan（TUI modes.rs 对齐），不改切换语义', () => {
+    fake.planMode = true
+    run('plan')
+    expect(fake.togglePlanMode).not.toHaveBeenCalled()
+    expect(fake.statusText).toBe('已在 plan 模式，用 /view-plan 查看当前 plan')
+    // plan·auto / plan·always 叠加态（permissionMode==='plan'）同样视为已进入。
+    fake.planMode = false
+    fake.permissionMode = 'plan'
+    run('plan')
+    expect(fake.togglePlanMode).not.toHaveBeenCalled()
+    // 未进入 → 照常切换。
+    fake.permissionMode = undefined
+    run('plan')
+    expect(fake.togglePlanMode).toHaveBeenCalledTimes(1)
   })
 
   it('/fork 参数（TUI parse_fork_args 对齐）：--worktree / --no-worktree / 互斥 / directive 拒绝', () => {
@@ -276,6 +417,87 @@ describe('slash command runs — 会话类', () => {
     expect(fake.openExtensions).toHaveBeenCalledWith('skills')
     run('marketplace')
     expect(fake.openExtensions).toHaveBeenCalledWith('marketplace')
+  })
+
+  it('/workflows → 扩展面板的 workflows tab（目录浏览），不再是运行面板', () => {
+    run('workflows')
+    expect(fake.openExtensions).toHaveBeenCalledWith('workflows')
+    expect(fake.setWorkflowPanelOpen).not.toHaveBeenCalled()
+  })
+})
+
+describe('slash command runs — /workflow（单数，TUI workflow.rs + shell resolve 对齐）', () => {
+  const runs = {
+    wf_1: { runId: 'wf_1', name: 'deep research', status: 'running' },
+  }
+
+  it('/workflow runs 打开运行面板（大小写不敏感）；runs 带参数不拦截', () => {
+    run('workflow', 'runs')
+    expect(fake.setWorkflowPanelOpen).toHaveBeenCalledWith(true)
+    run('workflow', 'RUNS')
+    expect(fake.setWorkflowPanelOpen).toHaveBeenCalledTimes(2)
+    fake.setWorkflowPanelOpen.mockClear()
+    // 带附加参数的 runs 是名为 runs 的 workflow 的 launch（shell 语义）。
+    run('workflow', 'runs extra')
+    expect(fake.setWorkflowPanelOpen).not.toHaveBeenCalled()
+    expect(fake.send).toHaveBeenCalledWith('/workflow runs extra')
+  })
+
+  it('manage op（前置，按 runId 或名称，大小写不敏感）→ workflowControl', () => {
+    fake.workflowRuns = runs
+    run('workflow', 'pause wf_1')
+    expect(fake.workflowControl).toHaveBeenCalledWith('wf_1', 'pause')
+    run('workflow', 'RESUME deep research')
+    expect(fake.workflowControl).toHaveBeenCalledWith('wf_1', 'resume')
+    run('workflow', 'stop wf_1')
+    expect(fake.workflowControl).toHaveBeenCalledWith('wf_1', 'stop')
+    expect(fake.send).not.toHaveBeenCalled()
+  })
+
+  it('manage op 倒序形式 `/workflow <run> pause`（shell second_is_final_op）', () => {
+    fake.workflowRuns = runs
+    run('workflow', 'wf_1 pause')
+    expect(fake.workflowControl).toHaveBeenCalledWith('wf_1', 'pause')
+    // 三个 token 不构成倒序管理（仍是 launch 透传）。
+    run('workflow', 'wf_1 pause x')
+    expect(fake.send).toHaveBeenCalledWith('/workflow wf_1 pause x')
+  })
+
+  it('/workflow save <run> → 保存脚本（复用面板的 saveWorkflowScript）', () => {
+    fake.workflowRuns = runs
+    run('workflow', 'save wf_1')
+    expect(fake.saveWorkflowScript).toHaveBeenCalledWith('wf_1')
+  })
+
+  it('管理 op 缺 handle / 未知 handle → 中文提示，不猜 run', () => {
+    run('workflow', 'pause')
+    expect(fake.appendLocalEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'error', text: expect.stringContaining('用法: /workflow') }),
+    )
+    expect(fake.workflowControl).not.toHaveBeenCalled()
+    // 有运行但 handle 未知 → 提示 + 列出当前运行。
+    fake.workflowRuns = runs
+    fake.appendLocalEntry.mockClear()
+    run('workflow', 'pause unknown-x')
+    expect(fake.workflowControl).not.toHaveBeenCalled()
+    expect(fake.appendLocalEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'error',
+        text: expect.stringContaining('未找到工作流运行「unknown-x」'),
+      }),
+    )
+  })
+
+  it('launch 与裸调用原样透传（断言发出的文本）', () => {
+    run('workflow', 'deep-research foo')
+    expect(fake.send).toHaveBeenCalledWith('/workflow deep-research foo')
+    run('workflow', 'deep-research rust pitfalls --agent-budget 4')
+    expect(fake.send).toHaveBeenCalledWith(
+      '/workflow deep-research rust pitfalls --agent-budget 4',
+    )
+    // 裸调用：透传让 shell 给文本概览（TUI PassThrough("/workflow")）。
+    run('workflow', '')
+    expect(fake.send).toHaveBeenCalledWith('/workflow')
   })
 })
 
@@ -416,25 +638,78 @@ describe('slash command runs — /delete /rename', () => {
 })
 
 describe('slash command runs — /loop', () => {
-  it('缺间隔或提示 → 用法错误', () => {
+  it('无参数 → 用法错误，不发请求', () => {
     run('loop')
-    run('loop', '5m')
+    run('loop', '   ')
     expect(fake.appendLocalEntry).toHaveBeenCalledTimes(2)
+    expect(fake.send).not.toHaveBeenCalled()
   })
 
-  it('busy → 排队；空闲 → 直发', () => {
+  it('原文透传：有参数 → 发送 /loop <args> 原文（busy 排队 / 空闲直发）', () => {
     fake.conn = 'busy'
     fake.sessionId = 's2'
     run('loop', '5m 检查测试状态')
-    const q = vi.mocked(usePromptQueue.getState).mock.results[0]?.value as { enqueue: ReturnType<typeof vi.fn> }
+    const q = vi.mocked(usePromptQueue.getState)()
     expect(q.enqueue).toHaveBeenCalledWith(
-      expect.objectContaining({ text: expect.stringContaining('每 5m 执行一次') }),
+      expect.objectContaining({ text: '/loop 5m 检查测试状态' }),
       's2',
     )
 
     fake.conn = 'idle'
     run('loop', '1h 汇报')
-    expect(fake.send).toHaveBeenCalledWith(expect.stringContaining('每 1h 执行一次'))
+    expect(fake.send).toHaveBeenCalledWith('/loop 1h 汇报')
+  })
+
+  it('回执：leading interval → 「每 n 单位 · prompt」；否则「调度中…」占位', () => {
+    run('loop', '5m 检查测试状态')
+    expect(fake.appendLocalEntry).toHaveBeenCalledWith({
+      kind: 'session_event',
+      text: expect.stringContaining('已请求定时任务：每 5 分钟 · 检查测试状态'),
+    })
+
+    fake.appendLocalEntry.mockClear()
+    run('loop', '每 30 分钟检查一次')
+    expect(fake.appendLocalEntry).toHaveBeenCalledWith({
+      kind: 'session_event',
+      text: expect.stringContaining('已请求定时任务：调度中…'),
+    })
+  })
+
+  it('非 interval 首 token / 裸 interval / 零值 / 坏后缀 → 不当错误，整串透传', () => {
+    fake.send.mockClear()
+    for (const args of ['每 30 分钟检查一次', '5m', '0m 检查', '5x 检查']) {
+      run('loop', args)
+      expect(fake.send).toHaveBeenCalledWith(`/loop ${args}`)
+      fake.send.mockClear()
+    }
+  })
+})
+
+describe('slash command runs — /btw', () => {
+  it('无参数 → 用法错误，不发请求', () => {
+    run('btw')
+    run('btw', '   ')
+    expect(fake.appendLocalEntry).toHaveBeenCalledTimes(2)
+    expect(fake.appendLocalEntry).toHaveBeenCalledWith({
+      kind: 'error',
+      text: expect.stringContaining('用法'),
+    })
+    expect(fake.askBtw).not.toHaveBeenCalled()
+  })
+
+  it('有参数 → 调 askBtw（store 直发 x.ai/btw 并带当前 sessionId）', () => {
+    run('btw', '还有多少步完成？')
+    expect(fake.askBtw).toHaveBeenCalledWith('还有多少步完成？')
+  })
+
+  it('busy（回合进行中）也必须照常发出——不走 sendPrompt 排队分支、不进 prompt 队列', () => {
+    fake.conn = 'busy'
+    fake.sessionId = 's2'
+    run('btw', '当前回合还剩几步')
+    expect(fake.askBtw).toHaveBeenCalledWith('当前回合还剩几步')
+    const q = vi.mocked(usePromptQueue.getState)()
+    expect(q.enqueue).not.toHaveBeenCalled()
+    expect(fake.send).not.toHaveBeenCalled()
   })
 })
 
@@ -463,6 +738,90 @@ describe('slash command runs — /copy', () => {
     writeText.mockRejectedValue(new Error('denied'))
     await run('copy')
     expect(chat().statusText).toBe('复制失败: denied')
+  })
+})
+
+describe('slash command runs — /export', () => {
+  const writeText = vi.fn()
+  let appendSpy: ReturnType<typeof vi.spyOn> | null = null
+
+  beforeEach(() => {
+    writeText.mockReset()
+    writeText.mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    })
+    Object.defineProperty(URL, 'createObjectURL', {
+      value: vi.fn(() => 'blob:mock'),
+      configurable: true,
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      value: vi.fn(),
+      configurable: true,
+    })
+    // 默认 callThrough：append 照常发生，spy 记录 calls 供断言取 <a>
+    // 引用（click 后立即 remove，querySelector 已不可见）。
+    appendSpy = vi.spyOn(document.body, 'appendChild')
+  })
+
+  afterEach(() => {
+    appendSpy?.mockRestore()
+  })
+
+  it('无活动会话 → 错误，剪贴板不触发', async () => {
+    fake.sessionId = null
+    await run('export')
+    expect(fake.appendLocalEntry).toHaveBeenCalledWith({
+      kind: 'error',
+      text: '没有可导出的会话',
+    })
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('无对话内容（只有 status 行）→ 错误', async () => {
+    fake.entries = [{ id: '1', kind: 'status', text: 'ready' }]
+    await run('export')
+    expect(fake.appendLocalEntry).toHaveBeenCalledWith({
+      kind: 'error',
+      text: '没有可导出的对话内容',
+    })
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('无参数 → 整段转录复制到剪贴板（带未加载历史提示）；失败 → status', async () => {
+    fake.entries = [
+      { id: '1', kind: 'user', text: '问' },
+      { id: '2', kind: 'assistant', text: '答' },
+    ]
+    fake.historyLoadedStart = 3
+    await run('export')
+    expect(writeText).toHaveBeenCalledTimes(1)
+    const md = writeText.mock.calls[0][0] as string
+    expect(md).toContain('## User')
+    expect(md).toContain('## Assistant')
+    expect(md).toContain('*注：') // 未加载历史提示行
+    expect(chat().statusText).toContain('已复制会话转录到剪贴板')
+
+    writeText.mockRejectedValue(new Error('denied'))
+    await run('export')
+    expect(chat().statusText).toBe('复制失败: denied')
+  })
+
+  it('有参数 → Blob 下载 + 文件名安全化 + 及时 revoke', async () => {
+    fake.entries = [
+      { id: '1', kind: 'user', text: '问' },
+      { id: '2', kind: 'assistant', text: '答' },
+    ]
+    await run('export', '../会话记录.txt')
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(1)
+    const blob = (URL.createObjectURL as ReturnType<typeof vi.fn>).mock.calls[0][0] as Blob
+    expect(blob.type).toBe('text/markdown;charset=utf-8')
+    const anchor = appendSpy!.mock.calls[0][0] as HTMLAnchorElement
+    expect(anchor.download).toBe('__会话记录.txt.md')
+    expect(anchor.href).toBe('blob:mock')
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:mock')
+    expect(chat().statusText).toContain('已导出为')
   })
 })
 
@@ -526,26 +885,27 @@ describe('parseBudgetTokens', () => {
 })
 
 describe('slash command runs — /memory /remember /dream', () => {
-  it('on/off 走提示词路径；无参打开浏览', () => {
+  it('on/off 走 session 内置 slash；无参打开浏览', () => {
     run('memory', 'on')
-    expect(fake.send).toHaveBeenCalledWith('请开启记忆')
+    expect(fake.send).toHaveBeenCalledWith('/memory on')
     fake.send.mockClear()
     run('memory', 'off')
-    expect(fake.send).toHaveBeenCalledWith('请关闭记忆')
+    expect(fake.send).toHaveBeenCalledWith('/memory off')
     run('memory')
     expect(fake.openMemory).toHaveBeenCalled()
   })
 
-  it('/remember 无参报错；有参走提示词', () => {
+  it('/remember 无参报错；有参调 rememberNote（不再发中文提示词）', () => {
     run('remember')
     expect(fake.appendLocalEntry).toHaveBeenCalledWith({ kind: 'error', text: expect.stringContaining('用法') })
     run('remember', '部署用 eu-west')
-    expect(fake.send).toHaveBeenCalledWith('请记住：部署用 eu-west（写入记忆）')
+    expect(fake.rememberNote).toHaveBeenCalledWith('部署用 eu-west')
+    expect(fake.send).not.toHaveBeenCalled()
   })
 
-  it('/dream 走提示词路径', () => {
+  it('/dream 走 session 内置 slash 命令', () => {
     run('dream')
-    expect(fake.send).toHaveBeenCalledWith('请执行记忆整合（memory consolidation）')
+    expect(fake.send).toHaveBeenCalledWith('/dream')
   })
 })
 

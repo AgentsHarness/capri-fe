@@ -4,6 +4,12 @@ export type HostInfo = {
   hostName: string
   online: boolean
   ready?: boolean
+  /** Hub registry realtime flag: any session has a turn in flight. */
+  busy?: boolean
+  /** Hub registry realtime flag: agent process has not finished booting. */
+  booting?: boolean
+  /** Hub registry realtime count: pending client requests (permits / questions). */
+  pendingCount?: number
   local?: boolean
   /** Hub registry liveness timestamp (hub mode). */
   lastSeen?: string
@@ -211,6 +217,12 @@ export type RewindConflict = {
  * wire: reverted_files / clean_files / conflicts / prompt_text).
  */
 export type RewindExecuteResult = {
+  /**
+   * 回退目标轮次（agent RewindResponse.target_prompt_index：保留
+   * 0..=target-1 轮）。前端用它做本地即时截断（TUI dispatch_rewind_success
+   * 同款），不依赖 updates.jsonl 的 rewind_marker 异步落盘。
+   */
+  targetPromptIndex?: number
   /** 回退点原文（Composer 恢复用，见 store.rewindExecute）。 */
   promptText?: string
   /** 实际还原（写回或删除）的文件。 */
@@ -366,7 +378,13 @@ export type SessionInfoExt = {
   model?: string
   modelDisplayName?: string
   resolvedModelId?: string
+  /** Model checkpoint fingerprint (TUI "Model Hash" row). */
+  modelFingerprint?: string
+  /** Catalog opt-in — governs both Model Hash display and resolved-id exposure. */
+  showModelFingerprint?: boolean
   apiBackend?: string
+  /** Gateway chat conversation id（gateway 代理会话才有，TUI "Conversation ID" 行）。 */
+  conversationId?: string
   agentName?: string
   turns?: number
   turnIndex?: number

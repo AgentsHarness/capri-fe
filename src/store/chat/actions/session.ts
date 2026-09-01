@@ -421,6 +421,12 @@ export function sessionActions(set: SetState, get: () => ChatState) {
         lastCompletedTurn: undefined,
         liveStream: null,
       })
+      // 状态栏 git 分支不会自己回来：resetSessionState 清掉了 gitInfo，
+      // 而 host 为新会话广播的 ready 在 POST 响应之前发出（先 Broadcast
+      // 再写响应），到达时本端尚未锚定 sid、被 ready 守卫当"非当前会话"
+      // 丢弃——之后 done 不触发、空闲会话不发 git_head_changed、hello 只
+      // 在重连时来，分支就一直缺失。与 continueSession 锚定后补拉同款。
+      void get().refreshGitInfo()
       return sid
     }
     return undefined

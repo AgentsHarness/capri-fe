@@ -11,10 +11,15 @@ import {
   syncDefaultModeFlagsFromUi,
   type PermissionModeLabel,
 } from '../store/chat/modeFlags'
-import { applyUiSettings } from '../store/settings'
+import { applyUiSettings, applyToolsetSettings } from '../store/settings'
 import { pushToast } from '../store/toast'
 import { useFePrefs } from '../store/historyPins'
 import { CustomModelsPanel } from './CustomModelsPanel'
+import {
+  loadDefaultSelectedPermission,
+  saveDefaultSelectedPermission,
+  type DefaultSelectedPermission,
+} from '../lib/defaultSelectedPermission'
 
 const GROUPS = [
   { key: 'ui', label: 'UI' },
@@ -44,6 +49,18 @@ const PERM_CHOICES: { id: PermissionModeLabel; label: string }[] = [
 const FOLLOW_UP_CHOICES: { id: 'queue' | 'steer'; label: string }[] = [
   { id: 'queue', label: 'queue' },
   { id: 'steer', label: 'steer' },
+]
+
+/** 审批弹窗默认选中行四选一（canonical 与 TUI 一致；顺序对齐设置面板与
+ *  审批弹窗的渲染顺序 YOLO → allow-always → allow-once → reject）。 */
+const DEFAULT_SELECTED_PERMISSION_UI: {
+  id: DefaultSelectedPermission
+  label: string
+}[] = [
+  { id: 'always_allow_all_sessions', label: '始终允许（所有会话）' },
+  { id: 'allow_command_always', label: '始终允许本命令' },
+  { id: 'allow_once', label: '仅允许一次' },
+  { id: 'reject', label: '拒绝' },
 ]
 
 const BOOL_ROWS: {
@@ -201,6 +218,7 @@ export function SettingsModal() {
             <>
               <ConsumedSettings
                 ui={data?.ui}
+                toolset={data?.toolset}
                 savingKey={savingKey}
                 disabled={!!savingKey}
                 onPatch={async (patch) => {
@@ -211,6 +229,7 @@ export function SettingsModal() {
                     setData(next)
                     const ui = next.ui ?? {}
                     applyUiSettings(ui)
+                    applyToolsetSettings(next.toolset)
                     applyCollapsedEditBlocksFromCache(useChatStore.setState)
                     syncDefaultModeFlagsFromUi(ui)
                     if (patch.permission_mode) {
@@ -316,11 +335,13 @@ async function applyLivePermission(mode: PermissionModeLabel): Promise<void> {
 
 function ConsumedSettings({
   ui,
+  toolset,
   savingKey,
   disabled,
   onPatch,
 }: {
   ui?: Record<string, unknown>
+  toolset?: SettingsPayload['toolset']
   savingKey?: string
   disabled: boolean
   onPatch: (patch: SettingsPatch) => Promise<void>
@@ -425,7 +446,110 @@ function ConsumedSettings({
           </div>
         )
       })}
+      <AskTimeoutSection toolset={toolset} savingKey={savingKey} disabled={disabled} onPatch={onPatch} />
     </section>
+  )
+}
+
+/** `[toolset.ask_user_question]` timeout pair — TUI「Ask-Question timeout」。
+ *  提示如实标注：agent 只在会话启动（agent build）时解析这两个键，改
+ *  动只影响新会话。secs 缺省 = agent 默认 1800（30 分钟）。 */
+const ASK_TIMEOUT_SECS_MAX = 86400
+
+function AskTimeoutSection({
+  toolset,
+  savingKey,
+  disabled,
+  onPatch,
+}: {
+  toolset?: SettingsPayload['toolset']
+  savingKey?: string
+  disabled: boolean
+  onPatch: (patch: SettingsPatch) => Promise<void>
+}) {
+  const aq = toolset?.ask_user_question
+  // 缺省与 agent 侧 DEFAULT_ASK_USER_QUESTION_TIMEOUT_ENABLED 一致。
+  const on = aq?.timeout_enabled !== false
+  const secs = aq?.timeout_secs
+  const busy = savingKey === 'toolset'
+  const [draft, setDraft] = useState('')
+
+  const commitSecs = () => {
+    const n = Number(draft)
+    if (!Number.isInteger(n) || n < 1 || n > ASK_TIMEOUT_SECS_MAX) {
+      setDraft('') // 非法输入不提交，回退显示当前值
+      return
+    }
+    setDraft('')
+    void onPatch({ toolset: { ask_user_question: { timeout_secs: n } } })
+  }
+
+  return (
+    <>
+      <div className="px-4 pt-2 pb-1 text-[10px] uppercase tracking-wider text-gn-gutter">
+        ask_user_question 超时
+      </div>
+      <div className="flex items-start gap-3 px-4 py-1.5">
+        <span
+          className="w-48 shrink-0 pt-0.5 font-mono text-[11.5px] text-gn-muted"
+          title="toolset.ask_user_question.timeout_enabled"
+        >
+          timeout_enabled
+        </span>
+        <div className="min-w-0 flex-1">
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => void onPatch({ toolset: { ask_user_question: { timeout_enabled: !on } } })}
+            className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-px text-[10.5px] ${
+              on
+                ? 'border-gn-green/60 text-gn-green'
+                : 'border-gn-prompt-border text-gn-muted'
+            } hover:bg-gn-bg-highlight disabled:opacity-50`}
+            title="提问卡片超时是否武装；关 = 一直等答案"
+          >
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${on ? 'bg-gn-green' : 'bg-gn-gutter'}`}
+            />
+            {busy ? '…' : on ? 'on' : 'off'}
+          </button>
+          <div className="mt-0.5 text-[10.5px] leading-snug text-gn-gutter">
+            开：提问超时自动放弃，agent 继续（默认开）· 只影响新会话。
+          </div>
+        </div>
+      </div>
+      <div className="flex items-start gap-3 px-4 py-1.5">
+        <span
+          className="w-48 shrink-0 pt-0.5 font-mono text-[11.5px] text-gn-muted"
+          title="toolset.ask_user_question.timeout_secs"
+        >
+          timeout_secs
+        </span>
+        <div className="min-w-0 flex-1">
+          <input
+            type="number"
+            min={1}
+            max={ASK_TIMEOUT_SECS_MAX}
+            inputMode="numeric"
+            disabled={disabled}
+            value={draft || (secs !== undefined ? String(secs) : '')}
+            placeholder="1800（默认 30 分钟）"
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={commitSecs}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                commitSecs()
+              }
+            }}
+            className="w-32 rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 text-[12px] text-gn-fg outline-none placeholder:text-gn-gray focus:border-gn-magenta/50"
+          />
+          <div className="mt-0.5 text-[10.5px] leading-snug text-gn-gutter">
+            超时秒数（1–{ASK_TIMEOUT_SECS_MAX}，Enter / 失焦生效）· 只影响新会话。
+          </div>
+        </div>
+      </div>
+    </>
   )
 }
 
@@ -436,6 +560,9 @@ function ConsumedSettings({
 function FePrefsSection() {
   const collapseToolGroups = useFePrefs((s) => s.fePrefs.collapseToolGroups)
   const setFePrefs = useFePrefs((s) => s.setFePrefs)
+  const [defaultSelectedPermission, setDefaultSelectedPermission] = useState<
+    DefaultSelectedPermission
+  >(() => loadDefaultSelectedPermission())
   return (
     <section className="border-b border-gn-prompt-border/50 py-1">
       <div className="px-4 pt-2 pb-1 text-[10px] uppercase tracking-wider text-gn-gutter">
@@ -469,6 +596,44 @@ function FePrefsSection() {
           <div className="mt-0.5 text-[10.5px] leading-snug text-gn-gutter">
             折叠 toolcall 分组 · 开：连续 toolcall 折叠成「Read 3 files」分组头，成员隐藏；
             关：分组默认展开、逐条显示。与置顶/待办同一 hub prefs 通道，跨端同步即时生效。
+          </div>
+        </div>
+      </div>
+      <div className="flex items-start gap-3 px-4 py-1.5">
+        <span
+          className="w-48 shrink-0 pt-0.5 font-mono text-[11.5px] text-gn-muted"
+          title="default_selected_permission"
+        >
+          default_selected_permission
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap gap-1">
+            {DEFAULT_SELECTED_PERMISSION_UI.map((c) => {
+              const on = defaultSelectedPermission === c.id
+              return (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => {
+                    saveDefaultSelectedPermission(c.id)
+                    setDefaultSelectedPermission(c.id)
+                  }}
+                  className={`rounded-full border px-2 py-px text-[10.5px] ${
+                    on
+                      ? 'border-gn-green/60 text-gn-green'
+                      : 'border-gn-prompt-border text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
+                  }`}
+                  title={c.id}
+                >
+                  {c.label}
+                </button>
+              )
+            })}
+          </div>
+          <div className="mt-1 text-[10.5px] leading-snug text-gn-gutter">
+            审批弹窗里默认光标落点（问的时候默认选哪一行）。与上面的 permission_mode
+            正交：permission_mode 决定会不会问，这一项决定问的时候默认选哪个。仅保存在本浏览器
+            localStorage，不写入 host 配置，审批卡已在显示时不强制重排（下一条生效）。
           </div>
         </div>
       </div>

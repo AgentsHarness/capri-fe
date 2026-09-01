@@ -63,3 +63,15 @@ export const HEADER_ROW_CLASS =
  * Matches EntryShell: accent(3) + gap(12) from the chrome content edge.
  */
 export const COMPOSER_BODY_PAD_LEFT_PX = ICON_COL_INSET_PX
+
+/**
+ * Left inset of a row's *text* column: one icon column (1.25em at the pinned
+ * 13px = 16.25px) plus the 6px gap after it. That is where the tool header
+ * target, the `$ command` line, and any other bullet-led row start — nested
+ * blocks (hook runs under a tool row) pad to the same value so their left edge
+ * lines up with the text above them instead of with the icon track.
+ */
+export const DETAIL_TEXT_PAD_CLASS = 'pl-[22.25px]'
+
+/** `DETAIL_TEXT_PAD_CLASS` + one nested icon column (16px) + its 4px gap. */
+export const DETAIL_SUB_TEXT_PAD_CLASS = 'pl-[42.25px]'

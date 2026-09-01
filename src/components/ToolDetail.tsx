@@ -3,7 +3,7 @@
  * (read line-gutter content, execute stdout panel, edit diff, search matches…).
  */
 
-import type { ToolCall } from '../api/types'
+import type { ToolCall, ToolHookData } from '../api/types'
 import { Fragment, useState } from 'react'
 import {
   EXEC_FIRST,
@@ -11,14 +11,18 @@ import {
   INLINE_MAX,
   READ_FIRST,
   READ_LAST,
+  discoveredToolAction,
   extractToolDetail,
   truncateLines,
   type DiffLine,
   type ToolDetail as Detail,
 } from '../scrollback/toolDetail'
+import { makeRelativePath, mcpTitleizeSegment } from '../scrollback/toolPaths'
+import { useChatStore } from '../store/chat'
 import { IconGlyph } from './IconGlyph'
 import { fmtBytes } from '../format'
 import { Ansi } from './Ansi'
+import { ToolHookDetail } from './scrollback/kinds/HookRuns'
 
 /**
  * Full-viewer page size for long stdout / read / edit bodies.
@@ -27,6 +31,9 @@ import { Ansi } from './Ansi'
  * Keep small (≤250) so mobile DOM stays light — load-more adds one page at a time.
  */
 const VIEWER_PAGE_LINES = 200
+
+/** TUI web_search `MAX_INLINE_SOURCES` — domains shown before "+N more". */
+const MAX_INLINE_SOURCES = 3
 
 function MoreLinesButton({
   total,
@@ -58,6 +65,13 @@ type Props = {
    * collapsed_edit_blocks=true). Rendered after the main raw with a gap.
    */
   mergedRaws?: ToolCall[]
+  /**
+   * Hook runs that gated this call (TUI order: tool header → pre_tool_use →
+   * post_tool_use). Rendered after the tool body under a `───` separator —
+   * hooks are attached to the row, not to the wire payload, so the store owns
+   * them and this component only paints what it is handed.
+   */
+  hooks?: ToolHookData
   className?: string
 }
 
@@ -66,6 +80,7 @@ export function ToolDetail({
   kindName,
   full = false,
   mergedRaws,
+  hooks,
   className,
 }: Props) {
   const d = extractToolDetail(raw, kindName)
@@ -73,6 +88,7 @@ export function ToolDetail({
   const extras = (mergedRaws ?? [])
     .map((r) => extractToolDetail(r, kindName))
     .filter((x): x is Extract<Detail, { kind: 'edit' }> => x.kind === 'edit')
+  const hookDetail = hooks ? <ToolHookDetail data={hooks} /> : null
   return (
     <div
       className={`min-w-0 font-ui text-[12.5px] leading-[1.45] ${className ?? 'mt-1'}`}
@@ -82,6 +98,7 @@ export function ToolDetail({
       ) : (
         <DetailBody d={d} full={full} />
       )}
+      {hookDetail}
     </div>
   )
 }
@@ -102,6 +119,8 @@ function DetailBody({ d, full }: { d: Detail; full: boolean }) {
       return <FetchBody d={d} full={full} />
     case 'web_search':
       return <WebSearchBody d={d} full={full} />
+    case 'search_tool':
+      return <SearchToolBody d={d} />
     case 'use_tool':
       return <UseToolBody d={d} full={full} />
     case 'generic':
@@ -221,18 +240,20 @@ function StdoutPanel({
 /**
  * Turn read-tool image content (data URI or bare base64) into a usable
  * <img> src; undefined when the content is not image-shaped (→ the
- * existing "(image)" text fallback).
+ * existing "(image)" text fallback). Bare base64 is wrapped with the wire
+ * mime when one is present (image/png default).
  */
-function readImageSrc(content?: string): string | undefined {
+function readImageSrc(content?: string, mime?: string): string | undefined {
   const c = content?.trim()
   if (!c) return undefined
   if (c.startsWith('data:')) return c
   // Stray "image/png;base64,…" prefix without the data: scheme.
   const m = c.match(/^([\w.+-]+\/[\w.+-]+);base64,(.+)$/)
   if (m) return `data:${m[1]};base64,${m[2]}`
-  // Long base64-shaped payload → wrap with image/png.
+  // Long base64-shaped payload → wrap (mime from the wire, default image/png).
   if (c.length > 64 && /^[A-Za-z0-9+/=\s]+$/.test(c)) {
-    return `data:image/png;base64,${c.replace(/\s+/g, '')}`
+    const mimeOk = mime && /^[\w.+-]+\/[\w.+-]+$/.test(mime) ? mime : 'image/png'
+    return `data:${mimeOk};base64,${c.replace(/\s+/g, '')}`
   }
   return undefined
 }
@@ -249,7 +270,9 @@ function ReadBody({
   const [visible, setVisible] = useState(VIEWER_PAGE_LINES)
   if (d.error) return <ErrorLine text={d.error} />
   if (d.media === 'image') {
-    const src = readImageSrc(d.content)
+    const src =
+      readImageSrc(d.content, d.imageMime) ??
+      (d.imageUri && /^https?:\/\//i.test(d.imageUri) ? d.imageUri : undefined)
     if (src) {
       // Real image preview (base64 / data URI content) — no max-h clip
       // like text panels; the image caps itself at 55vh.
@@ -265,7 +288,10 @@ function ReadBody({
     }
     return <MetaLine>(image)</MetaLine>
   }
-  if (d.media === 'pdf') return <MetaLine>(pdf)</MetaLine>
+  if (d.media === 'pdf') {
+    // TUI header suffix carries the page count; the body has nothing to show.
+    return <MetaLine>{d.pages != null ? `(${d.pages} pages)` : '(pdf)'}</MetaLine>
+  }
   if (d.empty) return <MetaLine>(empty)</MetaLine>
   if (!d.content) return <MetaLine>(no content)</MetaLine>
 
@@ -503,6 +529,9 @@ function DiffRow({ line, gutterW }: { line: DiffLine; gutterW: number }) {
 // ── search ───────────────────────────────────────────────────────────
 
 function SearchBody({ d }: { d: Extract<Detail, { kind: 'search' }> }) {
+  // TUI `make_relative_path`: grep result paths are stored cwd-relative.
+  const cwd = useChatStore((s) => s.historyCwd ?? s.cwd)
+  const rel = (p: string) => makeRelativePath(p, cwd)
   if (d.error) return <ErrorLine text={d.error} />
 
   const modeLabel =
@@ -534,7 +563,7 @@ function SearchBody({ d }: { d: Extract<Detail, { kind: 'search' }> }) {
             className="px-2 font-mono text-[12px]"
             style={{ color: 'var(--color-gn-path)' }}
           >
-            {fm.path}
+            {rel(fm.path)}
           </div>
           {fm.matches.map((m, j) => (
             <div key={j} className="flex px-2 font-mono text-[12px] leading-[1.4]">
@@ -556,7 +585,7 @@ function SearchBody({ d }: { d: Extract<Detail, { kind: 'search' }> }) {
             className="px-2 font-mono text-[12px]"
             style={{ color: 'var(--color-gn-path)' }}
           >
-            {p}
+            {rel(p)}
           </div>
         ))}
     </div>
@@ -613,6 +642,9 @@ function WebSearchBody({
   full: boolean
 }) {
   if (d.error) return <ErrorLine text={d.error} />
+  // TUI sources_line: deduplicated domains, first 3 inline, rest counted.
+  const shown = d.sites.slice(0, MAX_INLINE_SOURCES)
+  const remaining = Math.max(0, d.sites.length - MAX_INLINE_SOURCES)
   return (
     <div className="space-y-1">
       {d.content ? (
@@ -620,6 +652,13 @@ function WebSearchBody({
       ) : (
         <MetaLine>(no content)</MetaLine>
       )}
+      {shown.length > 0 ? (
+        <div className="px-1 text-[12px] text-gn-muted">
+          {'  '}Sources:{' '}
+          <span className="text-gn-fg">{shown.join(', ')}</span>
+          {remaining > 0 ? ` (+${remaining} more)` : ''}
+        </div>
+      ) : null}
       {d.citations.length > 0 ? (
         <div className="space-y-0.5 px-1">
           {d.citations.map((c, i) => (
@@ -629,6 +668,32 @@ function WebSearchBody({
           ))}
         </div>
       ) : null}
+    </div>
+  )
+}
+
+// ── search tool discovery ────────────────────────────────────────────
+
+/**
+ * TUI SearchToolCallBlock body: numbered rows of `Action  Server`, both halves
+ * title-cased, server ghosted. The action drops the trusted `server__` prefix.
+ */
+function SearchToolBody({ d }: { d: Extract<Detail, { kind: 'search_tool' }> }) {
+  if (d.error) return <ErrorLine text={d.error} />
+  if (!d.results.length) return <MetaLine>(no results)</MetaLine>
+  return (
+    <div className="space-y-0.5 py-0.5">
+      {d.results.map((t, i) => (
+        <div key={`${t.name}-${i}`} className="px-2 font-mono text-[12px] leading-[1.4]">
+          <span className="mr-2 text-gn-muted">{i + 1}.</span>
+          <span className="font-bold text-gn-fg">
+            {mcpTitleizeSegment(discoveredToolAction(t))}
+          </span>
+          {t.server ? (
+            <span className="ml-2 text-gn-gray-dim">{mcpTitleizeSegment(t.server)}</span>
+          ) : null}
+        </div>
+      ))}
     </div>
   )
 }
