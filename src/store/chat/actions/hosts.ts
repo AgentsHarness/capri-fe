@@ -54,9 +54,11 @@ export function hostActions(set: SetState, get: () => ChatState) {
         get().resetToEmpty()
       }
     }
-    // First selection. localHostId 有值时（内嵌直连或远程站
-    // discoverLocalHost 命中本机）优先选本机，避免被上次调试留下的
-    // 远程 host（capri-fe.host）拐走。否则：记忆 → hub default → 在线 → 本机。
+    // First selection. 本机优先只给「页面本身就跑在本机 host 上」的场景
+    // （内嵌前端 / Vite 代理，localBase 为空）——那里残留的远程
+    // capri-fe.host 会把 localhost 调试拐成「连不上本地」。远程站探测出的
+    // 127.0.0.1 近路（localBase 非空）只是一条加速通路，不该盖掉用户在这
+    // 个 origin 上显式选过的 host，否则永远回到本机、切不到 Hub 中继节点。
     // hub 尚未下发 port / 首次心跳前可能还没发现本机：有 port 时再探一次。
     if (
       transport.getConnectionMode() === 'hub' &&
@@ -66,10 +68,17 @@ export function hostActions(set: SetState, get: () => ChatState) {
       await transport.discoverLocalHost(hosts)
     }
     const localId = transport.getLocalHostId()
-    let saved: string | null = loadStr('capri-fe.host')
+    const local = localId ? hosts.find((h) => h.hostId === localId) : undefined
+    const saved = loadStr('capri-fe.host')
+    const remembered = saved ? hosts.find((h) => h.hostId === saved) : undefined
+    const first = transport.getLocalBase()
+      ? remembered?.online
+        ? remembered
+        : local
+      : local
     const pick =
-      (localId ? hosts.find((h) => h.hostId === localId) : undefined) ??
-      (saved ? hosts.find((h) => h.hostId === saved) : undefined) ??
+      first ??
+      remembered ??
       hosts.find((h) => h.hostId === defaultHostId) ??
       hosts.find((h) => h.online) ??
       hosts.find((h) => h.local) ??
