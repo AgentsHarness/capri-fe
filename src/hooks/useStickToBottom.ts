@@ -37,13 +37,17 @@ export function useStickToBottom(
 ) {
   const { enabled = true, initialFollowing = false, resetKey } = opts
   const followingRef = useRef(initialFollowing)
+  const roRef = useRef<ResizeObserver | null>(null)
+  const observedRef = useRef<Element | null>(null)
+  const pinRef = useRef<() => void>(() => {})
 
   /** Re-read the user's position; call from the box's onScroll. */
   const measure = useCallback(() => {
     if (!enabled) return
     const el = boxRef.current
     if (!el || el.scrollHeight <= el.clientHeight + 1) return
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_THRESHOLD_PX
+    const atBottom =
+      el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_THRESHOLD_PX
     followingRef.current = atBottom
   }, [boxRef, enabled])
 
@@ -54,10 +58,11 @@ export function useStickToBottom(
     if (!el) return
     el.scrollTop = el.scrollHeight
   }, [boxRef, enabled])
+  pinRef.current = pin
 
   // Open / item switch: seed the follow state, and for live logs land on the
-  // tail immediately (before that, the box renders at scrollTop 0 = newest
-  // page only if content is short, which is not the case for a running log).
+  // tail immediately (the box would otherwise render at scrollTop 0, which is
+  // the head of a long log, not its newest line).
   useEffect(() => {
     followingRef.current = enabled && initialFollowing
     if (!followingRef.current) return
@@ -67,15 +72,30 @@ export function useStickToBottom(
 
   // Content growth is what needs following — observe the content element, not
   // the box (the box is flex-sized and never changes height). Covers async
-  // layout too (markdown re-flow, images, late stream flushes).
+  // layout too (markdown re-flow, images, mermaid, late stream flushes).
+  //
+  // No dep array: callers whose single content wrapper is *replaced* between
+  // renders (empty-state → populated list) would otherwise leave the observer
+  // pinned to a detached node and silently stop following. The identity check
+  // keeps the steady-state cost at one comparison per render.
   useEffect(() => {
-    if (!enabled) return
-    const content = boxRef.current?.firstElementChild
-    if (!content || typeof ResizeObserver === 'undefined') return
-    const ro = new ResizeObserver(() => pin())
-    ro.observe(content)
-    return () => ro.disconnect()
-  }, [boxRef, enabled, initialFollowing, resetKey, pin])
+    const next = enabled ? (boxRef.current?.firstElementChild ?? null) : null
+    if (next === observedRef.current) return
+    roRef.current?.disconnect()
+    roRef.current = null
+    observedRef.current = next
+    if (!next || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => pinRef.current())
+    ro.observe(next)
+    roRef.current = ro
+  })
+  useEffect(() => () => roRef.current?.disconnect(), [])
 
-  return { onScroll: measure, pin }
+  return {
+    onScroll: measure,
+    pin,
+    /** Read the follow flag for extra tail-pinning that the box itself does
+     *  not cover (e.g. a clipped inner preview that must scroll separately). */
+    isFollowing: () => followingRef.current,
+  }
 }

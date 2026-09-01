@@ -122,6 +122,24 @@ describe('useStickToBottom', () => {
     expect(box.el.scrollTop).toBe(50)
   })
 
+  it('re-observes when the single content wrapper is replaced', () => {
+    // empty-state div → populated list div: the old node is detached, so an
+    // observer still pointing at it would silently stop following.
+    const box = makeBox(1000, 400)
+    const { rerender } = setup(box, { initialFollowing: true, resetKey: 'a' })
+    expect(observers).toHaveLength(1)
+
+    box.el.removeChild(box.content)
+    const next = document.createElement('div')
+    box.el.appendChild(next)
+    rerender()
+
+    expect(observers.length).toBe(2)
+    box.size.scrollHeight = 2400
+    act(() => observers[observers.length - 1].trigger())
+    expect(box.el.scrollTop).toBe(2400)
+  })
+
   it('re-seeds follow state when the viewed item changes', () => {
     const box = makeBox(1000, 400)
     const { result, rerender } = renderHook(

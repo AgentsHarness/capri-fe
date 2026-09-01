@@ -894,9 +894,17 @@ function SubagentTimeline({
     })
   }, [hasMore, loadingMore, renderItems, childSid, loadMoreSubagentView])
 
-  // 用户主动上滑 → 暂停自动滚底（标准 stick-to-bottom 语义）；滚回
-  // 底部附近自动恢复。流式输出期间上滑浏览历史不再被拉回。
-  const [userScrolledUp, setUserScrolledUp] = useState(false)
+  // stick-to-bottom 跟随：与块查看弹窗正文共用 useStickToBottom——距底
+  // 48px 内随内容增长钉尾，用户上滑立即让位，滑回尾部恢复。运行中的子代理
+  // 打开即跟随；已结束的从顶部读起，除非用户自己滑到底。
+  const {
+    onScroll: measureFollow,
+    pin: pinTimelineTail,
+    isFollowing: timelineFollowsTail,
+  } = useStickToBottom(scrollRef, {
+    initialFollowing: running,
+    resetKey: childSid,
+  })
   // 流式条目的正文自滚交给外层容器统一滚底：mini 传一个恒空 ref
   // （streamBodyRef 存在即跳过 EntryView 的条目自滚），body 内上滑
   // 不会被"自滚拉回"。
@@ -962,9 +970,7 @@ function SubagentTimeline({
   const onScroll = () => {
     const el = scrollRef.current
     if (!el) return
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48
-    if (nearBottom && userScrolledUp) setUserScrolledUp(false)
-    else if (!nearBottom && !userScrolledUp) setUserScrolledUp(true)
+    measureFollow()
     updatePinned()
     if (el.scrollTop > 8 || loadingMore) return
     if (!hasMore) return
@@ -977,16 +983,15 @@ function SubagentTimeline({
     })
   }
 
-  // running 时自动滚到底（与 bg_task 的 stick-to-bottom 同款）；用户
-  // 主动上滑（userScrolledUp）期间暂停，滚回底部恢复。流式思考正文
-  // 由这里统一滚底（EntryView 的条目自滚已被 streamBodyRef 关闭）。
+  // items 变化时同步钉一次（ResizeObserver 回调晚一帧），异步撑高
+  // （mermaid / 图片 / markdown 回流）由 useStickToBottom 的观察器兜住。
+  // 流式思考的 4 行预览是 overflow:hidden——没有滚动条但可程序滚动，
+  // 要显式钉到尾部才显示最新几行，EntryView 收口时会把该 ref 置空。
   useEffect(() => {
-    if (!running || userScrolledUp) return
+    pinTimelineTail()
     const bodyEl = miniStreamBodyRef.current
-    if (bodyEl) bodyEl.scrollTop = bodyEl.scrollHeight
-    const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [running, items, userScrolledUp])
+    if (bodyEl && timelineFollowsTail()) bodyEl.scrollTop = bodyEl.scrollHeight
+  }, [running, items, pinTimelineTail, timelineFollowsTail])
 
   // 主 scrollback 同款分组管线：scanGroups → projectDisplayRows。
   // 只用渲染窗口内的条目（renderItems），DOM 保持扁平。
