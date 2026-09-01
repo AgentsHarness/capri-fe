@@ -17,7 +17,7 @@
  * drops the collapsed-only suffixes — matching TUI `tool_summary`.
  */
 import type { ToolCall } from '../api/types'
-import { extractToolDetail } from './toolDetail'
+import { extractToolDetail, toolBodyOmitted } from './toolDetail'
 import {
   makeRelativePath,
   pathForSurface,
@@ -212,9 +212,13 @@ export function toolHeaderExtra(
         }
         // Match summary — TUI match_summary(), per output mode.
         const files = d.fileMatches.length
+        // 正文被 lite 裁过时 match_count 可能整块不在（兜底预算会继续裁）——
+        // 那时的 0 不代表「没有匹配」，宁可不写摘要也不误报空态。
+        const bodyCut = toolBodyOmitted(raw)
         let summary: string
         if (d.matchCount === 0) {
-          summary = d.outputMode === 'files' ? '(no files)' : '(no matches)'
+          if (bodyCut) summary = ''
+          else summary = d.outputMode === 'files' ? '(no files)' : '(no matches)'
         } else if (d.outputMode === 'files') {
           summary = d.matchCount === 1 ? '(1 file)' : `(${d.matchCount} files)`
         } else if (d.outputMode === 'count') {
@@ -233,7 +237,7 @@ export function toolHeaderExtra(
                 ? '(1 match)'
                 : `(${d.matchCount} matches)`
         }
-        return { target, suffix: ` ${summary}` }
+        return { target, suffix: summary ? ` ${summary}` : undefined }
       }
       case 'list_dir': {
         const n = d.entryCount

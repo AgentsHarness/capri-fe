@@ -19,6 +19,8 @@ import {
 import { formatTurnDuration, planTodos, useChatStore, type ViewerTask } from '../store/chat'
 import type { ScrollEntry } from '../api/types'
 import { subagentMeta } from '../format'
+import { LiteToolFill } from './scrollback/LiteToolFill'
+import { toolEntryLitePending } from '../store/chat/historyFill'
 import { ToolDetail } from './ToolDetail'
 import { HookGroupsDetail } from './scrollback/kinds/HookRuns'
 import { Markdown } from './Markdown'
@@ -477,6 +479,20 @@ function ViewerBody({
   now?: number
 }) {
   if (entry.kind === 'tool' && entry.raw) {
+    if (toolEntryLitePending(entry)) {
+      // 正文被 lite 裁掉：全文视图同样只给占位行（打开查看器已触发按需
+      // 补全，这里是补回来之前的过渡态）。判据要求补全坐标——没有
+      // [msgSeq, msgSeqEnd] 的行（host 透传回退整页无 msgSeq）点开也拉不
+      // 回来，占位行就是个死按钮。
+      return (
+        <LiteToolFill
+          bytes={entry.liteOmitted}
+          state={entry.liteState}
+          onFill={() => void useChatStore.getState().fillToolEntryDetail(entry.id)}
+          className="mt-0"
+        />
+      )
+    }
     return (
       <ToolDetail
         raw={entry.raw}
@@ -1054,7 +1070,12 @@ function SubagentTimeline({
   // 仍是主 store 动作（EntryView 内部取 actions ?? store），此处全部覆盖。
   const actions: EntryViewActions = useMemo(
     () => ({
-      toggleTool: (id) => setFolds((m) => new Map(m).set(id, !(m.get(id) ?? false))),
+      toggleTool: (id) => {
+        const next = !(folds.get(id) ?? false)
+        setFolds((m) => new Map(m).set(id, next))
+        // 展开 = 要看正文：lite 裁掉的行按需补全（非 lite / 已补全 no-op）。
+        if (next) void useChatStore.getState().fillToolEntryDetail(id)
+      },
       toggleThought: (id) =>
         setFolds((m) => new Map(m).set(id, !(m.get(id) ?? false))),
       toggleUser: (id) =>
@@ -1063,10 +1084,15 @@ function SubagentTimeline({
         setFolds((m) => new Map(m).set(id, !(m.get(id) ?? false))),
       toggleSessionEvent: (id) =>
         setFolds((m) => new Map(m).set(id, !(m.get(id) ?? false))),
-      openViewer: (id) => setViewerId(id),
+      openViewer: (id) => {
+        // 「查看」全文同样要先有正文（fillToolEntryDetail 会按 id 找到本
+        // 子代理视图里的条目）。
+        void useChatStore.getState().fillToolEntryDetail(id)
+        setViewerId(id)
+      },
       selectEntry: (id) => setSelectedId(id),
     }),
-    [],
+    [folds],
   )
 
   const toggleGroupExpansion = (anchorId: string) =>

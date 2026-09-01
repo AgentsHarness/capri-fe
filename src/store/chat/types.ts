@@ -12,6 +12,7 @@ import type {
   RewindPoint,
   ScheduledTask,
   ScrollEntry,
+  SessionHistoryProjected,
   SessionInfo,
   SubagentStatus,
   SubagentViewState,
@@ -229,6 +230,14 @@ export interface ChatHistoryState {
   historyPromptStarts?: number[]
   /** historyPromptStarts 中「最老已加载轮次」的下标；每往前加载一轮减 1；0 = 无更早轮次。 */
   historyTurnIdx: number
+  /**
+   * 最新一页的 host 投影回显（契约 [B]）：'lite' = 本页工具正文被裁（条目
+   * 带 liteOmitted，展开时按需补全）；undefined = 本页是全量（开关关闭 /
+   * 旧 host / 无可裁内容）。
+   */
+  historyProjected?: SessionHistoryProjected
+  /** 本页被裁掉的总字节数（projected 生效时带）；后台补全的预算闸门数据源。 */
+  historyOmittedBytes?: number
   /**
    * 空状态（无活动会话）时用户选/输入的工作目录；发送消息时用它
    * 创建新会话（空串 = 宿主默认目录）。resetSessionState 清空。
@@ -701,6 +710,15 @@ export interface ChatUiState {
    * stale sessions. The Composer owns open/change/close lifecycle.
    */
   fileSearch: FileSearchState | null
+  /**
+   * 按需补全一条 lite 工具行的正文（契约 [E]）：按该条目的
+   * [msgSeq, msgSeqEnd] 区间拉 detail=full，只把 raw.rawOutput / raw.content
+   * 填回原行。展开入口（toggleTool / 「查看」/ Diff 审查 / 子代理迷你视图）
+   * 与占位行上的重试都走这里；同区间只拉一次。
+   */
+  fillToolEntryDetail: (entryId: string) => Promise<void>
+  /** 整窗补全：一次展开一片的入口（Diff 审查弹窗打开时调）。 */
+  fillLiteToolBodies: (opts?: { editOnly?: boolean }) => Promise<void>
   toggleTool: (id: string) => void
   toggleThought: (id: string) => void
   /** Expand/collapse long user prompts (←/→ / click). */

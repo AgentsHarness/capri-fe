@@ -231,6 +231,159 @@ function rawBool(ri: Record<string, unknown> | undefined, ...keys: string[]): bo
   return false
 }
 
+/**
+ * host lite 投影留下的正文占位：`{"omitted": <字节>}`（契约 [C]1/2，形状
+ * 固定为只有 omitted 一个键，避免把工具自己的 `omitted` 字段误判成占位）。
+ * 它不是真实正文——当成空值往下传会渲染出 "(no matches)" / "(no content)"
+ * 这类假空态，所以正文提取一律先认它。
+ */
+export function liteOmittedBytes(v: unknown): number | undefined {
+  if (!isObj(v)) return undefined
+  const keys = Object.keys(v)
+  if (keys.length !== 1 || keys[0] !== 'omitted') return undefined
+  const n = (v as Record<string, unknown>).omitted
+  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : undefined
+}
+
+/**
+ * content 摘要块的形状：`{"omitted": n}` 之外还带着原块的 `type`
+ * （host 用它画「省略了哪种块」），所以不能只认单键。其余键一律不算占位，
+ * 免得把工具自己的 omitted 字段误判成占位。
+ */
+function contentStubBytes(v: unknown): number | undefined {
+  if (!isObj(v)) return undefined
+  const rec = v as Record<string, unknown>
+  const keys = Object.keys(rec)
+  if (!keys.includes('omitted')) return undefined
+  if (!keys.every((k) => k === 'omitted' || k === 'type')) return undefined
+  const n = rec.omitted
+  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : undefined
+}
+
+/** 一个值本身是不是占位（两种形状之一）。 */
+function stubBytesOf(v: unknown): number | undefined {
+  return liteOmittedBytes(v) ?? contentStubBytes(v)
+}
+
+/**
+ * 占位扫描的节点上限：host 裁过的 rawOutput 本来就 ≤2KB（[C]4 的预算），
+ * 但 `toolBodyOmitted` 同样跑在未裁的大 payload 上（一次 Read 的整篇正文），
+ * 所以给结构遍历设个封顶——超了就当没有占位，宁缺毋滥。
+ */
+const LITE_STUB_SCAN_NODES = 4096
+
+function findLiteStub(v: unknown, budget: { left: number }): number | undefined {
+  if (budget.left <= 0) return undefined
+  budget.left -= 1
+  const own = stubBytesOf(v)
+  if (own != null) return own
+  const children: unknown[] = isObj(v)
+    ? Object.values(v as Record<string, unknown>)
+    : Array.isArray(v)
+      ? v
+      : []
+  for (const inner of children) {
+    const n = findLiteStub(inner, budget)
+    if (n != null) return n
+  }
+  return undefined
+}
+
+/**
+ * 值本身或其子树里是不是留着 lite 占位。必须递归：host 的实际形状是
+ * `{Bash: {output: {omitted}}}`、content 是 `[{omitted, type}]`，都隔着层容器
+ * （`{ToolVariant:{字段:{omitted}}}` 这类只看一层会整个漏掉，只能退回
+ * `_meta.lite` 标记判定）。
+ */
+function omittedUnder(v: unknown): number | undefined {
+  return findLiteStub(v, { left: LITE_STUB_SCAN_NODES })
+}
+
+/** 正文占位的显示串：非空、一眼看不出内容，下游空态因此不会误报。 */
+export const LITE_OMITTED_MARK = '…'
+
+/** 取正文字符串：lite 占位 → 省略号，其余按原样。 */
+function bodyStr(v: unknown): string | undefined {
+  if (stubBytesOf(v) != null) return LITE_OMITTED_MARK
+  return asStr(v)
+}
+
+/** host 的投影标记 `_meta.lite = {omitted, fields}`（注意它不止一个键）。 */
+function liteMarkPresent(lite: unknown): boolean {
+  return (
+    isObj(lite) &&
+    typeof (lite as Record<string, unknown>).omitted === 'number' &&
+    Number.isFinite((lite as Record<string, unknown>).omitted as number)
+  )
+}
+
+/** rawOutput / content 里是否还留着占位（不看 `_meta.lite` 标记）。 */
+function bodyHasLiteStub(tc: ToolCall): boolean {
+  for (const v of [tc.rawOutput, tc.content]) {
+    if (v == null) continue
+    if (omittedUnder(v) != null) return true
+  }
+  return false
+}
+
+/**
+ * 这行还欠不欠**可显示的**正文：rawOutput 有真实值就够了（execute / read /
+ * grep 的正文都由它出，content 里的摘要块只是同一份输出的另一种形状）；
+ * 没有 rawOutput 时才看 content（edit 的 Diff 块就走这条路）。
+ * 与 toolBodyOmitted 的差别就在覆盖面：后者任一占位即算裁过（管空态措辞），
+ * 这里回答「用户展开能不能看到正文」（管撤不撤 live 续写行的占位）。
+ */
+export function toolBodyStillOwed(tc: ToolCall): boolean {
+  if (tc.rawOutput != null) return omittedUnder(tc.rawOutput) != null
+  return tc.content != null && omittedUnder(tc.content) != null
+}
+
+/**
+ * 这条工具调用的正文有没有被 lite 裁掉：`_meta.lite` 标记（FE 补全后会抹
+ * 掉）或 rawOutput / content 上的 `{"omitted": n}` 占位，任一命中即算被裁。
+ * 只看正文两处——rawInput 里被裁的参数按契约不参与补全，不能据此判整行未填。
+ */
+export function toolBodyOmitted(tc: ToolCall): boolean {
+  const meta = (tc as { _meta?: unknown })._meta
+  if (isObj(meta) && liteMarkPresent((meta as Record<string, unknown>).lite)) return true
+  return bodyHasLiteStub(tc)
+}
+
+/**
+ * 解析结果里「没有任何可看正文」——各分支的空态文案（(no content) /
+ * (no results) / (no diff) …）都以此为前提。lite 裁过正文时这个判断不可信
+ * （宿主只是没给，不是真的空），调用方必须改说「已省略」。
+ */
+export function detailIsEmpty(d: ToolDetail): boolean {
+  switch (d.kind) {
+    case 'read':
+      return !d.content && !d.media && !d.error
+    case 'execute':
+      return !d.output && !d.error
+    case 'edit':
+      return !d.lines.length && !d.error
+    case 'search':
+      return (
+        !d.error &&
+        d.matchCount === 0 &&
+        d.fileMatches.length === 0 &&
+        d.filePaths.length === 0
+      )
+    case 'list_dir':
+      return !d.output && !d.error
+    case 'fetch':
+      return !d.output && !d.error
+    case 'web_search':
+      return !d.content && !d.citations.length && !d.error
+    case 'search_tool':
+      return !d.results.length && !d.error
+    case 'use_tool':
+      return !d.output && !d.args.length && !d.error
+    case 'generic':
+      return !d.output && !d.content && !d.inputArgs.length && !d.error
+  }
+}
+
 /** Unwrap one level of Rust externally-tagged enum: { "Bash": {...} }. */
 function unwrapTagged(raw: unknown): { tag: string; body: unknown } | null {
   if (!isObj(raw)) return null
@@ -333,6 +486,10 @@ function contentDiffs(tc: ToolCall): Array<{
   const out: Array<{ path?: string; oldText: string; newText: string; newLine?: number }> = []
   for (const b of blocks) {
     if (!isObj(b)) continue
+    // lite 摘要块（`{"omitted": n, "type": "diff"}`）带着 diff 的 type，但
+    // 没有任何文本：当 diff 解析会凭空画出一个 `@@ -1,1 +1,1 @@` 空 hunk，
+    // 把「正文被裁过」这件事遮掉。整块跳过，由 toolBodyOmitted 报「已省略」。
+    if (stubBytesOf(b) != null) continue
     const type = String(b.type || '').toLowerCase()
     const isDiff =
       type === 'diff' ||
@@ -429,8 +586,8 @@ function extractBash(raw: unknown): {
   const output =
     bytesToText(body.output) ??
     bytesToText(body.stdout) ??
-    asStr(body.output) ??
-    asStr(body.stdout)
+    bodyStr(body.output) ??
+    bodyStr(body.stdout)
   const exitCode =
     typeof body.exit_code === 'number'
       ? body.exit_code
@@ -512,10 +669,10 @@ function extractReadFile(raw: unknown): {
       const b = nested.body
       return {
         content:
-          asStr(b.raw_output) ??
-          asStr(b.rawOutput) ??
-          asStr(b.content) ??
-          asStr(b.text),
+          bodyStr(b.raw_output) ??
+          bodyStr(b.rawOutput) ??
+          bodyStr(b.content) ??
+          bodyStr(b.text),
         totalLines:
           typeof b.total_lines === 'number'
             ? b.total_lines
@@ -605,7 +762,7 @@ function extractGrep(raw: unknown): {
                 : typeof m.lineNumber === 'number'
                   ? m.lineNumber
                   : 0,
-            content: asStr(m.content) ?? asStr(m.text) ?? '',
+            content: bodyStr(m.content) ?? bodyStr(m.text) ?? '',
           })
         }
       }

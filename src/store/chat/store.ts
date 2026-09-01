@@ -11,6 +11,10 @@ import {
   loadMoreHistory as loadOlderHistory,
 } from './sessionLoad'
 import { sendPrompt } from './send'
+import {
+  fillEntryDetail,
+  fillLiteWindow,
+} from './historyFill'
 import { appendEntry, type EntryWithoutId } from './entries'
 import { initChat } from './actions/init'
 import { goalActions } from './actions/goal'
@@ -233,6 +237,11 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
   dismissNotice: () => set({ layerErrors: {} }),
 
   loadHistory: (sessionId, cwd) => loadSessionHistory(set, get, sessionId, cwd),
+
+  // ── 精简回放（lite）正文补全 ───────────────────────────────────────
+  // 展开入口与占位行上的重试都收敛到这两个动作（实现在 historyFill.ts）。
+  fillToolEntryDetail: (entryId) => fillEntryDetail(set, get, entryId),
+  fillLiteToolBodies: (opts) => Promise.all(fillLiteWindow(set, get, opts)).then(() => {}),
 
   // ── 会话完成提醒（非当前会话 turn 跑完）───────────────────────────
   // Live turn_completed 事件带 sessionId：别的会话跑完时置对勾 +

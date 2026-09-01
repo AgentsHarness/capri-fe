@@ -118,6 +118,16 @@ export type ScrollEntry =
       startedAt?: number
       finishedAt?: number
       msgSeq?: number
+      /**
+       * 产生该条目的**最后**一条信封 msgSeq（host lite 契约 [D]）。回放页
+       * 只裁工具正文，展开补全要按 `{offset: msgSeq, limit: msgSeqEnd -
+       * msgSeq + 1}` 精确回拉这一小段；live 条目无 msgSeq → 也不参与补全。
+       */
+      msgSeqEnd?: number
+      /** 本页为该条目裁掉的工具正文字节数（host `_meta.lite.omitted` 累计）。 */
+      liteOmitted?: number
+      /** lite 正文补全态；缺省 = 未补全（工具卡显示占位行）。 */
+      liteState?: 'loading' | 'error' | 'filled'
     }
   | {
       id: string

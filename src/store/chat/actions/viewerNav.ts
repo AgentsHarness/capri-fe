@@ -8,12 +8,17 @@ import {
 } from '../../../scrollback/thoughtMode'
 import { hookGroupsHaveContent } from '../../../scrollback/hookRuns'
 import { currentCollapseToolGroups } from '../../historyPins'
+import { fillEntryRange } from '../historyFill'
 import type { ChatState, SetState } from '../types'
 import { selectableRowIds } from '../turn'
 
 export function viewerNavActions(set: SetState, get: () => ChatState) {
   return {
   toggleTool: (id) => {
+    // 展开即「要看正文」：lite 裁掉的行按 [msgSeq, msgSeqEnd] 区间按需补回
+    // （非 lite 行 no-op；折叠回去不打扰）。
+    const cur = get().entries.find((e) => e.id === id)
+    const willExpand = cur != null && cur.kind === 'tool' && !cur.expanded
     set({
       entries: get().entries.map((e) =>
         e.id === id && e.kind === 'tool' ? { ...e, expanded: !e.expanded } : e,
@@ -21,6 +26,7 @@ export function viewerNavActions(set: SetState, get: () => ChatState) {
       selectedId: id,
       focusMode: 'scrollback',
     })
+    if (willExpand) void fillEntryRange(set, get, id)
   },
 
   toggleThought: (id) => {
@@ -156,6 +162,8 @@ export function viewerNavActions(set: SetState, get: () => ChatState) {
         ),
         focusMode: 'scrollback',
       })
+      // 键盘 ←/→ 展开同样是「要看正文」→ 按需补回 lite 裁掉的部分。
+      if (expanded) void fillEntryRange(set, get, selectedId!)
       return
     }
     if (entry.kind === 'thought') {

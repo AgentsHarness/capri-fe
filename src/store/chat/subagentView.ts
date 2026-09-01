@@ -8,6 +8,7 @@ import type { SetState } from './types'
 import { nid } from './ids'
 import { formatElapsed, imageSrc, toolVerb } from './format'
 import { extractTarget, resolveAnonToolUpdate, toolCallIdOf, toolKindName } from './tools'
+import { liteMark } from './envelopeParse'
 import { collapsedEditBlocks } from './modeFlags'
 import { isEditToolKind } from '../../theme/toolFamily'
 
@@ -164,7 +165,7 @@ export function subagentViewAppend(
       // 运行中的每段 thinking 都挂着 "Thinking…" 直到回合终态。
       const sealed = sealSubagentStreaming(items)
       const tc = ev.toolCall || {}
-      const item = subagentToolItem(tc)
+      const item = stampLiteSeq(subagentToolItem(tc), ev)
       // 同 toolCallId 重复到达时原地替换，避免双行。
       const idx = item.toolCallId
         ? sealed.findIndex(
@@ -186,7 +187,7 @@ export function subagentViewAppend(
       if (!toolCallId) {
         // 空 toolCallId（qwen 等 OpenAI 兼容网关不给 call_id）：走与主
         // scrollback 同一套归属判定，否则三件套的每条 update 都新起一行。
-        return applyAnonToolUpdateToView(sealed, tc)
+        return applyAnonToolUpdateToView(sealed, tc, ev)
       }
       const idx = sealed.findIndex(
         (it) => it.kind === 'tool' && it.toolCallId === toolCallId,
@@ -197,12 +198,16 @@ export function subagentViewAppend(
           // 与主 scrollback 相同：update 的字段合并进 raw，标题/动词重算。
           const merged: ToolCall = { ...(existing.raw || {}), ...tc }
           const next = [...sealed]
-          next[idx] = subagentToolItem(merged, existing)
+          next[idx] = stampLiteSeq(subagentToolItem(merged, existing), ev, existing)
           return next
         }
       }
       // 未找到对应条目（回放分页边界）：按首次 tool_call 追加。
-      return subagentViewAppend(sealed, { type: 'tool_call', toolCall: tc })
+      return subagentViewAppend(sealed, {
+        type: 'tool_call',
+        toolCall: tc,
+        ...(ev.msgSeq != null ? { msgSeq: ev.msgSeq } : {}),
+      })
     }
     case 'plan':
       // plan 展示 = 流切换（主 scrollback plan 分支同样收口思考段）。
@@ -254,6 +259,7 @@ export function subagentViewAppend(
 function applyAnonToolUpdateToView(
   items: ScrollEntry[],
   tc: ToolCall,
+  ev: Extract<AcpEvent, { type: 'tool_call' } | { type: 'tool_call_update' }>,
 ): ScrollEntry[] {
   const target = resolveAnonToolUpdate(items, tc)
   if (!target) return items
@@ -266,8 +272,38 @@ function applyAnonToolUpdateToView(
     : // 并行多候选：只收状态，update 的 rawOutput 不落这条行。
       { ...(existing.raw || {}), status: tc.status }
   const next = [...items]
-  next[idx] = subagentToolItem(src, existing)
+  next[idx] = stampLiteSeq(subagentToolItem(src, existing), ev, existing)
   return next
+}
+
+/**
+ * lite 投影下迷你视图工具行的补全坐标：msgSeq = 产生该行的首条信封行号，
+ * msgSeqEnd = 本页最后一条碰到它的信封行号，liteOmitted = 本页为它裁掉的
+ * 字节。live 事件不带 msgSeq（也没有 lite 标记）→ 不参与补全。
+ */
+function stampLiteSeq(
+  item: Extract<ScrollEntry, { kind: 'tool' }>,
+  ev: Extract<AcpEvent, { type: 'tool_call' } | { type: 'tool_call_update' }>,
+  prev?: Extract<ScrollEntry, { kind: 'tool' }>,
+): Extract<ScrollEntry, { kind: 'tool' }> {
+  const tc: unknown =
+    ev.type === 'tool_call'
+      ? ev.toolCall
+      : ev.type === 'tool_call_update'
+        ? ev.toolCallUpdate
+        : undefined
+  const lite = liteMark(tc)
+  const seq = ev.msgSeq
+  const msgSeq = item.msgSeq ?? prev?.msgSeq ?? seq
+  const end = prev?.msgSeqEnd
+  const msgSeqEnd = seq != null && (end == null || seq > end) ? seq : end
+  const omitted = (prev?.liteOmitted ?? 0) + (lite ? lite.omitted : 0)
+  return {
+    ...item,
+    ...(msgSeq != null ? { msgSeq } : {}),
+    ...(msgSeqEnd != null ? { msgSeqEnd } : {}),
+    ...(omitted > 0 ? { liteOmitted: omitted } : {}),
+  }
 }
 
 /** 从 ToolCall 构造主 scrollback 同款的 tool 条目（title/verb/status/raw，

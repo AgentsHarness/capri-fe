@@ -22,6 +22,8 @@ export type EntryViewActions = {
   openViewer?: (id: string) => void
   /** 行选中（mini 局部选中；默认主 store selectEntry）。 */
   selectEntry?: (id: string) => void
+  /** lite 裁掉的工具正文按需补全（默认主 store entries；mini 补本子代理视图）。 */
+  fillToolBodies?: (id: string) => void
 }
 
 export type EntryViewProps = {
@@ -81,6 +83,11 @@ export type EntryChrome = {
   rowBtn: string
   openViewer: (id: string) => void
   toggleTool: (id: string) => void
+  /**
+   * lite 裁掉的工具正文按需补全（缺省 = 未接线：占位行只读不重试）。
+   * mini 时间线传子代理视图版——条目不在主 entries 里。
+   */
+  fillToolBodies?: (id: string) => void
   toggleThought: (id: string) => void
   toggleUser: (id: string) => void
   toggleBtw: (id: string) => void

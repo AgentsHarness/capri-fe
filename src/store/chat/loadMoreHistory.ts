@@ -7,6 +7,7 @@ import { captureAsyncScope, isAsyncScopeCurrent } from './globals'
 import {
   MAX_AUTO_FETCH_ENTRIES,
   adaptivePageSize,
+  applyEntryLiteStats,
   applyEntryMsgSeq,
   countUserMessages,
   mergeEntriesByMsgSeq,
@@ -15,6 +16,7 @@ import {
   replayUpdates,
   sortEntriesByMsgSeq,
 } from './history'
+import { historyDetailParam, noteHistoryProjection } from './historyFill'
 
 type LiveReplayState = Pick<
   ChatState,
@@ -140,11 +142,14 @@ export async function loadMoreHistory(
     }
     set({ historyLoadingMore: true, historyAnchorId: anchorId, historyLoadError: undefined })
     try {
+      const detail = historyDetailParam(get)
       const r = await transport.loadSessionHistory(s.historySessionId, s.historyCwd, {
         offset: reqOffset,
         limit: reqLimit,
+        ...(detail ? { detail } : {}),
       })
       if (!isCurrent()) return
+      noteHistoryProjection(get, detail != null, r)
       const fetched = r.updates?.length ?? 0
       // 真·live 回合：本端发送中 / 已知 promptId / loadHistory 对仍 open
       // 回合恢复的 turnStartedAt。turnOpen 已收紧（completed 后 stray
@@ -223,8 +228,14 @@ export async function loadMoreHistory(
                 : e,
             );
       // 新页条目补盖信封 msgSeq；全部带 msgSeq 时按其稳定排序（页内有序
-      // 是下方归并的前提）。
-      newEntries = sortEntriesByMsgSeq(applyEntryMsgSeq(newEntries, replay.entryMsgSeq))
+      // 是下方归并的前提）。lite 投影过的工具行补盖 msgSeqEnd / liteOmitted。
+      newEntries = sortEntriesByMsgSeq(
+        applyEntryLiteStats(
+          applyEntryMsgSeq(newEntries, replay.entryMsgSeq),
+          replay.entryMsgSeqEnd,
+          replay.entryLiteOmitted,
+        ),
+      )
       // Page boundaries can cut an assistant message in half; stitch the
       // continuation (first old entry) onto the new page's last entry.
       const lastNew = newEntries[newEntries.length - 1]

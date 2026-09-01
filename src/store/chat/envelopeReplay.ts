@@ -1,5 +1,5 @@
 import type { ChatState } from './types'
-import type { ScrollEntry } from '../../api/types'
+import type { AcpEvent, ScrollEntry, ToolCall } from '../../api/types'
 import { modelDisplayName } from './model'
 import {
   type RawEnvelope,
@@ -7,7 +7,9 @@ import {
   envelopeMsgSeq,
   envelopeToEvents,
   envelopeTimestamp,
+  liteMark,
 } from './envelopeParse'
+import { toolCallIdOf } from './tools'
 
 function replayUpdateKind(env: unknown): string | undefined {
   const e = env as RawEnvelope
@@ -197,6 +199,10 @@ export function replayUpdates(
   turnOpen: boolean
   /** 回放新产生条目的 id → 信封顶层 msgSeq（调用方盖到条目上）。 */
   entryMsgSeq: Map<string, number>
+  /** 工具条目 id → 本页最后一条碰到它的信封 msgSeq（lite 补全的窗口右端）。 */
+  entryMsgSeqEnd: Map<string, number>
+  /** 工具条目 id → 本页为该条目裁掉的字节数（`_meta.lite.omitted` 累计）。 */
+  entryLiteOmitted: Map<string, number>
 } {
   updates = reorderLateAgentEvents(updates)
   // 回放产生的条目按「产生它的第一条事件」盖信封顶层 msgSeq：新条目只会
@@ -206,6 +212,26 @@ export function replayUpdates(
   // entries 兜底：测试用的最小 store mock 可能不带该字段。
   const seenIds = new Set((getStore().entries ?? []).map((e) => e.id))
   const entryMsgSeq = new Map<string, number>()
+  const entryMsgSeqEnd = new Map<string, number>()
+  const entryLiteOmitted = new Map<string, number>()
+  /**
+   * lite 投影下工具行的补全坐标：`msgSeqEnd` = 本页最后一条碰到该行的信封
+   * 行号（按需补全要按 [msgSeq, msgSeqEnd] 精确回拉），`liteOmitted` = 本页
+   * 为该行为裁掉的字节。行归属取回放自己维护的 toolIndex（新建行也已登记），
+   * 匿名 call（无 toolCallId）无从对齐 → 不参与补全。
+   */
+  const stampToolTouch = (seq: number | undefined, ev: AcpEvent) => {
+    const tc: ToolCall | undefined =
+      ev.type === 'tool_call' ? ev.toolCall : ev.type === 'tool_call_update' ? ev.toolCallUpdate : undefined
+    if (!tc) return
+    const toolCallId = toolCallIdOf(tc)
+    if (!toolCallId) return
+    const entryId = getStore().toolIndex?.[toolCallId]
+    if (!entryId) return
+    if (seq != null) entryMsgSeqEnd.set(entryId, seq)
+    const lite = liteMark(tc)
+    if (lite) entryLiteOmitted.set(entryId, lite.omitted + (entryLiteOmitted.get(entryId) ?? 0))
+  }
   const stampNewEntries = (seq: number | undefined) => {
     const es = getStore().entries ?? []
     for (let i = es.length - 1; i >= 0; i--) {
@@ -409,6 +435,7 @@ export function replayUpdates(
     }
       flushUser()
       getStore().handleEvent(ev)
+      stampToolTouch(seq, ev)
     }
     stampNewEntries(seq)
   }
@@ -429,7 +456,42 @@ export function replayUpdates(
       anyEvent &&
       (sawTurnEnd ? userAfterEnd && turnStartTs != null : true),
     entryMsgSeq,
+    entryMsgSeqEnd,
+    entryLiteOmitted,
   }
+}
+
+/**
+ * 把 replayUpdates 的 lite 统计盖到回放条目上（`msgSeqEnd` 取较大者，
+ * `liteOmitted` 累加）。两个 map 都空时原数组返回。
+ */
+export function applyEntryLiteStats(
+  entries: ScrollEntry[],
+  msgSeqEnd: Map<string, number> | undefined,
+  liteOmitted: Map<string, number> | undefined,
+): ScrollEntry[] {
+  if ((!msgSeqEnd || msgSeqEnd.size === 0) && (!liteOmitted || liteOmitted.size === 0)) {
+    return entries
+  }
+  let changed = false
+  const next = entries.map((e) => {
+    if (e.kind !== 'tool') return e
+    const end = msgSeqEnd?.get(e.id)
+    const omitted = liteOmitted?.get(e.id)
+    if (end == null && omitted == null) return e
+    const prevEnd = e.msgSeqEnd
+    const prevOmitted = e.liteOmitted
+    const nextEnd = end != null && (prevEnd == null || end > prevEnd) ? end : prevEnd
+    const nextOmitted = omitted != null ? omitted + (prevOmitted ?? 0) : prevOmitted
+    if (nextEnd === prevEnd && nextOmitted === prevOmitted) return e
+    changed = true
+    return {
+      ...e,
+      ...(nextEnd != null ? { msgSeqEnd: nextEnd } : {}),
+      ...(nextOmitted != null ? { liteOmitted: nextOmitted } : {}),
+    }
+  })
+  return changed ? next : entries
 }
 
 /**

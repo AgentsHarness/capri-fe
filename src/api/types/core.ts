@@ -32,6 +32,8 @@ export type HubPrefsDoc = {
 export type FePrefsDoc = {
   /** scrollback 中 toolcall 分组默认折叠（false = 分组默认展开、逐条显示）。 */
   collapseToolGroups?: boolean
+  /** 精简回放（历史只裁工具正文）。缺省 = 未显式选过 = 按部署模式取默认。 */
+  liteReplay?: boolean
 }
 
 
