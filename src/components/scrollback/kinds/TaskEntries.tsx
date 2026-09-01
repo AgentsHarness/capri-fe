@@ -1,5 +1,6 @@
 import type { ScrollEntry } from '../../../api/types'
 import { subagentMeta } from '../../../format'
+import { InlineAction } from '../../InlineAction'
 import { Bullet, EntryShell } from '../EntryShell'
 import { ViewButton } from '../ViewButton'
 import type { EntryChrome } from '../chrome'
@@ -38,7 +39,9 @@ export function SubagentEntry({
           {e.title}
         </span>
         {(e.persona || e.role || e.model) && (
-          <span className="shrink-0 text-[11px] text-gn-gutter">
+          // wire 标识符理论上可超长：min-w-0 truncate 与标题同规则，
+          // 不把行撑出内容列（截断细节 hover/查看器可见）。
+          <span className="min-w-0 truncate text-[11px] text-gn-gutter">
             {subagentMeta(e.persona, e.role, e.model)}
           </span>
         )}
@@ -46,19 +49,12 @@ export function SubagentEntry({
           <span className="text-[11px] text-gn-gutter truncate">{e.detail}</span>
         )}
         {e.running && e.subagentId && (
-          <div className="ml-auto flex shrink-0 items-center gap-1">
-            <button
-              type="button"
-              onClick={(ev) => {
-                ev.stopPropagation()
-                void cancelSubagent(e.subagentId!)
-              }}
-              className="shrink-0 rounded border border-gn-red/40 px-1.5 py-0.5 text-[10.5px] text-gn-red hover:bg-gn-diff-del-bg"
-              title="x.ai/subagent/cancel"
-            >
-              cancel
-            </button>
-          </div>
+          <InlineAction
+            label="cancel"
+            title="x.ai/subagent/cancel"
+            className="ml-auto"
+            onRun={() => void cancelSubagent(e.subagentId!)}
+          />
         )}
       </div>
     </EntryShell>
@@ -152,19 +148,12 @@ export function BgTaskEntry({
           </span>
         )}
         {e.running && e.taskId && (
-          <div className="ml-auto flex shrink-0 items-center gap-1">
-            <button
-              type="button"
-              onClick={(ev) => {
-                ev.stopPropagation()
-                void killTask(e.taskId!)
-              }}
-              className="shrink-0 rounded border border-gn-red/40 px-1.5 py-0.5 text-[10.5px] text-gn-red hover:bg-gn-diff-del-bg"
-              title="x.ai/task/kill"
-            >
-              kill
-            </button>
-          </div>
+          <InlineAction
+            label="kill"
+            title="x.ai/task/kill"
+            className="ml-auto"
+            onRun={() => void killTask(e.taskId!)}
+          />
         )}
       </div>
     </EntryShell>

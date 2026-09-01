@@ -313,30 +313,43 @@ export function modeActions(set: SetState, get: () => ChatState) {
     const req = get().xaiRequests.find((r) => r.requestId === requestId)
     try {
       await transport.respondClientRequest(requestId, result, error)
-    } finally {
-      set({ xaiRequests: get().xaiRequests.filter((r) => r.requestId !== requestId) })
-      // x.ai/exit_plan_mode with an approving/abandoning outcome leaves
-      // plan mode. Clear the local plan flag immediately — the agent does
-      // not reliably broadcast yolo_mode_changed afterwards, so the
-      // composer's `plan` flag (planMode || permissionMode==='plan') would
-      // otherwise stay stuck. outcome 'cancelled' (request changes / 稍后
-      // 再说) keeps plan mode.
-      if (
-        !error &&
-        req?.method === 'x.ai/exit_plan_mode' &&
-        (result as { outcome?: string } | undefined)?.outcome !== 'cancelled'
-      ) {
-        const s = get()
-        set({
-          planMode: false,
-          ...(s.permissionMode === 'plan' ? { permissionMode: undefined } : {}),
-        })
-        // Arm the grace window: a 'plan' broadcast queued before the
-        // approval can still land after it (SSE and this HTTP response are
-        // separate channels) — planOnWithinGrace() suppresses it, so the
-        // flag we just cleared cannot be resurrected by a stale event.
-        markPlanExitApproved()
+    } catch (e) {
+      // P0: 失败不得静默删卡——卡片是唯一的重试入口，删掉后 agent 会一直
+      // 等到 approvalTimeout，而用户以为自己已经应答。例外：另一标签页已
+      // 应答 / host 侧超时（「不存在或已过期」）——卡已无主，清掉避免僵尸
+      // UI（与 respondPermission 同款策略）。
+      const msg = e instanceof Error ? e.message : String(e)
+      if (/不存在|已过期|not found|expired/i.test(msg)) {
+        set({ xaiRequests: get().xaiRequests.filter((r) => r.requestId !== requestId) })
+        return
       }
+      // 程序化拒绝（调用方显式传 error，如「前端不支持方法」）不弹 toast：
+      // 那些路径按事件批量触发，失败刷屏且本就没有可重试的卡片。
+      if (!error) pushToast(`回执发送失败: ${msg}`)
+      return
+    }
+    set({ xaiRequests: get().xaiRequests.filter((r) => r.requestId !== requestId) })
+    // x.ai/exit_plan_mode with an approving/abandoning outcome leaves
+    // plan mode. Clear the local plan flag immediately — the agent does
+    // not reliably broadcast yolo_mode_changed afterwards, so the
+    // composer's `plan` flag (planMode || permissionMode==='plan') would
+    // otherwise stay stuck. outcome 'cancelled' (request changes / 稍后
+    // 再说) keeps plan mode.
+    if (
+      !error &&
+      req?.method === 'x.ai/exit_plan_mode' &&
+      (result as { outcome?: string } | undefined)?.outcome !== 'cancelled'
+    ) {
+      const s = get()
+      set({
+        planMode: false,
+        ...(s.permissionMode === 'plan' ? { permissionMode: undefined } : {}),
+      })
+      // Arm the grace window: a 'plan' broadcast queued before the
+      // approval can still land after it (SSE and this HTTP response are
+      // separate channels) — planOnWithinGrace() suppresses it, so the
+      // flag we just cleared cannot be resurrected by a stale event.
+      markPlanExitApproved()
     }
   },
 

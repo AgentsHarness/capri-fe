@@ -696,7 +696,11 @@ export function groupingSignature(entries: ScrollEntry[]): string {
     let s = `${e.kind[0]}${id.length}${id[0] ?? ''}${id[id.length - 1] ?? ''}${h.toString(36)}`
     switch (e.kind) {
       case 'tool':
-        s += `${e.expanded ? '1' : '0'}${e.status ?? ''}`
+        // kindName 决定 verbGroupKind/labelKind 的归类（tool_call_update 后到
+        // 的 _meta 会改写它），漏进签名会让 span 缓存停留在旧分组上。
+        s += `${e.expanded ? '1' : '0'}${e.status ?? ''}|${
+          typeof e.kindName === 'string' ? e.kindName : ''
+        }`
         break
       case 'thought':
         s += `${thoughtDisplayMode(e)[0]}${e.streaming ? 's' : ''}${e.text.trim() ? 'x' : ''}`

@@ -250,7 +250,12 @@ export function McpPanel({
   const authServer = (name: string) =>
     void runAction(name, 'auth', async () => {
       const r = await mcpAuthTrigger(name)
-      setAuthResult({ name, ...r })
+      // 只放行 http(s)：这是全仓唯一绕过 react-markdown 协议过滤的裸
+      // <a href>，host/agent 回一个 javascript:/data: URL 就会被点击执行。
+      // 被过滤掉的 URL 不写进 url，卡片自然落到「已触发认证流程」兜底文案。
+      const url =
+        typeof r.url === 'string' && /^https?:\/\//i.test(r.url) ? r.url : undefined
+      setAuthResult({ name, ...r, url })
     })
 
   const submitAdd = async () => {
@@ -563,7 +568,7 @@ export function McpPanel({
                                   type="button"
                                   disabled={busy != null || toolBusy != null}
                                   onClick={() =>
-                                    void toggleTool(s.name, t.name, t.enabled !== false)
+                                    void toggleTool(s.name, t.name, t.enabled === false)
                                   }
                                   className={`shrink-0 rounded border px-1.5 py-px text-[10.5px] disabled:opacity-50 ${
                                     t.enabled !== false

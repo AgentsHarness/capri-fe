@@ -287,7 +287,8 @@ describe('useHistoryPaging · 触发纪律', () => {
     quiet()
     // 没到阈值 → 不该吃掉事件（条目内部的滚动区还要用）
     const under = new WheelEvent('wheel', {
-      deltaY: -100,
+      // 取阈值之下的相对量，不写死像素：PULL_TRIGGER_PX 会随手感调参变动
+      deltaY: -(PULL_TRIGGER_PX - 20),
       cancelable: true,
       bubbles: true,
     })

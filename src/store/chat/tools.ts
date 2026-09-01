@@ -218,7 +218,11 @@ export function xaiToolKind(tc: ToolCall): string | undefined {
  * 调用渲染成泛型 "Ran"。更新路径的 merged 对象同款优先序。
  */
 export function toolKindName(tc: ToolCall, fallback: string | undefined): string {
-  return xaiToolKind(tc) || (tc.kind as string) || fallback || 'other'
+  // Wire may carry a non-string kind (typed as string, never validated) —
+  // a cast would poison entry.kindName and blow up every .toLowerCase()
+  // consumer (toolFamily / toolHeader / verbGroupKind) at render time.
+  const wireKind = typeof tc.kind === 'string' ? tc.kind : ''
+  return xaiToolKind(tc) || wireKind || fallback || 'other'
 }
 
 /**

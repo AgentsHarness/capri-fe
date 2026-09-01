@@ -24,10 +24,11 @@ import { fallbackStickyBandH, pickStickyPin } from '../../scrollback/stickyPin'
  * - Next user entering the band pushes that pin up, then yield — do not
  *   switch identity onto the in-flow prompt.
  *
- * Jump force (`forcePinnedIdRef`):
- * - Align-to-bar: target top is in the band → drop force, yield.
- * - Last-turn clamp: target sits fully below the band → pin the target
- *   until it reaches the band, fully passes, or leaves the viewport.
+ * Jumps (directory rail / clicking the band) only align the target to the
+ * bar — they never override this rule. `scrollTop` assignment clamps at
+ * maxScrollTop, so a target whose trailing content is shorter than the
+ * viewport stays in flow below the bar; pinning it there would paint the
+ * same prompt twice (band + in-flow).
  */
 export function useStickyPin(
   boxRef: RefObject<HTMLDivElement | null>,
@@ -36,7 +37,6 @@ export function useStickyPin(
   wsBarElRef: MutableRefObject<HTMLDivElement | null>,
   wsBarH: number,
   userById: Map<string, ScrollEntry>,
-  historyLoadedAt: number | null | undefined,
 ) {
   const userEls = useRef<Map<string, HTMLElement>>(new Map())
   // 当前 sticky 钉选：entry 为渲染内容。
@@ -46,15 +46,6 @@ export function useStickyPin(
   /** Rendered sticky band (live height + push translate). */
   const stickyBandElRef = useRef<HTMLDivElement | null>(null)
   const lastPushYRef = useRef(0)
-  /**
-   * Jump target. Honored only while the target sits fully below the sticky
-   * band (last-turn clamp). Align-to-bar clears this and yields.
-   */
-  const forcePinnedIdRef = useRef<string | null>(null)
-
-  useEffect(() => {
-    forcePinnedIdRef.current = null
-  }, [historyLoadedAt])
 
   const applyStickyPushY = (y: number) => {
     if (lastPushYRef.current === y) {
@@ -78,9 +69,8 @@ export function useStickyPin(
       return
     }
     const scrollTop = box.scrollTop
-    // TUI: scroll_offset == 0 → no pin (also drop jump force).
+    // TUI: scroll_offset == 0 → no pin.
     if (scrollTop <= 0) {
-      forcePinnedIdRef.current = null
       applyStickyPushY(0)
       setPinned((prev) => (prev == null ? prev : null))
       return
@@ -107,37 +97,6 @@ export function useStickyPin(
     const list: UserPos[] = []
     for (const [id, el] of els) {
       list.push(measure(id, el))
-    }
-
-    // ── Jump force: clamp only (target fully below the sticky band) ──
-    const forcedId = forcePinnedIdRef.current
-    if (forcedId != null) {
-      const forcedEl = els.get(forcedId)
-      const forcedEntry = userById.get(forcedId)
-      if (!forcedEl || !forcedEntry) {
-        forcePinnedIdRef.current = null
-      } else {
-        const f = measure(forcedId, forcedEl)
-        const viewBottom = scrollTop + box.clientHeight
-        if (f.bottom <= pinLine) {
-          // Fully under bar → natural rule pins the same id.
-          forcePinnedIdRef.current = null
-        } else if (f.bottom <= scrollTop || f.top >= viewBottom) {
-          forcePinnedIdRef.current = null
-        } else if (f.top < pinLine + stickyH) {
-          // Aligned or entering the band → yield to in-flow.
-          forcePinnedIdRef.current = null
-        } else {
-          applyStickyPushY(0)
-          const next = { entry: forcedEntry, store: false as const }
-          setPinned((prev) =>
-            prev?.entry?.id === next.entry.id && prev?.store === next.store
-              ? prev
-              : next,
-          )
-          return
-        }
-      }
     }
 
     const pick = pickStickyPin(list, pinLine, stickyH)
@@ -221,9 +180,6 @@ export function useStickyPin(
       const box = boxRef.current
       if (!box) return
       followRef.current = false
-      // Mark jump target. updatePinned only honors this on last-turn clamp
-      // (target fully below the band); a successful align yields to in-flow.
-      forcePinnedIdRef.current = id
       const align = (el: HTMLElement) => {
         const boxTop = box.getBoundingClientRect().top
         const barH =
@@ -257,7 +213,6 @@ export function useStickyPin(
       box.scrollTop +=
         el.getBoundingClientRect().top - boxTop - barH
       lastScrollTopRef.current = box.scrollTop
-      forcePinnedIdRef.current = scrollToEntryId
     }
     setScrollToEntryId(null)
     updatePinned()

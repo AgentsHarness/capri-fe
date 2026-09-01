@@ -11,6 +11,7 @@ import {
 import { Accents } from '../../../theme/accents'
 import { Glyphs } from '../../../theme/glyphs'
 import { Ansi } from '../../Ansi'
+import { InlineAction } from '../../InlineAction'
 import { Markdown } from '../../Markdown'
 import { TodoMark } from '../../todoMark'
 import { Bullet, EntryShell, RowIcon } from '../EntryShell'
@@ -78,18 +79,12 @@ export function ErrorEntry({
         <ViewButton visible={showView} onOpen={() => openViewer(e.id)} />
         {e.action === 'restart-agent' && (
           // 传输级失败：agent 不可达，唯一恢复动作是重启——行内直接可点。
-          <button
-            type="button"
-            onClick={(ev) => {
-              ev.stopPropagation()
-              void onRestart()
-            }}
-            disabled={restarting}
-            className="shrink-0 rounded border border-gn-red/40 px-1.5 py-px text-[11px] text-gn-red transition-opacity enabled:hover:bg-gn-red/10 disabled:cursor-not-allowed disabled:opacity-50"
+          <InlineAction
+            label={restarting ? '重启中…' : '重启'}
             title="杀掉当前 agent 进程并重新启动（恢复上次会话）"
-          >
-            {restarting ? '重启中…' : '重启'}
-          </button>
+            disabled={restarting}
+            onRun={() => void onRestart()}
+          />
         )}
       </div>
     </EntryShell>
@@ -339,7 +334,7 @@ export function CreditLimitEntry({
   const { shell } = chrome
   return (
     <EntryShell {...shell}>
-      <div className="text-[13px] font-bold py-1" style={{ color: Accents.warning }}>
+      <div className="break-words text-[13px] font-bold py-1" style={{ color: Accents.warning }}>
         {e.text}
       </div>
     </EntryShell>

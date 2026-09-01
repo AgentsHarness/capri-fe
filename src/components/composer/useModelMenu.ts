@@ -79,9 +79,16 @@ export function useModelMenu() {
     void setModel(modelId, reasoningEffort)
     // 「设为默认」勾选时：写入 config.toml 的 [models] default（+effort），
     // 与切换动作一起生效（agent 热加载，TUI /model <name> <effort> 语义）。
+    // 会话未锚定时拒绝：host 侧 set-model 无 sessionId 会回退 active 会话，
+    // 「设为默认」的双动作（先切当前会话）就失去了会话隔离。
     if (setAsDefault) {
+      const sid = useChatStore.getState().sessionId
+      if (!sid) {
+        pushToast('请先开始或恢复一个会话，再设置默认模型')
+        return
+      }
       void transport
-        .setDefaultModel(modelId, reasoningEffort, useChatStore.getState().sessionId)
+        .setDefaultModel(modelId, reasoningEffort, sid)
         .then(() => pushToast(`已设为默认模型`))
         .catch((e) => pushToast(`设为默认失败: ${e instanceof Error ? e.message : String(e)}`))
     }

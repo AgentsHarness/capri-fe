@@ -312,18 +312,27 @@ describe('McpPanel — 管理操作', () => {
     )
   })
 
-  it('工具启停 → mcpToggleTool + 乐观翻转', async () => {
+  it('工具启停 → mcpToggleTool 传目标状态（非当前状态）+ 乐观翻转', async () => {
     setStore({ mcpServers: [{ name: 'fs', status: 'ready' }] })
     mcpList.mockResolvedValue([{ name: 'fs', enabled: true, tools } as McpListServer])
     renderPanel()
-    await waitFor(() => expect(screen.getByRole('button', { name: '禁用' })).not.toBeNull())
-    fireEvent.click(screen.getAllByRole('button', { name: '禁用' })[0])
-    // 注意：按钮把「当前 enabled 状态」传给 toggleTool（非翻转值）——
-    // 见 test-notes，疑似 bug，此处断言实际行为。
-    await waitFor(() => expect(mcpToggleTool).toHaveBeenCalledWith('fs', 'read', true))
+    // 按 title 定位（「禁用」这个文案在服务器级按钮上同名）
+    const disableRead = await screen.findByTitle('禁用工具 read（/api/mcp/toggle-tool）')
+    // 已启用的 read：按钮文案「禁用」→ 必须传 false（曾经的 bug 是传当前
+    // 状态 true，点一下等于没点，还回显「已启用」）。
+    fireEvent.click(disableRead)
+    await waitFor(() => expect(mcpToggleTool).toHaveBeenCalledWith('fs', 'read', false))
     await waitFor(() =>
       expect(h.setStateSpy).toHaveBeenCalledWith(
-        expect.objectContaining({ statusText: '已启用工具 read（fs）' }),
+        expect.objectContaining({ statusText: '已禁用工具 read（fs）' }),
+      ),
+    )
+    // 已禁用的 write：按钮文案「启用」→ 传 true。
+    fireEvent.click(await screen.findByTitle('启用工具 write（/api/mcp/toggle-tool）'))
+    await waitFor(() => expect(mcpToggleTool).toHaveBeenCalledWith('fs', 'write', true))
+    await waitFor(() =>
+      expect(h.setStateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ statusText: '已启用工具 write（fs）' }),
       ),
     )
   })
@@ -355,6 +364,20 @@ describe('McpPanel — 管理操作', () => {
     const link = await screen.findByRole('link', { name: 'https://auth.dev' })
     expect(link).toHaveAttribute('target', '_blank')
     expect(screen.getByText(/认证码: ABC123/)).not.toBeNull()
+  })
+
+  it('认证链接协议白名单：javascript: / data: 不落成可点链接', async () => {
+    for (const bad of ['javascript:alert(1)', 'data:text/html,<script>1</script>']) {
+      mcpAuthTrigger.mockResolvedValue({ url: bad })
+      setStore({ mcpServers: [{ name: 'fs', status: 'needs_auth' }] })
+      mcpList.mockResolvedValue([{ name: 'fs', enabled: true } as McpListServer])
+      const { container, unmount } = renderPanel()
+      fireEvent.click(await screen.findByRole('button', { name: '认证' }))
+      await waitFor(() => expect(container.textContent).toContain('已触发认证流程'))
+      expect(container.querySelector('a[href]')).toBeNull()
+      expect(container.textContent).not.toContain('javascript:alert')
+      unmount()
+    }
   })
 
   it('操作失败 → actionError 行', async () => {

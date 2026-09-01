@@ -8,14 +8,14 @@ export const TOP_PAGE_COOLDOWN_MS = 400
 export const TOP_EDGE_PX = 4
 /** 顶到边界后还要继续上推多少像素才真的翻页（pull-to-load）。触控板一次
  *  轻扫 / 惯性尾巴远不到这个量。 */
-export const PULL_TRIGGER_PX = 160
+export const PULL_TRIGGER_PX = 80
 /** 上推累加器的空闲窗口：两次上推间隔超过它即视为新的一下的手势（同时解开
  *  「一次手势最多一页」的门闩）。 */
 export const PULL_IDLE_MS = 350
 /** 刚滚到边界后要先停这么久才开始累计上推。没有这一条，「一路滚到顶」的
  *  那几下会被当成上拉，读长会话时到顶即误翻页；有了它，到顶 → 停一下 →
  *  再拉才翻页。 */
-export const PULL_DWELL_MS = 150
+export const PULL_DWELL_MS = 100
 
 /** Touch gesture distance (px) past the top edge that counts as a
  *  deliberate pull for older history. */

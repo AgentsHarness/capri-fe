@@ -6,15 +6,17 @@ export function liveTaskActions(set: SetState, get: () => ChatState) {
   return {
   refreshTaskOutput: async (taskId, sessionId, cwd) => {
     if (!taskId) return
-    const s = get()
     const scope = captureAsyncScope(get, sessionId, cwd)
-    const entryId = s.bgTaskIndex[taskId]
     try {
       const snap = await transport.taskOutput(
         taskId,
         sessionId || cwd ? { sessionId, cwd } : undefined,
       )
       if (!isAsyncScopeCurrent(get, scope)) return
+      // 快照必须在 await 之后取：用请求前的旧 entries 整体回写，会把等待
+      // 期间新追加的行（agent 正在流式输出）直接顶掉。
+      const s = get()
+      const entryId = s.bgTaskIndex[taskId]
       // Live row target: update the scrollback entry (viewer renders it).
       if (entryId) {
         set({
