@@ -274,3 +274,38 @@ describe('replayUpdates', () => {
     expect(users.map((h) => (h as { text?: string }).text)).toEqual(['A', 'B'])
   })
 })
+
+// ── 仍在跑的任务：那行 started 只属于顶部任务条 ────────────────────────
+describe('replayUpdates — 在跑任务的 started 行', () => {
+  const started = env('task_backgrounded', {
+    task_id: 't1',
+    description: '跑集成测试',
+    command: 'npm run test:e2e',
+  })
+
+  it('探活已报告该任务在跑（topTasks 命中）→ 回放不画这行', () => {
+    const handled: unknown[] = []
+    const getStore = () =>
+      ({
+        handleEvent: (ev: unknown) => handled.push(ev),
+        appendLocalEntry: () => {},
+        topTasks: [{ taskId: 't1', title: '跑集成测试' }],
+      }) as unknown as ChatState
+    replayUpdates(getStore as never, [started])
+    expect(handled).toHaveLength(0)
+  })
+
+  it('不在在跑集合里（已结束/未探到）→ 照旧作为历史行回放', () => {
+    const handled: unknown[] = []
+    const getStore = () =>
+      ({
+        handleEvent: (ev: unknown) => handled.push(ev),
+        appendLocalEntry: () => {},
+        topTasks: [{ taskId: 'other', title: '别的任务' }],
+      }) as unknown as ChatState
+    replayUpdates(getStore as never, [started])
+    expect(handled).toEqual([
+      expect.objectContaining({ type: 'task_lifecycle', kind: 'started', taskId: 't1' }),
+    ])
+  })
+})

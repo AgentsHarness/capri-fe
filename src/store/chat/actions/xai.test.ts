@@ -49,6 +49,10 @@ function makeState(patch: Partial<ChatState> = {}): ChatState {
     scheduledTasks: [],
     historyTurnIdx: 0,
     loadHistory: vi.fn().mockResolvedValue(undefined),
+    // 重载走 loadHistoryWithTaskProbe：需要探活与（有才开的）轮询
+    replayRunningTasks: vi.fn().mockResolvedValue(undefined),
+    startTopTaskPolling: vi.fn(),
+    topTasks: [],
     continueSession: vi.fn().mockResolvedValue(undefined),
     refreshSessions: vi.fn().mockResolvedValue(undefined),
     refreshWorkspaces: vi.fn().mockResolvedValue(undefined),
@@ -339,7 +343,9 @@ describe('xaiActions.rewindExecute', () => {
       turnIndex: 1,
       detail: 'meta',
     })
-    expect(state.loadHistory).toHaveBeenCalledWith('s1', '/w')
+    expect(state.loadHistory).toHaveBeenCalledWith('s1', '/w', {
+      awaitBeforeReplay: expect.any(Promise),
+    })
     expect(state.scheduledTasks).toHaveLength(1)
   })
 
