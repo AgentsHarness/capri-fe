@@ -5,7 +5,8 @@ import { useChatStore } from '../store/chat'
 import { usePromptQueue } from '../store/promptQueue'
 import { useThemeStore } from '../store/theme'
 
-const getLocalHostId = vi.fn((): string | null => null)
+/** 已验证的本机近路（hostId → route），TopBar 用它逐行标「本机 / Hub」。 */
+const localRoutes = new Map<string, { base: string; port: number; authRequired: boolean }>()
 
 vi.mock('../api/client', () => ({
   transport: {
@@ -13,13 +14,13 @@ vi.mock('../api/client', () => ({
     listSessions: vi.fn(async () => ({ sessions: [] })),
     pairingCode: vi.fn(async () => ({ code: 'PAIR-CODE-123', ttl: 300 })),
     getHubUrl: vi.fn(() => ''),
-    getLocalHostId: () => getLocalHostId(),
+    getLocalRoute: (hostId: string) => localRoutes.get(hostId) ?? null,
     sessionSearch: vi.fn(async () => ({ results: [] })),
   },
 }))
 
 function resetChat(over: Record<string, unknown> = {}) {
-  getLocalHostId.mockReturnValue(null)
+  localRoutes.clear()
   useChatStore.setState({
     hostName: '',
     hostId: '',
@@ -186,7 +187,6 @@ describe('TopBar', () => {
   })
 
   it('host 列表行标记本机 / Hub 通路', () => {
-    getLocalHostId.mockReturnValue('h1')
     resetChat({
       mode: 'hub',
       hostName: 'H1',
@@ -197,13 +197,17 @@ describe('TopBar', () => {
       ],
       conn: 'ready',
     })
-    // resetChat 会把 getLocalHostId 清回 null，测本机标记前再设一次
-    getLocalHostId.mockReturnValue('h1')
+    // resetChat 会清空近路表，测本机标记前再登记一次
+    localRoutes.set('h1', {
+      base: 'http://127.0.0.1:8765',
+      port: 8765,
+      authRequired: false,
+    })
     render(<TopBar />)
     fireEvent.click(screen.getByTitle(/右键可管理/))
     expect(screen.getByText('本机')).not.toBeNull()
     expect(screen.getByText('Hub')).not.toBeNull()
-    expect(screen.getByTitle(/直连本机 127\.0\.0\.1/)).not.toBeNull()
+    expect(screen.getByTitle(/直连 http:\/\/127\.0\.0\.1:8765/)).not.toBeNull()
     expect(screen.getByTitle(/经 Hub 中继/)).not.toBeNull()
   })
 

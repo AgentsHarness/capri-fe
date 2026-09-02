@@ -1,8 +1,9 @@
-import type { AcpEvent } from './types'
+import type { AcpEvent, HostInfo } from './types'
 import { loadStr, removeKey, saveStr } from '../lib/storage'
 import type { TransportHandler, TransportMode } from './transport'
 import { EventSequencer, type SequencedEvent } from './liveSequencing'
 import { rpcMixins } from './rpc/mixins'
+import { clearHostRegistryHandoff, rememberHostRegistry } from './rpc/hosts'
 
 
 function resolveAccessToken(): string {
@@ -22,6 +23,23 @@ type HubWsFrame =
  * wedge the per-host `pulling` slot) forever.
  */
 const DEFAULT_FETCH_TIMEOUT_MS = 30_000
+
+/** 旧 hub/host 不下发 port 时试的本机默认端口（与 capri-host 的 PORT 默认一致）。 */
+const DEFAULT_LOCAL_PORT = 8765
+/** 单个 127.0.0.1 探测的超时：本机要么毫秒级应答，要么根本没服务。 */
+const LOCAL_PROBE_TIMEOUT_MS = 800
+/** 探不到的端口多久内不再重复探测（hosts_changed 会频繁驱动 discoverLocalHost）。 */
+const LOCAL_PROBE_RETRY_MS = 30_000
+
+/** 一条已验证的本机近路（host 直连，不绕 hub 中继）。 */
+export type LocalRoute = {
+  /** 直连用的 origin（如 http://127.0.0.1:8765）；空串 = 页面 origin 本身。 */
+  base: string
+  /** 验证时这台 host 自报的本机监听端口；0 = 页面 origin 近路（与端口无关）。 */
+  port: number
+  /** 这台 host 的 API 是否要求 FE_TOKEN。 */
+  authRequired: boolean
+}
 
 /** 无 DecompressionStream 环境（旧浏览器）压缩帧会被丢弃——只告警一次。 */
 let warnedNoDecompression = false
@@ -47,25 +65,28 @@ export class LocalTransport {
    */
   private lastHubUrl = loadStr('capri-fe.hubUrl') || ''
   /**
-   * 本机 host 的 hostId（内嵌前端直连 capri-host 时从 /api/status 拿到）。
-   * hub 模式下选中该 host 时，API 请求直连本机（base），不绕 hub 中继。
+   * 已验证的「hostId → 本机近路」。认领依据是端口上服务**自报**的 hostId（且
+   * 该 hostId 在 hub 注册表里），不是 hub 给某个端口配的候选身份：8765 是每台
+   * capri-host 的默认端口，同一个端口号在不同机器上指向不同 host，拿注册表条目
+   * 去期待应答者会把真正的本机 host 判成不匹配（一台都不剩 → 全程 hub 中继）。
    */
-  private localHostId: string | null = null
-  /**
-   * 远程站探测到的本机近路 origin（如 http://127.0.0.1:8765），空串表示
-   * 本机就是页面 origin。仅 isLocalDirect 时参与路由，见 directBase()。
-   */
-  private localBase = ''
+  private localRoutes = new Map<string, LocalRoute>()
+  /** hub 注册表里各 host 自报的本机端口（hostId → port），供切 host 时定点探测。 */
+  private knownPorts = new Map<string, number>()
+  /** 探不到的端口 → 最近失败时刻，见 LOCAL_PROBE_RETRY_MS。 */
+  private probeFailedAt = new Map<number, number>()
+  /** 在途的定点探测（hostId → promise）：setHost 与 switchHost 共用同一次探测。 */
+  private probing = new Map<string, Promise<void>>()
   /** Shared secret for hub FE_TOKEN (Authorization / WS ?token=). */
   private accessToken: string
   /** A token entered this session may be used to authenticate mode detection. */
   private allowDetectAuth = false
   /**
-   * 本机 origin（directBase()：localBase 命中时是 127.0.0.1，否则页面
-   * origin）是否要求 FE_TOKEN。来自直连 /api/hosts 的 authRequired。
-   * EventSource 不能设 Authorization，只有本机真的要 token 时才把密钥
-   * 放进 /events?token=，避免把 hub token 泄漏到开放本机的 URL / 代理
-   * 日志里。
+   * 本机 origin（directBase()）是否要求 FE_TOKEN。来自近路 /api/hosts 的
+   * authRequired。EventSource 不能设 Authorization，只有本机真的要 token 时
+   * 才把密钥放进 /events?token=，避免把 hub token 泄漏到开放本机的 URL /
+   * 代理日志里。同一台机器上的多台 host 按部署约定共用一个 FE_TOKEN，故只
+   * 留单个标志（以选中 host 的近路为准）。
    */
   private localAuthRequired = false
   private intentionalClose = false
@@ -133,6 +154,8 @@ export class LocalTransport {
     this.selectedHostId = hostId
     // 双连接开关：切到本机 → 开本地 SSE 近路；切远程 → 关（hub WS 单路）。
     this.syncLocalSSE()
+    // 每次切换都重新核对这台 host 的本机端口归属（已验证且端口没变则零请求）。
+    if (hostId) void this.verifyLocalRoute(hostId)
   }
 
   getHost(): string | null {
@@ -145,6 +168,8 @@ export class LocalTransport {
     this.allowDetectAuth = next !== ''
     if (next) saveStr('capri-fe-token', next)
     else removeKey('capri-fe-token')
+    // 凭证变了：用旧凭证拿到的注册表交接快照不再代表「这次鉴权后的数据」。
+    clearHostRegistryHandoff()
     // Requests issued under the old token are settled now (re-fetches pick
     // up the new token).
     this.abortInflight()
@@ -211,47 +236,75 @@ export class LocalTransport {
     return this.mode === 'hub' ? this.hubUrl || this.lastHubUrl : ''
   }
 
+  /**
+   * 记录「页面 origin 本身就是这台 capri-host」（内嵌前端 / Vite 代理，
+   * detectMode 从 /api/status 拿到的 hostId）。这类近路不需要 127.0.0.1
+   * 探测，base 记空串 = 直接用 this.base。传 null 只清这一类，不动
+   * discoverLocalHost 探到的回环近路。
+   */
   setLocalHostId(hostId: string | null) {
-    this.localHostId = hostId
+    if (!hostId) {
+      for (const [id, r] of this.localRoutes) if (r.port === 0) this.localRoutes.delete(id)
+      return
+    }
+    this.localRoutes.set(hostId, {
+      base: '',
+      port: 0,
+      authRequired: this.localAuthRequired,
+    })
+  }
+
+  /** 主近路（按选中 host 优先），供「本机有几台 host / 页面是不是跑在 host 上」这类展示与挑选使用。 */
+  private primaryRoute(): [string, LocalRoute] | null {
+    if (this.selectedHostId) {
+      const sel = this.localRoutes.get(this.selectedHostId)
+      if (sel) return [this.selectedHostId, sel]
+    }
+    for (const entry of this.localRoutes.entries()) return entry
+    return null
   }
 
   getLocalHostId(): string | null {
-    return this.localHostId
+    return this.primaryRoute()?.[0] ?? null
   }
 
   /**
-   * 本机 HTTP 直连 base（如 http://127.0.0.1:8765）。远程站发现本机
-   * host 后写入；空串表示本机就是页面 origin（Vite 代理 / 内嵌前端）。
+   * 主近路的直连 base；空串表示本机就是页面 origin（Vite 代理 / 内嵌前端）。
    * 只作「选中本机 host 时」的近路，绝不覆盖 this.base——base 是 hub 的
    * 地址（同源部署时 hubUrl 为空、apiBase() 回落到 base），一旦被改写成
    * 127.0.0.1，listHosts / ws-ticket / prefs / /ws/fe 全都会打到本机
    * capri-host，host 列表就只剩本机、也切不到 Hub 中继的节点了。
    */
-  setLocalBase(base: string) {
-    this.localBase = base.replace(/\/$/, '')
+  getLocalBase(): string {
+    return this.primaryRoute()?.[1].base ?? ''
   }
 
-  getLocalBase(): string {
-    return this.localBase
+  /** 某台 host 已验证的本机近路（null = 只能走 hub 中继）。 */
+  getLocalRoute(hostId: string | null | undefined): LocalRoute | null {
+    if (!hostId) return null
+    return this.localRoutes.get(hostId) ?? null
   }
 
   /**
-   * 当前是否应直连本机：hub 模式 + 选中了本机 host。localHostId 来自：
+   * 当前是否应直连本机：hub 模式 + 选中的 host 有一条已验证的近路。近路来自：
    * - detectMode：页面 origin 本身就是本机 capri-host（单 host + local:true）
-   * - discoverLocalHost：远程站按 hub 下发的 port 探测 127.0.0.1 成功
+   * - discoverLocalHost / verifyLocalRoute：按 hub 登记的 port 探测 127.0.0.1，
+   *   且端口上的服务自报了这台 host 的身份
    * 不按页面 hostname 过滤，避免局域网 IP 访问内嵌前端被误判为远程。
    */
-  private isLocalDirect(): boolean {
+  isLocalDirect(): boolean {
     return (
       this.mode === 'hub' &&
-      this.localHostId != null &&
-      this.selectedHostId === this.localHostId
+      this.selectedHostId != null &&
+      this.localRoutes.has(this.selectedHostId)
     )
   }
 
-  /** 本机直连用的 base：发现到的 127.0.0.1 近路优先，否则页面 origin。 */
+  /** 选中 host 的直连 base：探到的 127.0.0.1 近路优先，否则页面 origin。 */
   private directBase(): string {
-    return this.mode === 'hub' && this.localBase ? this.localBase : this.base
+    const route = this.selectedHostId ? this.localRoutes.get(this.selectedHostId) : null
+    if (this.mode === 'hub' && route?.base) return route.base
+    return this.base
   }
 
   private pageIsLoopback(): boolean {
@@ -259,76 +312,185 @@ export class LocalTransport {
     return h === 'localhost' || h === '127.0.0.1' || h === '::1'
   }
 
+  /** 有没有「页面 origin 就是这台 host」的近路。 */
+  private hasPageOriginRoute(): boolean {
+    for (const r of this.localRoutes.values()) if (r.port === 0) return true
+    return false
+  }
+
+  /** 刚探不到、还在重试冷却里的端口。 */
+  private probeSkipped(port: number): boolean {
+    const at = this.probeFailedAt.get(port)
+    return at != null && Date.now() - at < LOCAL_PROBE_RETRY_MS
+  }
+
   /**
-   * 远程站（非 loopback 页面）按 hub 登记的 port 探测本机
-   * `http://127.0.0.1:<port>/api/hosts`：命中且 hostId 对得上则写入
-   * localBase + localHostId，后续选中该 host 时 API/SSE 走本机近路。
-   * 已在 loopback 页面且已有 localHostId 时跳过（Vite/内嵌前端已够用）。
-   * 返回发现到的 localHostId，未找到则 null。
+   * 探一次 `http://127.0.0.1:<port>/api/hosts`，返回端口上那个服务**自报**的
+   * 身份。只认「恰好一个 host 且 local:true」的应答形状（capri-host 的
+   * /api/hosts），其余当作没探到。
+   */
+  private async probeLocalPort(
+    port: number,
+  ): Promise<{ hostId: string; authRequired: boolean } | null> {
+    const ac = new AbortController()
+    const timer = setTimeout(() => ac.abort(), LOCAL_PROBE_TIMEOUT_MS)
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/hosts`, { signal: ac.signal })
+      if (!res.ok) return null
+      const data = (await res.json().catch(() => ({}))) as {
+        hosts?: Array<{ hostId?: string; local?: boolean }>
+        authRequired?: boolean
+      }
+      const local =
+        data.hosts?.length === 1 && data.hosts[0]?.local === true ? data.hosts[0] : null
+      if (!local?.hostId) return null
+      return { hostId: local.hostId, authRequired: data.authRequired === true }
+    } catch {
+      return null
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  /**
+   * 定点核对「127.0.0.1:<这台 host 的端口> 上是不是就是它」：切到一台 host 时
+   * 调用。身份必须逐字匹配（问的就是这台），探不到就作废旧近路，宁可回落到 hub
+   * 中继也不能把请求发到已经不属于它的端口上。
+   */
+  verifyLocalRoute(hostId: string): Promise<void> {
+    const running = this.probing.get(hostId)
+    if (running) return running
+    const p = (async () => {
+      if (this.mode !== 'hub') return
+      const cur = this.localRoutes.get(hostId)
+      // 页面 origin 就是这台 host：近路与端口无关，不需要验。
+      if (cur?.port === 0) return
+      const port = this.knownPorts.get(hostId)
+      // hub 没报这台 host 的端口（旧版本 host 不上报）：无从定点探测，
+      // 已验证的身份继续用（那是它自己在 /api/hosts 里报的）。
+      if (!port) return
+      if (cur && cur.port === port) return // 已验证且端口没变
+      const hit = await this.probeLocalPort(port)
+      if (hit?.hostId === hostId) {
+        this.localRoutes.set(hostId, {
+          base: `http://127.0.0.1:${port}`,
+          port,
+          authRequired: hit.authRequired,
+        })
+        this.probeFailedAt.delete(port)
+        if (this.selectedHostId === hostId) this.localAuthRequired = hit.authRequired
+      } else if (cur) {
+        this.localRoutes.delete(hostId)
+      }
+      // 近路可能刚建立 / 刚作废：本机 SSE 那一路要跟着开关。
+      this.syncLocalSSE()
+    })().finally(() => this.probing.delete(hostId))
+    this.probing.set(hostId, p)
+    return p
+  }
+
+  /**
+   * 按 hub 登记的 port 探测本机 `http://127.0.0.1:<port>/api/hosts`，把
+   * **应答者自报的 hostId**（必须在注册表里）登记成本机近路；之后选中该 host
+   * 时 API/SSE 走本机直连。要点：
+   * - 探测对象是端口，认领身份以端口上的服务自报为准。同一个端口号在每台机器
+   *   上指向各自的 host（8765 是 capri-host 默认端口），拿 hub 列表里排在前面
+   *   的那台去期待应答者，会把真正的本机 host 判成不匹配。
+   * - 每个唯一端口只探一次，能同时命中同机的多台 host（各自不同端口）。
+   * - 端口变了指漂了的近路并重探；探不到的端口进短暂冷却，别被 hosts_changed
+   *   风暴反复驱动。
+   * 已在 loopback 页面且已有页面 origin 近路时跳过（内嵌前端已够用）。
+   * 返回主近路的 hostId，一台都没探到则 null。
    */
   async discoverLocalHost(
     hosts?: Array<{ hostId: string; port?: number; online?: boolean }>,
   ): Promise<string | null> {
-    if (this.mode !== 'hub') return this.localHostId
-    if (this.pageIsLoopback() && this.localHostId) return this.localHostId
+    if (this.mode !== 'hub') return this.getLocalHostId()
+    if (this.pageIsLoopback() && this.hasPageOriginRoute()) return this.getLocalHostId()
 
     let list = hosts
     if (!list) {
       try {
         const res = await this.fetch(`${this.apiBase()}/api/hosts`, {}, { hubLevel: true })
-        if (!res.ok) return this.localHostId
+        if (!res.ok) return this.getLocalHostId()
         const data = (await res.json().catch(() => ({}))) as {
           hosts?: Array<{ hostId: string; port?: number; online?: boolean }>
         }
         list = data.hosts ?? []
       } catch {
-        return this.localHostId
+        return this.getLocalHostId()
       }
     }
 
-    type Cand = { hostId: string; port: number }
-    const candidates: Cand[] = []
-    const seen = new Set<number>()
+    // 注册表：hostId → 本机端口（0 = 未知）。顺带缓存给 verifyLocalRoute 用。
+    const registry = new Map<string, number>()
     for (const h of list) {
-      const port = h.port
-      if (typeof port !== 'number' || port < 1 || port > 65535) continue
-      if (seen.has(port)) continue
-      seen.add(port)
-      candidates.push({ hostId: h.hostId, port })
+      if (!h?.hostId) continue
+      const port =
+        typeof h.port === 'number' && h.port >= 1 && h.port <= 65535 ? h.port : 0
+      registry.set(h.hostId, port)
+      if (port > 0) this.knownPorts.set(h.hostId, port)
     }
-    // 旧 hub/host 尚未下发 port：仍试默认 8765，hostId 以本机应答为准。
-    if (candidates.length === 0) candidates.push({ hostId: '', port: 8765 })
+    // 注册表里没有的 host（unpair / 删除）：定点探测的端口线索一并清掉。
+    for (const hostId of [...this.knownPorts.keys()]) {
+      if (!registry.has(hostId)) this.knownPorts.delete(hostId)
+    }
 
-    for (const c of candidates) {
-      const base = `http://127.0.0.1:${c.port}`
-      const ac = new AbortController()
-      const timer = setTimeout(() => ac.abort(), 800)
-      try {
-        const res = await fetch(`${base}/api/hosts`, { signal: ac.signal })
-        if (!res.ok) continue
-        const data = (await res.json().catch(() => ({}))) as {
-          hosts?: Array<{ hostId?: string; local?: boolean }>
-          authRequired?: boolean
-        }
-        const local =
-          data.hosts?.length === 1 && data.hosts[0]?.local === true
-            ? data.hosts[0]
-            : null
-        if (!local?.hostId) continue
-        if (c.hostId && local.hostId !== c.hostId) continue
-        this.localBase = base
-        this.localHostId = local.hostId
-        this.localAuthRequired = data.authRequired === true
-        // 若 live 已连上，补开本机 SSE 近路。
-        this.syncLocalSSE()
-        return local.hostId
-      } catch {
-        /* probe miss — try next port */
-      } finally {
-        clearTimeout(timer)
+    // 作废旧近路：host 被删（不在注册表里）、或它自报的端口变了——缓存的
+    // 127.0.0.1:<旧端口> 可能已经没有服务，甚至换成了别的进程。
+    for (const [hostId, route] of [...this.localRoutes]) {
+      if (route.port === 0) continue // 页面 origin 近路与端口无关
+      const known = registry.get(hostId)
+      if (known === undefined || (known > 0 && known !== route.port)) {
+        this.localRoutes.delete(hostId)
       }
     }
-    return this.localHostId
+
+    // 还没验证过的端口才探（已绑到某台 host 的端口跳过）。
+    const covered = new Set<number>()
+    for (const r of this.localRoutes.values()) if (r.port > 0) covered.add(r.port)
+    const ports: number[] = []
+    for (const port of new Set(registry.values())) {
+      if (port > 0 && !covered.has(port) && !this.probeSkipped(port)) ports.push(port)
+    }
+    // 整份注册表都没下发端口（旧 hub/host）：仍试默认端口一次，身份以应答者为准。
+    if (
+      ports.length === 0 &&
+      this.localRoutes.size === 0 &&
+      registry.size > 0 &&
+      !this.probeSkipped(DEFAULT_LOCAL_PORT)
+    ) {
+      ports.push(DEFAULT_LOCAL_PORT)
+    }
+
+    let bound = 0
+    for (const port of ports) {
+      const hit = await this.probeLocalPort(port)
+      if (!hit) {
+        this.probeFailedAt.set(port, Date.now())
+        continue
+      }
+      this.probeFailedAt.delete(port)
+      // 应答者必须是 hub 注册表里的一员：认不出身份的端口不绑。
+      if (!registry.has(hit.hostId)) continue
+      this.localRoutes.set(hit.hostId, {
+        base: `http://127.0.0.1:${port}`,
+        port,
+        authRequired: hit.authRequired,
+      })
+      bound += 1
+    }
+    if (bound > 0) {
+      // 同机多台 host 共用一个 FE_TOKEN（部署约定），认证标志取选中 host 的近路，
+      // 其次任意一条。
+      const active =
+        (this.selectedHostId && this.localRoutes.get(this.selectedHostId)) ||
+        this.localRoutes.values().next().value
+      if (active) this.localAuthRequired = active.authRequired
+    }
+    // 近路可能新增（补开本机 SSE 近路）也可能刚作废（关掉那条 SSE）。
+    this.syncLocalSSE()
+    return this.getLocalHostId()
   }
 
   /**
@@ -367,12 +529,20 @@ export class LocalTransport {
       return { mode: 'local', hubUrl: '' }
     }
     const data = (await res.json().catch(() => ({}))) as {
-      hosts?: Array<{ local?: boolean; hostId?: string }>
+      hosts?: HostInfo[]
       defaultHostId?: string
       authRequired?: boolean
     }
     const direct =
       !data.defaultHostId && data.hosts?.length === 1 && data.hosts[0]?.local === true
+    // 这份注册表应答可能就是 hub 的那份（部署版前端与 hub 同源时 URL 完全
+    // 相同）：交给 listHosts 用，别在启动链里问第二遍。URL 不同（本机 host
+    // 的注册表 ≠ hub 的注册表）时自然不会命中。
+    rememberHostRegistry(`${this.base}/api/hosts`, {
+      hosts: data.hosts ?? [],
+      defaultHostId: data.defaultHostId,
+      authRequired: data.authRequired,
+    })
     if (!direct) {
       this.localAuthRequired = false
       return { mode: 'hub', hubUrl: this.base }
@@ -410,7 +580,8 @@ export class LocalTransport {
       // hubLevel：门禁探测与选中 host 无关，被 abortInflight 打断会退成
       // 'error'，调用方（App）把 'error' 当「网络问题也进主界面」处理，
       // 于是本该弹出的密钥门禁被跳过。
-      const res = await this.fetch(`${this.apiBase()}/api/hosts`, {}, { hubLevel: true })
+      const url = `${this.apiBase()}/api/hosts`
+      const res = await this.fetch(url, {}, { hubLevel: true })
       if (res.status === 401) return 'need_token'
       if (!res.ok) return 'error'
       // capri-host 配置了 FE_TOKEN 时 /api/hosts 保持开放（启动探测端点），
@@ -418,8 +589,16 @@ export class LocalTransport {
       // 避免无 token 裸请求打到所有接口上才暴露。
       const data = (await res.json().catch(() => ({}))) as {
         authRequired?: boolean
+        hosts?: HostInfo[]
+        defaultHostId?: string
       }
       if (data.authRequired && !this.accessToken) return 'need_token'
+      // 这份应答与随后 refreshHosts 要问的是同一个 URL：交出去，别问第二遍。
+      rememberHostRegistry(url, {
+        hosts: data.hosts ?? [],
+        defaultHostId: data.defaultHostId,
+        authRequired: data.authRequired,
+      })
       return 'ok'
     } catch {
       return 'error'
@@ -658,7 +837,7 @@ export class LocalTransport {
     if (!seqs || !this.selectedHostId) return
     // 双连接：选中本机时本机事件以本地 SSE 为权威（hub 路丢弃），
     // 缺口由本地 SSE 重连后的 gapPull 负责，不在此按 hub 补拉。
-    if (this.isLocalDirect() && this.selectedHostId === this.localHostId) return
+    if (this.isLocalDirect()) return
     const hubSeq = seqs[this.selectedHostId]
     if (typeof hubSeq !== 'number') return
     const mine = this.seq.watermark(this.selectedHostId)
@@ -748,7 +927,7 @@ export class LocalTransport {
           // （hub 侧做 chunk 合并，两条路事件边界不一致，无法按 seq
           // 对齐去重）。远程 host 事件不受影响。
           const evHost = (ev as { hostId?: string }).hostId
-          if (this.isLocalDirect() && evHost === this.localHostId) continue
+          if (this.isLocalDirect() && evHost === this.selectedHostId) continue
           // resync 是 hub 的控制标记（无 hostId/seq），不能进 seq 排序
           // 通路（会被当 flat event 原样透传），单独拦截处理。
           if ((ev as { type?: string }).type === 'resync') {
@@ -863,13 +1042,16 @@ export class LocalTransport {
     if (gen !== this.gen) return
     if (this.es) return // already on the SSE path; never double-connect
     this.clearSseReconnect()
+    // 这条 SSE  stream 属于谁：建连时的选中 host（本机近路只为选中的 host 开），
+    // 后面重连补拉按它对齐水位，不能在 onopen 时再读——期间可能已切走。
+    const sseHostId = this.selectedHostId
     const es = new EventSource(this.liveSseURL())
     this.es = es
     es.onopen = () => {
       if (gen !== this.gen || this.es !== es) return
       this.sseReconnectAttempt = 0
       if (!trackSeq) return
-      const hostId = this.localHostId
+      const hostId = sseHostId
       if (!hostId) return
       const last = this.seq.watermark(hostId)
       if (last === 0) {
@@ -886,8 +1068,25 @@ export class LocalTransport {
     es.onmessage = (msg) => {
       if (gen !== this.gen || this.es !== es) return
       try {
-        const data = JSON.parse(msg.data) as AcpEvent
+        const data = JSON.parse(msg.data) as AcpEvent & { hostId?: string }
         if (data && typeof data === 'object' && 'type' in data) {
+          // 近路的端口随时可能被别人占走（那台 host 换了 PORT、另一台 host
+          // 重启绑到了同一端口）。host 在 /events 的 hello/ready 里自报 hostId：
+          // 与这条近路的 host 不符，说明应答者已经不是它了——立即作废近路、
+          // 关掉这条 SSE，请求回落 hub 中继，绝不把 A 的会话继续发给 B。
+          const declares = data.type === 'hello' || data.type === 'ready'
+          if (
+            trackSeq &&
+            declares &&
+            sseHostId &&
+            typeof data.hostId === 'string' &&
+            data.hostId &&
+            data.hostId !== sseHostId
+          ) {
+            this.localRoutes.delete(sseHostId)
+            this.syncLocalSSE()
+            return
+          }
           if (trackSeq) this.acceptSequencedEvent(data as SequencedEvent, gen)
           else this.emit(data)
         }

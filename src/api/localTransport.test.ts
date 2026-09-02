@@ -1,6 +1,13 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
 import { LocalTransport } from './localTransport'
+import { clearHostRegistryHandoff } from './rpc/hosts'
 import type { HubPrefsDoc } from './types'
+
+/** 注册表交接快照是模块级缓存（按 URL 键）：每个用例前清一次，否则上一条
+ *  detectMode/probeAccess 存下的快照会被后一条的 listHosts 消费掉。 */
+beforeEach(() => {
+  clearHostRegistryHandoff()
+})
 
 /**
  * prefsOrigin 决定置顶/待办回写目的地：
@@ -241,6 +248,231 @@ describe('discoverLocalHost', () => {
     )
     const id = await t.discoverLocalHost([{ hostId: 'mba', port: 8765 }])
     expect(id).toBeNull()
+  })
+
+  /** capri-host 在 127.0.0.1:<port> 上的应答形状（单 host + local:true）。 */
+  function hostBody(hostId: string, authRequired = false) {
+    return {
+      authRequired,
+      hosts: [{ hostId, hostName: hostId, local: true, online: true }],
+    }
+  }
+
+  /**
+   * 按端口号编排本机应答；返回被探过的端口序列，供「探了几次」断言。
+   * 没编排到的端口一律 404（等价于该端口无服务）。
+   */
+  function stubLocalPorts(byPort: Record<number, unknown>) {
+    const probed: number[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo) => {
+        const m = /^http:\/\/127\.0\.0\.1:(\d+)\/api\/hosts$/.exec(String(input))
+        if (!m) return new Response(JSON.stringify({ hosts: [] }), { status: 200 })
+        const port = Number(m[1])
+        probed.push(port)
+        const body = byPort[port]
+        if (body === undefined) return new Response('nope', { status: 404 })
+        return new Response(JSON.stringify(body), { status: 200 })
+      }),
+    )
+    return probed
+  }
+
+  /** 本机 SSE 实例（jsdom 无 EventSource，桩出来供测试灌事件）。 */
+  const sseInstances: Array<{
+    url: string
+    self: { onmessage: ((m: MessageEvent) => void) | null }
+  }> = []
+  function stubEventSource() {
+    sseInstances.length = 0
+    vi.stubGlobal(
+      'EventSource',
+      class {
+        static readonly OPEN = 1
+        static readonly CLOSED = 2
+        readyState = 1
+        onopen: (() => void) | null = null
+        onmessage: ((m: MessageEvent) => void) | null = null
+        onerror: (() => void) | null = null
+        constructor(url: string) {
+          sseInstances.push({ url, self: this })
+        }
+        close() {}
+      },
+    )
+  }
+
+  it('本机 SSE 上的 hello 自报了别的 hostId：近路立即作废，回落 hub 中继', async () => {
+    const t = makeTransport()
+    stubEventSource()
+    t.setConnectionMode('hub', 'https://hub.example')
+    await t.discoverLocalHost([{ hostId: 'mba', port: 8765 }])
+    t.setHost('mba')
+    expect(t.isLocalDirect()).toBe(true)
+    const sse = sseInstances[sseInstances.length - 1]
+    expect(sse?.url).toBe('http://127.0.0.1:8765/events')
+    // 端口被另一台 host 接管：应答者自报 mbp
+    sse!.self.onmessage?.({
+      data: JSON.stringify({ type: 'hello', hostId: 'mbp', ready: true }),
+    } as MessageEvent)
+    expect(t.getLocalRoute('mba')).toBeNull()
+    expect(t.isLocalDirect()).toBe(false)
+    expect(t.apiUrl('/api/sessions')).toBe('https://hub.example/api/sessions?host=mba')
+  })
+
+  it('本机 SSE 上自报身份一致的 hello 不影响近路', async () => {
+    const t = makeTransport()
+    stubEventSource()
+    t.setConnectionMode('hub', 'https://hub.example')
+    await t.discoverLocalHost([{ hostId: 'mba', port: 8765 }])
+    t.setHost('mba')
+    const sse = sseInstances[sseInstances.length - 1]
+    sse!.self.onmessage?.({
+      data: JSON.stringify({ type: 'hello', hostId: 'mba', ready: true }),
+    } as MessageEvent)
+    expect(t.isLocalDirect()).toBe(true)
+  })
+
+  it('多台 host 共用默认端口：近路认给端口上真正应答的那台', async () => {
+    // 实测形状：hub 注册表 mba 与 mbp 都报 port 8765（各自机器上的默认端口），
+    // 浏览器在 mbp 上。按「候选 hostId 期待应答者」的旧逻辑，8765 被列表首位的
+    // mba 认领 → 应答者 mbp 被判不匹配 → 一台也探不到 → 全程 hub 中继。
+    const t = makeTransport()
+    t.setConnectionMode('hub', 'https://hub.example')
+    const probed = stubLocalPorts({ 8765: hostBody('mbp') })
+    const id = await t.discoverLocalHost([
+      { hostId: 'mba', port: 8765, online: true },
+      { hostId: 'mbp', port: 8765, online: true },
+    ])
+    expect(probed).toEqual([8765])
+    expect(id).toBe('mbp')
+    expect(t.getLocalRoute('mbp')?.base).toBe('http://127.0.0.1:8765')
+    expect(t.getLocalRoute('mba')).toBeNull()
+    // 旧访问器（store 的挑选链与 TopBar 兼容用）指向同一条近路
+    expect(t.getLocalHostId()).toBe('mbp')
+    expect(t.getLocalBase()).toBe('http://127.0.0.1:8765')
+  })
+
+  it('同机多台 host（各自端口）全部登记近路，不止第一条', async () => {
+    const t = makeTransport()
+    stubEventSource()
+    t.setConnectionMode('hub', 'https://hub.example')
+    stubLocalPorts({ 8765: hostBody('a'), 8766: hostBody('b') })
+    await t.discoverLocalHost([
+      { hostId: 'a', port: 8765, online: true },
+      { hostId: 'b', port: 8766, online: true },
+    ])
+    t.setHost('b')
+    expect(t.isLocalDirect()).toBe(true)
+    expect(t.apiUrl('/api/sessions')).toBe('http://127.0.0.1:8766/api/sessions')
+    t.setHost('a')
+    expect(t.apiUrl('/api/sessions')).toBe('http://127.0.0.1:8765/api/sessions')
+    t.setHost('remote')
+    expect(t.isLocalDirect()).toBe(false)
+    expect(t.apiUrl('/api/sessions')).toBe('https://hub.example/api/sessions?host=remote')
+  })
+
+  it('端口上应答的 host 不在 hub 注册表里则不绑', async () => {
+    const t = makeTransport()
+    t.setConnectionMode('hub', 'https://hub.example')
+    stubLocalPorts({ 8765: hostBody('stranger') })
+    const id = await t.discoverLocalHost([{ hostId: 'mba', port: 8765 }])
+    expect(id).toBeNull()
+    expect(t.getLocalRoute('stranger')).toBeNull()
+  })
+
+  it('已验证的端口不再重复探测；探不到的端口进重试冷却', async () => {
+    const t = makeTransport()
+    t.setConnectionMode('hub', 'https://hub.example')
+    const probed = stubLocalPorts({ 8765: hostBody('mba') })
+    const hosts = [
+      { hostId: 'mba', port: 8765, online: true },
+      { hostId: 'ghost', port: 9999, online: true },
+    ]
+    await t.discoverLocalHost(hosts)
+    expect(probed).toEqual([8765, 9999])
+    // hosts_changed 反复驱动：命中的 8765 与刚失败的 9999 都不再探
+    await t.discoverLocalHost(hosts)
+    expect(probed).toEqual([8765, 9999])
+    expect(t.getLocalHostId()).toBe('mba')
+  })
+
+  it('hub 未下发端口时回退默认端口，身份仍以应答者为准', async () => {
+    const t = makeTransport()
+    t.setConnectionMode('hub', 'https://hub.example')
+    const probed = stubLocalPorts({ 8765: hostBody('old-host') })
+    const id = await t.discoverLocalHost([{ hostId: 'old-host', online: true }])
+    expect(probed).toEqual([8765])
+    expect(id).toBe('old-host')
+  })
+
+  it('host 换了端口：作废旧近路并重探新端口', async () => {
+    const t = makeTransport()
+    stubEventSource()
+    t.setConnectionMode('hub', 'https://hub.example')
+    const probed = stubLocalPorts({ 8765: hostBody('mba'), 9001: hostBody('mba') })
+    await t.discoverLocalHost([{ hostId: 'mba', port: 8765 }])
+    t.setHost('mba')
+    expect(t.apiUrl('/api/sessions')).toBe('http://127.0.0.1:8765/api/sessions')
+    // hub 心跳把端口更新成 9001（PORT 改了 / 重启换端口）
+    await t.discoverLocalHost([{ hostId: 'mba', port: 9001 }])
+    expect(probed).toEqual([8765, 9001])
+    expect(t.getLocalRoute('mba')?.base).toBe('http://127.0.0.1:9001')
+    expect(t.apiUrl('/api/sessions')).toBe('http://127.0.0.1:9001/api/sessions')
+  })
+
+  it('端口被别的 host 接管：旧近路作废，回落 hub 中继', async () => {
+    const t = makeTransport()
+    stubEventSource()
+    t.setConnectionMode('hub', 'https://hub.example')
+    // mba 原来在 8765；现在 8765 上应答的是别人（mbp 重启后占了这台机器的端口）
+    const probed = stubLocalPorts({ 8765: hostBody('mbp') })
+    await t.discoverLocalHost([
+      { hostId: 'mba', port: 8765 },
+      { hostId: 'mbp', port: 8765 },
+    ])
+    expect(t.getLocalRoute('mba')).toBeNull()
+    t.setHost('mba')
+    // 选中 mba 时定点探测：8765 应答的不是 mba → 不建近路，走 hub 中继
+    await t.verifyLocalRoute('mba')
+    expect(probed).toEqual([8765, 8765])
+    expect(t.isLocalDirect()).toBe(false)
+    expect(t.apiUrl('/api/sessions')).toBe('https://hub.example/api/sessions?host=mba')
+  })
+
+  it('verifyLocalRoute：切 host 时只探它那一个端口，且身份必须逐字匹配', async () => {
+    const t = makeTransport()
+    stubEventSource()
+    t.setConnectionMode('hub', 'https://hub.example')
+    const probed = stubLocalPorts({ 8765: hostBody('mba'), 8766: hostBody('other') })
+    await t.discoverLocalHost([
+      { hostId: 'mba', port: 8765 },
+      { hostId: 'mbp', port: 8766 },
+    ])
+    expect(t.getLocalRoute('mbp')).toBeNull()
+    t.setHost('mbp')
+    await t.verifyLocalRoute('mbp')
+    // 只为 mbp 探了 8766（应答者是 other → 不是它，不建近路）
+    expect(probed).toEqual([8765, 8766, 8766])
+    expect(t.isLocalDirect()).toBe(false)
+    // 已验证的 mba 再切回去不产生任何探测
+    t.setHost('mba')
+    await t.verifyLocalRoute('mba')
+    expect(probed).toEqual([8765, 8766, 8766])
+    expect(t.isLocalDirect()).toBe(true)
+  })
+
+  it('近路 host 从注册表消失（unpair）：近路随之作废', async () => {
+    const t = makeTransport()
+    stubEventSource()
+    t.setConnectionMode('hub', 'https://hub.example')
+    stubLocalPorts({ 8765: hostBody('mba') })
+    await t.discoverLocalHost([{ hostId: 'mba', port: 8765 }])
+    t.setHost('mba')
+    expect(t.isLocalDirect()).toBe(true)
+    await t.discoverLocalHost([{ hostId: 'mbp', port: 8765 }])
+    expect(t.getLocalRoute('mba')).toBeNull()
   })
 })
 
