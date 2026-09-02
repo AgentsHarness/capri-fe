@@ -43,6 +43,8 @@ import {
  * - 直连 —— 本机近路可用，API/SSE 不绕 hub；
  * - 待验证 —— 探到了本机候选，但还差这台自己的钥匙，此刻仍走中继；
  * - 中继 —— 只有 hub 一条路（同机之外的一切机器，或用户显式选了中继）。
+ * 没有近路候选（不能直连本机）的行不显示通道——只有中继一条路可走，
+ * 标了也是噪声；对应 host 的操作菜单里「通路」区块也一并隐去。
  */
 function hostRouteLabel(state: 'direct' | 'pending' | 'relay'): '直连' | '待验证' | '中继' {
   return state === 'direct' ? '直连' : state === 'pending' ? '待验证' : '中继'
@@ -418,6 +420,9 @@ export function TopBar({
                   // hosts 更新会带动重绘，通路标记随之刷新。近路是按 hostId 逐台
                   // 验证的（同机可能有多台 host，也可能一台都没有）。
                   const localRoute = transport.getLocalRoute(h.hostId)
+                  // 不能直连本机的（无近路候选）不显示通道：行内标记与悬停
+                  // 提示都省掉——反正只有 Hub 中继一条路，标了也是噪声。
+                  const hasCandidate = transport.hasLocalCandidate(h.hostId)
                   const routeState = transport.activeRouteFor(h.hostId)
                   const route = hostRouteLabel(routeState)
                   const routeHint =
@@ -447,9 +452,11 @@ export function TopBar({
                         title={
                           h.online
                             ? stateLabel
-                              ? `切换到 ${h.hostName}（${stateLabel} · ${routeHint}，右键可管理）`
-                              : `切换到 ${h.hostName}（${routeHint}，右键可管理）`
-                            : `${h.hostName}（离线 · ${routeHint}）`
+                              ? `切换到 ${h.hostName}（${stateLabel}${hasCandidate ? ` · ${routeHint}` : ''}，右键可管理）`
+                              : hasCandidate
+                                ? `切换到 ${h.hostName}（${routeHint}，右键可管理）`
+                                : `切换到 ${h.hostName}（右键可管理）`
+                            : `${h.hostName}（离线${hasCandidate ? ` · ${routeHint}` : ''}）`
                         }
                       >
                         <span
@@ -459,17 +466,19 @@ export function TopBar({
                           <div className="truncate text-gn-fg">
                             {h.hostName}
                             {current && <span className="ml-1.5 text-[10px] text-gn-cyan">当前</span>}
-                            <span
-                              className={`ml-1.5 text-[10px] ${
-                                route === '直连'
-                                  ? 'text-gn-green'
-                                  : route === '待验证'
-                                    ? 'text-gn-yellow'
-                                    : 'text-gn-gutter'
-                              }`}
-                            >
-                              {route}
-                            </span>
+                            {hasCandidate && (
+                              <span
+                                className={`ml-1.5 text-[10px] ${
+                                  route === '直连'
+                                    ? 'text-gn-green'
+                                    : route === '待验证'
+                                      ? 'text-gn-yellow'
+                                      : 'text-gn-gutter'
+                                }`}
+                              >
+                                {route}
+                              </span>
+                            )}
                           </div>
                           <div className="truncate font-mono text-[10px] text-gn-muted">
                             {h.hostId}
