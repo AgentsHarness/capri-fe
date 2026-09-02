@@ -108,6 +108,12 @@ export interface ChatConnState {
   sessionId?: string
   /** Active session workspace dir (hello/ready; TUI status-bar path). */
   cwd?: string
+  /**
+   * 建会话 POST 在飞（newSession 已发起、响应未回填）：composer 锁定
+   * 输入，直到 sessionId 锚定（就绪）。POST 收口（成功/失败/被更新的
+   * 复位作废）即清除——锁定期不会残留。
+   */
+  newSessionPending: boolean
   /** Host user home dir — for "~/…" path shortening. */
   homeDir?: string
   /** Session title (top prompt border caption). */

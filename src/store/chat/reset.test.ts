@@ -29,6 +29,7 @@ describe('resetSessionState', () => {
     expect(partial.lastCompletedTurn).toBeUndefined()
     expect(partial.conn).toBe('ready')
     expect(partial.statusText).toBe('就绪')
+    expect(partial.newSessionPending).toBe(false)
     expect(partial.awaitingNext).toBe(false)
     expect(partial.planMode).toBe(false)
     expect(partial.pending).toEqual([])
