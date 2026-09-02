@@ -19,6 +19,8 @@ import {
 import { formatTurnDuration, planTodos, useChatStore, type ViewerTask } from '../store/chat'
 import type { ScrollEntry } from '../api/types'
 import { subagentMeta } from '../format'
+import { LiteToolFill } from './scrollback/LiteToolFill'
+import { toolEntryLitePending } from '../store/chat/historyFill'
 import { ToolDetail } from './ToolDetail'
 import { HookGroupsDetail } from './scrollback/kinds/HookRuns'
 import { Markdown } from './Markdown'
@@ -477,6 +479,20 @@ function ViewerBody({
   now?: number
 }) {
   if (entry.kind === 'tool' && entry.raw) {
+    if (toolEntryLitePending(entry)) {
+      // 正文被 lite 裁掉：全文视图同样只给占位行（打开查看器已触发按需
+      // 补全，这里是补回来之前的过渡态）。判据要求补全坐标——没有
+      // [msgSeq, msgSeqEnd] 的行（host 透传回退整页无 msgSeq）点开也拉不
+      // 回来，占位行就是个死按钮。
+      return (
+        <LiteToolFill
+          bytes={entry.liteOmitted}
+          state={entry.liteState}
+          onFill={() => void useChatStore.getState().fillToolEntryDetail(entry.id)}
+          className="mt-0"
+        />
+      )
+    }
     return (
       <ToolDetail
         raw={entry.raw}
@@ -894,9 +910,17 @@ function SubagentTimeline({
     })
   }, [hasMore, loadingMore, renderItems, childSid, loadMoreSubagentView])
 
-  // 用户主动上滑 → 暂停自动滚底（标准 stick-to-bottom 语义）；滚回
-  // 底部附近自动恢复。流式输出期间上滑浏览历史不再被拉回。
-  const [userScrolledUp, setUserScrolledUp] = useState(false)
+  // stick-to-bottom 跟随：与块查看弹窗正文共用 useStickToBottom——距底
+  // 48px 内随内容增长钉尾，用户上滑立即让位，滑回尾部恢复。运行中的子代理
+  // 打开即跟随；已结束的从顶部读起，除非用户自己滑到底。
+  const {
+    onScroll: measureFollow,
+    pin: pinTimelineTail,
+    isFollowing: timelineFollowsTail,
+  } = useStickToBottom(scrollRef, {
+    initialFollowing: running,
+    resetKey: childSid,
+  })
   // 流式条目的正文自滚交给外层容器统一滚底：mini 传一个恒空 ref
   // （streamBodyRef 存在即跳过 EntryView 的条目自滚），body 内上滑
   // 不会被"自滚拉回"。
@@ -962,9 +986,7 @@ function SubagentTimeline({
   const onScroll = () => {
     const el = scrollRef.current
     if (!el) return
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48
-    if (nearBottom && userScrolledUp) setUserScrolledUp(false)
-    else if (!nearBottom && !userScrolledUp) setUserScrolledUp(true)
+    measureFollow()
     updatePinned()
     if (el.scrollTop > 8 || loadingMore) return
     if (!hasMore) return
@@ -977,16 +999,15 @@ function SubagentTimeline({
     })
   }
 
-  // running 时自动滚到底（与 bg_task 的 stick-to-bottom 同款）；用户
-  // 主动上滑（userScrolledUp）期间暂停，滚回底部恢复。流式思考正文
-  // 由这里统一滚底（EntryView 的条目自滚已被 streamBodyRef 关闭）。
+  // items 变化时同步钉一次（ResizeObserver 回调晚一帧），异步撑高
+  // （mermaid / 图片 / markdown 回流）由 useStickToBottom 的观察器兜住。
+  // 流式思考的 4 行预览是 overflow:hidden——没有滚动条但可程序滚动，
+  // 要显式钉到尾部才显示最新几行，EntryView 收口时会把该 ref 置空。
   useEffect(() => {
-    if (!running || userScrolledUp) return
+    pinTimelineTail()
     const bodyEl = miniStreamBodyRef.current
-    if (bodyEl) bodyEl.scrollTop = bodyEl.scrollHeight
-    const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [running, items, userScrolledUp])
+    if (bodyEl && timelineFollowsTail()) bodyEl.scrollTop = bodyEl.scrollHeight
+  }, [running, items, pinTimelineTail, timelineFollowsTail])
 
   // 主 scrollback 同款分组管线：scanGroups → projectDisplayRows。
   // 只用渲染窗口内的条目（renderItems），DOM 保持扁平。
@@ -1049,7 +1070,12 @@ function SubagentTimeline({
   // 仍是主 store 动作（EntryView 内部取 actions ?? store），此处全部覆盖。
   const actions: EntryViewActions = useMemo(
     () => ({
-      toggleTool: (id) => setFolds((m) => new Map(m).set(id, !(m.get(id) ?? false))),
+      toggleTool: (id) => {
+        const next = !(folds.get(id) ?? false)
+        setFolds((m) => new Map(m).set(id, next))
+        // 展开 = 要看正文：lite 裁掉的行按需补全（非 lite / 已补全 no-op）。
+        if (next) void useChatStore.getState().fillToolEntryDetail(id)
+      },
       toggleThought: (id) =>
         setFolds((m) => new Map(m).set(id, !(m.get(id) ?? false))),
       toggleUser: (id) =>
@@ -1058,10 +1084,15 @@ function SubagentTimeline({
         setFolds((m) => new Map(m).set(id, !(m.get(id) ?? false))),
       toggleSessionEvent: (id) =>
         setFolds((m) => new Map(m).set(id, !(m.get(id) ?? false))),
-      openViewer: (id) => setViewerId(id),
+      openViewer: (id) => {
+        // 「查看」全文同样要先有正文（fillToolEntryDetail 会按 id 找到本
+        // 子代理视图里的条目）。
+        void useChatStore.getState().fillToolEntryDetail(id)
+        setViewerId(id)
+      },
       selectEntry: (id) => setSelectedId(id),
     }),
-    [],
+    [folds],
   )
 
   const toggleGroupExpansion = (anchorId: string) =>

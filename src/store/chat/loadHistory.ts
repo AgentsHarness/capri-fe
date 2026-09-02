@@ -18,12 +18,19 @@ import { spliceBtwEntries } from './btwReplay'
 import {
   INITIAL_TURN_LIMIT,
   INITIAL_TURNS,
+  applyEntryLiteStats,
   applyEntryMsgSeq,
   findMsgSeqGap,
   historyHasMorePage,
   replayUpdates,
   sortEntriesByMsgSeq,
 } from './history'
+import {
+  historyDetailParam,
+  noteHistoryProjection,
+  resetToolFillCache,
+  schedulePageFill,
+} from './historyFill'
 import { entryTimestamp } from './entries'
 import {
   envelopeAgentTimestampMs,
@@ -68,7 +75,8 @@ export async function loadHistory(
   set: SetState,
   get: () => ChatState,
   sessionId: string,
-  cwd: string
+  cwd: string,
+  opts: { awaitBeforeReplay?: Promise<void> } = {},
 ): Promise<void> {
     const loadSid = sessionId
     const scope = captureAsyncScope(get, sessionId, cwd)
@@ -83,6 +91,9 @@ export async function loadHistory(
     // a prepend it pins the newly loaded turn's user (no pre-fetch of
     // the previous turn for sticky).
     clearSuppressedTools()
+    // lite 补全的区间去重集合按「这一批条目」为作用域：重建快照即全部作废
+    // （切会话 / rewind 重载 / 刷新都走这里），在途的后台补全一并取消。
+    resetToolFillCache()
     // 流式缓冲丢弃：换会话后旧流的文本绝不能落进新 scrollback。
     clearStreamBuf()
     // 调用前锚定了 sessionId，这里不匹配说明调用后、执行前会话已被切走
@@ -105,6 +116,9 @@ export async function loadHistory(
       historyLoadError: undefined,
       historyPrependedAt: undefined,
       historyAnchorId: undefined,
+      historyProjected: undefined,
+      historyOmittedBytes: undefined,
+      liteFillBusy: 0,
       entries: [],
       liveStream: null,
       currentStreamStartMs: undefined,
@@ -180,6 +194,8 @@ export async function loadHistory(
         turnStartedAt?: number
         turnOpen: boolean
         entryMsgSeq?: Map<string, number>
+        entryMsgSeqEnd?: Map<string, number>
+        entryLiteOmitted?: Map<string, number>
       } = {
         turnOpen: false,
       }
@@ -191,10 +207,22 @@ export async function loadHistory(
       // so assistant text / turn_completed after the cap never appeared
       // between that user message and the next. Older turns still page via
       // loadMoreHistory (previousTurnWindow / offset fallback).
+      const detail = historyDetailParam(get)
       const r = await transport.loadSessionHistory(sessionId, cwd, {
         turnIndex: INITIAL_TURNS,
+        ...(detail ? { detail } : {}),
       })
       if (staleLoad()) return
+      // 能力回显：请求过 lite 却没回 projected = 旧 host（本页就是全量，
+      // 条目自然不带 lite 字段），停用该 host 的 lite。
+      noteHistoryProjection(get, detail != null, r)
+      // 并行切会话（continueSession）：快照 fetch 与任务探活同时发出，
+      // 但回放应用必须等探活结果（replayUpdates 跳过仍在跑任务的
+      // started 行）。探活失败已被调用方内部消化，await 不会抛。
+      if (opts.awaitBeforeReplay) {
+        await opts.awaitBeforeReplay
+        if (staleLoad()) return
+      }
       promptStarts = r.promptStarts
       turnIdx =
         promptStarts && promptStarts.length > 0
@@ -261,8 +289,13 @@ export async function loadHistory(
       const flushed = flushLiveStream(get())
       const sealed = sealThought(flushed)
       // 回放条目补盖信封 msgSeq；全部带 msgSeq 时按其稳定排序（契约：
-      // 任一条目缺失则完全保持现有行为，不排序）。
-      const stampedEntries = applyEntryMsgSeq(sealed.entries, replayMeta.entryMsgSeq)
+      // 任一条目缺失则完全保持现有行为，不排序）。lite 投影过的工具行再补
+      // 盖 msgSeqEnd / liteOmitted（展开时按区间回拉全量正文的坐标）。
+      const stampedEntries = applyEntryLiteStats(
+        applyEntryMsgSeq(sealed.entries, replayMeta.entryMsgSeq),
+        replayMeta.entryMsgSeqEnd,
+        replayMeta.entryLiteOmitted,
+      )
       const sortedEntries = sortEntriesByMsgSeq(stampedEntries)
       // 已结束的回合：settle + 清流式指针。仍 open（真·进行中）时保留
       // open*，但 liveStream 已 flush，文本不会丢。
@@ -291,6 +324,8 @@ export async function loadHistory(
         historyHasMore: hasMore,
         historyPromptStarts: promptStarts,
         historyTurnIdx: turnIdx,
+        historyProjected: r.projected,
+        historyOmittedBytes: r.omittedBytes,
         conn: 'ready',
         entries,
         liveStream: null,
@@ -390,6 +425,22 @@ export async function loadHistory(
       // 旧快照等下一次广播。adoption 返回值忽略：历史回放已渲染过该
       // 回合的用户行，这里只应用镜像更新，绝不重复 adoptTurn。
       const queuePullSentAt = Date.now()
+      // 精简回放的后台补全（契约 [E]）：首帧渲染已落，idle 期按同一窗口再拉
+      // 一份 detail=full，只把工具正文填回现有行（无预算闸门，失败静默）。
+      // 窗口固定为本页实际拉的 [loadedStart, loadedStart+fetched)（msgSeq/行号
+      // 空间与 lite 请求同源）——不再用 turnIndex:1 重拉：active 会话里两次
+      // 请求之间新开一轮会让 turnIndex 窗口漂移，full 页的工具行对不上本页。
+      // 仅本地归一化路径（信封带顶层 msgSeq）有该坐标；透传回退整页无 msgSeq、
+      // 区间补算不出窗口，回退 turnIndex 整轮（候选判定不要求坐标）。
+      const pageIsLocal = (r.updates ?? []).some(
+        (env) => typeof (env as { msgSeq?: unknown }).msgSeq === 'number',
+      )
+      schedulePageFill(
+        set,
+        get,
+        r,
+        pageIsLocal ? { offset: loadedStart, limit: fetched } : { turnIndex: INITIAL_TURNS },
+      )
       void transport
         .queueStatus(sessionId, cwd)
         .then((qr) => {

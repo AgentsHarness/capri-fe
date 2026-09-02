@@ -7,6 +7,7 @@ import { captureAsyncScope, isAsyncScopeCurrent } from './globals'
 import {
   MAX_AUTO_FETCH_ENTRIES,
   adaptivePageSize,
+  applyEntryLiteStats,
   applyEntryMsgSeq,
   countUserMessages,
   mergeEntriesByMsgSeq,
@@ -15,6 +16,11 @@ import {
   replayUpdates,
   sortEntriesByMsgSeq,
 } from './history'
+import {
+  historyDetailParam,
+  noteHistoryProjection,
+  schedulePageFill,
+} from './historyFill'
 
 type LiveReplayState = Pick<
   ChatState,
@@ -140,11 +146,14 @@ export async function loadMoreHistory(
     }
     set({ historyLoadingMore: true, historyAnchorId: anchorId, historyLoadError: undefined })
     try {
+      const detail = historyDetailParam(get)
       const r = await transport.loadSessionHistory(s.historySessionId, s.historyCwd, {
         offset: reqOffset,
         limit: reqLimit,
+        ...(detail ? { detail } : {}),
       })
       if (!isCurrent()) return
+      noteHistoryProjection(get, detail != null, r)
       const fetched = r.updates?.length ?? 0
       // 真·live 回合：本端发送中 / 已知 promptId / loadHistory 对仍 open
       // 回合恢复的 turnStartedAt。turnOpen 已收紧（completed 后 stray
@@ -223,8 +232,14 @@ export async function loadMoreHistory(
                 : e,
             );
       // 新页条目补盖信封 msgSeq；全部带 msgSeq 时按其稳定排序（页内有序
-      // 是下方归并的前提）。
-      newEntries = sortEntriesByMsgSeq(applyEntryMsgSeq(newEntries, replay.entryMsgSeq))
+      // 是下方归并的前提）。lite 投影过的工具行补盖 msgSeqEnd / liteOmitted。
+      newEntries = sortEntriesByMsgSeq(
+        applyEntryLiteStats(
+          applyEntryMsgSeq(newEntries, replay.entryMsgSeq),
+          replay.entryMsgSeqEnd,
+          replay.entryLiteOmitted,
+        ),
+      )
       // Page boundaries can cut an assistant message in half; stitch the
       // continuation (first old entry) onto the new page's last entry.
       const lastNew = newEntries[newEntries.length - 1]
@@ -330,6 +345,9 @@ export async function loadMoreHistory(
           historyPrependedAt: Date.now(),
         })
       }
+      // 更早轮同样「先 lite 后 full」（契约 [E]）：这一页按同一 offset/limit
+      // 窗口排队一份 detail=full，idle 期串行回填正文，不挡上滑渲染。
+      if (isCurrent()) schedulePageFill(set, get, r, { offset: reqOffset, limit: reqLimit })
       // 自动续翻（仅按条数兜底路径；页大小随 chained 翻倍）：本页无
       // user（纯工具流段）就继续向后翻——分页目标固定为「加载到上一条
       // user 消息为止」。按轮次路径每页必含 user，无需续翻。或翻尽

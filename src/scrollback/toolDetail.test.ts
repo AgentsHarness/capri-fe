@@ -616,3 +616,53 @@ describe('extractToolDetail — diff 内部逻辑', () => {
     expect(d.deletions).toBe(300)
   })
 })
+describe('extractToolDetail 畸形 wire 字段（wire 不做运行时校验，渲染期绝不能抛）', () => {
+  const shapes = [
+    { title: 12345, kind: 'other', status: 'completed' },
+    { title: { nested: true }, kind: 7, status: 'completed' },
+    { title: '', kind: { o: 1 }, status: 0 },
+    { title: '', kind: '', status: { s: 'failed' } },
+    { title: ['a'], kind: 'execute', status: null },
+    { title: undefined, kind: undefined, status: undefined },
+  ] as const
+
+  for (const [i, s] of shapes.entries()) {
+    it(`shape #${i}：kind / status / title 非字符串时按缺省分类处理`, () => {
+      expect(() =>
+        extractToolDetail({ toolCallId: 't1', ...s } as unknown as ToolCall),
+      ).not.toThrow()
+      // 带 kindName 的调用路径同样不能抛（kindName 来自条目，也可能被污染）
+      expect(() =>
+        extractToolDetail({ toolCallId: 't1', ...s } as unknown as ToolCall, 'execute'),
+      ).not.toThrow()
+    })
+  }
+
+  it('数字 title 在 execute 分支被当作命令文本（不再是 .startsWith 崩溃点）', () => {
+    const d = extractToolDetail({
+      toolCallId: 't1',
+      title: 42,
+      kind: 'execute',
+    } as unknown as ToolCall)
+    if (d.kind !== 'execute') throw new Error(`expected execute, got ${d.kind}`)
+    expect(d.command).toBe('42')
+    expect(d.error).toBeUndefined()
+  })
+
+  it('status 非字符串不算失败；字符串 failed/error 才算', () => {
+    const asCommand = (status: unknown) =>
+      extractToolDetail({
+        toolCallId: 't1',
+        kind: 'execute',
+        title: 'ls',
+        status,
+      } as unknown as ToolCall)
+    const err = (d: ReturnType<typeof asCommand>) =>
+      d.kind === 'execute' ? d.error : undefined
+    expect(err(asCommand('failed'))).toBe('Command failed')
+    expect(err(asCommand('FAILED'))).toBe('Command failed')
+    expect(err(asCommand('completed'))).toBeUndefined()
+    expect(err(asCommand(500))).toBeUndefined()
+    expect(err(asCommand({ status: 'failed' }))).toBeUndefined()
+  })
+})

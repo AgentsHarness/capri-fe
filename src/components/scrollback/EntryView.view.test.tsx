@@ -143,3 +143,42 @@ describe('标题单击立刻折叠 / 展开后「查看」弹窗', () => {
     expect(toolExpanded('t1')).toBe(true)
   })
 })
+
+/**
+ * lite 占位行只在展开态出现：折叠卡本来就不画正文，每张裁过的卡都插一行
+ * 「输出已省略」会把 lite 会话的滚动区撑成占位列表；展开（toggleTool）与
+ * 「查看」都会按需补全，届时才需要它。
+ */
+describe('lite 占位行的可见范围', () => {
+  const liteTool = (over: Partial<ScrollEntry> = {}) =>
+    toolEntry('lite1', {
+      raw: {
+        toolCallId: 'tc-lite1',
+        title: 'Execute `ls -la`',
+        kind: 'execute',
+        status: 'completed',
+        rawInput: { command: 'ls -la' },
+        rawOutput: { type: 'Bash', command: 'ls -la', output: { omitted: 4096 } },
+        _meta: { lite: { omitted: 4096, fields: ['rawOutput.output'] } },
+      } as unknown as ToolCall,
+      liteOmitted: 4096,
+      msgSeq: 1,
+      msgSeqEnd: 2,
+      ...over,
+    })
+
+  it('折叠态不插占位行', () => {
+    const e = liteTool({ expanded: false })
+    useChatStore.setState({ entries: [e] })
+    render(<EntryView e={e} selected={false} pendingFreeze={false} now={0} />)
+    expect(screen.queryByText(/输出已省略/)).toBeNull()
+  })
+
+  it('展开态显示占位行，且裁掉的正文不渲染', () => {
+    const e = liteTool({ expanded: true })
+    useChatStore.setState({ entries: [e] })
+    render(<EntryView e={e} selected={false} pendingFreeze={false} now={0} />)
+    expect(screen.getByText(/输出已省略/)).toBeTruthy()
+    expect(screen.queryByText(/total 448/)).toBeNull()
+  })
+})

@@ -5,7 +5,7 @@
  * resolution so store ↔ renderer stay acyclic.
  */
 import type { ScrollEntry, ToolCall } from '../api/types'
-import { extractToolDetail } from './toolDetail'
+import { extractToolDetail, toolBodyOmitted } from './toolDetail'
 import { thoughtDisplayMode } from './thoughtMode'
 import { userIsFoldable } from './userText'
 import { FINISH_FLASH_MS } from '../theme/wave'
@@ -63,8 +63,9 @@ export function entryFoldable(e: ScrollEntry): boolean {
   if (e.kind === 'tool') {
     // TUI: block.is_foldable() || hook_data.has_content().
     if (toolHooksHaveContent(e.hooks)) return true
+    if (e.liteOmitted) return true
     if (!e.raw) return false
-    return toolHasExpandableBody(e.raw, e.kindName)
+    return toolHasExpandableBody(e.raw, e.kindName, e.liteOmitted)
   }
   if (e.kind === 'thought') return !e.streaming && !!e.text
   // Recap body, or a turn marker carrying stop-hook runs (TUI
@@ -82,7 +83,11 @@ export function entryFoldable(e: ScrollEntry): boolean {
 export function toolHasExpandableBody(
   raw: ToolCall,
   kindName?: string,
+  liteOmitted?: number,
 ): boolean {
+  // lite 裁掉的正文仍然是正文：占位行必须能展开 / 开查看器，否则「查看」
+  // 按钮会在补全前消失（宿主只裁内容，不改行数与状态）。
+  if ((liteOmitted ?? 0) > 0 || toolBodyOmitted(raw)) return true
   try {
     const d = extractToolDetail(raw, kindName)
     switch (d.kind) {

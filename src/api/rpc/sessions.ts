@@ -1,4 +1,5 @@
 import type { TransportCore } from '../transport'
+import type { SessionHistoryDetail, SessionHistoryPage, SessionHistoryProjected } from '../types'
 import { assertRpcOk, findArrayField, findObjectField, pickSummaryActivityAt, readRpcJson, requireRpcObject, unwrapExtResult, xaiCall } from './core'
 import type {
   HostStatus,
@@ -199,22 +200,21 @@ export const sessionsRpc = {
     }
   },
 
+  /**
+   * POST /api/session-updates — 一页历史信封。`detail` 见
+   * {@link SessionHistoryDetail}：缺省 = full = 信封逐字节原样（今天的
+   * 行为），lite 只裁工具正文，meta 不回 updates 键。
+   */
   async loadSessionHistory(this: TransportCore,
     sessionId: string,
     cwd: string,
-    opts: { offset?: number; limit?: number; turnIndex?: number } = {},
-  ): Promise<{
-    totalCount?: number
-    hasMore?: boolean
-    updates?: unknown[]
-    /** 所有 user 回合的起始行号索引（turnIndex 模式返回；导航/定位用）。 */
-    promptStarts?: number[]
-    /**
-     * /btw 侧问回放记录（host 本地归一化路径从 btw_history.jsonl 读出，
-     * 按页窗口切片；agent 透传路径不带）。仅本地回放路径可用。
-     */
-    btw?: import('../types/scroll').BtwHistoryRecord[]
-  }> {
+    opts: {
+      offset?: number
+      limit?: number
+      turnIndex?: number
+      detail?: SessionHistoryDetail
+    } = {},
+  ): Promise<SessionHistoryPage> {
     const res = await this.fetch(this.url('/api/session-updates'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -224,7 +224,21 @@ export const sessionsRpc = {
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || `history failed (${res.status})`)
     }
-    return data
+    // projected / omittedBytes 是能力回显而非权威数据：非约定取值一律按
+    // 「旧 host 不支持」处理（丢字段），调用方据此降级 full。原键先剥掉，
+    // 免得非法值穿透进类型化结果。
+    const { projected: rawProjected, omittedBytes: rawOmitted, ...rest } = data
+    const projected =
+      rawProjected === 'lite' || rawProjected === 'meta'
+        ? (rawProjected as SessionHistoryProjected)
+        : undefined
+    const omittedBytes =
+      typeof rawOmitted === 'number' && Number.isFinite(rawOmitted) ? rawOmitted : undefined
+    return {
+      ...rest,
+      ...(projected ? { projected } : {}),
+      ...(omittedBytes != null ? { omittedBytes } : {}),
+    }
   },
 
   async sessionRunningTasks(this: TransportCore, 

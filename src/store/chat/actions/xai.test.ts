@@ -6,6 +6,10 @@ vi.mock('../../../api/client', () => ({
   transport: {
     forkSession: vi.fn().mockResolvedValue({ result: { newSessionId: 'fork-1' } }),
     rewindPoints: vi.fn().mockResolvedValue({ points: [{ index: 0 }, { index: 1 }, { index: 2 }] }),
+    // 精简回放模块在导入期就挂 prefs_changed 监听并读连接模式（liteReplay
+    // 默认值按 hub / local 取），替身必须带上这两个。
+    onEvent: vi.fn(() => () => {}),
+    getConnectionMode: vi.fn(() => 'local'),
     rewindExecute: vi.fn().mockResolvedValue({
       success: true,
       targetPromptIndex: 1,
@@ -330,6 +334,11 @@ describe('xaiActions.rewindExecute', () => {
     expect(state.entries.map((e) => e.id)).toEqual(['u0', 'a0'])
     // 对齐探针（promptStarts=[0] ≤ target 1）通过后才重载，且只重载一次。
     expect(transport.loadSessionHistory).toHaveBeenCalledTimes(1)
+    // 探针只要 promptStarts：恒传 detail=meta（与精简回放开关无关，不拉整页）。
+    expect(transport.loadSessionHistory).toHaveBeenCalledWith('s1', '/w', {
+      turnIndex: 1,
+      detail: 'meta',
+    })
     expect(state.loadHistory).toHaveBeenCalledWith('s1', '/w')
     expect(state.scheduledTasks).toHaveLength(1)
   })
@@ -420,5 +429,38 @@ describe('xaiActions.rewindExecute', () => {
     await p
     expect(current.entries.map((e) => e.id)).toEqual(['nx'])
     expect(current.loadHistory).not.toHaveBeenCalled()
+  })
+
+  it('切走会话后成功响应到达 → 状态行与 stashedDraft 也不写进新视图', async () => {
+    ;(transport.rewindExecute as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      success: true,
+      targetPromptIndex: 1,
+      promptText: '被回退的那条 prompt',
+    })
+    let current = makeState({ entries: twoTurns, statusText: '就绪' })
+    const set: SetState = (partial) => {
+      Object.assign(current, typeof partial === 'function' ? partial(current) : partial)
+    }
+    const api = xaiActions(set, () => current) as Pick<ChatState, 'rewindExecute'>
+    const p = api.rewindExecute(1, 'conversation_only')
+    current = { ...current, sessionId: 'other', statusText: '就绪', stashedDraft: '新会话草稿' }
+    await p
+    expect(current.statusText).toBe('就绪')
+    expect(current.stashedDraft).toBe('新会话草稿')
+  })
+
+  it('切走会话后请求失败 → 不在新会话里落「回退失败」错误行（仍向上抛）', async () => {
+    ;(transport.rewindExecute as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('rewind failed'),
+    )
+    let current = makeState({ entries: twoTurns })
+    const set: SetState = (partial) => {
+      Object.assign(current, typeof partial === 'function' ? partial(current) : partial)
+    }
+    const api = xaiActions(set, () => current) as Pick<ChatState, 'rewindExecute'>
+    const p = api.rewindExecute(1, 'conversation_only')
+    current = { ...current, sessionId: 'other', entries: [{ id: 'nx', kind: 'user', text: '新会话' }] }
+    await expect(p).rejects.toThrow('rewind failed')
+    expect(current.entries.map((e) => e.id)).toEqual(['nx'])
   })
 })

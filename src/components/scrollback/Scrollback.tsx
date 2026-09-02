@@ -126,7 +126,6 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
     wsBarElRef,
     wsBarH,
     userById,
-    historyLoadedAt,
   )
 
   const { rows: displayRows, spans } = useDisplayRows(entries, expandedGroups)
@@ -430,7 +429,7 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
           </>
         )}
       </div>
-      <div className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} py-3`}>
+      <div className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} pb-3`}>
         {/* TUI sticky prompt header (sticky.rs): last fully-past user
             prompt, collapsed to 3 lines. Next user pushes it off, then
             yield. Zero-height sticky shell + absolute band = no layout

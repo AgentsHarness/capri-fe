@@ -82,6 +82,10 @@ describe('extractTarget / raw 访问器', () => {
     // 形状防御：meta / x.ai/tool 非对象
     expect(xaiToolKind(tc({ _meta: 'x' as never }))).toBeUndefined()
     expect(xaiToolKind(tc({ _meta: { 'x.ai/tool': 'x' } as never }))).toBeUndefined()
+    // 顶层 kind 非字符串不得污染 kindName——它会被塞进条目，随后
+    // toolFamily / toolHeader / verbGroupKind 都对它调 .toLowerCase()
+    expect(toolKindName(tc({ kind: 3 as never }), undefined)).toBe('other')
+    expect(toolKindName(tc({ kind: { k: 'read' } as never }), 'edit')).toBe('edit')
   })
 })
 

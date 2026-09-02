@@ -10,6 +10,12 @@ export type {
   TodoStatus,
 } from './types/core'
 export type {
+  LiteProjectionMark,
+  SessionHistoryDetail,
+  SessionHistoryPage,
+  SessionHistoryProjected,
+} from './types/history'
+export type {
   AgentSkill,
   ContextInfoDetail,
   ContextUsageCategory,

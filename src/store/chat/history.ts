@@ -16,7 +16,9 @@ export {
 export {
   replayUpdates,
   applyEntryMsgSeq,
+  applyEntryLiteStats,
   envelopeTotalTokens,
+  liteMark,
   historicalTaskEvent,
   type RawEnvelope,
   envelopeTimestamp,

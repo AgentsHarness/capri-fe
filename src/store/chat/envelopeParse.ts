@@ -1,4 +1,4 @@
-import type { AcpEvent, ScrollEntry, ToolCall } from '../../api/types'
+import type { AcpEvent, LiteProjectionMark, ScrollEntry, ToolCall } from '../../api/types'
 
 export function historicalTaskEvent(
   up: Record<string, unknown>,
@@ -238,6 +238,70 @@ function toolReplayPayload(value: unknown): unknown {
   return object
 }
 
+/**
+ * host lite 投影打在 `params.update._meta.lite` 上的标记（契约 [C]5）。
+ * 工具正文之外的信封不会带它，按存在与否判定即可。
+ */
+export function liteMark(update: unknown): LiteProjectionMark | undefined {
+  if (!update || typeof update !== 'object' || Array.isArray(update)) return undefined
+  const meta = (update as Record<string, unknown>)._meta
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return undefined
+  const lite = (meta as Record<string, unknown>).lite
+  if (!lite || typeof lite !== 'object' || Array.isArray(lite)) return undefined
+  const o = lite as Record<string, unknown>
+  const omitted = typeof o.omitted === 'number' && Number.isFinite(o.omitted) ? o.omitted : 0
+  if (omitted <= 0) return undefined
+  return {
+    omitted,
+    fields: Array.isArray(o.fields)
+      ? (o.fields.filter((f) => typeof f === 'string') as string[])
+      : [],
+  }
+}
+
+/**
+ * 工具正文被裁后的身份键材料：toolCallId + status + kind + title。
+ * host 的 lite 投影保证这些字段原样保留（契约 [C]3），所以 lite 信封与
+ * 它的 live 全量事件在这里必然同串。
+ */
+function toolIdentityKey(kindPrefix: string, value: unknown): string | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const up = value as Record<string, unknown>
+  const toolCallId = typeof up.toolCallId === 'string' ? up.toolCallId : ''
+  if (!toolCallId) return null
+  return `${kindPrefix}:lite-id:${stableReplayJson({
+    toolCallId,
+    status: up.status,
+    kind: up.kind,
+    title: up.title,
+  })}`
+}
+
+/**
+ * 快照侧工具信封的去重键（契约 [E]）：带 `_meta.lite` 的信封正文被裁，
+ * 内容哈希与 live 侧的全量事件必然不等 → 改用身份键；没裁的信封保持今天的
+ * 内容键，一字不改。
+ */
+function toolSnapshotKeys(kindPrefix: string, payload: unknown): string[] {
+  if (liteMark(payload)) {
+    const identity = toolIdentityKey(kindPrefix, payload)
+    if (identity) return [identity]
+  }
+  return [`${kindPrefix}:${stableReplayJson(toolReplayPayload(payload))}`]
+}
+
+/**
+ * live 侧工具事件的去重键：内容键在前（精确），再带一把身份键兜底——快照
+ * 被 lite 投影过时只有身份键能对上（同 toolCallId + status + kind + title
+ * 即同一件事件）。旧 host 的快照不登记身份键 → 行为与今天一致。
+ */
+function toolLiveKeys(kindPrefix: string, payload: unknown): string[] {
+  const keys = [`${kindPrefix}:${stableReplayJson(toolReplayPayload(payload))}`]
+  const identity = toolIdentityKey(kindPrefix, payload)
+  if (identity) keys.push(identity)
+  return keys
+}
+
 /** Strip <fork-context>/<resume-context> wrappers from user message text. */
 export function stripContextWrappers(text: string): string {
   for (const tag of ['fork-context', 'resume-context']) {
@@ -436,9 +500,9 @@ function replayUpdateKeys(
       )
     }
     case 'tool_call':
-      return [`tool_call:${stableReplayJson(toolReplayPayload(up))}`]
+      return toolSnapshotKeys('tool_call', up)
     case 'tool_call_update':
-      return [`tool_update:${stableReplayJson(toolReplayPayload(up))}`]
+      return toolSnapshotKeys('tool_update', up)
     case 'plan':
       return [`plan:${stableReplayJson(up.entries)}`]
     case 'usage_update':
@@ -480,9 +544,9 @@ export function replayEventKeys(ev: AcpEvent): string[] {
     case 'image':
       return [replayImageKey(ev.data, ev.mimeType)]
     case 'tool_call':
-      return [`tool_call:${stableReplayJson(toolReplayPayload(ev.toolCall))}`]
+      return toolLiveKeys('tool_call', ev.toolCall)
     case 'tool_call_update':
-      return [`tool_update:${stableReplayJson(toolReplayPayload(ev.toolCallUpdate))}`]
+      return toolLiveKeys('tool_update', ev.toolCallUpdate)
     case 'plan':
       return [`plan:${stableReplayJson(ev.entries)}`]
     case 'task_lifecycle':

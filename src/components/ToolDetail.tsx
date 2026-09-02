@@ -11,8 +11,10 @@ import {
   INLINE_MAX,
   READ_FIRST,
   READ_LAST,
+  detailIsEmpty,
   discoveredToolAction,
   extractToolDetail,
+  toolBodyOmitted,
   truncateLines,
   type DiffLine,
   type ToolDetail as Detail,
@@ -73,6 +75,11 @@ type Props = {
    */
   hooks?: ToolHookData
   className?: string
+  /**
+   * 正文被 host 的 lite 投影裁过（还没补回）：空正文一律不报 "(no content)"
+   * / "(no results)" 这类假空态，改说「输出已省略」。
+   */
+  bodyOmitted?: boolean
 }
 
 export function ToolDetail({
@@ -82,6 +89,7 @@ export function ToolDetail({
   mergedRaws,
   hooks,
   className,
+  bodyOmitted,
 }: Props) {
   const d = extractToolDetail(raw, kindName)
   // Only edit rows merge (store-side rule); guard kind anyway.
@@ -89,6 +97,19 @@ export function ToolDetail({
     .map((r) => extractToolDetail(r, kindName))
     .filter((x): x is Extract<Detail, { kind: 'edit' }> => x.kind === 'edit')
   const hookDetail = hooks ? <ToolHookDetail data={hooks} /> : null
+  // lite 只裁正文、不改行数：正文没补回来时「空」不代表没有内容，各分支的
+  // (no content) / (no results) / (no diff) 一律换成省略提示。
+  const omitted = bodyOmitted ?? toolBodyOmitted(raw)
+  if (omitted && detailIsEmpty(d) && extras.length === 0) {
+    return (
+      <div
+        className={`min-w-0 font-ui text-[12.5px] leading-[1.45] ${className ?? 'mt-1'}`}
+      >
+        <MetaLine>输出已省略</MetaLine>
+        {hookDetail}
+      </div>
+    )
+  }
   return (
     <div
       className={`min-w-0 font-ui text-[12.5px] leading-[1.45] ${className ?? 'mt-1'}`}

@@ -13,6 +13,11 @@ export type Transport = {
   prefsOrigin(): string
   setLocalHostId(hostId: string | null): void
   getLocalHostId(): string | null
+  setLocalBase(base: string): void
+  getLocalBase(): string
+  discoverLocalHost(
+    hosts?: Array<{ hostId: string; port?: number; online?: boolean }>,
+  ): Promise<string | null>
   detectMode(): Promise<{
     mode: TransportMode
     hubUrl: string

@@ -1,5 +1,6 @@
 import { loadStr, removeKey, saveStr } from '../../../lib/storage'
 import { transport } from '../../../api/client'
+import type { HostInfo } from '../../../api/types'
 import type { ChatState, SetState } from '../types'
 import { clearStreamBuf } from '../stream'
 import {
@@ -15,48 +16,85 @@ import { clearSubagentSettleTimer, clearTurnBlipTimer } from '../turn'
 import { refreshDefaultModeFlags } from '../modePersist'
 
 export function hostActions(set: SetState, get: () => ChatState) {
-  return {
-  refreshHosts: async () => {
-    try {
-      const { hosts, defaultHostId } = await transport.listHosts()
-      set({ hosts })
-      const s = get()
-      // 选中 host 掉线/恢复：hub 层横幅提示（id 精确清除，不影响
-      // hub-ws 等其他 hub 层错误）。
-      if (s.selectedHostId) {
-        const sel = hosts.find((h) => h.hostId === s.selectedHostId)
-        const cur = s.layerErrors.hub
-        if (sel && !sel.online && cur?.id !== 'host-offline') {
-          get().setLayerError('hub', {
-            id: 'host-offline',
-            level: 'error',
-            message: `Host「${sel.hostName}」已离线`,
-            at: Date.now(),
-          })
-        } else if (sel && sel.online && cur?.id === 'host-offline') {
-          get().setLayerError('hub', undefined)
-        }
+  // 注册表应用（含首次自动选 host）：set 列表 + 离线/删除横幅 + 挑选
+  // 默认 host。数据来源由调用方决定——refreshHosts 拉 GET /api/hosts；
+  // hub 的 WS hello 已携带同一份快照（含 defaultHostId）时直接复用，
+  // 打开页面省掉一次跨网往返（见 conn.ts hello 分支）。
+  const applyHostRegistry = async (
+    hosts: HostInfo[],
+    defaultHostId: string | undefined,
+  ) => {
+    set({ hosts })
+    const s = get()
+    // 选中 host 掉线/恢复：hub 层横幅提示（id 精确清除，不影响
+    // hub-ws 等其他 hub 层错误）。
+    if (s.selectedHostId) {
+      const sel = hosts.find((h) => h.hostId === s.selectedHostId)
+      const cur = s.layerErrors.hub
+      if (sel && !sel.online && cur?.id !== 'host-offline') {
+        get().setLayerError('hub', {
+          id: 'host-offline',
+          level: 'error',
+          message: `Host「${sel.hostName}」已离线`,
+          at: Date.now(),
+        })
+      } else if (sel && sel.online && cur?.id === 'host-offline') {
+        get().setLayerError('hub', undefined)
       }
-      if (s.selectedHostId) return
-      // First selection. 本机页面直连 capri-host 时 localHostId 有值：
-      // 优先选本机（API 走 isLocalDirect 近路），不要被上次调试留下的
-      // 远程 host（capri-fe.host）拐走——localhost 开发会表现为
-      //「连不上本地」。部署版前端没有 localHostId，仍按
-      // 记忆 → hub default → 在线 → 本机。
-      const localId = transport.getLocalHostId()
-      let saved: string | null = loadStr('capri-fe.host')
-      const pick =
-        (localId ? hosts.find((h) => h.hostId === localId) : undefined) ??
-        (saved ? hosts.find((h) => h.hostId === saved) : undefined) ??
-        hosts.find((h) => h.hostId === defaultHostId) ??
-        hosts.find((h) => h.online) ??
-        hosts.find((h) => h.local) ??
-        hosts[0]
-      if (pick) void get().switchHost(pick.hostId)
-    } catch {
-      /* ignore */
+      if (sel) return
+      // 当前 host 已被外部删除（另一标签页 unpair / hub 侧清理）：它不在
+      // 列表里，上面的离线横幅分支根本不会触发，不清掉选择就会一直顶着
+      // 一个不存在的 host、要手动刷页才能恢复。落回下方重新挑选。
+      removeKey('capri-fe.host')
+      set({ selectedHostId: undefined })
+      // 一台都不剩时没有可连的 host（下面也挑不出 pick），整份落到空状态；
+      // 还有别的 host 时交给 switchHost 自己做全套视图复位。
+      if (hosts.length === 0) {
+        set({ hostId: undefined, hostName: undefined })
+        get().resetToEmpty()
+      }
     }
-  },
+    // First selection. 本机优先只给「页面本身就跑在本机 host 上」的场景
+    // （内嵌前端 / Vite 代理，localBase 为空）——那里残留的远程
+    // capri-fe.host 会把 localhost 调试拐成「连不上本地」。远程站探测出的
+    // 127.0.0.1 近路（localBase 非空）只是一条加速通路，不该盖掉用户在这
+    // 个 origin 上显式选过的 host，否则永远回到本机、切不到 Hub 中继节点。
+    // hub 尚未下发 port / 首次心跳前可能还没发现本机：有 port 时再探一次。
+    if (
+      transport.getConnectionMode() === 'hub' &&
+      !transport.getLocalHostId() &&
+      hosts.some((h) => typeof h.port === 'number' && h.port > 0)
+    ) {
+      await transport.discoverLocalHost(hosts)
+    }
+    const localId = transport.getLocalHostId()
+    const local = localId ? hosts.find((h) => h.hostId === localId) : undefined
+    const saved = loadStr('capri-fe.host')
+    const remembered = saved ? hosts.find((h) => h.hostId === saved) : undefined
+    const first = transport.getLocalBase()
+      ? remembered?.online
+        ? remembered
+        : local
+      : local
+    const pick =
+      first ??
+      remembered ??
+      hosts.find((h) => h.hostId === defaultHostId) ??
+      hosts.find((h) => h.online) ??
+      hosts.find((h) => h.local) ??
+      hosts[0]
+    if (pick) void get().switchHost(pick.hostId)
+  }
+
+  return {
+    refreshHosts: async (snap?: { hosts: HostInfo[]; defaultHostId?: string }) => {
+      try {
+        const { hosts, defaultHostId } = snap ?? (await transport.listHosts())
+        await applyHostRegistry(hosts, defaultHostId)
+      } catch {
+        /* ignore */
+      }
+    },
 
   switchHost: async (hostId) => {
     // 本地模式锁定本机：host 切换只在 hub 模式有效（也不写
@@ -273,6 +311,13 @@ export function hostActions(set: SetState, get: () => ChatState) {
   },
 
   setModel: async (modelId, reasoningEffort) => {
+    // 会话未锚定（空状态 / 切换窗口期）时拒绝切换：请求不带 sessionId
+    // 会被 host 落到它自身的 active 会话（可能不是当前视图），切换因此
+    // 失去会话隔离。提示先开始/恢复会话。
+    if (!get().sessionId) {
+      pushToast('请先开始或恢复一个会话，再切换模型')
+      return
+    }
     const prevName = get().modelName
     const prevEffort = get().reasoningEffort
     try {

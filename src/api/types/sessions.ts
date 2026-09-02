@@ -13,6 +13,11 @@ export type HostInfo = {
   local?: boolean
   /** Hub registry liveness timestamp (hub mode). */
   lastSeen?: string
+  /**
+   * Host's local HTTP listen port (hub registry). Remote FE probes
+   * `http://127.0.0.1:<port>` for a same-machine shortcut.
+   */
+  port?: number
 }
 
 /** Per-session todo status (hub-persisted UI prefs; absence = no record). */

@@ -5,17 +5,21 @@ import { useChatStore } from '../store/chat'
 import { usePromptQueue } from '../store/promptQueue'
 import { useThemeStore } from '../store/theme'
 
+const getLocalHostId = vi.fn((): string | null => null)
+
 vi.mock('../api/client', () => ({
   transport: {
     onEvent: () => () => {},
     listSessions: vi.fn(async () => ({ sessions: [] })),
     pairingCode: vi.fn(async () => ({ code: 'PAIR-CODE-123', ttl: 300 })),
     getHubUrl: vi.fn(() => ''),
+    getLocalHostId: () => getLocalHostId(),
     sessionSearch: vi.fn(async () => ({ results: [] })),
   },
 }))
 
 function resetChat(over: Record<string, unknown> = {}) {
+  getLocalHostId.mockReturnValue(null)
   useChatStore.setState({
     hostName: '',
     hostId: '',
@@ -176,9 +180,31 @@ describe('TopBar', () => {
     render(<TopBar />)
     fireEvent.click(screen.getByTitle(/右键可管理/))
     expect(screen.getByText('hosts')).not.toBeNull()
-    // 切换 host
-    fireEvent.click(screen.getByTitle('切换到 MyHost（右键可管理）'))
+    // 切换 host（title 带通路提示）
+    fireEvent.click(screen.getByTitle(/切换到 MyHost（.*右键可管理）/))
     expect(useChatStore.getState().switchHost).toHaveBeenCalledWith('h1')
+  })
+
+  it('host 列表行标记本机 / Hub 通路', () => {
+    getLocalHostId.mockReturnValue('h1')
+    resetChat({
+      mode: 'hub',
+      hostName: 'H1',
+      selectedHostId: 'h1',
+      hosts: [
+        { hostId: 'h1', hostName: 'H1', online: true },
+        { hostId: 'h2', hostName: 'H2', online: true },
+      ],
+      conn: 'ready',
+    })
+    // resetChat 会把 getLocalHostId 清回 null，测本机标记前再设一次
+    getLocalHostId.mockReturnValue('h1')
+    render(<TopBar />)
+    fireEvent.click(screen.getByTitle(/右键可管理/))
+    expect(screen.getByText('本机')).not.toBeNull()
+    expect(screen.getByText('Hub')).not.toBeNull()
+    expect(screen.getByTitle(/直连本机 127\.0\.0\.1/)).not.toBeNull()
+    expect(screen.getByTitle(/经 Hub 中继/)).not.toBeNull()
   })
 
   it('host 列表行显示实时状态（思考中/待处理/启动中/空闲）', () => {

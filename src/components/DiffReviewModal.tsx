@@ -231,6 +231,13 @@ export function DiffReviewModal() {
     return () => window.removeEventListener('keydown', onKey, true)
   }, [visible, req, dismissXai, closeDiffReview])
 
+  // 弹窗打开 = 要把这些改动摊开看：滚动区里被 lite 裁掉正文的 edit 工具行
+  // 在这里一次补回（同区间只拉一次；非 lite 场景 no-op、不发请求）。
+  useEffect(() => {
+    if (!visible) return
+    void useChatStore.getState().fillLiteToolBodies({ editOnly: true })
+  }, [visible])
+
   if (!visible) return null
 
   const close = () => {

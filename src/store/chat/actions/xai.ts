@@ -5,6 +5,7 @@ import { nid } from '../ids'
 import { appendEntry } from '../entries'
 import { scheduledTaskDeletedText } from '../tasks'
 import { INITIAL_TURNS } from '../history'
+import { noteHistoryProjection } from '../historyFill'
 import { pushToast } from '../../toast'
 
 /**
@@ -69,9 +70,15 @@ async function waitRewindAligned(
     }
     if (get().sessionId !== sessionId || get().cwd !== cwd) return false
     try {
+      // 探针只要 promptStarts（回合起点索引），恒传 detail=meta：与 lite
+      // 开关无关——没有工具正文可拉，整页 updates 是纯浪费。旧 host 不认识
+      // 该档 → 回 full 页 + 不回 projected，顺手把这个 host 标记为不支持
+      // 投影（lite 就此停用）。
       const page = await transport.loadSessionHistory(sessionId, cwd, {
         turnIndex: INITIAL_TURNS,
+        detail: 'meta',
       })
+      noteHistoryProjection(get, true, page)
       const ps = page.promptStarts
       if (ps == null || ps.length <= target) return true
     } catch {
@@ -404,8 +411,13 @@ export function xaiActions(set: SetState, get: () => ChatState) {
       set({ statusText: '回退失败: 无活动会话' })
       return undefined
     }
+    const stillCurrent = () =>
+      get().sessionId === s.sessionId && get().cwd === s.cwd
     try {
       const r = await transport.rewindExecute(s.sessionId, targetIndex, mode)
+      // 请求期间已切换会话/Host：这份结果只属于发起时的会话，绝不写进
+      // 当前视图（状态行、草稿、截断、重载全部跳过）。
+      if (!stillCurrent()) return r
       set({
         statusText: `已回退到索引 ${targetIndex}${
           mode === 'all' ? '（含文件）' : ''
@@ -425,8 +437,6 @@ export function xaiActions(set: SetState, get: () => ChatState) {
       // 出来），且标记落盘后没有 live 事件通知前端再刷新。本地截断
       // 让显示立即正确、不依赖磁盘；随后只在对齐（host 历史视图已
       // 按标记截断）后才全量重载收敛状态，过期页绝不覆盖本地截断。
-      const stillCurrent = () =>
-        get().sessionId === s.sessionId && get().cwd === s.cwd
       const target = r.targetPromptIndex
       if (target != null && stillCurrent()) {
         truncateEntriesTo(target, set, get)
@@ -439,7 +449,8 @@ export function xaiActions(set: SetState, get: () => ChatState) {
         // the loadHistory reset (which clears per-session state).
         const keep = get().scheduledTasks
         await get().loadHistory(s.sessionId, s.cwd)
-        if (keep.length > 0) set({ scheduledTasks: keep })
+        // 重载期间可能已切走：旧会话的调度任务不能塞进新视图。
+        if (keep.length > 0 && stillCurrent()) set({ scheduledTasks: keep })
       } else if (aligned === false && stillCurrent()) {
         // 重试窗口内标记仍未落盘（或该会话走 agent 透传、宿主不过滤）：
         // 保留本地截断视图，不拿过期页覆盖；重进会话后显示完整回退结果。
@@ -454,9 +465,15 @@ export function xaiActions(set: SetState, get: () => ChatState) {
       return r
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      set({
-        entries: [...get().entries, { id: nid(), kind: 'error', text: `回退失败: ${msg}` }],
-      })
+      // 错误行只属于发起回退的那个会话；throw 照旧（picker 要渲染失败原因）。
+      if (stillCurrent()) {
+        set({
+          entries: [
+            ...get().entries,
+            { id: nid(), kind: 'error', text: `回退失败: ${msg}` },
+          ],
+        })
+      }
       throw e
     }
   },
