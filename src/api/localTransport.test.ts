@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
 import { LocalTransport } from './localTransport'
-import { clearHostRegistryHandoff } from './rpc/hosts'
+import { clearHostRegistryHandoff, rememberHostRegistry } from './rpc/hosts'
 import type { HubPrefsDoc } from './types'
 
 /** 注册表交接快照是模块级缓存（按 URL 键）：每个用例前清一次，否则上一条
@@ -473,6 +473,74 @@ describe('discoverLocalHost', () => {
     expect(t.isLocalDirect()).toBe(true)
     await t.discoverLocalHost([{ hostId: 'mbp', port: 8765 }])
     expect(t.getLocalRoute('mba')).toBeNull()
+  })
+
+  it('无参 discoverLocalHost 吃注册表交接快照，不再多问一次 hub /api/hosts', async () => {
+    const t = makeTransport()
+    stubEventSource()
+    t.setConnectionMode('hub', 'https://hub.example')
+    // detectMode / probeAccess 刚问过的那个 URL 的同一份应答
+    rememberHostRegistry('https://hub.example/api/hosts', {
+      hosts: [{ hostId: 'mba', hostName: 'mba', online: true, port: 8765 }],
+    })
+    const asked: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo) => {
+        const url = String(input)
+        asked.push(url)
+        if (url.includes('127.0.0.1:8765/api/hosts')) {
+          return new Response(JSON.stringify(hostBody('mba')), { status: 200 })
+        }
+        return new Response(JSON.stringify({ hosts: [] }), { status: 200 })
+      }),
+    )
+    expect(await t.discoverLocalHost()).toBe('mba')
+    expect(asked.filter((u) => u === 'https://hub.example/api/hosts')).toHaveLength(0)
+    expect(asked.some((u) => u.includes('127.0.0.1:8765'))).toBe(true)
+    expect(t.getLocalRoute('mba')?.base).toBe('http://127.0.0.1:8765')
+  })
+
+  it('端口探不到（浏览器拒绝本地网络访问 / 无服务）→ 冷却期内不再撞第二次', async () => {
+    const t = makeTransport()
+    stubEventSource()
+    t.setConnectionMode('hub', 'https://hub.example')
+    const probed: number[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo) => {
+        const url = String(input)
+        const m = /^http:\/\/127\.0\.0\.1:(\d+)\/api\/hosts$/.exec(url)
+        if (m) {
+          probed.push(Number(m[1]))
+          throw new TypeError('Failed to fetch')
+        }
+        return new Response(
+          JSON.stringify({
+            hosts: [
+              { hostId: 'mba', hostName: 'mba', online: true, port: 8765 },
+              { hostId: 'mbp', hostName: 'mbp', online: true, port: 8767 },
+            ],
+          }),
+          { status: 200 },
+        )
+      }),
+    )
+    await t.discoverLocalHost([
+      { hostId: 'mba', port: 8765, online: true },
+      { hostId: 'mbp', port: 8767, online: true },
+    ])
+    expect(probed).toEqual([8765, 8767])
+    t.setHost('mba')
+    await t.verifyLocalRoute('mba')
+    // 两个端口都刚探不到 → 进冷却，切 host 的定点验证不再撞
+    expect(probed).toEqual([8765, 8767])
+    expect(t.isLocalDirect()).toBe(false)
+    expect(t.apiUrl('/api/sessions')).toBe('https://hub.example/api/sessions?host=mba')
+    t.setHost('mbp')
+    await t.verifyLocalRoute('mbp')
+    expect(probed).toEqual([8765, 8767])
+    expect(t.isLocalDirect()).toBe(false)
   })
 })
 

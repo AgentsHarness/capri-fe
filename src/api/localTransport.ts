@@ -3,7 +3,7 @@ import { loadStr, removeKey, saveStr } from '../lib/storage'
 import type { TransportHandler, TransportMode } from './transport'
 import { EventSequencer, type SequencedEvent } from './liveSequencing'
 import { rpcMixins } from './rpc/mixins'
-import { clearHostRegistryHandoff, rememberHostRegistry } from './rpc/hosts'
+import { clearHostRegistryHandoff, rememberHostRegistry, takeHostRegistry } from './rpc/hosts'
 
 
 function resolveAccessToken(): string {
@@ -370,6 +370,14 @@ export class LocalTransport {
       // 已验证的身份继续用（那是它自己在 /api/hosts 里报的）。
       if (!port) return
       if (cur && cur.port === port) return // 已验证且端口没变
+      // 这个端口刚探不到（没服务 / 浏览器拒绝了本地网络访问）→ 冷却期内不再
+      // 撞第二次：切来切去只是多刷几条控制台错误。与 discoverLocalHost 共用
+      // 同一套 LOCAL_PROBE_RETRY_MS 冷却，过期后照常重探。
+      if (this.probeSkipped(port)) {
+        if (cur) this.localRoutes.delete(hostId)
+        this.syncLocalSSE()
+        return
+      }
       const hit = await this.probeLocalPort(port)
       if (hit?.hostId === hostId) {
         this.localRoutes.set(hostId, {
@@ -379,8 +387,11 @@ export class LocalTransport {
         })
         this.probeFailedAt.delete(port)
         if (this.selectedHostId === hostId) this.localAuthRequired = hit.authRequired
-      } else if (cur) {
-        this.localRoutes.delete(hostId)
+      } else {
+        // 应答者为空 = 端口上没服务 / 被浏览器拒绝：进冷却。应答者是别的
+        // host 时不冷却（那是有人在答，下一次心跳的端口变更仍要立刻看清）。
+        if (!hit) this.probeFailedAt.set(port, Date.now())
+        if (cur) this.localRoutes.delete(hostId)
       }
       // 近路可能刚建立 / 刚作废：本机 SSE 那一路要跟着开关。
       this.syncLocalSSE()
@@ -410,15 +421,31 @@ export class LocalTransport {
 
     let list = hosts
     if (!list) {
-      try {
-        const res = await this.fetch(`${this.apiBase()}/api/hosts`, {}, { hubLevel: true })
-        if (!res.ok) return this.getLocalHostId()
-        const data = (await res.json().catch(() => ({}))) as {
-          hosts?: Array<{ hostId: string; port?: number; online?: boolean }>
+      const url = `${this.apiBase()}/api/hosts`
+      // 先吃注册表交接快照：detectMode / probeAccess / listHosts 问的就是这个
+      // URL 的同一份数据，这里再发一次纯属白跑一趟 hub 往返。
+      const handed = takeHostRegistry(url)
+      if (handed) {
+        list = handed.hosts
+      } else {
+        try {
+          const res = await this.fetch(url, {}, { hubLevel: true })
+          if (!res.ok) return this.getLocalHostId()
+          const data = (await res.json().catch(() => ({}))) as {
+            hosts?: HostInfo[]
+            defaultHostId?: string
+            authRequired?: boolean
+          }
+          const rows = data.hosts ?? []
+          list = rows
+          rememberHostRegistry(url, {
+            hosts: rows,
+            defaultHostId: data.defaultHostId,
+            authRequired: data.authRequired,
+          })
+        } catch {
+          return this.getLocalHostId()
         }
-        list = data.hosts ?? []
-      } catch {
-        return this.getLocalHostId()
       }
     }
 
