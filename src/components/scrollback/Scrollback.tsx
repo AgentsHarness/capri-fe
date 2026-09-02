@@ -1,6 +1,5 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ScrollEntry } from '../../api/types'
-import { userMessagePreview } from '../../format'
 import { useChatStore } from '../../store/chat'
 import {
   displayRowKey,
@@ -8,6 +7,7 @@ import {
   spanContaining,
   type DisplayRow,
 } from '../../scrollback/verbGroup'
+import { buildUserNavItems } from '../../scrollback/userNav'
 import { SelectionBox } from '../SelectionBox'
 import { SPINNER_FRAMES } from '../../theme/glyphs'
 import { COLUMN_PAD_X_CLASS, CONTENT_COLUMN_CLASS } from '../../theme/layout'
@@ -188,12 +188,16 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
   // historyLoadedAt: 贴底后立刻量钉选（与 scroll 同帧，避免 rAF 读到旧 scrollTop）。
   const handledPrependedAtRef = useRef(0)
   const handledLoadedAtRef = useRef(0)
+  const historyJumpSeq = useChatStore((s) => s.historyJumpSeq)
   useLayoutEffect(() => {
     if (
       historyPrependedAt &&
       handledPrependedAtRef.current !== historyPrependedAt
     ) {
       handledPrependedAtRef.current = historyPrependedAt
+      // 目录跳转批量翻页：prepend 不做任何视口恢复/锚定（终点是目标轮，
+      // 恢复机制会在跳转滚动落地后把视口拉回原处）。
+      if (historyJumpSeq != null) return
       const mode = pagingModeRef.current
       pagingModeRef.current = 'keep'
       revealPrependedTurn(historyAnchorId, mode)
@@ -272,27 +276,34 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
 
   // User-message directory rail (TUI timeline). Active tick is independent
   // of sticky pin (updateNavActive): nearest user at the readable top.
-  const userNavItems = useMemo((): UserMessageNavItem[] => {
-    const out: UserMessageNavItem[] = []
-    let turnIdx = 0
-    for (const e of entries) {
-      if (e.kind !== 'user') continue
-      out.push({
-        id: e.id,
-        preview: userMessagePreview(e.text),
-        turnIdx: turnIdx++,
-      })
-    }
-    return out
-  }, [entries])
+  // 全量目录：host 的 promptStarts+promptPreviews 补齐未加载轮（序号与渲染
+  // 行一致）；缺省（旧 host / 透传路径）退回只列已加载轮。
+  const historyPromptStarts = useChatStore((s) => s.historyPromptStarts)
+  const historyPromptPreviews = useChatStore((s) => s.historyPromptPreviews)
+  const jumpToPrompt = useChatStore((s) => s.jumpToPrompt)
+  const userNavItems = useMemo(
+    (): UserMessageNavItem[] =>
+      buildUserNavItems(entries, historyPromptStarts, historyPromptPreviews),
+    [entries, historyPromptStarts, historyPromptPreviews],
+  )
   const onUserNavJump = useCallback(
-    (id: string) => {
-      // jump already aligns under the bar; skip the selection scroll effect.
-      skipSelectScrollRef.current = true
-      selectEntry(id)
-      jumpToUserEntry(id)
+    async (item: UserMessageNavItem) => {
+      const jumpTo = (id: string | null) => {
+        if (!id) return
+        // jump already aligns under the bar; skip the selection scroll effect.
+        skipSelectScrollRef.current = true
+        selectEntry(id)
+        jumpToUserEntry(id)
+      }
+      if (item.loaded) {
+        jumpTo(item.id)
+        return
+      }
+      // 未加载轮：先循环加载该轮及之后全部内容，加载完成滚到目标。
+      if (item.seq == null) return
+      jumpTo(await jumpToPrompt(item.seq))
     },
-    [selectEntry, jumpToUserEntry],
+    [selectEntry, jumpToUserEntry, jumpToPrompt],
   )
 
   return (

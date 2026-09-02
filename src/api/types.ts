@@ -6,6 +6,8 @@ export type {
   ContentBlock,
   FePrefsDoc,
   HubPrefsDoc,
+  PrefsEntries,
+  PrefsEntry,
   Toast,
   TodoStatus,
 } from './types/core'

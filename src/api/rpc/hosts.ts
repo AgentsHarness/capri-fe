@@ -251,13 +251,15 @@ export const hostsRpc = {
    * baseVersion（新 hub）使写入成为条件写：版本过旧时 hub 回 409 +
    * 当前文档（抛 PrefsConflictError，调用方重放待推操作后重试）；
    * 不带 baseVersion 为无条件写（旧 hub / 旧 FE 兼容）。成功响应带
-   * 新版本。
+   * 新版本；prefs 文档带 entries 时 hub 按条目**合并**（不比对 base，回
+   * 合并后的权威文档），不带 entries 时仍是整份替换 —— 旧 FE 与旧 hub
+   * 都不受影响。响应里的 prefs 即合并后的权威文档（旧 hub 不回）。
    */
   async putPrefs(
     this: TransportCore,
     prefs: HubPrefsDoc,
     baseVersion?: number,
-  ): Promise<{ version?: number }> {
+  ): Promise<{ version?: number; prefs?: HubPrefsDoc }> {
     const origin = this.prefsOrigin()
     if (!origin) throw new Error('仅 Hub 模式支持置顶/待办持久化')
     const body: Record<string, unknown> = { prefs }
@@ -295,6 +297,9 @@ export const hostsRpc = {
         typeof data.error === 'string' && data.error ? data.error : `prefs write failed (${res.status})`,
       )
     }
-    return { version: typeof data.version === 'number' ? data.version : undefined }
+    return {
+      version: typeof data.version === 'number' ? data.version : undefined,
+      prefs: data.prefs && typeof data.prefs === 'object' ? data.prefs : undefined,
+    }
   },
 }

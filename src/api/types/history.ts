@@ -40,6 +40,12 @@ export type SessionHistoryPage = {
   /** 所有 user 回合的起始行号索引（turnIndex 模式返回；导航/定位用）。 */
   promptStarts?: number[]
   /**
+   * 与 promptStarts 平行的每轮首行预览（用户消息目录用）：零信任解析，
+   * 只收纯字符串数组。仅 host 本地归一化路径提供；透传路径 / 旧 host
+   * 缺省 → 目录回退为「已加载轮才有预览」。
+   */
+  promptPreviews?: string[]
+  /**
    * /btw 侧问回放记录（host 本地归一化路径从 btw_history.jsonl 读出，
    * 按页窗口切片；agent 透传路径不带）。仅本地回放路径可用。
    */

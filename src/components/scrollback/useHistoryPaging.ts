@@ -83,6 +83,9 @@ export function useHistoryPaging(
     prevLoadingMoreRef.current = historyLoadingMore
     if (!was && historyLoadingMore) {
       prependedAtAtStartRef.current = historyPrependedAt
+      // 目录跳转的批量翻页：不捕捉位置锚点（终点是目标轮，锚点恢复会在
+      // 跳转滚动落地后把视口拉回原处）。
+      if (useChatStore.getState().historyJumpSeq != null) return
       ensureScrollPositionCaptured()
     }
   }, [ensureScrollPositionCaptured, historyLoadingMore, historyPrependedAt])

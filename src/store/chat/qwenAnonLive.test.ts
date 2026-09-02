@@ -118,3 +118,90 @@ describe('qwen 空 toolCallId：live 实时流回放同一会话', () => {
     expect(liveRows).toEqual(replayRows)
   })
 })
+
+/**
+ * 并发匿名调用**乱序**回来（真实形状取自会话 01a06312 首轮 msgSeq 16..21）：
+ * bash 与 grep 同时在跑，grep 的完成帧先到且不带 rawInput / command（算不出
+ * 内容指纹），bash 的完成帧后到。此前两条开放匿名行 + 无指纹完成帧只能靠
+ * FIFO 猜，正文要么进错行要么永久丢失；现在按 `rawOutput.type` 的工具族
+ * （GrepSearch / Bash / ReadFile / SearchReplace）归属。
+ */
+function interleavedEnvs(): unknown[] {
+  const T0 = 1_700_000_000_000
+  let n = 0
+  const env = (update: Record<string, unknown>) => {
+    const msgSeq = n++
+    return {
+      msgSeq,
+      timestamp: Math.floor(T0 / 1000) + msgSeq,
+      method: 'session/update',
+      params: {
+        sessionId: '01a058f4-1701-7e23-b11c-2b4c705610ae',
+        update: { toolCallId: '', ...update, _meta: { agentTimestampMs: T0 + msgSeq } },
+        _meta: { agentTimestampMs: T0 + msgSeq, turnStartMs: T0 },
+      },
+    }
+  }
+  return [
+    env({ sessionUpdate: 'user_message_chunk', content: { type: 'text', text: '并发跑' } }),
+    env({ sessionUpdate: 'tool_call', rawInput: { command: 'git branch' } }),
+    env({
+      sessionUpdate: 'tool_call_update',
+      kind: 'execute',
+      title: 'Execute `git branch`',
+      rawInput: { command: 'git branch' },
+    }),
+    env({ sessionUpdate: 'tool_call', rawInput: { path: 'src' } }),
+    env({
+      sessionUpdate: 'tool_call_update',
+      kind: 'search',
+      title: 'grep',
+      rawInput: { path: 'src' },
+    }),
+    env({
+      sessionUpdate: 'tool_call_update',
+      status: 'completed',
+      rawOutput: { type: 'GrepSearch', match_count: 2, stdout: 'GREP OUT' },
+    }),
+    env({
+      sessionUpdate: 'tool_call_update',
+      status: 'completed',
+      rawOutput: { type: 'Bash', command: 'git branch', output: 'BASH OUT' },
+    }),
+    env({ sessionUpdate: 'turn_completed', stop_reason: 'end_turn' }),
+  ]
+}
+
+describe('并发匿名调用乱序完成帧：live 与回放都按工具族归属', () => {
+  const rowsByKind = (entries: ScrollEntry[]) =>
+    entries
+      .filter((e): e is Extract<ScrollEntry, { kind: 'tool' }> => e.kind === 'tool')
+      .map((e) => ({
+        kindName: e.kindName,
+        status: e.status,
+        rawOutput: e.raw?.rawOutput as Record<string, unknown> | undefined,
+      }))
+
+  it('历史回放：grep 行拿 grep 正文，bash 行拿 bash 正文', () => {
+    const get = () => useChatStore.getState()
+    const replay = replayUpdates(get, interleavedEnvs())
+    const rows = rowsByKind(
+      sortEntriesByMsgSeq(applyEntryMsgSeq(settleTurnEntries(get().entries), replay.entryMsgSeq)),
+    )
+    const byKind = new Map(rows.map((r) => [r.kindName, r]))
+    expect(byKind.get('search')?.rawOutput?.stdout).toBe('GREP OUT')
+    expect(byKind.get('execute')?.rawOutput?.output).toBe('BASH OUT')
+    expect(rows.map((r) => r.status)).toEqual(['completed', 'completed'])
+  })
+
+  it('live 实时流：同一串事件产出同样的归属，且与回放逐行一致', () => {
+    for (const env of interleavedEnvs()) {
+      for (const ev of toLiveEvents(env as never)) useChatStore.getState().handleEvent(ev)
+    }
+    const rows = rowsByKind(useChatStore.getState().entries)
+    const byKind = new Map(rows.map((r) => [r.kindName, r]))
+    expect(byKind.get('search')?.rawOutput?.stdout).toBe('GREP OUT')
+    expect(byKind.get('execute')?.rawOutput?.output).toBe('BASH OUT')
+    expect(rows.map((r) => r.status)).toEqual(['completed', 'completed'])
+  })
+})

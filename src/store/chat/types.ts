@@ -234,6 +234,26 @@ export interface ChatHistoryState {
    * 缺失（旧宿主）时退化为按条数绝对 offset 分页。每次分页响应会刷新。
    */
   historyPromptStarts?: number[]
+  /**
+   * 与 historyPromptStarts 平行的每轮首行预览（用户消息目录）：来自 host
+   * 本地归一化路径的 promptPreviews，随每次分页响应刷新（与 promptStarts
+   * 同进退）。缺失（旧 host / 透传路径）→ 目录回退为只列已加载轮。
+   */
+  historyPromptPreviews?: string[]
+  /**
+   * 目录跳转加载在飞：目标轮 msgSeq（jumpToPrompt 循环期间的旗帜）。翻页的
+   * 位置恢复机制（锚点捕捉 / prepend settle）必须整体让路——跳转的终点是
+   * 目标轮而不是当前阅读位置，恢复会在跳转滚动落地后把视口拉回原处。
+   * 循环结束 / 中止时清空。
+   */
+  historyJumpSeq?: number
+  /**
+   * 目录跳转进度（与 historyJumpSeq 同生命周期）：current = 已加载到的轮
+   * 序号，total = 计划加载的轮序号（均为 1 起）。TopBar 的 lite 补全芯片
+   * 消费——跳转在飞显示「跳转 N/M」，落地后同一芯片无缝接「◇N 待补全」
+   * （跳转加载的页正是 lite→full 补全的来源）。
+   */
+  historyJumpProgress?: { current: number; total: number }
   /** historyPromptStarts 中「最老已加载轮次」的下标；每往前加载一轮减 1；0 = 无更早轮次。 */
   historyTurnIdx: number
   /**
@@ -911,6 +931,13 @@ export interface ChatActions {
    *  chainedPages：内部续翻计数（零 user 页自动续翻，见实现），调用方
    *  不传。 */
   loadMoreHistory: (anchorId?: string, chainedPages?: number) => Promise<void>
+  /**
+   * 目录跳转（用户消息目录点击未加载轮）：循环 loadMoreHistory 把目标轮次
+   * 及其之后的全部内容加载进来，返回目标轮 user 条目的 id（调用方滚动到位）；
+   * 目标已在已加载区时直接解析返回。null = 加载失败/中断（错误经
+   * historyLoadError 就地显示）或目标不存在。
+   */
+  jumpToPrompt: (seq: number) => Promise<string | null>
   /**
    * Replay the session's STILL-RUNNING tasks (host liveness probe of
    * updates.jsonl) into the top task strip (topTasks). Deliberately NO

@@ -10,6 +10,7 @@ import {
   loadHistory as loadSessionHistory,
   loadMoreHistory as loadOlderHistory,
 } from './sessionLoad'
+import { jumpToPrompt as doJumpToPrompt } from './jumpToPrompt'
 import { sendPrompt } from './send'
 import {
   fillEntryDetail,
@@ -69,6 +70,7 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
   historyHasMore: false,
   historyLoadingMore: false,
   historyPromptStarts: undefined,
+  historyPromptPreviews: undefined,
   historyTurnIdx: 0,
   pending: [],
   agentCommands: [],
@@ -253,6 +255,10 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
 
   loadMoreHistory: (anchorId, chainedPages) =>
     loadOlderHistory(set, get, anchorId, chainedPages),
+
+  // 目录跳转（用户消息目录点击未加载轮）：循环加载直到目标轮，返回目标
+  // 条目 id（滚动由 Scrollback 执行）。
+  jumpToPrompt: (seq) => doJumpToPrompt(set, get, seq),
 
   ...livePollActions(set, get),
   handleEvent: (ev) => handleChatEvent(set, get, ev),

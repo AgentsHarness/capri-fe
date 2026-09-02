@@ -262,6 +262,12 @@ export async function loadMoreHistory(
         r.promptStarts && r.promptStarts.length > 0
           ? r.promptStarts
           : s.historyPromptStarts
+      // 预览与 promptStarts 同进退：本页不带（旧 host / 透传路径）→ 保留
+      // 已有值；host 两条路径按会话内容稳定选择，不会出现 mix。
+      const promptPreviews =
+        r.promptPreviews && r.promptPreviews.length > 0
+          ? r.promptPreviews
+          : s.historyPromptPreviews
       // win 路径：游标减 1。offset 兜底（超长回合）保持原 turnIdx——
       // 绝不能用 loadedStart 反查提前跳到更早轮，否则会跳过长回合未加载前缀。
       // promptStarts 因 live 新回合 append 变长时，旧下标仍指向同一 start 行。
@@ -316,6 +322,7 @@ export async function loadMoreHistory(
           historyLoadedStart: newLoadedStart,
           historyHasMore: hasMore,
           historyPromptStarts: promptStarts,
+          historyPromptPreviews: promptPreviews,
           historyTurnIdx: nextTurnIdx,
           historyLoadError: undefined,
           historyPrependedAt: Date.now(),
@@ -340,6 +347,7 @@ export async function loadMoreHistory(
           historyLoadedStart: newLoadedStart,
           historyHasMore: hasMore,
           historyPromptStarts: promptStarts,
+          historyPromptPreviews: promptPreviews,
           historyTurnIdx: nextTurnIdx,
           historyLoadError: undefined,
           historyPrependedAt: Date.now(),

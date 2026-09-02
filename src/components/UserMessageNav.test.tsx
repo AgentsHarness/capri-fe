@@ -6,8 +6,10 @@ import { UserMessageNav, type UserMessageNavItem } from './UserMessageNav'
 function items(n: number): UserMessageNavItem[] {
   return Array.from({ length: n }, (_, i) => ({
     id: `m${i}`,
+    seq: i * 10,
     preview: `消息 ${i}`,
     turnIdx: i,
+    loaded: true,
   }))
 }
 
@@ -44,7 +46,7 @@ describe('UserMessageNav', () => {
     // 序号 = turnIdx + 1
     expect(screen.getByText('1')).not.toBeNull()
     fireEvent.click(screen.getByLabelText('跳转到消息 2：消息 1'))
-    expect(onJump).toHaveBeenCalledWith('m1')
+    expect(onJump).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1', loaded: true }))
     // 目录已收起（回到折叠轨道）
     expect(screen.getByLabelText('打开用户消息目录')).not.toBeNull()
   })
@@ -167,5 +169,23 @@ describe('UserMessageNav', () => {
     fireEvent.mouseEnter(row)
     fireEvent.mouseLeave(row)
     expect(screen.getByRole('list', { name: '用户消息目录' })).not.toBeNull()
+  })
+
+  it('未加载轮：带「未加载」标记，点击把整条目交给 onJump（含 seq）', () => {
+    const onJump = vi.fn()
+    const mixed: UserMessageNavItem[] = [
+      { id: 'prompt:0', seq: 0, preview: '最早一轮', turnIdx: 0, loaded: false },
+      { id: 'm1', seq: 10, preview: '已加载轮', turnIdx: 1, loaded: true },
+    ]
+    render(<UserMessageNav items={mixed} activeId={null} onJump={onJump} />)
+    fireEvent.click(screen.getByLabelText('打开用户消息目录'))
+    const unloadedRow = screen.getByLabelText('跳转到消息 1：最早一轮')
+    expect(unloadedRow.textContent).toContain('未加载')
+    // 已加载轮不带「未加载」标记
+    expect(screen.getByLabelText('跳转到消息 2：已加载轮').textContent).not.toContain('未加载')
+    fireEvent.click(unloadedRow)
+    expect(onJump).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'prompt:0', seq: 0, loaded: false }),
+    )
   })
 })

@@ -329,13 +329,32 @@ function goalTodoItems(
  *  - ◇N 后台补全还在排队（点一下 = 不等 idle，立刻发出）
  *  - ⠿N 正在拉（braille spinner，与 ⠋N 任务计数同一套帧）
  *  - ✗N 上一轮拉失败，转警告色；展开任意一行或点这里都会重试
+ *
+ * 目录跳转加载在飞（historyJumpProgress 非空）时，同一芯片显示
+ * 「跳转 N/M」——跳转加载的页正是补全的来源，落地后无缝切换回 ◇N 待补全：
+ * 整条「加载轮次 → lite→full 补全」链路在一个状态位呈现。
  */
 export function LiteFillChip() {
   const summary = useChatStore(liteFillSummary)
   const busy = useChatStore((s) => s.liteFillBusy ?? 0)
+  const jump = useChatStore((s) => s.historyJumpProgress)
   const [pending, loading, failed] = summary.split('.').map((n) => Number(n) || 0)
   const active = busy > 0 || loading > 0
-  const spinnerFrame = useSessionSpinner(active)
+  const spinnerFrame = useSessionSpinner(active || jump != null)
+  if (jump) {
+    return (
+      <span
+        className="shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-gray-dim"
+        title={`正在跳转到目标轮次 · 已加载到第 ${jump.current}/${jump.total} 轮`}
+        aria-label={`跳转中：第 ${jump.current}/${jump.total} 轮`}
+      >
+        <span className="mr-1 inline-block" aria-hidden>
+          {SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length]}
+        </span>
+        跳转 {jump.current}/{jump.total}
+      </span>
+    )
+  }
   if (!summary) return null
   const count = pending + loading + failed
   const glyph = active
