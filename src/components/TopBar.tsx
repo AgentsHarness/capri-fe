@@ -37,9 +37,9 @@ import {
   RestartAgentModal,
 } from './HostActions'
 
-/** Hub 模式下列表行的通路标记：能打 127.0.0.1 近路的是「本机」，其余经 Hub。 */
-function hostRouteLabel(hostId: string, localHostId: string | null): '本机' | 'Hub' {
-  return localHostId != null && hostId === localHostId ? '本机' : 'Hub'
+/** Hub 模式下列表行的通路标记：有已验证 127.0.0.1 近路的是「本机」，其余经 Hub。 */
+function hostRouteLabel(hasLocalRoute: boolean): '本机' | 'Hub' {
+  return hasLocalRoute ? '本机' : 'Hub'
 }
 
 /** 菜单打开位置边缘夹取：菜单宽 ~184px、高 ~80px，贴着视口边缘。 */
@@ -405,12 +405,13 @@ export function TopBar({
                   const state = hostState(h)
                   const stateLabel = hostStateLabel(state)
                   // 每次渲染读 transport：discoverLocalHost / refreshHosts 后
-                  // hosts 更新会带动重绘，通路标记随之刷新。
-                  const route = hostRouteLabel(h.hostId, transport.getLocalHostId())
-                  const routeHint =
-                    route === '本机'
-                      ? '选中后 API/SSE 直连本机 127.0.0.1'
-                      : '经 Hub 中继'
+                  // hosts 更新会带动重绘，通路标记随之刷新。近路是按 hostId 逐台
+                  // 验证的（同机可能有多台 host，也可能一台都没有）。
+                  const localRoute = transport.getLocalRoute(h.hostId)
+                  const route = hostRouteLabel(localRoute != null)
+                  const routeHint = localRoute
+                    ? `选中后 API/SSE 直连 ${localRoute.base || '本机'}`
+                    : '经 Hub 中继'
                   return (
                     <div
                       key={h.hostId}

@@ -1,4 +1,5 @@
 import { LocalTransport } from './localTransport'
+import type { LocalRoute } from './localTransport'
 import type { TransportHandler, TransportMode } from './transport'
 import type { AcpEvent } from './types'
 import type { RpcApi } from './rpc/mixins'
@@ -13,8 +14,13 @@ export type Transport = {
   prefsOrigin(): string
   setLocalHostId(hostId: string | null): void
   getLocalHostId(): string | null
-  setLocalBase(base: string): void
   getLocalBase(): string
+  /** 某台 host 已验证的本机近路（null = 只能走 hub 中继）。 */
+  getLocalRoute(hostId: string | null | undefined): LocalRoute | null
+  /** 选中 host 当前是否正走本机近路。 */
+  isLocalDirect(): boolean
+  /** 定点核对某台 host 的本机端口归属（已验证且端口没变则零请求）。 */
+  verifyLocalRoute(hostId: string): Promise<void>
   discoverLocalHost(
     hosts?: Array<{ hostId: string; port?: number; online?: boolean }>,
   ): Promise<string | null>
