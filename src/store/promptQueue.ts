@@ -66,7 +66,11 @@ import { pushToast } from './toast'
 
 export type QueuedPrompt = {
   id: string
-  /** Display text (paste chips expanded; `[Image: …]` labels retained). */
+  /**
+   * Display text. Paste chips are expanded; image-only prompts carry the
+   * joined `[Image: …]` labels as a display fallback (the wire blocks
+   * hold the real images, never label text).
+   */
   text: string
   /** Full prompt blocks — text block first, image blocks in chip order. */
   blocks: ContentBlock[]

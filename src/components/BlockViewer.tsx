@@ -32,6 +32,7 @@ import { Accents } from '../theme/accents'
 import { toolHeaderExtra } from '../scrollback/toolHeaderExtra'
 import { mergeLiveText } from '../scrollback/liveText'
 import { useSessionSpinner } from '../hooks/sessionState'
+import { useStickToBottom } from '../hooks/useStickToBottom'
 import {
   EntryView,
   GroupHeaderView,
@@ -147,15 +148,20 @@ export function BlockViewer() {
     return () => window.clearInterval(t)
   }, [bgTaskId, bgTaskSessionId, bgTaskCwd, refreshTaskOutput])
 
-  // Stick to bottom while a running bg_task streams new output.
-  const bgOutputLen =
-    active?.kind === 'bg_task' ? (active.output?.length ?? 0) : 0
-  const bgRunning = active?.kind === 'bg_task' ? !!active.running : false
-  useEffect(() => {
-    if (!bgRunning) return
-    const el = bodyScrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [bgRunning, bgOutputLen])
+  // Follow the tail while content keeps arriving (streaming thought /
+  // assistant text, live bg_task stdout): pinned at the bottom the view
+  // tracks growth; scrolled up it stays put until the user returns.
+  // Subagent rows scroll inside SubagentView, which has its own follow.
+  const bodyKind = active?.kind
+  const bodyScrollable = bodyKind !== undefined && bodyKind !== 'subagent'
+  const liveLogTail = active?.kind === 'bg_task' && !!active.running
+  const { onScroll: onBodyScroll } = useStickToBottom(bodyScrollRef, {
+    enabled: bodyScrollable,
+    // A running bg_task is a live log — open on its tail, then follow the
+    // user's lead. Everything else opens at the top, disarmed.
+    initialFollowing: liveLogTail,
+    resetKey: viewerId ?? taskView?.taskId ?? null,
+  })
 
   if ((!viewerId || !entry) && !taskView) return null
   if (!active) return null
@@ -241,6 +247,7 @@ export function BlockViewer() {
             SubagentView 内部布局负责），时间线自身占满剩余区域滚动。 */}
         <div
           ref={bodyScrollRef}
+          onScroll={onBodyScroll}
           className={
             active.kind === 'subagent'
               ? 'min-h-0 flex-1 overflow-hidden'

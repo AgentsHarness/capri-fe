@@ -16,6 +16,8 @@ export function useFollowScroll(
   lastScrollTopRef: MutableRefObject<number>,
   streamBodyRef: MutableRefObject<HTMLDivElement | null>,
   scheduleUpdatePinned: () => void,
+  /** 历史翻页锚点看门狗：内容变高时把视口拉回正在读的那一行。 */
+  settleScrollAnchor: () => void,
   entries: ScrollEntry[],
   displayRowCount: number,
 ) {
@@ -68,11 +70,22 @@ export function useFollowScroll(
     if (!content || typeof ResizeObserver === 'undefined') return
     const ro = new ResizeObserver(() => {
       if (followRef.current) scrollToBottom(true)
-      else scheduleUpdatePinned()
+      else {
+        // prepend 后晚到的撑高（图片解码 / mermaid / 长 markdown）会二次挪
+        // 动视口；看门狗窗口内按同一行锚点拉回，窗口外什么都不做。
+        settleScrollAnchor()
+        scheduleUpdatePinned()
+      }
     })
     ro.observe(content)
     return () => ro.disconnect()
-  }, [contentRef, followRef, scheduleUpdatePinned, scrollToBottom])
+  }, [
+    contentRef,
+    followRef,
+    scheduleUpdatePinned,
+    scrollToBottom,
+    settleScrollAnchor,
+  ])
   // 发送消息（新的 user 行落到末尾，含 `!` 直执行）→ 视口跳回最新位置。
   // TUI [ui] page_flip_on_send（默认 true）：把刚发的 prompt 钉到视口
   // 顶部，响应从新的一页开始；false 时直接回到底部。只看 id 变化，历史

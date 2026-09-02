@@ -7,20 +7,20 @@ export const CHIP_MIN_LINES = 4 // TUI: 4, or 2 in compact mode (web has none)
 export const CHIP_DISPLAY_BYTES = 10_000
 
 /**
- * Paste chip = text paste chip; image chip = pasted/dropped image behind
- * an `[Image: <name>]` label. Both share the same atomic-label mechanics
- * (prune / caret clamp / whole-chip delete / Enter expand); image chips
- * expand to an inline thumbnail instead of text, and their data leaves
- * as an image ContentBlock on submit.
+ * Paste chip = text paste chip; image chip = pasted/dropped image shown
+ * as an always-expanded thumbnail above the textarea. Text chips share
+ * the atomic-label mechanics (prune / caret clamp / whole-chip delete /
+ * Enter expand); image chips are NOT text-anchored — no `[Image: …]`
+ * label ever enters the buffer, their label is a display fallback only
+ * (queue row text), and their data leaves as image ContentBlocks on
+ * submit.
  */
 export type PasteChip = {
   id: string
   label: string
   content: string
-  /** Image chip: label stays in the text; data goes out as an image block. */
+  /** Image chip: data goes out as an image block; no label in the buffer. */
   image?: { data: string; mimeType: string; name: string; size: number }
-  /** Image chip inline thumbnail expanded (Enter / double-click). */
-  expanded?: boolean
 }
 
 /** ── Image chips (paste / drop) ────────────────────────────────────── */
@@ -82,7 +82,8 @@ export function pasteChipLabel(cleaned: string): string {
   return `[Pasted: ${n} line${n === 1 ? '' : 's'}]`
 }
 
-/** Text range of the chip occurrence containing `pos` (or ending at it). */
+/** Text range of the chip occurrence containing `pos` (or ending at it).
+ *  Image chips are not text-anchored and can never match. */
 export function chipOccurrenceAt(
   text: string,
   chips: PasteChip[],
@@ -90,6 +91,7 @@ export function chipOccurrenceAt(
   mode: 'inside' | 'end',
 ): { chip: PasteChip; start: number; end: number } | null {
   for (const chip of chips) {
+    if (chip.image) continue
     let from = 0
     for (;;) {
       const start = text.indexOf(chip.label, from)
@@ -114,6 +116,7 @@ export function chipOccurrenceAtCaret(
   pos: number,
 ): { chip: PasteChip; start: number; end: number } | null {
   for (const chip of chips) {
+    if (chip.image) continue
     let from = 0
     for (;;) {
       const start = text.indexOf(chip.label, from)
@@ -126,9 +129,9 @@ export function chipOccurrenceAtCaret(
   return null
 }
 
-/** Expand every chip into its stashed content (submit path).
- *  Image chips keep their `[Image: …]` label in the text — the image
- *  itself travels as a ContentBlock, so the label must survive. */
+/** Expand every text chip into its stashed content (submit path).
+ *  Image chips never occupy text (no `[Image: …]` label in the buffer)
+ *  — their data travels as ContentBlocks, so they are skipped here. */
 export function expandChips(text: string, chips: PasteChip[]): string {
   let out = text
   for (const chip of chips) {
@@ -142,14 +145,20 @@ export function expandChips(text: string, chips: PasteChip[]): string {
 }
 
 /**
- * Drop chips whose label no longer appears in the text (user edits).
+ * Drop text chips whose label no longer appears in the text (user edits).
  * Occurrences are paired to chips in insertion order so a paste-then-edit
- * never leaves a stale chip that hijacks a later identical label.
+ * never leaves a stale chip that hijacks a later identical label. Image
+ * chips are not text-anchored — they always survive edits and are
+ * removed via the thumbnail row's X button.
  */
 export function pruneChips(text: string, chips: PasteChip[]): PasteChip[] {
   const kept: PasteChip[] = []
   let pos = 0
   for (const chip of chips) {
+    if (chip.image) {
+      kept.push(chip)
+      continue
+    }
     const idx = text.indexOf(chip.label, pos)
     if (idx === -1) continue
     kept.push(chip)

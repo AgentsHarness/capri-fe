@@ -47,6 +47,8 @@ export function EntryShell({
    */
   bandBg,
   onFold,
+  /** 关闭本行的 hover/选中框（图片画廊组：框由组容器统一绘制，横跨滚动区宽度）。 */
+  noFrame = false,
 }: {
   e: ScrollEntry
   selected: boolean
@@ -63,6 +65,8 @@ export function EntryShell({
   bandBg?: string
   /** 整块单击折叠（标题行之外的正文/留白同样生效）。 */
   onFold?: () => void
+  /** 关闭本行的 hover/选中框（图片画廊组：框由组容器统一绘制）。 */
+  noFrame?: boolean
 }) {
   // Accent color follows hover/selected; height follows content only.
   const opts = accentOpts(e, selected, pendingFreeze, now, hovered, inGroup)
@@ -133,7 +137,7 @@ export function EntryShell({
               : undefined,
       }}
     >
-      {showFrame && (
+      {showFrame && !noFrame && (
         // Taller frame (OUTSET_Y) wraps the block; accent centers in 选区.
         <SelectionBox variant={frameVariant} />
       )}
