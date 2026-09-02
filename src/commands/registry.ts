@@ -22,6 +22,7 @@ import { slashRecencyScore } from './recency'
 import { cachedSkills } from './skills'
 import { fmtBytes } from '../format'
 import { renderTranscript, safeExportFilename } from '../lib/exportTranscript'
+import { KEY } from '../lib/keys'
 
 export type SlashCommand = {
   name: string
@@ -57,7 +58,7 @@ function status(text: string) {
 // Persisted in localStorage; the composer reads it on every Enter to
 // decide Enter/Shift+Enter semantics (off = Enter sends, on = Enter
 // inserts a newline). Default off.
-const MULTILINE_KEY = 'acpfe.multiline'
+const MULTILINE_KEY = KEY.multiline
 
 export function isMultilineEnabled(): boolean {
   return loadBool(MULTILINE_KEY, false)

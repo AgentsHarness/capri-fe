@@ -48,7 +48,7 @@ describe('本地置顶/待办', () => {
   it('toggleWorkspacePin 往返并持久化 localStorage', () => {
     usePins.getState().toggleWorkspacePin('/w/1')
     expect(usePins.getState().pinnedWorkspaces.has('/w/1')).toBe(true)
-    const raw = window.localStorage.getItem('acpfe.historyPins')
+    const raw = window.localStorage.getItem('capri-fe.historyPins')
     expect(JSON.parse(raw ?? '{}').pinnedWorkspaces).toEqual(['/w/1'])
     usePins.getState().toggleWorkspacePin('/w/1')
     expect(usePins.getState().pinnedWorkspaces.has('/w/1')).toBe(false)

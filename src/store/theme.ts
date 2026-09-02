@@ -3,8 +3,9 @@ import { create } from 'zustand'
 import type { ThemeId } from '../theme/tokens'
 import { applyTokens } from '../theme/tokens'
 import { THEMES, getTheme, resolveThemeId } from '../theme/palettes'
+import { KEY } from '../lib/keys'
 
-const STORAGE_KEY = 'capri-fe.theme'
+const STORAGE_KEY = KEY.theme
 
 type ThemeState = {
   /** User preference (may be "auto") */

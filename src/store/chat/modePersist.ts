@@ -9,11 +9,12 @@ import { transport } from '../../api/client'
 import { ensureUiSettings, refreshUiSettings, uiBool, uiSettingsLoaded } from '../settings'
 import { isEditToolKind } from '../../theme/toolFamily'
 import type { ChatState, ModeFlags, SetState } from './types'
+import { KEY } from '../../lib/keys'
 
 /** Global permission-mode flags (single object, all sessions share it). */
-export const MODE_FLAGS_KEY = 'acpfe.modeFlags'
+export const MODE_FLAGS_KEY = KEY.modeFlags
 /** Per-session plan-mode copies (replay/current_mode_update is the authority). */
-export const PLAN_FLAGS_KEY = 'acpfe.planModes'
+export const PLAN_FLAGS_KEY = KEY.planModes
 
 /**
  * Normalize mode flags for persistence: only a confirmed non-ask write
@@ -388,7 +389,7 @@ export function permissionSeedMeta(
 // maybeReseed pushes last-known / config.toml onto the agent; the
 // composer badge updates only after setMode succeeds (or hello already
 // reported non-ask). Painting before the write is a false always-approve.
-export const LAST_AGENT_STARTED_KEY = 'acpfe.lastAgentStartedAt'
+export const LAST_AGENT_STARTED_KEY = KEY.lastAgentStartedAt
 
 export function consumeAgentInstance(agentStartedAt: number | undefined): {
   restarted: boolean
@@ -411,7 +412,7 @@ export let reseedGen = 0
 /** Agent stamp we already pushed a config/last-known seed for. Shared
  *  across reloads so a refresh does not fire another setMode (that RPC
  *  was serializing with Shift+Tab and making cycleMode feel lagged). */
-export const RESEED_STAMP_KEY = 'acpfe.permissionReseededFor'
+export const RESEED_STAMP_KEY = KEY.permissionReseededFor
 
 export function currentAgentStamp(): string | null {
   return loadStr(LAST_AGENT_STARTED_KEY)

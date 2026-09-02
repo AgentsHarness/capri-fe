@@ -1,11 +1,12 @@
 import { loadStr, saveStr } from './storage'
+import { KEY } from './keys'
 
 /** FE 本地设置：审批弹窗默认选中行 —— TUI `[ui].default_selected_permission`
  *  （xai-grok-pager-render appearance/permission_cursor.rs）的 FE 侧副本。
  *  它是 pager 客户端本地设置，不落 agent 配置（不走 /api/settings，
- *  host 白名单也只有 4 个键），按 MULTILINE_KEY（'acpfe.multiline'）同款
+ *  host 白名单也只有 4 个键），按 MULTILINE_KEY（capri-fe.multiline）同款
  *  约定持久化在 localStorage。 */
-export const DEFAULT_SELECTED_PERMISSION_KEY = 'acpfe.defaultSelectedPermission'
+export const DEFAULT_SELECTED_PERMISSION_KEY = KEY.defaultSelectedPermission
 
 /** 四个 canonical 取值，与 TUI DefaultSelectedPermission::as_canonical
  *  完全一致；顺序对齐 TUI 设置面板与审批弹窗的渲染顺序

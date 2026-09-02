@@ -14,12 +14,13 @@ import { permissionSeedMeta } from '../modeFlags'
 import { clearSuppressedTools } from '../tools'
 import { resetSessionState } from '../reset'
 import { clearStreamBuf } from '../stream'
+import { KEY } from '../../../lib/keys'
 
 /** workspace-list-recent 每页条数（初始 limit，「加载更多」每次 +50）。 */
 const WORKSPACE_RECENT_PAGE = 50
 
 /** 会话列表展示模式偏好的 localStorage 键（'recent' | 'full'，缺省 recent）。 */
-const WORKSPACE_MODE_KEY = 'capri-fe-workspace-mode'
+const WORKSPACE_MODE_KEY = KEY.workspaceMode
 
 /**
  * recent 增量合并：新响应（top-N 摘要）与现有列表按 sessionId 合并——

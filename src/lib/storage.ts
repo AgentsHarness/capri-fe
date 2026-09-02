@@ -5,9 +5,11 @@
  * - JSON 读写自动 try/catch：损坏数据/隐私模式/配额超限静默回退，
  *   调用方不需要防御性包裹；
  * - 布尔值统一 'true'/'false' 字符串语义，避免各处自造格式；
- * - key 由调用方持有（历史 key 名不可变——改名即丢用户数据，
- *   见各调用处常量注释）。
+ * - key 名一律取自 lib/keys 的 KEY 注册表（`capri-fe.<camelCase>`）；
+ *   首次访问时把更名前的旧键搬到新名，见 keys.ts 的 LEGACY_KEYS。
  */
+
+import { migrateStorageKeys } from './keys'
 
 /**
  * 取 localStorage 句柄。**必须懒取 + try/catch**：Safari 无痕、Chrome
@@ -40,6 +42,9 @@ function getStore(): KVStore {
     const probe = '__capri_probe__'
     ls.setItem(probe, '1')
     ls.removeItem(probe)
+    // 旧键迁移挂在这里而不是 main.tsx：store 模块（theme / chat store）在
+    // import 期就读值，body 里的调用赶在第一笔读之后。内存回退态无历史可搬。
+    migrateStorageKeys(ls)
     cached = ls
   } catch {
     cached = memoryStore()

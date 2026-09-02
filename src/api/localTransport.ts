@@ -15,6 +15,7 @@ import type { TransportHandler, TransportMode } from './transport'
 import { EventSequencer, type SequencedEvent } from './liveSequencing'
 import { rpcMixins } from './rpc/mixins'
 import { clearHostRegistryHandoff, rememberHostRegistry, freshHostRegistry } from './rpc/hosts'
+import { KEY } from '../lib/keys'
 
 
 function resolveAccessToken(): string {
@@ -118,7 +119,7 @@ export class LocalTransport {
    * 最近一次探测到的远端 hub origin（仅 hub 模式使用）。local 模式
    * 由 setConnectionMode 清空——置顶/待办只走 localStorage。
    */
-  private lastHubUrl = loadStr('capri-fe.hubUrl') || ''
+  private lastHubUrl = loadStr(KEY.hubUrl) || ''
   /**
    * 已发现的「hostId → 本机近路」候选。认领依据是端口上服务**自报**的 hostId
    * （且该 hostId 在 hub 注册表里），不是 hub 给某个端口配的候选身份：8765 是
@@ -343,7 +344,7 @@ export class LocalTransport {
       this.mode = 'local'
       this.hubUrl = ''
       this.lastHubUrl = ''
-      removeKey('capri-fe.hubUrl')
+      removeKey(KEY.hubUrl)
       // 这里**不动任何密钥槽**。旧实现「本机开放就把当前凭据当 hub 残留删
       // 掉」是因为那时只有一把钥匙；现在 hub 槽与 host 槽分开，本机要的那把
       // 存在 host 槽里，删 hub 槽既救不了本机也白白抹掉用户刚输入的密钥
@@ -356,7 +357,7 @@ export class LocalTransport {
     }
     if (next) {
       this.lastHubUrl = next
-      saveStr('capri-fe.hubUrl', next)
+      saveStr(KEY.hubUrl, next)
     }
     if (this.mode === mode && this.hubUrl === next) return
     this.resetSequencing()

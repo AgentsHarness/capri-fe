@@ -1,7 +1,8 @@
 import { loadJSON, saveJSON } from '../../lib/storage'
+import { KEY } from '../../lib/keys'
 
 /** ── Prompt history (TUI: ↑ on empty input recalls) ────────────────── */
-const HISTORY_KEY = 'acpfe.promptHistory'
+const HISTORY_KEY = KEY.promptHistory
 export const HISTORY_MAX = 50
 
 export type HistoryItem = { text: string; ts: number; shell?: boolean }

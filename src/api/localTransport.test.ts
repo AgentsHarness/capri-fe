@@ -186,7 +186,7 @@ describe('detectMode 认模式', () => {
    * 调用方（App）留在原地让用户重试。
    */
   it('网络失败 → mode:null，不改模式也不动密钥', async () => {
-    localStorage.setItem('capri-fe-token', 'hub-secret')
+    localStorage.setItem('capri-fe.token', 'hub-secret')
     const t = new LocalTransport('', 'hub-secret')
     vi.stubGlobal(
       'fetch',
@@ -196,7 +196,7 @@ describe('detectMode 认模式', () => {
     )
     expect(await t.detectMode()).toEqual({ mode: null, hubUrl: '' })
     // 什么都没被改动：模式没被切成 local（仍是探测前的默认态），hub 槽那把还在
-    expect(localStorage.getItem('capri-fe-token')).toBe('hub-secret')
+    expect(localStorage.getItem('capri-fe.token')).toBe('hub-secret')
     expect(t.getConnectionMode()).toBe('local')
     // 槽没被抹的证据：认定成 hub 模式后，门禁那把立刻就是它
     t.setConnectionMode('hub', 'https://hub.example')

@@ -53,14 +53,14 @@ describe('loadGlobalModeFlags / saveModeFlags', () => {
     expect(loadGlobalModeFlags()).toEqual({ yoloMode: true, permissionMode: 'always-approve' })
 
     saveModeFlags({ yoloMode: false })
-    expect(window.localStorage.getItem('acpfe.modeFlags')).toBeNull()
+    expect(window.localStorage.getItem('capri-fe.modeFlags')).toBeNull()
     expect(loadGlobalModeFlags()).toEqual({})
   })
 
   it('脏结构读成 {}', () => {
-    window.localStorage.setItem('acpfe.modeFlags', JSON.stringify({ evil: 1 }))
+    window.localStorage.setItem('capri-fe.modeFlags', JSON.stringify({ evil: 1 }))
     expect(loadGlobalModeFlags()).toEqual({})
-    window.localStorage.setItem('acpfe.modeFlags', 'not json')
+    window.localStorage.setItem('capri-fe.modeFlags', 'not json')
     expect(loadGlobalModeFlags()).toEqual({})
   })
 })
@@ -228,8 +228,8 @@ describe('applyCollapsedEditBlocksFlip / FromCache', () => {
 
 describe('consumeAgentInstance', () => {
   it('无时间戳 → 未重启；时间戳变化 → 重启并清标志', () => {
-    window.localStorage.removeItem('acpfe.lastAgentStartedAt')
-    window.localStorage.setItem('acpfe.modeFlags', JSON.stringify({ yoloMode: true }))
+    window.localStorage.removeItem('capri-fe.lastAgentStartedAt')
+    window.localStorage.setItem('capri-fe.modeFlags', JSON.stringify({ yoloMode: true }))
     expect(consumeAgentInstance(undefined)).toMatchObject({ restarted: false })
     expect(consumeAgentInstance(1725000000000)).toMatchObject({ restarted: true })
     expect(consumeAgentInstance(1725000000000)).toMatchObject({ restarted: false })

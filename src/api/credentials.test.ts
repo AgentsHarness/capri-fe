@@ -48,7 +48,7 @@ describe('credentials 双槽', () => {
     expect(loadHubToken()).toBe('spaced')
     saveHubToken('   ')
     expect(loadHubToken()).toBe('')
-    expect(localStorage.getItem('capri-fe-token')).toBeNull()
+    expect(localStorage.getItem('capri-fe.token')).toBeNull()
   })
 
   it('存坏数据不炸（JSON 语法合法但类型非法）', () => {

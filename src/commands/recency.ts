@@ -4,11 +4,12 @@
  * exponentially decayed score (half-life 7 days, 0.1 floor — never-used
  * commands score 0 and keep their registry order). The TUI persists to
  * `~/.grok/slash-mru.json`; the web client keeps the same shape in
- * localStorage (`acpfe.slashRecency`), capped at 256 entries.
+ * localStorage (`capri-fe.slashRecency`), capped at 256 entries.
  */
 import { loadJSON, saveJSON } from '../lib/storage'
+import { KEY } from '../lib/keys'
 
-const RECENCY_KEY = 'acpfe.slashRecency'
+const RECENCY_KEY = KEY.slashRecency
 const RECENCY_MAX = 256
 /** TUI RECENCY_HALF_LIFE_SECS / RECENCY_FLOOR. */
 const HALF_LIFE_MS = 7 * 24 * 3600 * 1000

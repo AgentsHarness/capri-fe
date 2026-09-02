@@ -1,5 +1,6 @@
 import { loadJSON, saveJSON } from '../lib/storage'
 import { create } from 'zustand'
+import { KEY } from '../lib/keys'
 
 /**
  * 会话列表展示形态（浏览器本地偏好，不经 hub）：
@@ -7,7 +8,7 @@ import { create } from 'zustand'
  * - marked    — 分类视图：思考中（非空闲会话）+ 置顶 / 待办标记
  */
 
-const VIEW_KEY = 'acpfe.historyView'
+const VIEW_KEY = KEY.historyView
 
 export type HistoryListMode = 'workspace' | 'marked'
 
