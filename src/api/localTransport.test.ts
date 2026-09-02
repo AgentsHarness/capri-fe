@@ -81,13 +81,76 @@ describe('prefsOrigin', () => {
   })
 })
 
-describe('detectMode 鉴权顺序', () => {
+describe('detectMode 认模式', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
     localStorage.clear()
   })
 
-  it('直连 + authRequired：先 hosts 再 status，且 status 带 Bearer', async () => {
+  /**
+   * 新版 host：免鉴权的 /api/hosts 自己就带 mode/hubUrl/hostId，一次请求定
+   * 模式，**不再问需鉴权的 /api/status**。这是「局域网 IP 打开内嵌页、浏览器
+   * 手里还没有 host 那把」也能升 hub 的前提。
+   */
+  it('host 直连 + authRequired：只看 /api/hosts 就升到 hub，不问 status', async () => {
+    const t = new LocalTransport('', 'secret-token')
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes('/api/status')) {
+        throw new Error('status must not be requested — /api/hosts already carries mode')
+      }
+      return new Response(
+        JSON.stringify({
+          hosts: [{ hostId: 'mba', local: true }],
+          authRequired: true,
+          mode: 'hub',
+          hubUrl: 'https://hub.example',
+          hostId: 'mba',
+          port: 8765,
+        }),
+        { status: 200 },
+      )
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const r = await t.detectMode()
+    expect(r).toEqual({
+      mode: 'hub',
+      hubUrl: 'https://hub.example',
+      localHostId: 'mba',
+      authRequired: true,
+    })
+    expect(fetchMock.mock.calls.map((c) => String(c[0]))).toEqual(['/api/hosts'])
+  })
+
+  /** 纯 local（host 没配 HUB_URL）：锁本机，hostId 照样带回来。 */
+  it('host 直连 + 未配 HUB_URL → local 模式', async () => {
+    const t = makeTransport()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            hosts: [{ hostId: 'mba', local: true }],
+            authRequired: false,
+            mode: 'local',
+            hostId: 'mba',
+          }),
+          { status: 200 },
+        ),
+      ),
+    )
+    expect(await t.detectMode()).toEqual({
+      mode: 'local',
+      hubUrl: '',
+      localHostId: 'mba',
+      authRequired: false,
+    })
+  })
+
+  /**
+   * 降级路径：旧版本 host 的 /api/hosts 不带 mode，只能去问 status。
+   * 串行仍然必要（先 hosts 才知道这是台 host），且手里有密钥就带上。
+   */
+  it('旧 host（无 mode）：回退问一次 /api/status，并带上已有密钥', async () => {
     const t = new LocalTransport('', 'secret-token')
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
       if (String(url).includes('/api/status')) {
@@ -112,11 +175,32 @@ describe('detectMode 鉴权顺序', () => {
       mode: 'hub',
       hubUrl: 'https://hub.example',
       localHostId: 'mba',
+      authRequired: true,
     })
-    const urls = fetchMock.mock.calls.map((c) => String(c[0]))
-    // 必须串行：hosts 返回并置 localAuthRequired 之后才发 status，
-    // 否则默认 mode=local 会剥掉 Bearer → status 401 → 盲判 local。
-    expect(urls).toEqual(['/api/hosts', '/api/status'])
+    expect(fetchMock.mock.calls.map((c) => String(c[0]))).toEqual(['/api/hosts', '/api/status'])
+  })
+
+  /**
+   * 关键回归（曾经的事故）：探测请求被网络打断时**不能**盲判 local ——
+   * 那会连带把 hub 模式与刚输入的密钥一起丢掉。mode:null = 不可知，
+   * 调用方（App）留在原地让用户重试。
+   */
+  it('网络失败 → mode:null，不改模式也不动密钥', async () => {
+    localStorage.setItem('capri-fe-token', 'hub-secret')
+    const t = new LocalTransport('', 'hub-secret')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('Failed to fetch')
+      }),
+    )
+    expect(await t.detectMode()).toEqual({ mode: null, hubUrl: '' })
+    // 什么都没被改动：模式没被切成 local（仍是探测前的默认态），hub 槽那把还在
+    expect(localStorage.getItem('capri-fe-token')).toBe('hub-secret')
+    expect(t.getConnectionMode()).toBe('local')
+    // 槽没被抹的证据：认定成 hub 模式后，门禁那把立刻就是它
+    t.setConnectionMode('hub', 'https://hub.example')
+    expect(t.getAccessToken()).toBe('hub-secret')
   })
 
   it('非直连 hub：只打 hosts，不发 status', async () => {
@@ -306,6 +390,9 @@ describe('discoverLocalHost', () => {
   it('本机 SSE 上的 hello 自报了别的 hostId：近路立即作废，回落 hub 中继', async () => {
     const t = makeTransport()
     stubEventSource()
+    // 编排本机应答：以前这几条用例没 stub fetch，实际是打到开发机上真在跑的
+    // 8765 —— 那台设了 FE_TOKEN 就会让近路停在 pending，用例随环境漂移。
+    stubLocalPorts({ 8765: hostBody('mba') })
     t.setConnectionMode('hub', 'https://hub.example')
     await t.discoverLocalHost([{ hostId: 'mba', port: 8765 }])
     t.setHost('mba')
@@ -324,6 +411,7 @@ describe('discoverLocalHost', () => {
   it('本机 SSE 上自报身份一致的 hello 不影响近路', async () => {
     const t = makeTransport()
     stubEventSource()
+    stubLocalPorts({ 8765: hostBody('mba') })
     t.setConnectionMode('hub', 'https://hub.example')
     await t.discoverLocalHost([{ hostId: 'mba', port: 8765 }])
     t.setHost('mba')

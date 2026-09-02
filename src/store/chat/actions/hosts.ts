@@ -281,6 +281,32 @@ export function hostActions(set: SetState, get: () => ChatState) {
     }
   },
 
+  /**
+   * 用户显式切换某台 host 的通路（host 列表菜单）。近路默认是开的，这里
+   * 主要给「反悔退回中继」和「重新试一次直连」用。
+   * - `relay` 只关掉这台的近路，注册表与 hub 登录都不动；
+   * - `direct` 重新走一遍先探再问：先拿 hub 那把探，探不过再问这台的钥匙。
+   */
+  setHostRoute: async (hostId, choice) => {
+    // 纯 local 没有「中继」可言（页面本身就是这台 host），菜单也不给点。
+    if (transport.getConnectionMode() !== 'hub') return
+    transport.setRouteChoice(hostId, choice)
+    const name = get().hosts.find((h) => h.hostId === hostId)?.hostName ?? hostId
+    if (choice === 'relay') {
+      pushToast(`Host「${name}」改走 Hub 中继`)
+    } else {
+      await transport.verifyLocalRoute(hostId)
+      if (transport.activeRouteFor(hostId) !== 'direct') {
+        pushToast(`Host「${name}」还需要它自己的钥匙，先继续走 Hub 中继`)
+      } else {
+        pushToast(`Host「${name}」已改为本机直连`)
+      }
+    }
+    // 通路状态存在 transport 里，store 无感；复制一份 hosts 触发列表重绘，
+    // 行上的「直连 / 中继」标记才会跟着变。
+    set({ hosts: get().hosts.slice() })
+  },
+
   // 用户显式重启当前 host 的 agent（host 从不自动重启——只报错）。
   // 重启期间在飞回合被中断且不重试；成功/失败都走 toast，状态变化
   // 由 host 的 live 事件（error / ready）自然驱动。

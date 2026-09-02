@@ -5,8 +5,11 @@ import { useChatStore } from '../store/chat'
 import { usePromptQueue } from '../store/promptQueue'
 import { useThemeStore } from '../store/theme'
 
-/** 已验证的本机近路（hostId → route），TopBar 用它逐行标「本机 / Hub」。 */
-const localRoutes = new Map<string, { base: string; port: number; authRequired: boolean }>()
+/** 已验证的本机近路候选（hostId → route），TopBar 用它逐行标「直连 / 中继」。 */
+const localRoutes = new Map<
+  string,
+  { base: string; port: number; authRequired: boolean }
+>()
 
 vi.mock('../api/client', () => ({
   transport: {
@@ -15,6 +18,12 @@ vi.mock('../api/client', () => ({
     pairingCode: vi.fn(async () => ({ code: 'PAIR-CODE-123', ttl: 300 })),
     getHubUrl: vi.fn(() => ''),
     getLocalRoute: (hostId: string) => localRoutes.get(hostId) ?? null,
+    // 通路三态：测试里有候选就算直连（钥匙链路由 localTransport 自己的用例覆盖）
+    activeRouteFor: (hostId: string) => (localRoutes.has(hostId) ? 'direct' : 'relay'),
+    hasLocalCandidate: (hostId: string) => localRoutes.has(hostId),
+    getRouteChoice: () => 'auto',
+    setRouteChoice: vi.fn(),
+    getAccessToken: () => '',
     sessionSearch: vi.fn(async () => ({ results: [] })),
   },
 }))
@@ -186,7 +195,7 @@ describe('TopBar', () => {
     expect(useChatStore.getState().switchHost).toHaveBeenCalledWith('h1')
   })
 
-  it('host 列表行标记本机 / Hub 通路', () => {
+  it('host 列表行标记直连 / 中继通路', () => {
     resetChat({
       mode: 'hub',
       hostName: 'H1',
@@ -205,8 +214,8 @@ describe('TopBar', () => {
     })
     render(<TopBar />)
     fireEvent.click(screen.getByTitle(/右键可管理/))
-    expect(screen.getByText('本机')).not.toBeNull()
-    expect(screen.getByText('Hub')).not.toBeNull()
+    expect(screen.getByText('直连')).not.toBeNull()
+    expect(screen.getByText('中继')).not.toBeNull()
     expect(screen.getByTitle(/直连 http:\/\/127\.0\.0\.1:8765/)).not.toBeNull()
     expect(screen.getByTitle(/经 Hub 中继/)).not.toBeNull()
   })

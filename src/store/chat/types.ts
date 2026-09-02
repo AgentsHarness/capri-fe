@@ -880,6 +880,8 @@ export interface ChatActions {
   renameHost: (hostId: string, hostName: string) => Promise<boolean>
   /** 删除（解除配对）一个 host；若删的是当前选中 host 则自动切到剩余 host。返回是否成功。 */
   deleteHost: (hostId: string) => Promise<boolean>
+  /** 切某台 host 的通路：direct = 本机近路（先探再问），relay = 经 Hub 中继。 */
+  setHostRoute: (hostId: string, choice: 'direct' | 'relay') => Promise<void>
   /** 用户显式重启当前 host 的 agent 进程（杀进程 + 重新 boot + 恢复上次会话）。返回是否成功。 */
   restartAgent: () => Promise<boolean>
   /** 当前配对码（添加新 host 用；仅 hub 模式）。 */
