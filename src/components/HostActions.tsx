@@ -75,47 +75,52 @@ export function HostActionsMenu({
       >
         {/* ── 通路：本机近路 vs Hub 中继 ─────────────────────────────
             近路默认开（transport 探到本机这台就会走），这里只给用户反悔的
-            入口。没有近路候选的机器（手机上看别的电脑）「直连本机」不可点。 */}
-        <div className="px-3 pb-1 pt-1 text-[10px] uppercase tracking-wider text-gn-gutter">
-          通路
-        </div>
-        <button
-          type="button"
-          role="menuitemradio"
-          aria-checked={routeState === 'direct'}
-          disabled={!transport.hasLocalCandidate(host.hostId)}
-          onClick={() => {
-            onRoute(host, 'direct')
-            onClose()
-          }}
-          className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
-          title={
-            transport.hasLocalCandidate(host.hostId)
-              ? '浏览器直连这台的本地端口，少一跳中继；缺钥匙时会让你补一把'
-              : '这台不在这台电脑上，只能经 Hub 中继'
-          }
-        >
-          <Zap size={13} strokeWidth={2} aria-hidden />
-          直连本机
-          {routeState === 'direct' && <span className="ml-auto text-[10px] text-gn-green">当前</span>}
-          {routeState === 'pending' && <span className="ml-auto text-[10px] text-gn-yellow">待验证</span>}
-        </button>
-        <button
-          type="button"
-          role="menuitemradio"
-          aria-checked={routeState !== 'direct'}
-          onClick={() => {
-            onRoute(host, 'relay')
-            onClose()
-          }}
-          className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-          title="请求一律经 Hub 中转（这台不需要它自己的钥匙）"
-        >
-          <Network size={13} strokeWidth={2} aria-hidden />
-          经 Hub 中继
-          {routeState === 'relay' && <span className="ml-auto text-[10px] text-gn-cyan">当前</span>}
-        </button>
-        <div className="my-1 border-t border-gn-prompt-border" />
+            入口。没有近路候选的机器（手机上看别的电脑）不能直连本机，
+            只有 Hub 中继一条路——整段通道菜单直接不显示。 */}
+        {transport.hasLocalCandidate(host.hostId) && (
+          <>
+            <div className="px-3 pb-1 pt-1 text-[10px] uppercase tracking-wider text-gn-gutter">
+              通路
+            </div>
+            <button
+              type="button"
+              role="menuitemradio"
+              aria-checked={routeState === 'direct'}
+              disabled={!transport.hasLocalCandidate(host.hostId)}
+              onClick={() => {
+                onRoute(host, 'direct')
+                onClose()
+              }}
+              className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+              title={
+                transport.hasLocalCandidate(host.hostId)
+                  ? '浏览器直连这台的本地端口，少一跳中继；缺钥匙时会让你补一把'
+                  : '这台不在这台电脑上，只能经 Hub 中继'
+              }
+            >
+              <Zap size={13} strokeWidth={2} aria-hidden />
+              直连本机
+              {routeState === 'direct' && <span className="ml-auto text-[10px] text-gn-green">当前</span>}
+              {routeState === 'pending' && <span className="ml-auto text-[10px] text-gn-yellow">待验证</span>}
+            </button>
+            <button
+              type="button"
+              role="menuitemradio"
+              aria-checked={routeState !== 'direct'}
+              onClick={() => {
+                onRoute(host, 'relay')
+                onClose()
+              }}
+              className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+              title="请求一律经 Hub 中转（这台不需要它自己的钥匙）"
+            >
+              <Network size={13} strokeWidth={2} aria-hidden />
+              经 Hub 中继
+              {routeState === 'relay' && <span className="ml-auto text-[10px] text-gn-cyan">当前</span>}
+            </button>
+            <div className="my-1 border-t border-gn-prompt-border" />
+          </>
+        )}
         <button
           type="button"
           role="menuitem"
