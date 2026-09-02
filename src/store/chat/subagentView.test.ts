@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AcpEvent, ScrollEntry } from '../../api/types'
 import { sealSubagentStreaming, subagentViewAppend } from './subagentView'
 import { extractToolDetail } from '../../scrollback/toolDetail'
-import envs from './qwenAnonSliceFixture.json'
 
 type ThoughtEvent = Extract<AcpEvent, { type: 'thought' }>
 
@@ -120,18 +119,18 @@ const anonCall = (update: Record<string, unknown>): AcpEvent => ({
     : { toolCallUpdate: update }),
 }) as AcpEvent
 
-/** read 三件套（wire 实录 01a058f4 turnIndex 5，正文裁短）：调用 / 元数据 / 终态。 */
-const anonReadTriple = (): AcpEvent[] => [
+/** read 三件套：调用 / 元数据 / 终态。 */
+const subagentReadTriple = (): AcpEvent[] => [
   anonCall({
     sessionUpdate: 'tool_call',
-    toolCallId: '',
+    toolCallId: 'call_sub_1',
     title: 'read_file',
     rawInput: { limit: 30, offset: 7, target_file: READ_PATH },
     _meta: { 'x.ai/tool': { kind: 'read', label: 'Read', name: 'read_file' } },
   }),
   anonCall({
     sessionUpdate: 'tool_call_update',
-    toolCallId: '',
+    toolCallId: 'call_sub_1',
     kind: 'read',
     title: `Read \`${READ_PATH}\``,
     rawInput: { limit: 30, offset: 7, target_file: READ_PATH, variant: 'ReadFile' },
@@ -139,7 +138,7 @@ const anonReadTriple = (): AcpEvent[] => [
   }),
   anonCall({
     sessionUpdate: 'tool_call_update',
-    toolCallId: '',
+    toolCallId: 'call_sub_1',
     status: 'completed',
     title: '',
     content: [{ type: 'content', content: { type: 'text', text: '7→export function SubagentEntry({\n' } }],
@@ -152,10 +151,10 @@ const anonReadTriple = (): AcpEvent[] => [
 const toolsOf = (items: ScrollEntry[]) =>
   items.filter((e): e is Extract<ScrollEntry, { kind: 'tool' }> => e.kind === 'tool')
 
-describe('subagentViewAppend — 空 toolCallId 认领（qwen 网关）', () => {
-  it('匿名 read 三件套并成一格：状态收口、内容落行、标题保留路径', () => {
+describe('subagentViewAppend — 工具行更新与状态合并', () => {
+  it('read 三件套并成一格：状态收口、内容落行、标题保留路径', () => {
     let items: ScrollEntry[] = []
-    for (const ev of anonReadTriple()) items = subagentViewAppend(items, ev)
+    for (const ev of subagentReadTriple()) items = subagentViewAppend(items, ev)
 
     const tools = toolsOf(items)
     expect(tools.length).toBe(1)
@@ -163,78 +162,5 @@ describe('subagentViewAppend — 空 toolCallId 认领（qwen 网关）', () => 
     expect(tools[0]!.status).toBe('completed')
     expect(tools[0]!.title).toBe(`Read \`${READ_PATH}\``)
     expect((detail as { content?: string }).content).toContain('SubagentEntry')
-  })
-
-  it('并行两条匿名行：无指纹的终态 update 只收状态，不贴别人的输出', () => {
-    let items = subagentViewAppend(
-      [],
-      anonCall({
-        sessionUpdate: 'tool_call',
-        toolCallId: '',
-        title: 'read_file',
-        rawInput: { target_file: '/repo/a.ts' },
-        _meta: { 'x.ai/tool': { kind: 'read', label: 'Read', name: 'read_file' } },
-      }),
-    )
-    items = subagentViewAppend(
-      items,
-      anonCall({
-        sessionUpdate: 'tool_call',
-        toolCallId: '',
-        title: 'read_file',
-        rawInput: { target_file: '/repo/b.ts' },
-        _meta: { 'x.ai/tool': { kind: 'read', label: 'Read', name: 'read_file' } },
-      }),
-    )
-    // 不带 rawInput/command/path 的终态 update：两条候选行在跑，归属有歧义。
-    items = subagentViewAppend(
-      items,
-      anonCall({
-        sessionUpdate: 'tool_call_update',
-        toolCallId: '',
-        status: 'completed',
-        rawOutput: { FileContent: { absolute_path: '/repo/a.ts', content: 'A\n' } },
-      }),
-    )
-
-    const tools = toolsOf(items)
-    expect(tools.length).toBe(2)
-    expect(tools[0]!.status).toBe('completed')
-    expect(tools[0]!.raw?.rawOutput).toBeUndefined()
-    expect(tools[1]!.status).toBe('pending')
-  })
-
-  it('没有未收口的匿名行时不凭空造行', () => {
-    let items: ScrollEntry[] = []
-    for (const ev of anonReadTriple()) items = subagentViewAppend(items, ev)
-    const before = items.length
-    items = subagentViewAppend(
-      items,
-      anonCall({ sessionUpdate: 'tool_call_update', toolCallId: '', status: 'completed' }),
-    )
-    expect(items.length).toBe(before)
-  })
-
-  it('整段匿名会话回放：一次调用一行，read 行都有内容', () => {
-    let items: ScrollEntry[] = []
-    for (const env of envs as { params?: { update?: Record<string, unknown> } }[]) {
-      const u = env.params?.update
-      if (!u || (u.sessionUpdate !== 'tool_call' && u.sessionUpdate !== 'tool_call_update')) {
-        continue
-      }
-      items = subagentViewAppend(items, anonCall(u))
-    }
-
-    const tools = toolsOf(items)
-    // 34 次匿名调用（wire 上 34 条 tool_call / 68 条 update）→ 34 行。
-    expect(tools.length).toBe(34)
-    expect(tools.filter((t) => t.status === 'pending' || t.status === 'in_progress')).toEqual([])
-    const reads = tools.filter((t) => t.kindName === 'read')
-    expect(reads.length).toBeGreaterThan(0)
-    const noContent = reads.filter((t) => {
-      const d = extractToolDetail(t.raw!, t.kindName) as { content?: string; error?: string }
-      return !d.content && !d.error
-    })
-    expect(noContent).toEqual([])
   })
 })

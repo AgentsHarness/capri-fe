@@ -16,13 +16,13 @@ window.matchMedia = window.matchMedia ?? (() => ({ matches: false })) as never
 
 const CMD = 'ls -la ~/.grok/ 2>/dev/null | head -50'
 
-// 空 toolCallId 的三段真实 wire（兼容层漏了 call_id 的会话载荷）。
+// 工具调用的三段真实 wire。
 const events: AcpEvent[] = [
   {
     type: 'tool_call',
     toolCall: {
       sessionUpdate: 'tool_call',
-      toolCallId: '',
+      toolCallId: 'tc_test_1',
       title: 'run_terminal_command',
       rawInput: { command: CMD, description: '列出 ~/.grok 目录内容' },
       _meta: { 'x.ai/tool': { name: 'run_terminal_command', kind: 'execute' } },
@@ -32,7 +32,7 @@ const events: AcpEvent[] = [
     type: 'tool_call_update',
     toolCallUpdate: {
       sessionUpdate: 'tool_call_update',
-      toolCallId: '',
+      toolCallId: 'tc_test_1',
       kind: 'execute',
       title: 'Execute `' + CMD + '`',
       rawInput: { variant: 'Bash', command: CMD, is_background: false },
@@ -42,7 +42,7 @@ const events: AcpEvent[] = [
     type: 'tool_call_update',
     toolCallUpdate: {
       sessionUpdate: 'tool_call_update',
-      toolCallId: '',
+      toolCallId: 'tc_test_1',
       status: 'completed',
       rawOutput: { type: 'Bash', command: CMD, output_for_prompt: 'total 448\n', exit_code: 0 },
     } as unknown as ToolCall,
@@ -64,7 +64,7 @@ function headerText(container: HTMLElement): string {
   return container.querySelector('button')?.textContent ?? ''
 }
 
-describe('匿名工具行的渲染（store → DOM）', () => {
+describe('工具行的渲染（store → DOM）', () => {
   it('终态 update 到达前显示 Running，到达后收口', () => {
     const feed = useChatStore.getState().handleEvent
 

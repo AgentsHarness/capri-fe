@@ -1,14 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { ScrollEntry, ToolCall } from '../../api/types'
+import type { ToolCall } from '../../api/types'
 import {
   absorbBashOutputIntoBgTask,
   absorbTaskOutputIntoBgTask,
-  anonToolKey,
   bashOutputText,
   bashRawOutput,
   clearSuppressedTools,
   extractTarget,
-  findAnonToolTarget,
   isBgExecuteTool,
   isBgPlumbingTool,
   isExecuteToolFunctionName,
@@ -18,7 +16,6 @@ import {
   isTaskSpawnTool,
   isTodoTool,
   isWorkflowTool,
-  resolveAnonToolUpdate,
   shouldSuppressToolFromScrollback,
   suppressedToolIds,
   toolCallIdOf,
@@ -219,78 +216,5 @@ describe('bashRawOutput / bashOutputText / isOrphanBashStreamUpdate / absorbBash
       tc({ rawOutput: { type: 'Bash', command: 'ls', output: 'o' } }),
     )
     expect(set).not.toHaveBeenCalled()
-  })
-})
-
-describe('anonToolKey / findAnonToolTarget（空 toolCallId 认领）', () => {
-  const row = (id: string, over: Partial<ScrollEntry> = {}): ScrollEntry =>
-    ({
-      id,
-      kind: 'tool',
-      title: '',
-      verb: 'Running',
-      status: 'in_progress',
-      ...over,
-    }) as ScrollEntry
-
-  it('判别键：Bash command > rawInput command > path > diff path', () => {
-    expect(anonToolKey(tc({ rawOutput: { type: 'Bash', command: 'ls -a' } }))).toBe('cmd:ls -a')
-    expect(anonToolKey(tc({ rawInput: { command: 'npm t' } }))).toBe('cmd:npm t')
-    expect(anonToolKey(tc({ rawInput: { path: '/a/b.ts' } }))).toBe('path:/a/b.ts')
-    expect(
-      anonToolKey(tc({ content: [{ type: 'diff', path: '/c.ts' }] })),
-    ).toBe('path:/c.ts')
-    // 列表/读取类工具的终态 update 不带任何可辨字段。
-    expect(anonToolKey(tc({ rawOutput: { type: 'ListDir', Content: {} } }))).toBeUndefined()
-  })
-
-  it('精确命中优先于 FIFO，且只认未收口的匿名行', () => {
-    const entries: ScrollEntry[] = [
-      row('e1', { raw: tc({ rawInput: { command: 'A' } }) }),
-      row('e2', { raw: tc({ rawInput: { command: 'B' } }) }),
-      row('e3', { toolCallId: 'call_3', raw: tc({ rawInput: { command: 'C' } }) }),
-      row('e4', { status: 'completed', raw: tc({ rawInput: { command: 'B' } }) }),
-    ]
-    expect(findAnonToolTarget(entries, tc({ rawOutput: { type: 'Bash', command: 'B' } }))).toEqual({
-      entryId: 'e2',
-      exact: true,
-    })
-    // 无键可辨 → 最早那条匿名 running 行（e3 带 id、e4 已收口，都不候选）。
-    expect(findAnonToolTarget(entries, tc({ status: 'completed' }))).toEqual({
-      entryId: 'e1',
-      exact: false,
-    })
-    expect(findAnonToolTarget([entries[2]], tc({ rawInput: { command: 'C' } }))).toBeUndefined()
-    expect(findAnonToolTarget([], tc({ rawInput: { command: 'A' } }))).toBeUndefined()
-  })
-
-  it('工具族判据：无指纹完成帧归到同族唯一开放行（并发乱序回来）', () => {
-    const entries: ScrollEntry[] = [
-      row('bash', { raw: tc({ kind: 'execute', rawInput: { command: 'git branch' } }) }),
-      row('grep', { raw: tc({ kind: 'search', rawInput: { path: 'src' } }) }),
-    ]
-    // grep 先完成，完成帧不带 rawInput / command（算不出指纹），只有
-    // rawOutput 的内部标签 —— 旧规则下它会被 FIFO 派给最早的 bash 行。
-    const grepDone = tc({ status: 'completed', rawOutput: { type: 'GrepSearch', stdout: 'x' } })
-    expect(findAnonToolTarget(entries, grepDone)).toEqual({
-      entryId: 'grep',
-      exact: false,
-      family: true,
-    })
-    expect(resolveAnonToolUpdate(entries, grepDone)?.applyRaw).toBe(true)
-    // 族认不出来（未知标签）→ 退回原样：FIFO + 非 exact，终态也不并正文。
-    const unknown = tc({ status: 'completed', rawOutput: { type: 'Whatever' } })
-    expect(findAnonToolTarget(entries, unknown)).toEqual({ entryId: 'bash', exact: false })
-    expect(resolveAnonToolUpdate(entries, unknown)?.applyRaw).toBe(false)
-  })
-
-  it('同族两条开放 + 无指纹完成帧：族判据不生效，绝不猜', () => {
-    const entries: ScrollEntry[] = [
-      row('g1', { raw: tc({ kind: 'search', rawInput: { path: 'a' } }) }),
-      row('g2', { raw: tc({ kind: 'search', rawInput: { path: 'b' } }) }),
-    ]
-    const done = tc({ status: 'completed', rawOutput: { type: 'GrepSearch', stdout: 'x' } })
-    expect(findAnonToolTarget(entries, done)).toEqual({ entryId: 'g1', exact: false })
-    expect(resolveAnonToolUpdate(entries, done)?.applyRaw).toBe(false)
   })
 })

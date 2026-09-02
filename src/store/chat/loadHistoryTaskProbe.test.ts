@@ -79,7 +79,7 @@ describe('loadHistoryWithTaskProbe', () => {
     expect(useChatStore.getState().entries.length).toBeGreaterThan(0)
   })
 
-  it('探活卡住不拖死首帧：到上限照常回放', async () => {
+  it('探活卡住不拖死首帧：到 800ms 上限照常回放', async () => {
     vi.useFakeTimers()
     vi.mocked(transport.sessionRunningTasks).mockReturnValue(
       new Promise<void>(() => {
@@ -87,7 +87,11 @@ describe('loadHistoryWithTaskProbe', () => {
       }) as never,
     )
     const p = loadHistoryWithTaskProbe(get, SID, CWD)
-    await vi.advanceTimersByTimeAsync(3100)
+    // 上限之内仍然等门（回放链上的快照 mock 早就 resolve 了）
+    await vi.advanceTimersByTimeAsync(799)
+    expect(useChatStore.getState().entries).toHaveLength(0)
+    // 越过上限：首帧不再等一个不会回来的探活
+    await vi.advanceTimersByTimeAsync(50)
     await p
     expect(useChatStore.getState().entries.length).toBeGreaterThan(0)
     expect(useChatStore.getState().historyLoading).toBe(false)

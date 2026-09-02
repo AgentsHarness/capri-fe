@@ -12,6 +12,8 @@ const localRoutes = new Map<
 >()
 /** 显式通路选择（hostId → 'auto' | 'relay'）。 */
 const routeChoices = new Map<string, string>()
+/** 门禁那把：默认空 = 未登录（退出入口整体不显示）。 */
+let accessToken = ''
 
 vi.mock('../api/client', () => ({
   transport: {
@@ -27,7 +29,7 @@ vi.mock('../api/client', () => ({
     hasLocalCandidate: (hostId: string) => localRoutes.has(hostId),
     getRouteChoice: (hostId: string) => routeChoices.get(hostId) ?? 'auto',
     setRouteChoice: vi.fn(),
-    getAccessToken: () => '',
+    getAccessToken: () => accessToken,
     sessionSearch: vi.fn(async () => ({ results: [] })),
   },
 }))
@@ -35,6 +37,7 @@ vi.mock('../api/client', () => ({
 function resetChat(over: Record<string, unknown> = {}) {
   localRoutes.clear()
   routeChoices.clear()
+  accessToken = ''
   useChatStore.setState({
     hostName: '',
     hostId: '',
@@ -328,6 +331,52 @@ describe('TopBar', () => {
     await vi.waitFor(() => {
       expect(screen.getByText('PAIR-CODE-123')).not.toBeNull()
     })
+  })
+
+  it('退出登录在 host 下拉里（「添加 Host」下面），右上角不再有', () => {
+    const onLogout = vi.fn()
+    resetChat({
+      mode: 'hub',
+      conn: 'ready',
+      hostName: 'H',
+      selectedHostId: 'h1',
+      hosts: [{ hostId: 'h1', hostName: 'H', online: true }],
+    })
+    accessToken = 'hub-key'
+    const { container } = render(<TopBar onLogout={onLogout} />)
+    // 收起时整个 header 里不该有退出入口。
+    expect(container.querySelector('header')?.textContent).not.toContain('退出')
+    fireEvent.click(screen.getByTitle(/右键可管理/))
+    const add = screen.getByTitle('获取新配对码，在另一台机器上接入 hub')
+    const out = screen.getByTitle('退出登录（清掉本机保存的 Hub 密钥；各台 Host 的近路钥匙保留）')
+    // 顺序：退出登录紧跟在添加 Host 之后。
+    expect(out.compareDocumentPosition(add) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy()
+    fireEvent.click(out)
+    expect(onLogout).toHaveBeenCalled()
+  })
+
+  it('纯 local 模式没有 host 下拉，退出仍留在右上角', () => {
+    const onLogout = vi.fn()
+    resetChat({ mode: 'local', conn: 'ready', hostName: 'H' })
+    accessToken = 'host-key'
+    render(<TopBar onLogout={onLogout} />)
+    expect(screen.queryByTitle(/右键可管理/)).toBeNull()
+    fireEvent.click(screen.getByTitle('退出登录（清掉本机保存的 Hub 密钥；各台 Host 的近路钥匙保留）'))
+    expect(onLogout).toHaveBeenCalled()
+  })
+
+  it('未登录（无门禁密钥）时不显示退出入口', () => {
+    resetChat({
+      mode: 'hub',
+      conn: 'ready',
+      hostName: 'H',
+      hosts: [{ hostId: 'h1', hostName: 'H', online: true }],
+    })
+    const onLogout = vi.fn()
+    const { container } = render(<TopBar onLogout={onLogout} />)
+    fireEvent.click(screen.getByTitle(/右键可管理/))
+    expect(container.textContent).not.toContain('退出')
+    expect(onLogout).not.toHaveBeenCalled()
   })
 
   it('桌面操作按钮：mcp / git / ext / usage / settings', () => {

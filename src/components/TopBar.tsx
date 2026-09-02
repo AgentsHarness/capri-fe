@@ -306,6 +306,10 @@ export function TopBar({
   const currentHost =
     hosts.find((h) => h.hostId === selectedHostId) ??
     (hosts.length ? hosts[0] : null)
+  // 退出登录：hub 模式下它在 host 下拉里（「添加 Host」下面，两端共用）。
+  // 纯 local 模式左上角是静态 Localhost 标签、没有 host 下拉，退出留在
+  // 右上角（桌面）/ ⋮ 菜单（移动端），否则无处可点。
+  const logoutInChrome = mode === 'local' && !!onLogout && !!transport.getAccessToken()
 
   // Host label reflects connection health: abnormal → "connecting" / "error".
   // 分层横幅（hub/host 层错误）存在时，label 只显示简短 ⚠ 状态——完整
@@ -534,6 +538,20 @@ export function TopBar({
                     <Plus size={13} strokeWidth={2} aria-hidden />
                     添加 Host
                   </button>
+                  {onLogout && transport.getAccessToken() && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpenHosts(false)
+                        onLogout()
+                      }}
+                      className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                      title="退出登录（清掉本机保存的 Hub 密钥；各台 Host 的近路钥匙保留）"
+                    >
+                      <LogOut size={13} strokeWidth={2} aria-hidden />
+                      退出登录
+                    </button>
+                  )}
                 </div>
               </div>
             </>
@@ -629,7 +647,7 @@ export function TopBar({
             <Settings size={13} strokeWidth={2} aria-hidden />
             settings
           </button>
-          {onLogout && transport.getAccessToken() && (
+          {logoutInChrome && (
             <button
               type="button"
               onClick={onLogout}
@@ -839,12 +857,12 @@ export function TopBar({
                   <Settings size={14} strokeWidth={2} aria-hidden />
                   settings
                 </button>
-                {onLogout && transport.getAccessToken() && (
+                {logoutInChrome && (
                   <button
                     type="button"
                     onClick={() => {
                       setMoreOpen(false)
-                      onLogout()
+                      onLogout?.()
                     }}
                     className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
                     title="退出登录（清掉本机保存的 Hub 密钥；各台 Host 的近路钥匙保留）"

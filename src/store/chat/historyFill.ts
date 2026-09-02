@@ -8,8 +8,8 @@ import {
 import { currentLiteReplay } from '../historyPins'
 import type { ChatState, SetState } from './types'
 import { captureAsyncScope, isAsyncScopeCurrent, runtime } from './globals'
-import { type RawEnvelope, envelopeMsgSeq } from './envelopeParse'
-import { anonFamilyOf, anonToolKey, toolCallIdOf } from './tools'
+import { type RawEnvelope } from './envelopeParse'
+import { toolCallIdOf } from './tools'
 
 // ── 精简回放（lite）：FE 侧策略 + 正文补全引擎 ─────────────────────────
 //
@@ -214,75 +214,18 @@ export type ToolBody = {
 }
 
 /**
- * 桶里到底有没有正文。只有 start 帧的实例（正文不在这一页里）不算填上——
- * 把它当正文填回去会抹掉 lite 标记、把占位变成假的「无内容」空态。
+ * 桶里到底有没有正文。
  */
 function bodyFilled(b: ToolBody | undefined): b is ToolBody {
   return !!b && (b.hasRawOutput || b.hasContent)
 }
 
 /**
- * 匿名调用的一次实例（= 一行）：`keys` 是这份正文在结果 Map 里的登记键
- * （开窗 msgSeq 唯一，所以带指纹与不带指纹两种形态可以同时登记同一个对象），
- * `fp` 是当前已知的内容指纹，`family` 是当前已知的工具族（undefined = 这一帧
- * 还带不出指纹 / 族）。
- */
-type AnonBucket = { keys: string[]; fp: string | undefined; family: string | undefined }
-
-/**
- * 匿名实例的登记键。
- *
- * - 有 msgSeq（host 归一化页，今天的常态）→ 实例键 `anon@<开窗 msgSeq>[:<指纹>]`。
- *   开窗 msgSeq 与行侧的条目 msgSeq 是同一个契约值（条目 msgSeq = 产生该条目
- *   的第一条信封），所以「哪次调用的正文」在这里逐调用精确：同一个文件被连着
- *   Edit 四次，四次正文各归各行，不再互相顶掉。指纹形态之外再挂一个纯坐标
- *   别名，行侧指纹算不出来（rawInput 被后续帧覆盖掉）时照样命中。
- * - 无 msgSeq（旧 host 的 `_x.ai/session/updates` 透传页）→ 退化成指纹键
- *   `anon:<指纹>` / `anon:(nofp)`，行侧再按「同指纹欠正文行数 >1 即拒绝」兜底。
- *
- * 实例键页里**不**再登记指纹键：那会让实例没命中的行退到按指纹取正文，而同
- * 指纹的指纹桶是后到覆盖先到的（装的是最后一次的正文），静默填错比不填更糟。
- */
-function anonBucketKeys(seq: number | undefined, fp: string | undefined): string[] {
-  if (seq == null) return [fp ? `${ANON_FP_PREFIX}${fp}` : ANON_NO_FP]
-  return fp
-    ? [`${ANON_INST_PREFIX}${seq}:${fp}`, `${ANON_INST_PREFIX}${seq}`]
-    : [`${ANON_INST_PREFIX}${seq}`]
-}
-
-/** 行侧按坐标取实例键（带指纹与无名两种开窗形态）。 */
-function anonInstKeys(msgSeq: number, fp: string | undefined): string[] {
-  return fp
-    ? [`${ANON_INST_PREFIX}${msgSeq}:${fp}`, `${ANON_INST_PREFIX}${msgSeq}`]
-    : [`${ANON_INST_PREFIX}${msgSeq}`]
-}
-
-const ANON_INST_PREFIX = 'anon@'
-const ANON_FP_PREFIX = 'anon:'
-/** 无指纹调用的退化键（只在无 msgSeq 的页里出现）。 */
-const ANON_NO_FP = 'anon:(nofp)'
-
-/**
- * 从一页 `detail=full` 的信封里摘出工具正文，键 = toolCallId 或匿名实例键
- * （`anonBucketKeys`）。合并语义与回放一致（逐条 `{...raw, ...update}` →
- * 后到的覆盖先到的），所以不必真的过一遍 store 回放：只取正文，其余字段
- * 一概不碰。
- *
- * 匿名 call（空 toolCallId，qwen 一类 OpenAI 兼容网关）按页内信封顺序归属，
- * 与回放建行的规则同构：**一条 `tool_call` start = 一次调用 = 一个实例**
- * （回放里每个 start 各建一行）。后续 `tool_call_update` 并进实例，判据按
- * 精确度递降：
- * 1. 内容指纹（`anonToolKey`）→ 最旧的同意指开放实例（`findAnonToolTarget`
- *    的 exact 命中同规则）；
- * 2. 工具族（`anonFamilyOf`）→ 该族唯一开放实例（乱序完成帧的正解）；
- * 3. 都没有 → 唯一开放实例（`resolveAnonToolUpdate` 的 `terminal && sole`）。
- * 每一档都要求候选唯一，多候选一律拒绝，正文绝不跨行串台。终态
- * （completed / failed）把实例收口，下一个同指纹 start 因此开的是新实例。
+ * 从一页 `detail=full` 的信封里摘出工具正文，键 = toolCallId。
+ * 合并语义与回放一致（逐条 `{...raw, ...update}` → 后到的覆盖先到的）。
  */
 export function extractToolBodies(updates: unknown[]): Map<string, ToolBody> {
   const out = new Map<string, ToolBody>()
-  // 开放中的匿名实例（页内信封顺序，最旧在前）；收口出列。
-  const open: AnonBucket[] = []
   for (const env of updates) {
     const raw = env as RawEnvelope | undefined
     const up = raw?.params?.update
@@ -293,74 +236,9 @@ export function extractToolBodies(updates: unknown[]): Map<string, ToolBody> {
     const id = toolCallIdOf(tc)
     if (id) {
       mergeToolBody(out, id, tc)
-      continue
     }
-    const fp = anonToolKey(tc)
-    const fam = anonFamilyOf(tc)
-    if (kind === 'tool_call') {
-      // start：一律开新实例（无指纹的也开，正文可能全在后续 update 上）。
-      const b: AnonBucket = { keys: anonBucketKeys(envelopeMsgSeq(raw), fp), fp, family: fam }
-      open.push(b)
-      mergeAnonBody(out, b, tc)
-      closeAnonBucket(open, b, tc)
-      continue
-    }
-    if (fp || fam) {
-      // 带身份信号（指纹或工具族）的更新：并入唯一可能的开放实例；没有候选
-      // 就说明这次调用的 start 不在本页（窗口切在调用中间），按本信封的
-      // msgSeq 另开实例，绝不并入别的调用。
-      const b = pickAnonBucket(open, fp, fam)
-      if (b) {
-        if (b.fp == null) b.fp = fp
-        if (b.family == null) b.family = fam
-        mergeAnonBody(out, b, tc)
-        closeAnonBucket(open, b, tc)
-        continue
-      }
-      const nb: AnonBucket = { keys: anonBucketKeys(envelopeMsgSeq(raw), fp), fp, family: fam }
-      open.push(nb)
-      mergeAnonBody(out, nb, tc)
-      closeAnonBucket(open, nb, tc)
-      continue
-    }
-    // 既无指纹又认不出族的更新：与 live 一致——非终态整条丢弃；终态只归属到
-    // 唯一开放的匿名实例（串行无歧义），并行多候选拒绝，正文绝不跨行串台。
-    const status = typeof tc.status === 'string' ? tc.status : ''
-    if (status !== 'completed' && status !== 'failed') continue
-    if (open.length !== 1) continue
-    mergeAnonBody(out, open[0]!, tc)
-    closeAnonBucket(open, open[0]!, tc)
   }
   return out
-}
-
-/**
- * 按身份信号挑这次更新所属的开放实例：
- * - 有指纹 → 最旧的同意指实例（`findAnonToolTarget` 的 exact 命中同规则）；
- * - 只有族 → 候选 = 同意指族 + 还没亮出族的实例（它的 start 可能正是这一
- *   次调用）；候选恰好一条才归属，多条 = 有歧义，交给调用方另开实例。
- */
-function pickAnonBucket(
-  open: AnonBucket[],
-  fp: string | undefined,
-  fam: string | undefined,
-): AnonBucket | undefined {
-  if (fp) return open.find((x) => x.fp === fp)
-  const cands = open.filter((x) => x.family === fam || x.family == null)
-  return cands.length === 1 ? cands[0] : undefined
-}
-
-/**
- * 把正文并进一个匿名实例（所有登记键共用同一个 body 对象）。只登记不保证
- * 有正文：start 帧通常不带正文，这种空实例在行侧按「没填上」处理。
- */
-function mergeAnonBody(out: Map<string, ToolBody>, b: AnonBucket, up: ToolCall): void {
-  let body = out.get(b.keys[0]!)
-  if (!body) {
-    body = { hasRawOutput: false, hasContent: false }
-    for (const k of b.keys) out.set(k, body)
-  }
-  mergeInto(body, up)
 }
 
 /** 合并正文进 body（后到覆盖先到，与逐条 `{...raw, ...update}` 同语义）。 */
@@ -383,14 +261,6 @@ function mergeToolBody(out: Map<string, ToolBody>, key: string, up: ToolCall): v
     out.set(key, body)
   }
   mergeInto(body, up)
-}
-
-/** 终态更新把这个匿名实例收口出列。 */
-function closeAnonBucket(open: AnonBucket[], b: AnonBucket, tc: ToolCall): void {
-  const status = typeof tc.status === 'string' ? tc.status : ''
-  if (status !== 'completed' && status !== 'failed') return
-  const i = open.indexOf(b)
-  if (i >= 0) open.splice(i, 1)
 }
 
 /**
@@ -423,44 +293,7 @@ function fillRaw(raw: ToolCall | undefined, body: ToolBody): ToolCall {
 }
 
 /**
- * 匿名行（空 toolCallId）的正文桶归属。
- *
- * 先按**调用实例**命中：行的 msgSeq 就是给它开窗的那条信封的 msgSeq（host
- * 契约「条目 msgSeq = 产生该条目的第一条信封」），与 `anonBucketKeys` 的实例
- * 键同源，所以同指纹的多次调用（同一文件被连着 Edit 四次）各拿各的正文。
- *
- * 实例没命中才退到**指纹**归属（旧 host 透传页整页没有 msgSeq，行侧也没有
- * 坐标可算）：这时同指纹还有第二条欠正文的匿名行就拒绝合并，防串台纪律与
- * `resolveAnonToolUpdate` 一致，正文绝不跨行串台。
- */
-function anonBucketBody(
-  e: Extract<ScrollEntry, { kind: 'tool' }>,
-  entries: ScrollEntry[],
-  bodies: Map<string, ToolBody>,
-): ToolBody | undefined {
-  const key = anonToolKey(e.raw ?? {})
-  if (e.msgSeq != null) {
-    for (const k of anonInstKeys(e.msgSeq, key)) {
-      const inst = bodies.get(k)
-      if (inst) return inst
-    }
-  }
-  if (!key) return undefined
-  const bucket = bodies.get(`${ANON_FP_PREFIX}${key}`)
-  if (!bucket) return undefined
-  let owed = 0
-  for (const x of entries) {
-    if (x.kind !== 'tool' || x.toolCallId) continue
-    if (x.liteState === 'filled') continue
-    if (anonToolKey(x.raw ?? {}) !== key) continue
-    owed++
-    if (owed > 1) return undefined
-  }
-  return bucket
-}
-
-/**
- * 把正文按 toolCallId / 匿名实例键填回条目（纯函数、幂等：填两次结果一致）。
+ * 把正文按 toolCallId 填回条目（纯函数、幂等：填两次结果一致）。
  * 没有条目命中时返回原数组引用——调用方据此跳过无谓重渲染。
  */
 export function applyToolBodies<T extends ScrollEntry>(
@@ -473,7 +306,7 @@ export function applyToolBodies<T extends ScrollEntry>(
     if (e.kind !== 'tool') return e
     // 幂等：已经填过的行直接跳过——再补一次既不重复写、也不换引用。
     if (e.liteState === 'filled') return e
-    const hit = e.toolCallId ? bodies.get(e.toolCallId) : anonBucketBody(e, entries, bodies)
+    const hit = e.toolCallId ? bodies.get(e.toolCallId) : undefined
     const own = bodyFilled(hit) ? hit : undefined
     let mergedRaws: ToolCall[] | undefined
     if (e.mergedRaws?.length) {
