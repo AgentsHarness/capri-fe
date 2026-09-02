@@ -27,6 +27,7 @@ import { xaiActions } from './actions/xai'
 import { liveTaskActions } from './actions/liveTasks'
 import { sessionActions } from './actions/session'
 import { viewerActions } from './actions/viewer'
+import { KEY } from '../../lib/keys'
 
 export const useChatStore = create<ChatState>((setRaw, get, api) => {
   // 无 store 条数上限：entries 全量保留（不再 MAX_ENTRIES 丢弃最旧）。
@@ -58,7 +59,7 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
   workspaceRecentLoadingMore: false,
   workspaceRecentHasMore: false,
   // 本地记忆的展示模式偏好（默认 recent 分页；用户切到全量后记住）。
-  workspaceListMode: loadStr('capri-fe-workspace-mode') === 'full' ? 'full' : 'recent',
+  workspaceListMode: loadStr(KEY.workspaceMode) === 'full' ? 'full' : 'recent',
   historyOpen: false,
   sidebarCollapsed: false,
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),

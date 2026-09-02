@@ -1,9 +1,10 @@
 import { loadJSON, loadStr, removeKey, saveJSON, saveStr } from '../lib/storage'
+import { KEY } from '../lib/keys'
 
 /**
  * 两把钥匙，两个槽。
  *
- * - **hub 槽**（`capri-fe-token`，键名沿用历史）：公网 hub 的门禁密钥。
+ * - **hub 槽**（`capri-fe.token`）：公网 hub 的门禁密钥。
  *   打 hub 的 `/api/*`、`/ws/fe` 用它。
  * - **host 槽**（`capri-fe.hostTokens`，hostId → 密钥）：某台 capri-host
  *   自己 `FE_TOKEN` 的密钥。**只在浏览器直连那台的本机端口（近路）时出示。**
@@ -18,8 +19,8 @@ import { loadJSON, loadStr, removeKey, saveJSON, saveStr } from '../lib/storage'
  * 的退化场景（host 太旧、/api/hosts 不报 hostId）用 `PAGE_SLOT` 这个保留键。
  */
 
-const HUB_KEY = 'capri-fe-token'
-const HOST_KEY = 'capri-fe.hostTokens'
+const HUB_KEY = KEY.hubToken
+const HOST_KEY = KEY.hostTokens
 
 /** host 槽里代表「页面 origin 这台 host」的保留键（hostId 未知时用）。 */
 export const PAGE_SLOT = '@page'
@@ -79,7 +80,7 @@ export function dropHost(hostId: string): void {
 /** `auto` = 有近路候选就直连；`relay` = 强制经 hub 中继。 */
 export type RouteChoice = 'auto' | 'direct' | 'relay'
 
-const CHOICE_KEY = 'capri-fe.routeChoice'
+const CHOICE_KEY = KEY.routeChoice
 
 export function loadRouteChoices(): Record<string, RouteChoice> {
   const raw = loadJSON<unknown>(CHOICE_KEY, {})

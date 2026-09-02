@@ -4,6 +4,7 @@ import type { FePrefsDoc, HubPrefsDoc, SessionInfo, TodoStatus, WorkspaceGroup }
 import { PrefsConflictError } from '../api/transport'
 import { sessionSortRank } from './historyGroups'
 import { transport } from '../api/client'
+import { KEY } from '../lib/keys'
 
 /**
  * 浏览器「置顶 + 待办」偏好（对 host 会话）：
@@ -16,7 +17,7 @@ import { transport } from '../api/client'
  *   盯住没做完的事；完成/取消后徽标消失或保留完成痕迹。
  *
  * 持久化与跨端同步（hub 权威）：
- * - localStorage（离线缓存，启动即用，key = acpfe.historyPins）；
+ * - localStorage（离线缓存，启动即用，key = capri-fe.historyPins）；
  * - hub（持久层 + 同步中枢）：Hub 模式启动时 GET /api/prefs **以 hub
  *   为准整体替换**本地（含删除）；之后每次变更防抖 500ms 全量 PUT 回写，
  *   hub 随即广播 prefs_changed——所有在线浏览器实时应用同一份文档，
@@ -40,15 +41,15 @@ import { transport } from '../api/client'
  * 通过 zustand 暴露，保证组件在 toggle 后立即重渲染。
  */
 
-const PIN_KEY = 'acpfe.historyPins'
+const PIN_KEY = KEY.historyPins
 /** 上次成功与 hub 对齐的文档快照（判断「本地有未推送改动」）。 */
-const SYNC_KEY = 'acpfe.historyPins.synced'
+const SYNC_KEY = KEY.historyPinsSynced
 /** 本地有尚未 PUT 成功的变更（跨刷新保留，避免启动时被 hub 覆盖）。 */
-const DIRTY_KEY = 'acpfe.historyPins.dirty'
+const DIRTY_KEY = KEY.historyPinsDirty
 /** hub 文档版本（CAS base；无此键 = hub 不支持版本 / 未知）。 */
-const VER_KEY = 'acpfe.historyPins.ver'
+const VER_KEY = KEY.historyPinsVer
 /** 自上次成功同步以来的本地操作日志（冲突重放用，跨刷新保留）。 */
-const OPS_KEY = 'acpfe.historyPins.ops'
+const OPS_KEY = KEY.historyPinsOps
 /** 变更后延迟多久统一回写 hub（合并连续点击）。 */
 const HUB_PUSH_DEBOUNCE_MS = 500
 /** 版本冲突重放上限：超过说明竞争异常激烈，保留 dirty/ops 待下次再推。 */

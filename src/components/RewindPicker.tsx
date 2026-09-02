@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useChatStore } from '../store/chat'
 import { pushToast } from '../store/toast'
 import type { RewindConflict, RewindExecuteResult, RewindMode, RewindPoint } from '../api/types'
+import { KEY } from '../lib/keys'
 
 /**
  * /rewind picker modal (TUI /rewind — views/rewind.rs state machine,
@@ -21,14 +22,14 @@ import type { RewindConflict, RewindExecuteResult, RewindMode, RewindPoint } fro
  *     before the modal closes so the surprise is surfaced, not silent.
  *
  * confirm-before-rewind is a persistent setting: the confirm layer's
- * "Yes, and don't ask again" flips `acpfe.confirmBeforeRewind` to false
+ * "Yes, and don't ask again" flips `capri-fe.confirmBeforeRewind` to false
  * in localStorage (TUI confirm_before_rewind); later rewinds execute
  * immediately without the confirm layer.
  *
  * Draft custody: while the picker is open the composer's draft is parked
  * in the store (`stashedDraft`) and restored on close — see Composer.
  */
-const CONFIRM_KEY = 'acpfe.confirmBeforeRewind'
+const CONFIRM_KEY = KEY.confirmBeforeRewind
 
 function confirmBeforeRewind(): boolean {
   return loadBool(CONFIRM_KEY, true)

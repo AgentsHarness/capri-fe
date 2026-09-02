@@ -14,6 +14,7 @@ import { appendEntry } from '../entries'
 import { pushToast } from '../../toast'
 import { clearSubagentSettleTimer, clearTurnBlipTimer } from '../turn'
 import { refreshDefaultModeFlags } from '../modePersist'
+import { KEY } from '../../../lib/keys'
 
 export function hostActions(set: SetState, get: () => ChatState) {
   // 注册表应用（含首次自动选 host）：set 列表 + 离线/删除横幅 + 挑选
@@ -45,7 +46,7 @@ export function hostActions(set: SetState, get: () => ChatState) {
       // 当前 host 已被外部删除（另一标签页 unpair / hub 侧清理）：它不在
       // 列表里，上面的离线横幅分支根本不会触发，不清掉选择就会一直顶着
       // 一个不存在的 host、要手动刷页才能恢复。落回下方重新挑选。
-      removeKey('capri-fe.host')
+      removeKey(KEY.host)
       set({ selectedHostId: undefined })
       // 一台都不剩时没有可连的 host（下面也挑不出 pick），整份落到空状态；
       // 还有别的 host 时交给 switchHost 自己做全套视图复位。
@@ -68,7 +69,7 @@ export function hostActions(set: SetState, get: () => ChatState) {
     }
     const localId = transport.getLocalHostId()
     const local = localId ? hosts.find((h) => h.hostId === localId) : undefined
-    const saved = loadStr('capri-fe.host')
+    const saved = loadStr(KEY.host)
     const remembered = saved ? hosts.find((h) => h.hostId === saved) : undefined
     const first = transport.getLocalBase()
       ? remembered?.online
@@ -108,7 +109,7 @@ export function hostActions(set: SetState, get: () => ChatState) {
     clearTurnBlipTimer()
     get().stopTopTaskPolling()
     transport.setHost(hostId)
-    saveStr('capri-fe.host', hostId)
+    saveStr(KEY.host, hostId)
     const host = get().hosts.find((h) => h.hostId === hostId)
     clearSuppressedTools()
     clearStreamBuf()
@@ -260,7 +261,7 @@ export function hostActions(set: SetState, get: () => ChatState) {
       // 删掉的是当前选中 host：清掉选择，让 refreshHosts 重新挑选
       // （持久化选择一并清除，避免下次进页面选中一个已删除的 host）。
       if (get().selectedHostId === hostId) {
-        removeKey('capri-fe.host')
+        removeKey(KEY.host)
         set({ selectedHostId: undefined })
       }
       // refreshHosts 直接以新注册表为准（不依赖 hosts_changed 广播）。

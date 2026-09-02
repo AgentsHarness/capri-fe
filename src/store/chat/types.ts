@@ -197,7 +197,7 @@ export interface ChatHistoryState {
    * 会话列表展示模式：recent = workspace-list-recent 分页（底部
    * 「已加载最近 N 条 + 加载更多」）；full = 全量 workspace-list
    * （底部「已加载全部」）。用户切换会持久化到 localStorage
-   * （capri-fe-workspace-mode），下次启动按记忆的偏好加载；recent
+   * （'capri-fe.workspaceMode'），下次启动按记忆的偏好加载；recent
    * 端点不可用时的降级展示也是 full（但不改写偏好）。
    */
   workspaceListMode: 'recent' | 'full'
@@ -365,7 +365,7 @@ export interface ChatModeState {
    * true = cancel running subagents with the turn, false = keep them
    * running, null = ask via the panel (only when subagents are running).
    * With a saved preference the panel never opens — Esc / [stop] act
-   * directly per it. Persisted to localStorage acpfe.cancelSubagentsOnTurnCancel.
+   * directly per it. Persisted to localStorage capri-fe.cancelSubagentsOnTurnCancel.
    */
   cancelSubagentsPref: boolean | null
   setCancelSubagentsPref: (stop: boolean) => void

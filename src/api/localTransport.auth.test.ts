@@ -213,7 +213,7 @@ describe('近路先探再问', () => {
 
     expect(await t.tryHostKey('mba', MBA_KEY)).toBe(true)
     expect(loadHostToken('mba')).toBe(MBA_KEY)
-    expect(localStorage.getItem('capri-fe-token')).toBe(HUB_KEY) // 没被顶掉
+    expect(localStorage.getItem('capri-fe.token')).toBe(HUB_KEY) // 没被顶掉
     expect(t.getLocalRoute('mba')?.probe).toBe('host-ok')
     expect(t.isLocalDirect()).toBe(true)
     // 刷新页面（重读 localStorage）后仍然认得这把
@@ -449,7 +449,7 @@ describe('401 按目标分流', () => {
     )
     await t.apiFetch('/api/sessions', { method: 'POST' })
     expect(gate).toBe(1)
-    expect(localStorage.getItem('capri-fe-token')).toBeNull()
+    expect(localStorage.getItem('capri-fe.token')).toBeNull()
     expect(loadHostToken('mba')).toBe(MBA_KEY) // 那台的钥匙留着
     expect(t.getRouteChoice('mba')).toBe('auto')
   })
@@ -494,7 +494,7 @@ describe('401 按目标分流', () => {
 
     expect(gate).toBe(0) // 没有回门禁
     expect(t.getAccessToken()).toBe(HUB_KEY) // hub 那把没被抹
-    expect(localStorage.getItem('capri-fe-token')).toBe(HUB_KEY)
+    expect(localStorage.getItem('capri-fe.token')).toBe(HUB_KEY)
     expect(t.isLocalDirect()).toBe(false) // 只有这台退了
     expect(t.getRouteChoice('mba')).toBe('relay')
     expect(t.getConnectionMode()).toBe('hub') // 模式也没被改
@@ -533,7 +533,7 @@ describe('401 按目标分流', () => {
     expect(loadHostToken('mba')).toBe('')
     // hub 那把与模式完好无损
     expect(t.getAccessToken()).toBe(HUB_KEY)
-    expect(localStorage.getItem('capri-fe-token')).toBe(HUB_KEY)
+    expect(localStorage.getItem('capri-fe.token')).toBe(HUB_KEY)
     expect(t.getConnectionMode()).toBe('hub')
   })
 
@@ -549,7 +549,7 @@ describe('401 按目标分流', () => {
     t.setConnectionMode('hub', '')
     expect(await t.probeAccess()).toBe('need_token')
     expect(gate).toBe(0)
-    expect(localStorage.getItem('capri-fe-token')).toBe('stale-key')
+    expect(localStorage.getItem('capri-fe.token')).toBe('stale-key')
   })
 })
 
@@ -605,7 +605,7 @@ describe('纯 local 模式也用 host 槽', () => {
     expect(await t.probeAccess()).toBe('need_token')
 
     t.setAccessToken('the-local-host-key')
-    expect(localStorage.getItem('capri-fe-token')).toBeNull() // hub 槽保持空
+    expect(localStorage.getItem('capri-fe.token')).toBeNull() // hub 槽保持空
     expect(loadHostToken('mba')).toBe('the-local-host-key')
     expect(t.getAccessToken()).toBe('the-local-host-key')
     // 本机请求就带这把
@@ -619,23 +619,23 @@ describe('纯 local 模式也用 host 槽', () => {
   it('老版本存在 hub 槽的本机钥匙：认出 hostId 后搬进 host 槽', () => {
     clearHostRegistryHandoff()
     localStorage.clear()
-    localStorage.setItem('capri-fe-token', 'legacy-local-key')
+    localStorage.setItem('capri-fe.token', 'legacy-local-key')
     const t = new LocalTransport('', 'legacy-local-key')
     t.setConnectionMode('local', '')
     t.setLocalHostId('mba', true)
     expect(loadHostToken('mba')).toBe('legacy-local-key')
-    expect(localStorage.getItem('capri-fe-token')).toBeNull()
+    expect(localStorage.getItem('capri-fe.token')).toBeNull()
     expect(t.getAccessToken()).toBe('legacy-local-key')
   })
 
   it('host 没设 FE_TOKEN 时不搬（hub 残留就该留在 hub 槽）', () => {
     localStorage.clear()
-    localStorage.setItem('capri-fe-token', 'hub-leftover')
+    localStorage.setItem('capri-fe.token', 'hub-leftover')
     const t = new LocalTransport('', 'hub-leftover')
     t.setConnectionMode('local', '')
     t.setLocalHostId('mba', false)
     expect(loadHostToken('mba')).toBe('')
-    expect(localStorage.getItem('capri-fe-token')).toBe('hub-leftover')
+    expect(localStorage.getItem('capri-fe.token')).toBe('hub-leftover')
   })
 
   it('认不出 hostId 时退到 PAGE_SLOT 保留格', () => {
