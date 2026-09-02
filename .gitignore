@@ -33,3 +33,7 @@ dist/
 
 # Vitest coverage artifacts
 coverage/
+
+# Agent-local workflows/skills and issue-investigation scratch
+.grok/
+issues/
