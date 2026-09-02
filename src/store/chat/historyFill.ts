@@ -9,7 +9,7 @@ import { currentLiteReplay } from '../historyPins'
 import type { ChatState, SetState } from './types'
 import { captureAsyncScope, isAsyncScopeCurrent, runtime } from './globals'
 import { type RawEnvelope } from './envelopeParse'
-import { toolCallIdOf } from './tools'
+import { anonToolKey, toolCallIdOf } from './tools'
 
 // ── 精简回放（lite）：FE 侧策略 + 正文补全引擎 ─────────────────────────
 //
@@ -217,28 +217,79 @@ export type ToolBody = {
  * 从一页 `detail=full` 的信封里按 toolCallId 摘出工具正文。合并语义与回放
  * 一致（逐条 `{...raw, ...update}` → 后到的覆盖先到的），所以不必真的过
  * 一遍 store 回放：只取正文，其余字段一概不碰。
+ *
+ * 匿名 call（空 toolCallId，qwen 网关）按页内信封顺序归属：带指纹的
+ * start / 更新按 anonToolKey 开桶，无指纹的富更新（read 完成更新）落到
+ * 唯一开放中的匿名桶——与 applyAnonToolUpdate 的防串台纪律一致，并行多
+ * 候选时拒绝正文（绝不跨行串台）。无指纹的 start 也开一个无名桶只为
+ * 「唯一开放」计数正确，不让别的调用把正文错并到它身上。
  */
 export function extractToolBodies(updates: unknown[]): Map<string, ToolBody> {
   const out = new Map<string, ToolBody>()
+  // 匿名调用的开放桶（页内信封顺序维护）；completed/failed 收口出列。
+  // 无名桶 = 无指纹 start 的调用，只为「唯一开放」计数正确——并行时不让
+  // 别的调用把正文错并到它头上（live 路径的 applyAnonToolUpdate 同纪律）。
+  const openAnonBuckets: string[] = []
   for (const env of updates) {
     const up = (env as RawEnvelope | undefined)?.params?.update
     if (!up) continue
     const kind = up.sessionUpdate
     if (kind !== 'tool_call' && kind !== 'tool_call_update') continue
-    const id = toolCallIdOf(up as ToolCall) ?? ''
-    if (!id) continue
-    const body: ToolBody = out.get(id) ?? { hasRawOutput: false, hasContent: false }
-    if ('rawOutput' in up) {
-      body.rawOutput = up.rawOutput
-      body.hasRawOutput = true
+    const tc = up as ToolCall
+    const id = toolCallIdOf(tc)
+    if (id) {
+      mergeToolBody(out, id, tc)
+      continue
     }
-    if ('content' in up) {
-      body.content = up.content
-      body.hasContent = true
+    const key = anonToolKey(tc)
+    if (key) {
+      // 同指纹串行复用桶（前一调用已收口后重开）：只在未开放时入列。
+      const bucket = `anon:${key}`
+      if (!openAnonBuckets.includes(bucket)) openAnonBuckets.push(bucket)
+      mergeToolBody(out, bucket, tc)
+      closeAnonBucket(openAnonBuckets, bucket, tc)
+      continue
     }
-    out.set(id, body)
+    if (kind === 'tool_call') {
+      // 无指纹 start：开无名槽（正文在 update 上，start 无正文可并）。
+      if (!openAnonBuckets.includes(ANON_NO_FP)) openAnonBuckets.push(ANON_NO_FP)
+      continue
+    }
+    // 无指纹更新：与 live 一致——非终态整条丢弃；终态只归属到唯一开放的
+    // 匿名桶（串行无歧义），并行多候选拒绝，正文绝不跨行串台。
+    const status = typeof tc.status === 'string' ? tc.status : ''
+    if (status !== 'completed' && status !== 'failed') continue
+    if (openAnonBuckets.length !== 1) continue
+    mergeToolBody(out, openAnonBuckets[0]!, tc)
+    closeAnonBucket(openAnonBuckets, openAnonBuckets[0]!, tc)
   }
   return out
+}
+
+/** 无名匿名桶（无指纹调用，只作开放计数）。 */
+const ANON_NO_FP = 'anon:(nofp)'
+
+/** 打桶 + 合并正文（后到覆盖先到，与逐条 `{...raw, ...update}` 同语义）。 */
+function mergeToolBody(out: Map<string, ToolBody>, key: string, up: ToolCall): void {
+  const body = out.get(key) ?? { hasRawOutput: false, hasContent: false }
+  if ('rawOutput' in up) {
+    body.rawOutput = up.rawOutput
+    body.hasRawOutput = true
+  }
+  if ('content' in up) {
+    body.content = up.content
+    body.hasContent = true
+  }
+  out.set(key, body)
+}
+
+/** 终态更新把桶从开放列表里收口出列。 */
+function closeAnonBucket(open: string[], bucket: string, tc: ToolCall): void {
+  const status = typeof tc.status === 'string' ? tc.status : ''
+  if (status === 'completed' || status === 'failed') {
+    const i = open.indexOf(bucket)
+    if (i >= 0) open.splice(i, 1)
+  }
 }
 
 /**
@@ -271,6 +322,31 @@ function fillRaw(raw: ToolCall | undefined, body: ToolBody): ToolCall {
 }
 
 /**
+ * 匿名行（空 toolCallId）的正文桶：按行 raw 的内容指纹（anonToolKey）命中
+ * 补全桶。防串台纪律与 applyAnonToolUpdate 一致——同一指纹还有第二条欠
+ * 正文的匿名行（并行同路径调用）时拒绝合并，正文绝不跨行串台。
+ */
+function anonBucketBody(
+  e: Extract<ScrollEntry, { kind: 'tool' }>,
+  entries: ScrollEntry[],
+  bodies: Map<string, ToolBody>,
+): ToolBody | undefined {
+  const key = anonToolKey(e.raw ?? {})
+  if (!key) return undefined
+  const bucket = bodies.get(`anon:${key}`)
+  if (!bucket) return undefined
+  let owed = 0
+  for (const x of entries) {
+    if (x.kind !== 'tool' || x.toolCallId) continue
+    if (x.liteState === 'filled') continue
+    if (anonToolKey(x.raw ?? {}) !== key) continue
+    owed++
+    if (owed > 1) return undefined
+  }
+  return bucket
+}
+
+/**
  * 把正文按 toolCallId 填回条目（纯函数、幂等：填两次结果一致）。没有条目
  * 命中时返回原数组引用——调用方据此跳过无谓重渲染。
  */
@@ -284,7 +360,9 @@ export function applyToolBodies<T extends ScrollEntry>(
     if (e.kind !== 'tool') return e
     // 幂等：已经填过的行直接跳过——再补一次既不重复写、也不换引用。
     if (e.liteState === 'filled') return e
-    const own = e.toolCallId ? bodies.get(e.toolCallId) : undefined
+    const own = e.toolCallId
+      ? bodies.get(e.toolCallId)
+      : anonBucketBody(e, entries, bodies)
     let mergedRaws: ToolCall[] | undefined
     if (e.mergedRaws?.length) {
       mergedRaws = e.mergedRaws.map((m) => {

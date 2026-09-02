@@ -9,7 +9,7 @@ import {
   envelopeTimestamp,
   liteMark,
 } from './envelopeParse'
-import { toolCallIdOf } from './tools'
+import { anonToolKey, resolveAnonToolUpdate, toolCallIdOf } from './tools'
 
 function replayUpdateKind(env: unknown): string | undefined {
   const e = env as RawEnvelope
@@ -190,6 +190,33 @@ export function reorderLateAgentEvents(updates: unknown[]): unknown[] {
 // A stored update is the JSONL envelope {timestamp, method, params} with
 // params = {sessionId, update}. Mirrors the host's session/update mapping.
 
+/**
+ * 匿名 tool_call start 刚落的新行：开放中（pending/in_progress）且内容指纹
+ * 与事件一致的唯一匿名行。并行同指纹多候选（上一个同路径调用还没收口）时
+ * 拒绝——与 resolveAnonToolUpdate 的防串台纪律一致。
+ */
+function anonStartRowId(entries: ScrollEntry[], tc: ToolCall): string | undefined {
+  const key = anonToolKey(tc)
+  let hit: string | undefined
+  let count = 0
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i]!
+    if (e.kind !== 'tool' || e.toolCallId) continue
+    if (e.status !== 'pending' && e.status !== 'in_progress') continue
+    if (key && anonToolKey(e.raw ?? {}) !== key) continue
+    count++
+    if (count > 1) return undefined
+    hit = e.id
+  }
+  return hit
+}
+
+/**
+ * 把一页历史信封回放成滚动条目；同时产出 lite 补全坐标：
+ * 工具条目 id → `entryMsgSeqEnd`（本页最后一条碰到它的信封 msgSeq）与
+ * `entryLiteOmitted`（累计裁掉字节）。匿名 call 的坐标归属规则见
+ * {@link stampToolTouch}。
+ */
 export function replayUpdates(
   getStore: () => ChatState,
   updates: unknown[],
@@ -217,16 +244,23 @@ export function replayUpdates(
   /**
    * lite 投影下工具行的补全坐标：`msgSeqEnd` = 本页最后一条碰到该行的信封
    * 行号（按需补全要按 [msgSeq, msgSeqEnd] 精确回拉），`liteOmitted` = 本页
-   * 为该行为裁掉的字节。行归属取回放自己维护的 toolIndex（新建行也已登记），
-   * 匿名 call（无 toolCallId）无从对齐 → 不参与补全。
+   * 为该行为裁掉的字节。命名 call 走 toolIndex；匿名 call（无 toolCallId，
+   * qwen 网关）的归属与 applyAnonToolUpdate 同纪律——update 的归属在应用前
+   * 预判（应用后行已收口，事后扫描失明；read 完成更新又不带指纹），start
+   * 落的新行事后按「开放 + 指纹唯一」匹配（并行多候选拒绝，防串台）。
    */
-  const stampToolTouch = (seq: number | undefined, ev: AcpEvent) => {
+  const stampToolTouch = (
+    seq: number | undefined,
+    ev: AcpEvent,
+    anonUpdateId?: string,
+  ) => {
     const tc: ToolCall | undefined =
       ev.type === 'tool_call' ? ev.toolCall : ev.type === 'tool_call_update' ? ev.toolCallUpdate : undefined
     if (!tc) return
     const toolCallId = toolCallIdOf(tc)
-    if (!toolCallId) return
-    const entryId = getStore().toolIndex?.[toolCallId]
+    const entryId = toolCallId
+      ? getStore().toolIndex?.[toolCallId]
+      : (anonUpdateId ?? anonStartRowId(getStore().entries, tc))
     if (!entryId) return
     if (seq != null) entryMsgSeqEnd.set(entryId, seq)
     const lite = liteMark(tc)
@@ -434,8 +468,20 @@ export function replayUpdates(
       continue
     }
       flushUser()
+      // 匿名（空 toolCallId）更新的归属在应用前定格：applyAnonToolUpdate
+      // 应用后行已收口，事后扫描读不到——read 完成更新不带指纹，当时的
+      // 判据是「唯一未收口行」。只认 applyAnonToolUpdate 真的会碰的行
+      // （exact 或终态）；无指纹非终态更新 live 整条丢弃，不盖章。
+      const anonTarget =
+        ev.type === 'tool_call_update' && ev.toolCallUpdate
+          ? resolveAnonToolUpdate(getStore().entries, ev.toolCallUpdate)
+          : undefined
+      const anonUpdateId =
+        anonTarget && (anonTarget.exact || anonTarget.terminal)
+          ? anonTarget.entryId
+          : undefined
       getStore().handleEvent(ev)
-      stampToolTouch(seq, ev)
+      stampToolTouch(seq, ev, anonUpdateId)
     }
     stampNewEntries(seq)
   }
