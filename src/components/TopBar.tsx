@@ -29,7 +29,6 @@ import {
 } from './StatusChips'
 import { filterRunningEntries, shortCwd } from '../format'
 import type { HostInfo } from '../api/types'
-import { transport } from '../api/client'
 import { hostState, hostStateLabel, type HostState } from '../lib/hostState'
 import {
   AddHostModal,
