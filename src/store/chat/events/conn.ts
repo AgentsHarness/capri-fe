@@ -18,6 +18,7 @@ import {
   busyPlausibleForView,
 } from '../turn'
 import { tailAlreadyTurnEnded } from '../turnLifecycle'
+import { loadHistoryWithTaskProbe } from '../loadHistory'
 import { applySessionModelState } from '../model'
 
 /**
@@ -226,13 +227,15 @@ export function handleConnEvent(
         // (the host never replays it on connect), so replay it here. Guard
         // on empty entries so a mid-session reconnect (timeline already
         // live) never reloads, and skip while history is being loaded.
+        // 与快照同时探一次在跑任务（回放要等它落地才能跳过仍在跑任务的
+        // `Task started` 行，并填顶部任务条）——见 loadHistoryWithTaskProbe。
         if (
           !suppressAnchor &&
           ev.sessionId &&
           get().entries.length === 0 &&
           !get().historyLoading
         ) {
-          void get().loadHistory(ev.sessionId, ev.cwd || '')
+          void loadHistoryWithTaskProbe(get, ev.sessionId, ev.cwd || '')
         }
         break
       }

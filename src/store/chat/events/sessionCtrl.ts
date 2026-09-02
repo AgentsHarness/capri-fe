@@ -6,6 +6,7 @@ import {
   syncPendingForSession,
 } from '../pending'
 import { appendEntry } from '../entries'
+import { loadHistoryWithTaskProbe } from '../loadHistory'
 export function handleSessionCtrlEvent(
   set: SetState,
   get: () => ChatState,
@@ -152,8 +153,9 @@ export function handleSessionCtrlEvent(
           break
         }
         // Rebuild from HTTP history (same path as continueSession). loadHistory
-        // sets historyLoading again and replaces entries wholesale.
-        void get().loadHistory(sid, cwd).then(() => {
+        // sets historyLoading again and replaces entries wholesale. 同一条
+        // 重建路径要带任务探活（见 loadHistoryWithTaskProbe）。
+        void loadHistoryWithTaskProbe(get, sid, cwd).then(() => {
           if (get().sessionId !== sid) return
           void syncPendingForSession(sid, get, set, runtime.sessionSwitchGen)
         })

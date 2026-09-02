@@ -40,6 +40,9 @@ import {
   replayEventKeys,
 } from './envelopeParse'
 
+/** 等任务探活的上限（见 loadHistory 的 awaitBeforeReplay）。 */
+const TASK_PROBE_AWAIT_MS = 3000
+
 /**
  * Replay events received while rebuilding a history snapshot. Timestamp is
  * only a fast path: stored timestamps are normalized to epoch ms, and keys
@@ -219,8 +222,20 @@ export async function loadHistory(
       // 并行切会话（continueSession）：快照 fetch 与任务探活同时发出，
       // 但回放应用必须等探活结果（replayUpdates 跳过仍在跑任务的
       // started 行）。探活失败已被调用方内部消化，await 不会抛。
+      // 等它有上限：探活卡在飞（host 挂住 / 中继抖动）时，宁可退化成
+      // 「画了一行 started」，也绝不能让首帧空等一个没用的请求。
       if (opts.awaitBeforeReplay) {
-        await opts.awaitBeforeReplay
+        let waiter: ReturnType<typeof setTimeout> | undefined
+        try {
+          await Promise.race([
+            opts.awaitBeforeReplay,
+            new Promise<void>((r) => {
+              waiter = setTimeout(r, TASK_PROBE_AWAIT_MS)
+            }),
+          ])
+        } finally {
+          if (waiter !== undefined) clearTimeout(waiter)
+        }
         if (staleLoad()) return
       }
       promptStarts = r.promptStarts
@@ -477,3 +492,32 @@ export async function loadHistory(
     }
   }
 
+/**
+ * 快照重建 + 任务探活一起发（同 continueSession 的形状）：探活与快照的
+ * 网络往返重叠，只有「回放落地」这一步严格等探活结果——replayUpdates 需要
+ * 已知的在跑任务集合才能跳过那行 `Task started`（见 envelopeReplay），否则
+ * 时间线里会出现一行永远等不到完成行的假进行中。
+ *
+ * 用于不经过 continueSession 的全量重建入口（hello 首屏回锚、hub resync
+ * 重建、多 tab peer 重建、rewind 对齐后重载）：这些路径以前完全不探活，
+ * 顶部任务条因此是空的、也没有轮询去收口。轮询只在探活确实查到在跑任务
+ * 时才开：空闲会话挂一个 10s 定时器，一页开着就是每小时 360 次没用的请求。
+ *
+ * 返回快照重建的 promise（调用方要接后续动作，如 peer 重建后补拉 pending）。
+ */
+export function loadHistoryWithTaskProbe(
+  get: () => ChatState,
+  sessionId: string,
+  cwd: string,
+): Promise<void> {
+  const tasksP = get().replayRunningTasks(sessionId, cwd)
+  const historyP = get().loadHistory(sessionId, cwd, { awaitBeforeReplay: tasksP })
+  // replayRunningTasks 内部吞掉所有失败，这里不会 reject。
+  void tasksP.then(() => {
+    const s = get()
+    // 探活期间会话被切走 / 复位：不开这条会话的轮询。
+    if (s.sessionId !== sessionId || s.cwd !== cwd) return
+    if (s.topTasks.length > 0) s.startTopTaskPolling(sessionId, cwd)
+  })
+  return historyP
+}

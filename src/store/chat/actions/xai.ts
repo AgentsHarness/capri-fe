@@ -6,6 +6,7 @@ import { appendEntry } from '../entries'
 import { scheduledTaskDeletedText } from '../tasks'
 import { INITIAL_TURNS } from '../history'
 import { noteHistoryProjection } from '../historyFill'
+import { loadHistoryWithTaskProbe } from '../loadHistory'
 import { pushToast } from '../../toast'
 
 /**
@@ -448,7 +449,7 @@ export function xaiActions(set: SetState, get: () => ChatState) {
         // Scheduled tasks belong to the same session, so stash them across
         // the loadHistory reset (which clears per-session state).
         const keep = get().scheduledTasks
-        await get().loadHistory(s.sessionId, s.cwd)
+        await loadHistoryWithTaskProbe(get, s.sessionId, s.cwd)
         // 重载期间可能已切走：旧会话的调度任务不能塞进新视图。
         if (keep.length > 0 && stillCurrent()) set({ scheduledTasks: keep })
       } else if (aligned === false && stillCurrent()) {
