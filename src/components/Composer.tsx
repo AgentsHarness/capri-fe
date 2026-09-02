@@ -107,10 +107,23 @@ export function Composer() {
   // 可知（refreshSessions），回放期间状态行保持可见。
   const historyLoading = useChatStore((s) => s.historyLoading)
   // 建会话 POST 在飞（目录右键"在此目录新建会话" / /new / 空状态首条
-  // 消息自动创建）：就绪（sessionId 锚定）之前锁定输入——readOnly +
-  // 吞掉键盘/粘贴/拖放，防止窗口期输入（首条消息会误触发第二次建会话
-  // POST，且又丢失右键指定的 cwd）。POST 收口（含失败）即解锁。
+  // 消息自动创建）：输入不锁（内容照常可打可贴可插入），但发送要等就绪
+  // ——submitCurrent 在 newSessionPending 期间把内容收起挂起，POST 收口
+  // （成功锚定 / 失败落平）后按序补发；直接放行会让首条消息误触发第二次
+  // 建会话 POST，且丢失右键指定的 cwd。
   const newSessionPending = useChatStore((s) => s.newSessionPending)
+  // 建会话在飞期间的发送挂起桶：内容先收起（不吞、不丢），创建收口后
+  // 逐条补发。创建失败时由 send() 的无会话分支自理（再试建一次或渲染
+  // 错误行），挂起内容不会丢。
+  const pendingSendsRef = useRef<Array<{ text: string; blocks: ContentBlock[] }>>([])
+  useEffect(() => {
+    if (newSessionPending || pendingSendsRef.current.length === 0) return
+    const batch = pendingSendsRef.current
+    pendingSendsRef.current = []
+    // 逐条补发：send 首条同步置 conn=busy，后续条目走忙分支进 agent
+    // 权威队列（与 Enter 忙时行为一致），不会并行开回合。
+    for (const p of batch) void send(p.text, p.blocks)
+  }, [newSessionPending, send])
   const usage = useChatStore((s) => s.usage)
   const genRate = useChatStore((s) => s.genRate)
   const statusText = useChatStore((s) => s.statusText)
@@ -321,6 +334,17 @@ export function Composer() {
   const submitCurrent = async () => {
     const trimmed = text.trim()
     if (!trimmed && !chips.some((c) => c.image)) return
+    // 建会话 POST 在飞：不吞内容，发送挂起——收起本轮内容（含图片
+    // chips），等创建收口后按序补发（见 pendingSendsRef 的 effect）。
+    // 直接放行会让 send 的无会话分支再触发一次建会话，丢失右键 cwd。
+    if (newSessionPending) {
+      const { expandedText, blocks } = buildBlocks(literalSlashPayload(text), chips)
+      setText('')
+      setChips([])
+      pendingSendsRef.current.push({ text: expandedText, blocks })
+      taRef.current?.focus()
+      return
+    }
     // 原文发送写法（`\/…` / 行首空白 + `/…`）的前缀是 composer 语法，
     // 发给 agent 前去掉；未命中的 `/…` 行到这里已是纯文本，原样保留。
     const { expandedText, blocks } = buildBlocks(literalSlashPayload(text), chips)
@@ -1126,8 +1150,8 @@ export function Composer() {
             style={{ paddingLeft: COMPOSER_BODY_PAD_LEFT_PX }}
           >
             {newSessionPending ? (
-              // 建会话 POST 在飞：composer 锁定，状态行给明确反馈
-              // （锁定期内输入一律吞掉，见下方 readOnly/键盘守卫）。
+              // 建会话 POST 在飞：状态行提示创建中——输入可用，发送会
+              // 挂起到创建收口后自动补发（见 submitCurrent / pendingSendsRef）。
               <>
                 <span className="inline-flex w-[1.25em] shrink-0 items-center justify-center leading-none text-gn-muted">
                   {SPINNER_FRAMES[spinnerFrame]}
@@ -1322,9 +1346,7 @@ export function Composer() {
           data-prompt-focused={promptFocused ? '1' : '0'}
           onMouseDown={(e) => {
             // Clicking chrome focuses the textarea (don't steal from buttons).
-            // 锁定（建会话在飞）时不把焦点吸进一个只读框。
             if ((e.target as HTMLElement).closest('button, a')) return
-            if (newSessionPending) return
             taRef.current?.focus()
           }}
         >
@@ -1464,8 +1486,6 @@ export function Composer() {
                 ref={taRef}
                 rows={1}
                 value={text}
-                readOnly={newSessionPending}
-                aria-disabled={newSessionPending}
                 onChange={(e) => {
                   const v = e.target.value
                   // TUI shell mode: typing `!` into an empty buffer enters
@@ -1492,13 +1512,6 @@ export function Composer() {
                 }}
                 onBlur={() => setFocused(false)}
                 onKeyDown={(e) => {
-                  // 建会话 POST 在飞（就绪前）：composer 锁定——吞掉
-                  // 一切键（含 Enter/Esc/slash 触发），readOnly 只是兜底
-                  // 层，自定义 Enter 提交/快捷键钩子若不吞会绕过它。
-                  if (newSessionPending) {
-                    e.preventDefault()
-                    return
-                  }
                   // IME composition (Chinese pinyin etc.): Enter commits the
                   // candidate and Backspace edits the composition — hand
                   // composition keys through untouched or Enter would send
@@ -1947,11 +1960,6 @@ export function Composer() {
                   }
                 }}
                 onBeforeInput={(e) => {
-                  // 锁定期间禁止一切输入通道（IME/拖放插入）。
-                  if (newSessionPending) {
-                    e.preventDefault()
-                    return
-                  }
                   // IME / drag-drop inserts into a chip label are swallowed.
                   const el = taRef.current
                   if (!el) return
@@ -1960,12 +1968,6 @@ export function Composer() {
                   }
                 }}
                 onPaste={(e) => {
-                  // 锁定期间禁止粘贴（readOnly 不拦浏览器事件，chip/图片
-                  // 走的是 setText/setChips 程序化写入）。
-                  if (newSessionPending) {
-                    e.preventDefault()
-                    return
-                  }
                   onPaste(e)
                 }}
                 onDragOver={(e) => {
@@ -1975,8 +1977,6 @@ export function Composer() {
                 }}
                 onDrop={(e) => {
                   e.preventDefault()
-                  // 锁定期间禁止拖放插入图片 chip。
-                  if (newSessionPending) return
                   const files = Array.from(e.dataTransfer.files).filter((f) =>
                     f.type.startsWith('image/'),
                   )
