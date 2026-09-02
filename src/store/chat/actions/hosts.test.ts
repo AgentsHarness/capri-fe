@@ -15,13 +15,20 @@ vi.mock('../../../api/client', () => ({
     connect: vi.fn(),
     disconnect: vi.fn(),
     setModel: vi.fn().mockResolvedValue({ ok: true }),
+    // switchHost 路径
+    setHost: vi.fn(),
+    status: vi.fn().mockResolvedValue({ ready: true }),
+    verifyLocalRoute: vi.fn().mockResolvedValue(undefined),
+    emitLocal: vi.fn(),
   },
 }))
 
 vi.mock('../../toast', () => ({ pushToast: vi.fn() }))
+vi.mock('../modePersist', () => ({ refreshDefaultModeFlags: vi.fn().mockResolvedValue(undefined) }))
 
 import { transport } from '../../../api/client'
 import { pushToast } from '../../toast'
+import { refreshDefaultModeFlags } from '../modePersist'
 import { loadStr, saveStr } from '../../../lib/storage'
 
 const HOST_KEY = 'capri-fe.host'
@@ -235,5 +242,66 @@ describe('setModel 会话隔离守卫', () => {
     expect(state.reasoningEffort).toBe('high')
     expect(state.entries).toHaveLength(1)
     expect(state.entries[0].kind).toBe('session_event')
+  })
+})
+
+// ── switchHost：只依赖 hostId 的请求不等 status ────────────────────────
+describe('switchHost 请求发起时机', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(transport.getConnectionMode as ReturnType<typeof vi.fn>).mockReturnValue('hub')
+    ;(transport.verifyLocalRoute as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+  })
+
+  function bindSwitch(state: ChatState) {
+    const set: SetState = (partial) => {
+      Object.assign(state, typeof partial === 'function' ? partial(state) : partial)
+    }
+    return hostActions(set, () => state)
+  }
+
+  it('status 还没回，host 级数据（会话列表 / 工作区 / [ui]）已经发出', async () => {
+    let resolveStatus!: (v: unknown) => void
+    ;(transport.status as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise((r) => (resolveStatus = r)),
+    )
+    const state = makeState({
+      hosts: [host('a'), host('b')],
+      selectedHostId: 'a',
+      refreshSessions: vi.fn(),
+      refreshWorkspaces: vi.fn(),
+      refreshSessionStats: vi.fn(),
+    })
+    const p = bindSwitch(state).switchHost('b')
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(transport.status).toHaveBeenCalledTimes(1)
+    expect(state.refreshSessions).toHaveBeenCalledTimes(1)
+    expect(state.refreshWorkspaces).toHaveBeenCalledTimes(1)
+    expect(refreshDefaultModeFlags).toHaveBeenCalledTimes(1)
+
+    resolveStatus({ ready: true })
+    await p
+  })
+
+  it('统计条不在 switchHost 里预拉（hello 锚定会话时组件自己拉，避免问两遍）', async () => {
+    ;(transport.status as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ready: true,
+      sessionId: 's1',
+      cwd: '/w',
+    })
+    const state = makeState({
+      hosts: [host('a'), host('b')],
+      selectedHostId: 'a',
+      refreshSessions: vi.fn(),
+      refreshWorkspaces: vi.fn(),
+      refreshSessionStats: vi.fn(),
+    })
+    await bindSwitch(state).switchHost('b')
+    expect(state.refreshSessionStats).not.toHaveBeenCalled()
+    // 快照仍按常规 hello 路径落进 store
+    expect(transport.emitLocal).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'hello', sessionId: 's1' }),
+    )
   })
 })

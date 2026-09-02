@@ -137,3 +137,47 @@ describe('handleConnEvent — hub hello 用注册表快照选 host', () => {
     expect(get().refreshHosts).toHaveBeenCalledWith(undefined)
   })
 })
+
+// ── 首屏/刷新回锚的会话回放：探活与快照一起发 ─────────────────────────
+describe('handleConnEvent — hello 触发的历史回放带任务探活', () => {
+  const hostHello = (
+    over: Partial<Extract<AcpEvent, { type: 'hello' }>> = {},
+  ): AcpEvent =>
+    ({ type: 'hello', hostId: 'h1', hostName: 'H1', ready: true, ...over }) as AcpEvent
+
+  it('空时间线 + hello 带 sessionId → 探活先发起，loadHistory 拿到 awaitBeforeReplay', () => {
+    const probeP = Promise.resolve()
+    const loadHistory = vi.fn()
+    const { set, get } = makeStore({
+      entries: [],
+      sessionId: undefined,
+      cwd: undefined,
+      loadHistory,
+      replayRunningTasks: vi.fn(() => probeP),
+      startTopTaskPolling: vi.fn(),
+      clearCompletedNotice: vi.fn(),
+      topTasks: [],
+    })
+    handleConnEvent(set, get, hostHello({ sessionId: 's1', cwd: '/w' }))
+    expect(get().replayRunningTasks).toHaveBeenCalledWith('s1', '/w')
+    expect(loadHistory).toHaveBeenCalledWith('s1', '/w', {
+      awaitBeforeReplay: probeP,
+    })
+  })
+
+  it('时间线已有内容（中途重连）→ 既不重载也不探活', () => {
+    const loadHistory = vi.fn()
+    const { set, get } = makeStore({
+      entries: [{ id: 'a', kind: 'assistant', text: 'x', streaming: false }],
+      sessionId: 's1',
+      cwd: '/w',
+      loadHistory,
+      replayRunningTasks: vi.fn(),
+      startTopTaskPolling: vi.fn(),
+      clearCompletedNotice: vi.fn(),
+    })
+    handleConnEvent(set, get, hostHello({ sessionId: 's1', cwd: '/w' }))
+    expect(get().replayRunningTasks).not.toHaveBeenCalled()
+    expect(loadHistory).not.toHaveBeenCalled()
+  })
+})

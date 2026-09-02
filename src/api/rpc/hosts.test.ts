@@ -1,0 +1,164 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { LocalTransport } from '../localTransport'
+import type { HostInfo } from '../types'
+import type { TransportCore } from '../transport'
+import {
+  clearHostRegistryHandoff,
+  freshHostRegistry,
+  hostsRpc,
+  rememberHostRegistry,
+} from './hosts'
+
+function h(hostId: string, over: Partial<HostInfo> = {}): HostInfo {
+  return { hostId, hostName: hostId, online: true, ...over }
+}
+
+function core(url: string, fetchImpl: (u: string) => Promise<Response>): TransportCore {
+  return {
+    url: (p: string) => `${url}${p}`,
+    apiBase: () => url,
+    prefsOrigin: () => url,
+    mode: 'hub',
+    fetch: (path: string) => fetchImpl(path),
+  } as unknown as TransportCore
+}
+
+function json(data: unknown): Promise<Response> {
+  return Promise.resolve(
+    new Response(JSON.stringify(data), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }),
+  )
+}
+
+/** mixin 方法（Object.assign 挂上原型）对类型不可见，测试里按最小面取用。 */
+function asHostApi(t: LocalTransport) {
+  return t as unknown as {
+    listHosts(): Promise<{ hosts: HostInfo[]; defaultHostId?: string }>
+    probeAccess(): Promise<'ok' | 'need_token' | 'error'>
+    setConnectionMode(mode: 'local' | 'hub', hubUrl?: string): void
+    detectMode(): Promise<{ mode: 'local' | 'hub'; hubUrl: string; localHostId?: string }>
+    discoverLocalHost(hosts?: unknown): Promise<string | null>
+  }
+}
+
+describe('listHosts 注册表交接', () => {
+  beforeEach(() => {
+    clearHostRegistryHandoff()
+    vi.unstubAllGlobals()
+  })
+
+  it('同端点已有交接快照 → 不再发请求，直接用快照', async () => {
+    const fetchMock = vi.fn()
+    rememberHostRegistry('https://hub.example/api/hosts', {
+      hosts: [h('mba', { local: false })],
+      defaultHostId: 'mba',
+      authRequired: false,
+    })
+    const r = await hostsRpc.listHosts.call(core('https://hub.example', fetchMock))
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(r).toEqual({ hosts: [expect.objectContaining({ hostId: 'mba' })], defaultHostId: 'mba' })
+  })
+
+  it('端点不同不命中（本机 host 的注册表 ≠ hub 的注册表）', async () => {
+    const fetchMock = vi.fn(() => json({ hosts: [h('other')] }))
+    rememberHostRegistry('/api/hosts', { hosts: [h('mba')] })
+    const r = await hostsRpc.listHosts.call(core('https://hub.example', fetchMock))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(r.hosts[0].hostId).toBe('other')
+  })
+
+  it('交接窗口内可重复取用；超窗一律重问', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetchMock = vi.fn(() => json({ hosts: [h('fresh')] }))
+      const c = core('https://hub.example', fetchMock)
+      rememberHostRegistry('https://hub.example/api/hosts', { hosts: [h('stale')] })
+      // 同一窗口里第二次仍然用快照（启动链四处要同一份文档）
+      expect(freshHostRegistry('https://hub.example/api/hosts')?.hosts[0].hostId).toBe('stale')
+      expect((await hostsRpc.listHosts.call(c)).hosts[0].hostId).toBe('stale')
+      expect(fetchMock).not.toHaveBeenCalled()
+      // 越过窗口年龄 → 快照作废，listHosts 回到真实请求
+      vi.advanceTimersByTime(1600)
+      expect(freshHostRegistry('https://hub.example/api/hosts')).toBeNull()
+      expect((await hostsRpc.listHosts.call(c)).hosts[0].hostId).toBe('fresh')
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('renameHost 写过后交接作废：随后的 listHosts 必须问到新名字', async () => {
+    // 先放一份「改名前」的快照，模拟启动期交接已经存在
+    rememberHostRegistry('https://hub.example/api/hosts', { hosts: [h('mba', { hostName: '旧' })] })
+    const renameFetch = vi.fn(() => json({ ok: true }))
+    await hostsRpc.renameHost.call(core('https://hub.example', renameFetch), 'mba', '新名字')
+    const listFetch = vi.fn(() => json({ hosts: [h('mba', { hostName: '新名字' })] }))
+    const r = await hostsRpc.listHosts.call(core('https://hub.example', listFetch))
+    expect(listFetch).toHaveBeenCalledTimes(1)
+    expect(r.hosts[0].hostName).toBe('新名字')
+  })
+})
+
+describe('probeAccess 交出自己的注册表应答', () => {
+  beforeEach(() => {
+    clearHostRegistryHandoff()
+    localStorage.clear()
+  })
+
+  it('门禁探测问过 hub /api/hosts 后，首个 listHosts 不再重问', async () => {
+    const t = asHostApi(new LocalTransport('', 'tok'))
+    t.setConnectionMode('hub', 'https://hub.example')
+    const hosts = [h('mba', { local: false }), h('mbp', { local: false })]
+    const fetchMock = vi.fn(() => json({ hosts, defaultHostId: 'mba', authRequired: true }))
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await t.probeAccess()).toBe('ok')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(await t.listHosts()).toEqual({ hosts, defaultHostId: 'mba' })
+    // 同一次启动里那份 hub 注册表只被问了一遍
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('门禁没过（需要密钥）时不交接，listHosts 仍自己问', async () => {
+    const t = asHostApi(new LocalTransport('', ''))
+    t.setConnectionMode('hub', 'https://hub.example')
+    const fetchMock = vi.fn(() => json({ hosts: [h('mba')], authRequired: true }))
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await t.probeAccess()).toBe('need_token')
+    expect(await t.listHosts()).toEqual({ hosts: [h('mba')], defaultHostId: undefined })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('detectMode 问过的注册表直接回答门禁，probeAccess 不再发请求', async () => {
+    const t = asHostApi(new LocalTransport('', 'tok'))
+    const fetchMock = vi.fn(() =>
+      json({
+        hosts: [h('mba'), h('mbp')],
+        defaultHostId: 'mba',
+        authRequired: true,
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    // 同源 hub 部署：base 空，detectMode 与 probeAccess 问的是同一个 URL
+    const mode = await t.detectMode()
+    expect(mode).toEqual({ mode: 'hub', hubUrl: '' })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    // App 的真实顺序：detectMode 之后立刻 setConnectionMode，才谈得上门禁。
+    // hub 模式下门禁那把就是 hub 槽。
+    t.setConnectionMode('hub', mode.hubUrl)
+    expect(await t.probeAccess()).toBe('ok')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    // 同一次启动里端口表与 host 列表也共用这一份：hub 的 /api/hosts 只问一次
+    // （多出来的请求是本机 127.0.0.1 端口的近路探测，不算 hub 往返）。
+    await t.discoverLocalHost()
+    expect(await t.listHosts()).toEqual({
+      hosts: [h('mba'), h('mbp')],
+      defaultHostId: 'mba',
+    })
+    const hubAsks = fetchMock.mock.calls.filter(
+      (args: unknown[]) => !String(args[0]).includes('127.0.0.1'),
+    )
+    expect(hubAsks).toHaveLength(1)
+  })
+})

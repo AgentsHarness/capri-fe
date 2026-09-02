@@ -39,6 +39,9 @@ export function resetSessionState(set: (partial: Partial<ChatState>) => void): v
     // 没有活跃回合，诚实的空闲状态；新会话的 ready 事件会再锚定。
     conn: 'ready',
     statusText: '就绪',
+    // 复位作废在飞的建会话 POST（过期响应的 finally 有 generation 守卫，
+    // 不会再把标志顶回）：composer 锁定随复位解除，避免残留卡死。
+    newSessionPending: false,
     lastSentPromptId: undefined,
     recapPendingFor: undefined,
     recapCache: {},

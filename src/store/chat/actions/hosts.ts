@@ -57,14 +57,13 @@ export function hostActions(set: SetState, get: () => ChatState) {
     // First selection. 本机优先只给「页面本身就跑在本机 host 上」的场景
     // （内嵌前端 / Vite 代理，localBase 为空）——那里残留的远程
     // capri-fe.host 会把 localhost 调试拐成「连不上本地」。远程站探测出的
-    // 127.0.0.1 近路（localBase 非空）只是一条加速通路，不该盖掉用户在这
+    // 127.0.0.1 近路（getLocalBase 非空）只是一条加速通路，不该盖掉用户在这
     // 个 origin 上显式选过的 host，否则永远回到本机、切不到 Hub 中继节点。
-    // hub 尚未下发 port / 首次心跳前可能还没发现本机：有 port 时再探一次。
-    if (
-      transport.getConnectionMode() === 'hub' &&
-      !transport.getLocalHostId() &&
-      hosts.some((h) => typeof h.port === 'number' && h.port > 0)
-    ) {
+    //
+    // 每次注册表更新都把最新列表交给 transport：近路按端口上「应答者自报的身份」
+    // 认领（8765 是每台 capri-host 的默认端口，同一端口号在不同机器上指向不同
+    // host），由它据此作废旧端口、补探还没验过的端口（见 discoverLocalHost）。
+    if (transport.getConnectionMode() === 'hub') {
       await transport.discoverLocalHost(hosts)
     }
     const localId = transport.getLocalHostId()
@@ -183,6 +182,21 @@ export function hostActions(set: SetState, get: () => ChatState) {
       queuePanelOpen: false,
       planMode: false,
     })
+    // 先等 setHost 发起的端口归属探测落地（同一次探测，不重复请求），第一条
+    // 快照 RPC 才能直接走本机近路而不是先绕一趟 hub。
+    await transport.verifyLocalRoute(hostId)
+    if (myGen !== runtime.sessionSwitchGen || get().selectedHostId !== hostId) return
+    // 只依赖 hostId 的数据不等 status 往返：会话列表 / 工作区分组 / `[ui]`
+    // 设置都是 host 级的（实测远程 host 的 status 要 1~2s，整条侧栏因此
+    // 白等一趟）。需要 sessionId/cwd 的（历史快照、git-info、队列、统计条）
+    // 由下面的 hello 驱动——统计条不在这里预拉：hello 锚定会话的瞬间
+    // SessionStatsBar 的 keyed effect 就会拉，一次切换问两遍没有意义。
+    void get().refreshSessions()
+    void get().refreshWorkspaces()
+    // `[ui]` 设置同样是 host 级的：init 那次预取跑在 host 选定之前，hub
+    // 模式下必然被 setHost 的 abort 风暴取消，而且旧 host 的缓存不能跟着
+    // 切过来——这里以新 host 为准重读一次。
+    void refreshDefaultModeFlags()
     // Apply the host's status snapshot through the normal hello path so
     // model state, pending requests and busy flags hydrate consistently.
     try {
@@ -218,15 +232,6 @@ export function hostActions(set: SetState, get: () => ChatState) {
       })
       return
     }
-    void get().refreshSessions()
-    void get().refreshWorkspaces()
-    // 切换 host：会话锚点将随 hello 更新，统计条先按新 host 预拉一次
-    //（refreshSessionStats 内部按当前 sessionId/cwd 校验，不会串数据）。
-    void get().refreshSessionStats()
-    // `[ui]` 设置同样是 host 级的：init 那次预取跑在 host 选定之前，hub
-    // 模式下必然被 setHost 的 abort 风暴取消，而且旧 host 的缓存不能跟着
-    // 切过来——这里以新 host 为准重读一次。
-    void refreshDefaultModeFlags()
   },
 
   renameHost: async (hostId, hostName) => {
@@ -274,6 +279,32 @@ export function hostActions(set: SetState, get: () => ChatState) {
       pushToast(`删除 Host 失败: ${e instanceof Error ? e.message : String(e)}`)
       return false
     }
+  },
+
+  /**
+   * 用户显式切换某台 host 的通路（host 列表菜单）。近路默认是开的，这里
+   * 主要给「反悔退回中继」和「重新试一次直连」用。
+   * - `relay` 只关掉这台的近路，注册表与 hub 登录都不动；
+   * - `direct` 重新走一遍先探再问：先拿 hub 那把探，探不过再问这台的钥匙。
+   */
+  setHostRoute: async (hostId, choice) => {
+    // 纯 local 没有「中继」可言（页面本身就是这台 host），菜单也不给点。
+    if (transport.getConnectionMode() !== 'hub') return
+    transport.setRouteChoice(hostId, choice)
+    const name = get().hosts.find((h) => h.hostId === hostId)?.hostName ?? hostId
+    if (choice === 'relay') {
+      pushToast(`Host「${name}」改走 Hub 中继`)
+    } else {
+      await transport.verifyLocalRoute(hostId)
+      if (transport.activeRouteFor(hostId) !== 'direct') {
+        pushToast(`Host「${name}」还需要它自己的钥匙，先继续走 Hub 中继`)
+      } else {
+        pushToast(`Host「${name}」已改为本机直连`)
+      }
+    }
+    // 通路状态存在 transport 里，store 无感；复制一份 hosts 触发列表重绘，
+    // 行上的「直连 / 中继」标记才会跟着变。
+    set({ hosts: get().hosts.slice() })
   },
 
   // 用户显式重启当前 host 的 agent（host 从不自动重启——只报错）。

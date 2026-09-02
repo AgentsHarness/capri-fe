@@ -106,6 +106,24 @@ export function Composer() {
   // 就绪——目标会话 busy/ready 由 host 的 /api/sessions roster 提前
   // 可知（refreshSessions），回放期间状态行保持可见。
   const historyLoading = useChatStore((s) => s.historyLoading)
+  // 建会话 POST 在飞（目录右键"在此目录新建会话" / /new / 空状态首条
+  // 消息自动创建）：输入不锁（内容照常可打可贴可插入），但发送要等就绪
+  // ——submitCurrent 在 newSessionPending 期间把内容收起挂起，POST 收口
+  // （成功锚定 / 失败落平）后按序补发；直接放行会让首条消息误触发第二次
+  // 建会话 POST，且丢失右键指定的 cwd。
+  const newSessionPending = useChatStore((s) => s.newSessionPending)
+  // 建会话在飞期间的发送挂起桶：内容先收起（不吞、不丢），创建收口后
+  // 逐条补发。创建失败时由 send() 的无会话分支自理（再试建一次或渲染
+  // 错误行），挂起内容不会丢。
+  const pendingSendsRef = useRef<Array<{ text: string; blocks: ContentBlock[] }>>([])
+  useEffect(() => {
+    if (newSessionPending || pendingSendsRef.current.length === 0) return
+    const batch = pendingSendsRef.current
+    pendingSendsRef.current = []
+    // 逐条补发：send 首条同步置 conn=busy，后续条目走忙分支进 agent
+    // 权威队列（与 Enter 忙时行为一致），不会并行开回合。
+    for (const p of batch) void send(p.text, p.blocks)
+  }, [newSessionPending, send])
   const usage = useChatStore((s) => s.usage)
   const genRate = useChatStore((s) => s.genRate)
   const statusText = useChatStore((s) => s.statusText)
@@ -316,6 +334,17 @@ export function Composer() {
   const submitCurrent = async () => {
     const trimmed = text.trim()
     if (!trimmed && !chips.some((c) => c.image)) return
+    // 建会话 POST 在飞：不吞内容，发送挂起——收起本轮内容（含图片
+    // chips），等创建收口后按序补发（见 pendingSendsRef 的 effect）。
+    // 直接放行会让 send 的无会话分支再触发一次建会话，丢失右键 cwd。
+    if (newSessionPending) {
+      const { expandedText, blocks } = buildBlocks(literalSlashPayload(text), chips)
+      setText('')
+      setChips([])
+      pendingSendsRef.current.push({ text: expandedText, blocks })
+      taRef.current?.focus()
+      return
+    }
     // 原文发送写法（`\/…` / 行首空白 + `/…`）的前缀是 composer 语法，
     // 发给 agent 前去掉；未命中的 `/…` 行到这里已是纯文本，原样保留。
     const { expandedText, blocks } = buildBlocks(literalSlashPayload(text), chips)
@@ -736,6 +765,7 @@ export function Composer() {
     (busy ||
       conn === 'connecting' ||
       recapPending ||
+      newSessionPending ||
       idleCueVisible ||
       localLive)
   // 生成速度（状态行总时间右侧）：host 推送的 gen_rate（字符/秒），
@@ -747,13 +777,13 @@ export function Composer() {
   // 回放中（historyLoading）也要转 spinner：会话切换加载期间状态行
   // 显示「回放中…」，与 busy 臂共用同一旋转动画。
   useEffect(() => {
-    if (!statusVisible && !historyLoading) return
+    if (!statusVisible && !historyLoading && !newSessionPending) return
     const t = window.setInterval(
       () => setSpinnerFrame((v) => (v + 1) % SPINNER_FRAMES.length),
       SPINNER_INTERVAL_MS,
     )
     return () => window.clearInterval(t)
-  }, [statusVisible, historyLoading])
+  }, [statusVisible, historyLoading, newSessionPending])
   // TUI MONITOR_PULSE_DIVISOR = 2 × SPINNER_DIVISOR: the idle cue's
   // `○ ◎ ◉ ◎` breath runs at half the active spinner's cadence.
   const pulseFrame =
@@ -1114,12 +1144,22 @@ export function Composer() {
             加载完毕立即按真实状态渲染（busy 臂 / 已切换文案），不再
             整行淡出。空态（真正空闲）时外层容器零高度，不占布局。 */}
         <div>
-          {(statusVisible || historyLoading) && (
+          {(statusVisible || historyLoading || newSessionPending) && (
           <div
             className="flex min-h-5 items-center gap-1.5 pb-2 pr-0.5 font-ui text-[13.5px] leading-[1.4] select-none"
             style={{ paddingLeft: COMPOSER_BODY_PAD_LEFT_PX }}
           >
-            {historyLoading ? (
+            {newSessionPending ? (
+              // 建会话 POST 在飞：状态行提示创建中——输入可用，发送会
+              // 挂起到创建收口后自动补发（见 submitCurrent / pendingSendsRef）。
+              <>
+                <span className="inline-flex w-[1.25em] shrink-0 items-center justify-center leading-none text-gn-muted">
+                  {SPINNER_FRAMES[spinnerFrame]}
+                </span>
+                <span className="truncate text-gn-gray-dim">正在创建会话…</span>
+                <span className="flex-1" />
+              </>
+            ) : historyLoading ? (
               // 回放中：session/load 重放历史期间（loadHistory + 宽限
               // 窗口）的状态行内容，加载完毕立即切换真实状态。
               <>
@@ -1305,7 +1345,7 @@ export function Composer() {
           style={{ borderColor }}
           data-prompt-focused={promptFocused ? '1' : '0'}
           onMouseDown={(e) => {
-            // Clicking chrome focuses the textarea (don't steal from buttons)
+            // Clicking chrome focuses the textarea (don't steal from buttons).
             if ((e.target as HTMLElement).closest('button, a')) return
             taRef.current?.focus()
           }}
@@ -1927,7 +1967,9 @@ export function Composer() {
                     e.preventDefault()
                   }
                 }}
-                onPaste={onPaste}
+                onPaste={(e) => {
+                  onPaste(e)
+                }}
                 onDragOver={(e) => {
                   // Allow the drop so the browser doesn't navigate to the
                   // file (image drop → chip below).

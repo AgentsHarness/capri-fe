@@ -2,6 +2,46 @@ import type { TransportCore } from '../transport'
 import { AccessTokenError, PrefsConflictError } from '../transport'
 import type { HostInfo, HubPrefsDoc } from '../types'
 
+/**
+ * 启动期注册表交接缓存。同一个 `GET {apiBase}/api/hosts` 在一次启动里要被
+ * 用四处：detectMode 判模式、probeAccess 过鉴权门禁、discoverLocalHost 拿
+ * 端口表、refreshHosts 选 host——都是同一个 URL 的同一份文档。谁先问到谁把
+ * 应答按 URL 存下，窗口内的其余调用直接取用。
+ *
+ * 窗口很短（REGISTRY_HANDOFF_MS）且只服务「刚问过」这一语义：超窗一律重问，
+ * 凭证变（setAccessToken）与注册表被写（rename / unpair）立即清空。所以
+ * ready / hosts_changed 这类常规刷新拿不到旧数据，只有启动那一瞬能省。
+ */
+export type HostRegistrySnapshot = {
+  hosts: HostInfo[]
+  defaultHostId?: string
+  authRequired?: boolean
+}
+
+/** 交接窗口：超过这个年龄的快照不再算「刚问过」。 */
+const REGISTRY_HANDOFF_MS = 1500
+const registryHandoff = new Map<string, { at: number; snap: HostRegistrySnapshot }>()
+
+export function rememberHostRegistry(url: string, snap: HostRegistrySnapshot): void {
+  if (registryHandoff.size > 4) registryHandoff.clear()
+  registryHandoff.set(url, { at: Date.now(), snap })
+}
+
+/** 某端点「刚问过」的注册表应答（超窗或没有则 null）。同一窗口内可重复取用。 */
+export function freshHostRegistry(url: string): HostRegistrySnapshot | null {
+  const hit = registryHandoff.get(url)
+  if (!hit) return null
+  if (Date.now() - hit.at > REGISTRY_HANDOFF_MS) {
+    registryHandoff.delete(url)
+    return null
+  }
+  return hit.snap
+}
+
+export function clearHostRegistryHandoff(): void {
+  registryHandoff.clear()
+}
+
 /** host/hub 管理：host 注册表、配对码、agent 重启、置顶/待办偏好文档。 */
 export const hostsRpc = {
   async listHosts(this: TransportCore): Promise<{ hosts: HostInfo[]; defaultHostId?: string }> {
@@ -9,10 +49,14 @@ export const hostsRpc = {
     // 无关——host 切换的 abort 风暴（setHost → abortInflight）不能打断
     // 它，否则 hosts_changed 广播触发的 refreshHosts 会静默失败、列表
     // 不更新；StrictMode 双挂载的 disconnect 同样不能 abort 它。
-    const res = await this.fetch(`${this.apiBase()}/api/hosts`, {}, { hubLevel: true })
+    const url = `${this.apiBase()}/api/hosts`
+    const handed = freshHostRegistry(url)
+    if (handed) return { hosts: handed.hosts, defaultHostId: handed.defaultHostId }
+    const res = await this.fetch(url, {}, { hubLevel: true })
     const data = (await res.json().catch(() => ({}))) as {
       hosts?: HostInfo[]
       defaultHostId?: string
+      authRequired?: boolean
       error?: string
       ok?: boolean
     }
@@ -30,7 +74,13 @@ export const hostsRpc = {
           : `hosts failed (${res.status})`,
       )
     }
-    return { hosts: data.hosts ?? [], defaultHostId: data.defaultHostId }
+    const snap: HostRegistrySnapshot = {
+      hosts: data.hosts ?? [],
+      defaultHostId: data.defaultHostId,
+      authRequired: data.authRequired,
+    }
+    rememberHostRegistry(url, snap)
+    return { hosts: snap.hosts, defaultHostId: snap.defaultHostId }
   },
 
   async pairingCode(this: TransportCore): Promise<{ code: string; expiresAt?: string; ttl?: number }> {
@@ -102,6 +152,8 @@ export const hostsRpc = {
           : `rename failed (${res.status})`,
       )
     }
+    // 注册表刚被写：交接快照作废，随后的 refreshHosts 必须问真实数据。
+    clearHostRegistryHandoff()
   },
 
   async unpairHost(this: TransportCore, hostId: string): Promise<void> {
@@ -122,6 +174,8 @@ export const hostsRpc = {
           : `unpair failed (${res.status})`,
       )
     }
+    // 注册表刚被写：同 renameHost，作废交接快照。
+    clearHostRegistryHandoff()
   },
 
   /**

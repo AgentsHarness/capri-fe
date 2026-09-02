@@ -108,6 +108,12 @@ export interface ChatConnState {
   sessionId?: string
   /** Active session workspace dir (hello/ready; TUI status-bar path). */
   cwd?: string
+  /**
+   * 建会话 POST 在飞（newSession 已发起、响应未回填）：composer 锁定
+   * 输入，直到 sessionId 锚定（就绪）。POST 收口（成功/失败/被更新的
+   * 复位作废）即清除——锁定期不会残留。
+   */
+  newSessionPending: boolean
   /** Host user home dir — for "~/…" path shortening. */
   homeDir?: string
   /** Session title (top prompt border caption). */
@@ -880,6 +886,8 @@ export interface ChatActions {
   renameHost: (hostId: string, hostName: string) => Promise<boolean>
   /** 删除（解除配对）一个 host；若删的是当前选中 host 则自动切到剩余 host。返回是否成功。 */
   deleteHost: (hostId: string) => Promise<boolean>
+  /** 切某台 host 的通路：direct = 本机近路（先探再问），relay = 经 Hub 中继。 */
+  setHostRoute: (hostId: string, choice: 'direct' | 'relay') => Promise<void>
   /** 用户显式重启当前 host 的 agent 进程（杀进程 + 重新 boot + 恢复上次会话）。返回是否成功。 */
   restartAgent: () => Promise<boolean>
   /** 当前配对码（添加新 host 用；仅 hub 模式）。 */

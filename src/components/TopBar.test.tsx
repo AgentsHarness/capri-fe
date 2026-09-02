@@ -5,7 +5,13 @@ import { useChatStore } from '../store/chat'
 import { usePromptQueue } from '../store/promptQueue'
 import { useThemeStore } from '../store/theme'
 
-const getLocalHostId = vi.fn((): string | null => null)
+/** 已验证的本机近路候选（hostId → route），TopBar 用它逐行标「直连 / 中继」。 */
+const localRoutes = new Map<
+  string,
+  { base: string; port: number; authRequired: boolean }
+>()
+/** 显式通路选择（hostId → 'auto' | 'relay'）。 */
+const routeChoices = new Map<string, string>()
 
 vi.mock('../api/client', () => ({
   transport: {
@@ -13,13 +19,22 @@ vi.mock('../api/client', () => ({
     listSessions: vi.fn(async () => ({ sessions: [] })),
     pairingCode: vi.fn(async () => ({ code: 'PAIR-CODE-123', ttl: 300 })),
     getHubUrl: vi.fn(() => ''),
-    getLocalHostId: () => getLocalHostId(),
+    getLocalRoute: (hostId: string) => localRoutes.get(hostId) ?? null,
+    // 通路三态：有候选 + 没显式选中继 = 直连；有候选但选了中继 / 无候选 = 中继
+    // （钥匙链路的 pending 态由 localTransport 自己的用例覆盖）
+    activeRouteFor: (hostId: string) =>
+      localRoutes.has(hostId) && routeChoices.get(hostId) !== 'relay' ? 'direct' : 'relay',
+    hasLocalCandidate: (hostId: string) => localRoutes.has(hostId),
+    getRouteChoice: (hostId: string) => routeChoices.get(hostId) ?? 'auto',
+    setRouteChoice: vi.fn(),
+    getAccessToken: () => '',
     sessionSearch: vi.fn(async () => ({ results: [] })),
   },
 }))
 
 function resetChat(over: Record<string, unknown> = {}) {
-  getLocalHostId.mockReturnValue(null)
+  localRoutes.clear()
+  routeChoices.clear()
   useChatStore.setState({
     hostName: '',
     hostId: '',
@@ -185,8 +200,7 @@ describe('TopBar', () => {
     expect(useChatStore.getState().switchHost).toHaveBeenCalledWith('h1')
   })
 
-  it('host 列表行标记本机 / Hub 通路', () => {
-    getLocalHostId.mockReturnValue('h1')
+  it('host 列表行标记直连 / 中继通路；无近路候选的不显示通道', () => {
     resetChat({
       mode: 'hub',
       hostName: 'H1',
@@ -194,17 +208,35 @@ describe('TopBar', () => {
       hosts: [
         { hostId: 'h1', hostName: 'H1', online: true },
         { hostId: 'h2', hostName: 'H2', online: true },
+        { hostId: 'h3', hostName: 'H3', online: true },
       ],
       conn: 'ready',
     })
-    // resetChat 会把 getLocalHostId 清回 null，测本机标记前再设一次
-    getLocalHostId.mockReturnValue('h1')
+    // resetChat 会清空近路表，测本机标记前再登记一次
+    localRoutes.set('h1', {
+      base: 'http://127.0.0.1:8765',
+      port: 8765,
+      authRequired: false,
+    })
+    // h3 有近路候选但显式选了中继——通道标记照常显示
+    localRoutes.set('h3', {
+      base: 'http://127.0.0.1:9000',
+      port: 9000,
+      authRequired: false,
+    })
+    routeChoices.set('h3', 'relay')
     render(<TopBar />)
     fireEvent.click(screen.getByTitle(/右键可管理/))
-    expect(screen.getByText('本机')).not.toBeNull()
-    expect(screen.getByText('Hub')).not.toBeNull()
-    expect(screen.getByTitle(/直连本机 127\.0\.0\.1/)).not.toBeNull()
+    // 有近路候选的行标通道：h1 直连、h3 中继
+    expect(screen.getByText('直连')).not.toBeNull()
+    expect(screen.getByText('中继')).not.toBeNull()
+    expect(screen.getByTitle(/直连 http:\/\/127\.0\.0\.1:8765/)).not.toBeNull()
     expect(screen.getByTitle(/经 Hub 中继/)).not.toBeNull()
+    // h2 无近路候选：行内不标通道，悬停提示也不带通路信息
+    const h2 = screen.getByTitle(/切换到 H2/)
+    expect(h2.getAttribute('title')).not.toContain('中继')
+    expect(h2.closest('div')?.textContent).not.toMatch(/直连|待验证|中继/)
+    expect(screen.getAllByText(/直连|待验证|中继/)).toHaveLength(2)
   })
 
   it('host 列表行显示实时状态（思考中/待处理/启动中/空闲）', () => {

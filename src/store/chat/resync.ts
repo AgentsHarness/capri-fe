@@ -1,4 +1,5 @@
 import type { ChatState } from './types'
+import { loadHistoryWithTaskProbe } from './loadHistory'
 
 /**
  * hub 慢消费者保护（resync）→ 全量重建。
@@ -23,5 +24,7 @@ export function handleResyncRebuild(get: () => ChatState): void {
   // 无活动会话（hub 首屏未选 host / 尚未 hello）：没有可重建的视图，
   // transport 已重置序号状态，直接忽略。
   if (!sessionId || !cwd) return
-  void get().loadHistory(sessionId, cwd)
+  // 与快照同时探一次在跑任务：全量重建同样要跳过仍在跑任务的那行
+  // `Task started`（见 loadHistoryWithTaskProbe）。
+  void loadHistoryWithTaskProbe(get, sessionId, cwd)
 }
