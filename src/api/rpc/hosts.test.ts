@@ -2,7 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { LocalTransport } from '../localTransport'
 import type { HostInfo } from '../types'
 import type { TransportCore } from '../transport'
-import { clearHostRegistryHandoff, hostsRpc, rememberHostRegistry } from './hosts'
+import {
+  clearHostRegistryHandoff,
+  freshHostRegistry,
+  hostsRpc,
+  rememberHostRegistry,
+} from './hosts'
 
 function h(hostId: string, over: Partial<HostInfo> = {}): HostInfo {
   return { hostId, hostName: hostId, online: true, ...over }
@@ -33,6 +38,8 @@ function asHostApi(t: LocalTransport) {
     listHosts(): Promise<{ hosts: HostInfo[]; defaultHostId?: string }>
     probeAccess(): Promise<'ok' | 'need_token' | 'error'>
     setConnectionMode(mode: 'local' | 'hub', hubUrl?: string): void
+    detectMode(): Promise<{ mode: 'local' | 'hub'; hubUrl: string; localHostId?: string }>
+    discoverLocalHost(hosts?: unknown): Promise<string | null>
   }
 }
 
@@ -62,16 +69,24 @@ describe('listHosts 注册表交接', () => {
     expect(r.hosts[0].hostId).toBe('other')
   })
 
-  it('快照只消费一次：下一次 listHosts 回到真实请求', async () => {
-    const fetchMock = vi.fn(() => json({ hosts: [h('fresh')], defaultHostId: 'z' }))
-    rememberHostRegistry('https://hub.example/api/hosts', {
-      hosts: [h('stale')],
-      defaultHostId: 'stale',
-    })
-    const c = core('https://hub.example', fetchMock)
-    expect((await hostsRpc.listHosts.call(c)).hosts[0].hostId).toBe('stale')
-    expect((await hostsRpc.listHosts.call(c)).hosts[0].hostId).toBe('fresh')
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+  it('交接窗口内可重复取用；超窗一律重问', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetchMock = vi.fn(() => json({ hosts: [h('fresh')] }))
+      const c = core('https://hub.example', fetchMock)
+      rememberHostRegistry('https://hub.example/api/hosts', { hosts: [h('stale')] })
+      // 同一窗口里第二次仍然用快照（启动链四处要同一份文档）
+      expect(freshHostRegistry('https://hub.example/api/hosts')?.hosts[0].hostId).toBe('stale')
+      expect((await hostsRpc.listHosts.call(c)).hosts[0].hostId).toBe('stale')
+      expect(fetchMock).not.toHaveBeenCalled()
+      // 越过窗口年龄 → 快照作废，listHosts 回到真实请求
+      vi.advanceTimersByTime(1600)
+      expect(freshHostRegistry('https://hub.example/api/hosts')).toBeNull()
+      expect((await hostsRpc.listHosts.call(c)).hosts[0].hostId).toBe('fresh')
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('renameHost 写过后交接作废：随后的 listHosts 必须问到新名字', async () => {
@@ -113,5 +128,30 @@ describe('probeAccess 交出自己的注册表应答', () => {
     expect(await t.probeAccess()).toBe('need_token')
     expect(await t.listHosts()).toEqual({ hosts: [h('mba')], defaultHostId: undefined })
     expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('detectMode 问过的注册表直接回答门禁，probeAccess 不再发请求', async () => {
+    const t = asHostApi(new LocalTransport('', 'tok'))
+    const fetchMock = vi.fn(() =>
+      json({
+        hosts: [h('mba'), h('mbp')],
+        defaultHostId: 'mba',
+        authRequired: true,
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    // 同源 hub 部署：base 空，detectMode 与 probeAccess 问的是同一个 URL
+    const mode = await t.detectMode()
+    expect(mode).toEqual({ mode: 'hub', hubUrl: '' })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(await t.probeAccess()).toBe('ok')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    // 同一次启动里端口表与 host 列表也共用这一份
+    await t.discoverLocalHost()
+    expect(await t.listHosts()).toEqual({
+      hosts: [h('mba'), h('mbp')],
+      defaultHostId: 'mba',
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })

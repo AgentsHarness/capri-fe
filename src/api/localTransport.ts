@@ -3,7 +3,7 @@ import { loadStr, removeKey, saveStr } from '../lib/storage'
 import type { TransportHandler, TransportMode } from './transport'
 import { EventSequencer, type SequencedEvent } from './liveSequencing'
 import { rpcMixins } from './rpc/mixins'
-import { clearHostRegistryHandoff, rememberHostRegistry, takeHostRegistry } from './rpc/hosts'
+import { clearHostRegistryHandoff, rememberHostRegistry, freshHostRegistry } from './rpc/hosts'
 
 
 function resolveAccessToken(): string {
@@ -424,7 +424,7 @@ export class LocalTransport {
       const url = `${this.apiBase()}/api/hosts`
       // 先吃注册表交接快照：detectMode / probeAccess / listHosts 问的就是这个
       // URL 的同一份数据，这里再发一次纯属白跑一趟 hub 往返。
-      const handed = takeHostRegistry(url)
+      const handed = freshHostRegistry(url)
       if (handed) {
         list = handed.hosts
       } else {
@@ -541,7 +541,9 @@ export class LocalTransport {
         // hubLevel：模式探测是 hub 级请求（不带 ?host=），绝不能被
         // host 切换 / setConnectionMode 的 abortInflight 风暴打断——
         // 被 abort 会走下面的 catch 盲判成 local 模式。
-        { auth: this.allowDetectAuth, hubLevel: true },
+        // 手里已有密钥就带上：hub 的 /api/hosts 不像 capri-host 那样开放，
+        // 空手去问只会换回 401——白跑一趟，还看不见注册表（也就无从交接）。
+        { auth: this.allowDetectAuth || this.accessToken !== '', hubLevel: true },
       )
     } catch {
       this.localAuthRequired = false
@@ -608,6 +610,13 @@ export class LocalTransport {
       // 'error'，调用方（App）把 'error' 当「网络问题也进主界面」处理，
       // 于是本该弹出的密钥门禁被跳过。
       const url = `${this.apiBase()}/api/hosts`
+      // 「能不能访问」这个问题，detectMode 刚问过的那个 URL 的应答已经回答了
+      // （200 本身即访问通过，authRequired 与本地密钥是否齐备决定要不要进门禁）
+      // ——交接窗口内直接据此作答，不再问第二遍。
+      const handed = freshHostRegistry(url)
+      if (handed) {
+        return handed.authRequired && !this.accessToken ? 'need_token' : 'ok'
+      }
       const res = await this.fetch(url, {}, { hubLevel: true })
       if (res.status === 401) return 'need_token'
       if (!res.ok) return 'error'

@@ -3,14 +3,14 @@ import { AccessTokenError, PrefsConflictError } from '../transport'
 import type { HostInfo, HubPrefsDoc } from '../types'
 
 /**
- * 启动期注册表交接缓存。`GET {apiBase}/api/hosts` 在同一次页面加载里会被
- * 问好几次：detectMode 判模式、probeAccess 过鉴权门禁、refreshHosts 选
- * host——三处问的是同一个 URL 的同一份数据。谁先问谁把应答按 URL 存下来，
- * 后续 `listHosts` 命中即直接用（消费一次即清），省掉那一趟往返。
+ * 启动期注册表交接缓存。同一个 `GET {apiBase}/api/hosts` 在一次启动里要被
+ * 用四处：detectMode 判模式、probeAccess 过鉴权门禁、discoverLocalHost 拿
+ * 端口表、refreshHosts 选 host——都是同一个 URL 的同一份文档。谁先问到谁把
+ * 应答按 URL 存下，窗口内的其余调用直接取用。
  *
- * 只作「同端点、刚问过」的交接：凭证变（setAccessToken）、模式/hub 地址变
- * （setConnectionMode）、注册表自己被写（rename / unpair / 配对码）都会清空，
- * 所以 hosts_changed 之后的刷新永远走真实请求，不会拿到旧列表。
+ * 窗口很短（REGISTRY_HANDOFF_MS）且只服务「刚问过」这一语义：超窗一律重问，
+ * 凭证变（setAccessToken）与注册表被写（rename / unpair）立即清空。所以
+ * ready / hosts_changed 这类常规刷新拿不到旧数据，只有启动那一瞬能省。
  */
 export type HostRegistrySnapshot = {
   hosts: HostInfo[]
@@ -19,7 +19,7 @@ export type HostRegistrySnapshot = {
 }
 
 /** 交接窗口：超过这个年龄的快照不再算「刚问过」。 */
-const REGISTRY_HANDOFF_MS = 5000
+const REGISTRY_HANDOFF_MS = 1500
 const registryHandoff = new Map<string, { at: number; snap: HostRegistrySnapshot }>()
 
 export function rememberHostRegistry(url: string, snap: HostRegistrySnapshot): void {
@@ -27,11 +27,14 @@ export function rememberHostRegistry(url: string, snap: HostRegistrySnapshot): v
   registryHandoff.set(url, { at: Date.now(), snap })
 }
 
-/** 取走某端点的交接快照（取不到/过期返回 null）；无论命中与否都清掉该条。 */
-export function takeHostRegistry(url: string): HostRegistrySnapshot | null {
+/** 某端点「刚问过」的注册表应答（超窗或没有则 null）。同一窗口内可重复取用。 */
+export function freshHostRegistry(url: string): HostRegistrySnapshot | null {
   const hit = registryHandoff.get(url)
-  registryHandoff.delete(url)
-  if (!hit || Date.now() - hit.at > REGISTRY_HANDOFF_MS) return null
+  if (!hit) return null
+  if (Date.now() - hit.at > REGISTRY_HANDOFF_MS) {
+    registryHandoff.delete(url)
+    return null
+  }
   return hit.snap
 }
 
@@ -47,7 +50,7 @@ export const hostsRpc = {
     // 它，否则 hosts_changed 广播触发的 refreshHosts 会静默失败、列表
     // 不更新；StrictMode 双挂载的 disconnect 同样不能 abort 它。
     const url = `${this.apiBase()}/api/hosts`
-    const handed = takeHostRegistry(url)
+    const handed = freshHostRegistry(url)
     if (handed) return { hosts: handed.hosts, defaultHostId: handed.defaultHostId }
     const res = await this.fetch(url, {}, { hubLevel: true })
     const data = (await res.json().catch(() => ({}))) as {
