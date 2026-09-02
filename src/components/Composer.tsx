@@ -106,6 +106,11 @@ export function Composer() {
   // 就绪——目标会话 busy/ready 由 host 的 /api/sessions roster 提前
   // 可知（refreshSessions），回放期间状态行保持可见。
   const historyLoading = useChatStore((s) => s.historyLoading)
+  // 建会话 POST 在飞（目录右键"在此目录新建会话" / /new / 空状态首条
+  // 消息自动创建）：就绪（sessionId 锚定）之前锁定输入——readOnly +
+  // 吞掉键盘/粘贴/拖放，防止窗口期输入（首条消息会误触发第二次建会话
+  // POST，且又丢失右键指定的 cwd）。POST 收口（含失败）即解锁。
+  const newSessionPending = useChatStore((s) => s.newSessionPending)
   const usage = useChatStore((s) => s.usage)
   const genRate = useChatStore((s) => s.genRate)
   const statusText = useChatStore((s) => s.statusText)
@@ -736,6 +741,7 @@ export function Composer() {
     (busy ||
       conn === 'connecting' ||
       recapPending ||
+      newSessionPending ||
       idleCueVisible ||
       localLive)
   // 生成速度（状态行总时间右侧）：host 推送的 gen_rate（字符/秒），
@@ -747,13 +753,13 @@ export function Composer() {
   // 回放中（historyLoading）也要转 spinner：会话切换加载期间状态行
   // 显示「回放中…」，与 busy 臂共用同一旋转动画。
   useEffect(() => {
-    if (!statusVisible && !historyLoading) return
+    if (!statusVisible && !historyLoading && !newSessionPending) return
     const t = window.setInterval(
       () => setSpinnerFrame((v) => (v + 1) % SPINNER_FRAMES.length),
       SPINNER_INTERVAL_MS,
     )
     return () => window.clearInterval(t)
-  }, [statusVisible, historyLoading])
+  }, [statusVisible, historyLoading, newSessionPending])
   // TUI MONITOR_PULSE_DIVISOR = 2 × SPINNER_DIVISOR: the idle cue's
   // `○ ◎ ◉ ◎` breath runs at half the active spinner's cadence.
   const pulseFrame =
@@ -1114,12 +1120,22 @@ export function Composer() {
             加载完毕立即按真实状态渲染（busy 臂 / 已切换文案），不再
             整行淡出。空态（真正空闲）时外层容器零高度，不占布局。 */}
         <div>
-          {(statusVisible || historyLoading) && (
+          {(statusVisible || historyLoading || newSessionPending) && (
           <div
             className="flex min-h-5 items-center gap-1.5 pb-2 pr-0.5 font-ui text-[13.5px] leading-[1.4] select-none"
             style={{ paddingLeft: COMPOSER_BODY_PAD_LEFT_PX }}
           >
-            {historyLoading ? (
+            {newSessionPending ? (
+              // 建会话 POST 在飞：composer 锁定，状态行给明确反馈
+              // （锁定期内输入一律吞掉，见下方 readOnly/键盘守卫）。
+              <>
+                <span className="inline-flex w-[1.25em] shrink-0 items-center justify-center leading-none text-gn-muted">
+                  {SPINNER_FRAMES[spinnerFrame]}
+                </span>
+                <span className="truncate text-gn-gray-dim">正在创建会话…</span>
+                <span className="flex-1" />
+              </>
+            ) : historyLoading ? (
               // 回放中：session/load 重放历史期间（loadHistory + 宽限
               // 窗口）的状态行内容，加载完毕立即切换真实状态。
               <>
@@ -1305,8 +1321,10 @@ export function Composer() {
           style={{ borderColor }}
           data-prompt-focused={promptFocused ? '1' : '0'}
           onMouseDown={(e) => {
-            // Clicking chrome focuses the textarea (don't steal from buttons)
+            // Clicking chrome focuses the textarea (don't steal from buttons).
+            // 锁定（建会话在飞）时不把焦点吸进一个只读框。
             if ((e.target as HTMLElement).closest('button, a')) return
+            if (newSessionPending) return
             taRef.current?.focus()
           }}
         >
@@ -1446,6 +1464,8 @@ export function Composer() {
                 ref={taRef}
                 rows={1}
                 value={text}
+                readOnly={newSessionPending}
+                aria-disabled={newSessionPending}
                 onChange={(e) => {
                   const v = e.target.value
                   // TUI shell mode: typing `!` into an empty buffer enters
@@ -1472,6 +1492,13 @@ export function Composer() {
                 }}
                 onBlur={() => setFocused(false)}
                 onKeyDown={(e) => {
+                  // 建会话 POST 在飞（就绪前）：composer 锁定——吞掉
+                  // 一切键（含 Enter/Esc/slash 触发），readOnly 只是兜底
+                  // 层，自定义 Enter 提交/快捷键钩子若不吞会绕过它。
+                  if (newSessionPending) {
+                    e.preventDefault()
+                    return
+                  }
                   // IME composition (Chinese pinyin etc.): Enter commits the
                   // candidate and Backspace edits the composition — hand
                   // composition keys through untouched or Enter would send
@@ -1920,6 +1947,11 @@ export function Composer() {
                   }
                 }}
                 onBeforeInput={(e) => {
+                  // 锁定期间禁止一切输入通道（IME/拖放插入）。
+                  if (newSessionPending) {
+                    e.preventDefault()
+                    return
+                  }
                   // IME / drag-drop inserts into a chip label are swallowed.
                   const el = taRef.current
                   if (!el) return
@@ -1927,7 +1959,15 @@ export function Composer() {
                     e.preventDefault()
                   }
                 }}
-                onPaste={onPaste}
+                onPaste={(e) => {
+                  // 锁定期间禁止粘贴（readOnly 不拦浏览器事件，chip/图片
+                  // 走的是 setText/setChips 程序化写入）。
+                  if (newSessionPending) {
+                    e.preventDefault()
+                    return
+                  }
+                  onPaste(e)
+                }}
                 onDragOver={(e) => {
                   // Allow the drop so the browser doesn't navigate to the
                   // file (image drop → chip below).
@@ -1935,6 +1975,8 @@ export function Composer() {
                 }}
                 onDrop={(e) => {
                   e.preventDefault()
+                  // 锁定期间禁止拖放插入图片 chip。
+                  if (newSessionPending) return
                   const files = Array.from(e.dataTransfer.files).filter((f) =>
                     f.type.startsWith('image/'),
                   )
@@ -1982,14 +2024,16 @@ export function Composer() {
                     : undefined
                 }
                 placeholder={
-                  shellMode
-                    ? '发送命令给 agent（! 前缀）'
-                    : // 占位提示只看真实焦点（focused），不看 store 的
-                      // focusMode：后者默认就是 'prompt' 且失焦不清，
-                      // 用它判断会导致「Build anything」几乎永远不显示。
-                      focused
-                      ? ''
-                      : 'Build anything'
+                  newSessionPending
+                    ? '正在创建会话…'
+                    : shellMode
+                      ? '发送命令给 agent（! 前缀）'
+                      : // 占位提示只看真实焦点（focused），不看 store 的
+                        // focusMode：后者默认就是 'prompt' 且失焦不清，
+                        // 用它判断会导致「Build anything」几乎永远不显示。
+                        focused
+                        ? ''
+                        : 'Build anything'
                 }
                 spellCheck={false}
                 className="gn-no-scrollbar min-h-[20px] flex-1 resize-none bg-transparent font-ui text-[13.5px] leading-[1.55] text-gn-fg outline-none placeholder:text-gn-gray"

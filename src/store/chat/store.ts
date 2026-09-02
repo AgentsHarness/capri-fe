@@ -45,6 +45,7 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
   lastCompletedTurn: undefined,
   conn: 'connecting',
   statusText: '连接中…',
+  newSessionPending: false,
   recapPendingFor: undefined,
   recapCache: {},
   awaitingNext: false,

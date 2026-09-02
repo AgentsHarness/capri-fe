@@ -70,8 +70,18 @@ describe('开新对话后恢复状态栏 git 分支', () => {
     // resetSessionState 在发起 POST 前同步清空 gitInfo。
     await wait(0)
     expect(useChatStore.getState().gitInfo).toBeUndefined()
+    // 就绪前 composer 锁定标志置位；释放 POST 响应（锚定）后收口清除。
+    expect(useChatStore.getState().newSessionPending).toBe(true)
     releaseNewSession?.()
     await creating
+    expect(useChatStore.getState().newSessionPending).toBe(false)
+    expect(useChatStore.getState().sessionId).toBe(NEW_SID)
+  })
+
+  it('POST 失败：锁定标志同样收口（不残留卡死 composer）', async () => {
+    vi.mocked(transport.newSession).mockRejectedValue(new Error('boom'))
+    await expect(useChatStore.getState().newSession()).rejects.toThrow('boom')
+    expect(useChatStore.getState().newSessionPending).toBe(false)
   })
 
   it('新会话锚定后补拉 git-info，分支恢复显示', async () => {

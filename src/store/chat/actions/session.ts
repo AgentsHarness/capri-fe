@@ -379,6 +379,8 @@ export function sessionActions(set: SetState, get: () => ChatState) {
     // 会穿过所有会话守卫——hello handler 凭此标志只吸收快照、不重锚。
     runtime.newSessionInFlight = true
     runtime.newSessionInFlightGeneration = newSessionGen
+    // composer 锁定：就绪（POST 响应回填 sessionId）之前禁止输入。
+    set({ newSessionPending: true })
     let res: unknown
     try {
       res = await transport.newSession({
@@ -389,6 +391,9 @@ export function sessionActions(set: SetState, get: () => ChatState) {
       if (runtime.newSessionInFlightGeneration === newSessionGen) {
         runtime.newSessionInFlight = false
         runtime.newSessionInFlightGeneration = undefined
+        // 收口即解锁（成功/失败/超时都到这里；被更新的复位作废时
+        // generation 不匹配，复位自己已把标志清掉）。
+        set({ newSessionPending: false })
       }
     }
     if (newSessionGen !== runtime.sessionSwitchGen || !isAsyncScopeCurrent(get, hostScope)) return
