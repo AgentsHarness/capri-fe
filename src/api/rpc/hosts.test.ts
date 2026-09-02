@@ -144,14 +144,21 @@ describe('probeAccess 交出自己的注册表应答', () => {
     const mode = await t.detectMode()
     expect(mode).toEqual({ mode: 'hub', hubUrl: '' })
     expect(fetchMock).toHaveBeenCalledTimes(1)
+    // App 的真实顺序：detectMode 之后立刻 setConnectionMode，才谈得上门禁。
+    // hub 模式下门禁那把就是 hub 槽。
+    t.setConnectionMode('hub', mode.hubUrl)
     expect(await t.probeAccess()).toBe('ok')
     expect(fetchMock).toHaveBeenCalledTimes(1)
-    // 同一次启动里端口表与 host 列表也共用这一份
+    // 同一次启动里端口表与 host 列表也共用这一份：hub 的 /api/hosts 只问一次
+    // （多出来的请求是本机 127.0.0.1 端口的近路探测，不算 hub 往返）。
     await t.discoverLocalHost()
     expect(await t.listHosts()).toEqual({
       hosts: [h('mba'), h('mbp')],
       defaultHostId: 'mba',
     })
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const hubAsks = fetchMock.mock.calls.filter(
+      (args: unknown[]) => !String(args[0]).includes('127.0.0.1'),
+    )
+    expect(hubAsks).toHaveLength(1)
   })
 })

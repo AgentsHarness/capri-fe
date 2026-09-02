@@ -3,6 +3,23 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { AccessTokenGate } from './AccessTokenGate'
 
 describe('AccessTokenGate', () => {
+  /**
+   * 纯 local（Host 没配 HUB_URL）时门后根本没有 Hub：文案不能再让用户去输
+   * 「Hub 的密钥」，否则他会拿 Hub 那把来敲本机的门，或反过来以为自己配错了。
+   */
+  it('local 模式 → 文案说这台 Host，不提 Hub', () => {
+    render(<AccessTokenGate local hostName="Office PC" onSubmit={vi.fn()} />)
+    expect(screen.getByRole('heading', { name: '输入本机访问密钥' })).toBeInTheDocument()
+    expect(screen.getByText(/Office PC/)).toBeInTheDocument()
+    expect(screen.queryByText(/此 Hub 已启用访问控制/)).toBeNull()
+  })
+
+  it('hub 模式（默认）→ 仍是 Hub 文案', () => {
+    render(<AccessTokenGate onSubmit={vi.fn()} />)
+    expect(screen.getByRole('heading', { name: '输入访问密钥' })).toBeInTheDocument()
+    expect(screen.getByText(/此 Hub 已启用访问控制/)).toBeInTheDocument()
+  })
+
   it('挂载后聚焦输入框并渲染标题', () => {
     render(<AccessTokenGate onSubmit={vi.fn()} />)
     expect(screen.getByRole('heading', { name: '输入访问密钥' })).toBeInTheDocument()

@@ -4,6 +4,7 @@ import {
   Boxes,
   GitBranch,
   History,
+  LogOut,
   Palette,
   Plus,
   Puzzle,
@@ -37,15 +38,20 @@ import {
   RestartAgentModal,
 } from './HostActions'
 
-/** Hub 模式下列表行的通路标记：有已验证 127.0.0.1 近路的是「本机」，其余经 Hub。 */
-function hostRouteLabel(hasLocalRoute: boolean): '本机' | 'Hub' {
-  return hasLocalRoute ? '本机' : 'Hub'
+/**
+ * Hub 模式下列表行的通路标记（transport.activeRouteFor 的三态文案）：
+ * - 直连 —— 本机近路可用，API/SSE 不绕 hub；
+ * - 待验证 —— 探到了本机候选，但还差这台自己的钥匙，此刻仍走中继；
+ * - 中继 —— 只有 hub 一条路（同机之外的一切机器，或用户显式选了中继）。
+ */
+function hostRouteLabel(state: 'direct' | 'pending' | 'relay'): '直连' | '待验证' | '中继' {
+  return state === 'direct' ? '直连' : state === 'pending' ? '待验证' : '中继'
 }
 
-/** 菜单打开位置边缘夹取：菜单宽 ~184px、高 ~80px，贴着视口边缘。 */
+/** 菜单打开位置边缘夹取：菜单宽 208px（w-52）、高 ~200px，贴着视口边缘。 */
 function clampMenuPos(x: number, y: number): { x: number; y: number } {
   return {
-    x: Math.max(4, Math.min(x, window.innerWidth - 188)),
+    x: Math.max(4, Math.min(x, window.innerWidth - 212)),
     y: Math.max(4, Math.min(y, window.innerHeight - 136)),
   }
 }
@@ -244,9 +250,12 @@ export function WorkspaceBar({
 export function TopBar({
   onOpenMcp,
   onOpenGit,
+  onLogout,
 }: {
   onOpenMcp?: () => void
   onOpenGit?: () => void
+  /** 退出登录：只清 hub 那把（各台 host 的近路钥匙保留）。无密钥时不显示。 */
+  onLogout?: () => void
 }) {
   const hostName = useChatStore((s) => s.hostName)
   const hostId = useChatStore((s) => s.hostId)
@@ -254,6 +263,7 @@ export function TopBar({
   const mode = useChatStore((s) => s.mode)
   const selectedHostId = useChatStore((s) => s.selectedHostId)
   const switchHost = useChatStore((s) => s.switchHost)
+  const setHostRoute = useChatStore((s) => s.setHostRoute)
   const conn = useChatStore((s) => s.conn)
   const layerErrors = useChatStore((s) => s.layerErrors)
   const resetToEmpty = useChatStore((s) => s.resetToEmpty)
@@ -408,10 +418,14 @@ export function TopBar({
                   // hosts 更新会带动重绘，通路标记随之刷新。近路是按 hostId 逐台
                   // 验证的（同机可能有多台 host，也可能一台都没有）。
                   const localRoute = transport.getLocalRoute(h.hostId)
-                  const route = hostRouteLabel(localRoute != null)
-                  const routeHint = localRoute
-                    ? `选中后 API/SSE 直连 ${localRoute.base || '本机'}`
-                    : '经 Hub 中继'
+                  const routeState = transport.activeRouteFor(h.hostId)
+                  const route = hostRouteLabel(routeState)
+                  const routeHint =
+                    routeState === 'direct'
+                      ? `API/SSE 直连 ${localRoute?.base || '本机'}`
+                      : routeState === 'pending'
+                        ? '已探到本机这台，等它的钥匙（现在走 Hub 中继）'
+                        : '经 Hub 中继'
                   return (
                     <div
                       key={h.hostId}
@@ -446,7 +460,13 @@ export function TopBar({
                             {h.hostName}
                             {current && <span className="ml-1.5 text-[10px] text-gn-cyan">当前</span>}
                             <span
-                              className={`ml-1.5 text-[10px] ${route === '本机' ? 'text-gn-green' : 'text-gn-gutter'}`}
+                              className={`ml-1.5 text-[10px] ${
+                                route === '直连'
+                                  ? 'text-gn-green'
+                                  : route === '待验证'
+                                    ? 'text-gn-yellow'
+                                    : 'text-gn-gutter'
+                              }`}
                             >
                               {route}
                             </span>
@@ -470,7 +490,7 @@ export function TopBar({
                           setMenuHost(
                             menuHost?.host.hostId === h.hostId
                               ? null
-                              : { host: h, pos: clampMenuPos(r.right - 176, r.bottom + 2) },
+                              : { host: h, pos: clampMenuPos(r.right - 208, r.bottom + 2) },
                           )
                         }}
                         aria-label={`${h.hostName} 操作`}
@@ -527,6 +547,8 @@ export function TopBar({
                 setMenuHost(null)
                 setRestartTarget(h)
               }}
+              routeState={transport.activeRouteFor(menuHost.host.hostId)}
+              onRoute={(h, choice) => void setHostRoute(h.hostId, choice)}
               // 重启作用于当前选中 host 的 agent（transport 按选中
               // host 路由）；非当前 host 行不显示重启项，避免误解。
               canRestart={menuHost.host.hostId === selectedHostId}
@@ -598,6 +620,17 @@ export function TopBar({
             <Settings size={13} strokeWidth={2} aria-hidden />
             settings
           </button>
+          {onLogout && transport.getAccessToken() && (
+            <button
+              type="button"
+              onClick={onLogout}
+              className="inline-flex items-center gap-1 rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+              title="退出登录（清掉本机保存的 Hub 密钥；各台 Host 的近路钥匙保留）"
+            >
+              <LogOut size={13} strokeWidth={2} aria-hidden />
+              退出
+            </button>
+          )}
         </div>
         {/* Mobile-only new — sits left of history (no ⋮ dive needed).
             Desktop relies on the sidebar "会话 new" header button. */}
@@ -797,6 +830,20 @@ export function TopBar({
                   <Settings size={14} strokeWidth={2} aria-hidden />
                   settings
                 </button>
+                {onLogout && transport.getAccessToken() && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMoreOpen(false)
+                      onLogout()
+                    }}
+                    className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                    title="退出登录（清掉本机保存的 Hub 密钥；各台 Host 的近路钥匙保留）"
+                  >
+                    <LogOut size={14} strokeWidth={2} aria-hidden />
+                    退出登录
+                  </button>
+                )}
               </div>
             </>
           )}
