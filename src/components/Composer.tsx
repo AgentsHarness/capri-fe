@@ -2024,16 +2024,14 @@ export function Composer() {
                     : undefined
                 }
                 placeholder={
-                  newSessionPending
-                    ? '正在创建会话…'
-                    : shellMode
-                      ? '发送命令给 agent（! 前缀）'
-                      : // 占位提示只看真实焦点（focused），不看 store 的
-                        // focusMode：后者默认就是 'prompt' 且失焦不清，
-                        // 用它判断会导致「Build anything」几乎永远不显示。
-                        focused
-                        ? ''
-                        : 'Build anything'
+                  shellMode
+                    ? '发送命令给 agent（! 前缀）'
+                    : // 占位提示只看真实焦点（focused），不看 store 的
+                      // focusMode：后者默认就是 'prompt' 且失焦不清，
+                      // 用它判断会导致「Build anything」几乎永远不显示。
+                      focused
+                      ? ''
+                      : 'Build anything'
                 }
                 spellCheck={false}
                 className="gn-no-scrollbar min-h-[20px] flex-1 resize-none bg-transparent font-ui text-[13.5px] leading-[1.55] text-gn-fg outline-none placeholder:text-gn-gray"
