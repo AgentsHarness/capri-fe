@@ -350,18 +350,58 @@ function diffContentPath(tc: ToolCall): string | undefined {
 }
 
 /**
+ * 匿名调用的工具族：内容指纹之外的第二判据。
+ *
+ * start 帧带 `kind`（或扩展分类 `_meta['x.ai/tool'].kind`），完成帧常常两者都
+ * 没有、但带 serde 内部标签 `rawOutput.type`（Bash / GrepSearch / ReadFile /
+ * SearchReplace …）——同一个工具的两帧因此可以对上。并发调用乱序回来时（一条
+ * 消息里 bash 和 grep 同时在跑，grep 的无指纹完成帧先到），这是唯一能把正文
+ * 归对行的判据。认不出族（`other` / 未知标签）一律返回 undefined，交给更弱
+ * 的规则，绝不猜。
+ */
+const ANON_KIND_FAMILY: Record<string, string> = {
+  execute: 'execute',
+  bash: 'execute',
+  shell: 'execute',
+  read: 'read',
+  search: 'search',
+  edit: 'edit',
+  write: 'edit',
+}
+
+const ANON_RAW_OUTPUT_FAMILY: Record<string, string> = {
+  Bash: 'execute',
+  BackgroundTaskStarted: 'execute',
+  GrepSearch: 'search',
+  GlobSearch: 'search',
+  ReadFile: 'read',
+  SearchReplace: 'edit',
+  WriteFile: 'edit',
+}
+
+export function anonFamilyOf(tc: ToolCall | undefined): string | undefined {
+  if (!tc) return undefined
+  const kind = typeof tc.kind === 'string' ? tc.kind.toLowerCase() : ''
+  const byKind = ANON_KIND_FAMILY[kind] ?? ANON_KIND_FAMILY[xaiToolKind(tc) ?? '']
+  if (byKind) return byKind
+  const tag = (tc.rawOutput as { type?: unknown } | undefined)?.type
+  return typeof tag === 'string' ? ANON_RAW_OUTPUT_FAMILY[tag] : undefined
+}
+
+/**
  * Routing target for a tool_call_update whose toolCallId is empty. Some
  * OpenAI/responses-compatible endpoints hand back function calls with no
  * call_id, and the agent relays that blank key verbatim, so nothing can be
  * looked up in toolIndex — the row sat at "Running" until the turn-end
  * settle (minutes for a long agentic turn). Claim the oldest unclaimed
  * anonymous row instead; `exact` says whether the content fingerprint
- * identified it, which is what makes merging raw safe.
+ * identified it, `family` says the tool family did — both are unique
+ * identifications and make merging raw safe.
  */
 export function findAnonToolTarget(
   entries: ScrollEntry[],
   tc: ToolCall,
-): { entryId: string; exact: boolean } | undefined {
+): { entryId: string; exact: boolean; family?: boolean } | undefined {
   const candidates = anonOpenToolRows(entries)
   const first = candidates[0]
   if (!first) return undefined
@@ -372,6 +412,15 @@ export function findAnonToolTarget(
         return { entryId: e.id, exact: true }
       }
     }
+  }
+  const fam = anonFamilyOf(tc)
+  if (fam) {
+    // 候选 = 同族行 + 还没亮出族的行（它的 start 帧可能正是这次调用）；
+    // 唯一候选才归属，多条 = 有歧义，交给下面的兜底。
+    const hits = candidates.filter(
+      (e) => e.kind === 'tool' && (anonFamilyOf(e.raw) ?? fam) === fam,
+    )
+    if (hits.length === 1) return { entryId: hits[0]!.id, exact: false, family: true }
   }
   return { entryId: first.id, exact: false }
 }
@@ -391,24 +440,29 @@ function anonOpenToolRows(entries: ScrollEntry[]): ScrollEntry[] {
  * scrollback and the subagent view so both attribute (and refuse to merge)
  * identically.
  *
- * `applyRaw`: the content fingerprint identified the row, or a terminal
- * update lands while exactly one anonymous row is still open (serial calls —
- * attribution is unambiguous, and read rows lose their rawOutput otherwise).
- * With several open rows a non-exact update only settles status: pasting
- * call A's output onto call B's row is real data corruption.
+ * `applyRaw`: the content fingerprint or the tool family identified the row
+ * uniquely, or a terminal update lands while exactly one anonymous row is
+ * still open (serial calls — attribution is unambiguous, and read rows lose
+ * their rawOutput otherwise). With several open rows and no unique identity a
+ * non-exact update only settles status: pasting call A's output onto call B's
+ * row is real data corruption.
  */
 export function resolveAnonToolUpdate(
   entries: ScrollEntry[],
   tc: ToolCall,
 ):
-  | { entryId: string; exact: boolean; terminal: boolean; applyRaw: boolean }
+  | { entryId: string; exact: boolean; family?: boolean; terminal: boolean; applyRaw: boolean }
   | undefined {
   const target = findAnonToolTarget(entries, tc)
   if (!target) return undefined
   const status = typeof tc.status === 'string' ? tc.status : ''
   const terminal = status === 'completed' || status === 'failed'
   const sole = anonOpenToolRows(entries).length === 1
-  return { ...target, terminal, applyRaw: target.exact || (terminal && sole) }
+  return {
+    ...target,
+    terminal,
+    applyRaw: target.exact || target.family === true || (terminal && sole),
+  }
 }
 
 /**

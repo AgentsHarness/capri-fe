@@ -27,17 +27,24 @@ const SCROLL_IDLE_HIDE_MS = 2000
 
 export type UserMessageNavItem = {
   id: string
+  /**
+   * 该轮首条信封的 msgSeq（host promptStarts 起点，append-only 稳定）。
+   * 全量目录（未加载轮）用它做跳转目标；已加载轮也有。
+   */
+  seq?: number
   /** First non-empty line, char-capped. */
   preview: string
-  /** 0-based turn ordinal among user messages. */
+  /** 0-based turn ordinal among visible user messages. */
   turnIdx: number
+  /** 该轮已在滚动区中；false = 点击会先加载该轮及之后全部内容再跳。 */
+  loaded: boolean
 }
 
 export type UserMessageNavProps = {
   items: UserMessageNavItem[]
   /** User entry currently at/above the viewport top (sticky pin / active). */
   activeId: string | null
-  onJump: (id: string) => void
+  onJump: (item: UserMessageNavItem) => void
   /**
    * Scrollback viewport element. Preferred over sibling querySelector so the
    * scroll listener binds even when this rail mounts after the first paint
@@ -199,8 +206,8 @@ export function UserMessageNav({
   }, [items, activeIdx])
 
   const handleJump = useCallback(
-    (id: string) => {
-      onJump(id)
+    (item: UserMessageNavItem) => {
+      onJump(item)
       setDirectoryOpen(false)
       setHoveredId(null)
     },
@@ -385,7 +392,7 @@ function ExpandedList({
   activeIdx: number
   hoveredId: string | null
   onHover: (id: string | null) => void
-  onJump: (id: string) => void
+  onJump: (item: UserMessageNavItem) => void
   touchUi: boolean
 }) {
   const listRef = useRef<HTMLDivElement>(null)
@@ -430,7 +437,11 @@ function ExpandedList({
             type="button"
             role="listitem"
             data-nav-id={it.id}
-            title={preview}
+            title={
+              it.loaded
+                ? preview
+                : `${preview}（点击将加载该轮及之后全部内容）`
+            }
             aria-label={`跳转到消息 ${it.turnIdx + 1}：${preview}`}
             aria-current={isActive ? 'true' : undefined}
             className={`flex w-full items-baseline gap-1.5 px-2 py-[5px] text-left font-ui text-[12px] leading-[1.35] transition-colors ${
@@ -438,13 +449,15 @@ function ExpandedList({
                 ? 'bg-gn-bg-highlight text-gn-fg font-semibold'
                 : isHover
                   ? 'bg-gn-bg-hover text-gn-fg'
-                  : 'text-gn-fg2 hover:bg-gn-bg-hover hover:text-gn-fg active:bg-gn-bg-hover'
+                  : it.loaded
+                    ? 'text-gn-fg2 hover:bg-gn-bg-hover hover:text-gn-fg active:bg-gn-bg-hover'
+                    : 'text-gn-gray hover:bg-gn-bg-hover hover:text-gn-fg active:bg-gn-bg-hover'
             }`}
             onMouseEnter={() => onHover(it.id)}
             onMouseLeave={() => onHover(null)}
             onClick={(ev) => {
               ev.stopPropagation()
-              onJump(it.id)
+              onJump(it)
             }}
           >
             <span
@@ -454,6 +467,9 @@ function ExpandedList({
               {it.turnIdx + 1}
             </span>
             <span className="min-w-0 flex-1 truncate">{preview}</span>
+            {!it.loaded && (
+              <span className="shrink-0 text-[10px] text-gn-gray-dim">未加载</span>
+            )}
           </button>
         )
       })}

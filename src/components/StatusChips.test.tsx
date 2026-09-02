@@ -104,6 +104,28 @@ describe('LiteFillChip', () => {
     fireEvent.click(btn)
     expect(vi.mocked(flushScheduledPageFills)).toHaveBeenCalledTimes(1)
   })
+
+  it('目录跳转在飞 → 同一芯片显示「跳转 N/M」+ spinner，不抢占 ◇ 待补全', () => {
+    useChatStore.setState({
+      historyJumpProgress: { current: 2, total: 5 },
+    })
+    const { container } = render(<LiteFillChip />)
+    const chip = screen.getByLabelText('跳转中：第 2/5 轮')
+    expect(chip.textContent).toContain('跳转 2/5')
+    const glyph = chip.querySelector('span')?.textContent ?? ''
+    expect(SPINNER_FRAMES).toContain(glyph)
+    expect(container.querySelector('button')).toBeNull()
+  })
+
+  it('跳转落地、仍有 lite 行 → 芯片回到 ◇N 待补全', () => {
+    useChatStore.setState({
+      historyJumpProgress: undefined,
+      entries: [liteRow()],
+      historyProjected: 'lite',
+    })
+    render(<LiteFillChip />)
+    expect(screen.getByRole('button', { name: /精简回放：1 行工具正文待补全/ })).toBeTruthy()
+  })
 })
 
 /**

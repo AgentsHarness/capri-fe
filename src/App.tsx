@@ -171,10 +171,10 @@ export default function App() {
   if (phase === 'unreachable') {
     return (
       <div className="flex h-full min-h-0 flex-col items-center justify-center gap-3 bg-gn-bg-base px-4 text-center font-ui">
-        <p className="text-[13px] text-gn-fg">连不上这台服务</p>
+        <p className="text-[13px] text-gn-fg">无法连接到服务</p>
+        {/* 整段一行到底：中文段落换行会在 JSX 里被折成空格，读起来像漏字。 */}
         <p className="max-w-sm text-[12px] leading-relaxed text-gn-muted">
-          页面没能问到自己是连在 Host 上还是 Hub 上。已保存的密钥原样保留，
-          网络恢复后重试即可。
+          页面未能确认当前应连接本机（Host）还是 Hub，已保存的访问密钥保持不变。请检查网络，或确认服务已启动后重试。
         </p>
         <button
           type="button"

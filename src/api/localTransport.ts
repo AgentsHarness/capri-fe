@@ -83,7 +83,10 @@ export type FetchOpts = {
   auth?: boolean
   /** 强制指定出示哪把钥匙（近路探路用：此刻近路还不可用，自动判定选不出归属）。 */
   forceToken?: string
-  /** 这条请求自带 401 语义（模式判定 / 门禁探测 / 探路），不参与运行时登出分流。 */
+  /**
+   * 这条请求自带 401 语义（模式判定 / 门禁探测 / 探路），不参与运行时登出
+   * 分流；同时它属于 probeInflight，任何 abort 风暴都不得打断它。
+   */
   authProbe?: boolean
 }
 
@@ -198,6 +201,15 @@ export class LocalTransport {
    * disconnect() 仍会中止它们，清理语义不变。
    */
   private hubInflight = new Set<AbortController>()
+  /**
+   * 探测请求（opts.authProbe：模式判定、门禁探测、近路探路）的在途控制器。
+   * 单开一桶是因为它们不属于任何连接代际——问的是「该连哪一端、要不要钥匙」。
+   * 重挂载时（Vite HMR / StrictMode 双挂载）上一轮 AppShell 的卸载会调
+   * disconnect()，若顺手 abort 掉**新一轮**在飞的 detectMode，它的 catch 会把
+   * 这个自伤误读成网络故障（mode: null → 「无法连接到服务」整屏挡路）。
+   * 桶里每条请求都自带超时，过期结果由调用方按代际丢弃（App 的 bootGen）。
+   */
+  private probeInflight = new Set<AbortController>()
   /**
    * Connection generation: bumped on every connect()/disconnect(). Async
    * callbacks (onopen/onclose/reconnect timer/gap-pull) capture the gen at
@@ -955,8 +967,10 @@ export class LocalTransport {
         {},
         // hubLevel：模式探测是 hub 级请求（不带 ?host=），绝不能被
         // host 切换 / setConnectionMode 的 abortInflight 风暴打断——
-        // 被 abort 会走下面的 catch 盲判成 local 模式。
-        // authProbe：这里的 401 是「该弹门禁了」的信号，不是「密钥失效」。
+        // 被 abort 会走下面的 catch 误判成网络故障。
+        // authProbe：这里的 401 是「该弹门禁了」的信号，不是「密钥失效」；
+        // 且这条请求进 probeInflight，连 disconnect() 也不许杀它（重挂载
+        // 竞态下那会把新一轮探测读成「无法连接到服务」）。
         // 手里已有密钥就带上：hub 的 /api/hosts 不像 capri-host 那样开放，
         // 空手去问只会换回 401——白跑一趟，还看不见注册表（也就无从交接）。
         {
@@ -1085,7 +1099,8 @@ export class LocalTransport {
     try {
       // hubLevel：门禁探测与选中 host 无关，被 abortInflight 打断会退成
       // 'error'，调用方（App）把 'error' 当「网络问题也进主界面」处理，
-      // 于是本该弹出的密钥门禁被跳过。
+      // 于是本该弹出的密钥门禁被跳过。authProbe 让它落在 probeInflight，
+      // 连重挂载带来的 disconnect() 也打不断。
       // authProbe：这里的 401 是「该弹门禁」，不是「手里的密钥失效」。
       const url = `${this.apiBase()}/api/hosts`
       const opts = { hubLevel: true, authProbe: true }
@@ -1313,9 +1328,14 @@ export class LocalTransport {
       headers.delete('Authorization')
     }
     const ac = new AbortController()
-    // hub 级请求（opts.hubLevel）单独跟踪：host 切换的 abort 风暴
-    // （abortInflight）不影响它；disconnect() 时两者都中止。
-    const tracked = opts.hubLevel ? this.hubInflight : this.inflight
+    // 三条在途队列：探测请求（authProbe）谁都不许 abort（见 probeInflight）；
+    // hub 级请求（hubLevel）躲过 host 切换的 abortInflight 风暴，但 disconnect()
+    // 仍会中止它们；其余是选中 host 的请求。
+    const tracked = opts.authProbe
+      ? this.probeInflight
+      : opts.hubLevel
+        ? this.hubInflight
+        : this.inflight
     tracked.add(ac)
     const sources: AbortSignal[] = []
     const timeoutMs = opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS
@@ -1746,6 +1766,8 @@ export class LocalTransport {
     // Settle every in-flight fetch (gap pulls included) so their finally
     // blocks run — gapPull releases its per-host pulling slot. Hub-level
     // requests (prefs) are settled here too, never by host switches.
+    // probeInflight 故意不碰：重挂载的这一次 disconnect 不该把**新一轮**启动
+    // 探测判成「连不上」（见该字段注释）。
     this.abortInflight()
     for (const ac of this.hubInflight) ac.abort()
     this.hubInflight.clear()

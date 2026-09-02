@@ -18,6 +18,7 @@ import {
   isTaskSpawnTool,
   isTodoTool,
   isWorkflowTool,
+  resolveAnonToolUpdate,
   shouldSuppressToolFromScrollback,
   suppressedToolIds,
   toolCallIdOf,
@@ -261,5 +262,35 @@ describe('anonToolKey / findAnonToolTarget（空 toolCallId 认领）', () => {
     })
     expect(findAnonToolTarget([entries[2]], tc({ rawInput: { command: 'C' } }))).toBeUndefined()
     expect(findAnonToolTarget([], tc({ rawInput: { command: 'A' } }))).toBeUndefined()
+  })
+
+  it('工具族判据：无指纹完成帧归到同族唯一开放行（并发乱序回来）', () => {
+    const entries: ScrollEntry[] = [
+      row('bash', { raw: tc({ kind: 'execute', rawInput: { command: 'git branch' } }) }),
+      row('grep', { raw: tc({ kind: 'search', rawInput: { path: 'src' } }) }),
+    ]
+    // grep 先完成，完成帧不带 rawInput / command（算不出指纹），只有
+    // rawOutput 的内部标签 —— 旧规则下它会被 FIFO 派给最早的 bash 行。
+    const grepDone = tc({ status: 'completed', rawOutput: { type: 'GrepSearch', stdout: 'x' } })
+    expect(findAnonToolTarget(entries, grepDone)).toEqual({
+      entryId: 'grep',
+      exact: false,
+      family: true,
+    })
+    expect(resolveAnonToolUpdate(entries, grepDone)?.applyRaw).toBe(true)
+    // 族认不出来（未知标签）→ 退回原样：FIFO + 非 exact，终态也不并正文。
+    const unknown = tc({ status: 'completed', rawOutput: { type: 'Whatever' } })
+    expect(findAnonToolTarget(entries, unknown)).toEqual({ entryId: 'bash', exact: false })
+    expect(resolveAnonToolUpdate(entries, unknown)?.applyRaw).toBe(false)
+  })
+
+  it('同族两条开放 + 无指纹完成帧：族判据不生效，绝不猜', () => {
+    const entries: ScrollEntry[] = [
+      row('g1', { raw: tc({ kind: 'search', rawInput: { path: 'a' } }) }),
+      row('g2', { raw: tc({ kind: 'search', rawInput: { path: 'b' } }) }),
+    ]
+    const done = tc({ status: 'completed', rawOutput: { type: 'GrepSearch', stdout: 'x' } })
+    expect(findAnonToolTarget(entries, done)).toEqual({ entryId: 'g1', exact: false })
+    expect(resolveAnonToolUpdate(entries, done)?.applyRaw).toBe(false)
   })
 })

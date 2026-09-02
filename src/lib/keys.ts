@@ -50,16 +50,25 @@ export const KEY = {
   lastAgentStartedAt: 'capri-fe.lastAgentStartedAt',
   /** 已针对其重播种过权限模式的 agent 实例标识。 */
   permissionReseededFor: 'capri-fe.permissionReseededFor',
-  /** 工作目录/会话置顶与待办（离线缓存）。 */
+  /** 工作目录/会话置顶与待办：条目化后的离线缓存（{v:3, entries}）。 */
   historyPins: 'capri-fe.historyPins',
-  /** 上次与 hub 对齐的 pins 快照指纹。 */
+  /**
+   * 已废弃（条目化同步不再需要，仅保留名字与迁移映射给仍在用的旧产物）：
+   * 上次与 hub 对齐的 pins 快照指纹。旧协议的「本地是否有未推送改动」判定
+   * 之源，正是取消的置顶被整份推回 hub 的入口。
+   */
   historyPinsSynced: 'capri-fe.historyPins.synced',
-  /** 是否有本地未回写 hub 的改动。 */
+  /** 有尚未被 hub 确认接受的本地改动（现仅用于安排重试）。 */
   historyPinsDirty: 'capri-fe.historyPins.dirty',
-  /** hub 侧 prefs 文档版本号。 */
+  /** hub 侧 prefs 文档版本号（条目合并用不上；旧 hub 条件写 + 排障）。 */
   historyPinsVer: 'capri-fe.historyPins.ver',
-  /** 待重放的 pins 写操作队列。 */
+  /**
+   * 已废弃：旧协议的待重放写操作队列。条目模型里每个条目自带时间戳与写入端，
+   * 不再需要单独的操作日志。
+   */
   historyPinsOps: 'capri-fe.historyPins.ops',
+  /** 本浏览器源标识（条目同分时的定序裁决），见 store/prefsEntries.ts。 */
+  historyPinsSite: 'capri-fe.historyPins.site',
 
   // ── 输入历史 ─────────────────────────────────────────────────
   /** composer 上行历史。 */

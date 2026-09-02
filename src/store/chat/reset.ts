@@ -93,6 +93,7 @@ export function resetSessionState(set: (partial: Partial<ChatState>) => void): v
     historyLoadingMore: false,
     historyLoadedAt: undefined,
     historyPromptStarts: undefined,
+    historyPromptPreviews: undefined,
     historyTurnIdx: 0,
     historyPrependedAt: undefined,
     historyAnchorId: undefined,
