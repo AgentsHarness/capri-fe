@@ -56,6 +56,7 @@ import { currentActivity } from './composer/activity'
 import { useEscLadder } from './composer/useEscLadder'
 import { useModelMenu } from './composer/useModelMenu'
 import { ModelMenu } from './composer/ModelMenu'
+import { PromptHistoryMenu } from './composer/PromptHistoryMenu'
 import { QueueStrip } from './composer/QueueStrip'
 import { useQueueNav } from './composer/useQueueNav'
 import { useSlashMenu } from './composer/useSlashMenu'
@@ -218,9 +219,10 @@ export function Composer() {
   // ── TUI prompt history recall (↑ on empty input) ──
   const [history, setHistory] = useState<HistoryItem[]>(loadPromptHistory)
   const [histOpen, setHistOpen] = useState(false)
-  // Panel list is newest-first; sel 0 = newest. ↑ walks older (TUI).
+  // Panel 渲染顺序是 TUI 的：最旧在顶、最新在底（history_search.rs 把
+  // 存储的 newest-first 数组反转），打开时选中最新一条（底部）。
+  const histItems = useMemo(() => [...history].reverse(), [history])
   const [histSel, setHistSel] = useState(0)
-  const histPanelRef = useRef<HTMLDivElement>(null)
 
   // ── TUI mid-turn send queue (Enter during a turn → queued) —
   // 选择/焦点/拖拽/键盘操作状态机 — composer/useQueueNav.ts ──
@@ -626,26 +628,23 @@ export function Composer() {
   /** Always-expanded image chips → thumbnail row above the textarea. */
   const imageChips = useMemo(() => chips.filter((c) => c.image), [chips])
 
-  // Close the recall panel on outside click or Escape. Queue 已内联进
-  // composer，不再有弹窗可关。
+  // Close the recall panel on outside-the-composer click (same chrome-scope
+  // dismissal as the slash menu; Esc is handled in the textarea key handler
+  // — the panel opens from ↑ with the textarea focused, so the key always
+  // lands there). Queue 已内联进 composer，不再有弹窗可关。
   useEffect(() => {
     if (!histOpen) return
     const onDown = (e: MouseEvent) => {
-      const t = e.target as Node
-      if (histPanelRef.current && !histPanelRef.current.contains(t)) {
+      if (
+        composerChromeRef.current &&
+        !composerChromeRef.current.contains(e.target as Node)
+      ) {
         setHistOpen(false)
       }
     }
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setHistOpen(false)
-    }
     document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [histOpen])
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [histOpen, composerChromeRef])
 
   // TUI queue: server-authoritative drain — the AGENT pops the queue head
   // at turn end (auto-drain) and broadcasts running_prompt_id for
@@ -1350,40 +1349,16 @@ export function Composer() {
             taRef.current?.focus()
           }}
         >
-          {/* Prompt history recall panel (TUI ↑ on empty input). */}
-          {histOpen && history.length > 0 && (
-            <div
-              ref={histPanelRef}
-              className="absolute bottom-full left-0 right-0 z-30 mb-1 overflow-hidden rounded border border-gn-prompt-border-active bg-gn-bg-dark shadow-2xl"
-            >
-              <div className="border-b border-gn-prompt-border px-3 py-1.5 text-[11px] font-bold text-gn-fg2">
-                提示历史
-              </div>
-              <div className="gn-no-scrollbar max-h-48 overflow-y-auto">
-                {history.map((h, i) => (
-                  <button
-                    key={`${h.ts}-${i}`}
-                    type="button"
-                    onClick={() => recallHistory(h)}
-                    onMouseEnter={() => setHistSel(i)}
-                    className={`block w-full truncate px-3 py-1 text-left text-[11.5px] transition-colors ${
-                      i === histSel
-                        ? 'bg-gn-bg-highlight text-gn-fg'
-                        : 'text-gn-fg2'
-                    }`}
-                    title={`${h.shell ? '! ' : ''}${h.text}\n${new Date(h.ts).toLocaleString()}`}
-                  >
-                    {h.shell ? (
-                      <span className="text-gn-cyan">! </span>
-                    ) : null}
-                    {h.text}
-                  </button>
-                ))}
-              </div>
-              <div className="border-t border-gn-prompt-border px-3 py-[3px] text-[10px] text-gn-muted">
-                ↑/↓ 选择 · Enter 填入 · Esc 关闭
-              </div>
-            </div>
+          {/* Prompt history recall panel (TUI ↑ on empty input) — 交互与
+              斜杠/文件浮层对齐：行样式、位置计数、选中行随动、Enter/Tab 填入。
+              列表顺序与 TUI 一致（最旧在顶、最新在底，histItems 已反转）。 */}
+          {histOpen && histItems.length > 0 && (
+            <PromptHistoryMenu
+              history={histItems}
+              selected={histSel}
+              onHover={setHistSel}
+              onPick={recallHistory}
+            />
           )}
           {/* TUI slash command menu — floats above the composer while the
               input starts with "/" (fuzzy filter, ↑/↓ + Enter/Tab pick). */}
@@ -1622,13 +1597,14 @@ export function Composer() {
                   ) {
                     if (histOpen) {
                       e.preventDefault()
+                      // TUI history_search.rs: ↑ 沿列表向上走向更旧（最旧
+                      // 在顶），↓ 向下走向更新，越过最新一条（底部）关闭。
                       if (e.key === 'ArrowUp') {
-                        setHistSel((s) => Math.min(s + 1, history.length - 1))
-                      } else if (histSel === 0) {
-                        // ↓ past the newest item closes the panel (TUI).
+                        setHistSel((s) => Math.max(0, s - 1))
+                      } else if (histSel >= histItems.length - 1) {
                         setHistOpen(false)
                       } else {
-                        setHistSel((s) => Math.max(0, s - 1))
+                        setHistSel((s) => Math.min(histItems.length - 1, s + 1))
                       }
                       return
                     }
@@ -1653,7 +1629,8 @@ export function Composer() {
                         setQueueFocus(true)
                       } else if (history.length > 0) {
                         e.preventDefault()
-                        setHistSel(0)
+                        // 打开即选中最新一条（列表底部，TUI stick_to_bottom）。
+                        setHistSel(histItems.length - 1)
                         setHistOpen(true)
                       }
                       return
@@ -1681,9 +1658,13 @@ export function Composer() {
                     return
                   }
                   if (histOpen) {
-                    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey) {
+                    // Enter/Tab 填入（与斜杠菜单 Enter/Tab 执行同构）。
+                    if (
+                      (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey) ||
+                      e.key === 'Tab'
+                    ) {
                       e.preventDefault()
-                      const item = history[histSel]
+                      const item = histItems[histSel]
                       if (item) recallHistory(item)
                       return
                     }
