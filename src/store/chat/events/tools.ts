@@ -11,7 +11,6 @@ import {
   absorbTaskOutputIntoBgTask,
   extractTarget,
   isOrphanBashStreamUpdate,
-  resolveAnonToolUpdate,
   shouldSuppressToolFromScrollback,
   suppressedToolIds,
   toolCallIdOf,
@@ -27,72 +26,6 @@ import {
 import { claimPendingToolHooks } from '../hookAttach'
 import { hookRoutingOf } from '../hookRouting'
 import { liteAfterLiveBody } from '../historyFill'
-/**
- * Route a tool_call_update that carries no toolCallId.
- *
- * Some OpenAI/responses-compatible gateways omit call_id on function calls
- * and the agent relays that blank key verbatim, so nothing can be looked up
- * in toolIndex — dropping these updates left the row at "Running" until the
- * turn-end settle (a 6-minute agentic turn showed every command block
- * spinning the whole time). Claim an unclaimed anonymous row instead;
- * resolveAnonToolUpdate (tools.ts) decides which row and whether its raw
- * may be merged — the subagent view runs the same rule.
- */
-function applyAnonToolUpdate(
-  set: SetState,
-  get: () => ChatState,
-  tc: ToolCall,
-): void {
-  const target = resolveAnonToolUpdate(get().entries, tc)
-  if (!target) return
-  const { entryId, exact, terminal, applyRaw } = target
-  const existing = get().entries.find((e) => e.id === entryId)
-  if (existing?.kind !== 'tool') return
-  const status = typeof tc.status === 'string' ? tc.status : ''
-  if (!exact && !terminal) return
-  // 合并而不是替换：富更新（rawOutput/content）不带 title/rawInput，整体
-  // 替换会让行头读不到路径（readPathOf 只认 raw.rawInput），标题丢文件名。
-  const merged: ToolCall = applyRaw ? { ...(existing.raw || {}), ...tc } : tc
-  if (
-    applyRaw &&
-    (shouldSuppressToolFromScrollback(merged) || isOrphanBashStreamUpdate(merged))
-  ) {
-    // Late classification (is_background / TaskOutput only in this update):
-    // the log belongs on the bg_task row. A blank id cannot enter
-    // suppressedToolIds, but removing the entry takes it out of the claim
-    // candidates, so later updates route elsewhere on their own.
-    set({ entries: get().entries.filter((e) => e.id !== entryId) })
-    absorbTaskOutputIntoBgTask(get, set, merged)
-    absorbBashOutputIntoBgTask(get, set, merged)
-    return
-  }
-  const nextStatus = status || existing.status
-  const running = nextStatus === 'pending' || nextStatus === 'in_progress'
-  const kindName = toolKindName(merged, existing.kindName)
-  set({
-    // A running tool settling opens the wait-for-next-token window (TUI
-    // Waiting(Model)) — same cue as the id-routed path.
-    ...(terminal ? { statusText: 'Waiting for response…' } : {}),
-    entries: get().entries.map((e) =>
-      e.id !== entryId || e.kind !== 'tool'
-        ? e
-        : {
-            ...e,
-            status: nextStatus,
-            verb: toolVerb(applyRaw ? kindName : e.kindName, running),
-            ...(applyRaw
-              ? {
-                  raw: merged,
-                  kindName,
-                  title: extractTarget(merged) || e.title,
-                  ...liteAfterLiveBody(e, merged),
-                }
-              : {}),
-            ...(terminal ? { finishedAt: Date.now() } : {}),
-          },
-    ),
-  })
-}
 
 export function handleToolEvent(
   set: SetState,
@@ -274,10 +207,7 @@ export function handleToolEvent(
         if (ev.sessionId && ev.sessionId !== get().sessionId) break
         const tc = ev.toolCallUpdate || {}
         const toolCallId = toolCallIdOf(tc)
-        if (!toolCallId) {
-          applyAnonToolUpdate(set, get, tc)
-          break
-        }
+        if (!toolCallId) break
         if (suppressedToolIds.has(toolCallId)) {
           // Final TaskOutput / Bash stream — fold log into bg_task.
           absorbTaskOutputIntoBgTask(get, set, tc)

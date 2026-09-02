@@ -7,7 +7,7 @@ import type {
 import type { SetState } from './types'
 import { nid } from './ids'
 import { formatElapsed, imageSrc, toolVerb } from './format'
-import { extractTarget, resolveAnonToolUpdate, toolCallIdOf, toolKindName } from './tools'
+import { extractTarget, toolCallIdOf, toolKindName } from './tools'
 import { liteMark } from './envelopeParse'
 import { collapsedEditBlocks } from './modeFlags'
 import { isEditToolKind } from '../../theme/toolFamily'
@@ -185,9 +185,7 @@ export function subagentViewAppend(
       const tc = ev.toolCallUpdate || {}
       const toolCallId = toolCallIdOf(tc)
       if (!toolCallId) {
-        // 空 toolCallId（qwen 等 OpenAI 兼容网关不给 call_id）：走与主
-        // scrollback 同一套归属判定，否则三件套的每条 update 都新起一行。
-        return applyAnonToolUpdateToView(sealed, tc, ev)
+        return sealed
       }
       const idx = sealed.findIndex(
         (it) => it.kind === 'tool' && it.toolCallId === toolCallId,
@@ -249,31 +247,6 @@ export function subagentViewAppend(
     default:
       return items
   }
-}
-
-/**
- * 空 toolCallId 的 update 并到既有匿名行上：归属与能否合并 raw 由
- * resolveAnonToolUpdate 决定（与主 scrollback 同一规则）。认不到行就原样
- * 返回——凭一条终态 update 造行会留下只有输出、没有标题的垃圾行。
- */
-function applyAnonToolUpdateToView(
-  items: ScrollEntry[],
-  tc: ToolCall,
-  ev: Extract<AcpEvent, { type: 'tool_call' } | { type: 'tool_call_update' }>,
-): ScrollEntry[] {
-  const target = resolveAnonToolUpdate(items, tc)
-  if (!target) return items
-  const idx = items.findIndex((it) => it.id === target.entryId)
-  const existing = idx >= 0 ? items[idx] : undefined
-  if (existing?.kind !== 'tool') return items
-  if (!target.exact && !target.terminal) return items
-  const src: ToolCall = target.applyRaw
-    ? { ...(existing.raw || {}), ...tc }
-    : // 并行多候选：只收状态，update 的 rawOutput 不落这条行。
-      { ...(existing.raw || {}), status: tc.status }
-  const next = [...items]
-  next[idx] = stampLiteSeq(subagentToolItem(src, existing), ev, existing)
-  return next
 }
 
 /**

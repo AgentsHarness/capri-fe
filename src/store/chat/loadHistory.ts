@@ -40,8 +40,15 @@ import {
   replayEventKeys,
 } from './envelopeParse'
 
-/** 等任务探活的上限（见 loadHistory 的 awaitBeforeReplay）。 */
-const TASK_PROBE_AWAIT_MS = 3000
+/**
+ * 等任务探活的上限（见 loadHistory 的 awaitBeforeReplay）。
+ *
+ * 探活本机直连约 50ms，走 hub 中继实测 1.0–1.5s，而首屏快照通常更晚落地，
+ * 所以正常情形下这道门不等任何东西。上限只为探活卡在飞（中继抖动时同一次
+ * status 实测能从 0.6ms 跳到 6.6s）兜底：宁可退化成「画了一行悬空 started」，
+ * 也不值得让首帧空等下去。
+ */
+const TASK_PROBE_AWAIT_MS = 800
 
 /**
  * Replay events received while rebuilding a history snapshot. Timestamp is
@@ -222,9 +229,8 @@ export async function loadHistory(
       noteHistoryProjection(get, detail != null, r)
       // 并行切会话（continueSession）：快照 fetch 与任务探活同时发出，
       // 但回放应用必须等探活结果（replayUpdates 跳过仍在跑任务的
-      // started 行）。探活失败已被调用方内部消化，await 不会抛。
-      // 等它有上限：探活卡在飞（host 挂住 / 中继抖动）时，宁可退化成
-      // 「画了一行 started」，也绝不能让首帧空等一个没用的请求。
+      // started 行）。探活失败已被调用方内部消化，await 不会抛；等待上限
+      // 见 TASK_PROBE_AWAIT_MS。
       if (opts.awaitBeforeReplay) {
         let waiter: ReturnType<typeof setTimeout> | undefined
         try {
