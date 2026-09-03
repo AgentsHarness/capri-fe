@@ -70,4 +70,33 @@ describe('tool_call_update 带 id 走 toolIndex', () => {
     expect(tool()).toMatchObject({ status: 'completed', verb: 'Run' })
     expect(state.entries.filter((e) => e.kind === 'tool')).toHaveLength(1)
   })
+
+  it('host 合成 id 同样走 toolIndex', () => {
+    const { state, feed, tool } = makeStore()
+    const id = 'synth:call:1700000000000:0'
+    feed({
+      type: 'tool_call',
+      toolCall: { ...callStart(LS), toolCallId: id },
+    } as AcpEvent)
+    feed({
+      type: 'tool_call_update',
+      toolCallUpdate: { ...callDone(LS, 'ok\n'), toolCallId: id },
+    } as AcpEvent)
+    expect(tool()).toMatchObject({ status: 'completed', toolCallId: id })
+    expect(state.entries.filter((e) => e.kind === 'tool')).toHaveLength(1)
+  })
+
+  it('空 toolCallId 的 update 直接丢弃（host 负责注入）', () => {
+    const { feed, tool } = makeStore()
+    feed({
+      type: 'tool_call',
+      toolCall: { ...callStart(LS), toolCallId: 'synth:call:1:0' },
+    } as AcpEvent)
+    feed({
+      type: 'tool_call_update',
+      toolCallUpdate: callDone(LS, 'should-not-apply\n'),
+    } as AcpEvent)
+    expect(tool()).toMatchObject({ status: 'pending' })
+    expect(tool()?.raw).not.toMatchObject({ status: 'completed' })
+  })
 })

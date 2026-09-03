@@ -207,6 +207,8 @@ export function handleToolEvent(
         if (ev.sessionId && ev.sessionId !== get().sessionId) break
         const tc = ev.toolCallUpdate || {}
         const toolCallId = toolCallIdOf(tc)
+        // 空 id 由 host 打上 synth:call:<ts>:<k> 后再到这里；没打上就丢弃，
+        // 不再做匿名猜谜（歧义时错配正文比转圈更糟）。
         if (!toolCallId) break
         if (suppressedToolIds.has(toolCallId)) {
           // Final TaskOutput / Bash stream — fold log into bg_task.
