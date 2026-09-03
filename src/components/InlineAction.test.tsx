@@ -3,7 +3,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { InlineAction } from './InlineAction'
 
 /**
- * 行内动作的统一约定：`[label]` 纯文本、无外边框无内边距（不把所在行撑高）、
+ * 行内动作的统一约定：`[label]` 纯文本、无外边框、hover 圆角底色，
  * 点击不冒泡到行（行级 onSelect 会弹块查看器）。
  */
 function renderAction(props: Parameters<typeof InlineAction>[0]) {
@@ -12,13 +12,12 @@ function renderAction(props: Parameters<typeof InlineAction>[0]) {
 }
 
 describe('InlineAction', () => {
-  it('渲染成 [label] 纯文本，样式里不带边框与内边距', () => {
+  it('渲染成 [label] 纯文本，无外边框，hover 圆角底色', () => {
     const btn = renderAction({ label: 'kill', onRun: () => {} })
     expect(btn.textContent).toBe('[kill]')
     expect(btn.className).not.toMatch(/border/)
-    expect(btn.className).not.toMatch(/\bpx-/)
-    expect(btn.className).not.toMatch(/\bpy-/)
-    expect(btn.className).not.toMatch(/rounded/)
+    expect(btn.className).toMatch(/rounded/)
+    expect(btn.className).toMatch(/hover:bg-/)
   })
 
   it('中文 label 同样套方括号', () => {

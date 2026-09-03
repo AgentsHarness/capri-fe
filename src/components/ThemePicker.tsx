@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { THEMES, useThemeStore } from '../store/theme'
 import type { ThemeId } from '../theme/tokens'
+import { chromeBtnClass } from '../theme/layout'
 
 const OPTIONS: { id: ThemeId; label: string; hint: string }[] = [
   { id: 'auto', label: 'Auto', hint: 'Follow system light/dark' },
@@ -37,9 +38,7 @@ export function ThemeOptions({ onSelect }: { onSelect?: (id: ThemeId) => void })
               setTheme(opt.id)
               onSelect?.(opt.id)
             }}
-            className={`flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] hover:bg-gn-bg-highlight ${
-              active ? 'bg-gn-bg-highlight/60' : ''
-            }`}
+            className={`flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] hover:bg-gn-bg-highlight ${ active ? 'bg-gn-bg-highlight/60' : '' }`}
           >
             {swatch ? (
               <span
@@ -82,7 +81,9 @@ export function ThemePicker() {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1 rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8 text-[12px] text-gn-muted"
+        aria-expanded={open}
+        aria-pressed={open}
+        className={chromeBtnClass(open)}
         title="Theme"
       >
         <span className="hidden sm:inline truncate max-w-[7rem]">{currentLabel}</span>
@@ -97,14 +98,11 @@ export function ThemePicker() {
             aria-label="close theme menu"
             onClick={() => setOpen(false)}
           />
-          <div className="absolute right-0 top-full z-40 mt-1 w-64 max-w-[90vw] rounded border border-gn-prompt-border bg-gn-bg-base shadow-xl py-1">
-            <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-gn-gutter">
+          <div className="absolute right-0 top-full z-40 mt-1 w-64 max-w-[90vw] gn-menu">
+            <div className="px-3 pb-1 pt-1.5 text-[10px] uppercase tracking-wider text-gn-gutter">
               theme
             </div>
             <ThemeOptions onSelect={() => setOpen(false)} />
-            <div className="border-t border-gn-prompt-border px-3 py-2 text-[10px] text-gn-gutter leading-snug">
-              Mirrors Grok Build TUI themes · saved in this browser
-            </div>
           </div>
         </>
       )}

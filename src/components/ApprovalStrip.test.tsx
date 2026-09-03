@@ -483,7 +483,7 @@ function selectedIndex(container: HTMLElement): number {
   const rows = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).filter(
     (b) => b.className.includes('min-h-10'),
   )
-  return rows.findIndex((b) => b.className.includes('border-gn-yellow/60'))
+  return rows.findIndex((b) => b.className.split(' ').includes('bg-gn-bg-highlight'))
 }
 
 describe('ApprovalStrip — 默认选中行（default_selected_permission）', () => {

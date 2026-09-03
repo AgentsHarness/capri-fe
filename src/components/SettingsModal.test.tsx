@@ -14,6 +14,7 @@ const settingsMock = vi.hoisted(() => ({
   deleteCustomModel: vi.fn(async () => ({ defaultCleared: false })),
   onEvent: () => () => {},
   getHubUrl: () => '',
+  prefsOrigin: () => '',
 }))
 
 vi.mock('../api/client', () => ({ transport: settingsMock }))
@@ -32,6 +33,19 @@ const uiData = {
 
 function openModal() {
   useChatStore.getState().openSettings()
+}
+
+/** 左栏分类按钮（role=tab）。 */
+function tab(name: string) {
+  return screen.getByRole('tab', { name })
+}
+
+/** 打开设置并切到某个分类（等首屏数据落地，只读分类才有内容）。 */
+async function openAt(name: string) {
+  openModal()
+  render(<SettingsModal />)
+  await waitFor(() => expect(tab(name)).not.toBeNull())
+  fireEvent.click(tab(name))
 }
 
 beforeEach(() => {
@@ -96,7 +110,24 @@ describe('SettingsModal', () => {
     await waitFor(() => expect(screen.queryByText('加载设置…')).toBeNull())
   })
 
-  it('渲染分组与只读值；consumed ui keys 不重复出现在 dump', async () => {
+  it('顶栏全宽，分类栏在 header 之下左右分区', async () => {
+    openModal()
+    const { container } = render(<SettingsModal />)
+    await waitFor(() => expect(tab('行为偏好')).not.toBeNull())
+    const dialog = container.querySelector('[role="dialog"]')!
+    const header = dialog.querySelector('header')
+    const tabs = dialog.querySelector('[role="tablist"]')
+    const panel = dialog.querySelector('[role="tabpanel"]')
+    expect(header).not.toBeNull()
+    expect(tabs).not.toBeNull()
+    expect(panel).not.toBeNull()
+    const pos = (el: Element) =>
+      [...dialog.querySelectorAll('*')].indexOf(el)
+    expect(pos(header!)).toBeLessThan(pos(tabs!))
+    expect(pos(tabs!)).toBeLessThan(pos(panel!))
+  })
+
+  it('左侧分类：只渲染选中分类，只读分组汇总进「Agent 配置」一栏', async () => {
     vi.mocked(transport.settings).mockResolvedValue({
       ui: { ...uiData },
       session: { some_value: 'hello' },
@@ -105,30 +136,72 @@ describe('SettingsModal', () => {
     })
     openModal()
     render(<SettingsModal />)
-    await waitFor(() => expect(screen.getByText('[ui] UI')).not.toBeNull())
-    expect(screen.getByText('[session] Session')).not.toBeNull()
-    expect(screen.getByText('[models] Models')).not.toBeNull()
-    expect(screen.getByText('[cli] CLI')).not.toBeNull()
-    // dump 行：extra_ui_key 展示（consumed 键只出现在「本端行为」区）
-    expect(screen.getByText('extra_ui_key')).not.toBeNull()
-    expect(screen.getByTitle('page_flip_on_send')).not.toBeNull()
-    expect(screen.getByText('hello')).not.toBeNull()
-    expect(screen.getByText('{"nested":true}')).not.toBeNull()
-    // bool 只读徽标
-    expect(screen.getByTitle('on（只读）')).not.toBeNull()
+    await waitFor(() => expect(tab('Agent 配置')).not.toBeNull())
+    // 四个可编辑分类 + 一个只读的 Agent 配置（不再按分组拆成多栏）
+    expect(
+      screen.getAllByRole('tab').map((t) => t.textContent),
+    ).toEqual(['行为偏好', '问答超时', '前端偏好', '自定义模型', 'Agent 配置'])
+    // 默认分类 = 行为偏好：可编辑行在，只读 dump 不在同一屏
+    expect(screen.getByText('权限默认')).toBeInTheDocument()
+    expect(screen.queryByText('extra_ui_key')).toBeNull()
+    fireEvent.click(tab('Agent 配置'))
+    // 切走后上一分类的内容不再渲染
+    expect(screen.queryByText('权限默认')).toBeNull()
+    // 四个分组在同一栏里各自成节，值都看得见
+    expect(screen.getByText(/^\[ui\]/)).toBeInTheDocument()
+    expect(screen.getByText(/^\[session\]/)).toBeInTheDocument()
+    expect(screen.getByText(/^\[models\]/)).toBeInTheDocument()
+    expect(screen.getByText(/^\[cli\]/)).toBeInTheDocument()
+    expect(screen.getByText('extra_ui_key')).toBeInTheDocument()
+    expect(screen.getByText('hello')).toBeInTheDocument()
+    expect(screen.getByText('{"nested":true}')).toBeInTheDocument()
+    expect(screen.getByTitle('on（只读）')).toBeInTheDocument()
+    // consumed 的 [ui] 标量不在这里重复出现（它们在「行为偏好」里编辑）
+    expect(screen.queryByText('page_flip_on_send')).toBeNull()
+  })
+
+  it('只读键一个都没有时，「Agent 配置」分类不出现', async () => {
+    // [ui] 全是 consumed 键（在「行为偏好」里编辑）、[session] 空 → 整栏不出现
+    vi.mocked(transport.settings).mockResolvedValue({
+      ui: {
+        permission_mode: 'ask',
+        approval_mode: 'ask',
+        yolo: false,
+        page_flip_on_send: true,
+        collapsed_edit_blocks: false,
+        remember_tool_approvals: true,
+      },
+      session: {},
+    })
+    openModal()
+    render(<SettingsModal />)
+    await waitFor(() => expect(screen.getByText('权限默认')).not.toBeNull())
+    expect(screen.queryByRole('tab', { name: 'Agent 配置' })).toBeNull()
+    expect(tab('行为偏好')).toBeInTheDocument()
+  })
+
+  it('左栏 ↑↓ 切换分类', async () => {
+    openModal()
+    render(<SettingsModal />)
+    await waitFor(() => expect(tab('行为偏好')).not.toBeNull())
+    fireEvent.keyDown(tab('行为偏好'), { key: 'ArrowDown' })
+    expect(tab('问答超时')).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByTitle(/提问卡片超时是否武装/)).toBeInTheDocument()
+    fireEvent.keyDown(tab('问答超时'), { key: 'ArrowUp' })
+    expect(tab('行为偏好')).toHaveAttribute('aria-selected', 'true')
   })
 
   it('权限 pills：当前态高亮 + 点击 patch permission_mode', async () => {
     openModal()
     render(<SettingsModal />)
-    await waitFor(() => expect(screen.getByText('permission_mode')).not.toBeNull())
-    const askBtn = screen.getByText('ask') as HTMLButtonElement
-    expect(askBtn.className).toContain('border-gn-green')
+    await waitFor(() => expect(screen.getByText('权限默认')).not.toBeNull())
+    const askBtn = screen.getByText('询问') as HTMLButtonElement
+    expect(askBtn.className).toContain('text-gn-green')
     expect(askBtn.disabled).toBe(false)
     // 点击已选中项不重复请求
     fireEvent.click(askBtn)
     expect(transport.updateSettings).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByText('auto'))
+    fireEvent.click(screen.getByText('自动'))
     await waitFor(() => {
       expect(transport.updateSettings).toHaveBeenCalledWith({ permission_mode: 'auto' })
     })
@@ -144,8 +217,8 @@ describe('SettingsModal', () => {
       .mockResolvedValueOnce(undefined)
     openModal()
     render(<SettingsModal />)
-    await waitFor(() => expect(screen.getByText('always-approve')).not.toBeNull())
-    fireEvent.click(screen.getByText('always-approve'))
+    await waitFor(() => expect(screen.getByText('始终允许')).not.toBeNull())
+    fireEvent.click(screen.getByText('始终允许'))
     await waitFor(() => {
       expect(useChatStore.getState().yoloMode).toBe(true)
     })
@@ -158,8 +231,8 @@ describe('SettingsModal', () => {
     vi.mocked(transport.setMode).mockRejectedValue(new Error('boom'))
     openModal()
     render(<SettingsModal />)
-    await waitFor(() => expect(screen.getByText('always-approve')).not.toBeNull())
-    fireEvent.click(screen.getByText('always-approve'))
+    await waitFor(() => expect(screen.getByText('始终允许')).not.toBeNull())
+    fireEvent.click(screen.getByText('始终允许'))
     await waitFor(() => {
       expect(useToastStore.getState().toasts.length).toBe(1)
     })
@@ -193,14 +266,14 @@ describe('SettingsModal', () => {
   it('follow_up pills：默认 queue 高亮；点击 patch follow_up_behavior 并回显选中', async () => {
     openModal()
     render(<SettingsModal />)
-    await waitFor(() => expect(screen.getByText('follow_up_behavior')).not.toBeNull())
-    const queueBtn = () => screen.getByText('queue')
-    const steerBtn = () => screen.getByText('steer')
+    await waitFor(() => expect(screen.getByText('忙时处理')).not.toBeNull())
+    const queueBtn = () => screen.getByText('排队')
+    const steerBtn = () => screen.getByText('引导')
     // 未配置（agent 默认 queue）→ queue 高亮，且非 disabled 避免半透明
-    expect(queueBtn().className).toContain('border-gn-green')
+    expect(queueBtn().className).toContain('text-gn-green')
     expect(queueBtn().className).toContain('cursor-default')
     expect((queueBtn() as HTMLButtonElement).disabled).toBe(false)
-    expect(steerBtn().className).not.toContain('border-gn-green')
+    expect(steerBtn().className).not.toContain('text-gn-green')
     // 点击已选中项不重复请求
     fireEvent.click(queueBtn())
     expect(transport.updateSettings).not.toHaveBeenCalled()
@@ -209,7 +282,7 @@ describe('SettingsModal', () => {
       expect(transport.updateSettings).toHaveBeenCalledWith({ follow_up_behavior: 'steer' })
     })
     // mock 回显 patch → 选中态切到 steer，不再弹回
-    await waitFor(() => expect(steerBtn().className).toContain('border-gn-green'))
+    await waitFor(() => expect(steerBtn().className).toContain('text-gn-green'))
   })
 
   it('follow_up 更新失败 → toast 展示 host 错误，选中态不跳变', async () => {
@@ -218,14 +291,14 @@ describe('SettingsModal', () => {
     )
     openModal()
     render(<SettingsModal />)
-    await waitFor(() => expect(screen.getByText('steer')).not.toBeNull())
-    const queueBtn = () => screen.getByText('queue')
-    fireEvent.click(screen.getByText('steer'))
+    await waitFor(() => expect(screen.getByText('引导')).not.toBeNull())
+    const queueBtn = () => screen.getByText('排队')
+    fireEvent.click(screen.getByText('引导'))
     await waitFor(() => {
       expect(useToastStore.getState().toasts[0]?.text).toBe('不允许的设置项 follow_up_behavior')
     })
     // setData 未发生 → 仍停留在原选中态（queue）
-    expect(queueBtn().className).toContain('border-gn-green')
+    expect(queueBtn().className).toContain('text-gn-green')
   })
 
   it('加载失败 → 错误 + 重试', async () => {
@@ -236,7 +309,7 @@ describe('SettingsModal', () => {
     render(<SettingsModal />)
     await waitFor(() => expect(screen.getByText('net down')).not.toBeNull())
     fireEvent.click(screen.getByText('重试'))
-    await waitFor(() => expect(screen.getByText('本端行为')).not.toBeNull())
+    await waitFor(() => expect(screen.getByText('权限默认')).not.toBeNull())
   })
 
   it('Esc 关闭', async () => {
@@ -270,10 +343,8 @@ describe('SettingsModal', () => {
   })
 
   it('前端偏好：collapse_tool_groups 切换', async () => {
-    openModal()
-    render(<SettingsModal />)
-    await waitFor(() => expect(screen.getByTitle('collapse_tool_groups')).not.toBeNull())
-    const btn = () => screen.getByTitle('控制 scrollback 里 toolcall 分组是否折叠，改动即时生效')
+    await openAt('前端偏好')
+    const btn = () => screen.getByTitle('控制滚动区里 toolcall 分组是否折叠，改动即时生效')
     // 默认 on；点击关闭
     expect(btn().textContent).toContain('on')
     fireEvent.click(btn())
@@ -281,9 +352,7 @@ describe('SettingsModal', () => {
   })
 
   it('前端偏好：auto_todo_new_session 切换', async () => {
-    openModal()
-    render(<SettingsModal />)
-    await waitFor(() => expect(screen.getByTitle('auto_todo_new_session')).not.toBeNull())
+    await openAt('前端偏好')
     const btn = () => screen.getByTitle('发起新对话时自动将其设为待办，改动即时生效')
     // 默认 off；点击开启
     expect(btn().textContent).toContain('off')
@@ -294,21 +363,19 @@ describe('SettingsModal', () => {
     expect(btn().textContent).toContain('off')
   })
 
-it('前端偏好：default_selected_permission 默认高亮 + 点击持久化', async () => {
-    openModal()
-    render(<SettingsModal />)
-    await waitFor(() => expect(screen.getByTitle('default_selected_permission')).not.toBeNull())
+  it('前端偏好：default_selected_permission 默认高亮 + 点击持久化', async () => {
+    await openAt('前端偏好')
     const pill = (label: string) => screen.getByRole('button', { name: label })
     // 未设置 → 默认 always_allow_all_sessions 高亮
-    expect(pill('始终允许（所有会话）').className).toContain('border-gn-green')
+    expect(pill('始终允许（所有会话）').className).toContain('text-gn-green')
     expect(loadDefaultSelectedPermission()).toBe('always_allow_all_sessions')
     // 点「拒绝」→ 高亮切换 + 持久化
     fireEvent.click(pill('拒绝'))
-    expect(pill('拒绝').className).toContain('border-gn-green')
-    expect(pill('始终允许（所有会话）').className).not.toContain('border-gn-green')
+    expect(pill('拒绝').className).toContain('text-gn-green')
+    expect(pill('始终允许（所有会话）').className).not.toContain('text-gn-green')
     expect(loadDefaultSelectedPermission()).toBe('reject')
-    // 文案讲清与 permission_mode 的正交关系
-    expect(screen.getByText(/与上面的 permission_mode 正交/)).not.toBeNull()
+    // 文案讲清审批默认选项
+    expect(screen.getByText(/审批弹窗里默认选中哪一行/)).not.toBeNull()
     // 其它两个选项也在
     expect(pill('始终允许本命令')).not.toBeNull()
     expect(pill('仅允许一次')).not.toBeNull()
@@ -322,7 +389,8 @@ it('前端偏好：default_selected_permission 默认高亮 + 点击持久化', 
     openModal()
     render(<SettingsModal />)
     const toggle = () => screen.getByTitle(/提问卡片超时是否武装/)
-    await waitFor(() => expect(toggle()).not.toBeNull())
+    await waitFor(() => expect(tab('问答超时')).not.toBeNull())
+    fireEvent.click(tab('问答超时'))
     expect(toggle().textContent).toContain('on')
     fireEvent.click(toggle())
     await waitFor(() => {
@@ -341,7 +409,9 @@ it('前端偏好：default_selected_permission 默认高亮 + 点击持久化', 
     })
     openModal()
     render(<SettingsModal />)
-    const inputEl = (await screen.findByPlaceholderText('1800（默认 30 分钟）')) as HTMLInputElement
+    await waitFor(() => expect(tab('问答超时')).not.toBeNull())
+    fireEvent.click(tab('问答超时'))
+    const inputEl = (await screen.findByPlaceholderText('1800')) as HTMLInputElement
     expect(inputEl.value).toBe('60')
     fireEvent.change(inputEl, { target: { value: '123' } })
     fireEvent.keyDown(inputEl, { key: 'Enter' })

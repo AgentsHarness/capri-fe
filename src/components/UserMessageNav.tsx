@@ -282,7 +282,7 @@ export function UserMessageNav({
       )}
       <div
         className={`relative flex h-full min-w-[28px] items-center justify-end pl-2 sm:min-w-[36px] ${
-          railInteractive ? 'pointer-events-auto' : 'pointer-events-none'
+ railInteractive ? 'pointer-events-auto' : 'pointer-events-none'
         }`}
         onMouseEnter={() => {
           if (isTouch) return
@@ -300,7 +300,7 @@ export function UserMessageNav({
       >
         <nav
           className={`flex flex-col items-end select-none transition-[width,opacity] duration-300 ease-out ${
-            visible ? 'opacity-100' : 'opacity-0'
+ visible ? 'opacity-100' : 'opacity-0'
           } ${open ? 'max-h-[min(70vh,520px)]' : ''}`}
           aria-hidden={!visible}
         >
@@ -350,11 +350,7 @@ function CollapsedRail({
         ev.stopPropagation()
         onOpen()
       }}
-      className={`flex flex-col items-end justify-center gap-[3px] pr-1 active:opacity-80 ${
-        touchUi
-          ? 'min-h-[44px] min-w-[44px] py-3 pl-4'
-          : 'min-h-[28px] min-w-[28px] py-2 pl-3 hover:opacity-90'
-      }`}
+      className={`flex flex-col items-end justify-center gap-[3px] pr-1 active:opacity-80 ${ touchUi ? 'min-h-[44px] min-w-[44px] py-3 pl-4' : 'min-h-[28px] min-w-[28px] py-2 pl-3 hover:opacity-90' }`}
       aria-label="打开用户消息目录"
       title="打开消息目录"
     >
@@ -366,7 +362,7 @@ function CollapsedRail({
             key={it.id}
             aria-hidden
             className={`block min-h-[12px] leading-none tracking-tight ${
-              isActive ? 'text-gn-fg' : 'text-gn-gray-dim'
+ isActive ? 'text-gn-fg' : 'text-gn-gray-dim'
             }`}
             style={{ fontSize: 11 }}
           >
@@ -418,8 +414,8 @@ function ExpandedList({
   return (
     <div
       ref={listRef}
-      className={`gn-scroll max-h-[min(70vh,520px)] overflow-y-auto overscroll-contain rounded-md border border-gn-prompt-border bg-gn-bg-base/95 py-1 shadow-lg backdrop-blur-sm ${
-        touchUi
+      className={`gn-scroll gn-menu max-h-[min(70vh,520px)] overflow-y-auto overscroll-contain ${
+ touchUi
           ? 'w-[min(78vw,300px)]'
           : 'w-[min(42vw,240px)] sm:w-[min(36vw,280px)]'
       }`}
@@ -444,15 +440,7 @@ function ExpandedList({
             }
             aria-label={`跳转到消息 ${it.turnIdx + 1}：${preview}`}
             aria-current={isActive ? 'true' : undefined}
-            className={`flex w-full items-baseline gap-1.5 px-2 py-[5px] text-left font-ui text-[12px] leading-[1.35] transition-colors ${
-              isActive
-                ? 'bg-gn-bg-highlight text-gn-fg font-semibold'
-                : isHover
-                  ? 'bg-gn-bg-hover text-gn-fg'
-                  : it.loaded
-                    ? 'text-gn-fg2 hover:bg-gn-bg-hover hover:text-gn-fg active:bg-gn-bg-hover'
-                    : 'text-gn-gray hover:bg-gn-bg-hover hover:text-gn-fg active:bg-gn-bg-hover'
-            }`}
+            className={`flex w-full items-baseline gap-1.5 px-2 py-[5px] text-left font-ui text-[12px] leading-[1.35] transition-colors ${ isActive ? 'bg-gn-bg-highlight text-gn-fg font-semibold' : isHover ? 'bg-gn-bg-hover text-gn-fg' : it.loaded ? 'text-gn-fg2 hover:bg-gn-bg-hover hover:text-gn-fg active:bg-gn-bg-hover' : 'text-gn-gray hover:bg-gn-bg-hover hover:text-gn-fg active:bg-gn-bg-hover' }`}
             onMouseEnter={() => onHover(it.id)}
             onMouseLeave={() => onHover(null)}
             onClick={(ev) => {

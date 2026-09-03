@@ -7,7 +7,7 @@ vi.mock('../../store/chat', () => ({
     selector({ showTimestamps: true }),
 }))
 
-import { PromptTime } from './PromptTime'
+import { PromptTime, UserSteerTime } from './PromptTime'
 
 describe('PromptTime', () => {
   it('showTimestamps 且 ts 存在 → 渲染短/全两种格式', () => {
@@ -27,5 +27,15 @@ describe('PromptTime', () => {
     expect(span.style.right).toBe('20px')
     const left = render(<PromptTime ts={ts} />)
     expect((left.container.querySelector('span') as HTMLElement).style.right).toBe('8px')
+  })
+
+  it('UserSteerTime：引导徽标在时间左边', () => {
+    const ts = new Date(2026, 7, 22, 20, 31, 0).getTime()
+    const { container } = render(<UserSteerTime ts={ts} steer className="top-[14.5px]" />)
+    expect(container.textContent).toMatch(/引导.*20:31/)
+    const cluster = container.querySelector('.flex.items-center') as HTMLElement
+    expect(cluster).not.toBeNull()
+    expect(cluster.className).toContain('h-[1.35em]')
+    expect(container.querySelector('.gn-pt')?.className).toContain('pointer-events-auto')
   })
 })

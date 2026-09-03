@@ -24,7 +24,11 @@ describe('ThemePicker', () => {
     useThemeStore.getState().setTheme('groknight')
     render(<ThemePicker />)
     expect(screen.getByText('Grok Night')).not.toBeNull()
-    fireEvent.click(screen.getByTitle('Theme'))
+    const trigger = screen.getByTitle('Theme')
+    expect(trigger).not.toHaveClass('bg-gn-bg-highlight')
+    fireEvent.click(trigger)
+    // 菜单打开后触发器与 mcp/git 等共用选中高亮
+    expect(trigger).toHaveClass('bg-gn-bg-highlight')
     // 菜单打开后出现 theme 标题与选项
     expect(screen.getByText('Auto')).not.toBeNull()
     fireEvent.click(screen.getByText('Rose Pine Moon'))

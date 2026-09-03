@@ -147,15 +147,15 @@ export function CancelPanel() {
               type="button"
               onMouseEnter={() => setSel(i)}
               onClick={() => pick(i)}
-              className={`min-h-10 rounded border px-3 py-1.5 text-left text-[12.5px] transition-colors ${
-                i === sel
-                  ? 'border-gn-yellow/60 bg-gn-bg-highlight text-gn-fg'
-                  : 'border-gn-prompt-border bg-gn-bg-base text-gn-fg hover:border-gn-magenta/50 hover:bg-gn-bg-highlight'
+              className={`min-h-10 rounded px-3 py-1.5 text-left text-[12.5px] transition-colors ${
+ i === sel
+                  ? 'bg-gn-bg-highlight text-gn-fg'
+                  : 'text-gn-fg hover:bg-gn-bg-highlight'
               }`}
             >
               <span
                 className={`mr-2 font-mono ${
-                  i === sel ? 'text-gn-yellow' : 'text-gn-muted'
+ i === sel ? 'text-gn-yellow' : 'text-gn-muted'
                 }`}
                 aria-hidden
               >

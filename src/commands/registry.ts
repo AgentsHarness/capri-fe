@@ -5,13 +5,23 @@
  * executes. Commands run LOCALLY against existing store / transport
  * capabilities — an unknown command appends an error row and is NEVER
  * sent to the agent (TUI semantics).
+ *
+ * Commands can also offer a second level: `suggestArgs` mirrors TUI
+ * `SlashCommand::suggest_args`, so a `/effort` Enter completes to
+ * `/effort ` and lists the levels instead of erroring about a missing
+ * argument (see `filterSlashArgs` / `isSlashInvocationComplete`).
  */
 import { loadBool, saveBool } from '../lib/storage'
 import { useChatStore, type ExtensionsTab } from '../store/chat'
 import { usePromptQueue } from '../store/promptQueue'
 import { THEMES, useThemeStore } from '../store/theme'
 import type { ThemeId } from '../theme/tokens'
-import type { AgentCommand, ContentBlock } from '../api/types'
+import type {
+  AgentCommand,
+  ContentBlock,
+  ModelOption,
+  ReasoningEffortOption,
+} from '../api/types'
 import {
   imagineInstruction,
   imagineUsageMessage,
@@ -20,6 +30,7 @@ import {
 } from './imagine'
 import { slashRecencyScore } from './recency'
 import { cachedSkills } from './skills'
+import { cachedWorkflows } from './workflows'
 import { fmtBytes } from '../format'
 import { renderTranscript, safeExportFilename } from '../lib/exportTranscript'
 import { KEY } from '../lib/keys'
@@ -37,7 +48,34 @@ export type SlashCommand = {
    * below the commands (TUI 1.0.9 grouping).
    */
   source?: 'local' | 'agent' | 'skill'
+  /**
+   * Second-level argument candidates (TUI `SlashCommand::suggest_args`).
+   * `argsQuery` is the raw text after the command token; returning an empty
+   * list means this command has nothing to offer for that text. The menu
+   * filters the result, so implementations list everything and ignore the
+   * query unless the phase depends on it (`/workflow pause …`).
+   */
+  suggestArgs?: (argsQuery: string) => SlashArgItem[]
+  /**
+   * TUI `args_required`: with an empty argument string Enter does NOT run
+   * the command — it completes the line to `/name ` and opens `suggestArgs`.
+   * Only meaningful together with `suggestArgs`.
+   */
+  argsRequired?: boolean
   run: (args: string) => void | Promise<void>
+}
+
+/** One argument row of the slash menu (TUI slash/command.rs `ArgItem`). */
+export type SlashArgItem = {
+  /** Text shown in the menu. */
+  display: string
+  /** Text the filter matches against (TUI `match_text`). */
+  matchText: string
+  /** Text replacing the whole argument string when accepted. A trailing
+   *  space means "more input expected" and keeps the menu open (TUI chains). */
+  insertText: string
+  /** Right-aligned explanation. */
+  description: string
 }
 
 /** One filtered row for the slash menu (ranked, low score = better). */
@@ -238,6 +276,243 @@ const THEME_ORDER: ThemeId[] = [
   'auto',
 ]
 
+/** ── second-level argument candidates (TUI `suggest_args` builders) ─── */
+
+/** The model the session is on, matched the way `/effort`'s run does. */
+function currentModel(): ModelOption | undefined {
+  const st = useChatStore.getState()
+  const cur = (st.modelName || '').trim()
+  if (!cur) return undefined
+  return st.models.find(
+    (x) =>
+      x.modelId.toLowerCase() === cur.toLowerCase() ||
+      (x.name ?? '').toLowerCase() === cur.toLowerCase(),
+  )
+}
+
+/**
+ * Effort rows of one model (TUI `reasoning_effort_options` +
+ * `build_effort_arg_items`): `insertText` is the canonical wire value and
+ * `(active)` only marks the model the session is actually on. `prefix`
+ * re-anchors a chained phase (`/model <name> <level>` replaces the whole
+ * args string, so every row carries the part already typed).
+ */
+function effortItems(model: ModelOption | undefined, prefix = ''): SlashArgItem[] {
+  const st = useChatStore.getState()
+  const cur = currentModel()
+  const markActive = !!model && !!cur && model.modelId === cur.modelId
+  const options: ReasoningEffortOption[] = model?.reasoningEfforts ?? []
+  return options.map((e) => {
+    const value = e.value || e.id
+    const active = markActive && !!st.reasoningEffort && st.reasoningEffort === value
+    return {
+      display: `${e.label || value}${active ? ' (active)' : ''}`,
+      matchText: `${prefix}${value} ${e.id} ${e.label ?? ''}`.trim(),
+      insertText: `${prefix}${value}`,
+      description: e.default ? '默认档' : '',
+    }
+  })
+}
+
+/**
+ * Effort levels worth naming in a message: the active model's offered ones
+ * (TUI effort.rs `usage()` — never a hardcoded set when the model tells us),
+ * else the built-in four.
+ */
+function effortScope(): string {
+  const offered = currentModel()?.reasoningEfforts ?? []
+  return (offered.length > 0
+    ? offered.map((e) => e.value || e.id)
+    : EFFORT_LEVELS
+  ).join('|')
+}
+
+/**
+ * `/model` candidates. A reasoning model's `insertText` keeps a trailing
+ * space (TUI build_model_items) so accepting it chains into the effort
+ * sub-phase instead of switching immediately.
+ */
+function modelItems(): SlashArgItem[] {
+  const st = useChatStore.getState()
+  const cur = (st.modelName || '').trim()
+  return st.models.map((m) => {
+    const name = m.name || m.modelId
+    const isCur =
+      !!cur &&
+      (m.modelId.toLowerCase() === cur.toLowerCase() ||
+        (m.name ?? '').toLowerCase() === cur.toLowerCase())
+    const efforts = m.reasoningEfforts ?? []
+    return {
+      display: `${name}${isCur ? ' (current)' : ''}`,
+      matchText: `${name} ${m.modelId}`,
+      insertText: efforts.length > 0 ? `${name} ` : name,
+      description: m.description ?? '',
+    }
+  })
+}
+
+/** The reasoning model whose display name the args string already starts
+ *  with (TUI `detect_effort_phase` — longest name wins, then a whitespace). */
+function modelEffortPhase(argsQuery: string): ModelOption | null {
+  const st = useChatStore.getState()
+  let hit: ModelOption | null = null
+  for (const m of st.models) {
+    if ((m.reasoningEfforts ?? []).length === 0) continue
+    const name = m.name || m.modelId
+    if (argsQuery.length <= name.length) continue
+    if (!argsQuery.slice(0, name.length).toLowerCase().startsWith(name.toLowerCase()))
+      continue
+    if (!/\s/.test(argsQuery[name.length])) continue
+    if (!hit || name.length > (hit.name || hit.modelId).length) hit = m
+  }
+  return hit
+}
+
+/** Split on the LAST whitespace run (TUI `split_trailing_token`) — the
+ *  `<model name> <effort>` form `/model` has to accept after its dropdown
+ *  chains into the effort sub-phase. */
+function splitTrailingToken(args: string): { prefix: string; token: string } | null {
+  const i = args.search(/\s\S*$/)
+  if (i <= 0) return null
+  const prefix = args.slice(0, i).trimEnd()
+  const token = args.slice(i).trim()
+  if (!prefix || !token) return null
+  return { prefix, token }
+}
+
+/** Theme rows: `auto` first, then the concrete palettes (TUI theme.rs). */
+function themeItems(): SlashArgItem[] {
+  const ts = useThemeStore.getState()
+  const autoActive = ts.preference === 'auto'
+  const items: SlashArgItem[] = [
+    {
+      display: `auto${autoActive ? ' (active)' : ''}`,
+      matchText: 'auto',
+      insertText: 'auto',
+      description: '跟随系统外观',
+    },
+  ]
+  for (const id of THEME_ORDER) {
+    if (id === 'auto') continue
+    const meta = THEMES.find((t) => t.id === id)
+    const active = !autoActive && ts.resolved === id
+    items.push({
+      display: `${id}${active ? ' (active)' : ''}`,
+      matchText: `${id} ${meta?.name ?? ''}`.trim(),
+      insertText: id,
+      description: meta?.name ?? '',
+    })
+  }
+  return items
+}
+
+/** on/off pair for the two-state commands. */
+function onOffItems(onDesc: string, offDesc: string): SlashArgItem[] {
+  return [
+    { display: 'on', matchText: 'on', insertText: 'on', description: onDesc },
+    { display: 'off', matchText: 'off', insertText: 'off', description: offDesc },
+  ]
+}
+
+/** `/workflow` verbs (TUI WORKFLOW_OPS; `runs` is a complete invocation). */
+const WORKFLOW_OPS: { op: string; desc: string; chains: boolean }[] = [
+  { op: 'runs', desc: '查看运行列表', chains: false },
+  { op: 'pause', desc: '暂停一个运行', chains: true },
+  { op: 'resume', desc: '恢复一个运行', chains: true },
+  { op: 'stop', desc: '停止一个运行', chains: true },
+  { op: 'save', desc: '把运行的脚本存成 workflow', chains: true },
+]
+
+/** Can `op` act on this run? (TUI WorkflowRunChoice::can_pause/_resume/_stop/_save) */
+function runOperable(op: string, run: { status: string; script?: string }): boolean {
+  switch (op) {
+    case 'pause':
+      return run.status === 'active'
+    case 'resume':
+      return run.status === 'user_paused' || run.status === 'cancelled'
+    case 'stop':
+      return !['interrupted', 'complete', 'completed', 'failed', 'cancelled'].includes(
+        run.status,
+      )
+    case 'save':
+      return !!run.script
+    default:
+      return true
+  }
+}
+
+/**
+ * `/workflow` candidates. Three phases (TUI workflow.rs suggest_args):
+ * verbs + installed names → the verb's runnable set → a launch name's flags.
+ * `matchText` always carries the already-typed head, because the args filter
+ * matches the WHOLE args string and an accept replaces it wholesale.
+ */
+function workflowItems(argsQuery: string): SlashArgItem[] {
+  const head = argsQuery.replace(/^\s*/, '')
+  const sp = head.search(/\s/)
+  const first = sp === -1 ? head : head.slice(0, sp)
+  const lower = first.toLowerCase()
+  // An exact verb lists this session's runs; a verb still being typed stays
+  // on the first phase so names keep ranking.
+  if (WORKFLOW_MANAGE_OPS.has(lower)) {
+    return Object.values(useChatStore.getState().workflowRuns)
+      .filter((r) => runOperable(lower, r))
+      .map((r) => ({
+        display: r.name,
+        matchText: `${lower} ${r.name}`,
+        insertText: `${lower} ${r.name}`,
+        description: r.status.replace(/_/g, ' '),
+      }))
+  }
+  if (sp === -1) {
+    const items: SlashArgItem[] = cachedWorkflows().map((w) => ({
+      display: w.name,
+      matchText: w.name,
+      insertText: `${w.name} `,
+      description: w.description,
+    }))
+    for (const o of WORKFLOW_OPS) {
+      items.push({
+        display: o.op,
+        matchText: o.op,
+        insertText: o.chains ? `${o.op} ` : o.op,
+        description: o.desc,
+      })
+    }
+    return items
+  }
+  const saved = cachedWorkflows().find((w) => w.name.toLowerCase() === lower)
+  if (!saved) return []
+  const tail = head.slice(first.length + 1).replace(/^\s*/, '')
+  const nameHead = head.slice(0, head.length - tail.length)
+  const effortValue = tail.match(/^--effort\s+(.*)$/)
+  if (effortValue) {
+    const valueHead = head.slice(0, head.length - effortValue[1].length)
+    return effortItems(currentModel()).map((e) => ({
+      display: e.display,
+      matchText: `${valueHead}${e.matchText}`,
+      insertText: `${valueHead}${e.insertText}`,
+      description: e.description,
+    }))
+  }
+  if (/\s/.test(tail)) return []
+  const flags: SlashArgItem[] = []
+  for (const [flag, desc] of [
+    ['--agent-budget', '限制子代理调用总数'],
+    ['--effort', '本次运行的强度档'],
+  ] as const) {
+    if (flag.startsWith(tail)) {
+      flags.push({
+        display: flag,
+        matchText: `${nameHead}${flag}`,
+        insertText: `${nameHead}${flag} `,
+        description: desc,
+      })
+    }
+  }
+  return flags
+}
+
 export const slashCommands: SlashCommand[] = [
   {
     name: 'new',
@@ -253,7 +528,13 @@ export const slashCommands: SlashCommand[] = [
   {
     name: 'model',
     description: '切换模型（无参数打开模型菜单）',
-    argHint: '[name]',
+    argHint: '[name [effort]]',
+    argsRequired: true,
+    suggestArgs: (q) => {
+      const chained = modelEffortPhase(q)
+      if (chained) return effortItems(chained, `${chained.name || chained.modelId} `)
+      return modelItems()
+    },
     run: (args) => {
       const st = useChatStore.getState()
       if (!args.trim()) {
@@ -266,6 +547,34 @@ export const slashCommands: SlashCommand[] = [
           x.modelId.toLowerCase() === q ||
           (x.name ?? '').toLowerCase() === q,
       )
+      // 参数层链到强度档后是 `<名字> <强度>`（TUI model.rs run 的
+      // split_trailing_token）：整串精确匹配没中才拆，避免名字里带空格的
+      // 短目录项（"Grok"）把 "Grok 4.5" 的 "4.5" 吃掉当强度档。
+      let effort: string | undefined
+      if (!m) {
+        const split = splitTrailingToken(args.trim())
+        const byPrefix = split
+          ? st.models.find(
+              (x) =>
+                x.modelId.toLowerCase() === split.prefix.toLowerCase() ||
+                (x.name ?? '').toLowerCase() === split.prefix.toLowerCase(),
+            )
+          : undefined
+        const offered = byPrefix?.reasoningEfforts ?? []
+        if (byPrefix && split && offered.length > 0) {
+          const hit = offered.find((e) => e.value === split.token || e.id === split.token)
+          if (!hit) {
+            err(
+              `当前模型不支持强度「${split.token}」。可选: ${offered
+                .map((e) => e.value || e.id)
+                .join(' / ')}`,
+            )
+            return
+          }
+          m = byPrefix
+          effort = hit.value || hit.id
+        }
+      }
       if (!m) {
         m = st.models.find(
           (x) =>
@@ -283,35 +592,25 @@ export const slashCommands: SlashCommand[] = [
         )
         return
       }
-      switchModelWithDefault(m.modelId)
+      if (effort) void st.setModel(m.modelId, effort)
+      else switchModelWithDefault(m.modelId)
     },
   },
   {
     name: 'effort',
     description: '设置推理强度',
     argHint: '[low|medium|high|xhigh]',
+    argsRequired: true,
+    suggestArgs: () => effortItems(currentModel()),
     run: (args) => {
       const st = useChatStore.getState()
       const level = args.trim().toLowerCase()
       if (!level) {
-        err('用法: /effort [low|medium|high|xhigh]')
+        err(`用法: /effort [${effortScope()}]`)
         return
       }
-      if (!EFFORT_LEVELS.includes(level)) {
-        err(`无效强度「${args.trim()}」。可选: ${EFFORT_LEVELS.join(' / ')}`)
-        return
-      }
-      const cur = (st.modelName || '').trim()
-      const m = st.models.find(
-        (x) =>
-          x.modelId.toLowerCase() === cur.toLowerCase() ||
-          (x.name ?? '').toLowerCase() === cur.toLowerCase(),
-      )
-      if (!m) {
-        err(`无法确定当前模型「${cur || '未知'}」— 先用 /model 选择模型`)
-        return
-      }
-      const offered = m.reasoningEfforts ?? []
+      const m = currentModel()
+      const offered = m?.reasoningEfforts ?? []
       if (
         offered.length > 0 &&
         !offered.some((e) => e.value === level || e.id === level)
@@ -323,6 +622,16 @@ export const slashCommands: SlashCommand[] = [
         )
         return
       }
+      // 模型没提供强度档（或未选中模型）时退回内置四级白名单——TUI 只用
+      // 当前模型的 offered 列表，但 FE 的 argHint 也得对没有 _meta 的 host 成立。
+      if (offered.length === 0 && !EFFORT_LEVELS.includes(level)) {
+        err(`无效强度「${args.trim()}」。可选: ${EFFORT_LEVELS.join(' / ')}`)
+        return
+      }
+      if (!m) {
+        err(`无法确定当前模型「${(st.modelName || '').trim() || '未知'}」— 先用 /model 选择模型`)
+        return
+      }
       void st.setModel(m.modelId, level)
     },
   },
@@ -330,6 +639,7 @@ export const slashCommands: SlashCommand[] = [
     name: 'theme',
     description: '切换主题（无参数循环切换）',
     argHint: '[name]',
+    suggestArgs: () => themeItems(),
     run: (args) => {
       const themeStore = useThemeStore.getState()
       if (!args.trim()) {
@@ -382,6 +692,22 @@ export const slashCommands: SlashCommand[] = [
     name: 'rename',
     description: '重命名当前会话',
     argHint: '[title]',
+    argsRequired: true,
+    // TUI rename.rs: only while the args are still empty — a ghost row that
+    // survives typed text would steal Enter.
+    suggestArgs: (q) => {
+      if (q.trim()) return []
+      const title = (useChatStore.getState().sessionTitle ?? '').trim()
+      if (!title || title === '--auto') return []
+      return [
+        {
+          display: title,
+          matchText: title,
+          insertText: title,
+          description: '当前标题',
+        },
+      ]
+    },
     run: (args) => {
       const st = useChatStore.getState()
       if (!st.sessionId) {
@@ -400,6 +726,21 @@ export const slashCommands: SlashCommand[] = [
     name: 'fork',
     description: '派生当前会话（--worktree 在隔离 git worktree 中派生）',
     argHint: '[--worktree|--no-worktree]',
+    // 无尾空格：`/fork` 只吃前导旗标，旗标后再跟内容会被 run 判成不支持。
+    suggestArgs: () => [
+      {
+        display: '--worktree',
+        matchText: '--worktree',
+        insertText: '--worktree',
+        description: '在隔离 git worktree 中派生',
+      },
+      {
+        display: '--no-worktree',
+        matchText: '--no-worktree',
+        insertText: '--no-worktree',
+        description: '在当前目录派生',
+      },
+    ],
     run: (args) => {
       // TUI parse_fork_args parity: leading flags only; an unknown bareword
       // starts the directive — the FE has no first-prompt channel for a
@@ -486,6 +827,19 @@ export const slashCommands: SlashCommand[] = [
     name: 'loop',
     description: '创建定时任务',
     argHint: '[interval] <prompt>',
+    argsRequired: true,
+    // 间隔只是首 token，提示词正文还得自己打：候选带尾空格，接受后菜单让位。
+    suggestArgs: (q) => {
+      if (/\s/.test(q.trim())) return []
+      return ['1m', '5m', '15m', '30m', '1h', '2h', '6h', '12h', '1d'].map(
+        (token) => ({
+          display: token,
+          matchText: token,
+          insertText: `${token} `,
+          description: loopIntervalToHuman(token),
+        }),
+      )
+    },
     run: (args) => {
       const trimmed = args.trim()
       const { interval, promptText } = parseLoopArgs(trimmed)
@@ -659,6 +1013,9 @@ export const slashCommands: SlashCommand[] = [
   {
     name: 'multiline',
     description: '切换多行输入（on: Enter 换行、Shift+Enter 发送）',
+    argHint: '[on|off]',
+    suggestArgs: () =>
+      onOffItems('Enter 换行，Shift+Enter 发送', 'Enter 发送，Shift+Enter 换行'),
     run: (args) => {
       const a = args.trim().toLowerCase()
       const next = a === 'on' ? true : a === 'off' ? false : !isMultilineEnabled()
@@ -704,6 +1061,13 @@ export const slashCommands: SlashCommand[] = [
     name: 'goal',
     description: '设置 / 查看 / 管理自主目标',
     argHint: '[objective | status|pause|resume|clear]',
+    // 目标描述是自由文本：候选照给，过滤不中时列表自然收起。
+    suggestArgs: () => [
+      { display: 'status', matchText: 'status', insertText: 'status', description: '查看当前目标' },
+      { display: 'pause', matchText: 'pause', insertText: 'pause', description: '暂停目标' },
+      { display: 'resume', matchText: 'resume', insertText: 'resume', description: '恢复目标' },
+      { display: 'clear', matchText: 'clear', insertText: 'clear', description: '清除目标' },
+    ],
     run: (args) => {
       const st = useChatStore.getState()
       const a = args.trim()
@@ -749,6 +1113,7 @@ export const slashCommands: SlashCommand[] = [
     name: 'workflow',
     description: '启动已保存的 workflow、查看运行列表、管理运行（pause/resume/stop/save）',
     argHint: '<名称> [--agent-budget N] [--effort LEVEL] [args] | runs | pause|resume|stop|save [名称]',
+    suggestArgs: workflowItems,
     run: (args) => {
       const trimmed = args.trim()
       // `/workflow runs`：精确 op（大小写不敏感，TUI workflow.rs run）→
@@ -789,6 +1154,7 @@ export const slashCommands: SlashCommand[] = [
     aliases: ['mem'],
     description: '浏览/管理记忆（on|off 开关记忆）',
     argHint: '[on|off]',
+    suggestArgs: () => onOffItems('开启记忆', '关闭记忆'),
     run: (args) => {
       const a = args.trim().toLowerCase()
       if (a === 'on' || a === 'off') {
@@ -1073,4 +1439,94 @@ export function filterSlashCommands(
       a.cmd.name.localeCompare(b.cmd.name),
   )
   return out
+}
+
+/** ── 二级参数候选（TUI slash/mod.rs 的 args 阶段）─────────────────── */
+
+/** A `/name args` line split into its command and its args text. */
+export type SlashLineParts = {
+  cmd: SlashCommand
+  /** 输入里的小写命令词（不含 `/`）。 */
+  token: string
+  /** 分隔符之后的原始参数文本（未 trim）。 */
+  args: string
+  /** `args` 在整行里的起始下标——参数阶段的替换从这里开始到行尾。 */
+  argsStart: number
+  /** 命令词后还没有分隔符（参数阶段尚未开始）。 */
+  inCommand: boolean
+}
+
+/**
+ * Split a line-start `/name args` for the menu. Only exact name/alias hits
+ * resolve (TUI `parse_invocation`), so `/effor high` gives no args phase.
+ */
+export function parseSlashLine(
+  input: string,
+  agentCommands?: AgentCommand[],
+): SlashLineParts | null {
+  if (!input.startsWith('/')) return null
+  const body = input.slice(1)
+  const sp = body.search(/\s/)
+  const token = (sp === -1 ? body : body.slice(0, sp)).toLowerCase()
+  if (!token) return null
+  const cmd = mergedSlashCommands(agentCommands).find(
+    (c) => c.name === token || (c.aliases ?? []).includes(token),
+  )
+  if (!cmd) return null
+  if (sp === -1) {
+    return { cmd, token, args: '', argsStart: input.length, inCommand: true }
+  }
+  const sep = /^\s*/.exec(body.slice(sp))?.[0].length ?? 1
+  const argsStart = 1 + sp + sep
+  return { cmd, token, args: input.slice(argsStart), argsStart, inCommand: false }
+}
+
+/** One filtered argument row (ranked, low score = better). */
+export type SlashArgMatch = { arg: SlashArgItem; score: number }
+
+/**
+ * Filter a command's argument candidates against the typed args, in the
+ * same ladder as the command filter (match prefix < match contains <
+ * anything else). Chained rows carry their already-typed head in `matchText`
+ * (TUI's `manage_run_items` trick), so the whole args string matches at once.
+ */
+export function filterSlashArgs(
+  input: string,
+  agentCommands?: AgentCommand[],
+): SlashArgMatch[] {
+  const parts = parseSlashLine(input, agentCommands)
+  if (!parts || parts.inCommand || !parts.cmd.suggestArgs) return []
+  const items = parts.cmd.suggestArgs(parts.args)
+  const q = parts.args.trim().toLowerCase()
+  if (!q) return items.map((arg) => ({ arg, score: 0 }))
+  const out: SlashArgMatch[] = []
+  for (const arg of items) {
+    const match = arg.matchText.toLowerCase()
+    if (!`${match} ${arg.description.toLowerCase()}`.includes(q)) continue
+    const score = match.startsWith(q) ? 0 : match.includes(q) ? 1 : 2
+    out.push({ arg, score })
+  }
+  // Array#sort is stable, so a rank keeps the builder's own order (effort
+  // levels, workflow names before verbs).
+  return out.sort((a, b) => a.score - b.score)
+}
+
+/**
+ * TUI `is_command_complete`: an invocation with required-but-missing args is
+ * NOT complete, so Enter completes it into the args phase instead of running
+ * the command (that is what stops `/effort` + Enter from erroring).
+ */
+export function isSlashInvocationComplete(input: string): boolean {
+  const hit = matchSlash(input)
+  if (!hit) return true
+  if (!hit.cmd.suggestArgs || !hit.cmd.argsRequired) return true
+  return hit.args.trim().length > 0
+}
+
+/**
+ * Text a command row inserts (TUI `SuggestionRow::from_command`): the
+ * trailing space for arg-taking commands is what chains into the args phase.
+ */
+export function slashCommandInsertText(cmd: SlashCommand): string {
+  return cmd.argHint ? `/${cmd.name} ` : `/${cmd.name}`
 }

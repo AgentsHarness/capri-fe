@@ -211,13 +211,13 @@ export function toolHeaderExtra(
           if (scope !== '.') target += ` in ${scope}`
         }
         // Match summary — TUI match_summary(), per output mode.
-        const files = d.fileMatches.length
-        // 正文被 lite 裁过时 match_count 可能整块不在（兜底预算会继续裁）——
-        // 那时的 0 不代表「没有匹配」，宁可不写摘要也不误报空态。
-        const bodyCut = toolBodyOmitted(raw)
+        // file_matches 被 lite 裁掉时 fileCount 用 host 折在标记里的数兜底。
+        const files = d.fileCount
+        // 只有 match_count 本身也不在载荷里（旧 host / 预算裁过）才不写摘要——
+        // 那时的 0 代表「没给」而不是「没有匹配」，误报空态比缺摘要更糟。
         let summary: string
         if (d.matchCount === 0) {
-          if (bodyCut) summary = ''
+          if (!d.matchCountPresent && toolBodyOmitted(raw)) summary = ''
           else summary = d.outputMode === 'files' ? '(no files)' : '(no matches)'
         } else if (d.outputMode === 'files') {
           summary = d.matchCount === 1 ? '(1 file)' : `(${d.matchCount} files)`

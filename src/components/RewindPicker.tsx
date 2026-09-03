@@ -326,7 +326,7 @@ export function RewindPicker() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/55 backdrop-blur-[1px] p-4"
+      className="fixed inset-0 z-50 flex items-start justify-center gn-modal-dim p-4"
       role="dialog"
       aria-modal="true"
       aria-label="rewind"
@@ -337,9 +337,9 @@ export function RewindPicker() {
       <div
         ref={panelRef}
         tabIndex={-1}
-        className="mt-8 w-full max-w-[460px] rounded border border-gn-prompt-border-active bg-gn-bg-base shadow-2xl outline-none"
+        className="mt-8 w-full max-w-[460px] gn-modal-panel"
       >
-        <header className="flex items-center gap-2 rounded-t border-b border-gn-prompt-border bg-gn-bg-dark px-4 py-2.5">
+        <header className="gn-modal-header">
           <span className="font-mono text-[13px] font-bold text-gn-fg">/rewind</span>
           <button
             type="button"
@@ -385,7 +385,7 @@ export function RewindPicker() {
                 <button
                   type="button"
                   onClick={() => void fetchPoints()}
-                  className="mt-2 rounded border border-gn-prompt-border px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                  className="mt-2 rounded px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
                 >
                   重试
                 </button>
@@ -489,7 +489,7 @@ export function RewindPicker() {
               <button
                 type="button"
                 onClick={closeRewind}
-                className="mt-3 w-full rounded border border-gn-prompt-border px-3 py-1.5 text-[12px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg"
+                className="mt-3 w-full rounded px-3 py-1.5 text-[12px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg"
               >
                 知道了（enter / esc）
               </button>
@@ -502,7 +502,7 @@ export function RewindPicker() {
                   <button
                     type="button"
                     onClick={() => void execute(pending.point, pending.mode)}
-                    className="rounded border border-gn-prompt-border px-3 py-1 text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg"
+                    className="rounded px-3 py-1 text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg"
                   >
                     重试
                   </button>
@@ -512,7 +512,7 @@ export function RewindPicker() {
                       setPending(undefined)
                       setPhase('picker')
                     }}
-                    className="rounded border border-gn-prompt-border px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                    className="rounded px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
                   >
                     返回列表
                   </button>
@@ -530,9 +530,7 @@ export function RewindPicker() {
                 type="button"
                 disabled={executing}
                 onClick={() => selectPoint(p)}
-                className={`flex w-full items-start gap-3 border-b border-gn-prompt-border/50 px-4 py-2 text-left hover:bg-gn-bg-highlight disabled:opacity-50 ${
-                  i === cursor ? 'bg-gn-bg-highlight' : ''
-                }`}
+                className={`flex w-full items-start gap-3 border-b border-gn-prompt-border/50 px-4 py-2 text-left hover:bg-gn-bg-highlight disabled:opacity-50 ${ i === cursor ? 'bg-gn-bg-highlight' : '' }`}
                 title={`回退到索引 ${p.index} — 删除该点之后的对话内容`}
               >
                 <span className="shrink-0 rounded border border-gn-prompt-border px-1 font-mono text-[10px] leading-[16px] text-gn-cyan">
@@ -586,10 +584,10 @@ function RadioRow({
       type="button"
       disabled={disabled}
       onClick={onClick}
-      className={`flex w-full items-center gap-2 rounded border px-3 py-1.5 text-left text-[12px] ${
-        active
-          ? 'border-gn-prompt-border-active bg-gn-bg-highlight text-gn-fg'
-          : 'border-gn-prompt-border text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg'
+      className={`flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-[12px] ${
+ active
+          ? 'bg-gn-bg-highlight text-gn-fg'
+          : 'text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg'
       } ${disabled ? 'cursor-not-allowed opacity-40 hover:bg-transparent hover:text-gn-fg2' : ''}`}
     >
       <span className={`font-mono text-[11px] ${active ? 'text-gn-cyan' : 'text-gn-muted'}`}>

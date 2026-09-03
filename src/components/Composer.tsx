@@ -30,6 +30,7 @@ import {
   COMPOSER_BODY_PAD_LEFT_PX,
   CONTENT_COLUMN_CLASS,
   COLUMN_PAD_X_CLASS,
+  IMAGE_THUMB_CLASS,
 } from '../theme/layout'
 import { IconGlyph } from './IconGlyph'
 import { X } from 'lucide-react'
@@ -66,6 +67,7 @@ import { useModelMenu } from './composer/useModelMenu'
 import { ModelMenu } from './composer/ModelMenu'
 import { PromptHistoryMenu } from './composer/PromptHistoryMenu'
 import { QueueStrip } from './composer/QueueStrip'
+import { QueueEditModal } from './composer/QueueEditModal'
 import { useQueueNav } from './composer/useQueueNav'
 import { useSlashMenu } from './composer/useSlashMenu'
 import { useAtPicker } from './composer/useAtPicker'
@@ -276,12 +278,15 @@ export function Composer() {
   const {
     slashOpen,
     slashLiteral,
+    slashPhase,
     slashMatches,
+    slashArgMatches,
+    slashArgCommand,
+    slashRowCount,
     setSlashSel,
     slashSelClamped,
-    slashList,
-    runSlashCommand,
-    resolveSlashLine,
+    acceptSelected,
+    slashEnter,
     setSlashDismissed,
   } = useSlashMenu({
     text,
@@ -290,6 +295,7 @@ export function Composer() {
     composerChromeRef,
     shellMode,
     clearChips: () => setChips([]),
+    setPendingCaret,
   })
 
   // /model (no args) opens the composer's own model menu.
@@ -333,8 +339,8 @@ export function Composer() {
   /**
    * Add pasted/dropped files as always-expanded image chips — the
    * thumbnail row above the textarea, no `[Image: …]` label in the
-   * buffer. The label is kept on the chip as a display fallback
-   * (queue row text for image-only prompts).
+   * buffer. The label only names the chip (alt text / history); the
+   * queued row renders its images from the wire blocks instead.
    */
   const insertImageChips = async (files: File[]) => {
     const newChips: PasteChip[] = []
@@ -496,8 +502,8 @@ export function Composer() {
       if (!usePromptQueue.getState().queue.some((x) => x.id === item.id)) return
       q.removeAt(item.id)
       try {
-        // Resend the wire text from the blocks (image-only rows stash
-        // `[Image: …]` display labels in item.text — never to the agent).
+        // Resend the wire text from the blocks (an image-only row's text
+        // block is empty — the images ride along in blocks[1..]).
         const firstBlock = item.blocks[0]
         // ContentBlock has an open `{ type: string; … }` arm — cast after
         // the discriminant check to get the string-typed text.
@@ -632,16 +638,11 @@ export function Composer() {
       // 收养广播把该条渲染为用户行。RPC 失败 → 行保留 degraded（队列
       // 区红点 + 失败徽标，可手动重发）。
       const { expandedText, blocks } = buildBlocks(literalSlashPayload(text), chips)
-      // Queue-row display text: the buffer holds no `[Image: …]` markers,
-      // so image-only prompts fall back to the joined labels (display
-      // only — the wire blocks carry the images).
-      const queueText =
-        expandedText !== ''
-          ? expandedText
-          : chips.filter((c) => c.image).map((c) => c.label).join('')
+      // 队列行的正文就是真正文（纯图片 prompt 为空串）——图片由 blocks
+      // 说话：队列条按每张图渲染一个可点的 `[image]` 标记（QueueStrip）。
       setText('')
       setChips([])
-      void useChatStore.getState().send(queueText, blocks)
+      void useChatStore.getState().send(expandedText, blocks)
       taRef.current?.focus()
       return
     }
@@ -1168,7 +1169,7 @@ export function Composer() {
         {modeBanner && (
           <div
             className={`flex min-h-5 items-center gap-1.5 pb-2 pr-0.5 font-ui text-[13px] leading-[1.4] select-none transition-opacity duration-300 ${
-              modeBannerVisible ? 'opacity-100' : 'opacity-0'
+ modeBannerVisible ? 'opacity-100' : 'opacity-0'
             }`}
             style={{ paddingLeft: COMPOSER_BODY_PAD_LEFT_PX }}
           >
@@ -1363,6 +1364,8 @@ export function Composer() {
           onToggleMode={() => void toggleFollowUpBehavior()}
           togglingMode={togglingFollowUp}
         />
+        {/* 排队消息正文的编辑弹窗（store 的 editIndex 打开它）。 */}
+        <QueueEditModal />
         {escHintRow}
         {/* ── TUI follow-up suggestion chips (x.ai/follow_ups, follow_ups.rs) ──
           Turn-end suggestions rendered as a transient row between the
@@ -1381,7 +1384,7 @@ export function Composer() {
                 key={`${i}-${f.label}`}
                 type="button"
                 onClick={() => sendFollowUp(f.label)}
-                className="inline-flex max-w-full min-h-6 items-center rounded-full border border-gn-prompt-border bg-gn-bg-dark px-2.5 text-[11px] leading-none transition-colors hover:border-gn-prompt-border-active hover:bg-gn-bg-highlight hover:text-gn-fg sm:min-h-0"
+                className="inline-flex max-w-full min-h-6 items-center rounded-full bg-gn-bg-dark px-2.5 text-[11px] leading-none transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg sm:min-h-0"
                 title="发送该建议"
               >
                 <span className="truncate text-gn-fg2">{f.label}</span>
@@ -1416,15 +1419,22 @@ export function Composer() {
               onPick={recallHistory}
             />
           )}
-          {/* TUI slash command menu — floats above the composer while the
-              input starts with "/" (fuzzy filter, ↑/↓ + Enter/Tab pick). */}
+          {/* TUI slash menu — floats above the composer while the input
+              starts with "/" (two phases: 命令 → 参数；↑/↓ + Enter/Tab pick). */}
           {slashOpen && (
             <SlashMenu
               input={text}
               selected={slashSelClamped}
+              phase={slashPhase}
               matches={slashMatches}
+              argMatches={slashArgMatches}
+              argCommand={slashArgCommand}
+              rowCount={slashRowCount}
               onHover={setSlashSel}
-              onPick={(cmd) => void runSlashCommand(cmd, '')}
+              onPick={(i) => {
+                setSlashSel(i)
+                slashEnter(i)
+              }}
               onLiteral={() => {
                 // Prepend the escape: `/xyz` → `\/xyz`, caret back at the
                 // end, menu closes (the line no longer starts with "/").
@@ -1454,13 +1464,13 @@ export function Composer() {
               pt clears the chrome's 4px top padding plus the remove button's
               -top-1.5 overflow so neither rides the border. */}
           {imageChips.length > 0 && (
-            <div className="flex flex-wrap items-end gap-2 px-3 pt-2.5 pb-1">
+            <div className="flex flex-wrap items-start gap-2 px-3 pt-2.5 pb-1">
               {imageChips.map((c) => (
                 <div key={c.id} className="group relative">
                   <img
                     src={`data:${c.image!.mimeType};base64,${c.image!.data}`}
                     alt={c.image!.name}
-                    className="max-h-24 w-auto max-w-[160px] rounded border border-gn-prompt-border object-contain"
+                    className={IMAGE_THUMB_CLASS}
                   />
                   <button
                     type="button"
@@ -1473,7 +1483,7 @@ export function Composer() {
                     <X size={10} strokeWidth={2.5} aria-hidden />
                   </button>
                   <div
-                    className="max-w-24 truncate text-[9.5px] leading-tight text-gn-muted"
+                    className="w-20 truncate text-[9.5px] leading-tight text-gn-muted"
                     title={c.image!.name}
                   >
                     {c.image!.name}
@@ -1640,12 +1650,13 @@ export function Composer() {
                     // No matches / empty query: fall through (Enter submits,
                     // typing continues) — the picker stays open for edits.
                   }
-                  // TUI slash menu: Tab executes the highlighted command
-                  // (swallows the global Tab focus-toggle).
-                  if (e.key === 'Tab' && slashOpen && slashList.length > 0) {
+                  // TUI slash menu: Tab accepts the highlighted row — text
+                  // only, never executes (Enter is the executing key). It
+                  // still swallows the global Tab focus-toggle.
+                  if (e.key === 'Tab' && slashOpen && slashRowCount > 0) {
                     e.preventDefault()
                     e.stopPropagation()
-                    void runSlashCommand(slashList[slashSelClamped], '')
+                    acceptSelected()
                     return
                   }
                   // TUI prompt history recall: ↑ on an EMPTY input opens
@@ -1714,7 +1725,7 @@ export function Composer() {
                     if (e.key === 'ArrowUp') {
                       setSlashSel((s) => Math.max(0, s - 1))
                     } else {
-                      setSlashSel((s) => Math.min(s + 1, slashList.length - 1))
+                      setSlashSel((s) => Math.min(s + 1, slashRowCount - 1))
                     }
                     return
                   }
@@ -1878,20 +1889,20 @@ export function Composer() {
                       e.preventDefault()
                       // TUI slash commands: a `/…` line that resolves to a
                       // command runs locally and is NEVER sent to the agent.
-                      // Everything else falls through and goes out as plain
-                      // text: the `\/…` / leading-space literals, and lines
-                      // whose first word matches no command at all (the TUI
-                      // appends an error row there — the FE lets it pass).
+                      // `slashEnter` also owns the two-level dropdown (it
+                      // completes `/effort` into `/effort ` + the level list
+                      // instead of running it). Everything it declines falls
+                      // through and goes out as plain text: the `\/…` /
+                      // leading-space literals, and lines whose first word
+                      // matches no command at all (the TUI appends an error
+                      // row there — the FE lets it pass).
                       if (
                         !shellMode &&
                         !slashLiteral &&
-                        text.trimStart().startsWith('/')
+                        text.trimStart().startsWith('/') &&
+                        slashEnter()
                       ) {
-                        const hit = resolveSlashLine(text)
-                        if (hit) {
-                          void runSlashCommand(hit.cmd, hit.args)
-                          return
-                        }
+                        return
                       }
                       void onSubmit()
                       return
@@ -2143,13 +2154,13 @@ export function Composer() {
               Image chips are always expanded, so no preview is needed. */}
           {preview &&
             previewLines && (
-              <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-1 w-[75%] -translate-x-1/2 overflow-hidden rounded border border-gn-prompt-border-active bg-gn-bg-dark shadow-2xl">
+              <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-1 w-[75%] -translate-x-1/2 gn-popover">
                 <div className="gn-no-scrollbar max-h-44 overflow-y-auto py-0.5">
                   {previewLines.map((line, i) => (
                     <div
                       key={i}
                       className={`truncate px-2 font-mono text-[11.5px] leading-[1.5] ${
-                        line.startsWith('⋮ (')
+ line.startsWith('⋮ (')
                           ? 'text-gn-gray-dim'
                           : 'text-gn-fg'
                       }`}

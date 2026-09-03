@@ -265,8 +265,8 @@ export interface ChatHistoryState {
   /** 本页被裁掉的总字节数（projected 生效时带）。 */
   historyOmittedBytes?: number
   /**
-   * 在途的后台正文补全请求数（TopBar 的 lite 进度图标用）。每个请求落地时
-   * 自减，切会话时由 loadHistory 归零。
+   * 在途的 lite 正文批量补全请求数（TopBar 的 lite 进度图标用）。每个请求
+   * 落地时自减，切会话时由 loadHistory 归零。
    */
   liteFillBusy?: number
   /**

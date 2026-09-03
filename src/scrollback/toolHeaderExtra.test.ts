@@ -439,3 +439,107 @@ describe('toolHeaderExtra — TUI 路径 surface', () => {
     ).toMatchObject({ suffix: ' (no files)' })
   })
 })
+
+// host 在裁正文前把折叠行行头要的数字折进 _meta.lite（契约 lite-replay [C]7），
+// 全量补回来时标记被抹掉、改回由真实 diff 计算。
+describe('toolHeaderExtra — lite 标记兜底折叠行后缀', () => {
+  it('edit 正文被裁 → (+N/−M) 用折好的行数', () => {
+    expect(
+      hep(
+        {
+          status: 'completed',
+          rawInput: { file_path: '/a/historyFill.ts' },
+          rawOutput: { type: 'SearchReplace', EditsApplied: { absolute_path: '/a/historyFill.ts' } },
+          _meta: { lite: { omitted: 29944, edits: { ins: 70, del: 3 } } },
+        },
+        'edit',
+        { surface: 'collapsed' },
+      ),
+    ).toMatchObject({ target: 'historyFill.ts', suffix: ' (+70/−3)' })
+  })
+
+  it('合并的多次编辑 → 各自折好的行数相加', () => {
+    const foldRaw = (ins: number, del: number) =>
+      tc({
+        status: 'completed',
+        rawInput: { file_path: '/a/x.ts' },
+        _meta: { lite: { omitted: 10, edits: { ins, del } } },
+      })
+    expect(
+      toolHeaderExtra(foldRaw(3, 1), 'edit', false, [foldRaw(4, 0), foldRaw(4, 0)], {
+        surface: 'collapsed',
+      }),
+    ).toMatchObject({ suffix: ' (+11/−1)' })
+  })
+
+  it('真实 diff 在时以 diff 为准，标记不覆盖', () => {
+    expect(
+      hep(
+        {
+          status: 'completed',
+          rawInput: { file_path: '/a/x.ts' },
+          content: [{ type: 'diff', path: '/a/x.ts', oldText: 'a\nb\nc', newText: 'a\nx\nc' }],
+          _meta: { lite: { omitted: 999, edits: { ins: 70, del: 3 } } },
+        },
+        'edit',
+        { surface: 'collapsed' },
+      ),
+    ).toMatchObject({ suffix: ' (+1/−1)' })
+  })
+
+  it('grep 正文被裁 → (N matches in M files) 用折好的文件数', () => {
+    expect(
+      hep(
+        {
+          status: 'completed',
+          rawInput: { pattern: 'lite', glob: '*.{ts,tsx}', path: '/ws' },
+          rawOutput: { type: 'GrepSearch', match_count: 55 },
+          _meta: { lite: { omitted: 25486, files: 13 } },
+        },
+        'search',
+        {},
+      ),
+    ).toMatchObject({ suffix: ' (55 matches in 13 files)' })
+  })
+
+  it('match_count 在载荷里 → 裁过正文也照常写 (no matches)', () => {
+    expect(
+      hep(
+        {
+          status: 'completed',
+          rawInput: { pattern: 'nope' },
+          rawOutput: { type: 'GrepSearch', match_count: 0 },
+          _meta: { lite: { omitted: 10 } },
+        },
+        'search',
+        {},
+      ),
+    ).toMatchObject({ suffix: ' (no matches)' })
+  })
+
+  it('match_count 也没给（旧 host / 预算裁过）→ 不写摘要，别误报空态', () => {
+    const h = hep(
+      { status: 'completed', rawInput: { pattern: 'nope' }, rawOutput: {}, _meta: { lite: { omitted: 10 } } },
+      'search',
+      {},
+    )
+    expect(h?.suffix).toBeUndefined()
+  })
+
+  it('use_tool 行头靠 rawInput.tool_name 拆出 Server + 动作', () => {
+    expect(
+      hep(
+        {
+          status: 'completed',
+          kind: 'other',
+          title: 'use_tool',
+          rawInput: { tool_name: 'tasks__list' },
+          rawOutput: { type: 'MCP', server_name: 'Automations' },
+          _meta: { lite: { omitted: 80 }, 'x.ai/tool': { kind: 'use_tool', name: 'use_tool' } },
+        },
+        'use_tool',
+        {},
+      ),
+    ).toMatchObject({ verb: 'Tasks', target: 'List' })
+  })
+})

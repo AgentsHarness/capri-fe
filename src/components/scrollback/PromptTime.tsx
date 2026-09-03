@@ -41,10 +41,13 @@ export function PromptTime({
   ts,
   className = '',
   shiftRight = false,
+  inline = false,
 }: {
   ts?: number
   className?: string
   shiftRight?: boolean
+  /** Sit in a flex cluster (e.g. next to the 引导 badge) instead of overlay. */
+  inline?: boolean
 }) {
   // /timestamps toggle (TUI scrollback_pane show_timestamps) — one gate
   // here covers every PromptTime call site.
@@ -53,11 +56,48 @@ export function PromptTime({
   return (
     <span
       aria-hidden
-      className={`gn-pt absolute w-[17ch] text-right text-[11px] leading-none text-gn-gray ${className}`}
-      style={{ right: shiftRight ? 20 : 8 }}
+      className={
+        inline
+          ? `gn-pt pointer-events-auto relative inline-block text-right text-[11px] leading-none text-gn-gray ${className}`
+          : `gn-pt absolute w-[17ch] text-right text-[11px] leading-none text-gn-gray ${className}`
+      }
+      style={inline ? undefined : { right: shiftRight ? 20 : 8 }}
     >
       <span className="gn-pt-short">{formatPromptTime(ts)}</span>
       <span className="gn-pt-full">{formatPromptTimeFull(ts)}</span>
     </span>
+  )
+}
+
+/** 用户消息右上：引导徽标贴在时间左边。时间关闭时徽标仍靠右。 */
+export function UserSteerTime({
+  ts,
+  steer,
+  className = '',
+}: {
+  ts?: number
+  steer?: boolean
+  className?: string
+}) {
+  if (!steer) {
+    return <PromptTime ts={ts} className={className} />
+  }
+  // 与用户消息第一行同高（13.5px × 1.35），顶对齐 py-[11px]；
+  // 引导 / 时间在这一格里垂直居中。时间自己 pointer-events-auto，hover 才扩得开。
+  return (
+    <div
+      className="pointer-events-none absolute right-2 top-[11px] z-[1] flex h-[1.35em] items-center gap-1"
+    >
+      <span
+        className="inline-block rounded px-1 py-[2px] text-[11px] font-medium leading-none select-none"
+        style={{
+          backgroundColor: 'color-mix(in srgb, var(--color-gn-warning) 18%, transparent)',
+          color: 'var(--color-gn-warning)',
+        }}
+      >
+        引导
+      </span>
+      <PromptTime ts={ts} inline />
+    </div>
   )
 }

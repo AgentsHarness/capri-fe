@@ -9,6 +9,43 @@ type ModelMenuProps = {
 }
 
 /**
+ * 过滤/规范化 effort 标签字符：子字符串匹配 low / medium / high / xhigh / max / minimal，
+ * 命中即收敛为对应简写档位，避免 "Extra High Effort" 等长字符撑宽弹窗。
+ */
+export function formatEffortLabel(e: { id?: string; label?: string; value?: string }): string {
+  const target = `${e.label || ''} ${e.value || ''} ${e.id || ''}`.toLowerCase()
+  if (
+    target.includes('xhigh') ||
+    target.includes('extra high') ||
+    target.includes('extra-high')
+  ) {
+    return 'xhigh'
+  }
+  if (target.includes('minimal')) return 'minimal'
+  if (target.includes('medium')) return 'medium'
+  if (target.includes('high')) return 'high'
+  if (target.includes('max')) return 'max'
+  if (target.includes('low')) return 'low'
+  return e.label || e.value || ''
+}
+
+const EFFORT_WEIGHTS: Record<string, number> = {
+  none: 0,
+  minimal: 1,
+  low: 2,
+  medium: 3,
+  high: 4,
+  xhigh: 5,
+  max: 6,
+}
+
+/** 语义强度权重（从小到大排序）。 */
+export function effortWeight(e: { id?: string; label?: string; value?: string }): number {
+  const norm = formatEffortLabel(e).toLowerCase()
+  return EFFORT_WEIGHTS[norm] ?? 99
+}
+
+/**
  * /model 模型菜单弹出层（composer 底部 caption 模型槽）：模型行 +
  * reasoning-effort chips + 「设为默认」勾选。定位/开关/激活判定归
  * useModelMenu；switchModel 的 effort 保留逻辑（重选同一模型时若仍
@@ -25,7 +62,7 @@ export function ModelMenu({ models, pos, menu }: ModelMenuProps) {
   } = menu
   return (
     <div
-      className="pointer-events-auto fixed z-50 overflow-y-auto rounded border border-gn-prompt-border-active bg-gn-bg-base shadow-2xl"
+      className="pointer-events-auto fixed z-50 flex flex-col gn-modal-panel"
       style={{
         bottom: pos.bottom,
         right: pos.right,
@@ -33,74 +70,79 @@ export function ModelMenu({ models, pos, menu }: ModelMenuProps) {
         width: pos.width,
       }}
     >
-      <div className="sticky top-0 z-10 border-b border-gn-prompt-border bg-gn-bg-dark px-3 py-1.5 text-[11px] font-bold text-gn-fg2">
+      <div className="shrink-0 border-b border-gn-prompt-border px-3 py-1.5 text-[11px] font-bold text-gn-fg2">
         切换模型
       </div>
-      {models.map((m) => {
-        const efforts = m.reasoningEfforts ?? []
-        const active = modelActive(m)
-        const defEffort = efforts.find((e) => e.default) ?? efforts[0]
-        return (
-          <div
-            key={m.modelId}
-            className={`border-b border-gn-prompt-border/40 px-3 py-1.5 ${
-              active ? 'bg-gn-bg-highlight/60' : ''
-            }`}
-          >
-            <button
-              type="button"
-              onClick={() =>
-                switchModel(
-                  m.modelId,
-                  // Keep current effort when re-picking same model
-                  // if still offered; else fall back to default.
-                  active && reasoningEffort
-                    ? efforts.find(
-                        (e) =>
-                          e.value === reasoningEffort ||
-                          e.id === reasoningEffort,
-                      )?.value ?? defEffort?.value
-                    : defEffort?.value,
-                )
-              }
-              className="block w-full text-left hover:opacity-90"
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {models.map((m) => {
+          const rawEfforts = m.reasoningEfforts ?? []
+          const defEffort = rawEfforts.find((e) => e.default) ?? rawEfforts[0]
+          const efforts = [...rawEfforts].sort(
+            (a, b) => effortWeight(a) - effortWeight(b),
+          )
+          const active = modelActive(m)
+          return (
+            <div
+              key={m.modelId}
+              className={`border-b border-gn-prompt-border/40 px-3 py-1.5 ${
+                active ? 'bg-gn-bg-highlight/60' : ''
+              }`}
             >
-              <span
-                className={`text-[12px] font-medium ${
-                  active ? 'text-gn-magenta' : 'text-gn-fg'
-                }`}
-              >
-                {m.name || m.modelId}
-              </span>
-            </button>
-            {efforts.length > 0 && (
-              <div className="mt-1.5 flex flex-wrap gap-1">
-                {efforts.map((e) => {
-                  const on = active && effortActive(e)
-                  return (
-                    <button
-                      key={e.id || e.value}
-                      type="button"
-                      onClick={() => switchModel(m.modelId, e.value)}
-                      title={
-                        e.label !== e.value ? `${e.label} (${e.value})` : e.value
-                      }
-                      className={`rounded border px-1.5 py-[2px] text-[10px] leading-none transition-colors ${
-                        on
-                          ? 'border-gn-prompt-border-active bg-gn-bg-hover text-gn-magenta'
-                          : 'border-gn-prompt-border text-gn-muted hover:border-gn-prompt-border-active hover:bg-gn-bg-highlight hover:text-gn-fg'
-                      }`}
-                    >
-                      {e.label || e.value}
-                    </button>
+              <button
+                type="button"
+                onClick={() =>
+                  switchModel(
+                    m.modelId,
+                    // Keep current effort when re-picking same model
+                    // if still offered; else fall back to default.
+                    active && reasoningEffort
+                      ? efforts.find(
+                          (e) =>
+                            e.value === reasoningEffort ||
+                            e.id === reasoningEffort,
+                        )?.value ?? defEffort?.value
+                      : defEffort?.value,
                   )
-                })}
-              </div>
-            )}
-          </div>
-        )
-      })}
-      <div className="sticky bottom-0 flex items-center gap-2 border-t border-gn-prompt-border bg-gn-bg-dark px-3 py-1.5">
+                }
+                className="block w-full text-left hover:opacity-90"
+              >
+                <span
+                  className={`text-[12px] font-medium ${
+                    active ? 'text-gn-magenta' : 'text-gn-fg'
+                  }`}
+                >
+                  {m.name || m.modelId}
+                </span>
+              </button>
+              {efforts.length > 0 && (
+                <div className="mt-1.5 flex flex-wrap gap-1">
+                  {efforts.map((e) => {
+                    const on = active && effortActive(e)
+                    return (
+                      <button
+                        key={e.id || e.value}
+                        type="button"
+                        onClick={() => switchModel(m.modelId, e.value)}
+                        title={
+                          e.label !== e.value ? `${e.label} (${e.value})` : e.value
+                        }
+                        className={`rounded border px-1.5 py-[2px] text-[10px] leading-none transition-colors ${
+                          on
+                            ? 'border-gn-magenta text-gn-magenta font-medium'
+                            : 'border-gn-prompt-border/60 text-gn-muted hover:border-gn-prompt-border-active hover:text-gn-fg'
+                        }`}
+                      >
+                        {formatEffortLabel(e)}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+      <div className="shrink-0 flex items-center gap-2 border-t border-gn-prompt-border bg-gn-bg-dark px-3 py-1.5">
         <input
           id="set-as-default-model"
           type="checkbox"

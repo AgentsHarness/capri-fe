@@ -818,11 +818,7 @@ export function SessionHistoryList() {
               type="button"
               onClick={() => void switchWorkspaceListMode('full')}
               disabled={workspaceLoading}
-              className={`flex flex-1 cursor-pointer items-center justify-center px-1 py-0.5 text-[10.5px] disabled:cursor-default disabled:opacity-60 ${
-                workspaceListMode === 'full'
-                  ? 'bg-gn-bg-highlight text-gn-cyan'
-                  : 'text-gn-muted hover:text-gn-fg'
-              }`}
+              className={`flex flex-1 cursor-pointer items-center justify-center px-1 py-0.5 text-[10.5px] disabled:cursor-default disabled:opacity-60 ${ workspaceListMode === 'full' ? 'bg-gn-bg-highlight text-gn-cyan' : 'text-gn-muted hover:text-gn-fg' }`}
               title="显示全部历史会话（更早的也会出现）"
             >
               切换全量
@@ -847,11 +843,7 @@ export function SessionHistoryList() {
               type="button"
               onClick={() => void switchWorkspaceListMode('recent')}
               disabled={workspaceLoading}
-              className={`flex flex-1 cursor-pointer items-center justify-center px-1 py-0.5 text-[10.5px] disabled:cursor-default disabled:opacity-60 ${
-                workspaceListMode === 'recent'
-                  ? 'bg-gn-bg-highlight text-gn-cyan'
-                  : 'text-gn-muted hover:text-gn-fg'
-              }`}
+              className={`flex flex-1 cursor-pointer items-center justify-center px-1 py-0.5 text-[10.5px] disabled:cursor-default disabled:opacity-60 ${ workspaceListMode === 'recent' ? 'bg-gn-bg-highlight text-gn-cyan' : 'text-gn-muted hover:text-gn-fg' }`}
               title="只显示最近加载的会话，可逐页加载更多"
             >
               切换最近
@@ -883,7 +875,7 @@ export function SessionHistoryList() {
             }}
           >
             <div
-              className="absolute w-[176px] overflow-hidden rounded border border-gn-prompt-border bg-gn-bg-dark py-0.5 shadow-xl"
+              className="absolute w-[176px] overflow-hidden gn-menu"
               style={{ left: menu.x, top: menu.y }}
               onMouseDown={(e) => e.stopPropagation()}
               role="menu"
@@ -928,7 +920,7 @@ export function SessionHistoryList() {
                     </span>{' '}
                     {pinnedSessions.has(menu.row.sessionId) ? '取消置顶' : '置顶此会话'}
                   </MenuItem>
-                  <div className="my-0.5 border-t border-gn-prompt-border/60" />
+                  <div className="border-t border-gn-prompt-border/60" />
                   {/* 待办操作：待办是独立于置顶的追踪状态——设为待办后
                       该会话升到列表前部，做完可标记已完成（✓ 徽标）。 */}
                   {(() => {
@@ -1016,7 +1008,7 @@ export function SessionHistoryList() {
                       </>
                     )
                   })()}
-                  <div className="my-0.5 border-t border-gn-prompt-border/60" />
+                  <div className="border-t border-gn-prompt-border/60" />
                   <MenuItem
                     danger
                     disabled={
@@ -1070,18 +1062,18 @@ export function SessionHistoryList() {
       {deleteTarget &&
         createPortal(
           <div
-            className="fixed inset-0 z-[60] flex items-center justify-center bg-black/55 p-4"
+            className="fixed inset-0 z-[60] flex items-center justify-center gn-modal-dim p-4"
             onMouseDown={(e) => {
               if (e.target === e.currentTarget) setDeleteTarget(null)
             }}
           >
             <div
-              className="w-full max-w-[360px] rounded border border-gn-prompt-border-active bg-gn-bg-base shadow-2xl"
+              className="w-full max-w-[360px] gn-modal-panel"
               role="dialog"
               aria-modal="true"
               aria-label="删除会话"
             >
-              <header className="flex items-center gap-2 rounded-t border-b border-gn-prompt-border bg-gn-bg-dark px-4 py-2.5">
+              <header className="gn-modal-header">
                 <span className="text-gn-red" aria-hidden>
                   ✕
                 </span>
@@ -1095,18 +1087,18 @@ export function SessionHistoryList() {
                 </span>
                 ？删除后不可恢复。
               </div>
-              <footer className="flex justify-end gap-2 rounded-b border-t border-gn-prompt-border px-4 py-2.5">
+              <footer className="gn-modal-footer flex justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setDeleteTarget(null)}
-                  className="min-h-8 rounded border border-gn-prompt-border bg-gn-bg-base px-3 py-1 text-[12px] text-gn-fg2 hover:bg-gn-bg-highlight"
+                  className="min-h-8 rounded bg-gn-bg-base px-3 py-1 text-[12px] text-gn-fg2 hover:bg-gn-bg-highlight"
                 >
                   取消
                 </button>
                 <button
                   type="button"
                   onClick={confirmDelete}
-                  className="min-h-8 rounded border border-gn-red/50 bg-gn-diff-del-bg px-3 py-1 text-[12px] font-semibold text-gn-red hover:bg-gn-red/15"
+                  className="min-h-8 rounded bg-gn-diff-del-bg px-3 py-1 text-[12px] font-semibold text-gn-red hover:bg-gn-red/15"
                 >
                   删除
                 </button>
@@ -1139,13 +1131,7 @@ function MenuItem({
       disabled={disabled}
       onClick={onClick}
       title={disabled ? disabledTitle : undefined}
-      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] ${
-        disabled
-          ? 'cursor-not-allowed text-gn-gutter opacity-50'
-          : danger
-            ? 'text-gn-red hover:bg-gn-diff-del-bg'
-            : 'text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg'
-      }`}
+      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] ${ disabled ? 'cursor-not-allowed text-gn-gutter opacity-50' : danger ? 'text-gn-red hover:bg-gn-diff-del-bg' : 'text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg' }`}
     >
       {children}
     </button>

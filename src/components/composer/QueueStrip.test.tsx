@@ -66,7 +66,7 @@ describe('QueueStrip', () => {
     )
     const btn = screen.getByRole('button', { name: '队列' })
     expect(btn).toBeInTheDocument()
-    expect(btn.className).toContain('text-gn-gutter')
+    expect(btn.className).toContain('text-gn-fg2')
     expect(btn.getAttribute('title')).toContain('当前为 queue（队列）')
     expect(btn).not.toBeDisabled()
 
@@ -150,5 +150,50 @@ describe('QueueStrip', () => {
       />,
     )
     expect(screen.queryByRole('button', { name: '引导' })).toBeNull()
+  })
+
+  it('纯图片行：每张图一个 [image N] 标记，点开是全屏预览', () => {
+    const imgs = [
+      { type: 'image', data: 'AA', mimeType: 'image/png' },
+      { type: 'image', data: 'BB', mimeType: 'image/jpeg' },
+    ]
+    render(
+      <QueueStrip
+        nav={makeNav([
+          makePrompt('q1', '', { blocks: [{ type: 'text', text: '' }, ...imgs] }),
+        ])}
+        sendQueuedItem={vi.fn()}
+        headSteer={false}
+      />,
+    )
+    // 正文为空也不该是一条空行：标记就是这行的内容。
+    expect(screen.getByRole('button', { name: '[image 1]' })).not.toBeNull()
+    const second = screen.getByRole('button', { name: '[image 2]' })
+    expect(second.getAttribute('title')).toBe('点击查看图片')
+    fireEvent.click(second)
+    expect(screen.getByRole('dialog', { name: '图片预览 2/2' })).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '关闭预览' }))
+    expect(screen.queryByRole('dialog', { name: /图片预览/ })).toBeNull()
+  })
+
+  it('正文 + 单张附图：正文照旧展示，标记不带序号且进 tooltip', () => {
+    render(
+      <QueueStrip
+        nav={makeNav([
+          makePrompt('q1', '看下这张', {
+            blocks: [
+              { type: 'text', text: '看下这张' },
+              { type: 'image', data: 'AA', mimeType: 'image/png' },
+            ],
+          }),
+        ])}
+        sendQueuedItem={vi.fn()}
+        headSteer={false}
+      />,
+    )
+    const rowText = screen.getByTitle('看下这张 [image]')
+    expect(rowText).not.toBeNull()
+    expect(rowText.textContent).toBe('看下这张[image]')
+    expect(screen.getByRole('button', { name: '[image]' })).not.toBeNull()
   })
 })

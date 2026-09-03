@@ -181,11 +181,7 @@ export function AssistantEntry({
               onClick={() => void copyMessage()}
               disabled={copied}
               title="复制消息（原文 + 格式化后）"
-              className={`${rowBtn} ${
-                copied
-                  ? 'cursor-default text-gn-teal'
-                  : 'text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
-              }`}
+              className={`${rowBtn} ${ copied ? 'cursor-default text-gn-teal' : 'text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg' }`}
             >
               {copied ? (
                 <Check size={11} strokeWidth={2.5} aria-hidden />

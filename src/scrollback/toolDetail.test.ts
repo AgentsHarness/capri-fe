@@ -4,9 +4,11 @@ import {
   contentText,
   extractToolDetail,
   hunkGapSeparator,
+  liteFoldStats,
   parseAskUserQaPairs,
   readPathOf,
   skillNameFromPath,
+  toolBodyStillOwed,
   type DiffLine,
   type KvPair,
 } from './toolDetail'
@@ -782,5 +784,67 @@ describe('extractToolDetail 畸形 wire 字段（wire 不做运行时校验，�
     expect(err(asCommand('completed'))).toBeUndefined()
     expect(err(asCommand(500))).toBeUndefined()
     expect(err(asCommand({ status: 'failed' }))).toBeUndefined()
+  })
+})
+
+// host 折进 _meta.lite 的行头数字（契约 lite-replay [C]7）。
+describe('liteFoldStats — 折叠行行头兜底数字', () => {
+  it('读 edits / files；缺键或畸形值一律忽略', () => {
+    expect(
+      liteFoldStats(
+        tc({
+          rawInput: { file_path: '/a/x.ts' },
+          _meta: { lite: { omitted: 10, edits: { ins: 70, del: 3 }, files: 13 } },
+        }),
+      ),
+    ).toEqual({ ins: 70, del: 3, files: 13 })
+    expect(liteFoldStats(tc({ _meta: { lite: { omitted: 10 } } }))).toBeUndefined()
+    expect(liteFoldStats(tc({ _meta: { lite: { edits: { ins: 'x', del: -2 }, files: null } } }))).toBeUndefined()
+    expect(liteFoldStats(tc({ _meta: { lite: 'nope' } }))).toBeUndefined()
+    expect(liteFoldStats(tc({}))).toBeUndefined()
+  })
+
+  it('只剩行头数字 ≠ 正文已补回：toolBodyStillOwed 仍为真，补全照旧跑', () => {
+    const owed = tc({
+      status: 'completed',
+      kind: 'edit',
+      rawInput: { file_path: '/a/x.ts' },
+      rawOutput: { type: 'SearchReplace', EditsApplied: { absolute_path: '/a/x.ts' } },
+      _meta: { lite: { omitted: 29944, msgSeqEnd: 177, edits: { ins: 70, del: 3 } } },
+    })
+    expect(toolBodyStillOwed(owed)).toBe(true)
+    const d = extractToolDetail(owed, 'edit')
+    expect(d.kind === 'edit' && d.insertions).toBe(70)
+    expect(d.kind === 'edit' && d.deletions).toBe(3)
+    expect(d.kind === 'edit' && d.lines).toHaveLength(0)
+  })
+
+  it('grep 的 fileCount 在 file_matches 被裁时用标记兜底，真实列表优先', () => {
+    const cut = extractToolDetail(
+      tc({
+        status: 'completed',
+        rawInput: { pattern: 'p' },
+        rawOutput: { type: 'GrepSearch', match_count: 55 },
+        _meta: { lite: { omitted: 900, files: 13 } },
+      }),
+      'search',
+    )
+    expect(cut.kind === 'search' && cut.fileCount).toBe(13)
+    expect(cut.kind === 'search' && cut.matchCountPresent).toBe(true)
+    const real = extractToolDetail(
+      tc({
+        status: 'completed',
+        rawInput: { pattern: 'p' },
+        rawOutput: {
+          type: 'GrepSearch',
+          match_count: 2,
+          file_matches: [{ path: 'a.ts', matches: [] }, { path: 'b.ts', matches: [] }],
+        },
+      }),
+      'search',
+    )
+    expect(real.kind === 'search' && real.fileCount).toBe(2)
+    const none = extractToolDetail(tc({ status: 'completed', rawInput: { pattern: 'p' }, rawOutput: {} }), 'search')
+    expect(none.kind === 'search' && none.matchCountPresent).toBe(false)
   })
 })

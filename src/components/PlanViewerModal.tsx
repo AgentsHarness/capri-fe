@@ -90,7 +90,7 @@ export function PlanViewerModal() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/55 backdrop-blur-[1px] p-4"
+      className="fixed inset-0 z-50 flex items-start justify-center gn-modal-dim p-4"
       role="dialog"
       aria-modal="true"
       aria-label="view plan"
@@ -101,9 +101,9 @@ export function PlanViewerModal() {
       <div
         ref={panelRef}
         tabIndex={-1}
-        className="mt-8 flex max-h-[min(80vh,36rem)] w-full max-w-[640px] flex-col rounded border border-gn-prompt-border-active bg-gn-bg-base shadow-2xl outline-none"
+        className="mt-8 flex max-h-[min(80vh,36rem)] w-full max-w-[640px] flex-col gn-modal-panel"
       >
-        <header className="flex items-center gap-2 rounded-t border-b border-gn-prompt-border bg-gn-bg-dark px-4 py-2.5">
+        <header className="gn-modal-header">
           <span className="font-mono text-[13px] font-bold text-gn-fg">/view-plan</span>
           {hasPlan && (
             <span className="font-mono text-[11px] text-gn-muted">plan.md</span>
@@ -152,7 +152,7 @@ export function PlanViewerModal() {
                 {pending > 0 ? `${pending} 待办` : ''}
               </span>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto py-1">
+            <div className="min-h-0 flex-1 overflow-y-auto">
               {todos.map((t, i) => (
                 <div
                   key={t.id ?? i}
@@ -163,7 +163,7 @@ export function PlanViewerModal() {
                   </span>
                   <span
                     className={`min-w-0 flex-1 break-words ${
-                      t.status === 'completed' || t.status === 'cancelled'
+ t.status === 'completed' || t.status === 'cancelled'
                         ? 'text-gn-muted'
                         : 'text-gn-fg'
                     }`}
@@ -179,7 +179,7 @@ export function PlanViewerModal() {
           </>
         )}
 
-        <footer className="rounded-b border-t border-gn-prompt-border px-4 py-2 text-right">
+        <footer className="gn-modal-footer text-right">
           <span className="text-[11px] text-gn-gutter">
             {hasPlan ? 'plan.md · 与 TUI /view-plan 一致' : 'plan 更新'}
           </span>

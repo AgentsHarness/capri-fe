@@ -67,7 +67,7 @@ export function HostActionsMenu({
         ref={ref}
         tabIndex={-1}
         role="menu"
-        className="fixed z-[46] w-52 rounded border border-gn-prompt-border bg-gn-bg-base shadow-xl py-1 outline-none"
+        className="fixed z-[46] w-52 gn-menu outline-none"
         style={{ left: pos.x, top: pos.y }}
         onKeyDown={(e) => {
           if (e.key === 'Escape') onClose()
@@ -79,7 +79,7 @@ export function HostActionsMenu({
             只有 Hub 中继一条路——整段通道菜单直接不显示。 */}
         {transport.hasLocalCandidate(host.hostId) && (
           <>
-            <div className="px-3 pb-1 pt-1 text-[10px] uppercase tracking-wider text-gn-gutter">
+            <div className="px-3 pb-1 pt-1.5 text-[10px] uppercase tracking-wider text-gn-gutter">
               通路
             </div>
             <button
@@ -118,7 +118,7 @@ export function HostActionsMenu({
               经 Hub 中继
               {routeState === 'relay' && <span className="ml-auto text-[10px] text-gn-cyan">当前</span>}
             </button>
-            <div className="my-1 border-t border-gn-prompt-border" />
+            <div className="border-t border-gn-prompt-border" />
           </>
         )}
         <button
@@ -161,7 +161,7 @@ export function HostActionsMenu({
   )
 }
 
-/** 通用模态外壳（与 DirectoryPickerModal 同款样式；portaled 到 body）。 */
+/** 通用模态外壳（TUI 平面边框，与 sidebar / 滚动区同款；portaled 到 body）。 */
 export function ModalShell({
   title,
   onClose,
@@ -173,7 +173,7 @@ export function ModalShell({
 }) {
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/55 backdrop-blur-[1px] p-4"
+      className="fixed inset-0 z-50 flex items-start justify-center gn-modal-dim p-4"
       role="dialog"
       aria-modal="true"
       aria-label={title}
@@ -181,8 +181,8 @@ export function ModalShell({
         if (e.target === e.currentTarget) onClose()
       }}
     >
-      <div className="mt-8 w-full max-w-[480px] rounded border border-gn-prompt-border-active bg-gn-bg-base shadow-2xl outline-none">
-        <header className="flex items-center gap-2 rounded-t border-b border-gn-prompt-border bg-gn-bg-dark px-4 py-2.5">
+      <div className="mt-8 w-full max-w-[480px] gn-modal-panel">
+        <header className="gn-modal-header">
           <span className="text-[13px] font-bold text-gn-fg">{title}</span>
           <button
             type="button"
@@ -252,7 +252,7 @@ export function RenameHostModal({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md border border-gn-prompt-border px-3 py-1.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+            className="rounded-md px-3 py-1.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
           >
             取消
           </button>
@@ -260,7 +260,7 @@ export function RenameHostModal({
             type="button"
             disabled={!value.trim() || submitting}
             onClick={submit}
-            className="rounded-md bg-gn-blue px-3 py-1.5 text-[12px] font-medium text-gn-bg-base transition-opacity enabled:hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded px-3 py-1.5 text-[12px] text-gn-cyan hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40"
           >
             {submitting ? '保存中…' : '保存'}
           </button>
@@ -302,7 +302,7 @@ export function DeleteHostModal({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md border border-gn-prompt-border px-3 py-1.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+            className="rounded-md px-3 py-1.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
           >
             取消
           </button>
@@ -310,7 +310,7 @@ export function DeleteHostModal({
             type="button"
             disabled={submitting}
             onClick={submit}
-            className="rounded-md bg-gn-red px-3 py-1.5 text-[12px] font-medium text-gn-bg-base transition-opacity enabled:hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded px-3 py-1.5 text-[12px] text-gn-red hover:bg-gn-diff-del-bg disabled:cursor-not-allowed disabled:opacity-40"
           >
             {submitting ? '删除中…' : '删除'}
           </button>
@@ -385,7 +385,7 @@ export function AddHostModal({ onClose }: { onClose: () => void }) {
     <ModalShell title="添加 Host" onClose={onClose}>
       <div className="p-4">
         <p className="mb-2 text-[12px] text-gn-muted leading-snug">
-          在要接入 hub 的新机器上启动 capri-host，填入以下配对码（每台机器一个码）：
+          启动 capri-host 时填入以下配对码（每台机器一个）：
         </p>
         {loading ? (
           <div className="mb-3 rounded-md border border-gn-prompt-border bg-gn-bg-dark px-3 py-3 text-center text-[12px] text-gn-muted">
@@ -411,7 +411,7 @@ export function AddHostModal({ onClose }: { onClose: () => void }) {
               <button
                 type="button"
                 onClick={copy}
-                className="inline-flex h-9 shrink-0 items-center gap-1 rounded-md border border-gn-prompt-border px-2.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                className="inline-flex h-9 shrink-0 items-center gap-1 rounded-md px-2.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
                 title="复制配对码"
               >
                 <Copy size={13} strokeWidth={2} aria-hidden />
@@ -419,8 +419,8 @@ export function AddHostModal({ onClose }: { onClose: () => void }) {
               </button>
             </div>
             <div className="mb-3 text-[11px] text-gn-muted">
-              {ttl ? `${ttl} 分钟内有效` : '一次性配对码'}
-              {expireText} · 一个码只能配对一台机器
+              {ttl ? `${ttl} 分钟内有效` : '一次性配对码'} · 
+              {expireText}
             </div>
           </>
         ) : null}
@@ -429,7 +429,7 @@ export function AddHostModal({ onClose }: { onClose: () => void }) {
           type="button"
           onClick={rotate}
           disabled={rotating || !!error}
-          className="mb-3 inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-gn-prompt-border px-3 py-2 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40"
+          className="mb-3 inline-flex w-full items-center justify-center gap-1.5 rounded-md px-3 py-2 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40"
           title="轮换配对码：旧码立即失效（正在配对的机器需用新码）"
         >
           <RefreshCw size={13} strokeWidth={2} aria-hidden className={rotating ? 'animate-spin' : ''} />
@@ -438,10 +438,9 @@ export function AddHostModal({ onClose }: { onClose: () => void }) {
 
         <div className="rounded-md border border-gn-prompt-border bg-gn-bg-dark p-3">
           <div className="mb-1.5 text-[12px] text-gn-fg">新机器启动示例</div>
-          <pre className="whitespace-pre-wrap break-all font-mono text-[11px] text-gn-cyan leading-relaxed">{`HUB_URL=${hubUrl} HUB_PAIR_CODE=${code ?? '<配对码>'} go run ./cmd/capri-host`}</pre>
+          <pre className="whitespace-pre-wrap break-all font-mono text-[11px] text-gn-cyan leading-relaxed">{`HOST_ID=macbook\nHOST_NAME=MacBook Air\nFE_TOKEN=sk-xxx\nHUB_URL=${hubUrl}\nHUB_PAIR_CODE=${code ?? '<配对码>'}\ngo run ./cmd/capri-host`}</pre>
           <div className="mt-1.5 text-[11px] text-gn-muted leading-snug">
-            已配对过的机器会自动复用 ~/.capri-host/hub.json 中的 token，无需重复配对；
-            HOST_TOKEN 优先级最高。
+            已配对过的机器无需重复配对
           </div>
         </div>
       </div>
@@ -483,7 +482,7 @@ export function RestartAgentModal({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md border border-gn-prompt-border px-3 py-1.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+            className="rounded-md px-3 py-1.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
           >
             取消
           </button>
@@ -491,7 +490,7 @@ export function RestartAgentModal({
             type="button"
             disabled={submitting}
             onClick={submit}
-            className="rounded-md bg-gn-blue px-3 py-1.5 text-[12px] font-medium text-gn-bg-base transition-opacity enabled:hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded px-3 py-1.5 text-[12px] text-gn-cyan hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40"
           >
             {submitting ? '重启中…' : '重启'}
           </button>

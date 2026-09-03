@@ -35,7 +35,7 @@ export function InlineImages({
     <>
       <div
         className={`flex flex-wrap ${
-          size === 'assistant' ? 'items-start gap-2' : 'items-end gap-1.5'
+ size === 'assistant' ? 'items-start gap-2' : 'items-end gap-1.5'
         }`}
       >
         {images.map((img, i) => (
@@ -147,9 +147,7 @@ export function ImageLightbox({
             type="button"
             aria-label="上一张"
             aria-disabled={atFirst}
-            className={`absolute left-2 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded text-gn-fg2 hover:bg-gn-bg-highlight ${
-              atFirst ? 'cursor-default opacity-30 hover:bg-transparent' : ''
-            }`}
+            className={`absolute left-2 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded text-gn-fg2 hover:bg-gn-bg-highlight ${ atFirst ? 'cursor-default opacity-30 hover:bg-transparent' : '' }`}
             onClick={(ev) => {
               ev.stopPropagation()
               if (!atFirst) setI((v) => Math.max(0, v - 1))
@@ -161,9 +159,7 @@ export function ImageLightbox({
             type="button"
             aria-label="下一张"
             aria-disabled={atLast}
-            className={`absolute right-2 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded text-gn-fg2 hover:bg-gn-bg-highlight ${
-              atLast ? 'cursor-default opacity-30 hover:bg-transparent' : ''
-            }`}
+            className={`absolute right-2 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded text-gn-fg2 hover:bg-gn-bg-highlight ${ atLast ? 'cursor-default opacity-30 hover:bg-transparent' : '' }`}
             onClick={(ev) => {
               ev.stopPropagation()
               if (!atLast) setI((v) => Math.min(images.length - 1, v + 1))

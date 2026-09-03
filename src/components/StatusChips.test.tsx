@@ -2,14 +2,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import type { ScrollEntry, ToolCall } from '../api/types'
 import { useChatStore } from '../store/chat'
-import { flushScheduledPageFills } from '../store/chat/historyFill'
+import { fillAllLiteTurns } from '../store/chat/historyFill'
 import { LiteFillChip } from './StatusChips'
 import { WorkspaceBar } from './TopBar'
 import { SPINNER_FRAMES } from '../theme/glyphs'
 
 vi.mock('../store/chat/historyFill', async (importOriginal) => {
   const mod = await importOriginal<typeof import('../store/chat/historyFill')>()
-  return { ...mod, flushScheduledPageFills: vi.fn() }
+  return { ...mod, fillAllLiteTurns: vi.fn() }
 })
 
 /**
@@ -102,7 +102,7 @@ describe('LiteFillChip', () => {
     const btn = screen.getByRole('button', { name: /精简回放：1 行工具正文待补全/ })
     expect(btn.textContent).toContain('✗')
     fireEvent.click(btn)
-    expect(vi.mocked(flushScheduledPageFills)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(fillAllLiteTurns)).toHaveBeenCalledTimes(1)
   })
 
   it('目录跳转在飞 → 同一芯片显示「跳转 N/M」+ spinner，不抢占 ◇ 待补全', () => {

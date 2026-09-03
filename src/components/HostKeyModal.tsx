@@ -134,7 +134,7 @@ function HostKeyForm({
           <button
             type="button"
             onClick={onDecline}
-            className="flex-1 rounded-md border border-gn-prompt-border px-3 py-2 text-[13px] text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+            className="flex-1 rounded-md px-3 py-2 text-[13px] text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
             title="不直连这台，请求继续经 Hub 中转（不影响 Hub 登录）"
           >
             改用 Hub 中继
@@ -143,7 +143,7 @@ function HostKeyForm({
             type="button"
             disabled={!value.trim() || busy}
             onClick={() => void submit()}
-            className="flex-1 rounded-md bg-gn-blue px-3 py-2 text-[13px] font-medium text-gn-bg-base transition-opacity enabled:hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            className="flex-1 rounded px-3 py-2 text-[13px] text-gn-cyan hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40"
           >
             {busy ? '验证中…' : '直连这台'}
           </button>

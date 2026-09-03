@@ -137,7 +137,7 @@ export function MemoryModal() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/55 backdrop-blur-[1px] p-4"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto gn-modal-dim p-4"
       role="dialog"
       aria-modal="true"
       aria-label="memory"
@@ -145,8 +145,8 @@ export function MemoryModal() {
         if (e.target === e.currentTarget) closeMemory()
       }}
     >
-      <div className="my-4 w-full max-w-[640px] rounded border border-gn-prompt-border-active bg-gn-bg-base shadow-2xl">
-        <header className="flex items-center gap-2 border-b border-gn-prompt-border bg-gn-bg-dark px-4 py-2.5 rounded-t">
+      <div className="my-4 w-full max-w-[640px] gn-modal-panel">
+        <header className="gn-modal-header">
           <span className="text-gn-magenta" aria-hidden>
             {Glyphs.diamondFilled}
           </span>
@@ -205,14 +205,14 @@ export function MemoryModal() {
                           <button
                             type="button"
                             onClick={() => setDetail({ path: pathOf(f), action: 'view' })}
-                            className="rounded border border-gn-prompt-border px-2 py-0.5 text-[10.5px] text-gn-fg2 hover:bg-gn-bg-highlight"
+                            className="rounded px-2 py-0.5 text-[10.5px] text-gn-fg2 hover:bg-gn-bg-highlight"
                           >
                             查看
                           </button>
                           <button
                             type="button"
                             onClick={() => setDetail({ path: pathOf(f), action: 'delete' })}
-                            className="rounded border border-gn-red/40 px-2 py-0.5 text-[10.5px] text-gn-red hover:bg-gn-diff-del-bg"
+                            className="rounded px-2 py-0.5 text-[10.5px] text-gn-red hover:bg-gn-diff-del-bg"
                           >
                             删除
                           </button>
@@ -246,14 +246,14 @@ export function MemoryModal() {
                       <button
                         type="button"
                         onClick={() => setDetail({ path: pathOf(f), action: 'view' })}
-                        className="rounded border border-gn-prompt-border px-2 py-0.5 text-[10.5px] text-gn-fg2 hover:bg-gn-bg-highlight"
+                        className="rounded px-2 py-0.5 text-[10.5px] text-gn-fg2 hover:bg-gn-bg-highlight"
                       >
                         查看
                       </button>
                       <button
                         type="button"
                         onClick={() => setDetail({ path: pathOf(f), action: 'delete' })}
-                        className="rounded border border-gn-red/40 px-2 py-0.5 text-[10.5px] text-gn-red hover:bg-gn-diff-del-bg"
+                        className="rounded px-2 py-0.5 text-[10.5px] text-gn-red hover:bg-gn-diff-del-bg"
                       >
                         删除
                       </button>
@@ -287,11 +287,11 @@ export function MemoryModal() {
           ) : null}
         </div>
 
-        <footer className="flex items-center justify-end gap-2 border-t border-gn-prompt-border px-4 py-3">
+        <footer className="gn-modal-footer flex items-center justify-end gap-2">
           <button
             type="button"
             onClick={closeMemory}
-            className="min-h-9 rounded border border-gn-prompt-border px-4 py-1.5 text-[12.5px] text-gn-fg2 hover:bg-gn-bg-highlight"
+            className="min-h-9 rounded px-4 py-1.5 text-[12.5px] text-gn-fg2 hover:bg-gn-bg-highlight"
           >
             关闭
           </button>

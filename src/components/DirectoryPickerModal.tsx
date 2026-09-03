@@ -166,7 +166,7 @@ export function DirectoryPickerModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/55 backdrop-blur-[1px] p-4"
+      className="fixed inset-0 z-50 flex items-start justify-center gn-modal-dim p-4"
       role="dialog"
       aria-modal="true"
       aria-label="选择工作目录"
@@ -176,9 +176,9 @@ export function DirectoryPickerModal({
     >
       <div
         tabIndex={-1}
-        className="mt-8 w-full max-w-[480px] rounded border border-gn-prompt-border-active bg-gn-bg-base shadow-2xl outline-none"
+        className="mt-8 w-full max-w-[480px] gn-modal-panel"
       >
-        <header className="flex items-center gap-2 rounded-t border-b border-gn-prompt-border bg-gn-bg-dark px-4 py-2.5">
+        <header className="gn-modal-header">
           <span className="text-[13px] font-bold text-gn-fg">选择工作目录</span>
           <button
             type="button"
@@ -195,7 +195,7 @@ export function DirectoryPickerModal({
               type="button"
               onClick={goUp}
               disabled={!parentDir(dir)}
-              className="shrink-0 rounded border border-gn-prompt-border px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-40 disabled:hover:bg-transparent"
+              className="shrink-0 rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-40 disabled:hover:bg-transparent"
               title="上级目录"
             >
               ↑ 上级
@@ -225,7 +225,7 @@ export function DirectoryPickerModal({
                 <button
                   type="button"
                   onClick={() => void load(dir)}
-                  className="mt-2 rounded border border-gn-prompt-border px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                  className="mt-2 rounded px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
                 >
                   重试
                 </button>
@@ -261,14 +261,14 @@ export function DirectoryPickerModal({
               <button
                 type="button"
                 onClick={onClose}
-                className="rounded border border-gn-prompt-border px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                className="rounded px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
               >
                 取消
               </button>
               <button
                 type="button"
                 onClick={choose}
-                className="rounded border border-gn-cyan/50 bg-gn-bg-highlight px-3 py-1 text-[11px] text-gn-cyan hover:bg-gn-bg-dark"
+                className="rounded bg-gn-bg-highlight px-3 py-1 text-[11px] text-gn-cyan hover:bg-gn-bg-dark"
               >
                 选择此目录
               </button>

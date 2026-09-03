@@ -61,14 +61,25 @@ export function useModelMenu() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setModelOpen(false)
     }
+    const onScroll = (e: Event) => {
+      // Ignore scroll events originating from inside the model menu itself.
+      if (
+        modelRef.current &&
+        e.target instanceof Node &&
+        modelRef.current.contains(e.target)
+      ) {
+        return
+      }
+      place()
+    }
     window.addEventListener('resize', place)
     // Capture scroll from nested scroll parents (scrollback).
-    window.addEventListener('scroll', place, true)
+    window.addEventListener('scroll', onScroll, true)
     window.addEventListener('mousedown', onDown)
     window.addEventListener('keydown', onKey)
     return () => {
       window.removeEventListener('resize', place)
-      window.removeEventListener('scroll', place, true)
+      window.removeEventListener('scroll', onScroll, true)
       window.removeEventListener('mousedown', onDown)
       window.removeEventListener('keydown', onKey)
     }

@@ -15,15 +15,14 @@ export function menuRowClass(selected: boolean): string {
 }
 
 /**
- * 浮层页脚里的动作按钮。必须有描边 + hover 提亮 + 按下位移：
- * Tailwind v4 的 preflight 把 <button> 默认设成 cursor: default，
- * 光靠文字（哪怕带 hover 底色）看起来就跟状态文案没区别。
+ * 浮层页脚里的动作按钮：无外边框、hover 圆角底色。
+ * cursor-pointer 盖过 preflight 的 default。
  */
 export function menuActionClass(): string {
   return [
-    'shrink-0 cursor-pointer rounded border border-gn-prompt-border-active px-1.5',
+    'shrink-0 cursor-pointer rounded px-1.5',
     'leading-[15px] text-gn-fg2 transition-colors',
-    'hover:border-gn-cyan/60 hover:bg-gn-bg-highlight hover:text-gn-cyan',
+    'hover:bg-gn-bg-highlight hover:text-gn-cyan',
     'active:translate-y-[0.5px]',
   ].join(' ')
 }

@@ -237,7 +237,7 @@ export function PlanApproval() {
                           if (e.shiftKey) selectLine(n, true)
                         }}
                         className={`flex cursor-pointer items-stretch hover:bg-gn-bg-highlight ${
-                          selected ? 'bg-gn-bg-highlight' : ''
+ selected ? 'bg-gn-bg-highlight' : ''
                         }`}
                         title={
                           selection
@@ -247,14 +247,14 @@ export function PlanApproval() {
                       >
                         <span
                           className={`shrink-0 w-8 select-none border-r border-gn-prompt-border/40 pr-1.5 text-right font-mono text-[10.5px] leading-[1.45] tabular-nums ${
-                            selected ? 'text-gn-cyan' : 'text-gn-gutter'
+ selected ? 'text-gn-cyan' : 'text-gn-gutter'
                           }`}
                         >
                           {n}
                         </span>
                         <span
                           className={`min-w-0 flex-1 whitespace-pre-wrap break-all pl-1.5 leading-[1.45] ${
-                            selected ? 'text-gn-fg' : 'text-gn-fg2'
+ selected ? 'text-gn-fg' : 'text-gn-fg2'
                           }`}
                         >
                           {line || ' '}
@@ -287,7 +287,7 @@ export function PlanApproval() {
           <button
             type="button"
             onClick={() => void respondXai(req.requestId, { outcome: 'approved' })}
-            className="inline-flex min-h-10 items-center gap-1 rounded border border-gn-green/50 bg-gn-bg-base px-3 py-1.5 text-[12.5px] text-gn-fg hover:bg-gn-bg-highlight"
+            className="inline-flex min-h-10 items-center gap-1 rounded bg-gn-bg-base px-3 py-1.5 text-[12.5px] text-gn-fg hover:bg-gn-bg-highlight"
           >
             {Glyphs.checkMark}
             批准并开始实施
@@ -301,7 +301,7 @@ export function PlanApproval() {
                 feedbackRef.current?.focus()
               }
             }}
-            className="min-h-10 rounded border border-gn-prompt-border bg-gn-bg-base px-3 py-1.5 text-[12.5px] text-gn-fg2 hover:bg-gn-bg-highlight"
+            className="min-h-10 rounded bg-gn-bg-base px-3 py-1.5 text-[12.5px] text-gn-fg2 hover:bg-gn-bg-highlight"
             title={
               selection
                 ? '以行级评论发送修改意见（Proposed plan lines …）'
@@ -313,7 +313,7 @@ export function PlanApproval() {
           <button
             type="button"
             onClick={() => void respondXai(req.requestId, { outcome: 'abandoned' })}
-            className="min-h-10 rounded border border-gn-red/40 bg-gn-bg-base px-3 py-1.5 text-[12.5px] text-gn-red hover:bg-gn-diff-del-bg"
+            className="min-h-10 rounded bg-gn-bg-base px-3 py-1.5 text-[12.5px] text-gn-red hover:bg-gn-diff-del-bg"
           >
             退出计划模式
           </button>

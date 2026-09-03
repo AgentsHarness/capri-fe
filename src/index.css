@@ -127,6 +127,49 @@ body {
   scrollbar-width: thin;
 }
 
+/* ── TUI floating surfaces ─────────────────────────────────────────
+   Sidebar / scrollback language: flat bg-base, 1px prompt-border,
+   no elevation, no glass. Corners are a slight 4px radius so the
+   panel doesn't look cut from cardboard. Overlay dim has no blur so
+   the chrome behind still reads as the same terminal surface. */
+.gn-modal-dim {
+  /* Light veil only — keep scrollback / sidebar readable behind the dialog. */
+  background: rgb(0 0 0 / 16%);
+}
+.gn-modal-panel {
+  background: var(--color-gn-bg-base);
+  border: 1px solid color-mix(in srgb, var(--color-gn-prompt-border) 60%, transparent);
+  border-radius: 4px;
+  outline: none;
+  overflow: hidden;
+}
+.gn-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 37px;
+  flex-shrink: 0;
+  padding-inline: 12px;
+  border-bottom: 1px solid var(--color-gn-prompt-border);
+}
+.gn-modal-footer {
+  border-top: 1px solid var(--color-gn-prompt-border);
+  padding-inline: 12px;
+  padding-block: 8px;
+}
+.gn-popover {
+  background: var(--color-gn-bg-base);
+  border: 1px solid color-mix(in srgb, var(--color-gn-prompt-border) 60%, transparent);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.gn-menu {
+  background: var(--color-gn-bg-base);
+  border: 1px solid color-mix(in srgb, var(--color-gn-prompt-border) 60%, transparent);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
 /* ── Scrollback ⇄ composer junction ────────────────────────────────
    Rows used to end on a hard pixel cut where the scroll viewport meets the
    prompt area. This band overlays that edge and dissolves the transcript

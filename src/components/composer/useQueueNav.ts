@@ -8,8 +8,8 @@ import { usePromptQueue } from '../../store/promptQueue'
  * （x 删除 / e·Enter 编辑 / Shift+K·J·Ctrl+↑↓ 换位）。队列状态本身
  * （queue / editIndex）仍在 promptQueue store，这里只管"选中哪行"。
  *
- * strip 的 JSX 由 Composer 渲染（queueRow），键盘路由（textarea onKeyDown）
- * 消费本 hook 返回的选择器与 setter。
+ * 编辑入口（点「编辑」或 e / Enter）只置 store 的 editIndex，正文在
+ * QueueEditModal 弹窗里改。
  */
 export function useQueueNav() {
   const queue = usePromptQueue((s) => s.queue)
@@ -18,7 +18,6 @@ export function useQueueNav() {
   const queuePanelOpen = useChatStore((s) => s.queuePanelOpen)
   const setQueuePanelOpen = useChatStore((s) => s.setQueuePanelOpen)
   const queueEditIndex = usePromptQueue((s) => s.editIndex)
-  const queueEditDraft = usePromptQueue((s) => s.editDraft)
   // Selected queue row (↑↓/j/k)；queueFocus 时快捷键归队列，否则滚动区
   // 照常吃 j/k（内联条常驻展开时不能把滚动键抢走）。
   const [queueSel, setQueueSel] = useState(0)
@@ -150,7 +149,6 @@ export function useQueueNav() {
     queuePanelOpen,
     setQueuePanelOpen,
     queueEditIndex,
-    queueEditDraft,
     queueSel,
     setQueueSel,
     queueFocus,

@@ -15,7 +15,7 @@ import { sendPrompt } from './send'
 import {
   fillEntryDetail,
   fillLiteWindow,
-  flushScheduledPageFills,
+  fillAllLiteTurns,
   registerHistoryFillStore,
 } from './historyFill'
 import { appendEntry, type EntryWithoutId } from './entries'
@@ -249,7 +249,7 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
   // 展开入口与占位行上的重试都收敛到这两个动作（实现在 historyFill.ts）。
   fillToolEntryDetail: (entryId) => fillEntryDetail(set, get, entryId),
   fillLiteToolBodies: (opts) => Promise.all(fillLiteWindow(set, get, opts)).then(() => {}),
-  flushLiteFills: () => flushScheduledPageFills(set, get),
+  flushLiteFills: () => fillAllLiteTurns(set, get),
 
   // ── 会话完成提醒（非当前会话 turn 跑完）───────────────────────────
   // Live turn_completed 事件带 sessionId：别的会话跑完时置对勾 +

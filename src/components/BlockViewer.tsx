@@ -205,7 +205,7 @@ export function BlockViewer() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-stretch justify-center bg-black/55 backdrop-blur-[1px]"
+      className="fixed inset-0 z-50 flex items-stretch justify-center gn-modal-dim"
       role="dialog"
       aria-modal="true"
       aria-label={title}
@@ -216,10 +216,10 @@ export function BlockViewer() {
       <div
         ref={panelRef}
         tabIndex={-1}
-        className="m-0 flex h-full w-full max-w-[960px] flex-col bg-gn-bg-base shadow-2xl outline-none sm:m-4 sm:h-[calc(100%-2rem)] sm:rounded border border-gn-prompt-border-active sm:border"
+        className="m-0 flex h-full w-full max-w-[960px] flex-col gn-modal-panel sm:m-4 sm:h-[calc(100%-2rem)]"
       >
         {/* Title bar */}
-        <header className="flex shrink-0 items-center gap-2 border-b border-gn-prompt-border bg-gn-bg-dark px-3 py-2 sm:rounded-t">
+        <header className="gn-modal-header">
           <div className="min-w-0 flex-1">
             {subChrome ? (
               <>
@@ -259,7 +259,7 @@ export function BlockViewer() {
           <button
             type="button"
             onClick={() => closeViewer()}
-            className="inline-flex shrink-0 items-center gap-1 rounded border border-transparent px-2 py-1 text-[12px] text-gn-muted hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+            className="inline-flex shrink-0 items-center gap-1 rounded px-2 py-1 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
             aria-label="Close viewer"
           >
             <IconGlyph glyph={Glyphs.ballotX} color="currentColor" />
@@ -328,7 +328,7 @@ function BlockBodyDialog({ entry, onClose }: { entry: ScrollEntry; onClose: () =
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-stretch justify-center bg-black/55 backdrop-blur-[1px]"
+      className="fixed inset-0 z-50 flex items-stretch justify-center gn-modal-dim"
       role="dialog"
       aria-modal="true"
       aria-label={title}
@@ -339,9 +339,9 @@ function BlockBodyDialog({ entry, onClose }: { entry: ScrollEntry; onClose: () =
       <div
         ref={panelRef}
         tabIndex={-1}
-        className="m-0 flex h-full w-full max-w-[960px] flex-col bg-gn-bg-base shadow-2xl outline-none sm:m-4 sm:h-[calc(100%-2rem)] sm:rounded border border-gn-prompt-border-active sm:border"
+        className="m-0 flex h-full w-full max-w-[960px] flex-col gn-modal-panel sm:m-4 sm:h-[calc(100%-2rem)]"
       >
-        <header className="flex shrink-0 items-center gap-2 border-b border-gn-prompt-border bg-gn-bg-dark px-3 py-2 sm:rounded-t">
+        <header className="gn-modal-header">
           <div className="min-w-0 flex-1">
             <div className="truncate text-[13px] font-bold text-gn-fg">{title}</div>
             {subtitle ? (
@@ -356,7 +356,7 @@ function BlockBodyDialog({ entry, onClose }: { entry: ScrollEntry; onClose: () =
           <button
             type="button"
             onClick={onClose}
-            className="inline-flex shrink-0 items-center gap-1 rounded border border-transparent px-2 py-1 text-[12px] text-gn-muted hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+            className="inline-flex shrink-0 items-center gap-1 rounded px-2 py-1 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
             aria-label="Close viewer"
           >
             <IconGlyph glyph={Glyphs.ballotX} color="currentColor" />
@@ -459,7 +459,7 @@ function subagentChrome(
   ) : (
     <span
       className={`shrink-0 ${
-        e.status === 'completed'
+ e.status === 'completed'
           ? 'text-gn-green'
           : e.status === 'cancelled'
             ? 'text-gn-yellow'
@@ -615,7 +615,7 @@ function ViewerBody({
               </span>
               <span
                 className={`min-w-0 flex-1 break-words ${
-                  t.status === 'completed' || t.status === 'cancelled'
+ t.status === 'completed' || t.status === 'cancelled'
                     ? 'text-gn-muted'
                     : 'text-gn-fg'
                 }`}

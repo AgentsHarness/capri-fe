@@ -387,11 +387,11 @@ export function QuestionModal() {
 
   return createPortal(
     <div
-      className="mx-auto mb-1.5 w-full max-w-[640px] overflow-hidden rounded border border-gn-magenta/40 bg-gn-bg-dark shadow-lg"
+      className="mx-auto mb-1.5 w-full max-w-[640px] overflow-hidden rounded border border-gn-magenta/40 bg-gn-bg-base"
       role="dialog"
       aria-label="ask user question"
     >
-      <header className="flex items-center gap-2 border-b border-gn-prompt-border px-3 py-2">
+      <header className="gn-modal-header">
         <span className="text-gn-magenta" aria-hidden>
           {Glyphs.diamondFilled}
         </span>
@@ -426,10 +426,10 @@ export function QuestionModal() {
                       setCursor((prev) => ({ ...prev, [activeTab]: oi }))
                       toggleOption(activeTab, oi, multi)
                     }}
-                    className={`flex items-start gap-2 rounded border px-3 py-1.5 text-left text-[12.5px] leading-snug transition-colors min-h-9 outline-none ${
-                      focused
-                        ? 'border-gn-magenta/60 bg-gn-bg-highlight text-gn-fg'
-                        : 'border-gn-prompt-border text-gn-fg2 hover:bg-gn-bg-highlight'
+                    className={`flex items-start gap-2 rounded px-3 py-1.5 text-left text-[12.5px] leading-snug transition-colors min-h-9 outline-none ${
+ focused
+                        ? 'bg-gn-bg-highlight text-gn-fg'
+                        : 'text-gn-fg2 hover:bg-gn-bg-highlight'
                     }`}
                   >
                     {oi < 9 ? (
@@ -439,7 +439,7 @@ export function QuestionModal() {
                     ) : null}
                     <span
                       className={`mt-[1px] shrink-0 text-[11px] ${
-                        active ? 'text-gn-magenta' : 'text-gn-gutter'
+ active ? 'text-gn-magenta' : 'text-gn-gutter'
                       }`}
                       aria-hidden
                     >
@@ -506,7 +506,7 @@ export function QuestionModal() {
         ) : null}
       </div>
 
-      <footer className="flex flex-wrap items-center gap-2 border-t border-gn-prompt-border px-3 py-2">
+      <footer className="gn-modal-footer flex flex-wrap items-center gap-2">
         {questions.length > 0 ? (
           <span className="text-[11px] text-gn-muted">
             第 <span className="text-gn-fg2">{activeTab + 1}</span>/
@@ -517,7 +517,7 @@ export function QuestionModal() {
           <button
             type="button"
             onClick={() => submitAccepted()}
-            className="min-h-9 rounded border border-gn-magenta/50 bg-gn-bg-highlight px-4 py-1 text-[12.5px] font-semibold text-gn-fg hover:bg-gn-bg-hover"
+            className="min-h-9 rounded bg-gn-bg-highlight px-4 py-1 text-[12.5px] font-semibold text-gn-fg hover:bg-gn-bg-hover"
           >
             提交
           </button>
@@ -525,7 +525,7 @@ export function QuestionModal() {
           <button
             type="button"
             onClick={() => setActiveTab((t) => clampTab(t + 1))}
-            className="min-h-9 rounded border border-gn-prompt-border bg-gn-bg-base px-3 py-1 text-[12.5px] text-gn-fg2 hover:bg-gn-bg-highlight"
+            className="min-h-9 rounded bg-gn-bg-base px-3 py-1 text-[12.5px] text-gn-fg2 hover:bg-gn-bg-highlight"
           >
             下一题 →
           </button>
@@ -540,7 +540,7 @@ export function QuestionModal() {
                   partial_answers: partialAnswers(),
                 })
               }
-              className="min-h-9 rounded border border-gn-prompt-border px-3 py-1 text-[12.5px] text-gn-fg2 hover:bg-gn-bg-highlight"
+              className="min-h-9 rounded px-3 py-1 text-[12.5px] text-gn-fg2 hover:bg-gn-bg-highlight"
             >
               与 Agent 继续讨论
             </button>
@@ -552,7 +552,7 @@ export function QuestionModal() {
                   partial_answers: partialAnswers(),
                 })
               }
-              className="min-h-9 rounded border border-gn-prompt-border px-3 py-1 text-[12.5px] text-gn-fg2 hover:bg-gn-bg-highlight"
+              className="min-h-9 rounded px-3 py-1 text-[12.5px] text-gn-fg2 hover:bg-gn-bg-highlight"
             >
               跳过提问，直接规划
             </button>
@@ -561,7 +561,7 @@ export function QuestionModal() {
         <button
           type="button"
           onClick={() => void dismissXai(req.requestId)}
-          className="ml-auto min-h-9 rounded border border-gn-red/40 px-3 py-1 text-[12.5px] text-gn-red hover:bg-gn-diff-del-bg"
+          className="ml-auto min-h-9 rounded px-3 py-1 text-[12.5px] text-gn-red hover:bg-gn-diff-del-bg"
         >
           取消
         </button>
