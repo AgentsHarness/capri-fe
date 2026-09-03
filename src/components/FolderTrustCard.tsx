@@ -83,7 +83,7 @@ export function FolderTrustCard() {
 
   return createPortal(
     <div
-      className="mx-2 mb-2 rounded border border-gn-prompt-border-active bg-gn-bg-dark shadow-2xl"
+      className="mx-2 mb-2 gn-popover"
       data-testid="folder-trust-card"
     >
       <div className="flex items-center gap-2 border-b border-gn-prompt-border px-3 py-1.5">
@@ -121,14 +121,14 @@ export function FolderTrustCard() {
           <button
             type="button"
             onClick={trust}
-            className="rounded border border-gn-green/60 px-2.5 py-1 text-[11.5px] text-gn-green transition-colors hover:bg-gn-bg-highlight"
+            className="rounded px-2.5 py-1 text-[11.5px] text-gn-green transition-colors hover:bg-gn-bg-highlight"
           >
             信任此目录 <span className="text-[10px] opacity-70">y</span>
           </button>
           <button
             type="button"
             onClick={decline}
-            className="rounded border border-gn-prompt-border px-2.5 py-1 text-[11.5px] text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+            className="rounded px-2.5 py-1 text-[11.5px] text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
           >
             不信任 <span className="text-[10px] opacity-70">n</span>
           </button>

@@ -12,7 +12,7 @@ import {
 } from 'lucide-react'
 import { useChatStore } from '../store/chat'
 import { ThemeOptions, ThemePicker } from './ThemePicker'
-import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS } from '../theme/layout'
+import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS, chromeBtnClass } from '../theme/layout'
 import { SessionHistoryList } from './SessionHistoryList'
 import { SessionListHeader } from './SessionListHeader'
 import { SessionSearchBox } from './SessionSearchBox'
@@ -151,7 +151,7 @@ export function WorkspaceBar({
           钉住的用户提示头始终与栏底齐平。 */}
       <div
         className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} flex min-h-[37px] sm:h-[37px] min-w-0 flex-wrap items-center gap-x-2 gap-y-1 py-1 sm:py-0 text-[13px] select-none transition-opacity duration-300 ${
-          fadeHidden ? 'pointer-events-none opacity-0' : 'opacity-100'
+ fadeHidden ? 'pointer-events-none opacity-0' : 'opacity-100'
         }`}
         aria-hidden={fadeHidden || undefined}
         inert={fadeHidden || undefined}
@@ -233,7 +233,7 @@ export function WorkspaceBar({
           会话切换加载中随栏内内容一起淡出（旧会话任务不属于新会话）。 */}
       <div
         className={`transition-opacity duration-300 ${
-          fadeHidden ? 'pointer-events-none opacity-0' : 'opacity-100'
+ fadeHidden ? 'pointer-events-none opacity-0' : 'opacity-100'
         }`}
         aria-hidden={fadeHidden || undefined}
         inert={fadeHidden || undefined}
@@ -252,10 +252,15 @@ export function WorkspaceBar({
 export function TopBar({
   onOpenMcp,
   onOpenGit,
+  mcpOpen,
+  gitOpen,
   onLogout,
 }: {
   onOpenMcp?: () => void
   onOpenGit?: () => void
+  /** MCP / git 面板是否打开（顶栏按钮选中态；点击已打开的按钮关闭）。 */
+  mcpOpen?: boolean
+  gitOpen?: boolean
   /** 退出登录：只清 hub 那把（各台 host 的近路钥匙保留）。无密钥时不显示。 */
   onLogout?: () => void
 }) {
@@ -273,8 +278,14 @@ export function TopBar({
   const openHistory = useChatStore((s) => s.openHistory)
   const closeHistory = useChatStore((s) => s.closeHistory)
   const openExtensions = useChatStore((s) => s.openExtensions)
+  const closeExtensions = useChatStore((s) => s.closeExtensions)
+  const extensionsOpen = useChatStore((s) => s.extensionsOpen)
   const openSettings = useChatStore((s) => s.openSettings)
+  const closeSettings = useChatStore((s) => s.closeSettings)
+  const settingsOpen = useChatStore((s) => s.settingsOpen)
   const openUsage = useChatStore((s) => s.openUsage)
+  const closeUsage = useChatStore((s) => s.closeUsage)
+  const usageOpen = useChatStore((s) => s.usageOpen)
   const sidebarCollapsed = useChatStore((s) => s.sidebarCollapsed)
   const toggleSidebar = useChatStore((s) => s.toggleSidebar)
 
@@ -409,8 +420,8 @@ export function TopBar({
                   setMenuHost(null)
                 }}
               />
-              <div className="absolute left-0 top-full z-40 mt-1 w-64 max-w-[90vw] rounded border border-gn-prompt-border bg-gn-bg-base shadow-xl py-1">
-                <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-gn-gutter">
+              <div className="absolute left-0 top-full z-40 mt-1 w-64 max-w-[90vw] gn-menu">
+                <div className="px-3 pb-1 pt-1.5 text-[10px] uppercase tracking-wider text-gn-gutter">
                   hosts
                 </div>
                 {(hosts.length
@@ -473,7 +484,7 @@ export function TopBar({
                             {hasCandidate && (
                               <span
                                 className={`ml-1.5 text-[10px] ${
-                                  route === '直连'
+ route === '直连'
                                     ? 'text-gn-green'
                                     : route === '待验证'
                                       ? 'text-gn-yellow'
@@ -525,7 +536,7 @@ export function TopBar({
                     </div>
                   )
                 })}
-                <div className="border-t border-gn-prompt-border py-1">
+                <div className="border-t border-gn-prompt-border">
                   <button
                     type="button"
                     onClick={() => {
@@ -602,7 +613,8 @@ export function TopBar({
             <button
               type="button"
               onClick={onOpenMcp}
-              className="inline-flex items-center gap-1 rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+              aria-pressed={!!mcpOpen}
+              className={chromeBtnClass(!!mcpOpen)}
               title="MCP 服务器状态"
             >
               <Boxes size={13} strokeWidth={2} aria-hidden />
@@ -613,7 +625,8 @@ export function TopBar({
             <button
               type="button"
               onClick={onOpenGit}
-              className="inline-flex items-center gap-1 rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+              aria-pressed={!!gitOpen}
+              className={chromeBtnClass(!!gitOpen)}
               title="Git 面板 — 工作区状态 / diff / 提交"
             >
               <GitBranch size={13} strokeWidth={2} aria-hidden />
@@ -622,8 +635,9 @@ export function TopBar({
           )}
           <button
             type="button"
-            onClick={() => openExtensions('hooks')}
-            className="inline-flex items-center gap-1 rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+            onClick={() => (extensionsOpen ? closeExtensions() : openExtensions('hooks'))}
+            aria-pressed={extensionsOpen}
+            className={chromeBtnClass(extensionsOpen)}
             title="扩展（/hooks /plugins /skills /marketplace）"
           >
             <Puzzle size={13} strokeWidth={2} aria-hidden />
@@ -631,8 +645,9 @@ export function TopBar({
           </button>
           <button
             type="button"
-            onClick={openUsage}
-            className="inline-flex items-center gap-1 rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+            onClick={() => (usageOpen ? closeUsage() : openUsage())}
+            aria-pressed={usageOpen}
+            className={chromeBtnClass(usageOpen)}
             title="usage — token 用量聚合（按模型/时间窗口）+ billing credits"
           >
             <Activity size={13} strokeWidth={2} aria-hidden />
@@ -640,8 +655,9 @@ export function TopBar({
           </button>
           <button
             type="button"
-            onClick={openSettings}
-            className="inline-flex items-center gap-1 rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+            onClick={() => (settingsOpen ? closeSettings() : openSettings())}
+            aria-pressed={settingsOpen}
+            className={chromeBtnClass(settingsOpen)}
             title="设置（F2）"
           >
             <Settings size={13} strokeWidth={2} aria-hidden />
@@ -651,7 +667,7 @@ export function TopBar({
             <button
               type="button"
               onClick={onLogout}
-              className="inline-flex items-center gap-1 rounded border border-transparent px-2 py-0.5 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+              className={chromeBtnClass()}
               title="退出登录（清掉本机保存的 Hub 密钥；各台 Host 的近路钥匙保留）"
             >
               <LogOut size={13} strokeWidth={2} aria-hidden />
@@ -665,7 +681,7 @@ export function TopBar({
           <button
             type="button"
             onClick={() => resetToEmpty()}
-            className="inline-flex items-center gap-1 rounded border border-transparent px-2 py-0.5 min-h-8 hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg"
+            className={chromeBtnClass()}
             title="新建会话（先进入空状态选择工作目录）"
           >
             <Plus size={13} strokeWidth={2} aria-hidden />
@@ -677,11 +693,8 @@ export function TopBar({
           <button
             type="button"
             onClick={() => (historyOpen ? closeMobileHistory() : void openHistory())}
-            className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 min-h-8 ${
-              historyOpen
-                ? 'border-gn-prompt-border bg-gn-bg-highlight text-gn-fg'
-                : 'border-transparent hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg'
-            }`}
+            className={chromeBtnClass(historyOpen)}
+            aria-pressed={historyOpen}
             title="加载历史会话"
           >
             <History size={13} strokeWidth={2} aria-hidden />
@@ -709,7 +722,7 @@ export function TopBar({
                   (flex-col) so the list's sticky group headers stick below
                   it instead of sliding underneath. */}
               <div
-                className="absolute right-0 top-full z-40 mt-1 flex max-h-[70vh] w-[min(84vw,20rem)] flex-col overflow-hidden rounded border border-gn-prompt-border bg-gn-bg-base shadow-xl isolate"
+                className="absolute right-0 top-full z-40 mt-1 flex max-h-[70vh] w-[min(84vw,20rem)] flex-col overflow-hidden gn-menu isolate"
                 style={{ backgroundColor: 'var(--color-gn-bg-base)' }}
               >
                 {/* py-1.5（非 py-2）：给 labeled 大按钮留高度的同时，
@@ -750,11 +763,7 @@ export function TopBar({
             aria-expanded={moreOpen}
             aria-label="更多操作"
             title="更多操作：theme / mcp / git / ext / settings"
-            className={`rounded border px-2 py-0.5 min-h-8 ${
-              moreOpen
-                ? 'border-gn-prompt-border bg-gn-bg-highlight text-gn-fg'
-                : 'border-transparent hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg'
-            }`}
+            className={chromeBtnClass(moreOpen)}
           >
             ⋮
           </button>
@@ -766,8 +775,8 @@ export function TopBar({
                 aria-label="close"
                 onClick={() => setMoreOpen(false)}
               />
-              <div className="absolute right-0 top-full z-40 mt-1 max-h-[70vh] w-64 max-w-[90vw] overflow-y-auto rounded border border-gn-prompt-border bg-gn-bg-base shadow-xl py-1">
-                <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-gn-gutter">
+              <div className="absolute right-0 top-full z-40 mt-1 max-h-[70vh] w-64 max-w-[90vw] overflow-y-auto gn-menu">
+                <div className="px-3 pb-1 pt-1.5 text-[10px] uppercase tracking-wider text-gn-gutter">
                   more
                 </div>
                 {/* theme — inline accordion, same options as the desktop picker. */}
@@ -784,7 +793,7 @@ export function TopBar({
                   </span>
                 </button>
                 {themeExpanded && (
-                  <div className="border-t border-gn-prompt-border/60 py-1">
+                  <div className="border-t border-gn-prompt-border/60">
                     <ThemeOptions
                       onSelect={() => {
                         setMoreOpen(false)

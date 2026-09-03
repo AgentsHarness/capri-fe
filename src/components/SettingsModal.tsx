@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from 'react'
 import { useChatStore } from '../store/chat'
 import { transport, type SettingsPatch, type SettingsPayload } from '../api/client'
 import {
@@ -21,12 +29,24 @@ import {
   type DefaultSelectedPermission,
 } from '../lib/defaultSelectedPermission'
 
+/** host config.toml 的分组（GET /api/settings 的形状）——合并成一个只读分类展示。 */
 const GROUPS = [
-  { key: 'ui', label: 'UI' },
-  { key: 'session', label: 'Session' },
-  { key: 'models', label: 'Models' },
+  { key: 'ui', label: '界面' },
+  { key: 'session', label: '会话' },
+  { key: 'models', label: '模型' },
   { key: 'cli', label: 'CLI' },
 ] as const
+
+/** 左侧分类键：四个可编辑分类 + 一个只读的 Agent 配置（有内容才出现）。 */
+type CategoryKey = 'behavior' | 'ask' | 'fe' | 'custom' | 'agent'
+
+type Category = {
+  key: CategoryKey
+  /** 左栏按钮文案（同时是右侧面板标题）。 */
+  label: string
+  /** 面板顶部一句说明。 */
+  desc: string
+}
 
 /** FE-consumed [ui] scalars — edited above, not dumped as raw keys. */
 const CONSUMED_UI_KEYS = new Set([
@@ -40,15 +60,15 @@ const CONSUMED_UI_KEYS = new Set([
 ])
 
 const PERM_CHOICES: { id: PermissionModeLabel; label: string }[] = [
-  { id: 'ask', label: 'ask' },
-  { id: 'auto', label: 'auto' },
-  { id: 'always-approve', label: 'always-approve' },
+  { id: 'ask', label: '询问' },
+  { id: 'auto', label: '自动' },
+  { id: 'always-approve', label: '始终允许' },
 ]
 
 /** TUI [ui].follow_up_behavior choices (queue default; steer = mid-turn). */
 const FOLLOW_UP_CHOICES: { id: 'queue' | 'steer'; label: string }[] = [
-  { id: 'queue', label: 'queue' },
-  { id: 'steer', label: 'steer' },
+  { id: 'queue', label: '排队' },
+  { id: 'steer', label: '引导' },
 ]
 
 /** 审批弹窗默认选中行四选一（canonical 与 TUI 一致；顺序对齐设置面板与
@@ -81,7 +101,7 @@ const BOOL_ROWS: {
   {
     key: 'collapsed_edit_blocks',
     label: '折叠编辑块',
-    hint: '开：diff 收成 +N/−M 一行（已有行立即收起）；同文件连续合并只作用于新到达的 edit。关：每条 diff 默认展开',
+    hint: '开：diff 收成 +N/−M 一行。关：每条 diff 默认展开',
     dflt: false,
   },
   {
@@ -100,6 +120,12 @@ const BOOL_ROWS: {
  * remaining keys stay read-only. Permission_mode / yolo / approval_mode
  * collapse to one effective default.
  *
+ * Layout: a left category rail (行为偏好 / 问答超时 / 前端偏好 / 自定义模型
+ * + 一个只读的「Agent 配置」，里面按 config.toml 分组分小节) and a right pane
+ * rendering ONLY the selected category — the whole config dump no longer
+ * stacks into one long scroll.
+ * Narrow viewports fold the rail into a horizontal strip above the pane.
+ *
  * F2 opens the modal (mounted here, not in useScrollbackKeys — that file
  * is shared); the binding is ignored while an input/textarea is focused.
  * Esc / backdrop click close it.
@@ -112,7 +138,10 @@ export function SettingsModal() {
   const [error, setError] = useState<string>()
   const [data, setData] = useState<SettingsPayload>()
   const [savingKey, setSavingKey] = useState<string>()
+  // 选中分类跨开关保留（组件常驻挂载，Modal 关闭时只 return null）。
+  const [active, setActive] = useState<CategoryKey>('behavior')
   const panelRef = useRef<HTMLDivElement>(null)
+  const navRef = useRef<HTMLElement>(null)
   const reqSeq = useRef(0)
 
   // F2 global binding — always mounted, opens the modal. Ignored while an
@@ -167,13 +196,157 @@ export function SettingsModal() {
     return () => window.removeEventListener('keydown', onKey, true)
   }, [open, fetchSettings, close])
 
+  // 只读分组剩下的键（consumed 的 [ui] 标量在「行为偏好」分类里编辑）。
+  const dumpRows = useMemo(() => {
+    const out: Partial<Record<(typeof GROUPS)[number]['key'], [string, unknown][]>> = {}
+    for (const g of GROUPS) {
+      const group = data?.[g.key]
+      if (group == null) continue
+      const rows = Object.entries(group)
+        .filter(([k]) => g.key !== 'ui' || !CONSUMED_UI_KEYS.has(k))
+        .sort(([a], [b]) => a.localeCompare(b))
+      if (rows.length > 0) out[g.key] = rows
+    }
+    return out
+  }, [data])
+
+  // 左栏分类：四个可编辑分类 + 一个「Agent 配置」（agent 解析的 config.toml
+  // 分组，本端只读；一个分组都没有时整项不出现）。
+  const cats: Category[] = useMemo(() => {
+    const list: Category[] = [
+      {
+        key: 'behavior',
+        label: '行为偏好',
+        desc: '改动写回 host 配置并即时生效。',
+      },
+      {
+        key: 'ask',
+        label: '问答超时',
+        desc: '提问卡片的超时策略；agent 只在会话启动时解析，改动只影响新会话。',
+      },
+      {
+        key: 'fe',
+        label: '前端偏好',
+        desc: '通过 hub 同步，不写入 host config.toml。',
+      },
+      {
+        key: 'custom',
+        label: '自定义模型',
+        desc: '',
+      },
+    ]
+    if (GROUPS.some((g) => dumpRows[g.key])) {
+      list.push({
+        key: 'agent',
+        label: 'Agent 配置',
+        desc: 'Agent config.toml，仅展示；请在 host 侧编辑配置。',
+      })
+    }
+    return list
+  }, [dumpRows])
+
+  // 分类固定四项恒在；选中项随数据消失（例如切到没有 [cli] 的 host）时落回首项。
+  const current: Category = cats.find((c) => c.key === active) ?? cats[0]
+
+  // 左栏 ↑↓（窄屏折成横条时 ←→）在分类间移动选中与焦点。
+  const onNavKeyDown = (e: ReactKeyboardEvent) => {
+    if (!NAV_MOVE_KEYS.has(e.key)) return
+    const i = cats.findIndex((c) => c.key === current.key)
+    if (i === -1) return
+    const last = cats.length - 1
+    const step =
+      e.key === 'ArrowDown' || e.key === 'ArrowRight'
+        ? 1
+        : e.key === 'ArrowUp' || e.key === 'ArrowLeft'
+          ? -1
+          : e.key === 'Home'
+            ? -i
+            : last - i
+    const next = cats[Math.min(last, Math.max(0, i + step))]
+    if (next.key === current.key) return
+    e.preventDefault()
+    e.stopPropagation()
+    setActive(next.key)
+    navRef.current
+      ?.querySelector<HTMLButtonElement>(`[data-cat="${next.key}"]`)
+      ?.focus()
+  }
+
   if (!open) return null
 
-  const sections = GROUPS.filter((g) => data?.[g.key] != null)
+  const onPatch = async (p: SettingsPatch) => {
+    const key = Object.keys(p)[0] ?? 'settings'
+    setSavingKey(key)
+    try {
+      const next = await transport.updateSettings(p)
+      setData(next)
+      const ui = next.ui ?? {}
+      applyUiSettings(ui)
+      applyToolsetSettings(next.toolset)
+      applyCollapsedEditBlocksFromCache(useChatStore.setState)
+      syncDefaultModeFlagsFromUi(ui)
+      if (p.permission_mode) {
+        await applyLivePermission(p.permission_mode)
+      }
+    } catch (e) {
+      pushToast(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSavingKey(undefined)
+    }
+  }
+
+  const pane = () => {
+    switch (current.key) {
+      case 'behavior':
+        return (
+          <ConsumedSettings
+            ui={data?.ui}
+            savingKey={savingKey}
+            disabled={!!savingKey}
+            onPatch={onPatch}
+          />
+        )
+      case 'ask':
+        return (
+          <AskTimeoutSection
+            toolset={data?.toolset}
+            savingKey={savingKey}
+            disabled={!!savingKey}
+            onPatch={onPatch}
+          />
+        )
+      case 'fe':
+        return <FePrefsSection />
+      case 'custom':
+        return <CustomModelsPanel />
+      default:
+        // 「Agent 配置」：每个 config.toml 分组一小节，键按字母序，只读。
+        return (
+          <section className="pb-1">
+            {GROUPS.filter((g) => dumpRows[g.key]?.length).map((g) => (
+              <div key={g.key} className="border-b border-gn-prompt-border/50 py-1 last:border-b-0">
+                <div className="px-4 pt-1.5 pb-0.5 font-mono text-[10.5px] tracking-wide text-gn-fg2">
+                  [{g.key}]
+                  <span className="ml-1.5 font-ui text-gn-fg2">{g.label}</span>
+                  <span className="ml-1.5 tabular-nums text-gn-muted">
+                    {dumpRows[g.key]?.length}
+                  </span>
+                </div>
+                {(dumpRows[g.key] ?? []).map(([k, v]) => (
+                  <SettingRow key={k} label={k}>
+                    <SettingValue value={v} />
+                  </SettingRow>
+                ))}
+              </div>
+            ))}
+          </section>
+        )
+    }
+  }
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/55 backdrop-blur-[1px] p-4"
+      className="fixed inset-0 z-50 flex items-start justify-center gn-modal-dim p-4"
       role="dialog"
       aria-modal="true"
       aria-label="settings"
@@ -184,96 +357,204 @@ export function SettingsModal() {
       <div
         ref={panelRef}
         tabIndex={-1}
-        className="mt-8 w-full max-w-[560px] rounded border border-gn-prompt-border-active bg-gn-bg-base shadow-2xl outline-none"
+        className="mt-4 mb-4 flex max-h-[80vh] w-full max-w-[560px] flex-col overflow-hidden gn-modal-panel sm:mt-8 sm:max-w-[860px]"
       >
-        <header className="flex items-center gap-2 rounded-t border-b border-gn-prompt-border bg-gn-bg-dark px-4 py-2.5">
+        <header className="gn-modal-header">
           <span className="text-[13px] font-bold text-gn-fg">settings</span>
-          <span className="font-mono text-[10.5px] text-gn-gutter">v{__APP_VERSION__}</span>
+          <span className="text-gn-gutter" aria-hidden>
+            ›
+          </span>
+          <span className="truncate text-[12px] text-gn-fg2">{current.label}</span>
+          <span className="ml-auto font-mono text-[10.5px] text-gn-gutter">
+            v{__APP_VERSION__}
+          </span>
           <button
             type="button"
             onClick={close}
-            className="ml-auto rounded px-2 py-0.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+            className="rounded px-2 py-0.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
           >
             esc
           </button>
         </header>
 
-        <div className="max-h-[52vh] overflow-y-auto py-1">
-          {loading ? (
-            <div className="px-4 py-6 text-center text-[12px] text-gn-muted">
-              加载设置…
-            </div>
-          ) : error ? (
-            <div className="px-4 py-5 text-center">
-              <div className="text-[12px] text-gn-red">{error}</div>
-              <button
-                type="button"
-                onClick={() => void fetchSettings()}
-                className="mt-2 rounded border border-gn-prompt-border px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-              >
-                重试
-              </button>
-            </div>
-          ) : (
-            <>
-              <ConsumedSettings
-                ui={data?.ui}
-                toolset={data?.toolset}
-                savingKey={savingKey}
-                disabled={!!savingKey}
-                onPatch={async (patch) => {
-                  const key = Object.keys(patch)[0] ?? 'settings'
-                  setSavingKey(key)
-                  try {
-                    const next = await transport.updateSettings(patch)
-                    setData(next)
-                    const ui = next.ui ?? {}
-                    applyUiSettings(ui)
-                    applyToolsetSettings(next.toolset)
-                    applyCollapsedEditBlocksFromCache(useChatStore.setState)
-                    syncDefaultModeFlagsFromUi(ui)
-                    if (patch.permission_mode) {
-                      await applyLivePermission(patch.permission_mode)
-                    }
-                  } catch (e) {
-                    pushToast(e instanceof Error ? e.message : String(e))
-                  } finally {
-                    setSavingKey(undefined)
-                  }
-                }}
-              />
-              <FePrefsSection />
-              {sections.map((g) => {
-                const group = data?.[g.key] ?? {}
-                const rows = Object.entries(group)
-                  .filter(([k]) => g.key !== 'ui' || !CONSUMED_UI_KEYS.has(k))
-                  .sort(([a], [b]) => a.localeCompare(b))
-                if (rows.length === 0) return null
+        {/* 顶栏之下左右分区：左分类 / 右内容（窄屏分类折成横向条）。 */}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col sm:flex-row">
+          <nav
+            ref={navRef}
+            role="tablist"
+            aria-label="设置分类"
+            aria-orientation="vertical"
+            onKeyDown={onNavKeyDown}
+            className="gn-no-scrollbar shrink-0 overflow-x-auto border-b border-gn-prompt-border px-2 py-2 sm:w-[186px] sm:overflow-x-hidden sm:overflow-y-auto sm:border-b-0 sm:border-r sm:border-gn-prompt-border/60"
+          >
+            <div className="flex min-w-max gap-1 sm:min-w-0 sm:flex-col sm:gap-0.5">
+              {cats.map((c) => {
+                const on = c.key === current.key
                 return (
-                  <section key={g.key} className="border-b border-gn-prompt-border/50 py-1 last:border-b-0">
-                    <div className="px-4 pt-2 pb-1 text-[10px] uppercase tracking-wider text-gn-gutter">
-                      [{g.key}] {g.label}
-                    </div>
-                    {rows.map(([k, v]) => (
-                      <div key={k} className="flex items-start gap-3 px-4 py-1">
-                        <span className="w-48 shrink-0 truncate font-mono text-[11.5px] text-gn-muted" title={k}>
-                          {k}
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <SettingValue value={v} />
-                        </span>
-                      </div>
-                    ))}
-                  </section>
+                  <button
+                    key={c.key}
+                    type="button"
+                    role="tab"
+                    data-cat={c.key}
+                    aria-selected={on}
+                    onClick={() => setActive(c.key)}
+                    className={`w-full shrink-0 truncate rounded px-2 py-1.5 text-left text-[12px] transition-colors ${ on ? 'bg-gn-bg-highlight font-medium text-gn-fg' : 'text-gn-muted hover:bg-gn-bg-highlight/60 hover:text-gn-fg2' }`}
+                    title={c.label}
+                  >
+                    {c.label}
+                  </button>
                 )
               })}
-            </>
-          )}
-          {/* 自定义模型（[model.*]）可视化编辑 — 独立于 /api/settings。 */}
-          <CustomModelsPanel />
+            </div>
+          </nav>
+
+          <div
+            role="tabpanel"
+            aria-label={current.label}
+            className="min-h-0 flex-1 overflow-y-auto"
+          >
+            {current.desc ? (
+              <div className="border-b border-gn-prompt-border/50 px-4 py-2 text-[10.5px] leading-snug text-gn-fg2">
+                {current.desc}
+              </div>
+            ) : null}
+            {loading && !data ? (
+              <div className="px-4 py-6 text-center text-[12px] text-gn-muted">
+                加载设置…
+              </div>
+            ) : error ? (
+              <div className="px-4 py-5 text-center">
+                <div className="text-[12px] text-gn-red">{error}</div>
+                <button
+                  type="button"
+                  onClick={() => void fetchSettings()}
+                  className="mt-2 rounded px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                >
+                  重试
+                </button>
+              </div>
+            ) : (
+              pane()
+            )}
+          </div>
         </div>
       </div>
     </div>
+  )
+}
+
+const NAV_MOVE_KEYS = new Set([
+  'ArrowDown',
+  'ArrowUp',
+  'ArrowRight',
+  'ArrowLeft',
+  'Home',
+  'End',
+])
+
+/**
+ * One settings row: key + hint on the left, control on the right. Narrow
+ * panes (and mobile) stack the control under the label instead of squeezing
+ * a fixed-width label column.
+ */
+function SettingRow({
+  label,
+  hint,
+  code,
+  children,
+}: {
+  label: string
+  hint?: string
+  /** 配置键名，悬停可见，界面不直接展示。 */
+  code?: string
+  children: ReactNode
+}) {
+  return (
+    <div className="flex flex-col gap-1.5 border-b border-gn-prompt-border/40 px-4 py-2.5 last:border-b-0 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
+      <div className="min-w-0 sm:flex-1">
+        <div className="text-[12px] leading-snug text-gn-fg" title={code ?? label}>
+          {label}
+        </div>
+        {hint ? (
+          <div className="mt-0.5 text-[10.5px] leading-snug text-gn-fg2">{hint}</div>
+        ) : null}
+      </div>
+      <div className="flex min-w-0 shrink-0 flex-wrap items-start gap-1 sm:max-w-[58%] sm:justify-end">
+        {children}
+      </div>
+    </div>
+  )
+}
+
+/** On/off pill button shared by the editable rows (on = green). */
+function TogglePill({
+  on,
+  busy,
+  disabled,
+  title,
+  onClick,
+}: {
+  on: boolean
+  busy?: boolean
+  disabled?: boolean
+  title: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      title={title}
+      className={`inline-flex items-center gap-1.5 rounded px-2 py-px text-[10.5px] ${
+ on ? 'bg-gn-bg-highlight text-gn-green' : 'text-gn-muted hover:bg-gn-bg-highlight'
+      } disabled:opacity-50`}
+    >
+      <span
+        className={`h-1.5 w-1.5 rounded-full ${on ? 'bg-gn-green' : 'bg-gn-gutter'}`}
+      />
+      {busy ? '…' : on ? 'on' : 'off'}
+    </button>
+  )
+}
+
+/** Radio-style pill group (current = green, clicking it is a no-op). */
+function ChoicePills<T extends string>({
+  choices,
+  value,
+  disabled,
+  onPick,
+}: {
+  choices: readonly { id: T; label: string }[]
+  value: T
+  disabled?: boolean
+  onPick: (id: T) => void
+}) {
+  return (
+    <>
+      {choices.map((c) => {
+        const on = value === c.id
+        return (
+          <button
+            key={c.id}
+            type="button"
+            disabled={disabled}
+            title={on ? `当前：${c.label}` : `切到 ${c.label}`}
+            onClick={() => {
+              if (on) return
+              onPick(c.id)
+            }}
+            className={`rounded px-2 py-px text-[10.5px] ${
+ on
+                ? 'bg-gn-bg-highlight text-gn-green cursor-default'
+                : 'text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
+            } disabled:opacity-50`}
+          >
+            {c.label}
+          </button>
+        )
+      })}
+    </>
   )
 }
 
@@ -333,126 +614,65 @@ async function applyLivePermission(mode: PermissionModeLabel): Promise<void> {
   markReseeded(currentAgentStamp())
 }
 
+/** 「行为偏好」分类：permission_mode / follow_up_behavior + 三个显示开关。 */
 function ConsumedSettings({
   ui,
-  toolset,
   savingKey,
   disabled,
   onPatch,
 }: {
   ui?: Record<string, unknown>
-  toolset?: SettingsPayload['toolset']
   savingKey?: string
   disabled: boolean
   onPatch: (patch: SettingsPatch) => Promise<void>
 }) {
   const perm = effectivePermissionLabelFromUi(ui)
+  const followUp = ui?.follow_up_behavior === 'steer' ? 'steer' : 'queue'
   return (
-    <section className="border-b border-gn-prompt-border/50 py-1">
-      <div className="px-4 pt-2 pb-1 text-[10px] uppercase tracking-wider text-gn-gutter">
-        本端行为
-      </div>
-      <div className="flex items-start gap-3 px-4 py-1.5">
-        <span className="w-48 shrink-0 pt-0.5 font-mono text-[11.5px] text-gn-muted">
-          permission_mode
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap gap-1">
-            {PERM_CHOICES.map((c) => {
-              const on = perm === c.id
-              return (
-                <button
-                  key={c.id}
-                  type="button"
-                  disabled={disabled}
-                  onClick={() => {
-                    if (on) return
-                    void onPatch({ permission_mode: c.id })
-                  }}
-                  className={`rounded-full border px-2 py-px text-[10.5px] ${
-                    on
-                      ? 'border-gn-green/60 text-gn-green cursor-default'
-                      : 'border-gn-prompt-border text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
-                  } disabled:opacity-50`}
-                >
-                  {c.label}
-                </button>
-              )
-            })}
-          </div>
-          <div className="mt-1 text-[10.5px] leading-snug text-gn-gutter">
-            新会话 / agent 启动默认；改动同时应用到当前会话。
-          </div>
-        </div>
-      </div>
-      <div className="flex items-start gap-3 px-4 py-1.5">
-        <span className="w-48 shrink-0 pt-0.5 font-mono text-[11.5px] text-gn-muted">
-          follow_up_behavior
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap gap-1">
-            {FOLLOW_UP_CHOICES.map((c) => {
-              const on =
-                (ui?.follow_up_behavior === 'steer' ? 'steer' : 'queue') === c.id
-              return (
-                <button
-                  key={c.id}
-                  type="button"
-                  disabled={disabled}
-                  onClick={() => {
-                    if (on) return
-                    void onPatch({ follow_up_behavior: c.id })
-                  }}
-                  className={`rounded-full border px-2 py-px text-[10.5px] ${
-                    on
-                      ? 'border-gn-green/60 text-gn-green cursor-default'
-                      : 'border-gn-prompt-border text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
-                  } disabled:opacity-50`}
-                >
-                  {c.label}
-                </button>
-              )
-            })}
-          </div>
-          <div className="mt-1 text-[10.5px] leading-snug text-gn-gutter">
-            steer：回合运行中 Enter 发送的消息仍入队，agent 在下一个工具/模型
-            安全间隙自动中途注入（不取消回合）；queue：等当前回合结束。
-          </div>
-        </div>
-      </div>
+    <section>
+      <SettingRow
+        label="权限默认"
+        code="permission_mode"
+        hint="新会话 / Agent 启动时的默认权限；改动同时应用到当前会话。"
+      >
+        <ChoicePills
+          choices={PERM_CHOICES}
+          value={perm}
+          disabled={disabled}
+          onPick={(id) => void onPatch({ permission_mode: id })}
+        />
+      </SettingRow>
+      <SettingRow
+        label="忙时处理"
+        code="follow_up_behavior"
+        hint="引导：工具调用完成后注入（不取消回合）；排队：等当前回合结束后发送。"
+      >
+        <ChoicePills
+          choices={FOLLOW_UP_CHOICES}
+          value={followUp}
+          disabled={disabled}
+          onPick={(id) => void onPatch({ follow_up_behavior: id })}
+        />
+      </SettingRow>
       {BOOL_ROWS.map((row) => {
         const on = readUiBool(ui, row.key, row.dflt)
-        const busy = savingKey === row.key
         return (
-          <div key={row.key} className="flex items-start gap-3 px-4 py-1.5">
-            <span className="w-48 shrink-0 pt-0.5 font-mono text-[11.5px] text-gn-muted" title={row.key}>
-              {row.key}
-            </span>
-            <div className="min-w-0 flex-1">
-              <button
-                type="button"
-                disabled={disabled}
-                onClick={() => void onPatch({ [row.key]: !on })}
-                className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-px text-[10.5px] ${
-                  on
-                    ? 'border-gn-green/60 text-gn-green'
-                    : 'border-gn-prompt-border text-gn-muted'
-                } hover:bg-gn-bg-highlight disabled:opacity-50`}
-                title={row.hint}
-              >
-                <span
-                  className={`h-1.5 w-1.5 rounded-full ${on ? 'bg-gn-green' : 'bg-gn-gutter'}`}
-                />
-                {busy ? '…' : on ? 'on' : 'off'}
-              </button>
-              <div className="mt-0.5 text-[10.5px] leading-snug text-gn-gutter">
-                {row.label} · {row.hint}
-              </div>
-            </div>
-          </div>
+          <SettingRow
+            key={row.key}
+            label={row.label}
+            code={row.key}
+            hint={row.hint}
+          >
+            <TogglePill
+              on={on}
+              busy={savingKey === row.key}
+              disabled={disabled}
+              title={row.hint}
+              onClick={() => void onPatch({ [row.key]: !on })}
+            />
+          </SettingRow>
         )
       })}
-      <AskTimeoutSection toolset={toolset} savingKey={savingKey} disabled={disabled} onPatch={onPatch} />
     </section>
   )
 }
@@ -491,229 +711,119 @@ function AskTimeoutSection({
   }
 
   return (
-    <>
-      <div className="px-4 pt-2 pb-1 text-[10px] uppercase tracking-wider text-gn-gutter">
-        ask_user_question 超时
-      </div>
-      <div className="flex items-start gap-3 px-4 py-1.5">
-        <span
-          className="w-48 shrink-0 pt-0.5 font-mono text-[11.5px] text-gn-muted"
-          title="toolset.ask_user_question.timeout_enabled"
-        >
-          timeout_enabled
-        </span>
-        <div className="min-w-0 flex-1">
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => void onPatch({ toolset: { ask_user_question: { timeout_enabled: !on } } })}
-            className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-px text-[10.5px] ${
-              on
-                ? 'border-gn-green/60 text-gn-green'
-                : 'border-gn-prompt-border text-gn-muted'
-            } hover:bg-gn-bg-highlight disabled:opacity-50`}
-            title="提问卡片超时是否武装；关 = 一直等答案"
-          >
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${on ? 'bg-gn-green' : 'bg-gn-gutter'}`}
-            />
-            {busy ? '…' : on ? 'on' : 'off'}
-          </button>
-          <div className="mt-0.5 text-[10.5px] leading-snug text-gn-gutter">
-            开：提问超时自动放弃，agent 继续（默认开）· 只影响新会话。
-          </div>
-        </div>
-      </div>
-      <div className="flex items-start gap-3 px-4 py-1.5">
-        <span
-          className="w-48 shrink-0 pt-0.5 font-mono text-[11.5px] text-gn-muted"
-          title="toolset.ask_user_question.timeout_secs"
-        >
-          timeout_secs
-        </span>
-        <div className="min-w-0 flex-1">
-          <input
-            type="number"
-            min={1}
-            max={ASK_TIMEOUT_SECS_MAX}
-            inputMode="numeric"
-            disabled={disabled}
-            value={draft || (secs !== undefined ? String(secs) : '')}
-            placeholder="1800（默认 30 分钟）"
-            onChange={(e) => setDraft(e.target.value)}
-            onBlur={commitSecs}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault()
-                commitSecs()
-              }
-            }}
-            className="w-32 rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 text-[12px] text-gn-fg outline-none placeholder:text-gn-gray focus:border-gn-magenta/50"
-          />
-          <div className="mt-0.5 text-[10.5px] leading-snug text-gn-gutter">
-            超时秒数（1–{ASK_TIMEOUT_SECS_MAX}，Enter / 失焦生效）· 只影响新会话。
-          </div>
-        </div>
-      </div>
-    </>
+    <section>
+      <SettingRow
+        label="提问超时"
+        code="toolset.ask_user_question.timeout_enabled"
+        hint="开：提问超时自动放弃，agent 继续（默认开）· 只影响新会话。"
+      >
+        <TogglePill
+          on={on}
+          busy={busy}
+          disabled={disabled}
+          title="提问卡片超时是否武装；关 = 一直等答案"
+          onClick={() =>
+            void onPatch({
+              toolset: { ask_user_question: { timeout_enabled: !on } },
+            })
+          }
+        />
+      </SettingRow>
+      <SettingRow
+        label="超时秒数"
+        code="toolset.ask_user_question.timeout_secs"
+        hint={`超时秒数（1–${ASK_TIMEOUT_SECS_MAX}，Enter / 失焦生效）· 只影响新会话。`}
+      >
+        <input
+          type="number"
+          min={1}
+          max={ASK_TIMEOUT_SECS_MAX}
+          inputMode="numeric"
+          disabled={disabled}
+          value={draft || (secs !== undefined ? String(secs) : '')}
+          placeholder="1800"
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commitSecs}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              commitSecs()
+            }
+          }}
+          className="w-32 rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 text-[12px] text-gn-fg outline-none placeholder:text-gn-gray focus:border-gn-magenta/50"
+        />
+      </SettingRow>
+    </section>
   )
 }
 
 /**
- * 「前端偏好」栏目：FE 侧自有偏好，与置顶/待办同走 hub prefs 通道
+ * 「前端偏好」分类：FE 侧自有偏好，与置顶/待办同走 hub prefs 通道
  * （localStorage 离线缓存 + hub 广播跨端同步），不走 host config.toml。
  */
 function FePrefsSection() {
   const collapseToolGroups = useFePrefs((s) => s.fePrefs.collapseToolGroups)
   const liteReplay = useLiteReplay()
   const autoTodoNewSession = useFePrefs((s) => s.fePrefs.autoTodoNewSession)
-  useChatStore((s) => s.selectedHostId)
   const viaRelay = historyViaHubRelay()
   const setFePrefs = useFePrefs((s) => s.setFePrefs)
   const [defaultSelectedPermission, setDefaultSelectedPermission] = useState<
     DefaultSelectedPermission
   >(() => loadDefaultSelectedPermission())
   return (
-    <section className="border-b border-gn-prompt-border/50 py-1">
-      <div className="px-4 pt-2 pb-1 text-[10px] uppercase tracking-wider text-gn-gutter">
-        前端偏好
-      </div>
-      <div className="flex items-start gap-3 px-4 py-1.5">
-        <span
-          className="w-48 shrink-0 pt-0.5 font-mono text-[11.5px] text-gn-muted"
-          title="collapse_tool_groups"
-        >
-          collapse_tool_groups
-        </span>
-        <div className="min-w-0 flex-1">
-          <button
-            type="button"
-            onClick={() => setFePrefs({ collapseToolGroups: !collapseToolGroups })}
-            className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-px text-[10.5px] ${
-              collapseToolGroups
-                ? 'border-gn-green/60 text-gn-green'
-                : 'border-gn-prompt-border text-gn-muted'
-            } hover:bg-gn-bg-highlight`}
-            title="控制 scrollback 里 toolcall 分组是否折叠，改动即时生效"
-          >
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${
-                collapseToolGroups ? 'bg-gn-green' : 'bg-gn-gutter'
-              }`}
-            />
-            {collapseToolGroups ? 'on' : 'off'}
-          </button>
-          <div className="mt-0.5 text-[10.5px] leading-snug text-gn-gutter">
-            折叠 toolcall 分组 · 开：连续 toolcall 折叠成「Read 3 files」分组头，成员隐藏；
-            关：分组默认展开、逐条显示。与置顶/待办同一 hub prefs 通道，跨端同步即时生效。
-          </div>
-        </div>
-      </div>
-      <div className="flex items-start gap-3 px-4 py-1.5">
-        <span
-          className="w-48 shrink-0 pt-0.5 font-mono text-[11.5px] text-gn-muted"
-          title="lite_replay"
-        >
-          lite_replay
-        </span>
-        <div className="min-w-0 flex-1">
-          <button
-            type="button"
-            disabled={!viaRelay}
-            onClick={() => viaRelay && setFePrefs({ liteReplay: !liteReplay })}
-            className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-px text-[10.5px] ${
-              liteReplay
-                ? 'border-gn-green/60 text-gn-green'
-                : 'border-gn-prompt-border text-gn-muted'
-            } ${viaRelay ? 'hover:bg-gn-bg-highlight' : 'cursor-not-allowed opacity-60'}`}
-            title={
-              viaRelay
-                ? '走 hub 中转时是否精简回放（先 lite 再补 full），改动即时生效'
-                : '当前直连 host，始终拉全量；切到中转后此开关才生效'
-            }
-          >
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${
-                liteReplay ? 'bg-gn-green' : 'bg-gn-gutter'
-              }`}
-            />
-            {liteReplay ? 'on' : 'off'}
-          </button>
-          <div className="mt-0.5 text-[10.5px] leading-snug text-gn-gutter">
-            精简回放 · 仅 hub 中转生效。开：先拉精简时间线再补全文，切会话更快。
-            关：整页全量。直连本机（纯 local / 近路）始终全量，不走 lite+full。
-          </div>
-        </div>
-      </div>
-      <div className="flex items-start gap-3 px-4 py-1.5">
-        <span
-          className="w-48 shrink-0 pt-0.5 font-mono text-[11.5px] text-gn-muted"
-          title="auto_todo_new_session"
-        >
-          auto_todo_new_session
-        </span>
-        <div className="min-w-0 flex-1">
-          <button
-            type="button"
-            onClick={() => setFePrefs({ autoTodoNewSession: !autoTodoNewSession })}
-            className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-px text-[10.5px] ${
-              autoTodoNewSession
-                ? 'border-gn-green/60 text-gn-green'
-                : 'border-gn-prompt-border text-gn-muted'
-            } hover:bg-gn-bg-highlight`}
-            title="发起新对话时自动将其设为待办，改动即时生效"
-          >
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${
-                autoTodoNewSession ? 'bg-gn-green' : 'bg-gn-gutter'
-              }`}
-            />
-            {autoTodoNewSession ? 'on' : 'off'}
-          </button>
-          <div className="mt-0.5 text-[10.5px] leading-snug text-gn-gutter">
-            新对话自动设为待办 · 开：新建会话后自动将其标记为待办，方便跟踪未完成事项；关：新会话默认为普通状态。与置顶/待办同一 hub prefs 通道，跨端同步即时生效。
-          </div>
-        </div>
-      </div>
-      <div className="flex items-start gap-3 px-4 py-1.5">
-        <span
-          className="w-48 shrink-0 pt-0.5 font-mono text-[11.5px] text-gn-muted"
-          title="default_selected_permission"
-        >
-          default_selected_permission
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap gap-1">
-            {DEFAULT_SELECTED_PERMISSION_UI.map((c) => {
-              const on = defaultSelectedPermission === c.id
-              return (
-                <button
-                  key={c.id}
-                  type="button"
-                  onClick={() => {
-                    if (on) return
-                    saveDefaultSelectedPermission(c.id)
-                    setDefaultSelectedPermission(c.id)
-                  }}
-                  className={`rounded-full border px-2 py-px text-[10.5px] ${
-                    on
-                      ? 'border-gn-green/60 text-gn-green cursor-default'
-                      : 'border-gn-prompt-border text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
-                  }`}
-                  title={c.id}
-                >
-                  {c.label}
-                </button>
-              )
-            })}
-          </div>
-          <div className="mt-1 text-[10.5px] leading-snug text-gn-gutter">
-            审批弹窗里默认光标落点（问的时候默认选哪一行）。与上面的 permission_mode
-            正交：permission_mode 决定会不会问，这一项决定问的时候默认选哪个。仅保存在本浏览器
-            localStorage，不写入 host 配置，审批卡已在显示时不强制重排（下一条生效）。
-          </div>
-        </div>
-      </div>
+    <section>
+      <SettingRow
+        label="折叠工具分组"
+        code="collapse_tool_groups"
+        hint="开：连续工具调用折叠成「Read 3 files」分组头，成员隐藏；关：分组默认展开、逐条显示。"
+      >
+        <TogglePill
+          on={collapseToolGroups}
+          title="控制滚动区里 toolcall 分组是否折叠，改动即时生效"
+          onClick={() => setFePrefs({ collapseToolGroups: !collapseToolGroups })}
+        />
+      </SettingRow>
+      <SettingRow
+        label="精简回放"
+        code="lite_replay"
+        hint="仅经 Hub 中转时生效。开：先拉精简时间线再补全文，切会话更快。关：整页全量。直连本机始终全量。"
+      >
+        <TogglePill
+          on={liteReplay}
+          disabled={!viaRelay}
+          title={
+            viaRelay
+              ? '走 hub 中转时是否精简回放，改动即时生效'
+              : '当前直连 host，始终拉全量；'
+          }
+          onClick={() => setFePrefs({ liteReplay: !liteReplay })}
+        />
+      </SettingRow>
+      <SettingRow
+        label="新对话自动待办"
+        code="auto_todo_new_session"
+        hint="开：新建会话后自动标记为待办；关：新会话默认为普通状态。"
+      >
+        <TogglePill
+          on={autoTodoNewSession}
+          title="发起新对话时自动将其设为待办，改动即时生效"
+          onClick={() => setFePrefs({ autoTodoNewSession: !autoTodoNewSession })}
+        />
+      </SettingRow>
+      <SettingRow
+        label="审批默认选项"
+        code="default_selected_permission"
+        hint="审批弹窗里默认选中哪一行。"
+      >
+        <ChoicePills
+          choices={DEFAULT_SELECTED_PERMISSION_UI}
+          value={defaultSelectedPermission}
+          onPick={(id) => {
+            saveDefaultSelectedPermission(id)
+            setDefaultSelectedPermission(id)
+          }}
+        />
+      </SettingRow>
     </section>
   )
 }
@@ -727,10 +837,8 @@ function SettingValue({ value }: { value: unknown }) {
   if (typeof value === 'boolean') {
     return (
       <span
-        className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-px text-[10.5px] ${
-          value
-            ? 'border-gn-green/60 text-gn-green'
-            : 'border-gn-prompt-border text-gn-muted'
+        className={`inline-flex items-center gap-1.5 rounded px-2 py-px text-[10.5px] ${
+ value ? 'bg-gn-bg-highlight text-gn-green' : 'text-gn-muted'
         }`}
         title={value ? 'on（只读）' : 'off（只读）'}
       >
@@ -742,7 +850,11 @@ function SettingValue({ value }: { value: unknown }) {
     )
   }
   if (typeof value === 'string' || typeof value === 'number') {
-    return <span className="break-all font-mono text-[11.5px] text-gn-fg">{String(value)}</span>
+    return (
+      <span className="break-all text-right font-mono text-[11.5px] text-gn-fg">
+        {String(value)}
+      </span>
+    )
   }
   if (value == null) {
     return <span className="text-[11.5px] text-gn-gutter">—</span>
@@ -754,7 +866,10 @@ function SettingValue({ value }: { value: unknown }) {
     text = String(value)
   }
   return (
-    <span className="break-all font-mono text-[11px] text-gn-gutter" title={text}>
+    <span
+      className="break-all text-right font-mono text-[11px] text-gn-fg2"
+      title={text}
+    >
       {text}
     </span>
   )

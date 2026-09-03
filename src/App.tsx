@@ -182,7 +182,7 @@ export default function App() {
             modeDetectPromise = null
             void boot()
           }}
-          className="rounded-md border border-gn-prompt-border px-3 py-1.5 text-[12px] text-gn-fg hover:bg-gn-bg-highlight"
+          className="rounded-md px-3 py-1.5 text-[12px] text-gn-fg hover:bg-gn-bg-highlight"
         >
           重试
         </button>
@@ -235,7 +235,13 @@ function AppShell({ onLogout }: { onLogout: () => void }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-gn-bg-base text-gn-fg font-ui transition-colors duration-150">
-      <TopBar onOpenMcp={() => setMcpOpen(true)} onOpenGit={() => setGitOpen(true)} onLogout={onLogout} />
+      <TopBar
+        onOpenMcp={() => setMcpOpen((v) => !v)}
+        onOpenGit={() => setGitOpen((v) => !v)}
+        mcpOpen={mcpOpen}
+        gitOpen={gitOpen}
+        onLogout={onLogout}
+      />
       {/* Host errors / connection warnings — always visible, dismissible. */}
       <ErrorBanner />
       <div className="flex min-h-0 flex-1">

@@ -149,7 +149,7 @@ export function PlanEntry({
                 </span>
                 <span
                   className={`min-w-0 flex-1 break-words ${
-                    t.status === 'completed' || t.status === 'cancelled'
+ t.status === 'completed' || t.status === 'cancelled'
                       ? 'text-gn-muted'
                       : 'text-gn-fg'
                   }`}

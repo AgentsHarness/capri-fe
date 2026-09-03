@@ -8,7 +8,7 @@ import { entryExpanded } from '../../../scrollback/entryState'
 import { Glyphs } from '../../../theme/glyphs'
 import { Bullet, EntryShell } from '../EntryShell'
 import { InlineImages } from '../InlineImages'
-import { PromptTime } from '../PromptTime'
+import { UserSteerTime } from '../PromptTime'
 import { ViewButton } from '../ViewButton'
 import type { EntryChrome } from '../chrome'
 
@@ -78,17 +78,6 @@ export function UserEntry({
         <div className="min-w-0 flex-1 text-gn-fg">
           {lines.map((line, i) => (
             <div key={i} className="whitespace-pre-wrap break-words">
-              {i === 0 && isInterjection && (
-                <span
-                  className="mr-1.5 inline-block rounded px-1 py-0.5 text-[11px] font-medium leading-none select-none"
-                  style={{
-                    backgroundColor: 'color-mix(in srgb, var(--color-gn-warning) 18%, transparent)',
-                    color: 'var(--color-gn-warning)',
-                  }}
-                >
-                  引导
-                </span>
-              )}
               {/* Icon sits in a sibling column (flex gap); continuations already
                   share the first line's text start — no extra indent (TUI uses
                   prefix-width spaces only when prefix is inline on each line). */}
@@ -99,7 +88,7 @@ export function UserEntry({
             <span className="sr-only"> (collapsed, expand with →)</span>
           )}
         </div>
-        <PromptTime ts={e.ts} className="top-[14.5px]" />
+        <UserSteerTime ts={e.ts} steer={isInterjection} className="top-[14.5px]" />
       </button>
       <ViewButton
         visible={showView}

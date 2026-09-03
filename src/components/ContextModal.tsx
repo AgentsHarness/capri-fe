@@ -191,7 +191,7 @@ export function ContextModal() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/55 backdrop-blur-[1px] p-4"
+      className="fixed inset-0 z-50 flex items-start justify-center gn-modal-dim p-4"
       role="dialog"
       aria-modal="true"
       aria-label="context usage"
@@ -202,9 +202,9 @@ export function ContextModal() {
       <div
         ref={panelRef}
         tabIndex={-1}
-        className="mt-8 w-full max-w-[480px] rounded border border-gn-prompt-border-active bg-gn-bg-base shadow-2xl outline-none"
+        className="mt-8 w-full max-w-[480px] gn-modal-panel"
       >
-        <header className="flex items-center gap-2 rounded-t border-b border-gn-prompt-border bg-gn-bg-dark px-4 py-2.5">
+        <header className="gn-modal-header">
           <span className="font-mono text-[13px] font-bold text-gn-fg">/context</span>
           <button
             type="button"
@@ -234,7 +234,7 @@ export function ContextModal() {
               <button
                 type="button"
                 onClick={() => void fetchInfo()}
-                className="mt-2 rounded border border-gn-prompt-border px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                className="mt-2 rounded px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
               >
                 重试
               </button>
@@ -312,7 +312,7 @@ export function ContextModal() {
               {autoCompact && (
                 <div
                   className={`border-t border-gn-prompt-border/50 pt-2 font-mono text-[11px] leading-snug ${
-                    autoCompact.triggered ? 'text-gn-warning' : 'text-gn-muted'
+ autoCompact.triggered ? 'text-gn-warning' : 'text-gn-muted'
                   }`}
                 >
                   {autoCompact.triggered

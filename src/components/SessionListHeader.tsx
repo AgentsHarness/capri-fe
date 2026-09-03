@@ -76,7 +76,7 @@ export function SessionListHeader({
     <>
       <span
         className={`shrink-0 font-medium uppercase tracking-wide text-gn-gutter ${
-          labeled ? 'text-[11px]' : 'text-[10.5px]'
+ labeled ? 'text-[11px]' : 'text-[10.5px]'
         }`}
       >
         会话
@@ -85,7 +85,7 @@ export function SessionListHeader({
       {/* 展示形态：工作区 | 标记（图标 + 短文案，适配窄侧栏）；labeled
           模式文字与右侧按钮统一 11px。 */}
       <div
-        className="inline-flex shrink-0 items-center rounded border border-gn-prompt-border/70 p-px"
+        className="inline-flex shrink-0 items-center gap-0.5"
         role="group"
         aria-label="会话列表展示形态"
       >
@@ -118,13 +118,13 @@ export function SessionListHeader({
           桌面侧边栏保持 19px 纯图标紧凑样式。 */}
       <span
         className={`inline-flex shrink-0 items-center gap-0.5 ${
-          alignRight ? 'ml-auto' : ''
+ alignRight ? 'ml-auto' : ''
         }`}
       >
         {refreshState === 'ok' ? (
           <span
             className={`inline-flex items-center justify-center text-gn-green ${
-              labeled
+ labeled
                 ? 'min-h-6 gap-1 rounded px-2 text-[11px] leading-none'
                 : 'h-[19px] w-[19px]'
             }`}
@@ -139,11 +139,7 @@ export function SessionListHeader({
             type="button"
             onClick={doRefresh}
             disabled={refreshState === 'refreshing'}
-            className={`inline-flex items-center rounded text-gn-gutter transition-colors hover:bg-gn-bg-highlight hover:text-gn-cyan disabled:cursor-default ${
-              labeled
-                ? 'min-h-6 gap-1 px-2 text-[11px] leading-none'
-                : 'h-[19px] w-[19px] justify-center'
-            }`}
+            className={`inline-flex items-center rounded text-gn-gutter transition-colors hover:bg-gn-bg-highlight hover:text-gn-cyan disabled:cursor-default ${ labeled ? 'min-h-6 gap-1 px-2 text-[11px] leading-none' : 'h-[19px] w-[19px] justify-center' }`}
             title={refreshState === 'refreshing' ? '正在刷新会话列表' : '刷新会话列表'}
             aria-label={refreshState === 'refreshing' ? '正在刷新会话列表' : '刷新会话列表'}
             aria-live="polite"
@@ -165,15 +161,7 @@ export function SessionListHeader({
             aria-pressed={searchOpen}
             aria-label={searchOpen ? '关闭会话搜索' : '搜索历史会话'}
             title={searchOpen ? '关闭会话搜索' : '搜索历史会话'}
-            className={`inline-flex items-center rounded transition-colors ${
-              labeled
-                ? 'min-h-6 gap-1 px-2 text-[11px] leading-none'
-                : 'h-[19px] w-[19px] justify-center'
-            } ${
-              searchOpen
-                ? 'bg-gn-bg-highlight text-gn-cyan'
-                : 'text-gn-gutter hover:bg-gn-bg-highlight hover:text-gn-cyan'
-            }`}
+            className={`inline-flex items-center rounded transition-colors ${ labeled ? 'min-h-6 gap-1 px-2 text-[11px] leading-none' : 'h-[19px] w-[19px] justify-center' } ${ searchOpen ? 'bg-gn-bg-highlight text-gn-cyan' : 'text-gn-gutter hover:bg-gn-bg-highlight hover:text-gn-cyan' }`}
           >
             <Search size={labeled ? 13 : 11} strokeWidth={2.5} />
             {labeled && (searchOpen ? '收起' : '搜索')}
@@ -206,13 +194,7 @@ function ModeTab({
       title={title}
       aria-pressed={active}
       aria-label={mode === 'workspace' ? '目录视图' : '标记视图'}
-      className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 leading-none transition-colors ${
-        labeled ? 'text-[11px]' : 'text-[10px]'
-      } ${
-        active
-          ? 'bg-gn-bg-highlight text-gn-cyan'
-          : 'text-gn-gutter hover:text-gn-fg'
-      }`}
+      className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 leading-none transition-colors ${ labeled ? 'text-[11px]' : 'text-[10px]' } ${ active ? 'bg-gn-bg-highlight text-gn-cyan' : 'text-gn-gutter hover:text-gn-fg' }`}
     >
       {children}
     </button>

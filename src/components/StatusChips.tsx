@@ -3,7 +3,7 @@ import type { ReactNode, RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { Glyphs, SPINNER_FRAMES } from '../theme/glyphs'
 import {
-  flushScheduledPageFills,
+  fillAllLiteTurns,
   liteFillSummary,
 } from '../store/chat/historyFill'
 import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS } from '../theme/layout'
@@ -132,9 +132,7 @@ export function TodoChip({
         onClick={() => expandable && setOpen((v) => !v)}
         aria-expanded={expandable ? open : undefined}
         aria-controls={expandable ? 'todo-inline-panel' : undefined}
-        className={`flex items-center gap-0.5 rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-fg2 hover:bg-gn-bg-highlight whitespace-nowrap ${expandable ? 'cursor-pointer' : 'cursor-default'} ${
-          open && expandable ? 'bg-gn-bg-highlight' : ''
-        }`}
+        className={`flex items-center gap-0.5 rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-fg2 hover:bg-gn-bg-highlight whitespace-nowrap ${expandable ? 'cursor-pointer' : 'cursor-default'} ${ open && expandable ? 'bg-gn-bg-highlight' : '' }`}
         title={objective ? `目标: ${objective}` : '待办进度'}
       >
         <span>
@@ -154,7 +152,7 @@ export function TodoChip({
             >
               {/* Content column matches scrollback/composer (mx-auto max-w-[960px]) */}
               <div
-                className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} max-h-[min(32vh,16rem)] overflow-y-auto py-1`}
+                className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} max-h-[min(32vh,16rem)] overflow-y-auto`}
               >
                 <div className="px-1 pb-0.5 pt-1 text-[10px] uppercase tracking-wider text-gn-gutter">
                   todo · {completed}/{total} 完成
@@ -326,7 +324,7 @@ function goalTodoItems(
  *
  * 只在还有 lite 行欠着正文时出现：全部补齐、或本页本来就是全量（开关关 /
  * 旧 host）都不渲染。数字 = 还欠正文的行数。
- *  - ◇N 后台补全还在排队（点一下 = 不等 idle，立刻发出）
+ *  - ◇N 还没去拉（首屏不再自动补全，点一下 = 一次并发补齐当前视图所有 lite 轮）
  *  - ⠿N 正在拉（braille spinner，与 ⠋N 任务计数同一套帧）
  *  - ✗N 上一轮拉失败，转警告色；展开任意一行或点这里都会重试
  *
@@ -366,11 +364,9 @@ export function LiteFillChip() {
     <button
       type="button"
       onClick={() => {
-        void flushScheduledPageFills()
+        void fillAllLiteTurns()
       }}
-      className={`shrink-0 cursor-pointer whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums hover:bg-gn-bg-highlight ${
-        failed > 0 ? 'text-gn-warning' : 'text-gn-gray-dim'
-      }`}
+      className={`shrink-0 cursor-pointer whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums hover:bg-gn-bg-highlight ${ failed > 0 ? 'text-gn-warning' : 'text-gn-gray-dim' }`}
       title={
         active
           ? `正在补全精简回放裁掉的工具正文 · 还有 ${count} 行`
@@ -457,10 +453,10 @@ function ChipDropdown({
       />
       {pos ? (
         <div
-          className={`fixed z-40 max-h-[55vh] max-w-[92vw] overflow-y-auto rounded border border-gn-prompt-border bg-gn-bg-base shadow-xl py-1 ${widthClass ?? 'w-80'}`}
+          className={`fixed z-40 max-h-[55vh] max-w-[92vw] overflow-y-auto gn-menu ${widthClass ?? 'w-80'}`}
           style={{ left: pos.left, top: pos.top, width: pos.width }}
         >
-          <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-gn-gutter">
+          <div className="px-3 pb-1 pt-1.5 text-[10px] uppercase tracking-wider text-gn-gutter">
             {label}
           </div>
           {children}
@@ -743,9 +739,7 @@ export function RunningChip({
       onClick={onToggle}
       aria-expanded={open}
       aria-controls="running-tasks-bar"
-      className={`shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-accent-running hover:bg-gn-bg-highlight ${
-        open ? 'bg-gn-bg-highlight' : ''
-      }`}
+      className={`shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-accent-running hover:bg-gn-bg-highlight ${ open ? 'bg-gn-bg-highlight' : '' }`}
       title={
         open
           ? '隐藏运行中的任务列表'
@@ -1025,9 +1019,7 @@ export function QueueBadge() {
       type="button"
       onClick={() => setQueuePanelOpen(!open)}
       aria-expanded={open}
-      className={`shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-fg2 hover:bg-gn-bg-highlight ${
-        open ? 'bg-gn-bg-highlight' : ''
-      }`}
+      className={`shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-fg2 hover:bg-gn-bg-highlight ${ open ? 'bg-gn-bg-highlight' : '' }`}
       title={open ? '收起排队消息' : `展开排队消息 · ${queue.length} 条`}
     >
       +{queue.length}

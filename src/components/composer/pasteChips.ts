@@ -11,9 +11,9 @@ export const CHIP_DISPLAY_BYTES = 10_000
  * as an always-expanded thumbnail above the textarea. Text chips share
  * the atomic-label mechanics (prune / caret clamp / whole-chip delete /
  * Enter expand); image chips are NOT text-anchored — no `[Image: …]`
- * label ever enters the buffer, their label is a display fallback only
- * (queue row text), and their data leaves as image ContentBlocks on
- * submit.
+ * label ever enters the buffer (it only names the chip), and their data
+ * leaves as image ContentBlocks on submit. Queue rows re-derive their
+ * image markers from those blocks, not from this label.
  */
 export type PasteChip = {
   id: string

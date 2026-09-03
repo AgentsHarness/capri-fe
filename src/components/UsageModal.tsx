@@ -102,7 +102,7 @@ export function UsageModal() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/55 backdrop-blur-[1px] p-4"
+      className="fixed inset-0 z-50 flex items-start justify-center gn-modal-dim p-4"
       role="dialog"
       aria-modal="true"
       aria-label="usage"
@@ -113,9 +113,9 @@ export function UsageModal() {
       <div
         ref={panelRef}
         tabIndex={-1}
-        className="mt-8 w-full max-w-[620px] rounded border border-gn-prompt-border-active bg-gn-bg-base shadow-2xl outline-none"
+        className="mt-8 w-full max-w-[620px] gn-modal-panel"
       >
-        <header className="flex items-center gap-2 rounded-t border-b border-gn-prompt-border bg-gn-bg-dark px-4 py-2.5">
+        <header className="gn-modal-header">
           <span className="font-mono text-[13px] font-bold text-gn-fg">/usage</span>
           <button
             type="button"
@@ -138,9 +138,9 @@ export function UsageModal() {
           </button>
         </header>
 
-        <div className="max-h-[70vh] overflow-y-auto py-1">
+        <div className="max-h-[70vh] overflow-y-auto">
           {/* ── billing credits ─────────────────────────────────────── */}
-          <Section title="credits" hint="x.ai/billing">
+          <Section title="credits">
             {billingLoading ? (
               <div className="px-4 py-3 text-[12px] text-gn-muted">加载中…</div>
             ) : billingError ? (
@@ -149,7 +149,7 @@ export function UsageModal() {
                 <button
                   type="button"
                   onClick={() => void fetchBilling()}
-                  className="mt-2 rounded border border-gn-prompt-border px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                  className="mt-2 rounded px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
                 >
                   重试
                 </button>
@@ -162,7 +162,7 @@ export function UsageModal() {
           {/* ── token 用量聚合 ──────────────────────────────────────── */}
           <Section
             title="usage"
-            hint={`POST /api/usage-report · 全会话真实 usage · rewind 分支照常计入`}
+            hint={`rewind 分支照常计入`}
           >
             {/* 时间窗口 segmented control */}
             <div className="flex items-center gap-1 px-4 pt-3">
@@ -173,11 +173,7 @@ export function UsageModal() {
                   type="button"
                   disabled={usageLoading}
                   onClick={() => switchWindow(w.key)}
-                  className={`rounded px-2 py-0.5 text-[11px] disabled:opacity-50 ${
-                    windowKey === w.key
-                      ? 'bg-gn-bg-highlight text-gn-fg border border-gn-prompt-border'
-                      : 'text-gn-muted border border-transparent hover:border-gn-prompt-border hover:text-gn-fg'
-                  }`}
+                  className={`rounded px-2 py-0.5 text-[11px] disabled:opacity-50 ${ windowKey === w.key ? 'bg-gn-bg-highlight text-gn-fg' : 'text-gn-muted hover:text-gn-fg' }`}
                 >
                   {w.label}
                 </button>
@@ -195,7 +191,7 @@ export function UsageModal() {
                 <button
                   type="button"
                   onClick={() => void fetchUsage(windowKey)}
-                  className="mt-2 rounded border border-gn-prompt-border px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                  className="mt-2 rounded px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
                 >
                   重试
                 </button>
@@ -283,12 +279,12 @@ const WINDOWS = [
 type WindowKey = (typeof WINDOWS)[number]['key']
 
 /** 区块容器：标题行 + 内容。 */
-function Section({ title, hint, children }: { title: string; hint: string; children: React.ReactNode }) {
+function Section({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
   return (
     <section className="border-b border-gn-prompt-border/60 pb-3 last:border-b-0">
       <div className="flex items-baseline gap-2 px-4 pt-3">
         <span className="text-[10px] uppercase tracking-wider text-gn-gutter">{title}</span>
-        <span className="text-[10.5px] text-gn-muted/80">{hint}</span>
+        {hint && <span className="text-[10.5px] text-gn-muted/80">{hint}</span>}
       </div>
       {children}
     </section>

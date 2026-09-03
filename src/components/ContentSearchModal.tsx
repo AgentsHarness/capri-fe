@@ -238,7 +238,7 @@ export function ContentSearchModal() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/55 backdrop-blur-[1px] p-4"
+      className="fixed inset-0 z-50 flex items-start justify-center gn-modal-dim p-4"
       role="dialog"
       aria-modal="true"
       aria-label="search"
@@ -246,8 +246,8 @@ export function ContentSearchModal() {
         if (e.target === e.currentTarget) closeContentSearch()
       }}
     >
-      <div className="mt-8 flex w-full max-w-[680px] flex-col overflow-hidden rounded border border-gn-prompt-border-active bg-gn-bg-base shadow-2xl">
-        <header className="flex items-center gap-2 rounded-t border-b border-gn-prompt-border bg-gn-bg-dark px-4 py-2.5">
+      <div className="mt-8 flex w-full max-w-[680px] flex-col overflow-hidden gn-modal-panel">
+        <header className="gn-modal-header">
           <span className="font-mono text-[13px] font-bold text-gn-fg">/search</span>
           <span className="text-[11px] text-gn-muted">搜索工作区文件内容</span>
           <button
@@ -312,9 +312,7 @@ export function ContentSearchModal() {
                         data-sel={idx === sel ? '1' : '0'}
                         onMouseEnter={() => setSel(idx)}
                         onClick={() => copyHit(idx)}
-                        className={`flex w-full items-baseline gap-2 border-b border-gn-prompt-border/30 px-3 py-1 text-left ${
-                          idx === sel ? 'bg-gn-bg-highlight' : ''
-                        }`}
+                        className={`flex w-full items-baseline gap-2 border-b border-gn-prompt-border/30 px-3 py-1 text-left ${ idx === sel ? 'bg-gn-bg-highlight' : '' }`}
                       >
                         <span className="w-10 shrink-0 text-right font-mono text-[10px] leading-[18px] text-gn-gutter">
                           {m.line > 0 ? m.line : ''}
@@ -335,7 +333,7 @@ export function ContentSearchModal() {
           )}
         </div>
 
-        <footer className="flex items-center gap-3 border-t border-gn-prompt-border bg-gn-bg-dark px-4 py-1.5 text-[10px] text-gn-muted">
+        <footer className="gn-modal-footer flex items-center gap-3 py-1.5 text-[10px] text-gn-muted">
           {result && (
             <span>
               {result.truncated ? '结果已截断 · ' : ''}

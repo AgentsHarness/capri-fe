@@ -99,8 +99,12 @@ export type ToolDetail =
       fileType?: string
       multiline?: boolean
       matchCount: number
+      /** 载荷里到底有没有 match_count —— 正文被裁时用来分辨「真 0」与「没给」。 */
+      matchCountPresent: boolean
       fileMatches: SearchFile[]
       filePaths: string[]
+      /** 命中文件数：file_matches 在时数它，被 lite 裁掉时用 host 折好的数。 */
+      fileCount: number
       error?: string
     }
   | {
@@ -331,6 +335,33 @@ export function liteStubIn(v: unknown): boolean {
 /** rawOutput / content 里是否还留着占位（不看 `_meta.lite` 标记）。 */
 function bodyHasLiteStub(tc: ToolCall): boolean {
   return [tc.rawOutput, tc.content].some(liteStubIn)
+}
+
+/**
+ * host 在裁正文前折好的折叠行行头数字（契约 lite-replay [C]7）：edit 的
+ * 加减行数、grep 的命中文件数。全量补回来时 `_meta.lite` 会被整键抹掉，
+ * 行头自动改回由真实正文计算。
+ */
+export type LiteFoldStats = { ins: number; del: number; files: number }
+
+export function liteFoldStats(tc: ToolCall): Partial<LiteFoldStats> | undefined {
+  const meta = (tc as { _meta?: unknown })._meta
+  if (!isObj(meta)) return undefined
+  const lite = (meta as Record<string, unknown>).lite
+  if (!isObj(lite)) return undefined
+  const num = (v: unknown) =>
+    typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined
+  const out: Partial<LiteFoldStats> = {}
+  const edits = lite.edits
+  if (isObj(edits)) {
+    const ins = num((edits as Record<string, unknown>).ins)
+    const del = num((edits as Record<string, unknown>).del)
+    if (ins != null) out.ins = ins
+    if (del != null) out.del = del
+  }
+  const files = num(lite.files)
+  if (files != null) out.files = files
+  return Object.keys(out).length ? out : undefined
 }
 
 /**
@@ -744,6 +775,7 @@ function extractReadFile(raw: unknown): {
 
 function extractGrep(raw: unknown): {
   matchCount: number
+  hasMatchCount: boolean
   fileMatches: SearchFile[]
   filePaths: string[]
 } | null {
@@ -802,7 +834,12 @@ function extractGrep(raw: unknown): {
       .map((l) => l.trim())
       .filter((l) => l && !l.startsWith('<') && !l.startsWith('Found '))
   }
-  return { matchCount, fileMatches, filePaths }
+  return {
+    matchCount,
+    hasMatchCount: typeof body.match_count === 'number' || typeof body.matchCount === 'number',
+    fileMatches,
+    filePaths,
+  }
 }
 
 // ── list dir ─────────────────────────────────────────────────────────
@@ -1296,15 +1333,18 @@ export function extractToolDetail(tc: ToolCall, kindName?: string): ToolDetail {
         error: contentText(tc) || 'Edit failed',
       }
     }
-    const { lines, ins, del } = extractEditHunks(tc)
+    const hunk = extractEditHunks(tc)
+    // 正文被 lite 裁掉时 diff 原文不在，行头的 (+N/−M) 用 host 折进标记的
+    // 数字兜底；补全回来后标记消失，改回真实 hunk。
+    const fold = hunk.lines.length || hunk.ins || hunk.del ? undefined : liteFoldStats(tc)
     return {
       kind: 'edit',
       path,
       creating,
       workflow,
-      lines,
-      insertions: ins,
-      deletions: del,
+      lines: hunk.lines,
+      insertions: fold?.ins ?? hunk.ins,
+      deletions: fold?.del ?? hunk.del,
     }
   }
 
@@ -1386,8 +1426,14 @@ export function extractToolDetail(tc: ToolCall, kindName?: string): ToolDetail {
       fileType: rawField(ri, 'type', 'file_type'),
       multiline: rawBool(ri, 'multiline'),
       matchCount: grep?.matchCount ?? 0,
+      matchCountPresent: grep?.hasMatchCount ?? false,
       fileMatches: grep?.fileMatches ?? [],
       filePaths: grep?.filePaths ?? [],
+      // file_matches 被 lite 裁掉时，用 host 折在标记里的文件数兜底。
+      fileCount:
+        (grep?.fileMatches.length ?? 0) ||
+        (grep?.filePaths.length ?? 0) ||
+        (liteFoldStats(tc)?.files ?? 0),
       error: isFail ? 'Search failed' : undefined,
     }
   }

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeAll, afterAll } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { SlashMenu } from './SlashMenu'
-import type { SlashCommand, SlashMatch } from '../commands/registry'
+import type { SlashArgMatch, SlashCommand, SlashMatch } from '../commands/registry'
 
 const cmdA: SlashCommand = {
   name: 'context',
@@ -15,6 +15,25 @@ const cmdB: SlashCommand = {
   source: 'agent',
   aliases: ['ac'],
   run: vi.fn(),
+}
+/** 声明了二级参数候选的命令（`/effort` 形态）。 */
+const cmdEffort: SlashCommand = {
+  name: 'effort',
+  description: '设置推理强度',
+  argHint: '[low|medium|high]',
+  argsRequired: true,
+  suggestArgs: () => [],
+  run: vi.fn(),
+}
+
+function argMatches(): SlashArgMatch[] {
+  return [
+    {
+      arg: { display: 'high (active)', matchText: 'high', insertText: 'high', description: '默认档' },
+      score: 0,
+    },
+    { arg: { display: 'low', matchText: 'low', insertText: 'low', description: '' }, score: 0 },
+  ]
 }
 
 function matches(): SlashMatch[] {
@@ -64,13 +83,13 @@ describe('SlashMenu', () => {
     expect(onHover).toHaveBeenCalledWith(0)
   })
 
-  it('点击行 → onPick 该命令；selected 变化时滚动到选中行', () => {
+  it('点击行 → onPick 行号（外层按该行判定补全/执行）；selected 变化时滚动到选中行', () => {
     const onPick = vi.fn()
     const { rerender } = render(
       <SlashMenu input="/co" selected={0} matches={matches()} onHover={noop} onPick={onPick} />,
     )
     fireEvent.click(screen.getByText('/context'))
-    expect(onPick).toHaveBeenCalledWith(cmdA)
+    expect(onPick).toHaveBeenCalledWith(0)
 
     rerender(
       <SlashMenu input="/co" selected={1} matches={matches()} onHover={noop} onPick={onPick} />,
@@ -82,7 +101,7 @@ describe('SlashMenu', () => {
     render(
       <SlashMenu input="/co" selected={1} matches={matches()} onHover={noop} onPick={noop} />,
     )
-    const hint = screen.getByText(/↑\/↓ 选择 · Enter\/Tab 执行 · Esc 关闭/)
+    const hint = screen.getByText(/↑\/↓ 选择 · Tab 补全 · Enter 执行 · Esc 关闭/)
     expect(hint).toBeInTheDocument()
     expect(hint.getAttribute('title')).toContain(String.raw`\/`)
     expect(hint.getAttribute('title')).toContain('空格')
@@ -166,7 +185,7 @@ describe('SlashMenu', () => {
     render(
       <SlashMenu input="/" selected={0} matches={[]} onHover={noop} onPick={noop} />,
     )
-    expect(screen.getByText(/↑\/↓ 选择 · Enter\/Tab 执行 · Esc 关闭/)).toBeInTheDocument()
+    expect(screen.getByText(/↑\/↓ 选择 · Tab 补全 · Enter 执行 · Esc 关闭/)).toBeInTheDocument()
     expect(screen.getByText('/ 前缀触发')).toBeInTheDocument()
   })
 
@@ -178,5 +197,59 @@ describe('SlashMenu', () => {
     const row = screen.getByText('/plan')
     expect(row).toBeInTheDocument()
     expect(screen.getByText('计划模式')).toBeInTheDocument()
+  })
+
+  it('参数阶段：表头带命令名，行是候选参数，页脚换成参数键盘提示', () => {
+    const onPick = vi.fn()
+    render(
+      <SlashMenu
+        input="/effort "
+        selected={0}
+        phase="args"
+        matches={[]}
+        argMatches={argMatches()}
+        argCommand={cmdEffort}
+        onHover={noop}
+        onPick={onPick}
+      />,
+    )
+    expect(screen.getByText('参数 · /effort')).toBeInTheDocument()
+    expect(screen.queryByText('命令')).not.toBeInTheDocument()
+    expect(screen.getByText('high (active)')).toBeInTheDocument()
+    expect(screen.getByText('默认档')).toBeInTheDocument()
+    expect(screen.getByText('1/2')).toBeInTheDocument()
+    expect(screen.getByText(/↑\/↓ 选择参数 · Enter 选定并执行/)).toBeInTheDocument()
+    fireEvent.click(screen.getByText('low'))
+    expect(onPick).toHaveBeenCalledWith(1)
+  })
+
+  it('参数阶段也保留「作为原文发送」（首词必是真命令）', () => {
+    const onLiteral = vi.fn()
+    render(
+      <SlashMenu
+        input="/effort high"
+        selected={0}
+        phase="args"
+        matches={[]}
+        argMatches={argMatches()}
+        argCommand={cmdEffort}
+        onHover={noop}
+        onPick={noop}
+        onLiteral={onLiteral}
+      />,
+    )
+    fireEvent.click(screen.getByText('作为原文发送'))
+    expect(onLiteral).toHaveBeenCalled()
+  })
+
+  it('命令行的 ▸ 只标在声明了参数候选的命令上', () => {
+    const { rerender } = render(
+      <SlashMenu input="/effort" selected={0} matches={[{ cmd: cmdEffort, score: 0 }]} onHover={noop} onPick={noop} />,
+    )
+    expect(screen.getAllByText('▸')).toHaveLength(1)
+    rerender(
+      <SlashMenu input="/co" selected={0} matches={[{ cmd: cmdA, score: 0 }]} onHover={noop} onPick={noop} />,
+    )
+    expect(screen.queryByText('▸')).not.toBeInTheDocument()
   })
 })

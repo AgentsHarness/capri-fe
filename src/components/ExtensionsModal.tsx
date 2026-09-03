@@ -8,6 +8,7 @@ import {
   type ExtensionSkill,
 } from '../api/client'
 import type { AgentSkill, WorkflowInfo } from '../api/types'
+import { setCachedWorkflows } from '../commands/workflows'
 import { Glyphs } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
 
@@ -202,7 +203,7 @@ function GroupHeader({
     <button
       type="button"
       onClick={onToggle}
-      className="sticky top-0 z-10 flex w-full cursor-pointer items-center gap-1.5 border-b border-gn-prompt-border/60 bg-gn-bg-base px-3 py-1 text-left hover:bg-gn-bg-highlight"
+      className="sticky top-0 z-10 flex w-full cursor-pointer items-center gap-1.5 border-b border-gn-prompt-border/50 bg-gn-bg-base px-3 py-1 text-left hover:bg-gn-bg-highlight"
       title={collapsed ? `展开${label}` : `收起${label}`}
     >
       <span className="shrink-0 text-gn-gutter" aria-hidden>
@@ -363,6 +364,8 @@ export function ExtensionsModal() {
       // 防御：ext result 已由 unwrapExtResult 解包；结构不符按失败处理。
       const list = payload?.workflows
       if (!Array.isArray(list)) throw new Error('workflows 返回结构异常')
+      // 顺手喂 /workflow 参数候选的模块缓存（suggestArgs 是同步的）。
+      setCachedWorkflows(list)
       if (seq === workflowsReqSeq.current) setWorkflows(list)
     } catch (e) {
       if (seq === workflowsReqSeq.current) {
@@ -438,7 +441,7 @@ export function ExtensionsModal() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/55 backdrop-blur-[1px] p-4"
+      className="fixed inset-0 z-50 flex items-start justify-center gn-modal-dim p-4"
       role="dialog"
       aria-modal="true"
       aria-label="extensions"
@@ -449,9 +452,9 @@ export function ExtensionsModal() {
       <div
         ref={panelRef}
         tabIndex={-1}
-        className="mt-8 w-full max-w-[560px] rounded border border-gn-prompt-border-active bg-gn-bg-base shadow-2xl outline-none"
+        className="mt-8 w-full max-w-[560px] gn-modal-panel"
       >
-        <header className="flex items-center gap-2 rounded-t border-b border-gn-prompt-border bg-gn-bg-dark px-4 py-2.5">
+        <header className="gn-modal-header">
           <span className="text-[13px] font-bold text-gn-fg">extensions</span>
           <button
             type="button"
@@ -472,10 +475,10 @@ export function ExtensionsModal() {
                 useChatStore.getState().openExtensions(t.id)
                 setHookToggleError(undefined)
               }}
-              className={`shrink-0 whitespace-nowrap rounded-t border border-b-0 px-3 py-1.5 text-[12px] ${
-                tab === t.id
-                  ? 'border-gn-prompt-border bg-gn-bg-base text-gn-fg'
-                  : 'border-transparent text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
+              className={`shrink-0 whitespace-nowrap rounded px-3 py-1.5 text-[12px] ${
+ tab === t.id
+                  ? 'bg-gn-bg-highlight text-gn-fg'
+                  : 'text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
               }`}
             >
               {t.label}
@@ -493,11 +496,7 @@ export function ExtensionsModal() {
                 key={f.id}
                 type="button"
                 onClick={() => setStatusFilter(f.id)}
-                className={`rounded px-2 py-0.5 text-[10.5px] ${
-                  statusFilter === f.id
-                    ? 'bg-gn-bg-highlight text-gn-fg'
-                    : 'text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
-                }`}
+                className={`rounded px-2 py-0.5 text-[10.5px] ${ statusFilter === f.id ? 'bg-gn-bg-highlight text-gn-fg' : 'text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg' }`}
                 aria-pressed={statusFilter === f.id}
               >
                 {f.label}
@@ -512,7 +511,7 @@ export function ExtensionsModal() {
                   type="button"
                   onClick={() => void reloadHooks()}
                   disabled={reloadBusy}
-                  className="shrink-0 rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
+                  className="shrink-0 rounded px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
                   title="x.ai/hooks/action reload — 重新扫描 ~/.grok/hooks，无需重启"
                 >
                   {reloadBusy ? '重载中…' : '重载 hooks（热加载）'}
@@ -522,7 +521,7 @@ export function ExtensionsModal() {
           </div>
         )}
 
-        <div className="max-h-[52vh] overflow-y-auto pb-1">
+        <div className="max-h-[52vh] overflow-y-auto">
           {loading ? (
             <div className="px-4 py-6 text-center text-[12px] text-gn-muted">
               加载扩展…
@@ -533,7 +532,7 @@ export function ExtensionsModal() {
               <button
                 type="button"
                 onClick={() => void fetchData()}
-                className="mt-2 rounded border border-gn-prompt-border px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                className="mt-2 rounded px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
               >
                 重试
               </button>
@@ -595,7 +594,7 @@ function HookItem({
   return (
     <div
       className={`flex items-start gap-2.5 border-b border-gn-prompt-border/50 px-4 py-2 ${
-        h.disabled ? 'opacity-50' : ''
+ h.disabled ? 'opacity-50' : ''
       }`}
     >
       <div className="min-w-0 flex-1">
@@ -620,7 +619,7 @@ function HookItem({
         type="button"
         onClick={() => onToggle(h)}
         disabled={busy || h.pinned === true}
-        className="shrink-0 rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
+        className="shrink-0 rounded px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
         title={h.pinned === true ? '托管策略强制，不可停用' : `x.ai/hooks/action ${isOff ? 'enable' : 'disable'}`}
       >
         {busy ? '…' : isOff ? '启用' : '停用'}
@@ -715,7 +714,7 @@ function PluginItem({ p }: { p: ExtensionPlugin }) {
           {p.enabled !== undefined && (
             <span
               className={`shrink-0 rounded border px-1 text-[9px] leading-[14px] ${
-                p.enabled
+ p.enabled
                   ? 'border-gn-green/60 text-gn-green'
                   : 'border-gn-prompt-border text-gn-muted'
               }`}
@@ -799,7 +798,7 @@ function SkillItem({
           <span className="truncate font-mono text-[12.5px] text-gn-fg">{s.name}</span>
           <span
             className={`shrink-0 rounded border px-1 text-[9px] leading-[14px] ${
-              s.scope === 'user'
+ s.scope === 'user'
                 ? 'border-gn-cyan/60 text-gn-cyan'
                 : s.scope === 'bundled'
                   ? 'border-gn-prompt-border text-gn-muted'
@@ -819,7 +818,7 @@ function SkillItem({
           {s.enabled !== undefined && (
             <span
               className={`shrink-0 rounded border px-1 text-[9px] leading-[14px] ${
-                s.enabled
+ s.enabled
                   ? 'border-gn-green/60 text-gn-green'
                   : 'border-gn-prompt-border text-gn-muted'
               }`}
@@ -839,10 +838,10 @@ function SkillItem({
           type="button"
           disabled={busy != null}
           onClick={() => onToggle(s)}
-          className={`shrink-0 rounded border px-2 py-0.5 text-[11px] disabled:opacity-50 ${
-            s.enabled === false
-              ? 'border-gn-prompt-border-active bg-gn-bg-highlight text-gn-fg'
-              : 'border-gn-prompt-border text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
+          className={`shrink-0 rounded px-2 py-0.5 text-[11px] disabled:opacity-50 ${
+ s.enabled === false
+              ? 'bg-gn-bg-highlight text-gn-fg'
+              : 'text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
           }`}
           title="x.ai/skills/toggle — 启用/禁用该 skill（agent 注册表）"
         >
@@ -994,7 +993,7 @@ function WorkflowsTab({
         <button
           type="button"
           onClick={onRetry}
-          className="mt-2 rounded border border-gn-prompt-border px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+          className="mt-2 rounded px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
         >
           重试
         </button>

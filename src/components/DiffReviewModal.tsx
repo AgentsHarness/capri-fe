@@ -266,7 +266,7 @@ export function DiffReviewModal() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/55 backdrop-blur-[1px] p-4"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto gn-modal-dim p-4"
       role="dialog"
       aria-modal="true"
       aria-label="diff review"
@@ -274,8 +274,8 @@ export function DiffReviewModal() {
         if (e.target === e.currentTarget) close()
       }}
     >
-      <div className="my-4 w-full max-w-[860px] rounded border border-gn-prompt-border-active bg-gn-bg-base shadow-2xl">
-        <header className="flex items-center gap-2 border-b border-gn-prompt-border bg-gn-bg-dark px-4 py-2.5 rounded-t">
+      <div className="my-4 w-full max-w-[860px] gn-modal-panel">
+        <header className="gn-modal-header">
           <span className="text-gn-magenta" aria-hidden>
             {Glyphs.diamondFilled}
           </span>
@@ -305,15 +305,11 @@ export function DiffReviewModal() {
                     key={i}
                     type="button"
                     onClick={() => setSelectedIdx(i)}
-                    className={`flex min-w-0 flex-1 items-center gap-1.5 border-b border-gn-prompt-border px-2.5 py-1.5 text-left last:border-b-0 md:flex-none md:border-b md:last:border-b ${
-                      i === selectedIdx
-                        ? 'bg-gn-bg-highlight text-gn-fg'
-                        : 'text-gn-fg2 hover:bg-gn-bg-highlight/60'
-                    }`}
+                    className={`flex min-w-0 flex-1 items-center gap-1.5 border-b border-gn-prompt-border px-2.5 py-1.5 text-left last:border-b-0 md:flex-none md:border-b md:border-gn-prompt-border md:last:border-b ${ i === selectedIdx ? 'bg-gn-bg-highlight text-gn-fg' : 'text-gn-fg2 hover:bg-gn-bg-highlight/60' }`}
                   >
                     <span
                       className={`shrink-0 text-[10.5px] ${
-                        d === 'approved'
+ d === 'approved'
                           ? 'text-gn-diff-ins-fg'
                           : d === 'rejected'
                             ? 'text-gn-red'
@@ -371,10 +367,10 @@ export function DiffReviewModal() {
                       <button
                         type="button"
                         onClick={() => setDecision(selectedIdx, 'approved')}
-                        className={`rounded border px-1.5 py-px text-[10.5px] ${
-                          decisions[selectedIdx] === 'approved'
-                            ? 'border-gn-diff-ins-fg/60 bg-gn-bg-highlight text-gn-diff-ins-fg'
-                            : 'border-gn-prompt-border text-gn-fg2 hover:bg-gn-bg-highlight'
+                        className={`rounded px-1.5 py-px text-[10.5px] ${
+ decisions[selectedIdx] === 'approved'
+                            ? 'bg-gn-bg-highlight text-gn-diff-ins-fg'
+                            : 'text-gn-fg2 hover:bg-gn-bg-highlight'
                         }`}
                       >
                         批准
@@ -382,10 +378,10 @@ export function DiffReviewModal() {
                       <button
                         type="button"
                         onClick={() => setDecision(selectedIdx, 'rejected')}
-                        className={`rounded border px-1.5 py-px text-[10.5px] ${
-                          decisions[selectedIdx] === 'rejected'
-                            ? 'border-gn-red/60 bg-gn-bg-highlight text-gn-red'
-                            : 'border-gn-prompt-border text-gn-fg2 hover:bg-gn-bg-highlight'
+                        className={`rounded px-1.5 py-px text-[10.5px] ${
+ decisions[selectedIdx] === 'rejected'
+                            ? 'bg-gn-bg-highlight text-gn-red'
+                            : 'text-gn-fg2 hover:bg-gn-bg-highlight'
                         }`}
                       >
                         拒绝
@@ -409,7 +405,7 @@ export function DiffReviewModal() {
         )}
 
         {req ? (
-          <footer className="flex flex-wrap items-center gap-2 border-t border-gn-prompt-border px-4 py-3">
+          <footer className="gn-modal-footer flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={() => {
@@ -417,7 +413,7 @@ export function DiffReviewModal() {
                 files.forEach((_, i) => (next[i] = 'approved'))
                 setDecisions(next)
               }}
-              className="min-h-9 rounded border border-gn-diff-ins-fg/40 bg-gn-bg-highlight px-3 py-1.5 text-[12px] text-gn-diff-ins-fg hover:bg-gn-bg-hover"
+              className="min-h-9 rounded bg-gn-bg-highlight px-3 py-1.5 text-[12px] text-gn-diff-ins-fg hover:bg-gn-bg-hover"
             >
               全部批准
             </button>
@@ -428,7 +424,7 @@ export function DiffReviewModal() {
                 files.forEach((_, i) => (next[i] = 'rejected'))
                 setDecisions(next)
               }}
-              className="min-h-9 rounded border border-gn-red/40 bg-gn-bg-highlight px-3 py-1.5 text-[12px] text-gn-red hover:bg-gn-bg-hover"
+              className="min-h-9 rounded bg-gn-bg-highlight px-3 py-1.5 text-[12px] text-gn-red hover:bg-gn-bg-hover"
             >
               全部拒绝
             </button>
@@ -443,27 +439,27 @@ export function DiffReviewModal() {
               type="button"
               onClick={submit}
               disabled={!allDecided}
-              className="min-h-9 rounded border border-gn-magenta/50 bg-gn-bg-highlight px-4 py-1.5 text-[12.5px] font-semibold text-gn-fg hover:bg-gn-bg-hover disabled:cursor-not-allowed disabled:opacity-40"
+              className="min-h-9 rounded bg-gn-bg-highlight px-4 py-1.5 text-[12.5px] font-semibold text-gn-fg hover:bg-gn-bg-hover disabled:cursor-not-allowed disabled:opacity-40"
             >
               提交审查
             </button>
             <button
               type="button"
               onClick={close}
-              className="min-h-9 rounded border border-gn-red/40 px-3 py-1.5 text-[12.5px] text-gn-red hover:bg-gn-diff-del-bg"
+              className="min-h-9 rounded px-3 py-1.5 text-[12.5px] text-gn-red hover:bg-gn-diff-del-bg"
             >
               取消
             </button>
           </footer>
         ) : (
-          <footer className="flex items-center justify-between gap-2 border-t border-gn-prompt-border px-4 py-3">
+          <footer className="gn-modal-footer flex items-center justify-between gap-2">
             <span className="text-[11.5px] text-gn-muted">
               通知态请求无法回执 — 如需批准/拒绝，请让 Agent 通过 x.ai/diff_review 请求发起
             </span>
             <button
               type="button"
               onClick={close}
-              className="min-h-9 rounded border border-gn-prompt-border px-4 py-1.5 text-[12.5px] text-gn-fg2 hover:bg-gn-bg-highlight"
+              className="min-h-9 rounded px-4 py-1.5 text-[12.5px] text-gn-fg2 hover:bg-gn-bg-highlight"
             >
               关闭
             </button>

@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { ContentBlock } from '../api/types'
 import { transport } from '../api/client'
+import { imageSrc } from './chat/format'
 import { pushToast } from './toast'
 
 /**
@@ -67,9 +68,10 @@ import { pushToast } from './toast'
 export type QueuedPrompt = {
   id: string
   /**
-   * Display text. Paste chips are expanded; image-only prompts carry the
-   * joined `[Image: …]` labels as a display fallback (the wire blocks
-   * hold the real images, never label text).
+   * The prompt's real text body — '' for an image-only prompt. Display
+   * adds one `[image …]` marker per image block (see `imageMarkerLabels`);
+   * the labels never enter this field, and the wire blocks always hold
+   * the real images.
    */
   text: string
   /** Full prompt blocks — text block first, image blocks in chip order. */
@@ -107,6 +109,83 @@ export function qid(): string {
   return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
     ? crypto.randomUUID()
     : `q_${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+/**
+ * 图片块的显示标记（纯显示层，wire 上永不出现——真图走 image ContentBlocks）：
+ * 一张 `[image]`，多张按序号区分（`[image 1] [image 2]`），顺序与 blocks
+ * 里的图片一致。agent 侧队列正文只由 text blocks 拼成，纯图片 prompt 的
+ * 权威 text 因此是空的——没有这些标记，队列行和用户行就只剩一条空行。
+ */
+export function imageMarkerLabels(blocks: ContentBlock[]): string[] {
+  let n = 0
+  for (const b of blocks) if (b.type === 'image') n++
+  if (n === 0) return []
+  return Array.from({ length: n }, (_, i) => (n === 1 ? '[image]' : `[image ${i + 1}]`))
+}
+
+/** 队列行展示正文：真正文在前，每张图一个标记在后。 */
+export function queueRowText(row: { text: string; blocks: ContentBlock[] }): string {
+  return [row.text.trim(), imageMarkerLabels(row.blocks).join(' ')]
+    .filter(Boolean)
+    .join(' ')
+}
+
+/** 用户行展示正文：正文为空但有附图时用标记兜底（不渲染空行）。 */
+export function userRowText(text: string, blocks?: ContentBlock[]): string {
+  return text.trim() || imageMarkerLabels(blocks ?? []).join(' ')
+}
+
+/** 队列行附带的图片（data URI + mime），顺序与 `imageMarkerLabels` 一致。 */
+export function queuedImages(
+  blocks: ContentBlock[],
+): { data: string; mimeType: string }[] {
+  const out: { data: string; mimeType: string }[] = []
+  for (const b of blocks) {
+    if (b.type !== 'image') continue
+    const img = b as { type: 'image'; data: string; mimeType: string }
+    const src = imageSrc(img.data, img.mimeType)
+    if (src) out.push({ data: src, mimeType: img.mimeType || 'image/png' })
+  }
+  return out
+}
+
+/** 只取 blocks 里的图片块（保持原顺序）——编辑弹窗的附图草稿就是它。 */
+export function imageBlocksOf(blocks: ContentBlock[]): ContentBlock[] {
+  return blocks.filter((b) => b.type === 'image')
+}
+
+/** 图片块的稳定身份（mime + data），用于比对附图有没有被改过。 */
+function imageKeys(blocks: ContentBlock[]): string[] {
+  return imageBlocksOf(blocks).map(
+    (b) => `${String((b as { mimeType?: unknown }).mimeType ?? '')}|${String((b as { data?: unknown }).data ?? '')}`,
+  )
+}
+
+/** 两组附图是否逐张相同（按 data + mime 比，不看 text 块）。 */
+export function sameImages(a: ContentBlock[], b: ContentBlock[]): boolean {
+  const x = imageKeys(a)
+  const y = imageKeys(b)
+  return x.length === y.length && x.every((k, i) => k === y[i])
+}
+
+/**
+ * 这条排队消息的附图现在能不能改。
+ * - degraded（RPC 失败，agent 从没见过）：能——本端 blocks 就是真身，
+ *   手动重发用的就是改后的那份。
+ * - 已确认（agent-owned）：能——保存时删旧行重新入队（见 saveEdit）。
+ * - optimistic（prompt RPC 在飞）：不能——agent 那份随时落地，换图的
+ *   remove/prompt 到达顺序没有保证，等它进队再改。
+ */
+export function canEditQueuedImages(row: QueuedPrompt): boolean {
+  return row.degraded === true || row.optimistic !== true
+}
+
+/** 附图改动的后果（弹窗里的提示文案按这个说，不含糊）。 */
+export function queuedImageEditNote(row: QueuedPrompt): string {
+  if (row.optimistic) return '这条正在发送，进队后即可增删附图'
+  if (row.degraded) return '附图改动会在手动重发时生效'
+  return '改附图会把这条重新排队（移到队尾）'
 }
 
 /** Max sessions kept in the per-session queue stash (oldest dropped). */
@@ -263,12 +342,18 @@ type PromptQueueState = {
   deletedRows: Map<string, QueuedPrompt>
   /**
    * Queue-panel edit mode (TUI PromptMode::EditingQueued): index of the
-   * row being edited. The row renders as a textarea; Enter saves, Esc
+   * row whose edit dialog is open (QueueEditModal). Enter saves, Esc
    * cancels, Shift+Enter inserts a newline.
    */
   editIndex: number | null
   /** Live draft text of the row being edited. */
   editDraft: string
+  /**
+   * 编辑中的附图草稿（只有 image blocks）。startEdit 从行本体取初值，
+   * QueueEditModal 里增删都写这里；保存时与行本体比对——变了才需要
+   * 重新入队（x.ai/queue/edit 只带正文，改不了 agent 侧的图）。
+   */
+  editImages: ContentBlock[]
   /**
    * Server-authoritative enqueue: 立即 fire-and-forget 发 session/prompt
    * （`_meta.promptId` = 行 id）→ agent 把它插进权威队列；本地插入乐观
@@ -301,6 +386,8 @@ type PromptQueueState = {
   /** Enter edit mode for queue row `index` (TUI QueueEvent::EditSelected). */
   startEdit: (index: number) => void
   setEditDraft: (text: string) => void
+  /** 编辑弹窗里的附图草稿（整份替换，只留 image blocks）。 */
+  setEditImages: (blocks: ContentBlock[]) => void
   /** Enter-save the edited row back into the queue (never blanked). */
   saveEdit: () => void
   /** Esc — discard the draft and leave edit mode. */
@@ -321,6 +408,7 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
   deletedRows: new Map(),
   editIndex: null,
   editDraft: '',
+  editImages: [],
   enqueue: (item, sessionId) => {
     const promptId = qid()
     const entry: QueuedPrompt = {
@@ -409,6 +497,7 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
         deletedRows: rememberDeleted(st.deletedRows, [row]),
         editIndex,
         editDraft: editIndex == null ? '' : st.editDraft,
+        editImages: editIndex == null ? [] : st.editImages,
       }
     })
     // 编辑中的行被删除：释放它的编辑锁（TUI combine-hold 语义），否则
@@ -439,6 +528,7 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
       queue: [],
       editIndex: null,
       editDraft: '',
+      editImages: [],
       // Keep the session tag: the departure-time stash in switchSession
       // refreshes this session's map entry with the emptied queue, so a
       // cleared queue must not resurrect from the stale stash.
@@ -485,6 +575,7 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
       sessionId: next,
       editIndex: null,
       editDraft: '',
+      editImages: [],
       sending: false,
     })
   },
@@ -492,47 +583,60 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
   startEdit: (index) => {
     const item = get().queue[index]
     if (!item) return
-    set({ editIndex: index, editDraft: item.text })
+    set({ editIndex: index, editDraft: item.text, editImages: imageBlocksOf(item.blocks) })
     // 编辑锁（TUI combine-hold 语义）：agent 在编辑期间保持队列组合。
     syncQueue(() => transport.queueHoldEdit({ id: item.id }, get().sessionId))
   },
   setEditDraft: (text) => set({ editDraft: text }),
+  setEditImages: (blocks) => set({ editImages: imageBlocksOf(blocks) }),
   saveEdit: () => {
-    const { editIndex, editDraft } = get()
+    const { editIndex, editDraft, editImages } = get()
     if (editIndex == null) return
-    const id = get().queue[editIndex]?.id
-    const sid = get().sessionId
-    const text = editDraft.trim()
-    if (!text) {
-      // TUI: an empty edit keeps the original row text — a queued prompt
-      // must never be blanked by Save (queue_edit.rs).
-      set({ editIndex: null, editDraft: '' })
-      if (id) syncQueue(() => transport.queueReleaseEdit({ id }, sid))
+    const row = get().queue[editIndex]
+    if (!row) {
+      set({ editIndex: null, editDraft: '', editImages: [] })
       return
     }
-    set((s) => ({
-      editIndex: null,
-      editDraft: '',
-      queue: s.queue.map((q, i) =>
-        i === editIndex
-          ? {
-              ...q,
-              text,
-              // Rebuild the text block; image blocks ride along.
-              blocks: [{ type: 'text', text }, ...q.blocks.slice(1)],
-            }
-          : q,
-      ),
-    }))
-    if (id) {
-      syncQueue(() => transport.queueEdit({ id, newText: text }, sid))
+    const sid = get().sessionId ?? ''
+    const id = row.id
+    const typed = editDraft.trim()
+    // TUI: an empty edit keeps the original row text — a queued prompt
+    // must never be blanked by Save (queue_edit.rs).
+    const text = typed || row.text
+    const oldImages = imageBlocksOf(row.blocks)
+    const imagesChanged = !sameImages(oldImages, editImages)
+    // 乐观回显行的附图改不动：prompt RPC 还在飞，agent 那份（旧图）随时
+    // 落地，此刻换图的 remove/prompt 到达顺序没有保证。草稿丢弃，只留正文。
+    const dropImageEdit = imagesChanged && row.optimistic
+    const images = dropImageEdit ? oldImages : editImages
+    const blocks: ContentBlock[] = [{ type: 'text', text }, ...images]
+    set({ editIndex: null, editDraft: '', editImages: [] })
+    if (dropImageEdit) pushToast('这条还在发送中，等它进入队列后再改附图')
+
+    if (imagesChanged && !row.degraded && !row.optimistic) {
+      // agent-owned：x.ai/queue/edit 只带正文，改不了 agent 手里的图块。
+      // 诚实做法是删掉旧行、用新 blocks 重新入队（新 promptId → 排到队尾；
+      // 删除若晚于 agent 出队，removeAt 的登记会照例提示「删除未生效」）。
       syncQueue(() => transport.queueReleaseEdit({ id }, sid))
+      get().removeAt(id)
+      get().enqueue({ text, blocks }, sid)
+      pushToast('附图已更新：这条重新排队到队尾')
+      return
     }
+    // 本端镜像：正文重建为 text block，附图按草稿顺序重排（degraded 行
+    // 是本端真身，手动重发用的就是这份 blocks）。
+    set((s) => ({
+      queue: s.queue.map((q, i) => (i === editIndex ? { ...q, text, blocks } : q)),
+    }))
+    if (text !== row.text) {
+      syncQueue(() => transport.queueEdit({ id, newText: text }, sid))
+    }
+    syncQueue(() => transport.queueReleaseEdit({ id }, sid))
   },
   cancelEdit: () => {
     const s = get()
     const id = s.queue[s.editIndex ?? -1]?.id
-    set({ editIndex: null, editDraft: '' })
+    set({ editIndex: null, editDraft: '', editImages: [] })
     if (id) syncQueue(() => transport.queueReleaseEdit({ id }, s.sessionId))
   },
   moveUp: (index) => get().moveTo(index, index - 1),
@@ -711,7 +815,11 @@ export function applyQueueChanged(
       const id = str(o.id) || str(o.queue_id) || ''
       if (!id) continue
       const text = str(o.text) || str(o.content) || str(o.prompt) || ''
-      if (!text) continue
+      const known = byId.get(id)
+      // 权威条目可以没有正文：agent 侧的 queue text 只由 text blocks 拼成，
+      // 纯图片 prompt 因此是空的。本地认得这个 id（乐观回显/降级行）就保留
+      // 它的正文与图片继续参与快照；无正文又不认得 → 无从展示，跳过。
+      if (!text && !known) continue
       parsed++
       // 已出队/已删除的行：stale 广播不得复活它们。
       if (drainedIds.has(id)) continue
@@ -720,7 +828,7 @@ export function applyQueueChanged(
       if (runningId && id === runningId) continue
       const version =
         num(o.version) ?? num(o.queue_version) ?? num(o.queueVersion) ?? num(o.v)
-      let existing = byId.get(id)
+      let existing = known
       if (!existing) {
         // id 未命中：按 text 认领一条尚未占用的乐观/降级行（见上方注释）。
         const hit = adoptableByText.find(
@@ -739,8 +847,12 @@ export function applyQueueChanged(
               ...existing,
               // 权威 id 以 server 为准（text 对齐时本地 id 可能不同）。
               id,
-              text,
-              blocks: [{ type: 'text', text }, ...existing.blocks.slice(1)],
+              // 无权威的正文（纯图片行）时保留本地正文，且不动 blocks——
+              // 本地那份才带真图。
+              text: text || existing.text,
+              blocks: text
+                ? [{ type: 'text', text }, ...existing.blocks.slice(1)]
+                : existing.blocks,
               // 广播确认：乐观/降级行拿到权威 version，归 agent-owned。
               optimistic: false,
               degraded: false,
@@ -794,7 +906,7 @@ export function applyQueueChanged(
       }
     }
   }
-  if (adoption && deletedRunning) settleDeletedRunning(adoption.id, adoption.text)
+  if (adoption && deletedRunning) settleDeletedRunning(adoption.id, queueRowText(adoption))
 
   if (snapshot) {
     // 本地在途行（乐观回显 / 降级，FE 侧尚悬而未决）不在快照里 → 保留
@@ -833,7 +945,13 @@ export function applyQueueChanged(
         if (editedId != null) {
           const newIdx = snapshot.findIndex((q) => q.id === editedId)
           if (newIdx === -1) {
-            return { queue: snapshot, editIndex: null, editDraft: '', ...tagged }
+            return {
+              queue: snapshot,
+              editIndex: null,
+              editDraft: '',
+              editImages: [],
+              ...tagged,
+            }
           }
           if (newIdx !== s.editIndex) {
             return { queue: snapshot, editIndex: newIdx, ...tagged }
@@ -856,6 +974,7 @@ export function applyQueueChanged(
         queue: s.queue.filter((q) => q.id !== adoption.id),
         editIndex,
         editDraft: editIndex == null ? '' : s.editDraft,
+        editImages: editIndex == null ? [] : s.editImages,
         ...tagged,
       }
     }

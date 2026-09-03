@@ -20,6 +20,7 @@ import {
   type HookRouting,
 } from './hookRouting'
 import { lifecycleEntry } from './hookAttach'
+import { userRowText } from '../promptQueue'
 
 /** Selectable row ids in display order (entries + synthetic group headers). */
 export type StreamBufKind = 'thought' | 'assistant'
@@ -147,7 +148,9 @@ export function adoptTurn(
   const userEntry = {
     id: userId,
     kind: 'user' as const,
-    text: adopted.text,
+    // 纯图片行的权威正文是空的（agent 的 queue text 只拼 text blocks）——
+    // 用每张图的标记兜底，收养出来的用户行才不是一条空白。
+    text: userRowText(adopted.text, adopted.blocks),
     ts: Date.now(),
   }
   set({

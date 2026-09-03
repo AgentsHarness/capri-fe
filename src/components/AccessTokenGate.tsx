@@ -41,7 +41,7 @@ export function AccessTokenGate({
 
   return (
     <div className="flex h-full min-h-0 flex-col items-center justify-center bg-gn-bg-base px-4 text-gn-fg font-ui">
-      <div className="w-full max-w-md rounded-xl border border-gn-prompt-border bg-gn-bg-dark p-6 shadow-lg">
+      <div className="w-full max-w-md gn-modal-panel p-6">
         <div className="mb-4 flex items-center gap-2 text-gn-cyan">
           <KeyRound className="h-5 w-5 shrink-0" aria-hidden />
           <h1 className="text-base font-medium tracking-tight">
@@ -94,7 +94,7 @@ export function AccessTokenGate({
           type="button"
           disabled={!value.trim() || submitting}
           onClick={submit}
-          className="w-full rounded-md bg-gn-blue px-3 py-2 text-[13px] font-medium text-gn-bg-base transition-opacity enabled:hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+          className="w-full rounded px-3 py-2 text-[13px] text-gn-cyan hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40"
         >
           {submitting ? '验证中…' : '进入'}
         </button>

@@ -17,20 +17,26 @@ vi.mock('../store/promptQueue', () => ({
 
 import { useChatStore } from '../store/chat'
 import { usePromptQueue } from '../store/promptQueue'
+import { useThemeStore } from '../store/theme'
 import { bumpSlashRecency } from './recency'
 import { setCachedSkills } from './skills'
+import { setCachedWorkflows } from './workflows'
 import {
   escapeSlash,
+  filterSlashArgs,
   filterSlashCommands,
   isMultilineEnabled,
   isSlashEscaped,
+  isSlashInvocationComplete,
   isSlashLiteral,
   literalSlashPayload,
   matchSlash,
   mergedSlashCommands,
   parseBudgetTokens,
+  parseSlashLine,
   registerMcpPanelOpener,
   registerModelMenuOpener,
+  slashCommandInsertText,
   slashCommands,
   unescapeSlash,
 } from './registry'
@@ -38,6 +44,7 @@ import {
 interface FakeChat {
   models: Array<Record<string, unknown>>
   modelName: string
+  reasoningEffort?: string
   conn: string
   sessionId: string | null
   cwd: string | null
@@ -84,7 +91,10 @@ interface FakeChat {
   openMemory: ReturnType<typeof vi.fn>
   memoryFlush: ReturnType<typeof vi.fn>
   rememberNote: ReturnType<typeof vi.fn>
-  workflowRuns: Record<string, { runId: string; name: string; status?: string }>
+  workflowRuns: Record<
+    string,
+    { runId: string; name: string; status?: string; script?: string }
+  >
   workflowControl: ReturnType<typeof vi.fn>
   saveWorkflowScript: ReturnType<typeof vi.fn>
 }
@@ -524,6 +534,31 @@ describe('slash command runs — /model', () => {
     fake.setModel.mockClear()
     run('model', '4') // 包含匹配
     expect(fake.setModel).toHaveBeenCalledWith('grok-4', undefined)
+  })
+
+  it('链式两 token（`<名字> <强度>`）→ 用该档位切换', () => {
+    fake.models = [
+      { modelId: 'm1', name: 'M1', reasoningEfforts: [{ id: 'low', value: 'low' }, { id: 'high', value: 'high' }] },
+      { modelId: 'm2', name: 'M2' },
+    ]
+    run('model', 'M1 high')
+    expect(fake.setModel).toHaveBeenCalledWith('m1', 'high')
+    fake.setModel.mockClear()
+    run('model', 'M1 insane')
+    expect(fake.setModel).not.toHaveBeenCalled()
+    expect(fake.appendLocalEntry).toHaveBeenCalledWith({
+      kind: 'error',
+      text: expect.stringContaining('不支持强度'),
+    })
+    fake.appendLocalEntry.mockClear()
+    // 名字里带空格时整串精确匹配优先，不会被拆成 `<短名> <强度>`
+    fake.models = [
+      { modelId: 'm1', name: 'M1', reasoningEfforts: [{ id: 'low', value: 'low' }] },
+      { modelId: 'm1p', name: 'M1 high', reasoningEfforts: [{ id: 'low', value: 'low' }] },
+    ]
+    fake.setModel.mockClear()
+    run('model', 'M1 high')
+    expect(fake.setModel).toHaveBeenCalledWith('m1p', 'low')
   })
 
   it('未找到 → error 行（有/无可用模型）', () => {
@@ -975,5 +1010,225 @@ describe('slash 菜单 recency + skills 分组（TUI 1.0.9 对齐）', () => {
     expect(aIdx).toBeGreaterThan(settingsIdx)
     expect(zIdx).toBeGreaterThan(aIdx)
     setCachedSkills([])
+  })
+})
+
+describe('parseSlashLine（参数阶段的行切分）', () => {
+  it('无分隔符 → inCommand，argsStart 落在行尾', () => {
+    const p = parseSlashLine('/effort')
+    expect(p?.cmd.name).toBe('effort')
+    expect(p?.inCommand).toBe(true)
+    expect(p?.args).toBe('')
+    expect(p?.argsStart).toBe(7)
+  })
+
+  it('有分隔符 → 给出参数文本与其起始下标（含多空格）', () => {
+    const p = parseSlashLine('/effort   high')
+    expect(p?.inCommand).toBe(false)
+    expect(p?.args).toBe('high')
+    expect(p?.argsStart).toBe(10)
+  })
+
+  it('别名与 agent 命令都解析；未知首词 / 非命令行为 null', () => {
+    expect(parseSlashLine('/mem on')?.cmd.name).toBe('memory')
+    fake.agentCommands = [{ name: 'deploy', description: 'd' }]
+    expect(parseSlashLine('/deploy prod')?.cmd.name).toBe('deploy')
+    fake.agentCommands = []
+    expect(parseSlashLine('/nope x')).toBeNull()
+    expect(parseSlashLine('hello')).toBeNull()
+    expect(parseSlashLine('/')).toBeNull()
+  })
+})
+
+describe('isSlashInvocationComplete（两位完备性模型）', () => {
+  it('参数必需且为空 → 不完备（Enter 该补全而不是执行）', () => {
+    expect(isSlashInvocationComplete('/effort')).toBe(false)
+    expect(isSlashInvocationComplete('/effort ')).toBe(false)
+    expect(isSlashInvocationComplete('/effort high')).toBe(true)
+    expect(isSlashInvocationComplete('/model')).toBe(false)
+    expect(isSlashInvocationComplete('/loop')).toBe(false)
+    expect(isSlashInvocationComplete('/loop 5m')).toBe(true)
+  })
+
+  it('参数可选 / 无参命令 / 未知命令 → 完备', () => {
+    expect(isSlashInvocationComplete('/theme')).toBe(true)
+    expect(isSlashInvocationComplete('/new')).toBe(true)
+    // compact 收参数但无候选列表，空参仍执行
+    expect(isSlashInvocationComplete('/compact')).toBe(true)
+    expect(isSlashInvocationComplete('/nope')).toBe(true)
+  })
+})
+
+describe('filterSlashArgs（二级候选的过滤）', () => {
+  it('命令阶段 / 无候选命令 / 未知命令 → 空', () => {
+    expect(filterSlashArgs('/effort')).toEqual([])
+    expect(filterSlashArgs('/compact x')).toEqual([])
+    expect(filterSlashArgs('/nope x')).toEqual([])
+  })
+
+  it('空参数查询 → 按 builder 顺序全列', () => {
+    const rows = filterSlashArgs('/memory ')
+    expect(rows.map((r) => r.arg.insertText)).toEqual(['on', 'off'])
+    expect(rows.every((r) => r.score === 0)).toBe(true)
+  })
+
+  it('前缀命中排在包含命中之前', () => {
+    fake.models = [
+      { modelId: 'm1', name: 'M1', reasoningEfforts: [{ id: 'low', value: 'low' }, { id: 'xhigh', value: 'xhigh' }] },
+    ]
+    fake.modelName = 'm1'
+    expect(filterSlashArgs('/effort high').map((r) => r.arg.insertText)).toEqual(['xhigh'])
+    expect(filterSlashArgs('/effort lo').map((r) => r.arg.insertText)).toEqual(['low'])
+  })
+
+  it('链式行的 matchText 带已输入的头部，整段参数仍能匹配', () => {
+    fake.models = [{ modelId: 'm1', name: 'M1', reasoningEfforts: [{ id: 'high', value: 'high' }] }]
+    fake.modelName = 'm1'
+    const rows = filterSlashArgs('/model M1 hi')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.arg.insertText).toBe('M1 high')
+  })
+})
+
+describe('suggestArgs — 各命令的候选来源', () => {
+  const items = (line: string) => filterSlashArgs(line).map((r) => r.arg)
+  const cmd = (name: string) => slashCommands.find((c) => c.name === name)
+
+  it('/effort 用当前模型提供的档位，不是硬编码四级', () => {
+    fake.models = [
+      {
+        modelId: 'm1',
+        name: 'M1',
+        reasoningEfforts: [
+          { id: 'deep', label: 'Deep', value: 'xhigh', default: true },
+          { id: 'low', label: 'Low', value: 'low' },
+        ],
+      },
+    ]
+    fake.modelName = 'm1'
+    fake.reasoningEffort = 'low'
+    const rows = cmd('effort')!.suggestArgs!('')
+    expect(rows.map((r) => r.insertText)).toEqual(['xhigh', 'low'])
+    expect(rows[1]?.display).toBe('Low (active)')
+    expect(rows[0]?.description).toBe('默认档')
+  })
+
+  it('/effort 校验改走模型档位（id 不再被硬编码白名单拒掉）', () => {
+    fake.models = [{ modelId: 'm1', name: 'M1', reasoningEfforts: [{ id: 'deep', value: 'xhigh' }] }]
+    fake.modelName = 'm1'
+    run('effort', 'xhigh')
+    expect(fake.setModel).toHaveBeenCalledWith('m1', 'xhigh')
+    fake.setModel.mockClear()
+    run('effort', 'medium')
+    expect(fake.appendLocalEntry).toHaveBeenCalledWith({
+      kind: 'error',
+      text: expect.stringContaining('不支持强度'),
+    })
+  })
+
+  it('/model 先列模型，选中推理模型后转强度档', () => {
+    fake.models = [
+      { modelId: 'm1', name: 'M1', reasoningEfforts: [{ id: 'low', value: 'low' }, { id: 'high', value: 'high' }] },
+      { modelId: 'm2', name: 'M2' },
+    ]
+    fake.modelName = 'm2'
+    const first = items('/model ')
+    expect(first.map((a) => a.insertText)).toEqual(['M1 ', 'M2'])
+    expect(first[0]?.display).toBe('M1')
+    expect(first[1]?.display).toBe('M2 (current)')
+    expect(items('/model M1 ').map((a) => a.insertText)).toEqual(['M1 low', 'M1 high'])
+    // 非推理模型不带尾空格 → 选中即执行
+    expect(items('/model M2')[0]?.insertText).toBe('M2')
+  })
+
+  it('/theme auto 置顶并标 (active)', () => {
+    useThemeStore.getState().setTheme('grokday')
+    const rows = items('/theme ')
+    expect(rows[0]?.insertText).toBe('auto')
+    expect(rows.find((r) => r.display.includes('(active)'))?.insertText).toBe('grokday')
+  })
+
+  it('/rename 只在参数为空时给当前标题一条', () => {
+    fake.sessionTitle = 'Fix Login Bug'
+    expect(items('/rename ').map((a) => a.insertText)).toEqual(['Fix Login Bug'])
+    expect(items('/rename Fix L')).toEqual([])
+    fake.sessionTitle = null
+    expect(items('/rename ')).toEqual([])
+  })
+
+  it('/fork 与 /multiline /memory 给封闭集合', () => {
+    expect(items('/fork ').map((a) => a.insertText)).toEqual(['--worktree', '--no-worktree'])
+    expect(items('/multiline ').map((a) => a.insertText)).toEqual(['on', 'off'])
+    expect(items('/goal ').map((a) => a.insertText)).toEqual([
+      'status',
+      'pause',
+      'resume',
+      'clear',
+    ])
+  })
+
+  it('/loop 间隔候选带尾空格（正文接着打）', () => {
+    const rows = items('/loop ')
+    expect(rows.length).toBeGreaterThan(3)
+    expect(rows.every((r) => r.insertText.endsWith(' '))).toBe(true)
+    expect(rows[1]?.insertText).toBe('5m ')
+    expect(rows[1]?.description).toBe('5 分钟')
+    // 已经有第二个 token 就不再列间隔
+    expect(items('/loop 5m 检查')).toEqual([])
+  })
+
+  it('/workflow 三层：动词+目录 → 该动词可作用的 run → launch 旗标', () => {
+    setCachedWorkflows([
+      { name: 'review-pr', description: '审 PR', source: 'file' },
+    ])
+    fake.workflowRuns = {
+      r1: { runId: 'r1', name: 'deep-research', status: 'active' },
+      r2: { runId: 'r2', name: 'boost-coverage', status: 'user_paused', script: 'x' },
+    }
+    const first = items('/workflow ')
+    expect(first.map((a) => a.insertText)).toEqual([
+      'review-pr ',
+      'runs',
+      'pause ',
+      'resume ',
+      'stop ',
+      'save ',
+    ])
+    // pause 只列 active 的 run；save 只列有脚本的
+    expect(items('/workflow pause ').map((a) => a.insertText)).toEqual([
+      'pause deep-research',
+    ])
+    expect(items('/workflow save ').map((a) => a.insertText)).toEqual(['save boost-coverage'])
+    expect(items('/workflow pause dee').map((a) => a.insertText)).toEqual([
+      'pause deep-research',
+    ])
+    // 已安装名之后给旗标
+    expect(items('/workflow review-pr ').map((a) => a.insertText)).toEqual([
+      'review-pr --agent-budget ',
+      'review-pr --effort ',
+    ])
+    // --effort 的取值走当前模型的档位，并带已输入的头部
+    fake.models = [
+      { modelId: 'm1', name: 'M1', reasoningEfforts: [{ id: 'low', value: 'low' }, { id: 'high', value: 'high' }] },
+    ]
+    fake.modelName = 'm1'
+    expect(items('/workflow review-pr --effort ').map((a) => a.insertText)).toEqual([
+      'review-pr --effort low',
+      'review-pr --effort high',
+    ])
+    expect(items('/workflow review-pr --effort h').map((a) => a.insertText)).toEqual([
+      'review-pr --effort high',
+    ])
+    setCachedWorkflows([])
+    fake.workflowRuns = {}
+  })
+})
+
+describe('slashCommandInsertText（尾空格 = 进下一层）', () => {
+  it('takes-args 的命令补成 `/name `，无参命令不带空格', () => {
+    expect(slashCommandInsertText(slashCommands.find((c) => c.name === 'effort')!)).toBe(
+      '/effort ',
+    )
+    expect(slashCommandInsertText(slashCommands.find((c) => c.name === 'new')!)).toBe('/new')
   })
 })

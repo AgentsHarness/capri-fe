@@ -1,6 +1,6 @@
 import type { ContentBlock } from '../../api/types'
 import { transport, AgentTurnError } from '../../api/client'
-import { qid, usePromptQueue } from '../promptQueue'
+import { qid, userRowText, usePromptQueue } from '../promptQueue'
 import type { ChatState, SetState } from './types'
 import { nid } from './ids'
 import {
@@ -110,7 +110,9 @@ export async function sendPrompt(
     const userEntry = {
       id: userId,
       kind: 'user' as const,
-      text: t,
+      // 正文为空但有附图（纯图片 prompt）时按每张图给一个 `[image]` 标记，
+      // 用户行才不是一条空白；wire 上发的仍是真 blocks，标记不外传。
+      text: userRowText(t, blocks),
       ts: Date.now(),
       ...(opts?.fromShell ? { isShell: true } : {}),
     }

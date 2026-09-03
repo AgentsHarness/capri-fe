@@ -54,7 +54,7 @@ export function ToastStack() {
       {toasts.map((t) => (
         <div
           key={t.id}
-          className="pointer-events-auto flex items-start gap-2 rounded border border-gn-prompt-border bg-gn-bg-dark px-3 py-2 shadow-lg"
+          className="pointer-events-auto flex items-start gap-2 gn-menu px-3 py-2"
         >
           <span className="mt-px shrink-0 text-[11px] leading-none text-gn-green">✓</span>
           <span className="min-w-0 flex-1 truncate text-[12px] text-gn-fg" title={t.text}>

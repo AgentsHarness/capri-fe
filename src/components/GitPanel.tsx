@@ -428,7 +428,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/55 backdrop-blur-[1px] p-4"
+      className="fixed inset-0 z-50 flex items-start justify-center gn-modal-dim p-4"
       role="dialog"
       aria-modal="true"
       aria-label="git"
@@ -439,9 +439,9 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
       <div
         ref={panelRef}
         tabIndex={-1}
-        className="mt-8 flex max-h-[80vh] w-full max-w-[840px] flex-col rounded border border-gn-prompt-border-active bg-gn-bg-base shadow-2xl outline-none"
+        className="mt-8 flex max-h-[80vh] w-full max-w-[840px] flex-col gn-modal-panel"
       >
-        <header className="flex items-center gap-2 rounded-t border-b border-gn-prompt-border bg-gn-bg-dark px-4 py-2.5">
+        <header className="gn-modal-header">
           <span className="text-[13px] font-bold text-gn-fg">git</span>
           {branch ? (
             <span className="flex min-w-0 items-center gap-1 truncate font-mono text-[12px] text-gn-cyan" title={branch}>
@@ -495,7 +495,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
             <button
               type="button"
               onClick={() => void refresh()}
-              className="mt-2 rounded border border-gn-prompt-border px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+              className="mt-2 rounded px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
             >
               重试
             </button>
@@ -529,11 +529,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                         type="button"
                         disabled={busy || b.current === true}
                         onClick={() => onCheckoutClick(b)}
-                        className={`flex w-full items-center gap-1.5 rounded px-1.5 py-[3px] text-left font-mono text-[11px] disabled:cursor-default ${
-                          b.current
-                            ? 'text-gn-green'
-                            : 'text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-60'
-                        }`}
+                        className={`flex w-full items-center gap-1.5 rounded px-1.5 py-[3px] text-left font-mono text-[11px] disabled:cursor-default ${ b.current ? 'text-gn-green' : 'text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-60' }`}
                         title={
                           b.current
                             ? '当前分支'
@@ -626,11 +622,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                         type="button"
                         disabled={busy}
                         onClick={(e) => onDiscardClick(e, row)}
-                        className={`rounded px-1 py-0.5 text-[10px] disabled:opacity-40 ${
-                          armed
-                            ? 'bg-gn-diff-del-bg text-gn-red'
-                            : 'text-gn-red opacity-60 hover:bg-gn-diff-del-bg hover:opacity-100'
-                        }`}
+                        className={`rounded px-1 py-0.5 text-[10px] disabled:opacity-40 ${ armed ? 'bg-gn-diff-del-bg text-gn-red' : 'text-gn-red opacity-60 hover:bg-gn-diff-del-bg hover:opacity-100' }`}
                         title={
                           armed
                             ? '再点一次确认丢弃更改（2 秒内）'
@@ -687,7 +679,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
           </div>
         )}
 
-        <footer className="rounded-b border-t border-gn-prompt-border px-4 py-2">
+        <footer className="gn-modal-footer">
           <div className="flex items-center gap-2">
             <input
               type="text"
@@ -738,7 +730,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                   if (ok) setCommitMsg('')
                 })
               }}
-              className="shrink-0 rounded border border-gn-green/50 bg-gn-bg-base px-3 py-1 text-[12px] text-gn-fg hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40"
+              className="shrink-0 rounded bg-gn-bg-base px-3 py-1 text-[12px] text-gn-fg hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40"
               title="提交暂存区的更改（x.ai/git/commit）"
             >
               commit
@@ -747,7 +739,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
               type="button"
               disabled={busy}
               onClick={onStashClick}
-              className="shrink-0 rounded border border-gn-yellow/40 bg-gn-bg-base px-3 py-1 text-[12px] text-gn-fg hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40"
+              className="shrink-0 rounded bg-gn-bg-base px-3 py-1 text-[12px] text-gn-fg hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40"
               title="git stash — 暂存全部未提交更改（x.ai/git/stash）"
             >
               stash

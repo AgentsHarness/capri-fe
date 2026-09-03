@@ -257,3 +257,60 @@ describe('TUI 行头复刻（surface / 名词改写）', () => {
     r.unmount()
   })
 })
+
+// host 在裁正文前折进行头标记的数字（_meta.lite.edits / .files），
+// 折叠行在 lite 档就能显示 (+N/−M) 与 (N matches in M files)。
+describe('lite 标记兜底折叠行后缀（store → DOM）', () => {
+  function liteRow(over: Partial<Extract<ScrollEntry, { kind: 'tool' }>>): ScrollEntry {
+    return {
+      id: `t-${Math.random().toString(36).slice(2, 8)}`,
+      kind: 'tool',
+      verb: 'v',
+      status: 'completed',
+      title: '',
+      ...over,
+    } as ScrollEntry
+  }
+
+  it('edit 正文被裁 → 折叠行仍显示 (+70/−3)', () => {
+    const text = renderHeader(
+      liteRow({
+        kindName: 'edit',
+        toolCallId: 'e1',
+        msgSeq: 177,
+        msgSeqEnd: 177,
+        liteOmitted: 29944,
+        raw: {
+          toolCallId: 'e1',
+          kind: 'edit',
+          status: 'completed',
+          title: 'Edit `/a/historyFill.ts`',
+          rawInput: { file_path: '/a/historyFill.ts' },
+          rawOutput: { type: 'SearchReplace', EditsApplied: { absolute_path: '/a/historyFill.ts' } },
+          _meta: { lite: { omitted: 29944, msgSeqEnd: 177, edits: { ins: 70, del: 3 } } },
+        } as unknown as ToolCall,
+      }),
+    )
+    expect(text).toContain('(+70/−3)')
+  })
+
+  it('grep 正文被裁 → 折叠行仍显示 (55 matches in 13 files)', () => {
+    const text = renderHeader(
+      liteRow({
+        kindName: 'search',
+        toolCallId: 'g1',
+        liteOmitted: 25486,
+        raw: {
+          toolCallId: 'g1',
+          kind: 'search',
+          status: 'completed',
+          title: 'grep lite',
+          rawInput: { pattern: 'lite', glob: '*.{ts,tsx}' },
+          rawOutput: { type: 'GrepSearch', match_count: 55 },
+          _meta: { lite: { omitted: 25486, files: 13 } },
+        } as unknown as ToolCall,
+      }),
+    )
+    expect(text).toContain('(55 matches in 13 files)')
+  })
+})

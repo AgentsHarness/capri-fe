@@ -134,7 +134,7 @@ export function EmptyStatePicker() {
                     type="button"
                     disabled={creating}
                     onClick={() => void handleCreate()}
-                    className="inline-flex items-center gap-1.5 rounded border border-gn-cyan/50 px-3 py-1 text-[12px] text-gn-cyan transition-colors hover:bg-gn-bg-highlight disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent"
+                    className="inline-flex items-center gap-1.5 rounded px-3 py-1 text-[12px] text-gn-cyan transition-colors hover:bg-gn-bg-highlight disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent"
                     title="为当前目录新建 git worktree，并把新会话的工作目录切到 worktree 上"
                   >
                     <svg
@@ -197,7 +197,7 @@ export function EmptyStatePicker() {
                   <button
                     type="button"
                     onClick={() => void handleCreate()}
-                    className="rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                    className="rounded px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
                   >
                     重试
                   </button>

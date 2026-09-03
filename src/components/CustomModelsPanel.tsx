@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Plus, Search, Zap } from 'lucide-react'
 import { transport } from '../api/client'
 import type { CustomModelConfig } from '../api/types'
 import { pushToast } from '../store/toast'
 import { Glyphs } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
+import { QuickAddModelsModal } from './QuickAddModelsModal'
 
 /**
  * 自定义模型面板（settings 内）—— `[model.<id>]` 可视化编辑。
@@ -48,6 +50,20 @@ export function CustomModelsPanel() {
   const [editing, setEditing] = useState<CustomModelConfig | null>(null)
   const [saving, setSaving] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const [quickAddOpen, setQuickAddOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+
+  const filteredModels = useMemo(() => {
+    if (!searchQuery.trim()) return models
+    const q = searchQuery.trim().toLowerCase()
+    return models.filter(
+      (m) =>
+        m.id.toLowerCase().includes(q) ||
+        (m.model && m.model.toLowerCase().includes(q)) ||
+        (m.name && m.name.toLowerCase().includes(q)) ||
+        (m.base_url && m.base_url.toLowerCase().includes(q)),
+    )
+  }, [models, searchQuery])
 
   const refresh = useCallback(async () => {
     try {
@@ -64,11 +80,30 @@ export function CustomModelsPanel() {
     void refresh()
   }, [refresh])
 
-  const save = async (cfg: CustomModelConfig) => {
+  const save = async (cfg: CustomModelConfig, oldId?: string) => {
     setSaving(true)
     try {
+      const isRename = Boolean(oldId && oldId !== cfg.id)
+      let defaultCleared = false
+      if (isRename && oldId) {
+        const delRes = await transport.deleteCustomModel(oldId)
+        defaultCleared = Boolean(delRes?.defaultCleared)
+      }
       await transport.upsertCustomModel(cfg)
-      pushToast(cfg.name || cfg.id ? `已保存自定义模型「${cfg.name || cfg.id}」` : '已保存')
+      if (defaultCleared) {
+        try {
+          await transport.setDefaultModel(cfg.id, cfg.reasoning_effort)
+        } catch {
+          // 忽略默认模型重设失败，模型配置本身已保存成功
+        }
+      }
+      pushToast(
+        isRename
+          ? `已更新模型 id 并保存「${cfg.name || cfg.id}」`
+          : cfg.name || cfg.id
+            ? `已保存自定义模型「${cfg.name || cfg.id}」`
+            : '已保存',
+      )
       setEditing(null)
       void refresh()
     } catch (e) {
@@ -99,13 +134,25 @@ export function CustomModelsPanel() {
         <span className="text-[10px] uppercase tracking-wider text-gn-gutter">
           [model.*] 自定义模型（BYOK）
         </span>
-        <button
-          type="button"
-          onClick={() => setEditing({ id: '' })}
-          className="rounded border border-gn-prompt-border px-2 py-px text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg"
-        >
-          ＋ 新增模型
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => setEditing({ id: '' })}
+            className="flex items-center gap-1 rounded px-2 py-px text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg"
+          >
+            <Plus className="h-3 w-3 text-gn-gutter" />
+            <span>新增模型</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setQuickAddOpen(true)}
+            className="flex items-center gap-1 rounded px-2 py-px text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg"
+            title="从已有或自定义端点拉取 /v1/models 批量添加"
+          >
+            <Zap className="h-3 w-3 text-gn-cyan" />
+            <span>快速添加</span>
+          </button>
+        </div>
       </div>
 
       {editing ? (
@@ -117,7 +164,7 @@ export function CustomModelsPanel() {
           onSave={save}
         />
       ) : (
-        <div className="px-4 pb-2">
+        <div className="px-4 pb-2 space-y-1.5">
           {loading ? (
             <div className="py-2 text-[11.5px] text-gn-muted">加载中…</div>
           ) : error ? (
@@ -132,72 +179,119 @@ export function CustomModelsPanel() {
               </button>
             </div>
           ) : models.length === 0 ? (
-            <div className="py-2 text-[11.5px] text-gn-muted">
-              暂无自定义模型。新增后写入 ~/.grok/config.toml，agent 热加载后生效。
+            <div className="rounded border border-gn-prompt-border/40 bg-gn-bg-dark/30 p-3 text-center text-[11.5px] text-gn-muted">
+              暂无自定义模型。点击上方「＋ 新增模型」或「⚡ 快速添加」写入 ~/.grok/config.toml，agent 热加载后生效。
             </div>
           ) : (
-            models.map((m) => (
-              <div
-                key={m.id}
-                className="flex items-center gap-2 rounded border border-gn-prompt-border/40 px-2.5 py-1.5 odd:bg-gn-bg-dark/40"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-[12px] font-medium text-gn-fg">
-                    {m.name || m.id}
-                    {m.name && m.name !== m.id ? (
-                      <span className="ml-1.5 font-mono text-[10.5px] text-gn-gutter">
-                        {m.id}
-                      </span>
-                    ) : null}
+            <>
+              {/* 工具栏：统计与快速搜索 */}
+              <div className="flex items-center justify-between gap-2 text-[10.5px]">
+                <span className="text-gn-gutter">
+                  {searchQuery ? (
+                    <>
+                      找到 <span className="font-semibold text-gn-fg">{filteredModels.length}</span> / {models.length} 个模型
+                    </>
+                  ) : (
+                    <>
+                      已配置 <span className="font-semibold text-gn-fg">{models.length}</span> 个模型
+                    </>
+                  )}
+                </span>
+                {models.length >= 3 && (
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-1.5 top-1/2 -translate-y-1/2 h-3 w-3 text-gn-gutter" />
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="搜索模型、Slug 或 Base URL…"
+                      className="w-44 rounded border border-gn-prompt-border bg-gn-bg-dark pl-5 pr-2 py-0.5 text-[10.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active placeholder:text-gn-gutter"
+                    />
                   </div>
-                  <div className="truncate font-mono text-[10.5px] text-gn-muted">
-                    {m.model} · {m.base_url}
-                  </div>
-                </div>
-                {confirmDelete === m.id ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => void del(m.id)}
-                      className="rounded border border-gn-red/50 px-2 py-0.5 text-[11px] text-gn-red hover:bg-gn-diff-del-bg"
-                    >
-                      确认删除
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmDelete(null)}
-                      className="rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-muted hover:text-gn-fg"
-                    >
-                      取消
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => setEditing({ ...m })}
-                      className="rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg"
-                    >
-                      编辑
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmDelete(m.id)}
-                      className="rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-muted hover:border-gn-red/50 hover:text-gn-red"
-                    >
-                      删除
-                    </button>
-                  </>
                 )}
               </div>
-            ))
+
+              {/* 列表项 */}
+              {filteredModels.length === 0 ? (
+                <div className="py-3 text-center text-[11px] text-gn-muted">
+                  没有匹配的自定义模型
+                </div>
+              ) : (
+                <div className="overflow-hidden rounded border border-gn-prompt-border/40 divide-y divide-gn-prompt-border/25 bg-gn-bg-dark/25">
+                  {filteredModels.map((m) => (
+                    <div
+                      key={m.id}
+                      className="flex items-center justify-between gap-2 px-2.5 py-1.5 transition-colors hover:bg-gn-bg-highlight/30"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[12px] font-medium leading-snug text-gn-fg">
+                          {m.name || m.id}
+                        </div>
+                        <div
+                          className="truncate font-mono text-[10.5px] leading-tight text-gn-muted"
+                          title={`${m.model} · ${m.base_url}`}
+                        >
+                          {m.model} · {m.base_url}
+                        </div>
+                      </div>
+
+                      {/* 右侧：操作按钮 */}
+                      <div className="flex shrink-0 items-center gap-1">
+                        {confirmDelete === m.id ? (
+                          <div className="flex items-center gap-1">
+                            <span className="text-[10px] text-gn-red">确定删除？</span>
+                            <button
+                              type="button"
+                              onClick={() => void del(m.id)}
+                              className="rounded bg-gn-diff-del-bg px-1.5 py-0.5 text-[10.5px] font-medium text-gn-red hover:bg-gn-red/20"
+                            >
+                              确定
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDelete(null)}
+                              className="rounded px-1.5 py-0.5 text-[10.5px] text-gn-muted hover:text-gn-fg"
+                            >
+                              取消
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => setEditing({ ...m })}
+                              className="rounded border border-gn-prompt-border/50 px-1.5 py-0.5 text-[10.5px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg"
+                            >
+                              编辑
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDelete(m.id)}
+                              className="rounded border border-gn-prompt-border/50 px-1.5 py-0.5 text-[10.5px] text-gn-muted hover:border-gn-red/50 hover:text-gn-red"
+                            >
+                              删除
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
           )}
-          <p className="mt-1.5 text-[10px] leading-relaxed text-gn-gutter">
-            必填：id（配置节键）、model（路由 slug）、base_url。保存/删除后 host 会调
-            x.ai/internal/reload_models 让 agent 立即重载模型目录（无需重启），
-            新模型几秒内出现在模型列表；已存在模型整节替换。
-          </p>
         </div>
+      )}
+
+      {quickAddOpen && (
+        <QuickAddModelsModal
+          isOpen={quickAddOpen}
+          onClose={() => setQuickAddOpen(false)}
+          existingModels={models}
+          onAdded={() => {
+            void refresh()
+          }}
+        />
       )}
     </section>
   )
@@ -216,7 +310,7 @@ function ModelForm({
   saving: boolean
   models: CustomModelConfig[]
   onCancel: () => void
-  onSave: (cfg: CustomModelConfig) => void
+  onSave: (cfg: CustomModelConfig, oldId?: string) => void
 }) {
   const [d, setD] = useState<CustomModelConfig>(initial)
   // 高级区默认收起；编辑已含高级字段的模型时自动展开，避免"看不见已配置项"。
@@ -225,11 +319,16 @@ function ModelForm({
   )
   const advancedCount = ADVANCED_KEYS.filter((k) => isSet(d[k])).length
   const isNew = !initial.id
-  // 相同 id 只能配置一个（grok 目录按 key 合并，重复 id 后者覆盖前者）；
-  // 相同 routing slug 也只能配置一个（默认模型按 slug 匹配取第一个）。
-  const idCollision = isNew && models.some((m) => m.id === d.id)
+  const trimmedId = d.id.trim()
+  const trimmedModel = d.model?.trim() ?? ''
+  const trimmedBaseUrl = d.base_url?.trim() ?? ''
+  // 相同 id 只能配置一个（排除当前编辑模型自身）；
+  // 相同 routing slug 也只能配置一个（排除当前编辑模型自身）。
+  const idCollision = models.some(
+    (m) => m.id !== initial.id && m.id === trimmedId,
+  )
   const slugCollision = models.some(
-    (m) => m.id !== d.id && !!m.model && m.model === d.model,
+    (m) => m.id !== initial.id && !!m.model && m.model === trimmedModel,
   )
   const blocked = idCollision || slugCollision
   const set = <K extends keyof CustomModelConfig,>(k: K, v: CustomModelConfig[K]) =>
@@ -250,7 +349,6 @@ function ModelForm({
           <input
             className={inputCls}
             value={d.id}
-            disabled={!isNew}
             onChange={(e) => set('id', e.target.value)}
             placeholder="my-model"
           />
@@ -513,30 +611,32 @@ function ModelForm({
       <div className="mt-3 flex items-center gap-2">
         <button
           type="button"
-          disabled={saving || blocked || !d.id.trim() || !d.model?.trim() || !d.base_url?.trim()}
-          onClick={() => void onSave(d)}
-          className="rounded border border-gn-prompt-border-active bg-gn-bg-highlight px-3 py-1 text-[12px] font-medium text-gn-fg hover:bg-gn-bg-hover disabled:cursor-not-allowed disabled:opacity-40"
+          disabled={saving || blocked || !trimmedId || !trimmedModel || !trimmedBaseUrl}
+          onClick={() => void onSave({ ...d, id: trimmedId }, initial.id || undefined)}
+          className="rounded bg-gn-bg-highlight px-3 py-1 text-[12px] font-medium text-gn-fg hover:bg-gn-bg-hover disabled:cursor-not-allowed disabled:opacity-40"
         >
           {saving ? '保存中…' : isNew ? '新增' : '保存修改'}
         </button>
         <button
           type="button"
           onClick={onCancel}
-          className="rounded border border-gn-prompt-border px-3 py-1 text-[12px] text-gn-muted hover:text-gn-fg"
+          className="rounded px-3 py-1 text-[12px] text-gn-muted hover:text-gn-fg"
         >
           取消
         </button>
         {idCollision ? (
           <span className="text-[10.5px] text-gn-red">
-            id「{d.id}」已存在——相同模型只能配置一个，请直接编辑现有条目
+            id「{trimmedId}」已存在——相同模型只能配置一个，请直接编辑现有条目
           </span>
         ) : slugCollision ? (
           <span className="text-[10.5px] text-gn-red">
-            model（路由 slug）「{d.model}」已被其他条目使用，不能重复配置
+            model（路由 slug）「{trimmedModel}」已被其他条目使用，不能重复配置
           </span>
         ) : (
           <span className="text-[10.5px] text-gn-gutter">
-            保存=整节替换 `[model.{d.id || '…'}]`
+            {initial.id && initial.id !== trimmedId
+              ? `保存=重命名 [model.${initial.id}] → [model.${trimmedId || '…'}]`
+              : `保存=整节替换 \`[model.${trimmedId || '…'}]\``}
           </span>
         )}
       </div>
@@ -677,7 +777,7 @@ function KVEditor({
       <button
         type="button"
         onClick={() => onChange({ ...(value ?? {}), [`k${entries.length + 1}`]: '' })}
-        className="rounded border border-gn-prompt-border px-2 py-px text-[10.5px] text-gn-muted hover:text-gn-fg"
+        className="rounded px-2 py-px text-[10.5px] text-gn-muted hover:text-gn-fg"
       >
         ＋ 添加键值
       </button>
@@ -771,7 +871,7 @@ function EffortListEditor({
       <button
         type="button"
         onClick={() => update([...rows, { value: '', label: '', default: false }])}
-        className="rounded border border-gn-prompt-border px-2 py-px text-[10.5px] text-gn-muted hover:text-gn-fg"
+        className="rounded px-2 py-px text-[10.5px] text-gn-muted hover:text-gn-fg"
       >
         ＋ 添加档位
       </button>

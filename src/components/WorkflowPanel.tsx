@@ -187,7 +187,7 @@ export function WorkflowPanel() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/55 backdrop-blur-[1px] p-4"
+      className="fixed inset-0 z-50 flex items-start justify-center gn-modal-dim p-4"
       role="dialog"
       aria-modal="true"
       aria-label="workflows"
@@ -198,9 +198,9 @@ export function WorkflowPanel() {
       <div
         ref={panelRef}
         tabIndex={-1}
-        className="mt-8 w-full max-w-[560px] rounded border border-gn-prompt-border-active bg-gn-bg-base shadow-2xl outline-none"
+        className="mt-8 w-full max-w-[560px] gn-modal-panel"
       >
-        <header className="flex items-center gap-2 rounded-t border-b border-gn-prompt-border bg-gn-bg-dark px-4 py-2.5">
+        <header className="gn-modal-header">
           <span className="font-mono text-[13px] font-bold text-gn-fg">/workflows</span>
           <span className="min-w-0 truncate text-[11px] text-gn-muted">
             {detailRun
@@ -326,9 +326,9 @@ function agentGlyph(state?: string) {
 }
 
 const ctlBtn =
-  'rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40'
+  'rounded px-2 py-0.5 text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40'
 const dangerBtn =
-  'rounded border border-gn-red/40 px-2 py-0.5 text-[11px] text-gn-red opacity-80 hover:bg-gn-diff-del-bg hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40'
+  'rounded px-2 py-0.5 text-[11px] text-gn-red opacity-80 hover:bg-gn-diff-del-bg hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40'
 
 function RunRow({
   run,
@@ -345,7 +345,7 @@ function RunRow({
   return (
     <div
       className={`cursor-pointer border-b border-gn-prompt-border/50 px-4 py-2 last:border-b-0 ${
-        selected ? 'bg-gn-bg-highlight' : ''
+ selected ? 'bg-gn-bg-highlight' : ''
       }`}
       onClick={onOpen}
       title="点击或 Enter 查看运行详情"
@@ -532,7 +532,7 @@ function RunDetail({ run }: { run: WorkflowRun }) {
                 <div
                   key={ph.title}
                   className={`flex items-center gap-2 font-mono text-[11px] ${
-                    current ? 'text-gn-plan' : 'text-gn-muted'
+ current ? 'text-gn-plan' : 'text-gn-muted'
                   }`}
                 >
                   <span className="w-4 shrink-0" aria-hidden>

@@ -235,7 +235,7 @@ function StdoutPanel({
         <div
           key={i}
           className={`px-2 font-mono text-[12px] leading-[1.4] whitespace-pre-wrap break-all ${
-            line.startsWith('… +') ? 'text-gn-muted' : 'text-gn-fg'
+ line.startsWith('… +') ? 'text-gn-muted' : 'text-gn-fg'
           }`}
         >
           {line.startsWith('… +') ? (

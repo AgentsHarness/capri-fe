@@ -395,6 +395,36 @@ describe('TopBar', () => {
     expect(useChatStore.getState().openSettings).toHaveBeenCalled()
   })
 
+  it('桌面操作按钮：对应面板打开时共用选中高亮；再点关闭', () => {
+    const closeSettings = vi.fn()
+    const closeUsage = vi.fn()
+    const closeExtensions = vi.fn()
+    resetChat({
+      settingsOpen: true,
+      usageOpen: true,
+      extensionsOpen: true,
+      closeSettings,
+      closeUsage,
+      closeExtensions,
+    })
+    render(<TopBar onOpenMcp={() => {}} onOpenGit={() => {}} mcpOpen gitOpen />)
+    for (const title of [
+      'MCP 服务器状态',
+      'Git 面板 — 工作区状态 / diff / 提交',
+      '扩展（/hooks /plugins /skills /marketplace）',
+      'usage — token 用量聚合（按模型/时间窗口）+ billing credits',
+      '设置（F2）',
+    ]) {
+      expect(screen.getByTitle(title)).toHaveClass('bg-gn-bg-highlight')
+    }
+    fireEvent.click(screen.getByTitle('设置（F2）'))
+    expect(closeSettings).toHaveBeenCalled()
+    fireEvent.click(screen.getByTitle('usage — token 用量聚合（按模型/时间窗口）+ billing credits'))
+    expect(closeUsage).toHaveBeenCalled()
+    fireEvent.click(screen.getByTitle('扩展（/hooks /plugins /skills /marketplace）'))
+    expect(closeExtensions).toHaveBeenCalled()
+  })
+
   it('侧边栏折叠按钮切换', () => {
     render(<TopBar />)
     fireEvent.click(screen.getByTitle('折叠会话侧边栏'))

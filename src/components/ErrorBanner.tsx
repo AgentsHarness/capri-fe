@@ -51,14 +51,14 @@ export function ErrorBanner() {
     <div
       role="alert"
       className={`flex items-center gap-2 border-b px-3 py-1.5 text-[12px] leading-snug select-none sm:px-4 ${
-        isError
+ isError
           ? 'border-gn-red/30 bg-gn-red/10 text-gn-red'
           : 'border-gn-warning/30 bg-gn-warning/10 text-gn-warning'
       }`}
     >
       <span
         className={`shrink-0 rounded px-1 py-px font-mono text-[10px] uppercase tracking-wider ${
-          isError ? 'bg-gn-red/20' : 'bg-gn-warning/20'
+ isError ? 'bg-gn-red/20' : 'bg-gn-warning/20'
         }`}
       >
         {layer}
@@ -69,10 +69,10 @@ export function ErrorBanner() {
           type="button"
           onClick={() => void onRestart()}
           disabled={restarting}
-          className={`shrink-0 rounded border px-2 py-0.5 transition-opacity enabled:hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${
-            isError
-              ? 'border-gn-red/40 hover:bg-gn-red/15'
-              : 'border-gn-warning/40 hover:bg-gn-warning/15'
+          className={`shrink-0 rounded px-2 py-0.5 disabled:cursor-not-allowed disabled:opacity-50 ${
+ isError
+              ? 'text-gn-red hover:bg-gn-diff-del-bg'
+              : 'text-gn-warning hover:bg-gn-bg-highlight'
           }`}
           title="杀掉当前 agent 进程并重新启动（恢复上次会话）"
         >

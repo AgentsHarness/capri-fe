@@ -552,7 +552,7 @@ export function ApprovalStrip() {
             <button
               type="button"
               onClick={() => void resetPermissions()}
-              className="rounded border border-gn-prompt-border px-2 py-[3px] text-[11px] text-gn-muted transition-colors hover:border-gn-prompt-border-active hover:bg-gn-bg-highlight hover:text-gn-fg"
+              className="rounded px-2 py-[3px] text-[11px] text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
               title="x.ai/permissions/reset — 忘记已记忆的权限规则（始终允许模式等）"
             >
               重置权限规则
@@ -579,10 +579,10 @@ export function ApprovalStrip() {
                   void respond(req.requestId, undefined, true)
                 }
               }}
-              className={`inline-flex items-center gap-1 rounded border px-2 py-[3px] text-[11px] transition-colors ${
-                followupOpen
-                  ? 'border-gn-red/70 bg-gn-diff-del-bg text-gn-red'
-                  : 'border-gn-red/40 text-gn-red hover:bg-gn-diff-del-bg'
+              className={`inline-flex items-center gap-1 rounded px-2 py-[3px] text-[11px] transition-colors ${
+ followupOpen
+                  ? 'bg-gn-diff-del-bg text-gn-red'
+                  : 'text-gn-red hover:bg-gn-diff-del-bg'
               }`}
               title="拒绝并取消该请求（可附带给 agent 的反馈）"
             >
@@ -627,7 +627,7 @@ export function ApprovalStrip() {
                   setScopeIdx(SCOPE_PRESETS.length - 1)
                   setPatternEdit(command)
                 }}
-                className="rounded border border-gn-cyan/40 px-1.5 py-[1px] text-[10.5px] text-gn-cyan transition-colors hover:bg-gn-bg-highlight"
+                className="rounded px-1.5 py-[1px] text-[10.5px] text-gn-cyan transition-colors hover:bg-gn-bg-highlight"
                 title="打开自由模式 glob 编辑器（TUI e 键）"
               >
                 e 编辑
@@ -671,7 +671,7 @@ export function ApprovalStrip() {
                     : undefined,
                 )
               }}
-              className="shrink-0 rounded border border-gn-cyan/40 px-2 py-1 text-[11px] text-gn-cyan transition-colors hover:bg-gn-bg-highlight"
+              className="shrink-0 rounded px-2 py-1 text-[11px] text-gn-cyan transition-colors hover:bg-gn-bg-highlight"
               title="Enter 确认 · 以 glob 模式保存"
             >
               保存
@@ -679,7 +679,7 @@ export function ApprovalStrip() {
             <button
               type="button"
               onClick={() => setPatternEdit(null)}
-              className="shrink-0 rounded border border-gn-prompt-border px-2 py-1 text-[11px] text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+              className="shrink-0 rounded px-2 py-1 text-[11px] text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
               title="Esc 取消"
             >
               取消
@@ -716,7 +716,7 @@ export function ApprovalStrip() {
                     setRejectOption(undefined)
                     void respond(req.requestId, ro, true, undefined, text || undefined)
                   }}
-                  className="shrink-0 rounded border border-gn-red/40 px-2 py-1 text-[11px] text-gn-red transition-colors hover:bg-gn-diff-del-bg"
+                  className="shrink-0 rounded px-2 py-1 text-[11px] text-gn-red transition-colors hover:bg-gn-diff-del-bg"
                   title="Enter 确认 · Esc 关闭"
                 >
                   确认拒绝
@@ -743,12 +743,10 @@ export function ApprovalStrip() {
                     isAlwaysOption(opt) ? scopeForPreset() : undefined,
                   )
                 }}
-                className={`min-h-10 w-full rounded border px-3 py-1.5 text-left text-[12.5px] transition-colors ${
-                  i === sel
-                    ? // Selected row: yellow border + solid dot, background
-                      // stays base — no dark-gray fill.
-                      'border-gn-yellow/60 bg-gn-bg-base text-gn-fg'
-                    : 'border-gn-prompt-border bg-gn-bg-base text-gn-fg hover:border-gn-magenta/50 hover:bg-gn-bg-highlight'
+                className={`min-h-10 w-full rounded px-3 py-1.5 text-left text-[12.5px] transition-colors ${
+ i === sel
+                    ? 'bg-gn-bg-highlight text-gn-fg'
+                    : 'text-gn-fg hover:bg-gn-bg-highlight'
                 }`}
               >
                 <span className="mr-1.5 font-mono text-gn-muted">{i + 1}</span>
@@ -756,7 +754,7 @@ export function ApprovalStrip() {
                     selected row (TUI `1 (●) …` rows), hollow otherwise. */}
                 <span
                   className={`mr-1.5 ${
-                    isAlwaysOption(opt)
+ isAlwaysOption(opt)
                       ? 'text-gn-cyan'
                       : i === sel
                         ? 'text-gn-yellow'

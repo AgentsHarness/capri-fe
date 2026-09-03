@@ -42,7 +42,7 @@ export function HistorySidebar() {
   return (
     <aside
       className={`hidden shrink-0 flex-col overflow-hidden bg-gn-bg-base transition-[width] duration-200 ease-out lg:flex ${
-        sidebarCollapsed ? 'w-0 border-r-0' : 'w-72 border-r border-gn-prompt-border/60'
+ sidebarCollapsed ? 'w-0 border-r-0' : 'w-72 border-r border-gn-prompt-border/60'
       }`}
     >
       {/* No border under the header — the group headers carry their own

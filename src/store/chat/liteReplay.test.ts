@@ -6,11 +6,11 @@ import { useChatStore } from '../chat'
 import { runtime, clearContinueSessionTimer } from './globals'
 import {
   applyToolBodies,
+  collectLiteTurnJobs,
   extractThoughtRuns,
   extractToolBodies,
-  flushScheduledPageFills,
+  fillAllLiteTurns,
   liteFillSummary,
-  pageFillWindow,
   resetLiteCapability,
   resetToolFillCache,
   thoughtEntryNeedsFill,
@@ -182,10 +182,6 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(transport.getConnectionMode).mockReturnValue('hub')
   vi.mocked(transport.isLocalDirect).mockReturnValue(false)
-  // 后台补全走 requestIdleCallback（缺失才 setTimeout(0) 兜底）——一律置空
-  // 走定时器分支，用例里的「转一轮宏任务」才是确定的。
-  vi.stubGlobal('requestIdleCallback', undefined)
-  vi.stubGlobal('cancelIdleCallback', undefined)
   // 去重集合按「这一批条目」为作用域；代际推进让上个用例的在途请求作废。
   runtime.sessionSwitchGen += 1
   resetToolFillCache()
@@ -396,7 +392,7 @@ describe('只填工具正文的补全', () => {
     expect(load).toHaveBeenCalledTimes(3)
   })
 
-  it('当前轮后台自动补全：首帧后 idle 期发 detail=full（固定 lite 窗口），只填正文', async () => {
+  it('首屏不自动拉 full：lite 页渲染完零请求，点顶部图标才按轮补全', async () => {
     const load = vi
       .mocked(transport.loadSessionHistory)
       .mockResolvedValueOnce(litePage({ omittedBytes: 1200 }))
@@ -405,12 +401,16 @@ describe('只填工具正文的补全', () => {
     const before = useChatStore.getState().entries
     expect(before.some((e) => toolEntryLitePending(e))).toBe(true)
 
-    // jsdom 没有 requestIdleCallback → setTimeout(0) 兜底，转一轮宏任务。
+    // 转一轮宏任务：首屏不再有 idle 期的整窗自动补全。
     await new Promise((r) => setTimeout(r, 5))
+    expect(fullCalls()).toHaveLength(0)
+    expect(load).toHaveBeenCalledTimes(1)
+    expect(toolEntry()!.liteState).toBeUndefined()
 
-    // 补全窗口 = lite 页实际拉的 [loadedStart, +fetched)，不是动态 turnIndex
-    // （active 会话里新开一轮会让 turnIndex 窗口漂移，full 页对不上本页行）。
-    expect(load).toHaveBeenLastCalledWith(SID, CWD, { offset: 0, limit: 5, detail: 'full' })
+    await fillAllLiteTurns()
+    // 补全窗口按「这一轮欠正文的行」的 [msgSeq, msgSeqEnd] 闭区间算。
+    expect(fullCalls()).toHaveLength(1)
+    expect(fullCalls()[0]?.[2]).toMatchObject({ offset: 1, limit: 2, detail: 'full' })
     const after = useChatStore.getState().entries
     expect(after.map((e) => e.id)).toEqual(before.map((e) => e.id))
     expect(after.filter((e) => e.kind !== 'tool')).toEqual(
@@ -419,20 +419,19 @@ describe('只填工具正文的补全', () => {
     expect(toolEntry()!.liteState).toBe('filled')
   })
 
-  // 预算闸门已按需求去掉：被裁最多的正是带后台任务 / 长流式输出的会话，
+  // 预算闸门按需求去掉：被裁最多的正是带后台任务 / 长流式输出的会话，
   // 拦下来只会让它们整轮退化成逐条手点。
-  it('被裁正文再大也照补：omittedBytes 超 2MB 仍发后台 detail=full', async () => {
+  it('被裁正文再大也照补：omittedBytes 超 2MB 仍发 detail=full', async () => {
     vi.mocked(transport.loadSessionHistory)
       .mockResolvedValueOnce(litePage({ omittedBytes: 6 * 1024 * 1024 }))
       .mockResolvedValue(fullPage())
     await useChatStore.getState().loadHistory(SID, CWD)
     expect(toolEntryLitePending(toolEntry()!)).toBe(true)
 
-    await new Promise((r) => setTimeout(r, 5))
+    await fillAllLiteTurns()
     const full = fullCalls()
     expect(full).toHaveLength(1)
-    // 窗口 = lite 页实际拉的 [loadedStart, +fetched)，不再用动态 turnIndex。
-    expect(full[0]?.[2]).toMatchObject({ offset: 0, limit: 5, detail: 'full' })
+    expect(full[0]?.[2]).toMatchObject({ offset: 1, limit: 2, detail: 'full' })
     expect(toolEntry()!.liteState).toBe('filled')
     expect(toolEntryLitePending(toolEntry()!)).toBe(false)
     // 在途计数随请求落地归零（顶部进度图标的 spinner 数据源）。
@@ -581,12 +580,12 @@ describe('只填工具正文的补全', () => {
     await useChatStore.getState().loadHistory(SID, CWD)
     expect(fullCalls()).toHaveLength(0)
 
-    flushScheduledPageFills()
+    fillAllLiteTurns()
     await new Promise((r) => setTimeout(r, 5))
     expect(fullCalls()).toHaveLength(1)
 
     // 队列已空：再催一次不会多发。
-    flushScheduledPageFills()
+    fillAllLiteTurns()
     await new Promise((r) => setTimeout(r, 5))
     expect(fullCalls()).toHaveLength(1)
   })
@@ -601,7 +600,7 @@ describe('只填工具正文的补全', () => {
     expect(toolEntryLitePending(toolEntry()!)).toBe(true)
 
     runtime.sessionSwitchGen += 1
-    flushScheduledPageFills()
+    fillAllLiteTurns()
     await new Promise((r) => setTimeout(r, 5))
 
     expect(fullCalls()).toHaveLength(1)
@@ -624,7 +623,7 @@ describe('只填工具正文的补全', () => {
     await useChatStore.getState().loadHistory(SID, CWD)
     const before = useChatStore.getState().entries
 
-    flushScheduledPageFills()
+    fillAllLiteTurns()
     await new Promise((r) => setTimeout(r, 0)) // 让 fillToolBodies 真的把请求发出去
 
     useChatStore.setState({
@@ -648,7 +647,7 @@ describe('只填工具正文的补全', () => {
     // 裁过、还没补 → 1 行待补。
     expect(liteFillSummary(useChatStore.getState())).toBe('1.0.0')
 
-    flushScheduledPageFills()
+    fillAllLiteTurns()
     await new Promise((r) => setTimeout(r, 5))
     // 补齐 → 图标消失。
     expect(liteFillSummary(useChatStore.getState())).toBe('')
@@ -665,10 +664,10 @@ describe('只填工具正文的补全', () => {
     expect(liteFillSummary(useChatStore.getState())).toBe('1.0.0')
   })
 
-  it('host 透传回退（整页无 msgSeq）：不显示死占位，但整轮补全仍回填正文', async () => {
+  it('host 透传回退（整页无 msgSeq）：不显示死占位，主动补全按 turnIndex 回填正文', async () => {
     // agent 透传路径的响应不带 msgSeq（bridge 的 _x.ai/session/updates 回退
     // 分支）——区间补算不出窗口，此时占位行必须是不可点的（否则用户点开
-    // 永远拿不回正文）；turnIndex 窗口的后台补全按 toolCallId 匹配，照旧生效。
+    // 永远拿不回正文）；turnIndex 窗口的整轮补全按 toolCallId 匹配，照旧生效。
     const dropSeq = (page: SessionHistoryPage): SessionHistoryPage => ({
       ...page,
       updates: (page.updates ?? []).map((raw) => {
@@ -688,7 +687,10 @@ describe('只填工具正文的补全', () => {
     expect(toolEntryLitePending(e)).toBe(false)
     expect(toolEntryNeedsFill(e)).toBe(false)
 
-    await new Promise((r) => setTimeout(r, 5))
+    await fillAllLiteTurns()
+    const full = fullCalls()
+    expect(full).toHaveLength(1)
+    expect(full[0]?.[2]).toMatchObject({ turnIndex: 1, detail: 'full' })
     const filled = toolEntry()!
     expect(filled.liteState).toBe('filled')
     expect((filled.raw?.rawOutput as { Bash?: { output?: unknown } })?.Bash?.output).toBeTypeOf(
@@ -696,15 +698,16 @@ describe('只填工具正文的补全', () => {
     )
   })
 
-  it('后台补全失败静默：不打 loading / error，也不改 UI', async () => {
+  it('补全失败静默：不打 loading / error，也不改 UI', async () => {
     vi.mocked(transport.loadSessionHistory)
       .mockResolvedValueOnce(litePage({ omittedBytes: 1200 }))
       .mockRejectedValueOnce(new Error('502'))
     await useChatStore.getState().loadHistory(SID, CWD)
-    await new Promise((r) => setTimeout(r, 5))
+    await fillAllLiteTurns()
     const e = toolEntry()!
     expect(e.liteState).toBeUndefined()
     expect(toolEntryLitePending(e)).toBe(true)
+    expect(useChatStore.getState().liteFillBusy ?? 0).toBe(0)
   })
 
   it('多轮 lite 场景：识别有多少个 lite 轮，并发发起 full 请求补全', async () => {
@@ -799,7 +802,7 @@ describe('只填工具正文的补全', () => {
     })
 
     // 点击主动补全
-    await flushScheduledPageFills()
+    await fillAllLiteTurns()
 
     // 两个 lite 轮并发发起了 full 请求
     const calls = vi.mocked(transport.loadSessionHistory).mock.calls.filter(
@@ -824,7 +827,7 @@ describe('只填工具正文的补全', () => {
     expect(liteFillSummary(useChatStore.getState())).toBe('')
 
     // 再次点击不产生重复请求
-    await flushScheduledPageFills()
+    await fillAllLiteTurns()
     const callsAfter = vi.mocked(transport.loadSessionHistory).mock.calls.filter(
       ([, , opts]) => opts?.detail === 'full',
     )
@@ -879,9 +882,9 @@ describe('只填工具正文的补全', () => {
     })
 
     // 第一次并发触发
-    const flush1 = flushScheduledPageFills()
+    const flush1 = fillAllLiteTurns()
     // 第二次连续点击触发
-    const flush2 = flushScheduledPageFills()
+    const flush2 = fillAllLiteTurns()
 
     // 仅针对两轮发出了各 1 次在途请求（共 2 次，不重发）
     const calls = vi.mocked(transport.loadSessionHistory).mock.calls.filter(
@@ -1446,7 +1449,7 @@ describe('live 事件续写被裁的工具行', () => {
     expect(e.liteOmitted).toBe(1200)
     expect(toolEntryLiteOmitted(e)).toBe(true)
 
-    flushScheduledPageFills()
+    fillAllLiteTurns()
     await new Promise((r) => setTimeout(r, 5))
     const f = toolEntry()!
     expect(f.liteState).toBe('filled')
@@ -1554,18 +1557,34 @@ describe('live 事件续写被裁的工具行', () => {
 })
 
 describe('极致 lite：合成窗口与 thought 补全', () => {
-  it('pageFillWindow 用 lite.msgSeqEnd 还原被合成掉的信封区间', () => {
-    const updates = [
-      env(10, { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'q' } }),
-      env(11, {
-        sessionUpdate: 'tool_call',
+  it('collectLiteTurnJobs 按欠正文行的 [msgSeq, msgSeqEnd] 还原补全区间', () => {
+    const tool: ScrollEntry = {
+      id: 'c1',
+      kind: 'tool',
+      title: 'grep',
+      verb: 'Searched',
+      kindName: 'search',
+      status: 'completed',
+      toolCallId: 'c1',
+      msgSeq: 11,
+      msgSeqEnd: 14,
+      liteOmitted: 900,
+      raw: {
         toolCallId: 'c1',
+        kind: 'search',
         status: 'completed',
+        rawOutput: { match_count: 2 },
         _meta: { lite: { omitted: 900, msgSeqEnd: 14 } },
-      }),
-      env(15, { sessionUpdate: 'turn_completed', stop_reason: 'end_turn' }),
-    ]
-    expect(pageFillWindow(updates)).toEqual({ offset: 10, limit: 6 })
+      } as unknown as ToolCall,
+    }
+    const jobs = collectLiteTurnJobs(
+      [{ id: 'u1', kind: 'user', text: 'q', msgSeq: 10 }, tool],
+      SID,
+      CWD,
+    )
+    expect(jobs).toHaveLength(1)
+    expect(jobs[0]!.win).toEqual({ offset: 11, limit: 4 })
+    expect(jobs[0]!.entryIds).toEqual(['c1'])
   })
 
   it('extractThoughtRuns 把连续 thought chunk 拼成一段', () => {
@@ -1664,7 +1683,7 @@ describe('极致 lite：合成窗口与 thought 补全', () => {
     >
     expect(th).toBeTruthy()
     // 后台整窗补全（当前轮 idle 期）应把它填回。
-    flushScheduledPageFills()
+    fillAllLiteTurns()
     await new Promise((r) => setTimeout(r, 5))
     const filled = useChatStore.getState().entries.find((e) => e.kind === 'thought') as Extract<
       ScrollEntry,
@@ -1785,7 +1804,7 @@ describe('极致 lite：合成窗口与 thought 补全', () => {
     expect(thoughts()).toHaveLength(2)
     // 两段都走后台整窗补全（当前轮）。
     await new Promise((r) => setTimeout(r, 5))
-    flushScheduledPageFills()
+    fillAllLiteTurns()
     await new Promise((r) => setTimeout(r, 10))
     const [a, b] = thoughts()
     expect(a.text).toBe('第一段A第一段B')
@@ -1844,7 +1863,7 @@ describe('极致 lite：合成窗口与 thought 补全', () => {
     const th = thoughts()[0]
     expect(th.msgSeq).toBe(1)
     expect(th.msgSeqEnd).toBe(3)
-    flushScheduledPageFills()
+    fillAllLiteTurns()
     await new Promise((r) => setTimeout(r, 8))
     const filled = thoughts()[0]
     expect(filled.liteState).toBe('filled')

@@ -349,7 +349,7 @@ export function McpPanel({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/55 backdrop-blur-[1px] p-4"
+      className="fixed inset-0 z-50 flex items-start justify-center gn-modal-dim p-4"
       role="dialog"
       aria-modal="true"
       aria-label="MCP servers"
@@ -360,9 +360,9 @@ export function McpPanel({
       <div
         ref={panelRef}
         tabIndex={-1}
-        className="mt-8 w-full max-w-[620px] rounded border border-gn-prompt-border-active bg-gn-bg-base shadow-2xl outline-none"
+        className="mt-8 w-full max-w-[620px] gn-modal-panel"
       >
-        <header className="flex items-center gap-2 rounded-t border-b border-gn-prompt-border bg-gn-bg-dark px-4 py-2.5">
+        <header className="gn-modal-header">
           <span className="text-[13px] font-bold text-gn-fg">MCP servers</span>
           <span className="text-[11px] text-gn-muted">
             {rows.length} 个服务器
@@ -449,13 +449,13 @@ export function McpPanel({
           {/* ── 下半区: 管理 ──────────────────────────────────────── */}
           <div className="flex items-center gap-2 px-4 pt-3 pb-1">
             <span className="text-[10px] uppercase tracking-wider text-gn-gutter">
-              管理 · /api/mcp/list
+              管理
             </span>
             <button
               type="button"
               onClick={() => void refreshList()}
               disabled={listLoading}
-              className="rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
+              className="rounded px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
               title="重新读取 host 的 MCP 配置"
             >
               {listLoading ? '刷新中…' : '刷新列表'}
@@ -554,7 +554,7 @@ export function McpPanel({
                               <div key={t.name} className="flex items-center gap-2">
                                 <span
                                   className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                                    t.enabled !== false ? 'bg-gn-green' : 'bg-gn-gutter'
+ t.enabled !== false ? 'bg-gn-green' : 'bg-gn-gutter'
                                   }`}
                                   title={t.enabled !== false ? '已启用' : '已禁用'}
                                 />
@@ -570,10 +570,10 @@ export function McpPanel({
                                   onClick={() =>
                                     void toggleTool(s.name, t.name, t.enabled === false)
                                   }
-                                  className={`shrink-0 rounded border px-1.5 py-px text-[10.5px] disabled:opacity-50 ${
-                                    t.enabled !== false
-                                      ? 'border-gn-prompt-border text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
-                                      : 'border-gn-prompt-border-active bg-gn-bg-highlight text-gn-fg'
+                                  className={`shrink-0 rounded px-1.5 py-px text-[10.5px] disabled:opacity-50 ${
+ t.enabled !== false
+                                      ? 'text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
+                                      : 'bg-gn-bg-highlight text-gn-fg'
                                   }`}
                                   title={`${t.enabled !== false ? '禁用' : '启用'}工具 ${t.name}（/api/mcp/toggle-tool）`}
                                 >
@@ -594,10 +594,10 @@ export function McpPanel({
                         type="button"
                         disabled={busy != null || toolBusy != null}
                         onClick={() => void toggleServer(s.name, !enabled)}
-                        className={`rounded border px-2 py-0.5 text-[11px] disabled:opacity-50 ${
-                          enabled
-                            ? 'border-gn-prompt-border text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
-                            : 'border-gn-prompt-border-active bg-gn-bg-highlight text-gn-fg'
+                        className={`rounded px-2 py-0.5 text-[11px] disabled:opacity-50 ${
+ enabled
+                            ? 'text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
+                            : 'bg-gn-bg-highlight text-gn-fg'
                         }`}
                         title={enabled ? '禁用该服务器（/api/mcp-toggle）' : '启用该服务器（/api/mcp-toggle）'}
                       >
@@ -607,7 +607,7 @@ export function McpPanel({
                         type="button"
                         disabled={busy != null || toolBusy != null}
                         onClick={() => void authServer(s.name)}
-                        className="rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
+                        className="rounded px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
                         title="触发 OAuth 认证（/api/mcp-auth-trigger）"
                       >
                         {isBusy('auth') ? '…' : '认证'}
@@ -616,7 +616,7 @@ export function McpPanel({
                         type="button"
                         disabled={busy != null || toolBusy != null}
                         onClick={() => removeServer(s.name)}
-                        className="rounded border border-gn-diff-del-bg px-2 py-0.5 text-[11px] text-gn-red hover:bg-gn-diff-del-bg disabled:opacity-50"
+                        className="rounded px-2 py-0.5 text-[11px] text-gn-red hover:bg-gn-diff-del-bg disabled:opacity-50"
                         title="删除该服务器（/api/mcp-remove）"
                       >
                         {isBusy('remove') ? '…' : '删除'}
@@ -670,7 +670,7 @@ export function McpPanel({
                 setAddOpen((v) => !v)
                 setFormError(undefined)
               }}
-              className="rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+              className="rounded px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
             >
               {addOpen ? '− 收起添加表单' : '＋ 添加服务器'}
             </button>
@@ -726,7 +726,7 @@ export function McpPanel({
                     type="button"
                     disabled={adding}
                     onClick={() => void submitAdd()}
-                    className="rounded border border-gn-prompt-border-active bg-gn-bg-highlight px-3 py-1 text-[11px] text-gn-fg hover:bg-gn-bg-highlight disabled:opacity-50"
+                    className="rounded bg-gn-bg-highlight px-3 py-1 text-[11px] text-gn-fg hover:bg-gn-bg-highlight disabled:opacity-50"
                   >
                     {adding ? '添加中…' : '添加'}
                   </button>
@@ -737,7 +737,7 @@ export function McpPanel({
                       setAddOpen(false)
                       setFormError(undefined)
                     }}
-                    className="rounded border border-gn-prompt-border px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
+                    className="rounded px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
                   >
                     取消
                   </button>
@@ -756,7 +756,7 @@ export function McpPanel({
                   setCallError(undefined)
                   setCallResult(undefined)
                 }}
-                className="rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                className="rounded px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
               >
                 {callOpen ? '− 收起调用工具' : '＋ 调用工具'}
               </button>
@@ -767,7 +767,7 @@ export function McpPanel({
                   setReadError(undefined)
                   setReadResult(undefined)
                 }}
-                className="rounded border border-gn-prompt-border px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                className="rounded px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
               >
                 {readOpen ? '− 收起读取资源' : '＋ 读取资源'}
               </button>
@@ -829,7 +829,7 @@ export function McpPanel({
                     type="button"
                     disabled={calling}
                     onClick={() => void submitCall()}
-                    className="rounded border border-gn-prompt-border-active bg-gn-bg-highlight px-3 py-1 text-[11px] text-gn-fg hover:bg-gn-bg-highlight disabled:opacity-50"
+                    className="rounded bg-gn-bg-highlight px-3 py-1 text-[11px] text-gn-fg hover:bg-gn-bg-highlight disabled:opacity-50"
                   >
                     {calling ? '调用中…' : '调用'}
                   </button>
@@ -841,7 +841,7 @@ export function McpPanel({
                       setCallError(undefined)
                       setCallResult(undefined)
                     }}
-                    className="rounded border border-gn-prompt-border px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
+                    className="rounded px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
                   >
                     取消
                   </button>
@@ -891,7 +891,7 @@ export function McpPanel({
                     type="button"
                     disabled={reading}
                     onClick={() => void submitRead()}
-                    className="rounded border border-gn-prompt-border-active bg-gn-bg-highlight px-3 py-1 text-[11px] text-gn-fg hover:bg-gn-bg-highlight disabled:opacity-50"
+                    className="rounded bg-gn-bg-highlight px-3 py-1 text-[11px] text-gn-fg hover:bg-gn-bg-highlight disabled:opacity-50"
                   >
                     {reading ? '读取中…' : '读取'}
                   </button>
@@ -903,7 +903,7 @@ export function McpPanel({
                       setReadError(undefined)
                       setReadResult(undefined)
                     }}
-                    className="rounded border border-gn-prompt-border px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
+                    className="rounded px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
                   >
                     取消
                   </button>

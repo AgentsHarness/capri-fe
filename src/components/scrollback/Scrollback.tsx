@@ -385,7 +385,7 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
       <div
         ref={contentRef}
         className={`${
-          contentVisible ? 'transition-opacity duration-300 opacity-100' : 'opacity-0'
+ contentVisible ? 'transition-opacity duration-300 opacity-100' : 'opacity-0'
         }`}
       >
       {(historyHasMore || historyLoadingMore) && entries.length > 0 && (
@@ -429,7 +429,7 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
       <div
         aria-hidden={!loadingVisible && !loadFailedVisible}
         className={`pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2 select-none transition-opacity duration-300 ${
-          loadingVisible || loadFailedVisible ? 'opacity-100' : 'opacity-0'
+ loadingVisible || loadFailedVisible ? 'opacity-100' : 'opacity-0'
         }`}
       >
         {loadFailedVisible ? (

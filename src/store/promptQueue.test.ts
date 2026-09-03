@@ -3,6 +3,10 @@ import type { ContentBlock } from '../api/types'
 import { transport } from '../api/client'
 import {
   applyQueueChanged,
+  imageMarkerLabels,
+  queueRowText,
+  queuedImages,
+  userRowText,
   DELETED_ROWS_MAX,
   usePromptQueue,
   type QueuedPrompt,
@@ -282,6 +286,81 @@ describe('applyQueueChanged（权威快照广播）', () => {
     const st = usePromptQueue.getState()
     expect(st.queue.map((q) => q.id)).toEqual(['a'])
     expect(st.queues['s2']?.map((q) => q.id)).toEqual(['x1'])
+  })
+})
+
+describe('纯图片队列行（agent 侧权威正文为空）', () => {
+  const imgBlocks: ContentBlock[] = [
+    { type: 'text', text: '' },
+    { type: 'image', data: 'AAAA', mimeType: 'image/png' },
+    { type: 'image', data: 'BBBB', mimeType: 'image/jpeg' },
+  ]
+  const imgRow = (id: string, over: Partial<QueuedPrompt> = {}): QueuedPrompt => ({
+    id,
+    text: '',
+    blocks: imgBlocks,
+    ts: 0,
+    ...over,
+  })
+
+  it('标记：单张 [image]，多张按序号区分；正文非空时标记附在后面', () => {
+    expect(imageMarkerLabels([{ type: 'text', text: 'hi' }])).toEqual([])
+    expect(imageMarkerLabels([{ type: 'image', data: 'A', mimeType: 'image/png' }])).toEqual([
+      '[image]',
+    ])
+    expect(imageMarkerLabels(imgBlocks)).toEqual(['[image 1]', '[image 2]'])
+    expect(queueRowText(imgRow('p1'))).toBe('[image 1] [image 2]')
+    expect(queueRowText({ text: '看图', blocks: imgBlocks })).toBe('看图 [image 1] [image 2]')
+    // 用户行只在正文为空时用标记兜底（附图本身另有缩略图渲染）。
+    expect(userRowText('', imgBlocks)).toBe('[image 1] [image 2]')
+    expect(userRowText('正文', imgBlocks)).toBe('正文')
+    expect(userRowText('')).toBe('')
+  })
+
+  it('queuedImages 按 blocks 顺序给出 data URI', () => {
+    expect(queuedImages(imgBlocks)).toEqual([
+      { data: 'data:image/png;base64,AAAA', mimeType: 'image/png' },
+      { data: 'data:image/jpeg;base64,BBBB', mimeType: 'image/jpeg' },
+    ])
+    expect(queuedImages([{ type: 'text', text: 'hi' }])).toEqual([])
+  })
+
+  it('空正文的权威条目按 id 认回本地行：确认乐观回显且保留图片 blocks', () => {
+    usePromptQueue.setState({
+      queue: [imgRow('p1', { optimistic: true })],
+      sessionId: 's1',
+    })
+    applyQueueChanged({ entries: [{ id: 'p1', text: '', version: 3 }] }, 's1')
+    const q = usePromptQueue.getState().queue
+    expect(q).toHaveLength(1)
+    expect(q[0]).toMatchObject({ id: 'p1', optimistic: false, degraded: false, version: 3 })
+    // blocks[0] 仍是空的 text block，真图原样保留（编辑/重发都靠它）。
+    expect(q[0]?.blocks).toEqual(imgBlocks)
+  })
+
+  it('空正文且不认得的条目跳过；同批带正文的行照常应用', () => {
+    usePromptQueue.setState({ queue: [row('keep', 'keep me')], sessionId: 's1' })
+    applyQueueChanged(
+      { entries: [{ id: 'ghost', text: '' }, { id: 'keep', text: 'keep me', version: 1 }] },
+      's1',
+    )
+    const q = usePromptQueue.getState().queue
+    expect(q.map((x) => x.id)).toEqual(['keep'])
+    expect(q[0]).toMatchObject({ version: 1 })
+  })
+
+  it('收养纯图片行：adoption 带图片 blocks（用户行据此标记渲染）', () => {
+    usePromptQueue.setState({
+      queue: [imgRow('p1', { optimistic: true })],
+      sessionId: 's1',
+    })
+    const adoption = applyQueueChanged(
+      { entries: [], runningPromptId: 'p1', runningText: '' },
+      's1',
+    )
+    expect(adoption).toMatchObject({ id: 'p1', text: '', fromOptimistic: true })
+    expect(adoption?.blocks.filter((b) => b.type === 'image')).toHaveLength(2)
+    expect(usePromptQueue.getState().queue).toEqual([])
   })
 })
 

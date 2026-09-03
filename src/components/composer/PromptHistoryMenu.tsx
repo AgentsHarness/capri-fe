@@ -33,7 +33,7 @@ export function PromptHistoryMenu({
   }, [selected, history.length])
 
   return (
-    <div className="absolute bottom-full left-0 right-0 z-40 mb-1 overflow-hidden rounded border border-gn-prompt-border-active bg-gn-bg-dark shadow-2xl">
+    <div className="absolute bottom-full left-0 right-0 z-40 mb-1 gn-popover">
       <div className="flex items-center justify-between gap-2 border-b border-gn-prompt-border px-3 py-1.5">
         <span className="text-[11px] font-bold text-gn-fg2">提示历史</span>
         {/* 位置/总数放表头右侧（与斜杠菜单同一处）。 */}
@@ -45,7 +45,7 @@ export function PromptHistoryMenu({
           <span className="min-w-0 truncate text-[10px] text-gn-muted">↑ 前缀触发</span>
         )}
       </div>
-      <div ref={listRef} className="gn-no-scrollbar max-h-56 overflow-y-auto py-0.5">
+      <div ref={listRef} className="gn-no-scrollbar max-h-56 overflow-y-auto">
         {history.map((h, i) => {
           const sel = i === selected
           return (
@@ -69,7 +69,7 @@ export function PromptHistoryMenu({
               )}
               <span
                 className={`min-w-0 flex-1 truncate text-[11.5px] leading-[18px] ${
-                  sel ? 'font-semibold text-gn-fg' : 'text-gn-fg2'
+ sel ? 'font-semibold text-gn-fg' : 'text-gn-fg2'
                 }`}
               >
                 {h.text}
