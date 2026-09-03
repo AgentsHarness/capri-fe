@@ -12,6 +12,7 @@ vi.mock('../settings', () => ({
 import {
   applyCollapsedEditBlocksFlip,
   applyCollapsedEditBlocksFromCache,
+  clearPlanMode,
   consumeAgentInstance,
   effectivePermissionLabelFromUi,
   ensureDefaultModeFlags,
@@ -85,6 +86,9 @@ describe('plan modes', () => {
     expect(restorePlanMode()).toEqual({})
     savePlanMode('s1', false)
     expect(restorePlanMode('s1')).toEqual({ planMode: false })
+    clearPlanMode('s1')
+    expect(loadPlanModes()).toEqual({})
+    expect(restorePlanMode('s1')).toEqual({})
   })
 })
 

@@ -103,6 +103,16 @@ export function savePlanMode(sessionId: string, planMode: boolean): void {
   saveJSON(PLAN_FLAGS_KEY, map)
 }
 
+/** Clear one session's plan-mode copy. */
+export function clearPlanMode(sessionId?: string): void {
+  if (!sessionId) return
+  const map = loadPlanModes()
+  if (sessionId in map) {
+    delete map[sessionId]
+    saveJSON(PLAN_FLAGS_KEY, map)
+  }
+}
+
 /** Restore one session's plan-mode copy ({} when unknown). */
 export function restorePlanMode(sessionId?: string): Partial<Pick<ChatState, 'planMode'>> {
   if (!sessionId) return {}
