@@ -335,8 +335,15 @@ function bodyHasLiteStub(tc: ToolCall): boolean {
  * 这里回答「用户展开能不能看到正文」（管占位显示、以及补全还要不要跑）。
  */
 export function toolBodyStillOwed(tc: ToolCall): boolean {
-  if (tc.rawOutput != null) return liteStubIn(tc.rawOutput)
-  return liteStubIn(tc.content)
+  const marked = toolBodyOmitted(tc)
+  if (tc.rawOutput != null && !liteStubIn(tc.rawOutput)) {
+    // 真正文（live 续写 / 未裁）。极致 lite 把占位键删光、只剩标量 + 标记
+    // 时 content 也不在，仍欠可显示正文。
+    if (marked && tc.content == null) return true
+    return false
+  }
+  if (liteStubIn(tc.rawOutput) || liteStubIn(tc.content)) return true
+  return marked && tc.rawOutput == null && tc.content == null
 }
 
 /**

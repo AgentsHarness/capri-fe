@@ -78,7 +78,15 @@ export function ThoughtEntry({
           }
           style={{ borderColor: 'color-mix(in srgb, var(--color-gn-gray-dim) 40%, transparent)' }}
         >
-          {thoughtText ? (
+          {e.liteOmitted && e.liteState !== 'filled' && !e.streaming ? (
+            <div className="text-[12px] text-gn-gutter italic">
+              {e.liteState === 'loading'
+                ? `思考加载中${Glyphs.ellipsis}`
+                : e.liteState === 'error'
+                  ? '思考加载失败，点击重试'
+                  : '思考已省略'}
+            </div>
+          ) : thoughtText ? (
             <div className="italic text-gn-muted whitespace-pre-wrap break-words">
               {/* thoughtText = e.text + liveStream delta（additive merge）。 */}
               {e.streaming

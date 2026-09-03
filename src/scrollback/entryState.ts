@@ -67,7 +67,7 @@ export function entryFoldable(e: ScrollEntry): boolean {
     if (!e.raw) return false
     return toolHasExpandableBody(e.raw, e.kindName, e.liteOmitted)
   }
-  if (e.kind === 'thought') return !e.streaming && !!e.text
+  if (e.kind === 'thought') return !e.streaming && (!!e.text || !!e.liteOmitted)
   // Recap body, or a turn marker carrying stop-hook runs (TUI
   // SessionEventBlock::is_foldable).
   if (e.kind === 'session_event')

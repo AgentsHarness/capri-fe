@@ -29,6 +29,7 @@ import {
   historyDetailParam,
   noteHistoryProjection,
   resetToolFillCache,
+  pageFillWindow,
   schedulePageFill,
 } from './historyFill'
 import { entryTimestamp } from './entries'
@@ -253,7 +254,7 @@ export async function loadHistory(
       const updates = r.updates ?? []
       // 页内 msgSeq 连续性自检：页来自 turnIndex 切片，host 归一化序号
       // 会话内密集，正常必须连续（断裂说明 host 归一化/切片异常）。
-      if (import.meta.env.DEV) {
+      if (import.meta.env.DEV && r.projected !== 'lite') {
         const gap = findMsgSeqGap(updates)
         if (gap) console.warn(`[acp history] 页内 msgSeq 不连续：${gap}`)
       }
@@ -455,14 +456,12 @@ export async function loadHistory(
       // 请求之间新开一轮会让 turnIndex 窗口漂移，full 页的工具行对不上本页。
       // 仅本地归一化路径（信封带顶层 msgSeq）有该坐标；透传回退整页无 msgSeq、
       // 区间补算不出窗口，回退 turnIndex 整轮（候选判定不要求坐标）。
-      const pageIsLocal = (r.updates ?? []).some(
-        (env) => typeof (env as { msgSeq?: unknown }).msgSeq === 'number',
-      )
+      const span = pageFillWindow(r.updates ?? [])
       schedulePageFill(
         set,
         get,
         r,
-        pageIsLocal ? { offset: loadedStart, limit: fetched } : { turnIndex: INITIAL_TURNS },
+        span ?? { turnIndex: INITIAL_TURNS },
       )
       void transport
         .queueStatus(sessionId, cwd)

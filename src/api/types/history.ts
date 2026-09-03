@@ -25,7 +25,9 @@ export type SessionHistoryProjected = 'lite' | 'meta'
  */
 export type LiteProjectionMark = {
   omitted: number
-  fields: string[]
+  fields?: string[]
+  /** 合成掉的最后一条信封 msgSeq（补全窗口右端）。缺省 = 本封 msgSeq。 */
+  msgSeqEnd?: number
 }
 
 /**

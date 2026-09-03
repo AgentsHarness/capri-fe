@@ -19,7 +19,6 @@ import {
 import {
   historyDetailParam,
   noteHistoryProjection,
-  schedulePageFill,
 } from './historyFill'
 
 type LiveReplayState = Pick<
@@ -353,9 +352,7 @@ export async function loadMoreHistory(
           historyPrependedAt: Date.now(),
         })
       }
-      // 更早轮同样「先 lite 后 full」（契约 [E]）：这一页按同一 offset/limit
-      // 窗口排队一份 detail=full，idle 期串行回填正文，不挡上滑渲染。
-      if (isCurrent()) schedulePageFill(set, get, r, { offset: reqOffset, limit: reqLimit })
+      // 更早轮按契约 [E] 只在展开时按需补全，不自动再拉一份 full。
       // 自动续翻（仅按条数兜底路径；页大小随 chained 翻倍）：本页无
       // user（纯工具流段）就继续向后翻——分页目标固定为「加载到上一条
       // user 消息为止」。按轮次路径每页必含 user，无需续翻。或翻尽

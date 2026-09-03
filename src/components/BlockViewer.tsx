@@ -1076,8 +1076,11 @@ function SubagentTimeline({
         // 展开 = 要看正文：lite 裁掉的行按需补全（非 lite / 已补全 no-op）。
         if (next) void useChatStore.getState().fillToolEntryDetail(id)
       },
-      toggleThought: (id) =>
-        setFolds((m) => new Map(m).set(id, !(m.get(id) ?? false))),
+      toggleThought: (id) => {
+        const next = !(folds.get(id) ?? false)
+        setFolds((m) => new Map(m).set(id, next))
+        if (next) void useChatStore.getState().fillToolEntryDetail(id)
+      },
       toggleUser: (id) =>
         setFolds((m) => new Map(m).set(id, !(m.get(id) ?? false))),
       toggleLifecycle: (id) =>

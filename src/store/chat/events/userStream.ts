@@ -450,6 +450,7 @@ export function handleUserStreamEvent(
                 // (agentTimestampMs - streamStartMs); live chunks have none
                 // and seal against the local timer instead.
                 ...(ev.elapsedMs != null ? { elapsedMs: ev.elapsedMs } : {}),
+                ...(ev.liteOmitted ? { liteOmitted: ev.liteOmitted } : {}),
               },
             ],
             // Seed liveStream with the first chunk; later deltas append via

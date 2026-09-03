@@ -87,6 +87,10 @@ export type ScrollEntry =
        */
       elapsedMs?: number
       msgSeq?: number
+      /** 合成 thought 跑的最后一条信封 msgSeq（lite 补全窗口右端）。 */
+      msgSeqEnd?: number
+      liteOmitted?: number
+      liteState?: 'loading' | 'error' | 'filled'
     }
   | {
       id: string

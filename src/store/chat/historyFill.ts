@@ -8,15 +8,16 @@ import {
 import { currentLiteReplay } from '../historyPins'
 import type { ChatState, SetState } from './types'
 import { captureAsyncScope, isAsyncScopeCurrent, runtime } from './globals'
-import { type RawEnvelope } from './envelopeParse'
+import { envelopeMsgSeq, envelopeToEvents, type RawEnvelope } from './envelopeParse'
 import { toolCallIdOf } from './tools'
 
 // ── 精简回放（lite）：FE 侧策略 + 正文补全引擎 ─────────────────────────
 //
-// host 的 lite 投影只裁工具正文（tool_call / tool_call_update 的
-// rawOutput / content），行数、顺序、msgSeq、其余信封一律不变。所以「补全」
-// 不是把一页重新回放进视图（那会闪空滚动区、还会抢改 live 指针），而只是
-// 把被裁掉的那两个字段按 toolCallId 填回已经渲染好的行——契约 [E]。
+// host 的 lite 投影是首屏时间线：工具信封按 toolCallId 合成、thought 正文
+// 占位、params._meta 收到回放真用的键。条数可以少于 full，msgSeq 与
+// _meta.lite.msgSeqEnd 给出补全闭区间。「补全」不是把一页重新回放进视图
+// （那会闪空滚动区、还会抢改 live 指针），而只是把工具 rawOutput/content
+// 和 thought 文本填回已经渲染好的行。
 //
 // 三条纪律：
 // - 幂等：同一区间补两次结果一致（正文来自同一份全量信封）；
@@ -55,8 +56,8 @@ function hostScope(s: ChatState): string {
 }
 
 /**
- * 本次历史请求该带的 `detail`：开关关闭、或该 host 已被判定不支持时返回
- * undefined——请求体里连键都不带，与今天的逐字节请求完全一致。
+ * 本次历史请求该带的 `detail`：直连 / 开关关闭 / 该 host 不支持时返回
+ * undefined——请求体里连键都不带，即逐字节 full。
  */
 export function historyDetailParam(get: () => ChatState): 'lite' | undefined {
   if (!currentLiteReplay()) return undefined
@@ -127,6 +128,52 @@ export function toolEntryLiteOmitted(e: ScrollEntry): boolean {
   )
 }
 
+export function thoughtEntryNeedsFill(
+  e: ScrollEntry,
+): e is Extract<ScrollEntry, { kind: 'thought' }> & { msgSeq: number; msgSeqEnd: number } {
+  if (e.kind !== 'thought') return false
+  if (!e.liteOmitted || e.liteOmitted <= 0) return false
+  if (e.liteState === 'filled') return false
+  return e.msgSeq != null && e.msgSeqEnd != null
+}
+
+export function thoughtEntryLiteOmitted(e: ScrollEntry): boolean {
+  return (
+    e.kind === 'thought' && !!e.liteOmitted && e.liteOmitted > 0 && e.liteState !== 'filled'
+  )
+}
+
+/** lite 页合成后条数 < 原窗口：用信封 msgSeq + lite.msgSeqEnd 还原闭区间。 */
+export function pageFillWindow(updates: unknown[]): FillWindow | undefined {
+  let min: number | undefined
+  let max: number | undefined
+  for (const env of updates) {
+    const seq = envelopeMsgSeq(env)
+    if (seq == null) continue
+    min = min == null ? seq : Math.min(min, seq)
+    max = max == null ? seq : Math.max(max, seq)
+    const mark = liteMarkFromEnv(env)
+    if (mark?.msgSeqEnd != null) max = Math.max(max, mark.msgSeqEnd)
+  }
+  if (min == null || max == null) return undefined
+  return { offset: min, limit: max - min + 1 }
+}
+
+function liteMarkFromEnv(env: unknown): { omitted: number; msgSeqEnd?: number } | undefined {
+  const up = (env as RawEnvelope)?.params?.update
+  if (!up) return undefined
+  const meta = (up as { _meta?: unknown })._meta
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return undefined
+  const lite = (meta as Record<string, unknown>).lite
+  if (!lite || typeof lite !== 'object' || Array.isArray(lite)) return undefined
+  const o = lite as Record<string, unknown>
+  const omitted = typeof o.omitted === 'number' && Number.isFinite(o.omitted) ? o.omitted : 0
+  const msgSeqEnd =
+    typeof o.msgSeqEnd === 'number' && Number.isFinite(o.msgSeqEnd) ? o.msgSeqEnd : undefined
+  if (omitted <= 0 && msgSeqEnd == null) return undefined
+  return { omitted, ...(msgSeqEnd != null ? { msgSeqEnd } : {}) }
+}
+
 /**
  * live 事件把真实正文并进了这条 lite 行之后的结账：所有被裁过的载体都不剩
  * 占位了，就把这行记成 filled 并抹掉 `_meta.lite`（图标少一格、占位与补全
@@ -172,7 +219,7 @@ export function liteFillSummary(s: ChatState): string {
   let loading = 0
   let failed = 0
   for (const e of s.entries ?? []) {
-    if (e.kind !== 'tool' || !e.liteOmitted || e.liteOmitted <= 0) continue
+    if ((e.kind !== 'tool' && e.kind !== 'thought') || !e.liteOmitted || e.liteOmitted <= 0) continue
     if (e.liteState === 'filled') continue
     if (e.liteState === 'loading') loading++
     else if (e.liteState === 'error') failed++
@@ -239,6 +286,52 @@ export function extractToolBodies(updates: unknown[]): Map<string, ToolBody> {
     }
   }
   return out
+}
+
+export type ThoughtRun = { msgSeq: number; msgSeqEnd: number; text: string }
+
+/** 从 detail=full 页里按连续 thought chunk 拼出各段正文。 */
+export function extractThoughtRuns(updates: unknown[]): ThoughtRun[] {
+  const out: ThoughtRun[] = []
+  let cur: ThoughtRun | null = null
+  const flush = () => {
+    if (cur && cur.text) out.push(cur)
+    cur = null
+  }
+  for (const env of updates) {
+    const up = (env as RawEnvelope)?.params?.update
+    if (up?.sessionUpdate !== 'agent_thought_chunk') {
+      flush()
+      continue
+    }
+    const seq = envelopeMsgSeq(env) ?? 0
+    let text = ''
+    for (const ev of envelopeToEvents(env)) {
+      if (ev.type === 'thought' && ev.text && ev.text !== '…') text += ev.text
+    }
+    if (!cur) cur = { msgSeq: seq, msgSeqEnd: seq, text }
+    else {
+      cur.msgSeqEnd = seq
+      cur.text += text
+    }
+  }
+  flush()
+  return out
+}
+
+function applyThoughtBodies(entries: ScrollEntry[], runs: ThoughtRun[]): ScrollEntry[] {
+  if (runs.length === 0) return entries
+  let changed = false
+  const next = entries.map((e) => {
+    if (e.kind !== 'thought' || e.liteState === 'filled' || !e.liteOmitted) return e
+    const seq = e.msgSeq
+    if (seq == null) return e
+    const run = runs.find((r) => r.msgSeq <= seq && seq <= r.msgSeqEnd)
+    if (!run?.text) return e
+    changed = true
+    return { ...e, text: run.text, liteState: 'filled' as const }
+  })
+  return changed ? next : entries
 }
 
 /** 合并正文进 body（后到覆盖先到，与逐条 `{...raw, ...update}` 同语义）。 */
@@ -338,7 +431,7 @@ function markLiteState(
 ): ScrollEntry[] {
   let changed = false
   const next = entries.map((e) => {
-    if (e.kind !== 'tool' || !ids.has(e.id)) return e
+    if ((e.kind !== 'tool' && e.kind !== 'thought') || !ids.has(e.id)) return e
     // 已填好的不回退；同状态不重复造对象（EntryView 的 memo 靠引用相等）。
     if (e.liteState === 'filled' || e.liteState === state) return e
     changed = true
@@ -351,8 +444,8 @@ function markLiteState(
 function countLiteOwed(entries: ScrollEntry[], ids: Set<string>): number {
   let n = 0
   for (const e of entries) {
-    if (e.kind !== 'tool' || !ids.has(e.id)) continue
-    if (toolEntryLiteOmitted(e)) n++
+    if (!ids.has(e.id)) continue
+    if (toolEntryLiteOmitted(e) || thoughtEntryLiteOmitted(e)) n++
   }
   return n
 }
@@ -365,11 +458,18 @@ function candidateIds(
   const want = only ? new Set(only) : null
   const out = new Set<string>()
   for (const e of entries) {
-    if (e.kind !== 'tool') continue
     if (want && !want.has(e.id)) continue
-    // 按 turnIndex 拉整轮时不需要行内坐标（正文按 toolCallId 匹配回填）；
-    // 按区间拉必须有 [msgSeq, msgSeqEnd]，否则连窗口都算不出来。
-    if (requireRange ? !toolEntryNeedsFill(e) : !toolEntryLiteOmitted(e)) continue
+    const owed =
+      e.kind === 'tool'
+        ? requireRange
+          ? toolEntryNeedsFill(e)
+          : toolEntryLiteOmitted(e)
+        : e.kind === 'thought'
+          ? requireRange
+            ? thoughtEntryNeedsFill(e)
+            : thoughtEntryLiteOmitted(e)
+          : false
+    if (!owed) continue
     out.add(e.id)
   }
   return out
@@ -501,7 +601,13 @@ export function fillToolBodies(
     }
     if (stale()) return
     const bodies = extractToolBodies(page.updates ?? [])
-    writeTarget(set, get, target, applyToolBodies(readTarget(get, target), bodies))
+    const thoughts = extractThoughtRuns(page.updates ?? [])
+    writeTarget(
+      set,
+      get,
+      target,
+      applyThoughtBodies(applyToolBodies(readTarget(get, target), bodies), thoughts),
+    )
     // 结账：这一批候选里仍欠正文的行（同指纹并行拒绝、或它的实例根本不在这
     // 一页里）必须从 loading 退下来。留在 loading 上是永久 spinner，而下面
     // 的 settled 只放行 error 重试 —— 那点第二次[加载]就彻底没反应了。
@@ -539,7 +645,16 @@ export function fillEntryRange(
 ): Promise<void> {
   const s = get()
   const e = readTarget(get, target).find((x) => x.id === entryId)
-  if (!e || e.kind !== 'tool' || !toolEntryNeedsFill(e)) return Promise.resolve()
+  const owed =
+    e &&
+    (e.kind === 'tool'
+      ? toolEntryNeedsFill(e)
+        ? e
+        : undefined
+      : e.kind === 'thought' && thoughtEntryNeedsFill(e)
+        ? e
+        : undefined)
+  if (!owed) return Promise.resolve()
   const sessionId = s.sessionId
   const cwd = s.cwd
   if (!sessionId || !cwd) return Promise.resolve()
@@ -547,7 +662,7 @@ export function fillEntryRange(
     sessionId,
     cwd,
     fetchSessionId: target.childSessionId ?? sessionId,
-    win: { offset: e.msgSeq!, limit: e.msgSeqEnd! - e.msgSeq! + 1 },
+    win: { offset: owed.msgSeq, limit: owed.msgSeqEnd - owed.msgSeq + 1 },
     target,
     entryIds: [entryId],
   })
@@ -603,9 +718,9 @@ export function fillLiteWindow(
 }
 
 /**
- * 一页 lite 渲染完后的后台补全（契约 [E]）：按**同一窗口**再拉一次
- * detail=full，只把工具正文填回已经渲染好的行。当前轮与上滑翻出来的更早轮
- * 都走这里。
+ * 一页 lite 渲染完后的后台补全：按**同一窗口**再拉一次 detail=full，把
+ * 工具正文和 thought 文本填回已经渲染好的行。当前轮走这里；更早轮只在
+ * 展开时按需拉。
  *
  * 不设预算闸门：host 真把这一页裁过（projected=lite）就补。被裁最多的恰恰是
  * 带后台任务 / 长流式输出的会话，闸门只会让它们整轮退化成逐条手点；传输成本
