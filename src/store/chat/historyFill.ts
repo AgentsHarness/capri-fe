@@ -39,9 +39,23 @@ const fillSettled = new Set<string>()
  * 待触发的后台补全（每页一个，键 = 窗口键）：idle 期才发，且串行排队——
  * 上滑连翻多页时不会同时压出多份整窗全量。
  */
-const pendingPageFills = new Map<string, { handle: number; run: () => void }>()
+type PendingFillRecord = {
+  handle: number
+  run: () => void
+  sessionId: string
+  cwd: string
+  win: FillWindow
+  target?: FillTarget
+  entryIds?: string[]
+}
+const pendingPageFills = new Map<string, PendingFillRecord>()
 const bgQueued = new Set<string>()
 let bgChain: Promise<void> = Promise.resolve()
+let activeStore: { set: SetState; get: () => ChatState } | null = null
+
+export function registerHistoryFillStore(set: SetState, get: () => ChatState): void {
+  activeStore = { set, get }
+}
 
 /** 一个补全窗口：offset/limit（更早轮 / 上滑翻页）或 turnIndex（当前轮）。 */
 export type FillWindow =
@@ -326,10 +340,17 @@ function applyThoughtBodies(entries: ScrollEntry[], runs: ThoughtRun[]): ScrollE
     if (e.kind !== 'thought' || e.liteState === 'filled' || !e.liteOmitted) return e
     const seq = e.msgSeq
     if (seq == null) return e
-    const run = runs.find((r) => r.msgSeq <= seq && seq <= r.msgSeqEnd)
-    if (!run?.text) return e
+    // 一条思考行的补全窗口是 [msgSeq, msgSeqEnd]。host 只在「连续
+    // agent_thought_chunk」间合成，被 usage_update / 隐藏注入打断时留多条
+    // run，而 FE 把它们并进了同一条目（指针不 seal）——窗口里会命中多段
+    // run。只取第一段会把思考截成开头几行，必须按序拼回全部重叠片段。
+    const end = e.msgSeqEnd ?? seq
+    const covered = runs.filter((r) => r.msgSeq <= end && seq <= r.msgSeqEnd && r.text)
+    if (covered.length === 0) return e
+    const text = covered.map((r) => r.text).join('')
+    if (!text) return e
     changed = true
-    return { ...e, text: run.text, liteState: 'filled' as const }
+    return { ...e, text, liteState: 'filled' as const }
   })
   return changed ? next : entries
 }
@@ -651,16 +672,16 @@ export function fillToolBodies(
   const items = readTarget(get, target)
   const ids = candidateIds(
     items,
-    req.background ? undefined : req.entryIds,
+    req.entryIds,
     // 后台补全的窗口由调用方给定（同一页的 turnIndex 或 offset/limit），正文
     // 按 toolCallId 回填 → 不要求行内有坐标（host 透传回退的整页就没有坐标，
     // 那种页照样能补）。只有用户手势的区间补需要坐标来算窗口。
     req.win.turnIndex == null && !req.background,
   )
   if (ids.size === 0) return Promise.resolve()
+  const running = fillInflight.get(key)
+  if (running) return running
   if (!req.background) {
-    const running = fillInflight.get(key)
-    if (running) return running
     const retryable = items.some(
       (e) => e.kind === 'tool' && ids.has(e.id) && e.liteState === 'error',
     )
@@ -731,14 +752,12 @@ export function fillToolBodies(
     // 的手势被 settled 挡掉，永远不再重试。
     if (!req.background) fillSettled.add(key)
   })()
+  fillInflight.set(key, run)
+  void run.finally(() => fillInflight.delete(key))
   if (req.background) {
     void run.finally(() =>
       set((s) => ({ liteFillBusy: Math.max(0, (s.liteFillBusy ?? 1) - 1) })),
     )
-  }
-  if (!req.background) {
-    fillInflight.set(key, run)
-    void run.finally(() => fillInflight.delete(key))
   }
   return run
 }
@@ -845,6 +864,7 @@ export function schedulePageFill(
   page: Pick<SessionHistoryPage, 'projected'> | undefined,
   win: FillWindow,
 ): void {
+  registerHistoryFillStore(set, get)
   if (page?.projected !== 'lite') return
   const sessionId = get().sessionId
   const cwd = get().cwd
@@ -867,19 +887,199 @@ export function schedulePageFill(
       })
       .finally(() => bgQueued.delete(key))
   }
-  pendingPageFills.set(key, { handle: runWhenIdle(run), run })
+  pendingPageFills.set(key, { handle: runWhenIdle(run), run, sessionId, cwd, win })
 }
 
 /**
- * 立刻发出所有排队中的后台补全（顶部进度图标上点一下 = 不等 idle）。
- * 已经在途的不受影响，只补还没发的。
+ * 从条目列表中提取出按轮次划分的未补全任务（每个包含待补全条目的轮次为一个任务）。
  */
-export function flushScheduledPageFills(): void {
+export function collectLiteTurnJobs(
+  entries: ScrollEntry[],
+  sessionId: string,
+  cwd: string,
+  target?: FillTarget,
+): {
+  win: FillWindow
+  entryIds: string[]
+  sessionId: string
+  cwd: string
+  target?: FillTarget
+}[] {
+  if (!sessionId || !cwd || !entries.length) return []
+
+  // 按 user 消息划分轮次（排除 shell 直执行行）
+  const turns: ScrollEntry[][] = []
+  let current: ScrollEntry[] = []
+  for (const e of entries) {
+    if (e.kind === 'user' && !e.isShell) {
+      if (current.length > 0) turns.push(current)
+      current = [e]
+    } else {
+      current.push(e)
+    }
+  }
+  if (current.length > 0) turns.push(current)
+
+  const jobs: {
+    win: FillWindow
+    entryIds: string[]
+    sessionId: string
+    cwd: string
+    target?: FillTarget
+  }[] = []
+
+  for (let i = 0; i < turns.length; i++) {
+    const turn = turns[i]
+    const liteItems = turn.filter(
+      (e) =>
+        (e.kind === 'tool' || e.kind === 'thought') &&
+        !!e.liteOmitted &&
+        e.liteOmitted > 0 &&
+        e.liteState !== 'filled',
+    )
+    if (liteItems.length === 0) continue
+
+    let minSeq: number | undefined
+    let maxSeq: number | undefined
+    for (const item of liteItems) {
+      if (item.msgSeq != null) {
+        minSeq = minSeq == null ? item.msgSeq : Math.min(minSeq, item.msgSeq)
+        const end = item.msgSeqEnd ?? item.msgSeq
+        maxSeq = maxSeq == null ? end : Math.max(maxSeq, end)
+      }
+    }
+
+    if (minSeq != null && maxSeq != null) {
+      jobs.push({
+        win: { offset: minSeq, limit: maxSeq - minSeq + 1 },
+        entryIds: liteItems.map((e) => e.id),
+        sessionId,
+        cwd,
+        target,
+      })
+    } else {
+      const reverseIdx = turns.length - i
+      jobs.push({
+        win: { turnIndex: Math.max(1, reverseIdx) },
+        entryIds: liteItems.map((e) => e.id),
+        sessionId,
+        cwd,
+        target,
+      })
+    }
+  }
+
+  return jobs
+}
+
+/**
+ * 主动拉取 full 进行正文补全：取消排队中的 idle 延时，计算当前视图中所有
+ * 包含未补全条目的 lite 轮，并发发起 detail=full 补全。
+ */
+export async function flushScheduledPageFills(
+  set?: SetState,
+  get?: () => ChatState,
+): Promise<void> {
+  const currentSet = typeof set === 'function' ? set : activeStore?.set
+  const currentGet = typeof get === 'function' ? get : activeStore?.get
+  if (!currentSet || !currentGet) return
+
+  const s = currentGet()
+  const sessionId = s.sessionId
+  const cwd = s.cwd
+  if (!sessionId || !cwd) return
+
   const w = window as IdleWindow
-  const waiting = [...pendingPageFills.values()]
+  const scheduledList = [...pendingPageFills.values()]
   pendingPageFills.clear()
-  for (const { handle } of waiting) cancelIdleTask(w, handle)
-  for (const { run } of waiting) run()
+  for (const record of scheduledList) cancelIdleTask(w, record.handle)
+
+  const jobMap = new Map<
+    string,
+    {
+      win: FillWindow
+      entryIds?: string[]
+      sessionId: string
+      cwd: string
+      target?: FillTarget
+    }
+  >()
+
+  // 1. 先加入之前 pendingPageFills 里的窗口（包含通过 pageFillWindow 精确计算过的整窗）
+  for (const record of scheduledList) {
+    if (record.sessionId === sessionId && record.cwd === cwd) {
+      const key = windowKey(record.sessionId, record.win)
+      jobMap.set(key, {
+        win: record.win,
+        entryIds: record.entryIds,
+        sessionId: record.sessionId,
+        cwd: record.cwd,
+        target: record.target,
+      })
+    }
+  }
+
+  // 2. 扫描主滚动区 entries 中的所有 lite 轮
+  const mainJobs = collectLiteTurnJobs(s.entries ?? [], sessionId, cwd)
+  for (const job of mainJobs) {
+    const covered = scheduledList.some((rec) => {
+      if (rec.sessionId !== sessionId || rec.cwd !== cwd) return false
+      if (rec.win.turnIndex != null && job.win.turnIndex != null) {
+        return rec.win.turnIndex === job.win.turnIndex
+      }
+      if (
+        rec.win.offset != null &&
+        rec.win.limit != null &&
+        job.win.offset != null &&
+        job.win.limit != null
+      ) {
+        const recEnd = rec.win.offset + rec.win.limit - 1
+        const jobEnd = job.win.offset + job.win.limit - 1
+        return rec.win.offset <= job.win.offset && recEnd >= jobEnd
+      }
+      return false
+    })
+    if (!covered) {
+      const key = windowKey(sessionId, job.win)
+      if (!jobMap.has(key)) {
+        jobMap.set(key, job)
+      }
+    }
+  }
+
+  // 3. 扫描子代理视图 subagentViews 中的所有 lite 轮
+  for (const [childSid, view] of Object.entries(s.subagentViews ?? {})) {
+    const childJobs = collectLiteTurnJobs(view.items ?? [], sessionId, cwd, {
+      childSessionId: childSid,
+    })
+    for (const job of childJobs) {
+      const key = windowKey(childSid, job.win)
+      if (!jobMap.has(key)) {
+        jobMap.set(key, { ...job, sessionId })
+      }
+    }
+  }
+
+  const allJobs = [...jobMap.values()]
+  if (allJobs.length === 0) return
+
+  if (import.meta.env.DEV) {
+    console.info(`[capri lite] 主动并发补全 ${allJobs.length} 个 lite 轮`)
+  }
+
+  await Promise.all(
+    allJobs.map((job) =>
+      fillToolBodies(currentSet, currentGet, {
+        sessionId: job.sessionId,
+        cwd: job.cwd,
+        fetchSessionId: job.target?.childSessionId ?? job.sessionId,
+        win: job.win,
+        target: job.target,
+        entryIds: job.entryIds,
+        background: true,
+      }),
+    ),
+  )
 }
 
 type IdleWindow = Window & {

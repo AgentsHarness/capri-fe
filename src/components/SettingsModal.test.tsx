@@ -280,6 +280,20 @@ describe('SettingsModal', () => {
     expect(btn().textContent).toContain('off')
   })
 
+  it('前端偏好：auto_todo_new_session 切换', async () => {
+    openModal()
+    render(<SettingsModal />)
+    await waitFor(() => expect(screen.getByTitle('auto_todo_new_session')).not.toBeNull())
+    const btn = () => screen.getByTitle('发起新对话时自动将其设为待办，改动即时生效')
+    // 默认 off；点击开启
+    expect(btn().textContent).toContain('off')
+    fireEvent.click(btn())
+    expect(btn().textContent).toContain('on')
+    // 再次点击关闭
+    fireEvent.click(btn())
+    expect(btn().textContent).toContain('off')
+  })
+
 it('前端偏好：default_selected_permission 默认高亮 + 点击持久化', async () => {
     openModal()
     render(<SettingsModal />)

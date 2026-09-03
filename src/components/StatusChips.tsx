@@ -365,8 +365,10 @@ export function LiteFillChip() {
   return (
     <button
       type="button"
-      onClick={flushScheduledPageFills}
-      className={`shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums hover:bg-gn-bg-highlight ${
+      onClick={() => {
+        void flushScheduledPageFills()
+      }}
+      className={`shrink-0 cursor-pointer whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums hover:bg-gn-bg-highlight ${
         failed > 0 ? 'text-gn-warning' : 'text-gn-gray-dim'
       }`}
       title={

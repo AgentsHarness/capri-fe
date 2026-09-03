@@ -750,6 +750,8 @@ export interface ChatUiState {
   fillToolEntryDetail: (entryId: string) => Promise<void>
   /** 整窗补全：一次展开一片的入口（Diff 审查弹窗打开时调）。 */
   fillLiteToolBodies: (opts?: { editOnly?: boolean }) => Promise<void>
+  /** 主动拉取 full 进行正文补全：并发补全当前视图所有包含待补全条目的 lite 轮。 */
+  flushLiteFills: () => Promise<void>
   toggleTool: (id: string) => void
   toggleThought: (id: string) => void
   /** Expand/collapse long user prompts (←/→ / click). */

@@ -56,6 +56,8 @@ export type FePrefsDoc = {
   collapseToolGroups?: boolean
   /** 精简回放（历史只裁工具正文）。缺省 = 未显式选过 = 按部署模式取默认。 */
   liteReplay?: boolean
+  /** 发起新对话自动设置为待办（默认 false）。 */
+  autoTodoNewSession?: boolean
 }
 
 
