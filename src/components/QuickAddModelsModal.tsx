@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Boxes, Eye, EyeOff, LoaderCircle, RefreshCw, Search, Sparkles, X, Zap } from 'lucide-react'
+import { Boxes, Eye, EyeOff, LoaderCircle, RefreshCw, Search, X, Zap } from 'lucide-react'
 import { transport } from '../api/client'
 import type { CustomModelConfig } from '../api/types'
 import { pushToast } from '../store/toast'
@@ -9,8 +9,17 @@ import {
   generateModelConfigKey,
   fetchRemoteModels,
   getModelsDevMap,
+  getEffortCandidates,
+  getLimitCandidates,
   type DiscoveredModel,
 } from '../lib/quickAddModels'
+
+/** effort 展示排序：none < minimal < low < medium < high < xhigh < max < 其他按字母序 */
+const EFFORT_ORDER = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+function effortRank(v: string): number {
+  const i = EFFORT_ORDER.indexOf(v)
+  return i === -1 ? EFFORT_ORDER.length + v.charCodeAt(0) : i
+}
 
 export function QuickAddModelsModal({
   isOpen,
@@ -31,8 +40,10 @@ export function QuickAddModelsModal({
   const [apiKey, setApiKey] = useState('')
   const [apiBackend, setApiBackend] = useState<CustomModelConfig['api_backend']>('chat_completions')
   const [showKey, setShowKey] = useState(false)
+  // 两步选端点：先选 baseUrl，再选该端点下的模型 → 用（baseUrl, 模型）命中的本地配置回填 key
+  const [selectedModelOnEndpoint, setSelectedModelOnEndpoint] = useState('')
 
-  // 当选择已有端点时自动填充；切到自定义端点时清空上次残留的 Base URL / API Key
+  // 当选择已有端点时填充 base URL；切到自定义端点时清空残留
   useEffect(() => {
     if (selectedEndpointKey === 'custom') {
       setCustomBaseUrl('')
@@ -46,6 +57,38 @@ export function QuickAddModelsModal({
       if (ep.apiBackend) setApiBackend(ep.apiBackend)
     }
   }, [selectedEndpointKey, endpoints])
+
+  // 当前端点下已配置的模型（供第二步选择）
+  const endpointModelOptions = useMemo(() => {
+    const url = customBaseUrl.trim().replace(/\/+$/, '')
+    if (!url) return [] as string[]
+    const seen = new Set<string>()
+    for (const m of existingModels) {
+      if (m.base_url?.trim().replace(/\/+$/, '') !== url) continue
+      const id = m.model || m.id
+      if (id) seen.add(id)
+    }
+    return Array.from(seen)
+  }, [customBaseUrl, existingModels])
+
+  // 选 baseUrl 后重置模型选择；选模型后用（baseUrl, 模型）命中的本地配置回填 key/后端
+  useEffect(() => {
+    setSelectedModelOnEndpoint('')
+  }, [customBaseUrl])
+
+  useEffect(() => {
+    if (!selectedModelOnEndpoint) return
+    const url = customBaseUrl.trim().replace(/\/+$/, '')
+    const hit = existingModels.find(
+      (m) =>
+        m.base_url?.trim().replace(/\/+$/, '') === url &&
+        (m.model === selectedModelOnEndpoint || m.id === selectedModelOnEndpoint),
+    )
+    if (hit) {
+      setApiKey(hit.api_key || '')
+      if (hit.api_backend) setApiBackend(hit.api_backend)
+    }
+  }, [selectedModelOnEndpoint, customBaseUrl, existingModels])
 
   const [fetching, setFetching] = useState(false)
   const [fetchError, setFetchError] = useState<string | null>(null)
@@ -101,10 +144,15 @@ export function QuickAddModelsModal({
           devMap.get(m.id.split('/').pop()?.toLowerCase() || '')
 
         const name = matched?.name || m.name || m.id
-        const contextWindow =
-          matched?.limit?.context || m.context_window || 200000
-        const maxCompletionTokens = matched?.limit?.output
         const supportsReasoning = Boolean(matched?.reasoning)
+
+        // 各 provider 上报的 context/output 组（可能不一致），默认选上报 provider 最多的一组
+        const limitCands = getLimitCandidates(m.id)
+        const chosenLimit = limitCands?.groups[0]
+        const contextWindow =
+          chosenLimit?.context ?? matched?.limit?.context ?? m.context_window ?? 200000
+        const maxCompletionTokens =
+          chosenLimit?.output ?? matched?.limit?.output
 
         let reasoningEfforts: DiscoveredModel['reasoningEfforts'] = undefined
         if (matched?.reasoning_options) {
@@ -116,6 +164,14 @@ export function QuickAddModelsModal({
             }))
           }
         }
+
+        // 各 provider 上报的 effort 档位组（可能不一致），默认选上报 provider 最多的一组
+        const candidates = getEffortCandidates(m.id)
+        const selectedEfforts = candidates
+          ? [...(candidates.groups[0]?.values ?? [])].sort(effortRank)
+          : reasoningEfforts
+            ? reasoningEfforts.map((e) => e.value)
+            : undefined
 
         const isExisting = existingModels.some(
           (em) =>
@@ -131,6 +187,9 @@ export function QuickAddModelsModal({
           maxCompletionTokens,
           supportsReasoning,
           reasoningEfforts,
+          effortChoices: candidates?.groups.length ? candidates.groups : undefined,
+          selectedEfforts,
+          limitChoices: limitCands?.groups.length ? limitCands.groups : undefined,
           isExisting,
           matchedDev: Boolean(matched),
         }
@@ -195,6 +254,33 @@ export function QuickAddModelsModal({
     )
   }
 
+  // 整组选用某 provider 上报的 effort 档位
+  const selectEffortGroup = (remoteId: string, values: string[]) => {
+    setDiscoveredModels((prev) =>
+      prev.map((m) =>
+        m.remoteId === remoteId ? { ...m, selectedEfforts: [...values].sort(effortRank) } : m,
+      ),
+    )
+  }
+
+  // 整组选用某 provider 上报的 context/output 上限
+  const selectLimitGroup = (
+    remoteId: string,
+    choice: { context?: number; output?: number },
+  ) => {
+    setDiscoveredModels((prev) =>
+      prev.map((m) =>
+        m.remoteId === remoteId
+          ? {
+              ...m,
+              contextWindow: choice.context ?? m.contextWindow,
+              maxCompletionTokens: choice.output ?? m.maxCompletionTokens,
+            }
+          : m,
+      ),
+    )
+  }
+
   // 保存所选模型
   const handleSaveSelected = async () => {
     if (selectedRemoteIds.size === 0) return
@@ -214,8 +300,13 @@ export function QuickAddModelsModal({
           context_window: item.contextWindow,
           ...(item.maxCompletionTokens ? { max_completion_tokens: item.maxCompletionTokens } : {}),
           ...(item.supportsReasoning ? { supports_reasoning_effort: true } : {}),
-          ...(item.reasoningEfforts && item.reasoningEfforts.length > 0
-            ? { reasoning_efforts: item.reasoningEfforts }
+          ...(item.selectedEfforts && item.selectedEfforts.length > 0
+            ? {
+                reasoning_efforts: item.selectedEfforts.map((v) => ({
+                  value: v,
+                  label: v,
+                })),
+              }
             : {}),
         }
         await transport.upsertCustomModel(cfg)
@@ -304,6 +395,27 @@ export function QuickAddModelsModal({
                   </select>
                 </label>
               </div>
+            )}
+
+            {/* 第二步：选定 baseUrl 后，从该端点已配置的模型中选择，自动回填对应的 apiKey */}
+            {endpointModelOptions.length > 0 && (
+              <label className="block">
+                <span className="text-[10.5px] text-gn-muted">
+                  该端点已配置的模型（选中后自动回填对应的 API Key / 后端类型）
+                </span>
+                <select
+                  value={selectedModelOnEndpoint}
+                  onChange={(e) => setSelectedModelOnEndpoint(e.target.value)}
+                  className="mt-0.5 w-full rounded border border-gn-prompt-border bg-gn-bg-base px-2 py-1 text-[11.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
+                >
+                  <option value="">选择模型…</option>
+                  {endpointModelOptions.map((mo) => (
+                    <option key={mo} value={mo}>
+                      {mo}
+                    </option>
+                  ))}
+                </select>
+              </label>
             )}
 
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -464,15 +576,6 @@ export function QuickAddModelsModal({
                                 <span>models.dev</span>
                               </span>
                             )}
-                            {item.supportsReasoning && (
-                              <span className="flex items-center gap-0.5 rounded bg-gn-yellow/15 px-1.5 py-px text-[9.5px] text-gn-yellow font-medium">
-                                <Sparkles className="h-2.5 w-2.5" />
-                                <span>思考推理</span>
-                              </span>
-                            )}
-                            <span className="rounded bg-gn-bg-dark border border-gn-prompt-border/40 px-1.5 py-px text-[9.5px] tabular-nums text-gn-fg2">
-                              {Math.round(item.contextWindow / 1000)}k 上下文
-                            </span>
                           </div>
 
                           <div className="flex items-center gap-1.5 text-[10px] text-gn-gutter font-mono">
@@ -487,6 +590,64 @@ export function QuickAddModelsModal({
                             />
                             <span>]</span>
                           </div>
+
+                          {/* 思考强度：各 provider 上报的整组档位，下拉选一组（默认多数组） */}
+                          {item.effortChoices && item.effortChoices.length > 0 && (
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[9.5px] text-gn-muted">思考强度：</span>
+                              <select
+                                value={item.effortChoices.findIndex(
+                                  (g) =>
+                                    g.values.length === item.selectedEfforts?.length &&
+                                    g.values.every((v) => item.selectedEfforts?.includes(v)),
+                                )}
+                                onChange={(e) =>
+                                  selectEffortGroup(
+                                    item.remoteId,
+                                    item.effortChoices![Number(e.target.value)].values,
+                                  )
+                                }
+                                className="rounded border border-gn-prompt-border/40 bg-gn-bg-base px-1 py-px text-[9.5px] font-mono text-gn-fg outline-none focus:border-gn-prompt-border cursor-pointer"
+                              >
+                                {item.effortChoices.map((g, gi) => (
+                                  <option key={g.values.join(',')} value={gi}>
+                                    {g.values.join('/')}
+                                    {g.providers.length > 0 && ` ×${g.providers.length}`}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          )}
+
+                          {/* 上下文/输出上限：各 provider 上报的整组数值，下拉选一组（默认多数组） */}
+                          {item.limitChoices && item.limitChoices.length > 1 && (
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[9.5px] text-gn-muted">上下文/输出：</span>
+                              <select
+                                value={item.limitChoices.findIndex(
+                                  (g) =>
+                                    g.context === item.contextWindow &&
+                                    g.output === item.maxCompletionTokens,
+                                )}
+                                onChange={(e) =>
+                                  selectLimitGroup(
+                                    item.remoteId,
+                                    item.limitChoices![Number(e.target.value)],
+                                  )
+                                }
+                                className="rounded border border-gn-prompt-border/40 bg-gn-bg-base px-1 py-px text-[9.5px] font-mono text-gn-fg outline-none focus:border-gn-prompt-border cursor-pointer"
+                              >
+                                {item.limitChoices.map((g, gi) => (
+                                  <option key={`${g.context}/${g.output}`} value={gi}>
+                                    {(g.context ? `${Math.round(g.context / 1000)}k` : '?') +
+                                      ' / ' +
+                                      (g.output ? `${Math.round(g.output / 1000)}k` : '?') +
+                                      ` ×${g.providers.length}`}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          )}
                         </div>
                       </div>
                     )

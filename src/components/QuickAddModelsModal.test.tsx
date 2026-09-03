@@ -5,6 +5,7 @@ import {
   extractEndpoints,
   generateModelConfigKey,
   fetchRemoteModels,
+  resetModelsDevCacheForTest,
 } from '../lib/quickAddModels'
 import type { CustomModelConfig } from '../api/types'
 import { useToastStore } from '../store/toast'
@@ -122,6 +123,7 @@ describe('QuickAddModelsModal component', () => {
   beforeEach(() => {
     useToastStore.setState({ toasts: [] })
     vi.mocked(transport.upsertCustomModel).mockReset()
+    resetModelsDevCacheForTest()
   })
 
   it('renders modal with extracted endpoint and allows fetching models', async () => {
@@ -190,7 +192,6 @@ describe('QuickAddModelsModal component', () => {
 
     // deepseek-chat was existing, deepseek-reasoner was new
     expect(screen.getByText('已配置')).toBeDefined() // for deepseek-chat
-    expect(screen.getAllByText('128k 上下文')).toHaveLength(2)
 
     // Unadded model (deepseek-reasoner) should be selected by default
     const addBtn = screen.getByRole('button', { name: /添加所选模型 \(1\)/ })
@@ -219,5 +220,233 @@ describe('QuickAddModelsModal component', () => {
     })
 
     globalThis.fetch = originalFetch
+  })
+
+  it('shows per-provider effort groups, defaults to majority group, and lets user pick another', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = vi.fn(async (url) => {
+      const urlStr = String(url)
+      if (urlStr.includes('models.dev')) {
+        return {
+          ok: true,
+          json: async () => ({
+            // providerA×2 上报 low/high/max（多数组）；requesty 上报 none/low/medium/high/max
+            canonical: {
+              models: {
+                'glm-5.3': {
+                  id: 'glm-5.3',
+                  name: 'GLM-5.3',
+                  reasoning: true,
+                  reasoning_options: [{ type: 'effort', values: ['low', 'high', 'max'] }],
+                  limit: { context: 1000000, output: 131072 },
+                },
+              },
+            },
+            zai: {
+              models: {
+                'glm-5.3': {
+                  id: 'glm-5.3',
+                  name: 'GLM-5.3',
+                  reasoning: true,
+                  reasoning_options: [{ type: 'effort', values: ['low', 'high', 'max'] }],
+                },
+              },
+            },
+            requesty: {
+              models: {
+                'glm-5.3': {
+                  id: 'glm-5.3',
+                  name: 'GLM-5.3 (R)',
+                  reasoning: true,
+                  reasoning_options: [
+                    { type: 'effort', values: ['none', 'low', 'medium', 'high', 'max'] },
+                  ],
+                },
+              },
+            },
+          }),
+        } as Response
+      }
+      return {
+        ok: true,
+        json: async () => ({ data: [{ id: 'glm-5.3' }] }),
+      } as Response
+    })
+
+    render(
+      <QuickAddModelsModal
+        isOpen={true}
+        onClose={vi.fn()}
+        existingModels={[]}
+        onAdded={vi.fn()}
+      />,
+    )
+
+    // 无已有端点时需手填 Base URL
+    fireEvent.change(screen.getByPlaceholderText('https://api.deepseek.com/v1'), {
+      target: { value: 'https://api.example.com/v1' },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '获取模型列表' }))
+
+    // 下拉框渲染出两组候选；默认选中多数组 low/high/max（×2 家 provider）
+    await waitFor(() => {
+      expect(screen.getByText('思考强度：')).toBeDefined()
+    })
+    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
+    expect(select.value).toBe('0')
+    const optionTexts = Array.from(select.querySelectorAll('option')).map((o) => o.textContent)
+    expect(optionTexts).toEqual(['low/high/max ×2', 'none/low/medium/high/max ×1'])
+
+    // 用户改选 requesty 上报的那组（含 medium）
+    fireEvent.change(select, { target: { value: '1' } })
+
+    fireEvent.click(screen.getByRole('button', { name: /添加所选模型 \(1\)/ }))
+
+    await waitFor(() => {
+      expect(transport.upsertCustomModel).toHaveBeenCalledTimes(1)
+      const callArg = vi.mocked(transport.upsertCustomModel).mock.calls[0][0]
+      expect(callArg.reasoning_efforts).toEqual(
+        ['none', 'low', 'medium', 'high', 'max'].map((v) =>
+          expect.objectContaining({ value: v }),
+        ),
+      )
+    })
+
+    globalThis.fetch = originalFetch
+  })
+
+  it('shows per-provider limit groups, defaults to majority, and lets user pick another', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = vi.fn(async (url) => {
+      const urlStr = String(url)
+      if (urlStr.includes('models.dev')) {
+        return {
+          ok: true,
+          json: async () => ({
+            // canonical×2 上报 1M/128k（多数组）；crof 只报 256k/16k（裁剪版）
+            canonical: {
+              models: {
+                'glm-5.2': {
+                  id: 'glm-5.2',
+                  name: 'GLM-5.2',
+                  reasoning: true,
+                  limit: { context: 1000000, output: 131072 },
+                },
+              },
+            },
+            zai: {
+              models: {
+                'glm-5.2': {
+                  id: 'glm-5.2',
+                  name: 'GLM-5.2',
+                  limit: { context: 1000000, output: 131072 },
+                },
+              },
+            },
+            crof: {
+              models: {
+                'glm-5.2': {
+                  id: 'glm-5.2',
+                  name: 'GLM-5.2 (C)',
+                  limit: { context: 256000, output: 16384 },
+                },
+              },
+            },
+          }),
+        } as Response
+      }
+      return {
+        ok: true,
+        json: async () => ({ data: [{ id: 'glm-5.2' }] }),
+      } as Response
+    })
+
+    render(
+      <QuickAddModelsModal
+        isOpen={true}
+        onClose={vi.fn()}
+        existingModels={[]}
+        onAdded={vi.fn()}
+      />,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText('https://api.deepseek.com/v1'), {
+      target: { value: 'https://api.example.com/v1' },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '获取模型列表' }))
+
+    // 默认取多数组：下拉渲染且默认选中 1000k/131k ×2
+    await waitFor(() => {
+      expect(screen.getByRole('combobox')).toBeDefined()
+    })
+    const select = screen.getByRole('combobox') as HTMLSelectElement
+    expect(select.value).toBe('0')
+    const optionTexts = Array.from(select.querySelectorAll('option')).map((o) => o.textContent)
+    expect(optionTexts).toEqual(['1000k / 131k ×2', '256k / 16k ×1'])
+
+    // 用户改选 crof 上报的裁剪版
+    fireEvent.change(select, { target: { value: '1' } })
+    expect(select.value).toBe('1')
+
+    fireEvent.click(screen.getByRole('button', { name: /添加所选模型 \(1\)/ }))
+
+    await waitFor(() => {
+      expect(transport.upsertCustomModel).toHaveBeenCalledTimes(1)
+      const callArg = vi.mocked(transport.upsertCustomModel).mock.calls[0][0]
+      expect(callArg.context_window).toBe(256000)
+      expect(callArg.max_completion_tokens).toBe(16384)
+    })
+
+    globalThis.fetch = originalFetch
+  })
+
+  it('selecting a model on the endpoint fills its saved api key and backend', async () => {
+    // 同一端点下两个模型各带不同的 key
+    const models: CustomModelConfig[] = [
+      {
+        id: 'a',
+        model: 'glm-5.3',
+        base_url: 'https://api.example.com/v1',
+        api_key: 'sk-glm',
+        api_backend: 'chat_completions',
+      },
+      {
+        id: 'b',
+        model: 'kimi-k3',
+        base_url: 'https://api.example.com/v1',
+        api_key: 'sk-kimi',
+        api_backend: 'messages',
+      },
+    ]
+
+    render(
+      <QuickAddModelsModal
+        isOpen={true}
+        onClose={vi.fn()}
+        existingModels={models}
+        onAdded={vi.fn()}
+      />,
+    )
+
+    // 第一步：选 baseUrl（端点下拉）
+    fireEvent.change(screen.getByDisplayValue('https://api.example.com/v1'), {
+      target: { value: 'https://api.example.com/v1' },
+    })
+
+    // 第二步：该端点下的模型下拉出现，选中 kimi-k3
+    const modelSelect = await screen.findByRole('combobox', {
+      name: /该端点已配置的模型/,
+    }) as HTMLSelectElement
+    expect(Array.from(modelSelect.querySelectorAll('option')).map((o) => o.value)).toEqual(
+      expect.arrayContaining(['', 'glm-5.3', 'kimi-k3']),
+    )
+    fireEvent.change(modelSelect, { target: { value: 'kimi-k3' } })
+
+    // 第三步：apiKey/backend 自动回填为 kimi-k3 条目的值
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('sk-kimi')).toBeDefined()
+    })
   })
 })
