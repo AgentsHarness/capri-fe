@@ -127,7 +127,7 @@ beforeEach(async () => {
     pinnedWorkspaces: new Set<string>(),
     pinnedSessions: new Set<string>(),
     todos: {},
-    fePrefs: { collapseToolGroups: true, liteReplay: false },
+    fePrefs: { collapseToolGroups: true, liteReplay: false, autoTodoNewSession: false },
   })
   vi.mocked(transport.prefsOrigin).mockReturnValue('')
   vi.mocked(transport.getPrefs).mockRejectedValue(new Error('未编排'))
@@ -173,11 +173,24 @@ describe('本地置顶/待办', () => {
 
   it('setFePrefs 局部合并，且 liteReplay 被显式选过后才进投影', () => {
     usePins.getState().setFePrefs({ collapseToolGroups: false })
-    expect(usePins.getState().fePrefs).toEqual({ collapseToolGroups: false, liteReplay: false })
+    expect(usePins.getState().fePrefs).toEqual({
+      collapseToolGroups: false,
+      liteReplay: false,
+      autoTodoNewSession: false,
+    })
     expect(liveKeys(localEntries())).toEqual([feKey('collapseToolGroups')])
 
     usePins.getState().setFePrefs({ liteReplay: true })
     expect(aliveKey(localEntries(), feKey('liteReplay'))).toBe(true)
+  })
+
+  it('setFePrefs autoTodoNewSession 开启后进条目并投影', () => {
+    expect(usePins.getState().fePrefs.autoTodoNewSession).toBe(false)
+    usePins.getState().setFePrefs({ autoTodoNewSession: true })
+    expect(usePins.getState().fePrefs.autoTodoNewSession).toBe(true)
+    expect(aliveKey(localEntries(), feKey('autoTodoNewSession'))).toBe(true)
+    usePins.getState().setFePrefs({ autoTodoNewSession: false })
+    expect(usePins.getState().fePrefs.autoTodoNewSession).toBe(false)
   })
 
   it('变更经 500ms 防抖合并为一次回写，文档同时带投影与条目', async () => {

@@ -566,6 +566,7 @@ function AskTimeoutSection({
 function FePrefsSection() {
   const collapseToolGroups = useFePrefs((s) => s.fePrefs.collapseToolGroups)
   const liteReplay = useLiteReplay()
+  const autoTodoNewSession = useFePrefs((s) => s.fePrefs.autoTodoNewSession)
   useChatStore((s) => s.selectedHostId)
   const viaRelay = historyViaHubRelay()
   const setFePrefs = useFePrefs((s) => s.setFePrefs)
@@ -641,6 +642,36 @@ function FePrefsSection() {
           <div className="mt-0.5 text-[10.5px] leading-snug text-gn-gutter">
             精简回放 · 仅 hub 中转生效。开：先拉精简时间线再补全文，切会话更快。
             关：整页全量。直连本机（纯 local / 近路）始终全量，不走 lite+full。
+          </div>
+        </div>
+      </div>
+      <div className="flex items-start gap-3 px-4 py-1.5">
+        <span
+          className="w-48 shrink-0 pt-0.5 font-mono text-[11.5px] text-gn-muted"
+          title="auto_todo_new_session"
+        >
+          auto_todo_new_session
+        </span>
+        <div className="min-w-0 flex-1">
+          <button
+            type="button"
+            onClick={() => setFePrefs({ autoTodoNewSession: !autoTodoNewSession })}
+            className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-px text-[10.5px] ${
+              autoTodoNewSession
+                ? 'border-gn-green/60 text-gn-green'
+                : 'border-gn-prompt-border text-gn-muted'
+            } hover:bg-gn-bg-highlight`}
+            title="发起新对话时自动将其设为待办，改动即时生效"
+          >
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${
+                autoTodoNewSession ? 'bg-gn-green' : 'bg-gn-gutter'
+              }`}
+            />
+            {autoTodoNewSession ? 'on' : 'off'}
+          </button>
+          <div className="mt-0.5 text-[10.5px] leading-snug text-gn-gutter">
+            新对话自动设为待办 · 开：新建会话后自动将其标记为待办，方便跟踪未完成事项；关：新会话默认为普通状态。与置顶/待办同一 hub prefs 通道，跨端同步即时生效。
           </div>
         </div>
       </div>

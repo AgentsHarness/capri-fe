@@ -15,6 +15,7 @@ import { clearSuppressedTools } from '../tools'
 import { resetSessionState } from '../reset'
 import { clearStreamBuf } from '../stream'
 import { KEY } from '../../../lib/keys'
+import { usePins } from '../../historyPins'
 
 /** workspace-list-recent 每页条数（初始 limit，「加载更多」每次 +50）。 */
 const WORKSPACE_RECENT_PAGE = 50
@@ -427,6 +428,9 @@ export function sessionActions(set: SetState, get: () => ChatState) {
         lastCompletedTurn: undefined,
         liveStream: null,
       })
+      if (usePins.getState().fePrefs.autoTodoNewSession) {
+        usePins.getState().setTodoStatus(sid, 'todo')
+      }
       // 状态栏 git 分支不会自己回来：resetSessionState 清掉了 gitInfo，
       // 而 host 为新会话广播的 ready 在 POST 响应之前发出（先 Broadcast
       // 再写响应），到达时本端尚未锚定 sid、被 ready 守卫当"非当前会话"

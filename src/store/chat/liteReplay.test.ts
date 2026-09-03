@@ -706,6 +706,197 @@ describe('只填工具正文的补全', () => {
     expect(e.liteState).toBeUndefined()
     expect(toolEntryLitePending(e)).toBe(true)
   })
+
+  it('多轮 lite 场景：识别有多少个 lite 轮，并发发起 full 请求补全', async () => {
+    // 构造多轮 entries：Turn 1（带 lite 工具）、Turn 2（无 lite）、Turn 3（带 lite 工具）
+    const t1Tool: ScrollEntry = {
+      id: 't-turn1',
+      kind: 'tool',
+      title: 'ReadFile file1.txt',
+      kindName: 'read_file',
+      status: 'completed',
+      toolCallId: 'tc-turn1',
+      msgSeq: 10,
+      msgSeqEnd: 15,
+      liteOmitted: 1024,
+      raw: {
+        toolCallId: 'tc-turn1',
+        kind: 'read_file',
+        status: 'completed',
+        rawOutput: { ReadFile: { output: { omitted: 1024 } } },
+        _meta: { lite: { omitted: 1024, fields: ['rawOutput.output'] } },
+      } as unknown as ToolCall,
+    }
+    const t3Tool: ScrollEntry = {
+      id: 't-turn3',
+      kind: 'tool',
+      title: 'Bash build.sh',
+      kindName: 'execute',
+      status: 'completed',
+      toolCallId: 'tc-turn3',
+      msgSeq: 50,
+      msgSeqEnd: 55,
+      liteOmitted: 2048,
+      raw: {
+        toolCallId: 'tc-turn3',
+        kind: 'execute',
+        status: 'completed',
+        rawOutput: { Bash: { output: { omitted: 2048 } } },
+        _meta: { lite: { omitted: 2048, fields: ['rawOutput.output'] } },
+      } as unknown as ToolCall,
+    }
+
+    useChatStore.setState({
+      sessionId: SID,
+      cwd: CWD,
+      entries: [
+        // Turn 1
+        { id: 'u1', kind: 'user', text: '查看文件 1', msgSeq: 0 },
+        t1Tool,
+        { id: 'a1', kind: 'assistant', text: '文件 1 已查看', msgSeq: 16 },
+        // Turn 2（无 lite 工具）
+        { id: 'u2', kind: 'user', text: '修改文件', msgSeq: 20 },
+        { id: 'a2', kind: 'assistant', text: '修改完毕', msgSeq: 30 },
+        // Turn 3
+        { id: 'u3', kind: 'user', text: '构建项目', msgSeq: 40 },
+        t3Tool,
+        { id: 'a3', kind: 'assistant', text: '构建完成', msgSeq: 60 },
+      ],
+    })
+
+    expect(liteFillSummary(useChatStore.getState())).toBe('2.0.0')
+
+    vi.mocked(transport.loadSessionHistory).mockImplementation(async (_sid, _cwd, opts) => {
+      if (opts?.offset === 10) {
+        return {
+          sessionId: SID,
+          updates: [
+            env(10, {
+              sessionUpdate: 'tool_call',
+              toolCallId: 'tc-turn1',
+              status: 'completed',
+              rawOutput: { ReadFile: { output: '文件 1 完整内容' } },
+            }),
+          ],
+        }
+      }
+      if (opts?.offset === 50) {
+        return {
+          sessionId: SID,
+          updates: [
+            env(50, {
+              sessionUpdate: 'tool_call',
+              toolCallId: 'tc-turn3',
+              status: 'completed',
+              rawOutput: { Bash: { output: '构建成功 100%' } },
+            }),
+          ],
+        }
+      }
+      return { sessionId: SID, updates: [] }
+    })
+
+    // 点击主动补全
+    await flushScheduledPageFills()
+
+    // 两个 lite 轮并发发起了 full 请求
+    const calls = vi.mocked(transport.loadSessionHistory).mock.calls.filter(
+      ([, , opts]) => opts?.detail === 'full',
+    )
+    expect(calls).toHaveLength(2)
+    expect(calls.some(([, , opts]) => opts?.offset === 10 && opts?.limit === 6)).toBe(true)
+    expect(calls.some(([, , opts]) => opts?.offset === 50 && opts?.limit === 6)).toBe(true)
+
+    // 两轮条目的正文均成功填回
+    const entriesAfter = useChatStore.getState().entries
+    const t1After = entriesAfter.find((e) => e.id === 't-turn1') as Extract<ScrollEntry, { kind: 'tool' }>
+    const t3After = entriesAfter.find((e) => e.id === 't-turn3') as Extract<ScrollEntry, { kind: 'tool' }>
+    expect(t1After.liteState).toBe('filled')
+    expect(t3After.liteState).toBe('filled')
+    expect((t1After.raw?.rawOutput as { ReadFile: { output: string } }).ReadFile.output).toBe(
+      '文件 1 完整内容',
+    )
+    expect((t3After.raw?.rawOutput as { Bash: { output: string } }).Bash.output).toBe('构建成功 100%')
+
+    // 进度读数清空（无欠正文行）
+    expect(liteFillSummary(useChatStore.getState())).toBe('')
+
+    // 再次点击不产生重复请求
+    await flushScheduledPageFills()
+    const callsAfter = vi.mocked(transport.loadSessionHistory).mock.calls.filter(
+      ([, , opts]) => opts?.detail === 'full',
+    )
+    expect(callsAfter).toHaveLength(2)
+  })
+
+  it('多轮并发补全在途去重：请求未返回时再次触发不重复发网络请求', async () => {
+    let resolveTurn1!: (p: SessionHistoryPage) => void
+    let resolveTurn2!: (p: SessionHistoryPage) => void
+    const p1 = new Promise<SessionHistoryPage>((r) => {
+      resolveTurn1 = r
+    })
+    const p2 = new Promise<SessionHistoryPage>((r) => {
+      resolveTurn2 = r
+    })
+
+    useChatStore.setState({
+      sessionId: SID,
+      cwd: CWD,
+      entries: [
+        { id: 'u1', kind: 'user', text: 'turn 1', msgSeq: 0 },
+        {
+          id: 't1',
+          kind: 'tool',
+          toolCallId: 'c1',
+          msgSeq: 1,
+          msgSeqEnd: 2,
+          liteOmitted: 100,
+          raw: { toolCallId: 'c1', rawOutput: { output: { omitted: 100 } } } as unknown as ToolCall,
+        },
+        { id: 'u2', kind: 'user', text: 'turn 2', msgSeq: 10 },
+        {
+          id: 't2',
+          kind: 'tool',
+          toolCallId: 'c2',
+          msgSeq: 11,
+          msgSeqEnd: 12,
+          liteOmitted: 200,
+          raw: { toolCallId: 'c2', rawOutput: { output: { omitted: 200 } } } as unknown as ToolCall,
+        },
+      ],
+    })
+
+    vi.mocked(transport.loadSessionHistory).mockImplementation(async (_sid, _cwd, opts) => {
+      if (opts?.offset === 1) return p1
+      if (opts?.offset === 11) return p2
+      return { sessionId: SID, updates: [] }
+    })
+
+    // 第一次并发触发
+    const flush1 = flushScheduledPageFills()
+    // 第二次连续点击触发
+    const flush2 = flushScheduledPageFills()
+
+    // 仅针对两轮发出了各 1 次在途请求（共 2 次，不重发）
+    const calls = vi.mocked(transport.loadSessionHistory).mock.calls.filter(
+      ([, , opts]) => opts?.detail === 'full',
+    )
+    expect(calls).toHaveLength(2)
+
+    resolveTurn1({
+      sessionId: SID,
+      updates: [env(1, { sessionUpdate: 'tool_call', toolCallId: 'c1', rawOutput: { output: 'body1' } })],
+    })
+    resolveTurn2({
+      sessionId: SID,
+      updates: [env(11, { sessionUpdate: 'tool_call', toolCallId: 'c2', rawOutput: { output: 'body2' } })],
+    })
+
+    await Promise.all([flush1, flush2])
+    expect(useChatStore.getState().entries.every((e) => e.kind !== 'tool' || e.liteState === 'filled')).toBe(
+      true,
+    )
+  })
 })
 
 describe('补全合并纯函数', () => {
@@ -1423,5 +1614,236 @@ describe('极致 lite：合成窗口与 thought 补全', () => {
     const filled = useChatStore.getState().entries.find((e) => e.kind === 'thought')
     expect(filled?.liteState).toBe('filled')
     expect(filled?.text).toBe('先想再想然后')
+  })
+
+  it('真实形状：单 chunk 思考 stub（lite 无 msgSeqEnd）也能补回全文', async () => {
+    // 8765 实盘：grok 每段思考 = 一条 agent_thought_chunk，lite 把它裁成
+    // {type,omitted} 且不打 msgSeqEnd（单条无需合成）。FE 窗口退化成
+    // [msgSeq,msgSeq]，但只要该条 full 原样回正文就该补全。
+    const realText =
+      '**Analyzing WorkspaceBar Requirements**\n\nThe user requests the unfinished task list. ' +
+      'Let me inspect the store…\nline3\nline4\nline5\nline6'
+    const liteThought = env(1, {
+      sessionUpdate: 'agent_thought_chunk',
+      content: { type: 'text', omitted: 496 },
+      _meta: { lite: { omitted: 496 } },
+    })
+    vi.mocked(transport.loadSessionHistory)
+      .mockResolvedValueOnce({
+        updates: [
+          env(0, { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: '问' } }),
+          liteThought,
+          env(2, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '答' } }),
+        ],
+        promptStarts: [0],
+        totalCount: 3,
+        projected: 'lite',
+        omittedBytes: 496,
+      } as never)
+      .mockResolvedValue({
+        updates: [
+          env(0, { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: '问' } }),
+          env(1, {
+            sessionUpdate: 'agent_thought_chunk',
+            content: { type: 'text', text: realText },
+          }),
+          env(2, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '答' } }),
+        ],
+        promptStarts: [0],
+        totalCount: 3,
+      } as never)
+    usePins.getState().setFePrefs({ liteReplay: true })
+    await useChatStore.getState().loadHistory(SID, CWD)
+    const th = useChatStore.getState().entries.find((e) => e.kind === 'thought') as Extract<
+      ScrollEntry,
+      { kind: 'thought' }
+    >
+    expect(th).toBeTruthy()
+    // 后台整窗补全（当前轮 idle 期）应把它填回。
+    flushScheduledPageFills()
+    await new Promise((r) => setTimeout(r, 5))
+    const filled = useChatStore.getState().entries.find((e) => e.kind === 'thought') as Extract<
+      ScrollEntry,
+      { kind: 'thought' }
+    >
+    expect(filled.liteState).toBe('filled')
+    expect(filled.text).toBe(realText)
+  })
+
+  it('长多行思考（50 chunk 合成一行）补全取回全文', async () => {
+    const N = 50
+    const chunks: string[] = []
+    for (let i = 0; i < N; i++) chunks.push(`line${i}\n`)
+    const fullThoughtEnvs = chunks.map((c, i) =>
+      env(i + 1, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: c } }),
+    )
+    const liteThought = env(1, {
+      sessionUpdate: 'agent_thought_chunk',
+      content: { type: 'text', omitted: 5000 },
+      _meta: { lite: { omitted: 5000, msgSeqEnd: N } },
+    })
+    vi.mocked(transport.loadSessionHistory)
+      .mockResolvedValueOnce({
+        updates: [
+          env(0, { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: '问' } }),
+          liteThought,
+          env(N + 1, {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: '答' },
+          }),
+        ],
+        promptStarts: [0],
+        totalCount: N + 2,
+        projected: 'lite',
+        omittedBytes: 5000,
+      })
+      .mockResolvedValue({
+        updates: [
+          env(0, { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: '问' } }),
+          ...fullThoughtEnvs,
+          env(N + 1, {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: '答' },
+          }),
+        ],
+        promptStarts: [0],
+        totalCount: N + 2,
+      })
+    usePins.getState().setFePrefs({ liteReplay: true })
+    await useChatStore.getState().loadHistory(SID, CWD)
+    const th = useChatStore.getState().entries.find((e) => e.kind === 'thought')!
+    expect(th.msgSeq).toBe(1)
+    expect(th.msgSeqEnd).toBe(N)
+    await useChatStore.getState().fillToolEntryDetail(th.id)
+    const filled = useChatStore.getState().entries.find((e) => e.kind === 'thought')!
+    expect(filled.text).toBe(chunks.join(''))
+    expect(filled.text!.split('\n').length).toBeGreaterThan(40)
+  })
+
+  it('一轮里两段思考（think→tool→think）各自补全', async () => {
+    const liteUpdates = [
+      env(0, { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: '问' } }),
+      env(1, {
+        sessionUpdate: 'agent_thought_chunk',
+        content: { type: 'text', omitted: 20 },
+        _meta: { lite: { omitted: 20, msgSeqEnd: 2 } },
+      }),
+      env(3, {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'c1',
+        kind: 'execute',
+        status: 'completed',
+        rawOutput: { Bash: { output: { omitted: 30 }, exit_code: 0 } },
+        _meta: { lite: { omitted: 30, fields: ['rawOutput.output'] } },
+      }),
+      env(4, {
+        sessionUpdate: 'agent_thought_chunk',
+        content: { type: 'text', omitted: 20 },
+        _meta: { lite: { omitted: 20, msgSeqEnd: 5 } },
+      }),
+      env(6, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '答' } }),
+    ]
+    const fullUpdates = [
+      env(0, { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: '问' } }),
+      env(1, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: '第一段A' } }),
+      env(2, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: '第一段B' } }),
+      env(3, {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'c1',
+        kind: 'execute',
+        status: 'completed',
+        rawOutput: { Bash: { output: 'ran', exit_code: 0 } },
+      }),
+      env(4, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: '第二段A' } }),
+      env(5, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: '第二段B' } }),
+      env(6, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '答' } }),
+    ]
+    usePins.getState().setFePrefs({ liteReplay: true })
+    const load = vi
+      .mocked(transport.loadSessionHistory)
+      .mockResolvedValueOnce({
+        updates: liteUpdates,
+        promptStarts: [0],
+        totalCount: 7,
+        projected: 'lite',
+        omittedBytes: 70,
+      } as never)
+      .mockResolvedValue({
+        updates: fullUpdates,
+        promptStarts: [0],
+        totalCount: 7,
+      } as never)
+    await useChatStore.getState().loadHistory(SID, CWD)
+    const thoughts = () =>
+      useChatStore
+        .getState()
+        .entries.filter((e) => e.kind === 'thought') as Extract<ScrollEntry, { kind: 'thought' }>[]
+    expect(thoughts()).toHaveLength(2)
+    // 两段都走后台整窗补全（当前轮）。
+    await new Promise((r) => setTimeout(r, 5))
+    flushScheduledPageFills()
+    await new Promise((r) => setTimeout(r, 10))
+    const [a, b] = thoughts()
+    expect(a.text).toBe('第一段A第一段B')
+    expect(b.text).toBe('第二段A第二段B')
+    expect(load.mock.calls.length).toBeGreaterThan(1)
+  })
+
+  it('一段思考被 usage_update 打断成两条 chunk 但并入同一行：补全要取回全部片段', async () => {
+    // host 只在「连续 agent_thought_chunk」间合成，usage_update 打断 → 不合成，
+    // 留两条各自 {omitted} 的 stub。FE 侧 usage 不收口思考，两条 chunk 并进同
+    // 一条 thought 条目（msgSeq=1、msgSeqEnd=3）。补全窗口 [1,3] 里 extractThoughtRuns
+    // 会得到两段 run，回填必须拼全，不能只取第一段（否则展开只剩开头几行）。
+    const fullA = '第一段思考：先看代码结构'
+    const fullB = '第二段思考：再定改动点'
+    usePins.getState().setFePrefs({ liteReplay: true })
+    vi.mocked(transport.loadSessionHistory)
+      .mockResolvedValueOnce({
+        updates: [
+          env(0, { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: '问' } }),
+          env(1, {
+            sessionUpdate: 'agent_thought_chunk',
+            content: { type: 'text', omitted: 90 },
+            _meta: { lite: { omitted: 90 } },
+          }),
+          env(2, { sessionUpdate: 'usage_update', used: 120, size: 200 }),
+          env(3, {
+            sessionUpdate: 'agent_thought_chunk',
+            content: { type: 'text', omitted: 80 },
+            _meta: { lite: { omitted: 80 } },
+          }),
+          env(4, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '答' } }),
+        ],
+        promptStarts: [0],
+        totalCount: 5,
+        projected: 'lite',
+        omittedBytes: 170,
+      } as never)
+      .mockResolvedValue({
+        updates: [
+          env(0, { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: '问' } }),
+          env(1, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: fullA } }),
+          env(2, { sessionUpdate: 'usage_update', used: 120, size: 200 }),
+          env(3, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: fullB } }),
+          env(4, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '答' } }),
+        ],
+        promptStarts: [0],
+        totalCount: 5,
+      } as never)
+    await useChatStore.getState().loadHistory(SID, CWD)
+    const thoughts = () =>
+      useChatStore
+        .getState()
+        .entries.filter((e) => e.kind === 'thought') as Extract<ScrollEntry, { kind: 'thought' }>[]
+    // usage 不打断思考流：两条 chunk 应并成一条。
+    expect(thoughts()).toHaveLength(1)
+    const th = thoughts()[0]
+    expect(th.msgSeq).toBe(1)
+    expect(th.msgSeqEnd).toBe(3)
+    flushScheduledPageFills()
+    await new Promise((r) => setTimeout(r, 8))
+    const filled = thoughts()[0]
+    expect(filled.liteState).toBe('filled')
+    expect(filled.text).toBe(fullA + fullB)
   })
 })

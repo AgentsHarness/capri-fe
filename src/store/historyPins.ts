@@ -87,6 +87,8 @@ export type FePrefs = {
    * 始终拉 full。没显式选过时默认随是否中转现算。
    */
   liteReplay: boolean
+  /** 发起新对话自动设置为待办。 */
+  autoTodoNewSession: boolean
 }
 
 /** entries 投影出的内存态（组件只认这份，不感知条目模型）。 */
@@ -130,6 +132,7 @@ function project(entries: PrefsEntries): PrefsView {
       collapseToolGroups: v.fePrefs.collapseToolGroups !== false,
       liteReplay:
         typeof v.fePrefs.liteReplay === 'boolean' ? v.fePrefs.liteReplay : defaultLiteReplay(),
+      autoTodoNewSession: v.fePrefs.autoTodoNewSession === true,
     },
   }
 }
@@ -138,6 +141,7 @@ function project(entries: PrefsEntries): PrefsView {
 function fePrefsView(entries: PrefsEntries, fePrefs: FePrefs): FePrefsDoc {
   const out: FePrefsDoc = { collapseToolGroups: fePrefs.collapseToolGroups }
   if (alive(entries, feKey('liteReplay'))) out.liteReplay = fePrefs.liteReplay
+  if (alive(entries, feKey('autoTodoNewSession'))) out.autoTodoNewSession = fePrefs.autoTodoNewSession
   return out
 }
 
@@ -524,6 +528,11 @@ export function currentCollapseToolGroups(): boolean {
 /** liteReplay 是否被任一端的条目记录显式选过（没选过按部署模式取默认）。 */
 export function isLiteReplayChosen(): boolean {
   return alive(usePins.getState().entries, feKey('liteReplay'))
+}
+
+/** 非 hook 同步读取「新对话自动待办」开关。 */
+export function currentAutoTodoNewSession(): boolean {
+  return usePins.getState().fePrefs.autoTodoNewSession
 }
 
 /**
