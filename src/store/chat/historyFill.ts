@@ -944,7 +944,7 @@ export function collectLiteTurnJobs(
     for (const item of liteItems) {
       if (item.msgSeq != null) {
         minSeq = minSeq == null ? item.msgSeq : Math.min(minSeq, item.msgSeq)
-        const end = item.msgSeqEnd ?? item.msgSeq
+        const end = (item as { msgSeqEnd?: number }).msgSeqEnd ?? item.msgSeq
         maxSeq = maxSeq == null ? end : Math.max(maxSeq, end)
       }
     }

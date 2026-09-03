@@ -713,6 +713,7 @@ describe('只填工具正文的补全', () => {
       id: 't-turn1',
       kind: 'tool',
       title: 'ReadFile file1.txt',
+      verb: 'ReadFile',
       kindName: 'read_file',
       status: 'completed',
       toolCallId: 'tc-turn1',
@@ -731,6 +732,7 @@ describe('只填工具正文的补全', () => {
       id: 't-turn3',
       kind: 'tool',
       title: 'Bash build.sh',
+      verb: 'Bash',
       kindName: 'execute',
       status: 'completed',
       toolCallId: 'tc-turn3',
@@ -847,6 +849,8 @@ describe('只填工具正文的补全', () => {
         {
           id: 't1',
           kind: 'tool',
+          title: 't1',
+          verb: 'tool',
           toolCallId: 'c1',
           msgSeq: 1,
           msgSeqEnd: 2,
@@ -857,6 +861,8 @@ describe('只填工具正文的补全', () => {
         {
           id: 't2',
           kind: 'tool',
+          title: 't2',
+          verb: 'tool',
           toolCallId: 'c2',
           msgSeq: 11,
           msgSeqEnd: 12,
@@ -869,7 +875,7 @@ describe('只填工具正文的补全', () => {
     vi.mocked(transport.loadSessionHistory).mockImplementation(async (_sid, _cwd, opts) => {
       if (opts?.offset === 1) return p1
       if (opts?.offset === 11) return p2
-      return { sessionId: SID, updates: [] }
+      return { updates: [] } as never
     })
 
     // 第一次并发触发
@@ -884,13 +890,11 @@ describe('只填工具正文的补全', () => {
     expect(calls).toHaveLength(2)
 
     resolveTurn1({
-      sessionId: SID,
       updates: [env(1, { sessionUpdate: 'tool_call', toolCallId: 'c1', rawOutput: { output: 'body1' } })],
-    })
+    } as never)
     resolveTurn2({
-      sessionId: SID,
       updates: [env(11, { sessionUpdate: 'tool_call', toolCallId: 'c2', rawOutput: { output: 'body2' } })],
-    })
+    } as never)
 
     await Promise.all([flush1, flush2])
     expect(useChatStore.getState().entries.every((e) => e.kind !== 'tool' || e.liteState === 'filled')).toBe(
