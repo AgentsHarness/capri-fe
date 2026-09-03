@@ -371,15 +371,125 @@ export function clearLiteMark(raw: ToolCall): ToolCall {
 }
 
 /**
+ * 与 host `lite.go` `liteBodyKeys` + `file_matches` 对齐（投影时整键删除，
+ * 不留 `{"omitted": n}`）。camelCase 是 FE 侧偶发的同一字段。
+ */
+const LITE_DELETED_BODY_KEYS = new Set([
+  'output',
+  'output_delta',
+  'output_for_prompt',
+  'content',
+  'content_concise',
+  'data',
+  'stdout',
+  'stderr',
+  'new_string',
+  'old_string',
+  'plan_content',
+  'file_matches',
+  'fileMatches',
+  'newString',
+  'oldString',
+  'contentConcise',
+  'planContent',
+])
+
+/** host `liteLongStringBytes`：未知键长字符串按正文删。 */
+const LITE_LONG_STRING_BYTES = 512
+
+function isPlainObj(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object' && !Array.isArray(v)
+}
+
+function jsonLen(v: unknown): number {
+  try {
+    return JSON.stringify(v)?.length ?? 0
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * live 已经写过正文：具名正文键，或 ≥512 字节的未知字符串（host 会当正文删）。
+ * 骨架里的 match_count / 短 URL citations / 裁空 `edits: [{}]` 都不是。
+ */
+function hasProjectedBody(v: unknown, budget = 256): boolean {
+  if (budget <= 0 || v == null || liteStubIn(v)) return false
+  if (typeof v === 'string') return jsonLen(v) >= LITE_LONG_STRING_BYTES
+  if (Array.isArray(v)) return v.some((item) => hasProjectedBody(item, budget - 1))
+  if (isPlainObj(v)) {
+    for (const [k, iv] of Object.entries(v)) {
+      if (iv == null || liteStubIn(iv)) continue
+      if (LITE_DELETED_BODY_KEYS.has(k)) return true
+      if (hasProjectedBody(iv, budget - 1)) return true
+    }
+  }
+  return false
+}
+
+/** 字符串 / 数组 / 含字符串的对象算载荷；数字布尔不算（match_count 等标量）。 */
+function isPayloadValue(v: unknown, budget = 8): boolean {
+  if (budget <= 0 || v == null || liteStubIn(v)) return false
+  if (typeof v === 'string') return v.length > 0
+  if (Array.isArray(v)) return v.some((item) => isPayloadValue(item, budget - 1))
+  if (isPlainObj(v)) return Object.values(v).some((item) => isPayloadValue(item, budget - 1))
+  return false
+}
+
+/**
+ * 快照是不是比骨架多出了可显示载荷（当前缺的键、或当前是 null 占位）。
+ * 用来接住 host 预算整键删掉的未知数组（元素往往 <512，不算 hasProjectedBody）。
+ */
+function incomingHasExtraPayload(current: unknown, incoming: unknown, budget = 256): boolean {
+  if (budget <= 0 || incoming == null || liteStubIn(incoming)) return false
+  if (isPlainObj(incoming)) {
+    const cur = isPlainObj(current) ? current : undefined
+    for (const [k, iv] of Object.entries(incoming)) {
+      if (iv == null || liteStubIn(iv)) continue
+      const cv = cur?.[k]
+      if (cv == null || liteStubIn(cv)) {
+        if (isPayloadValue(iv)) return true
+        continue
+      }
+      if (incomingHasExtraPayload(cv, iv, budget - 1)) return true
+    }
+    return false
+  }
+  if (Array.isArray(incoming)) {
+    const curArr = Array.isArray(current) ? current : []
+    if (incoming.some(isPayloadValue) && !curArr.some(isPayloadValue)) return true
+    for (let i = 0; i < incoming.length; i++) {
+      if (incomingHasExtraPayload(curArr[i], incoming[i], budget - 1)) return true
+    }
+  }
+  return false
+}
+
+/** 当前没 live 正文、快照多出载荷 → 整段换成 full；已有正文则保护 live。 */
+function incomingFillsLiteSkeleton(current: unknown, incoming: unknown): boolean {
+  if (incoming == null || liteStubIn(incoming)) return false
+  if (hasProjectedBody(current)) return false
+  return hasProjectedBody(incoming) || incomingHasExtraPayload(current, incoming)
+}
+
+/**
  * 全量正文填回一份 raw，并抹掉 host 的 `_meta.lite` 标记——填完之后这份
  * raw 不再是占位（渲染与 toolDetail 的假空态判定都看这个标记）。
  */
 function fillRaw(raw: ToolCall | undefined, body: ToolBody): ToolCall {
   const next: ToolCall = { ...(raw ?? {}) }
   // live-owned：这个载体上已经有一份不带占位的真实正文（live 事件续写进来的），
-  // 而快照那一帧可能更旧 —— 不许覆盖。只有该键缺失或仍是占位时才填。
-  const owned = (key: 'rawOutput' | 'content') =>
-    key in next && !liteStubIn((next as Record<string, unknown>)[key])
+  // 而快照那一帧可能更旧 —— 不许覆盖。缺失、仍是 {omitted} 占位、或极致
+  // lite 删光正文键只剩标量骨架时，都算还没拥有，用快照填。
+  const owned = (key: 'rawOutput' | 'content') => {
+    if (!(key in next)) return false
+    const cur = (next as Record<string, unknown>)[key]
+    if (liteStubIn(cur)) return false
+    const has = key === 'rawOutput' ? body.hasRawOutput : body.hasContent
+    const incoming = key === 'rawOutput' ? body.rawOutput : body.content
+    if (has && incomingFillsLiteSkeleton(cur, incoming)) return false
+    return true
+  }
   if (body.hasRawOutput && !owned('rawOutput')) next.rawOutput = body.rawOutput
   if (body.hasContent && !owned('content')) next.content = body.content
   return clearLiteMark(next)

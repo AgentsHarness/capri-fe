@@ -1,10 +1,9 @@
 import { fmtBytes } from '../../format'
 
 /**
- * lite 裁掉的工具正文占位行。host 只是没把正文发过来（不是没有正文），
- * 所以这里不能用各 kind 的 "(no content)" 空态：说清省了多少字节、点
- * 「[加载]」按该条目的 [msgSeq, msgSeqEnd] 区间按需回拉 detail=full，
- * 补全中给行内 spinner，失败给就地重试。
+ * lite 裁掉的工具正文占位行。展开 / 「查看」已经按 [msgSeq, msgSeqEnd]
+ * 触发补全，所以这里只展示省略规模和加载中 spinner；按钮只在失败时给
+ * 就地 [重试]，加载中和尚未返回时都不出现。
  */
 export function LiteToolFill({
   bytes,
@@ -13,9 +12,9 @@ export function LiteToolFill({
   className = '',
 }: {
   bytes: number
-  /** 补全态；缺省 = 还没拉过。 */
+  /** 补全态；缺省 = 还没拉过（展开瞬间、请求尚未打上 loading）。 */
   state?: 'loading' | 'error' | 'filled'
-  /** 手动重试 / 加载（缺省 = 只读占位，例如键盘展开已在补全中）。 */
+  /** 失败就地重试。加载中 / 待补全不展示按钮。 */
   onFill?: () => void
   className?: string
 }) {
@@ -42,7 +41,7 @@ export function LiteToolFill({
             ? `工具输出加载失败 · ${size}`
             : `输出已省略 · ${size}`}
       </span>
-      {onFill ? (
+      {failed && onFill ? (
         <button
           type="button"
           onClick={(ev) => {
@@ -50,9 +49,9 @@ export function LiteToolFill({
             onFill()
           }}
           className="shrink-0 text-[10.5px] text-gn-cyan hover:text-gn-fg hover:underline"
-          title={failed ? '重试加载被省略的工具输出' : '加载被省略的工具输出'}
+          title="重试加载被省略的工具输出"
         >
-          {failed ? '[重试]' : '[加载]'}
+          [重试]
         </button>
       ) : null}
     </div>

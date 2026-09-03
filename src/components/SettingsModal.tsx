@@ -364,11 +364,14 @@ function ConsumedSettings({
                 <button
                   key={c.id}
                   type="button"
-                  disabled={disabled || on}
-                  onClick={() => void onPatch({ permission_mode: c.id })}
+                  disabled={disabled}
+                  onClick={() => {
+                    if (on) return
+                    void onPatch({ permission_mode: c.id })
+                  }}
                   className={`rounded-full border px-2 py-px text-[10.5px] ${
                     on
-                      ? 'border-gn-green/60 text-gn-green'
+                      ? 'border-gn-green/60 text-gn-green cursor-default'
                       : 'border-gn-prompt-border text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
                   } disabled:opacity-50`}
                 >
@@ -395,11 +398,14 @@ function ConsumedSettings({
                 <button
                   key={c.id}
                   type="button"
-                  disabled={disabled || on}
-                  onClick={() => void onPatch({ follow_up_behavior: c.id })}
+                  disabled={disabled}
+                  onClick={() => {
+                    if (on) return
+                    void onPatch({ follow_up_behavior: c.id })
+                  }}
                   className={`rounded-full border px-2 py-px text-[10.5px] ${
                     on
-                      ? 'border-gn-green/60 text-gn-green'
+                      ? 'border-gn-green/60 text-gn-green cursor-default'
                       : 'border-gn-prompt-border text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
                   } disabled:opacity-50`}
                 >
@@ -654,12 +660,13 @@ function FePrefsSection() {
                   key={c.id}
                   type="button"
                   onClick={() => {
+                    if (on) return
                     saveDefaultSelectedPermission(c.id)
                     setDefaultSelectedPermission(c.id)
                   }}
                   className={`rounded-full border px-2 py-px text-[10.5px] ${
                     on
-                      ? 'border-gn-green/60 text-gn-green'
+                      ? 'border-gn-green/60 text-gn-green cursor-default'
                       : 'border-gn-prompt-border text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
                   }`}
                   title={c.id}

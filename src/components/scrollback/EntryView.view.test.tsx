@@ -180,5 +180,20 @@ describe('lite 占位行的可见范围', () => {
     render(<EntryView e={e} selected={false} pendingFreeze={false} now={0} />)
     expect(screen.getByText(/输出已省略/)).toBeTruthy()
     expect(screen.queryByText(/total 448/)).toBeNull()
+    expect(screen.queryByRole('button', { name: '[加载]' })).toBeNull()
+  })
+
+  it('加载中不显示按钮；失败才出现 [重试]', () => {
+    const loading = liteTool({ expanded: true, liteState: 'loading' })
+    useChatStore.setState({ entries: [loading] })
+    const r = render(<EntryView e={loading} selected={false} pendingFreeze={false} now={0} />)
+    expect(screen.getByText(/正在加载工具输出/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '[加载]' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '[重试]' })).toBeNull()
+
+    const failed = liteTool({ expanded: true, liteState: 'error' })
+    useChatStore.setState({ entries: [failed] })
+    r.rerender(<EntryView e={failed} selected={false} pendingFreeze={false} now={0} />)
+    expect(screen.getByRole('button', { name: '[重试]' })).toBeTruthy()
   })
 })

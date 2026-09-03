@@ -122,6 +122,12 @@ describe('SettingsModal', () => {
     openModal()
     render(<SettingsModal />)
     await waitFor(() => expect(screen.getByText('permission_mode')).not.toBeNull())
+    const askBtn = screen.getByText('ask') as HTMLButtonElement
+    expect(askBtn.className).toContain('border-gn-green')
+    expect(askBtn.disabled).toBe(false)
+    // 点击已选中项不重复请求
+    fireEvent.click(askBtn)
+    expect(transport.updateSettings).not.toHaveBeenCalled()
     fireEvent.click(screen.getByText('auto'))
     await waitFor(() => {
       expect(transport.updateSettings).toHaveBeenCalledWith({ permission_mode: 'auto' })
@@ -190,9 +196,14 @@ describe('SettingsModal', () => {
     await waitFor(() => expect(screen.getByText('follow_up_behavior')).not.toBeNull())
     const queueBtn = () => screen.getByText('queue')
     const steerBtn = () => screen.getByText('steer')
-    // 未配置（agent 默认 queue）→ queue 高亮
+    // 未配置（agent 默认 queue）→ queue 高亮，且非 disabled 避免半透明
     expect(queueBtn().className).toContain('border-gn-green')
+    expect(queueBtn().className).toContain('cursor-default')
+    expect((queueBtn() as HTMLButtonElement).disabled).toBe(false)
     expect(steerBtn().className).not.toContain('border-gn-green')
+    // 点击已选中项不重复请求
+    fireEvent.click(queueBtn())
+    expect(transport.updateSettings).not.toHaveBeenCalled()
     fireEvent.click(steerBtn())
     await waitFor(() => {
       expect(transport.updateSettings).toHaveBeenCalledWith({ follow_up_behavior: 'steer' })

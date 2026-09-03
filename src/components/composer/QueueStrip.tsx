@@ -11,6 +11,10 @@ type QueueStripProps = {
   sendQueuedItem: (id?: string) => void
   /** busy + follow_up_behavior=steer → 队首标注「引导」。 */
   headSteer: boolean
+  /** 点击切换队首模式（steer 引导 ↔ queue 队列）。 */
+  onToggleMode?: () => void
+  /** 模式切换中（禁用按钮避免重复快速触发）。 */
+  togglingMode?: boolean
 }
 
 /**
@@ -18,7 +22,13 @@ type QueueStripProps = {
  * 每行常驻 立即发送 / 编辑 / 删除；左侧抓手拖拽排序。字号与 status 行一致。
  * 展开开关（queuePanelOpen）与选择/焦点/拖拽状态归 useQueueNav。
  */
-export function QueueStrip({ nav, sendQueuedItem, headSteer }: QueueStripProps) {
+export function QueueStrip({
+  nav,
+  sendQueuedItem,
+  headSteer,
+  onToggleMode,
+  togglingMode,
+}: QueueStripProps) {
   const {
     queue,
     queuePanelOpen,
@@ -122,20 +132,26 @@ export function QueueStrip({ nav, sendQueuedItem, headSteer }: QueueStripProps) 
               ) : (
                 <>
                   {i === 0 && !q.degraded ? (
-                    <span
-                      className={`shrink-0 rounded border px-1 py-px text-[10px] leading-none ${
+                    <button
+                      type="button"
+                      disabled={togglingMode}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onToggleMode?.()
+                      }}
+                      className={`shrink-0 rounded border px-1.5 py-px text-[10px] leading-none transition-colors select-none ${
                         headSteer
-                          ? 'border-gn-cyan/50 text-gn-cyan'
-                          : 'border-gn-prompt-border/70 text-gn-gutter'
-                      }`}
+                          ? 'border-gn-cyan/60 text-gn-cyan hover:border-gn-cyan hover:bg-gn-cyan/10 active:bg-gn-cyan/20'
+                          : 'border-gn-prompt-border text-gn-gutter hover:border-gn-prompt-border-active hover:bg-gn-bg-highlight hover:text-gn-fg active:bg-gn-bg-hover'
+                      } disabled:cursor-not-allowed disabled:opacity-50`}
                       title={
                         headSteer
-                          ? 'steer：队首将在运行中回合的下一个工具/模型安全间隙注入（不取消回合）'
-                          : 'queue：队首等当前回合结束后作为下一回合运行'
+                          ? '当前为 steer（引导）：队首将在下一个安全间隙注入；点击切换为「队列」'
+                          : '当前为 queue（队列）：等当前回合结束后运行；点击切换为「引导」'
                       }
                     >
                       {headSteer ? '引导' : '队列'}
-                    </span>
+                    </button>
                   ) : null}
                   <button
                     type="button"
