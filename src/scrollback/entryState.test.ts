@@ -11,6 +11,8 @@ import {
   entryRunning,
   expandableGlyph,
   isHeaderStyleBlock,
+  nextToolFoldMode,
+  toolDisplayMode,
   toolHasExpandableBody,
 } from './entryState'
 
@@ -199,5 +201,79 @@ describe('toolHasExpandableBody', () => {
   it('execute 有输出可展开，无输出不可', () => {
     expect(toolHasExpandableBody({ kind: 'execute', content: 'out' }, 'execute')).toBe(true)
     expect(toolHasExpandableBody({ kind: 'execute' }, 'execute')).toBe(false)
+  })
+})
+
+describe('toolDisplayMode / nextToolFoldMode（TUI 三态）', () => {
+  const tool = (
+    over: Partial<Extract<ScrollEntry, { kind: 'tool' }>> = {},
+  ): Extract<ScrollEntry, { kind: 'tool' }> => ({
+    id: 't',
+    kind: 'tool',
+    title: 't',
+    verb: 'v',
+    ...over,
+  })
+
+  it('缺省回退 expanded 布尔：true → truncated 预览，false/缺省 → collapsed', () => {
+    expect(toolDisplayMode(tool({ expanded: true }))).toBe('truncated')
+    expect(toolDisplayMode(tool({ expanded: false }))).toBe('collapsed')
+    expect(toolDisplayMode(tool())).toBe('collapsed')
+    expect(toolDisplayMode(tool({ displayMode: 'expanded', expanded: false }))).toBe('expanded')
+  })
+
+  it('read：Collapsed → Truncated → Collapsed（TUI read.rs:443-448）', () => {
+    expect(nextToolFoldMode('read', 'collapsed', false)).toBe('truncated')
+    expect(nextToolFoldMode('read', 'truncated', false)).toBe('collapsed')
+    expect(nextToolFoldMode('read', 'expanded', false)).toBe('collapsed')
+  })
+
+  it('generic（TUI Other）：流式 Truncated↔Expanded；完成后 Collapsed↔Expanded', () => {
+    expect(nextToolFoldMode('generic', 'truncated', true)).toBe('expanded')
+    expect(nextToolFoldMode('generic', 'collapsed', true)).toBe('truncated')
+    expect(nextToolFoldMode('generic', 'collapsed', false)).toBe('expanded')
+    expect(nextToolFoldMode('generic', 'expanded', false)).toBe('collapsed')
+    expect(nextToolFoldMode(undefined, 'collapsed', false)).toBe('expanded')
+  })
+
+  it('其余两态：Collapsed ↔ Expanded（TUI block.rs 默认）', () => {
+    expect(nextToolFoldMode('execute', 'collapsed', false)).toBe('expanded')
+    expect(nextToolFoldMode('execute', 'expanded', false)).toBe('collapsed')
+    expect(nextToolFoldMode('edit', 'truncated', false)).toBe('collapsed')
+  })
+
+  it('entryExpanded / entryAtMinFold 走三态归一', () => {
+    expect(entryExpanded(tool({ displayMode: 'truncated' }))).toBe(true)
+    expect(entryExpanded(tool({ displayMode: 'collapsed', expanded: true }))).toBe(false)
+    expect(entryAtMinFold(tool({ displayMode: 'truncated' }))).toBe(false)
+    expect(entryAtMinFold(tool({ displayMode: 'collapsed' }))).toBe(true)
+  })
+})
+
+describe('foldable 边界（对齐 TUI is_foldable）', () => {
+  it('search：无 error 恒可折（零命中也可）', () => {
+    expect(toolHasExpandableBody({ kind: 'search' }, 'search')).toBe(true)
+    expect(toolHasExpandableBody({ kind: 'search' }, 'search', undefined)).toBe(true)
+  })
+
+  it('web_search：!error && content && 非 X search', () => {
+    const ws = (variant: string, content?: string) => ({
+      kind: 'search',
+      rawInput: { variant },
+      rawOutput: content ? { content } : {},
+    })
+    expect(toolHasExpandableBody(ws('WebSearch', 'result text'), 'search')).toBe(true)
+    expect(toolHasExpandableBody(ws('WebSearch'), 'search')).toBe(false)
+    expect(toolHasExpandableBody(ws('XSearch', 'result text'), 'search')).toBe(false)
+  })
+
+  it('list_dir / generic / fetch：失败不可折', () => {
+    const tc = (kind: string) => ({ kind, content: 'out' })
+    expect(toolHasExpandableBody(tc('list_dir'), 'list_dir')).toBe(true)
+    expect(toolHasExpandableBody({ kind: 'list_dir', error: 'boom' }, 'list_dir')).toBe(false)
+    expect(toolHasExpandableBody(tc('unknown_tool'), undefined)).toBe(true)
+    expect(toolHasExpandableBody({ kind: 'other', error: 'boom' }, 'unknown_tool')).toBe(false)
+    expect(toolHasExpandableBody(tc('fetch'), 'fetch')).toBe(true)
+    expect(toolHasExpandableBody({ kind: 'fetch', error: 'boom' }, 'fetch')).toBe(false)
   })
 })

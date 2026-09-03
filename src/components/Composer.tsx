@@ -54,6 +54,8 @@ import {
 } from './composer/promptHistory'
 import { currentActivity } from './composer/activity'
 import { useEscLadder } from './composer/useEscLadder'
+// 跨焦点 Esc 阶梯：scrollback 侧首个 idle Esc 的臂定时间戳（useScrollbackKeys）
+import { clearEscArm, escArmTimestamp } from '../hooks/useScrollbackKeys'
 import { useModelMenu } from './composer/useModelMenu'
 import { ModelMenu } from './composer/ModelMenu'
 import { PromptHistoryMenu } from './composer/PromptHistoryMenu'
@@ -1910,7 +1912,14 @@ export function Composer() {
                     // Busy keeps the pre-existing cancel flow below (the
                     // ladder never delays a cancel).
                     if (!busy) {
-                      const armed = Date.now() - escArmAtRef.current < 800
+                      // 跨焦点臂定：scrollback 侧首个 idle Esc
+                      // （useScrollbackKeys）臂定的时间戳同样算 armed——
+                      // 2×Esc 从 scrollback 起步时，第二次按键落在这里
+                      // 直达回退（TUI prompt.rs 2×Esc = /rewind）。
+                      const armed =
+                        Date.now() -
+                          Math.max(escArmAtRef.current, escArmTimestamp()) <
+                        800
                       const hasDraft = text !== '' || chips.length > 0
                       if (!armed) {
                         armEsc(hasDraft ? 'clear' : 'rewind')
@@ -1919,6 +1928,8 @@ export function Composer() {
                         return
                       }
                       disarmEsc()
+                      // 跨焦点臂定一并解除，避免残留臂定让下一次 Esc 误判为第二击。
+                      clearEscArm()
                       e.preventDefault()
                       e.stopPropagation()
                       if (hasDraft) {

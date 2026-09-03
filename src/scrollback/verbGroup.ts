@@ -335,17 +335,16 @@ export function scanGroups(
       }
       const groupStart = i
       let groupLen = 1
-      // 触发计数只数工具类参与者：thought 与工具一同隐藏/计数/进标签，
-      // 但不把混合回合的折叠点提前——思考-工具交替的折叠阈值与纯工具
-      // 回合一致（> maxVisible + 1 个工具），短交替保持平铺可见。
-      let toolLen = entries[i].kind === 'thought' ? 0 : 1
+      // 触发计数按全参与者（TUI groups.rs:220-235 group_len 含收口思考，
+      // 仅隐藏思考剔除）：思考-工具交替段与纯工具回合同门槛折叠
+      // （groupLen > maxVisible + 1）。隐藏思考（showThinking=false）透明
+      // 不计数；流式思考不计数也不打断（FE 直播行语义，见下）。
       let j = i + 1
       while (j < n) {
         if (claimed[j]) break
         const e = entries[j]
         if (participatesInTruncation(e, showThinking)) {
           groupLen += 1
-          if (e.kind !== 'thought') toolLen += 1
         } else if (e.kind === 'thought') {
           // 思考永不截断密集段（与 verb 扫描的 transparent 语义一致）。
           // 走到这里的是流式思考（直播行不计数、不隐藏）以及
@@ -358,7 +357,7 @@ export function scanGroups(
         j += 1
       }
       const groupEnd = j
-      if (toolLen > maxVisible + 1) {
+      if (groupLen > maxVisible + 1) {
         const anchorId = entries[groupStart].id
         spans.push({
           range: { start: groupStart, end: groupEnd },
@@ -440,33 +439,40 @@ export function verbGroupLabel(
 }
 
 /**
- * Truncation 组标签：盘点整组参与者（全组计数，与 verb 组头「描述整个
- * span」一致；旧版只数 hidden 前缀，header 下方跟着 10 行可见成员时读不通）。
- * thought 参与密度但不占工具动词条表，以 "Thought N times" 追加在工具段
- * 之后；无词表参与者（bg_task）计入密度、不进标签。
+ * Truncation 组标签（TUI verb_group.rs:273-305 truncation_header_label）：
+ * 与 verb 组头同一套动词条表，但按 `limit` 只描述**被隐藏的前缀**——
+ * 折叠头 limit=hidden，展开头不传（描述整段）。思考行占参与者名额、
+ * 永不进词表（TUI "Thoughts … are NEVER bucketed"，无 Thought N times）；
+ * showThinking=false 的隐藏思考整行跳过（不占名额）。遇到词表叫不出
+ * 名字的非思考参与者（bg_task 等）整个放弃（返回 null → 回落 "N more"），
+ * 否则标签会对折叠隐藏的内容撒谎。
  */
 export function truncationLabel(
   entries: ScrollEntry[],
   span: GroupSpan,
   showThinking = true,
+  limit?: number,
 ): GroupLabel | null {
   if (span.kind.type !== 'truncation') return null
   const buckets = new Map<VerbGroupKind, number>()
   let running = false
   let failedCount = 0
-  let thoughtCount = 0
+  let participants = 0
   const order: VerbGroupKind[] = []
 
   for (let i = span.range.start; i < span.range.end; i++) {
     const e = entries[i]
     if (!e) break
-    if (!participatesInTruncation(e, showThinking)) continue
-    if (e.kind === 'thought') {
-      thoughtCount += 1
-      continue
-    }
+    if (limit != null && participants >= limit) break
+    // 隐藏思考（showThinking=false）：透明行，不占名额不进词表。
+    if (e.kind === 'thought' && !showThinking) continue
+    // 流式思考（直播行，不参与截断计数）同样跳过不占名额。
+    if (e.kind === 'thought' && e.streaming) continue
+    participants += 1
+    // 思考占名额但永不进词表。
+    if (e.kind === 'thought') continue
     const lk = labelKind(e)
-    if (!lk) continue
+    if (!lk) return null
     if (!buckets.has(lk)) {
       buckets.set(lk, 0)
       order.push(lk)
@@ -481,9 +487,6 @@ export function truncationLabel(
     const count = buckets.get(vg) || 0
     parts.push(`${verbOf(vg, running)} ${count} ${nounOf(vg, count)}`)
   }
-  if (thoughtCount > 0) {
-    parts.push(`Thought ${thoughtCount} ${thoughtCount === 1 ? 'time' : 'times'}`)
-  }
   if (parts.length === 0) return null
   let text = parts.join(', ')
   if (failedCount > 0) text += ` · ${failedCount} failed`
@@ -491,8 +494,9 @@ export function truncationLabel(
 }
 
 /**
- * Truncation header label — collapsed / expanded 共用整组计数一版。退化
- * （全组无词表，如纯 bg_task）时回落 "N more"。
+ * Truncation header label — 折叠头只描述 hidden 前缀（limit=hidden，
+ * render.rs:421 `(!span.expanded).then_some(hidden)`），展开头描述整段。
+ * 退化（前缀无可命名参与者，如纯思考前缀）时回落 "N more"。
  */
 function truncationHeaderLabel(
   entries: ScrollEntry[],
@@ -501,7 +505,12 @@ function truncationHeaderLabel(
   showThinking: boolean,
 ): GroupLabel {
   return (
-    truncationLabel(entries, span, showThinking) || {
+    truncationLabel(
+      entries,
+      span,
+      showThinking,
+      span.expanded ? undefined : Math.max(0, kind.hidden),
+    ) || {
       text: `${Math.max(0, kind.hidden)} more`,
       running: false,
       failed: false,

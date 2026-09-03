@@ -86,6 +86,12 @@ export type ScrollEntry =
        * keeps the real "Thought for Xs" instead of ~0s.
        */
       elapsedMs?: number
+      /**
+       * 用户手动折叠/展开过（TUI display_mode_pinned，selection.rs:278）。
+       * 置位后收口路径（sealThought 等）不再无条件折回 collapsed——
+       * state/mod.rs:936 只折「没被钉住」的思考行。
+       */
+      foldPinned?: boolean
       msgSeq?: number
       /** 合成 thought 跑的最后一条信封 msgSeq（lite 补全窗口右端）。 */
       msgSeqEnd?: number
@@ -102,6 +108,15 @@ export type ScrollEntry =
       kindName?: string
       detail?: string
       expanded?: boolean
+      /**
+       * ToolCallBlock display mode（TUI 三态）：'collapsed' = 仅行头，
+       * 'truncated' = 行头 + 截断正文预览（即原 expanded:true 的行内
+       * 形态），'expanded' = 行内全量正文。缺省回退 expanded 布尔：
+       * true → 'truncated'（历史/回放数据的行内预览语义），false →
+       * 'collapsed'。写入侧两者同步维护，读侧一律走 entryState 的
+       * toolDisplayMode 归一。
+       */
+      displayMode?: 'collapsed' | 'truncated' | 'expanded'
       raw?: ToolCall
       /**
        * Additional EditFile calls merged into this row (TUI

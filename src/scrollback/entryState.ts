@@ -36,8 +36,44 @@ export function entryFailed(e: ScrollEntry): boolean {
   return false
 }
 
+export type ToolDisplayMode = 'collapsed' | 'truncated' | 'expanded'
+
+type ToolModeLike = { displayMode?: ToolDisplayMode; expanded?: boolean }
+
+/**
+ * Effective display mode of a tool entry. Missing `displayMode` falls back
+ * to the legacy `expanded` boolean — `true` meant the inline truncated
+ * preview (TUI Truncated), `false` the header-only card.
+ */
+export function toolDisplayMode(e: ToolModeLike): ToolDisplayMode {
+  return e.displayMode ?? (e.expanded ? 'truncated' : 'collapsed')
+}
+
+/**
+ * Next mode on toggle (TUI block.next_fold_mode). Only three blocks get a
+ * three-way cycle; everything else flips collapsed ↔ expanded:
+ * - read (read.rs:443-448): Collapsed → Truncated → Collapsed.
+ * - other/generic (other.rs:361-373): running 走 Truncated ↔ Expanded，
+ *   完成后 Collapsed ↔ Expanded。
+ * - default (block.rs:116): Collapsed → Expanded，其余 → Collapsed。
+ */
+export function nextToolFoldMode(
+  kindName: string | undefined,
+  current: ToolDisplayMode,
+  running: boolean,
+): ToolDisplayMode {
+  if (kindName === 'read') return current === 'collapsed' ? 'truncated' : 'collapsed'
+  if (kindName == null || kindName === 'generic') {
+    if (running) return current === 'truncated' ? 'expanded' : 'truncated'
+    return current === 'collapsed' ? 'expanded' : 'collapsed'
+  }
+  return current === 'collapsed' ? 'expanded' : 'collapsed'
+}
+
 export function entryExpanded(e: ScrollEntry): boolean {
-  if (e.kind === 'tool') return !!e.expanded
+  // Tool: anything past the header-only card counts as expanded（含旧数据
+  // 的 expanded:true —— toolDisplayMode 归一后是 truncated 预览档）。
+  if (e.kind === 'tool') return toolDisplayMode(e) !== 'collapsed'
   // Thought: only the fully-collapsed header counts as folded (truncated
   // and expanded both show body content).
   if (e.kind === 'thought') return thoughtDisplayMode(e) !== 'collapsed'
@@ -98,24 +134,29 @@ export function toolHasExpandableBody(
       case 'edit':
         return d.lines.length > 0 || !!d.error
       case 'search':
-        return (
-          d.fileMatches.length > 0 ||
-          d.filePaths.length > 0 ||
-          d.matchCount > 0 ||
-          !!d.error
-        )
+        // TUI search.rs:547-551: 恒可折（无 error 即可，哪怕零命中——
+        // 展开能看到元数据/“(no results)”）。
+        return !d.error
       case 'list_dir':
-        return !!(d.output || d.error)
+        // TUI list_dir.rs:223-228: 失败不可折。
+        return !d.error && !!d.output
       case 'fetch':
-        return !!(d.output || d.error || d.statusCode != null)
+        // TUI web_fetch.rs:321-323: error.is_none() && output.is_some()。
+        return !d.error && !!d.output
       case 'web_search':
-        return !!(d.content || d.citations.length || d.error)
+        // TUI web_search.rs:365-367: !error && content && !is_x_search
+        // （FE 的 X search 变体由 toolDetail 标成 label 'X Search'）。
+        return !d.error && !!d.content && d.label !== 'X Search'
       case 'use_tool':
         return d.args.length > 0 || !!d.output || !!d.error
       case 'search_tool':
         return d.results.length > 0 || !!d.error
       case 'generic':
-        return d.inputArgs.length > 0 || !!d.output || !!d.error
+        // TUI other.rs:349-355: 失败不可折，且仅 output 计入（input 不算）。
+        return !d.error && !!d.output
+      default:
+        // 新增 detail kind 的兜底（与 catch 同款）：有正文即视为可展开。
+        return !!(raw.rawOutput || raw.content || raw.rawInput)
     }
   } catch {
     return !!(raw.rawOutput || raw.content || raw.rawInput)
@@ -128,10 +169,8 @@ export function toolHasExpandableBody(
  */
 export function entryAtMinFold(e: ScrollEntry): boolean {
   if (e.kind === 'tool') {
-    if (!e.expanded) return true
-    // running + still "collapsed header" feel: indicator while running even if auto-open later
-    const running = e.status === 'pending' || e.status === 'in_progress'
-    return running && !e.expanded
+    // 最小形态 = 仅行头（truncated 预览与全量正文都算展开）。
+    return toolDisplayMode(e) === 'collapsed'
   }
   if (e.kind === 'thought') {
     if (e.streaming) return false // live body visible; not at min fold chrome

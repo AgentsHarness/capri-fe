@@ -124,18 +124,27 @@ export function resolveAccent(opts: AccentResolveOpts): AccentPaint {
   let paint: AccentPaint
 
   // ── Finish flash (tools + thinking) ────────────────────────────────
-  // Tools without a natural accent (Read etc.) flash accent_success green.
-  // Thinking flashes accent_thinking (magenta). Execute uses success/error.
-  // Collapsed height stays short (content mode) — not toggled by selection.
+  // Colors follow block.accent_color() (block.rs:987-1022) with the
+  // accent_success green fallback (entry_renderer.rs:758-766): execute
+  // success green / failure red; standard family success tool / failure
+  // red; Read/Edit/ListDir/Search carry no accent → always flash green.
+  // A collapsed row paints no rail at all — flash included
+  // (entry_renderer.rs:757-768: display_mode != Collapsed gate;
+  // Truncated counts as open).
   if (flashing) {
+    if (!expanded) {
+      return withInteraction(
+        { show: false, color: 'transparent', animated: false },
+        selected,
+        hovered,
+      )
+    }
     if (kind === 'thought') {
-      // Collapsed stays short (content mode) — flash only swaps color,
-      // mirroring execute's `collapsedGlyph: !expanded`.
       paint = {
         show: true,
         color: Accents.thinking,
         animated: false,
-        collapsedGlyph: !expanded,
+        collapsedGlyph: false,
       }
       return withInteraction(paint, selected, hovered)
     }
@@ -145,7 +154,7 @@ export function resolveAccent(opts: AccentResolveOpts): AccentPaint {
           show: true,
           color: failed ? Accents.error : Accents.success,
           animated: false,
-          collapsedGlyph: !expanded,
+          collapsedGlyph: false,
         }
         return withInteraction(paint, selected, hovered)
       }
@@ -157,9 +166,11 @@ export function resolveAccent(opts: AccentResolveOpts): AccentPaint {
         }
         return withInteraction(paint, selected, hovered)
       }
+      // never / edit（含其它无 accent 家族）：TUI unwrap_or(accent_success)
+      // —— 失败也闪绿（红色由行头 bullet 表达）。
       paint = {
         show: true,
-        color: failed ? Accents.error : Accents.success,
+        color: Accents.success,
         animated: false,
       }
       return withInteraction(paint, selected, hovered)

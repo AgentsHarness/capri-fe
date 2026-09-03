@@ -49,7 +49,7 @@ export function HistorySidebar() {
           border-b, and removing this line lets the top edge sit flush with
           the borderless WorkspaceBar. py-2 + compact button matches the
           (taller) WorkspaceBar row height so the "会话 new" header lines up. */}
-      <div className="flex min-h-[37px] items-center gap-2 border-b border-gn-prompt-border px-3 py-2">
+      <div className="flex min-h-[37px] h-[37px] items-center gap-2 border-b border-gn-prompt-border px-3 py-0">
         <SessionListHeader
           searchOpen={searchOpen}
           onToggleSearch={() => setSearchOpen((v) => !v)}

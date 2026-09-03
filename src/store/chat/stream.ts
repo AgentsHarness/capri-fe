@@ -334,12 +334,14 @@ export function sealThought(
             ? formatElapsed(Date.now() - e.startedAt)
             : e.elapsed
       // Collapse body after finish (TUI truncated "Thought for Xs" preview)
-      // finishedAt drives the short finish-flash accent (EntryRenderer)
+      // finishedAt drives the short finish-flash accent (EntryRenderer).
+      // 手动折叠过（foldPinned，TUI display_mode_pinned）不折回——
+      // state/mod.rs:936 只折叠未钉住的思考行。
       return {
         ...e,
         streaming: false,
         elapsed,
-        displayMode: 'collapsed',
+        ...(e.foldPinned ? {} : { displayMode: 'collapsed' as const }),
         finishedAt: Date.now(),
       }
     }),
@@ -389,7 +391,8 @@ export function sealThoughtVisual(s: ChatState): ChatState {
         ...e,
         streaming: false,
         elapsed,
-        displayMode: 'collapsed',
+        // 同 sealThought：foldPinned（display_mode_pinned）豁免收口折叠。
+        ...(e.foldPinned ? {} : { displayMode: 'collapsed' as const }),
         finishedAt: Date.now(),
       }
     }),

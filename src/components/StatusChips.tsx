@@ -799,7 +799,7 @@ export function RunningTasksBar({
     >
       {/* Content column matches scrollback/composer (mx-auto max-w-[960px]) */}
       <div
-        className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} flex max-h-[min(28vh,12rem)] flex-col overflow-y-auto py-0.5`}
+        className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} flex max-h-[min(28vh,12rem)] flex-col overflow-y-auto py-0`}
       >
         {/* 运行中区块：直接列出任务，无标题行。 */}
         {count > 0 && (
@@ -807,7 +807,7 @@ export function RunningTasksBar({
             {topTasks.map((t) => (
               <div
                 key={`restored-${t.taskId}`}
-                className="group flex min-h-6 cursor-pointer items-center gap-1.5 py-[2px] text-[12px] leading-snug hover:bg-gn-bg-highlight"
+                className="group flex min-h-[25px] cursor-pointer items-center gap-1.5 py-0 text-[12px] leading-none hover:bg-gn-bg-highlight"
                 title={
                   t.restored
                     ? '恢复的运行中任务（宿主探活确认仍在运行；由 TUI 进程持有，无法在此 kill）· 点击查看日志'
@@ -852,7 +852,7 @@ export function RunningTasksBar({
             {running.map((e) => (
               <div
                 key={e.id}
-                className="group flex min-h-6 cursor-pointer items-center gap-1.5 py-[2px] text-[12px] leading-snug hover:bg-gn-bg-highlight"
+                className="group flex min-h-[25px] cursor-pointer items-center gap-1.5 py-0 text-[12px] leading-none hover:bg-gn-bg-highlight"
                 title="点击查看日志"
                 onClick={() => openViewer(e.id)}
               >

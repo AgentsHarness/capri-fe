@@ -27,11 +27,16 @@ export function thoughtDisplayMode(e: ThoughtLike): ThoughtDisplayMode {
 }
 
 /**
- * Click/space cycle (TUI toggle_fold on thinking blocks): collapsed ↔
- * expanded. The truncated preview mode is not in the default cycle — the
- * first click expands to the full body, the next collapses to the header.
+ * Click/space cycle (TUI thinking.rs:484-503 next_fold_mode)。完成态：
+ * Collapsed → Expanded，其余（Truncated/Expanded）→ Collapsed；流式态
+ * （FE 对 streaming 思考禁折，仅对齐保留）：Expanded → Truncated，其余
+ * → Expanded。
  */
-export function nextThoughtMode(m: ThoughtDisplayMode): ThoughtDisplayMode {
+export function nextThoughtMode(
+  m: ThoughtDisplayMode,
+  running = false,
+): ThoughtDisplayMode {
+  if (running) return m === 'expanded' ? 'truncated' : 'expanded'
   if (m === 'collapsed') return 'expanded'
   return 'collapsed'
 }

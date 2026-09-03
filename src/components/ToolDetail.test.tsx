@@ -51,7 +51,7 @@ describe('ToolDetail — execute', () => {
     expect(container.textContent).not.toContain('… +')
   })
 
-  it('仅 error → error 行；error + output → 都在', () => {
+  it('仅 error → error 行；error + output → 只渲染输出（TUI：有输出不追加错误行）', () => {
     const { container } = renderDetail(
       { rawInput: { command: 'ls' }, rawOutput: { Bash: { exit_code: 2 } } },
       'execute',
@@ -64,7 +64,8 @@ describe('ToolDetail — execute', () => {
       'execute',
     )
     expect(c2.textContent).toContain('partial')
-    expect(c2.textContent).toContain('exit code 2')
+    expect(c2.textContent).not.toContain('exit code 2')
+    expect(c2.querySelector('[style*="accent-error"]')).toBeNull()
   })
 })
 
@@ -88,7 +89,7 @@ describe('ToolDetail — read', () => {
     expect(c2.textContent).not.toContain('… +')
   })
 
-  it('error / empty / no content / pdf 分支', () => {
+  it('error / no content 分支；(empty)/(pdf) 占位只在行头，正文不再重复', () => {
     const { container } = renderDetail(
       { rawInput: { path: 'a' }, rawOutput: { Read: { NotFound: 'no such file' } } },
       'read',
@@ -99,7 +100,7 @@ describe('ToolDetail — read', () => {
       { rawInput: { path: 'a' }, rawOutput: { Read: { FileContent: { content: '' } } } },
       'read',
     )
-    expect(c2.textContent).toContain('(empty)')
+    expect(c2.textContent).not.toContain('(empty)')
 
     const { container: c3 } = renderDetail({ rawInput: { path: 'a' } }, 'read')
     expect(c3.textContent).toContain('(no content)')
@@ -108,7 +109,8 @@ describe('ToolDetail — read', () => {
       { rawInput: { path: 'a.pdf' }, rawOutput: { Read: { Pdf: { data: 'x' } } } },
       'read',
     )
-    expect(c4.textContent).toContain('(pdf)')
+    expect(c4.textContent).not.toContain('(pdf)')
+    expect(c4.textContent).not.toContain('pages')
   })
 
   it('图片 base64 内容 → 渲染 <img>（wire mime 包装成 data URI）', () => {
@@ -128,12 +130,13 @@ describe('ToolDetail — read', () => {
     expect(container.textContent).not.toContain('(image)')
   })
 
-  it('图片内容缺失/无效 → (image) 占位（content 缺失时）', () => {
+  it('图片内容缺失/无效 → 正文不再渲染 (image) 占位（只在行头后缀显示）', () => {
     const { container } = renderDetail(
       { rawInput: { path: 'a.png' }, rawOutput: { Read: { ImageContent: {} } } },
       'read',
     )
-    expect(container.textContent).toContain('(image)')
+    expect(container.textContent).not.toContain('(image)')
+    expect(container.querySelector('img')).toBeNull()
   })
 
   it('full + 超长内容分页：显示 200 行 + 加载更多按钮', () => {
@@ -163,7 +166,7 @@ describe('ToolDetail — edit', () => {
     },
   }
 
-  it('结构化 diff：diffstat + 行内容（含 === 前缀头）', () => {
+  it('结构化 diff：diffstat + 行内容；@@ hunk 头行不上屏（TUI 只在补丁文本里有 @@）', () => {
     const { container } = renderDetail(
       { title: 'EditFile: /src/x.ts', rawInput: { path: '/src/x.ts' }, rawOutput: editsApplied },
       'edit',
@@ -172,10 +175,10 @@ describe('ToolDetail — edit', () => {
     expect(container.textContent).toContain('a')
     expect(container.textContent).toContain('b')
     const rows = Array.from(container.querySelectorAll('div')).map((d) => d.textContent)
-    expect(rows.some((t) => t?.includes('@@'))).toBe(true)
+    expect(rows.some((t) => t?.includes('@@'))).toBe(false)
   })
 
-  it('合并 extra hunks（mergedRaws）中间用 … 分隔', () => {
+  it('合并 extra hunks（mergedRaws）中间分隔带不变行数（TUI hunk_gap_lines）', () => {
     const second = tc({
       title: 'EditFile: /src/x.ts',
       rawInput: { path: '/src/x.ts' },
@@ -191,8 +194,9 @@ describe('ToolDetail — edit', () => {
       { mergedRaws: [second] },
     )
     expect(container.textContent).toContain('z')
+    // 主 detail 最后的新文件行号 3（insert b）→ 第二个 raw 起于 9：间隔 5 行
     const separators = Array.from(container.querySelectorAll('div')).filter(
-      (d) => d.textContent === '…',
+      (d) => d.textContent === '… 5 unchanged lines',
     )
     expect(separators.length).toBeGreaterThan(0)
   })
@@ -211,7 +215,7 @@ describe('ToolDetail — edit', () => {
     expect(c2.textContent).toContain('(no diff)')
   })
 
-  it('超长 diff 行内截断（head 20 / tail 10 + gap）', () => {
+  it('超长 diff 行内不截断（TUI Truncated/Expanded 同路径全量渲染）', () => {
     const manyDetails = Array.from({ length: 50 }, (_, i) => ({
       old_string: `old${i}`,
       new_string: `new${i}`,
@@ -225,9 +229,10 @@ describe('ToolDetail — edit', () => {
       },
       'edit',
     )
-    expect(container.textContent).toMatch(/… \+1\d\d lines/)
+    // 首尾 hunk 都直接可见，没有 head/tail 截断
     expect(container.textContent).toContain('new0')
     expect(container.textContent).toContain('new49')
+    expect(container.textContent).not.toContain('… +')
   })
 })
 
@@ -269,13 +274,22 @@ describe('ToolDetail — search', () => {
 })
 
 describe('ToolDetail — list_dir / fetch / web_search / use_tool / generic', () => {
-  it('list_dir：输出 / 空 / 错误', () => {
+  it('list_dir：输出 / 空 / 错误；行内展开全量渲染不截断（TUI list_dir.rs）', () => {
     const { container } = renderDetail(
       { rawInput: { target_directory: '/tmp' }, rawOutput: { ListDir: { content: 'a\nb' } } },
       'list_dir',
     )
     expect(container.textContent).toContain('a')
     expect(container.textContent).toContain('b')
+
+    const many = Array.from({ length: 15 }, (_, i) => `entry${i}`).join('\n')
+    const { container: cLong } = renderDetail(
+      { rawInput: { target_directory: '/tmp' }, rawOutput: { ListDir: { content: many } } },
+      'list_dir',
+    )
+    expect(cLong.textContent).toContain('entry0')
+    expect(cLong.textContent).toContain('entry14')
+    expect(cLong.textContent).not.toContain('… +')
 
     const { container: c2 } = renderDetail({ rawInput: { path: '/tmp' } }, 'list_dir')
     expect(c2.textContent).toContain('(empty)')
@@ -306,7 +320,7 @@ describe('ToolDetail — list_dir / fetch / web_search / use_tool / generic', ()
     expect(c3.textContent).toContain('Fetch failed')
   })
 
-  it('web_search：内容 + 编号引用', () => {
+  it('web_search：内容 + 编号引用（引用可点击 <a>，带 title）', () => {
     const rawOutput = {
       WebSearch: { content: '结果', citations: ['https://a.dev', 'https://b.dev'] },
     }
@@ -317,9 +331,14 @@ describe('ToolDetail — list_dir / fetch / web_search / use_tool / generic', ()
     expect(container.textContent).toContain('结果')
     expect(container.textContent).toContain('1. https://a.dev')
     expect(container.textContent).toContain('2. https://b.dev')
+    const links = Array.from(container.querySelectorAll('a'))
+    expect(links.map((a) => a.getAttribute('href'))).toEqual(['https://a.dev', 'https://b.dev'])
+    expect(links[0]!.getAttribute('title')).toBe('https://a.dev')
+    expect(links[0]!.getAttribute('target')).toBe('_blank')
+    expect(links[0]!.getAttribute('rel')).toBe('noreferrer')
   })
 
-  it('use_tool：args KV + output / error', () => {
+  it('use_tool：args KV + output / error；失败时 output 转红 error 不双显', () => {
     const { container } = renderDetail(
       {
         rawInput: { tool_name: 'linear_search', variant: 'UseTool', query: 'x' },
@@ -336,6 +355,35 @@ describe('ToolDetail — list_dir / fetch / web_search / use_tool / generic', ()
       'use_tool',
     )
     expect(c2.textContent).toContain('boom')
+    // 原始输出整体挪进红色 error 行，stdout 正文不再重复出现
+    expect(c2.textContent!.split('boom').length - 1).toBe(1)
+    expect(c2.querySelector('[style*="accent-error"]')).not.toBeNull()
+
+    // null 参数显示 "null"（TUI Value::Null）
+    const { container: c3 } = renderDetail(
+      { rawInput: { toolName: 't', tool_input: { channel: null } } },
+      'use_tool',
+    )
+    expect(c3.textContent).toContain('channel:')
+    expect(c3.textContent).toContain('null')
+  })
+
+  it('ask_user：AskUserQuestion 输出渲染编号问答行', () => {
+    const answered =
+      'User has answered your questions: "Which framework?"="React", "Why?"="Speed. selected preview: x". You can now continue with the user\'s answers in mind.'
+    const { container } = renderDetail({ title: 'AskUserQuestion', content: answered }, 'other')
+    expect(container.textContent).toContain('1. Which framework?')
+    expect(container.textContent).toContain('React')
+    expect(container.textContent).toContain('2. Why?')
+    expect(container.textContent).toContain('Speed.')
+    expect(container.textContent).not.toContain('selected preview:')
+
+    // 未作答 → (no answer)
+    const plan =
+      'Questions asked\n- "Deploy where?"\n  (No answer provided)'
+    const { container: c2 } = renderDetail({ title: 'AskUserQuestion', content: plan }, 'other')
+    expect(c2.textContent).toContain('1. Deploy where?')
+    expect(c2.textContent).toContain('(no answer)')
   })
 
   it('generic：inputArgs + (no output) 兜底', () => {

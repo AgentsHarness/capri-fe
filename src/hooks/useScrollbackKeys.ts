@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { useChatStore } from '../store/chat'
+import { selectableRowIds } from '../store/chat/turn'
 
 const NAV_KEYS = new Set([
   'j',
@@ -26,6 +27,58 @@ const NAV_KEYS = new Set([
 /** The scrollback scroll container (Scrollback.tsx data-scrollback-box). */
 function scrollBox(): HTMLElement | null {
   return document.querySelector<HTMLElement>('[data-scrollback-box]')
+}
+
+/**
+ * Esc 阶梯跨焦点臂时间戳（epoch ms，0 = 未臂定）：scrollback 侧首个 idle
+ * Esc 臂定（TUI prompt.rs try_handle_esc_policy 的 2×Esc = /rewind）。
+ * 首次 Esc 已把焦点交回 prompt，第二次 Esc 落在 composer 的阶梯里——
+ * Composer 的 idle Esc 分支经 escArmTimestamp() 读到这份臂定，跨焦点
+ * 也能两击直达回退；第二击仍落在 scrollback（composer 缺席/异常）时由
+ * 本 hook 的 idle 分支兜底。任何非 Esc 键（onKey 顶部）与臂定动作的
+ * 执行路径都会解除。
+ */
+let escArmAt = 0
+
+/** Esc 阶梯 TTL：与 Composer useEscLadder 的 800ms 臂定窗口一致。 */
+const ESC_ARM_TTL_MS = 800
+
+/** 当前跨焦点 Esc 臂时间戳（Composer idle Esc 分支判定第二次 Esc 用）。 */
+export function escArmTimestamp(): number {
+  return escArmAt
+}
+
+/** 解除跨焦点 Esc 臂（composer 执行臂定动作后调用，避免残留臂定）。 */
+export function clearEscArm(): void {
+  escArmAt = 0
+}
+
+/**
+ * TUI page_up/page_down 的 select_viewport_edge（nav.rs:446-503）：翻页
+ * 后选中视口上/下边缘的可见可选行。用滚动容器内 [data-entry-id] 行与
+ * 视口矩形求交得可见行，边缘行须命中 selectableRowIds（j/k 的同一可选
+ * 行通路；折叠隐藏的成员行不在其中），不命中则向视口内侧行走。
+ */
+function selectViewportEdge(dir: 'top' | 'bottom'): void {
+  const st = useChatStore.getState()
+  const box = scrollBox()
+  if (!box) return
+  const selectable = new Set(selectableRowIds(st.entries, st.expandedGroups))
+  const boxRect = box.getBoundingClientRect()
+  const visible = Array.from(
+    box.querySelectorAll<HTMLElement>('[data-entry-id]'),
+  ).filter((el) => {
+    const r = el.getBoundingClientRect()
+    return r.height > 0 && r.bottom > boxRect.top && r.top < boxRect.bottom
+  })
+  const ordered = dir === 'top' ? visible : visible.reverse()
+  for (const el of ordered) {
+    const id = el.dataset.entryId
+    if (id && selectable.has(id)) {
+      st.selectEntry(id)
+      return
+    }
+  }
 }
 
 /**
@@ -72,20 +125,26 @@ function onInteractiveControl(target: EventTarget | null): boolean {
  * - Tab: toggle prompt ↔ scrollback focus
  * - j/k / ↑↓: move selection (scrollback focus)
  * - ← / → / h / l: collapse / expand selected foldable block (inline)
- * - Enter: open block viewer (TUI OpenBlockViewer)
+ * - Enter: open block viewer (TUI OpenBlockViewer); on a group header
+ *   (gh_ row) toggles the group's expansion instead (TUI router.rs)
  * - Space: toggle inline expand
- * - g / G: scroll to top / bottom (G restores bottom-follow)
- * - PgUp / PgDn: page the conversation (also from the prompt, TUI docs)
- * - Ctrl+J / Ctrl+K: scroll a line down / up without moving selection
+ * - g / G: scroll to top / bottom and select the first / last selectable
+ *   entry (TUI goto_top/goto_bottom); G restores bottom-follow
+ * - PgUp / PgDn: page the conversation and select the viewport-edge
+ *   entry (TUI select_viewport_edge; from the prompt it only scrolls)
+ * - Ctrl+J / Ctrl+K: scroll one line down / up without moving selection
  * - Ctrl+U / Ctrl+D: half page up / down
  * - Shift+J / Shift+K: next / previous assistant response
  * - Shift+H / Shift+L: previous / next user turn (TUI PrevTurn/NextTurn)
  * - Esc: close viewer if open, else scrollback → prompt (or the cancel
  *   flow when busy: saved preference acts directly, running subagents
- *   open the cancel panel, otherwise the turn is cancelled)
- * - Ctrl+C: TUI ladder — a non-empty draft is cleared first (turn keeps
- *   running); an empty draft cancels the running turn (subagents keep
- *   running). Idle with a draft clears it; idle and empty does nothing.
+ *   open the cancel panel, otherwise the turn is cancelled). Idle Esc is
+ *   a 2-press ladder (TUI try_handle_esc_policy): the second press within
+ *   the TTL opens the rewind picker.
+ * - Ctrl+C: TUI ladder — a text selection always wins (browser copy); a
+ *   non-empty draft is cleared next (turn keeps running); an empty draft
+ *   cancels the running turn (subagents keep running). Idle with a draft
+ *   clears it; idle and empty does nothing.
  * - Tab / Enter / Space: pane-switch and scrollback bindings yield to
  *   native behavior on interactive controls (link/button/select), so
  *   keyboard focus traversal and activation stay reachable (audit B1).
@@ -95,6 +154,9 @@ export function useScrollbackKeys() {
     const onKey = (e: KeyboardEvent) => {
       // Ignore pure modifier chords (Ctrl-F also opens viewer — handled below)
       if (e.metaKey || e.altKey) return
+
+      // Esc 阶梯：非 Esc 键解除跨焦点臂定（TUI try_handle_esc_policy）。
+      if (e.key !== 'Escape') escArmAt = 0
 
       const store0 = useChatStore.getState()
 
@@ -129,6 +191,11 @@ export function useScrollbackKeys() {
         ) {
           return
         }
+        // 滚动区/页面文本选区优先（TUI 复制优先）：有非空选区时 Ctrl+C
+        // 让给浏览器复制——不清草稿、不取消回合（textarea/input 内选区
+        // 下面另有同效守卫，这里补上滚动区选中文本的场景，与文档注释
+        // 承诺的行为对齐）。
+        if ((window.getSelection()?.toString() ?? '') !== '') return
         const t = e.target as HTMLElement | null
         const inField =
           !!t &&
@@ -183,9 +250,16 @@ export function useScrollbackKeys() {
         if (!box) return
         e.preventDefault()
         const line = e.key === 'j' || e.key === 'J' || e.key === 'k' || e.key === 'K'
-        const amount = line
-          ? 48
-          : Math.max(120, Math.round(box.clientHeight / 2))
+        let amount: number
+        if (line) {
+          // TUI ScrollUp/ScrollDown 是 1 行（defaults.rs "Scroll up/down
+          // one line"）：按滚动容器的计算行高滚 1 行，读不到（line-height:
+          // normal 等 NaN 场景）回退 22px。
+          const lh = parseFloat(getComputedStyle(box).lineHeight)
+          amount = Number.isFinite(lh) && lh > 0 ? lh : 22
+        } else {
+          amount = Math.max(120, Math.round(box.clientHeight / 2))
+        }
         const up =
           e.key === 'k' || e.key === 'K' || e.key === 'u' || e.key === 'U'
         box.scrollBy({ top: up ? -amount : amount })
@@ -310,8 +384,15 @@ export function useScrollbackKeys() {
           store.setExpanded(false)
           return
         case 'Enter':
-          // Open block viewer (TUI OpenBlockViewer default_key: Enter)
+          // Open block viewer (TUI OpenBlockViewer default_key: Enter).
+          // 组头上 Enter 先切换组展开（TUI router.rs OpenBlockViewer 遇组
+          // 头先 toggle_group_expansion）——openViewer 对 gh_ 前缀直接
+          // no-op，不拦截的话组头上的 Enter 永远无动作。
           e.preventDefault()
+          if (store.selectedId?.startsWith('gh_')) {
+            store.toggleGroupExpansion(store.selectedId.slice(3))
+            return
+          }
           store.openViewer()
           return
         case ' ':
@@ -321,30 +402,43 @@ export function useScrollbackKeys() {
           return
         case 'g': {
           // TUI GotoTop: jump to the scrollback top (follow pauses
-          // automatically — the box's onScroll sees the distance grow).
+          // automatically — the box's onScroll sees the distance grow),
+          // and select the FIRST selectable entry (nav.rs goto_top →
+          // find_first_selectable_in_range) — j/k 的同一可选行通路。
           e.preventDefault()
           const box = scrollBox()
           if (box) box.scrollTop = 0
+          const st = useChatStore.getState()
+          const ids = selectableRowIds(st.entries, st.expandedGroups)
+          if (ids.length > 0) st.selectEntry(ids[0])
           return
         }
         case 'G': {
           // TUI GotoBottom: jump to the bottom; landing near the bottom
-          // re-engages the existing bottom-follow.
+          // re-engages the existing bottom-follow. Also selects the LAST
+          // selectable entry (nav.rs goto_bottom →
+          // find_last_selectable_in_range).
           e.preventDefault()
           const box = scrollBox()
           if (box) box.scrollTop = box.scrollHeight
+          const st = useChatStore.getState()
+          const ids = selectableRowIds(st.entries, st.expandedGroups)
+          if (ids.length > 0) st.selectEntry(ids[ids.length - 1])
           return
         }
         case 'PageUp':
-        case 'PageDown':
+        case 'PageDown': {
           e.preventDefault()
-          scrollBox()?.scrollBy({
-            top:
-              (e.key === 'PageUp' ? -1 : 1) *
-              (scrollBox()?.clientHeight ?? 0) *
-              0.9,
+          const box = scrollBox()
+          if (!box) return
+          box.scrollBy({
+            top: (e.key === 'PageUp' ? -1 : 1) * box.clientHeight * 0.9,
           })
+          // TUI page_up/page_down 滚完 select_viewport_edge（nav.rs）：
+          // 选中视口上/下边缘的可见可选行。
+          selectViewportEdge(e.key === 'PageUp' ? 'top' : 'bottom')
           return
+        }
         case 'J':
           // TUI NextResponse: next assistant reply
           e.preventDefault()
@@ -369,16 +463,29 @@ export function useScrollbackKeys() {
           // TUI: Esc while a turn runs goes through the cancel flow —
           // saved preference acts directly, running subagents open the
           // cancel panel, otherwise the turn is cancelled outright.
-          // Idle Esc moves focus back to the prompt.
+          // Idle Esc = TUI prompt.rs try_handle_esc_policy 阶梯：首个 Esc
+          // 臂定并照旧把焦点交回 prompt，800ms TTL（与 Composer 的
+          // useEscLadder 一致）内第二次 Esc 打开 /rewind 回退选择器——
+          // 第二击仍落在 scrollback 时在这里触发；焦点已切走时由
+          // composer 经 escArmTimestamp() 串联的臂定判定触发。
           e.preventDefault()
           if (store.conn === 'busy') {
+            // busy 路径不经阶梯：消费掉可能挂着的臂定，取消后的首个
+            // idle Esc 不会误判为第二击。
+            escArmAt = 0
             void store.requestCancelTurn()
-          } else {
-            store.setFocus('prompt')
-            requestAnimationFrame(() => {
-              document.getElementById('composer-input')?.focus()
-            })
+            return
           }
+          if (Date.now() - escArmAt < ESC_ARM_TTL_MS) {
+            escArmAt = 0
+            store.openRewind()
+            return
+          }
+          escArmAt = Date.now()
+          store.setFocus('prompt')
+          requestAnimationFrame(() => {
+            document.getElementById('composer-input')?.focus()
+          })
           return
         default:
           break

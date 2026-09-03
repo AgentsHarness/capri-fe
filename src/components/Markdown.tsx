@@ -258,11 +258,14 @@ const baseComponents: Components = {
     <h6 className="mt-2 mb-1 text-gn-gray-dim first:mt-0">{children}</h6>
   ),
   p: ({ children }) => <p className="my-1.5 first:mt-0 last:mb-0">{children}</p>,
+  // TUI 状态栏 URL 预览的最低成本对齐：hover 时 title 显示完整链接地址
+  // （TUI 把目标 URL 显示在状态栏，Web 里用原生 tooltip 承担同职）。
   a: ({ href, children }) => (
     <a
       href={href}
       target="_blank"
       rel="noreferrer"
+      title={href}
       className="text-gn-link underline decoration-gn-link/40 underline-offset-2 hover:decoration-gn-link"
     >
       {children}

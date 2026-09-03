@@ -38,9 +38,11 @@ export function ViewButton({
   )
 }
 
-/** 把 HEADER/DENSE 行上的 w-full 换成 flex-1，给右侧「查看」留位。 */
+/** 把 HEADER/DENSE 行上的 w-full 换成 flex-1，给右侧「查看」留位。
+ *  select-text：标题 button 内的文本参与划选复制（浏览器默认 button
+ *  文本不可选，工具/思考头部长路径复制不了）。 */
 function foldBtnClass(className: string): string {
-  return `${className.replace(/\bw-full\b/g, '').replace(/\s+/g, ' ').trim()} min-w-0 flex-1`
+  return `${className.replace(/\bw-full\b/g, '').replace(/\s+/g, ' ').trim()} min-w-0 flex-1 select-text`
 }
 
 /**

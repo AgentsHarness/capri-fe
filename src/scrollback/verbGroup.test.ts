@@ -282,7 +282,8 @@ describe('scanGroups / projectDisplayRows — thought 参与截断密度', () =>
     expect(collapsed).toHaveLength(1)
     expect(collapsed[0].kind).toEqual({ type: 'truncation', participants: 18, hidden: 8 })
     expect(truncationLabel(entries, collapsed[0])).toMatchObject({
-      text: 'Ran 17 commands, Thought 1 time',
+      // TUI verb_group.rs：思考占名额、永不进词表（无 Thought N times）。
+      text: 'Ran 17 commands',
     })
 
     const openedEntries = entries.map((e) =>
@@ -294,7 +295,7 @@ describe('scanGroups / projectDisplayRows — thought 参与截断密度', () =>
     // 参与者集合不变:participants/hidden 与折叠态完全一致 → 尾部不滑行
     expect(opened[0].kind).toEqual({ type: 'truncation', participants: 18, hidden: 8 })
     expect(truncationLabel(openedEntries, opened[0])).toMatchObject({
-      text: 'Ran 17 commands, Thought 1 time',
+      text: 'Ran 17 commands',
     })
     // 展开的思考豁免隐藏,原位可见
     const rows = projectDisplayRows(openedEntries, opened)
@@ -308,13 +309,49 @@ describe('scanGroups / projectDisplayRows — thought 参与截断密度', () =>
     ).toBe(true)
   })
 
-  it('纯思考段不触发截断（阈值只数工具，短段保持平铺）', () => {
+  it('纯思考段也按全参与者计数折叠（TUI groups.rs group_len 含思考）；标签回落 N more', () => {
     const entries = Array.from({ length: 12 }, () => thought({ text: 't' }))
-    expect(scanGroups(entries, new Set())).toHaveLength(0)
+    const spans = scanGroups(entries, new Set())
+    expect(spans).toHaveLength(1)
+    expect(spans[0].kind).toEqual({ type: 'truncation', participants: 12, hidden: 2 })
+    // 纯思考前缀无可命名参与者 → truncationLabel 返回 null → 回落 "N more"
+    expect(truncationLabel(entries, spans[0])).toBeNull()
   })
 
-  it('折叠点只看工具数：6 轮交替（12 参与者、6 工具）不折叠', () => {
-    expect(scanGroups(alt(6), new Set())).toHaveLength(0)
+  it('折叠点按全参与者计数：6 轮交替（12 参与者、6 工具）超阈值折叠', () => {
+    const spans = scanGroups(alt(6), new Set())
+    expect(spans).toHaveLength(1)
+    expect(spans[0].kind).toEqual({ type: 'truncation', participants: 12, hidden: 2 })
+  })
+
+  it('折叠头标签只描述 hidden 前缀（TUI truncation_header_label limit）', () => {
+    // 18 参与者（16 工具 + 1 思考 + 1 工具），hidden=8：折叠头只数前 8 个
+    // 参与者（全是工具）→ Ran 8 commands。
+    const entries = [
+      ...Array.from({ length: 16 }, () => tool({ kindName: 'execute' })),
+      thought({ text: 'mid' }),
+      tool({ kindName: 'execute' }),
+    ]
+    const span = scanGroups(entries, new Set())[0]
+    if (span.kind.type !== 'truncation') throw new Error('expected truncation')
+    expect(
+      truncationLabel(entries, span, true, span.kind.hidden),
+    ).toMatchObject({
+      text: 'Ran 8 commands',
+    })
+    // 展开态（无 limit）描述整段。
+    expect(truncationLabel(entries, span, true, undefined)).toMatchObject({
+      text: 'Ran 17 commands',
+    })
+  })
+
+  it('词表叫不出的参与者（bg_task）让整个标签回落 N more（TUI decline）', () => {
+    const entries = [
+      ...Array.from({ length: 12 }, () => tool({ kindName: 'execute' })),
+      { id: 'b', kind: 'bg_task', title: 't', command: 'x', status: 'completed' } as never,
+    ]
+    const span = scanGroups(entries, new Set())[0]
+    expect(truncationLabel(entries, span)).toBeNull()
   })
 
   it('折叠段前的思考一并入组隐藏', () => {
@@ -357,11 +394,11 @@ describe('scanGroups / projectDisplayRows — thought 参与截断密度', () =>
     expect(rows[24]).toMatchObject({ type: 'entry', index: 23 })
   })
 
-  it('truncationLabel：thought 计数以 "Thought N times" 追加在工具段之后', () => {
+  it('truncationLabel：思考永不进词表（TUI "NEVER bucketed"），工具段照常', () => {
     const entries = alt(12)
     const span = scanGroups(entries, new Set())[0]
     expect(truncationLabel(entries, span)).toEqual({
-      text: 'Ran 12 commands, Thought 12 times',
+      text: 'Ran 12 commands',
       running: false,
       failed: false,
     })

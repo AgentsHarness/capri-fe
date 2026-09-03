@@ -1,6 +1,7 @@
 import type { ScrollEntry } from '../../../api/types'
 import { toolHeaderExtra } from '../../../scrollback/toolHeaderExtra'
 import { toolHooksHaveContent } from '../../../scrollback/hookRuns'
+import { toolDisplayMode } from '../../../scrollback/entryState'
 import { Accents } from '../../../theme/accents'
 import { toolHeader } from '../../../theme/glyphs'
 import { ToolDetail } from '../../ToolDetail'
@@ -29,31 +30,34 @@ export function ToolEntry({
     fillToolBodies,
     cwd,
   } = chrome
+  // TUI 三态：collapsed = 仅行头；truncated = 行内截断预览（原 expanded
+  // 布尔的行内形态）；expanded = 行内全量正文（TUI Expanded）。
+  const mode = toolDisplayMode(e)
+  const showBody = mode !== 'collapsed'
   // lite 投影裁掉了正文、还没补回来 → 整行只显示占位（不渲染裁过的 body）。
   // 占位必须带补全坐标才显示：没有 [msgSeq, msgSeqEnd]（host 走
   // _x.ai/session/updates 透传回退时整页无 msgSeq）就没有任何可点的拉取
   // 路径，显示出来是个永远拿不回正文的死按钮。
   // 只在展开态显示：折叠卡本来就不画 body，每张都插一行提示纯属占地方；
   // 展开（toggleTool）与「查看」都会按需补全，占位到那时才有意义。
-  const showView = !!e.expanded
-  const litePending = showView && toolEntryLitePending(e)
+  const litePending = showBody && toolEntryLitePending(e)
   const running = e.status === 'pending' || e.status === 'in_progress'
   const failed = e.status === 'failed' || e.status === 'error'
   const { verb } = toolHeader(e.kindName, running)
   const verbColor = failed
     ? Accents.error
-    : e.expanded
+    : showBody
       ? 'var(--color-gn-fg)'
       : Accents.gray
   const targetColor =
-    e.expanded && !failed ? 'var(--color-gn-path)' : Accents.gray
+    showBody && !failed ? 'var(--color-gn-path)' : Accents.gray
   const detailColor = 'var(--color-gn-muted)'
 
   // TUI collapsed_line / header_line: the row noun, path paint and suffix all
   // depend on which surface this is — collapsed one-liner vs inline expand.
   const headerExtra = e.raw
     ? toolHeaderExtra(e.raw, e.kindName, failed, e.mergedRaws, {
-        surface: e.expanded ? 'expanded' : 'collapsed',
+        surface: showBody ? 'expanded' : 'collapsed',
         cwd,
         status: e.status,
       })
@@ -67,7 +71,7 @@ export function ToolEntry({
   // same spans to the first collapsed line). Expanded: they show as detail
   // under the body instead, so the two forms are mutually exclusive.
   const hooks = e.hooks
-  const hookSuffix = !e.expanded && toolHooksHaveContent(hooks) ? hooks : null
+  const hookSuffix = !showBody && toolHooksHaveContent(hooks) ? hooks : null
 
   return (
     <EntryShell {...shell}>
@@ -75,7 +79,7 @@ export function ToolEntry({
         className={rowBtn}
         title="click fold · 查看 / enter view"
         onFold={() => toggleTool(e.id)}
-        viewVisible={showView}
+        viewVisible={showBody}
         onOpen={() => openViewer(e.id)}
       >
         <Bullet
@@ -139,7 +143,8 @@ export function ToolEntry({
         )}
         {hookSuffix ? <ToolHookSuffix data={hookSuffix} /> : null}
       </HeaderWithView>
-      {/* Inline expand = TUI Truncated preview; full body via Enter / 查看. */}
+      {/* Inline expand = TUI Truncated preview; TUI Expanded = 全量正文
+          （full=true，仅视口预算截断）。full body via Enter / 查看。 */}
       {litePending ? (
         // lite 裁掉的正文：占位行报出省略规模 + 按需加载（行内 spinner /
         // 失败就地重试）。补全完成后这条自动让位给下面的正文。
@@ -149,15 +154,15 @@ export function ToolEntry({
           onFill={fillToolBodies ? () => fillToolBodies(e.id) : undefined}
           className="pl-1"
         />
-      ) : e.expanded && e.raw ? (
+      ) : showBody && e.raw ? (
         <ToolDetail
           raw={e.raw}
           kindName={e.kindName}
-          full={false}
+          full={mode === 'expanded'}
           mergedRaws={e.mergedRaws}
           hooks={hooks}
         />
-      ) : e.expanded && !e.raw && hooks ? (
+      ) : showBody && !e.raw && hooks ? (
         // A row whose only content is its hook runs still folds (TUI
         // is_foldable counts hook detail), so the expand has to render them
         // even with no tool payload on the row.

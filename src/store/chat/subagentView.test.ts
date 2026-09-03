@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AcpEvent, ScrollEntry } from '../../api/types'
-import { sealSubagentStreaming, subagentViewAppend } from './subagentView'
+import {
+  applySubagentViewEvent,
+  sealSubagentStreaming,
+  subagentViewAppend,
+} from './subagentView'
 import { extractToolDetail } from '../../scrollback/toolDetail'
 
 type ThoughtEvent = Extract<AcpEvent, { type: 'thought' }>
@@ -10,6 +14,13 @@ const thought = (over: Partial<ThoughtEvent> = {}): AcpEvent => ({
   text: 'hmm',
   ...over,
 })
+
+/** 取视图末条（断言收口标记用），并校验条目种类。 */
+function lastOf(items: ScrollEntry[]): ScrollEntry {
+  const e = items[items.length - 1]
+  if (!e) throw new Error('expected an entry')
+  return e
+}
 
 describe('subagentViewAppend — thought 耗时', () => {
   beforeEach(() => {
@@ -105,6 +116,168 @@ describe('subagentViewToolItem — todo/plan update 顶层赝品 kind:"think"', 
     expect(entry.verb.startsWith('Thought')).toBe(false)
     expect(entry.verb.startsWith('Thinking')).toBe(false)
     expect(entry.title).toBe('Updating plan')
+  })
+})
+
+describe('subagentViewAppend — 回合收口标记（TUI session_event.rs 对齐）', () => {
+  it('turn_completed 成功 + elapsedMs → "Worked for X"（无句号）', () => {
+    const items = subagentViewAppend([], {
+      type: 'turn_completed',
+      elapsedMs: 125000,
+    } as AcpEvent)
+    const e = lastOf(items)
+    expect(e.kind).toBe('session_event')
+    expect(e.kind === 'session_event' && e.text).toBe('Worked for 2m5s')
+    expect(e.kind === 'session_event' && e.warning).toBeUndefined()
+  })
+
+  it('turn_completed error + agentResult + elapsedMs → "Turn failed in X: err" 带 warning', () => {
+    const items = subagentViewAppend([], {
+      type: 'turn_completed',
+      stopReason: 'error',
+      agentResult: 'connection reset',
+      elapsedMs: 3000,
+    } as AcpEvent)
+    const e = lastOf(items)
+    expect(e.kind).toBe('session_event')
+    expect(e.kind === 'session_event' && e.text).toBe(
+      'Turn failed in 3.0s: connection reset',
+    )
+    expect(e.kind === 'session_event' && e.warning).toBe(true)
+  })
+
+  it('turn_completed rate_limit → "Turn failed in X: rate limited"', () => {
+    const items = subagentViewAppend([], {
+      type: 'turn_completed',
+      stopReason: 'rate_limit',
+      elapsedMs: 32000,
+    } as AcpEvent)
+    const e = lastOf(items)
+    expect(e.kind === 'session_event' && e.text).toBe(
+      'Turn failed in 32s: rate limited',
+    )
+  })
+
+  it('turn_completed cancelled + elapsedMs → "Turn cancelled by user in X."', () => {
+    const items = subagentViewAppend([], {
+      type: 'turn_completed',
+      stopReason: 'cancelled',
+      elapsedMs: 10000,
+    } as AcpEvent)
+    const e = lastOf(items)
+    expect(e.kind === 'session_event' && e.text).toBe(
+      'Turn cancelled by user in 10s.',
+    )
+  })
+
+  it('update 原样字段（live rail 形状）→ stop_reason/agent_result/elapsed_ms 兜底', () => {
+    const items = subagentViewAppend([], {
+      type: 'turn_completed',
+      update: { stop_reason: 'error', agent_result: 'boom', elapsed_ms: 2500 },
+    } as unknown as AcpEvent)
+    const e = lastOf(items)
+    expect(e.kind === 'session_event' && e.text).toBe('Turn failed in 2.5s: boom')
+  })
+
+  it('turn_completed 无任何数据 → 回退旧固定文案 "— turn ended —"', () => {
+    const items = subagentViewAppend([], { type: 'turn_completed' } as AcpEvent)
+    const e = lastOf(items)
+    expect(e.kind === 'session_event' && e.text).toBe('— turn ended —')
+  })
+
+  it('live done 无数据 → 固定文案 "— turn completed —"；带 stopReason=error → Turn failed', () => {
+    const idle = lastOf(subagentViewAppend([], { type: 'done' } as AcpEvent))
+    expect(idle.kind === 'session_event' && idle.text).toBe('— turn completed —')
+
+    const failed = lastOf(
+      subagentViewAppend([], { type: 'done', stopReason: 'error' } as AcpEvent),
+    )
+    expect(failed.kind === 'session_event' && failed.text).toBe(
+      'Turn failed: unknown error',
+    )
+  })
+
+  it('live cancelled 无字段 → "Turn cancelled."（事件类型即 stopReason，TUI TurnCancelled）', () => {
+    const items = subagentViewAppend([], { type: 'cancelled' } as AcpEvent)
+    const e = lastOf(items)
+    expect(e.kind === 'session_event' && e.text).toBe('Turn cancelled.')
+  })
+
+  it('turn_completed 旧日志无 elapsed_ms → turnStartedAt/endMs 推导时长', () => {
+    const items = subagentViewAppend([], {
+      type: 'turn_completed',
+      turnStartedAt: 1000,
+      endMs: 61000,
+    } as AcpEvent)
+    const e = lastOf(items)
+    expect(e.kind === 'session_event' && e.text).toBe('Worked for 1m0s')
+  })
+})
+
+describe('applySubagentViewEvent — cancelled 本地回合锚（live cancelled 无字段也带时长）', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+  })
+  afterEach(() => vi.useRealTimers())
+
+  function makeSet(state: { subagentViews: Record<string, { items: ScrollEntry[]; fetchState: string }> }) {
+    return vi.fn((partial: unknown) => {
+      const patch =
+        typeof partial === 'function'
+          ? (partial as (s: typeof state) => Partial<typeof state>)(state)
+          : (partial as Partial<typeof state>)
+      Object.assign(state, patch)
+    }) as unknown as Parameters<typeof applySubagentViewEvent>[0]
+  }
+
+  it('user_message 锚定 → cancelled 注入本地时长 "Turn cancelled by user in 1.5s."', () => {
+    const state = {
+      subagentViews: { child1: { items: [] as ScrollEntry[], fetchState: 'idle' } },
+    }
+    applySubagentViewEvent(makeSet(state), 'child1', {
+      type: 'user_message',
+      text: 'go',
+    } as AcpEvent)
+    vi.setSystemTime(new Date('2026-01-01T00:00:01.500Z'))
+    applySubagentViewEvent(makeSet(state), 'child1', { type: 'cancelled' } as AcpEvent)
+    const items = state.subagentViews['child1']!.items
+    const e = lastOf(items)
+    expect(e.kind === 'session_event' && e.text).toBe(
+      'Turn cancelled by user in 1.5s.',
+    )
+  })
+
+  it('锚随终态消费：下一回合 user_message 重新锚定，时长不跨回合累计', () => {
+    const state = {
+      subagentViews: { child1: { items: [] as ScrollEntry[], fetchState: 'idle' } },
+    }
+    applySubagentViewEvent(makeSet(state), 'child1', {
+      type: 'user_message',
+      text: 'go',
+    } as AcpEvent)
+    vi.setSystemTime(new Date('2026-01-01T00:00:01.500Z'))
+    applySubagentViewEvent(makeSet(state), 'child1', { type: 'cancelled' } as AcpEvent)
+    // 第二回合 3s 后开始、3.5s 后收到 done——时长按第二回合的锚算。
+    vi.setSystemTime(new Date('2026-01-01T00:00:03.000Z'))
+    applySubagentViewEvent(makeSet(state), 'child1', {
+      type: 'user_message',
+      text: 'again',
+    } as AcpEvent)
+    vi.setSystemTime(new Date('2026-01-01T00:00:03.500Z'))
+    applySubagentViewEvent(makeSet(state), 'child1', { type: 'done' } as AcpEvent)
+    const items = state.subagentViews['child1']!.items
+    const e = lastOf(items)
+    expect(e.kind === 'session_event' && e.text).toBe('Worked for 0.5s')
+  })
+
+  it('无锚（回放路径直接调 subagentViewAppend）→ done/cancelled 走固定文案回退', () => {
+    const state = {
+      subagentViews: { child1: { items: [] as ScrollEntry[], fetchState: 'idle' } },
+    }
+    applySubagentViewEvent(makeSet(state), 'child1', { type: 'done' } as AcpEvent)
+    const e = lastOf(state.subagentViews['child1']!.items)
+    expect(e.kind === 'session_event' && e.text).toBe('— turn completed —')
   })
 })
 

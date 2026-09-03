@@ -9,6 +9,7 @@ import { nid } from './ids'
 import { formatElapsed, imageSrc, toolVerb } from './format'
 import { extractTarget, toolCallIdOf, toolKindName } from './tools'
 import { liteMark } from './envelopeParse'
+import { turnEndMarkerText, wireElapsedMs } from './turnStatus'
 import { collapsedEditBlocks } from './modeFlags'
 import { isEditToolKind } from '../../theme/toolFamily'
 
@@ -60,11 +61,44 @@ export function applySubagentViewEvent(
   set((s) => {
     const prev = s.subagentViews[childSid]
     // 防御：spawn 尚未处理（索引已建但视图缺失）时惰性初始化。
-    const items = subagentViewAppend(prev?.items ?? [], ev)
+    const items = subagentViewAppend(prev?.items ?? [], withLocalElapsed(childSid, ev))
     const view: SubagentViewState = { ...(prev ?? { items: [], fetchState: 'idle' }), items }
     if (prev && prev.items === items) return {}
     return { subagentViews: { ...s.subagentViews, [childSid]: view } }
   })
+}
+
+/**
+ * 子代理视图的 live 回合锚（childSid → 回合开始 epoch ms）。live 的
+ * done/cancelled 事件不带任何时长字段（turn_completed 的 elapsedMs 只有
+ * 回放/rail 才有），本地锚让 cancelled 的 "Turn cancelled by user in X"
+ * 也有真实时长（TUI session_event.rs 同款）。user_message/user_chunk
+ * （回合起点）到达时锚定，终态事件消费后即清除；无锚或 wire 已带时长
+ * 时事件原样放行。时长只在锚存在且非负时注入，陈旧锚最多多算、不产生
+ * 负值。
+ */
+const subagentTurnAnchors = new Map<string, number>()
+
+function withLocalElapsed(sid: string, ev: AcpEvent): AcpEvent {
+  if (ev.type === 'user_message' || ev.type === 'user_chunk') {
+    if (!subagentTurnAnchors.has(sid)) subagentTurnAnchors.set(sid, Date.now())
+    return ev
+  }
+  if (
+    ev.type !== 'done' &&
+    ev.type !== 'cancelled' &&
+    ev.type !== 'turn_completed'
+  ) {
+    return ev
+  }
+  const start = subagentTurnAnchors.get(sid)
+  subagentTurnAnchors.delete(sid)
+  if (start == null || ev.type === 'turn_completed') return ev
+  if ((ev as { elapsedMs?: number }).elapsedMs != null) return ev
+  const elapsed = Date.now() - start
+  // done/cancelled 类型上没有 elapsedMs 字段——本地推导值经同一宽松通道
+  // 注入，收口分支再用该通道读回。
+  return elapsed >= 0 ? ({ ...ev, elapsedMs: elapsed } as unknown as AcpEvent) : ev
 }
 
 /**
@@ -230,19 +264,74 @@ export function subagentViewAppend(
     case 'turn_completed':
     case 'cancelled': {
       // 回合收口：assistant/thought 停止 streaming（thought 与主 scrollback
-      // settleTurnEntries 一致：折叠 + 本地 elapsed），追加回合结束标记——
-      // 主 scrollback 同款：turn 标记用 session_event 条目。
+      // settleTurnEntries 一致：折叠 + 本地 elapsed），追加回合结束标记。
+      // 文案对齐 TUI session_event.message()（主 scrollback
+      // turnStatus.turnEndMarkerText 同源）：turn_completed（回放由
+      // envelopeParse.turnCompletedEvent 归一化，live rail 原样带 update）
+      // 带 stopReason/agentResult/elapsedMs → "Turn failed …" /
+      // "Turn cancelled by user in X." / "Worked for X"；live done 只带
+      // stopReason；live cancelled 无字段，时长由 withLocalElapsed 的
+      // 本地回合锚注入。无任何数据时回退旧的固定文案。
       const sealed = sealSubagentStreaming(items)
-      const marker: ScrollEntry = {
-        id: nid(),
-        kind: 'session_event',
-        text:
-          ev.type === 'done'
-            ? '— turn completed —'
-            : ev.type === 'cancelled'
-              ? '— turn cancelled —'
-              : '— turn ended —',
-      }
+      const stopReason =
+        ev.type === 'turn_completed'
+          ? (ev.stopReason ??
+            (typeof ev.update?.stop_reason === 'string'
+              ? ev.update.stop_reason
+              : undefined))
+          : ev.type === 'done'
+            ? ev.stopReason
+            : // cancelled 事件本身就是用户取消（TUI TurnCancelled）——
+              // 事件类型即 stopReason，没有这个映射注入的时长会落进
+              // "Worked for" 分支。
+              'cancelled'
+      const agentResult =
+        ev.type === 'turn_completed'
+          ? (ev.agentResult ??
+            (typeof ev.update?.agent_result === 'string'
+              ? ev.update.agent_result
+              : undefined))
+          : undefined
+      const elapsedMs =
+        ev.type === 'turn_completed'
+          ? // wire 权威时长（update.elapsed_ms，1.0.9+）优先；旧日志回放
+            // 回退 turnStartedAt/endMs 推导（主 scrollback 回放同款取值序）。
+            (ev.elapsedMs ??
+              wireElapsedMs(ev.update) ??
+              (ev.turnStartedAt != null &&
+                ev.endMs != null &&
+                ev.endMs >= ev.turnStartedAt
+                ? ev.endMs - ev.turnStartedAt
+                : undefined))
+          : // done/cancelled 类型上没有 elapsedMs——withLocalElapsed 注入
+            // 的本地推导时长经同一通道读取。
+            ((ev as { elapsedMs?: number }).elapsedMs ?? undefined)
+      const marker: ScrollEntry =
+        stopReason == null && elapsedMs == null
+          ? {
+              id: nid(),
+              kind: 'session_event',
+              text:
+                ev.type === 'done'
+                  ? '— turn completed —'
+                  : ev.type === 'cancelled'
+                    ? '— turn cancelled —'
+                    : '— turn ended —',
+            }
+          : (() => {
+              const { text, warning } = turnEndMarkerText(
+                stopReason,
+                agentResult,
+                elapsedMs,
+              )
+              return {
+                id: nid(),
+                kind: 'session_event',
+                text,
+                // 失败回合的琥珀警示（主 scrollback 同款 warning accent）。
+                ...(warning ? { warning } : {}),
+              }
+            })()
       return subagentViewPush(sealed, marker)
     }
     default:
