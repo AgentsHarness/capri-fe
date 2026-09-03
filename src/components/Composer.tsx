@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useReducer,
@@ -10,7 +11,12 @@ import { useChatStore, formatTurnDuration, stillRunningCue } from '../store/chat
 import { tailAlreadyTurnEnded } from '../store/chat/turnLifecycle'
 import { pushToast } from '../store/toast'
 import { usePromptQueue } from '../store/promptQueue'
-import { onUiSettingsChange, onUiSettingsReady, uiString } from '../store/settings'
+import {
+  applyUiSettings,
+  onUiSettingsChange,
+  onUiSettingsReady,
+  uiString,
+} from '../store/settings'
 import { transport } from '../api/client'
 import type { ContentBlock } from '../api/types'
 import {
@@ -185,6 +191,22 @@ export function Composer() {
     return onUiSettingsChange(() => forceQueueBadgeRender())
   }, [])
   const headSteer = busy && uiString('follow_up_behavior') === 'steer'
+
+  const [togglingFollowUp, setTogglingFollowUp] = useState(false)
+  const toggleFollowUpBehavior = useCallback(async () => {
+    if (togglingFollowUp) return
+    const current = uiString('follow_up_behavior') === 'steer' ? 'steer' : 'queue'
+    const next = current === 'steer' ? 'queue' : 'steer'
+    setTogglingFollowUp(true)
+    try {
+      const res = await transport.updateSettings({ follow_up_behavior: next })
+      applyUiSettings(res.ui ?? {})
+    } catch (e) {
+      pushToast(e instanceof Error ? e.message : String(e))
+    } finally {
+      setTogglingFollowUp(false)
+    }
+  }, [togglingFollowUp])
 
   // ── Scrollbar gutter alignment ────────────────────────────────────
   // The scrollback box reserves its scrollbar gutter via
@@ -1308,7 +1330,13 @@ export function Composer() {
           )}
         </div>
         {/* 内联发送队列（无弹窗）：排队消息正文 + 行内操作。 */}
-        <QueueStrip nav={queueNav} sendQueuedItem={(id) => void sendQueuedItem(id)} headSteer={headSteer} />
+        <QueueStrip
+          nav={queueNav}
+          sendQueuedItem={(id) => void sendQueuedItem(id)}
+          headSteer={headSteer}
+          onToggleMode={() => void toggleFollowUpBehavior()}
+          togglingMode={togglingFollowUp}
+        />
         {escHintRow}
         {/* ── TUI follow-up suggestion chips (x.ai/follow_ups, follow_ups.rs) ──
           Turn-end suggestions rendered as a transient row between the

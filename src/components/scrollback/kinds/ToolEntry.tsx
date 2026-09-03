@@ -146,8 +146,8 @@ export function ToolEntry({
       {/* Inline expand = TUI Truncated preview; TUI Expanded = 全量正文
           （full=true，仅视口预算截断）。full body via Enter / 查看。 */}
       {litePending ? (
-        // lite 裁掉的正文：占位行报出省略规模 + 按需加载（行内 spinner /
-        // 失败就地重试）。补全完成后这条自动让位给下面的正文。
+        // lite 裁掉的正文：占位行报出省略规模；展开已经触发补全，这里
+        // 只在失败时给 [重试]。补全完成后这条自动让位给下面的正文。
         <LiteToolFill
           bytes={e.liteOmitted!}
           state={e.liteState}

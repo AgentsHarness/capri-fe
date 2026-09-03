@@ -28,6 +28,7 @@ import {
 } from '../../scrollback/toolDetail'
 import { toolHeaderExtra } from '../../scrollback/toolHeaderExtra'
 import { entryFoldable, toolHasExpandableBody } from '../../scrollback/entryState'
+import { planDocFromEntries } from '../../scrollback/planDoc'
 
 vi.mock('../../api/client', () => ({
   transport: {
@@ -438,6 +439,117 @@ describe('只填工具正文的补全', () => {
     expect(useChatStore.getState().liteFillBusy ?? 0).toBe(0)
   })
 
+  it('按需补全：极致 lite 的 search/read 把 file_matches / content 填回来', async () => {
+    // 更早轮不走后台整窗补全，只在展开 / [加载] 时按 [msgSeq, msgSeqEnd] 拉
+    // detail=full。host 删掉正文键后 rawOutput 仍在（只剩标量），必须替换。
+    const grepLite: ToolCall = {
+      toolCallId: 'g1',
+      kind: 'search',
+      status: 'completed',
+      rawOutput: { match_count: 3, mode: 'content' },
+      _meta: { lite: { omitted: 1200, msgSeqEnd: 20 } },
+    }
+    const readLite: ToolCall = {
+      toolCallId: 'r1',
+      kind: 'read',
+      status: 'completed',
+      rawOutput: { type: 'ReadFile', FileContent: { total_lines: 40 } },
+      _meta: { lite: { omitted: 800, msgSeqEnd: 11 } },
+    }
+    useChatStore.setState({
+      entries: [
+        {
+          id: 'g',
+          kind: 'tool',
+          title: 'grep foo',
+          verb: 'Searched',
+          toolCallId: 'g1',
+          kindName: 'search',
+          status: 'completed',
+          msgSeq: 20,
+          msgSeqEnd: 20,
+          liteOmitted: 1200,
+          raw: grepLite,
+        },
+        {
+          id: 'r',
+          kind: 'tool',
+          title: 'Read a.ts',
+          verb: 'Read',
+          toolCallId: 'r1',
+          kindName: 'read',
+          status: 'completed',
+          msgSeq: 11,
+          msgSeqEnd: 11,
+          liteOmitted: 800,
+          raw: readLite,
+        },
+      ],
+    })
+    vi.mocked(transport.loadSessionHistory).mockImplementation(async (_sid, _cwd, opts) => {
+      const offset = (opts as { offset?: number } | undefined)?.offset
+      if (offset === 20) {
+        return {
+          updates: [
+            env(20, {
+              sessionUpdate: 'tool_call_update',
+              toolCallId: 'g1',
+              rawOutput: {
+                match_count: 3,
+                file_matches: [{ path: 'a.ts', matches: [{ lineNumber: 2, content: 'foo()' }] }],
+              },
+            }),
+          ],
+          promptStarts: [],
+          totalCount: 21,
+          hasMore: false,
+        }
+      }
+      return {
+        updates: [
+          env(11, {
+            sessionUpdate: 'tool_call_update',
+            toolCallId: 'r1',
+            rawOutput: {
+              type: 'ReadFile',
+              FileContent: { content: 'export const foo = 1\n', total_lines: 40 },
+            },
+          }),
+        ],
+        promptStarts: [],
+        totalCount: 21,
+        hasMore: false,
+      }
+    })
+
+    await useChatStore.getState().fillToolEntryDetail('g')
+    await useChatStore.getState().fillToolEntryDetail('r')
+
+    const g = useChatStore.getState().entries.find((e) => e.id === 'g') as Extract<
+      ScrollEntry,
+      { kind: 'tool' }
+    >
+    const r = useChatStore.getState().entries.find((e) => e.id === 'r') as Extract<
+      ScrollEntry,
+      { kind: 'tool' }
+    >
+    expect(g.liteState).toBe('filled')
+    expect(r.liteState).toBe('filled')
+    expect(detailIsEmpty(extractToolDetail(g.raw!, 'search'))).toBe(false)
+    expect(extractToolDetail(g.raw!, 'search')).toMatchObject({
+      kind: 'search',
+      matchCount: 3,
+      fileMatches: [{ path: 'a.ts', matches: [{ lineNumber: 2, content: 'foo()' }] }],
+    })
+    expect(extractToolDetail(r.raw!, 'read')).toMatchObject({
+      kind: 'read',
+      content: 'export const foo = 1\n',
+    })
+    expect(fullCalls()).toHaveLength(2)
+    expect(fullCalls()[0]?.[2]).toMatchObject({ offset: 20, limit: 1, detail: 'full' })
+    expect(fullCalls()[1]?.[2]).toMatchObject({ offset: 11, limit: 1, detail: 'full' })
+  })
+
   it('更早轮翻页：只拉 lite，不自动再要一份 full', async () => {
     const load = vi
       .mocked(transport.loadSessionHistory)
@@ -645,6 +757,327 @@ describe('补全合并纯函数', () => {
     expect(t.status).toBe('completed')
     // 幂等：再填一次没有变化 → 原数组引用。
     expect(applyToolBodies(once, bodies)).toBe(once)
+  })
+
+  /**
+   * host lite.go 每种裁法各一条：投影删正文键 / 长字符串，只留标量。
+   * 补全必须把 full 正文换上去，不能把骨架当成 live 拒填。
+   */
+  it.each([
+    {
+      name: 'execute/bash（删 output）',
+      kindName: 'execute',
+      liteRaw: { exit_code: 0, truncated: false, signal: null },
+      fullRaw: { exit_code: 0, truncated: false, output: 'total 8\ndrwxr-x .\n', output_for_prompt: 'p'.repeat(20) },
+      before: (raw: ToolCall) => {
+        const d = extractToolDetail(raw, 'execute')
+        expect(d).toMatchObject({ kind: 'execute', output: undefined })
+        expect(toolBodyStillOwed(raw)).toBe(true)
+      },
+      after: (raw: ToolCall) => {
+        expect(extractToolDetail(raw, 'execute')).toMatchObject({
+          kind: 'execute',
+          output: expect.stringContaining('total 8'),
+        })
+      },
+    },
+    {
+      name: 'read（删 content / content_concise）',
+      kindName: 'read',
+      liteRaw: { type: 'ReadFile', FileContent: { total_lines: 1200, offset: 0, limit: 10 } },
+      fullRaw: {
+        type: 'ReadFile',
+        FileContent: { content: 'package main\n', raw_output: 'package main\n', total_lines: 1200, offset: 0, limit: 10 },
+      },
+      before: (raw: ToolCall) => {
+        expect(detailIsEmpty(extractToolDetail(raw, 'read'))).toBe(true)
+        expect(toolBodyStillOwed(raw)).toBe(true)
+      },
+      after: (raw: ToolCall) => {
+        expect(extractToolDetail(raw, 'read')).toMatchObject({ kind: 'read', content: 'package main\n' })
+      },
+    },
+    {
+      name: 'search/grep（删 file_matches / stdout，留 match_count）',
+      kindName: 'search',
+      liteRaw: { match_count: 25, mode: 'content', total_lines: 25 },
+      fullRaw: {
+        match_count: 25,
+        mode: 'content',
+        total_lines: 25,
+        file_matches: [{ path: 'a.ts', matches: [{ lineNumber: 2, content: 'xx' }] }],
+        stdout: 'a.ts:2:xx\n',
+      },
+      before: (raw: ToolCall) => {
+        expect(extractToolDetail(raw, 'search')).toMatchObject({
+          kind: 'search',
+          matchCount: 25,
+          fileMatches: [],
+        })
+        expect(toolHeaderExtra(raw, 'search', false)?.suffix).toMatch(/25 matches/)
+        expect(toolBodyStillOwed(raw)).toBe(true)
+      },
+      after: (raw: ToolCall) => {
+        expect(extractToolDetail(raw, 'search')).toMatchObject({
+          kind: 'search',
+          matchCount: 25,
+          fileMatches: [{ path: 'a.ts', matches: [{ lineNumber: 2, content: 'xx' }] }],
+        })
+      },
+    },
+    {
+      name: 'edit（删 old_string / new_string，留 insertions）',
+      kindName: 'edit',
+      liteRaw: {
+        type: 'EditsApplied',
+        insertions: 12,
+        deletions: 3,
+        edit_count: 1,
+        file_path: '/ws/pkg/main.go',
+        edits: [{ details: {} }],
+      },
+      fullRaw: {
+        SearchReplace: {
+          EditsApplied: {
+            details: [{ old_string: 'a\n', new_string: 'b\n', new_line: 1 }],
+          },
+        },
+      },
+      before: (raw: ToolCall) => {
+        const d = extractToolDetail(raw, 'edit')
+        expect(d).toMatchObject({ kind: 'edit', lines: [] })
+        expect(toolBodyStillOwed(raw)).toBe(true)
+      },
+      after: (raw: ToolCall) => {
+        const d = extractToolDetail(raw, 'edit')
+        expect(d.kind).toBe('edit')
+        if (d.kind === 'edit') expect(d.lines.length).toBeGreaterThan(0)
+      },
+    },
+    {
+      name: 'read/image（删 data，留 mimeType）',
+      kindName: 'read',
+      liteRaw: { type: 'ReadFile', ImageContent: { mime_type: 'image/png' } },
+      fullRaw: { type: 'ReadFile', ImageContent: { data: 'aGk=', mime_type: 'image/png' } },
+      before: (raw: ToolCall) => {
+        expect(extractToolDetail(raw, 'read')).toMatchObject({ kind: 'read', media: 'image', content: undefined })
+        expect(toolBodyStillOwed(raw)).toBe(true)
+      },
+      after: (raw: ToolCall) => {
+        expect(extractToolDetail(raw, 'read')).toMatchObject({ kind: 'read', media: 'image', content: 'aGk=' })
+      },
+    },
+    {
+      name: 'mcp/unknown（删 content 数组，留 isError / 短 meta）',
+      kindName: 'use_tool',
+      liteRaw: { isError: false, meta: { note: '短说明', count: 7 } },
+      fullRaw: {
+        isError: false,
+        meta: { note: '短说明', count: 7 },
+        content: [{ type: 'text', text: 'hello from mcp' }],
+      },
+      before: (raw: ToolCall) => {
+        expect(toolBodyStillOwed(raw)).toBe(true)
+      },
+      after: (raw: ToolCall) => {
+        const d = extractToolDetail(raw, 'use_tool')
+        expect(d.kind).toBe('use_tool')
+        if (d.kind === 'use_tool') expect(d.output).toMatch(/hello from mcp/)
+      },
+    },
+    {
+      name: 'plan（删 plan_content，留 ok）',
+      kindName: 'other',
+      liteRaw: { ok: true, type: 'PlanReady' },
+      fullRaw: { ok: true, type: 'PlanReady', plan_content: '# 计划正文\n- a\n' },
+      before: (raw: ToolCall) => {
+        expect(planDocFromEntries([{ id: 'p', kind: 'tool', title: 'Plan', verb: 'Ran', raw }])).toBeUndefined()
+        expect(toolBodyStillOwed(raw)).toBe(true)
+      },
+      after: (raw: ToolCall) => {
+        expect(planDocFromEntries([{ id: 'p', kind: 'tool', title: 'Plan', verb: 'Ran', raw }])).toContain('计划正文')
+      },
+    },
+    {
+      name: 'list_dir（删 output）',
+      kindName: 'list_dir',
+      liteRaw: { path: '/ws', entry_count: 2 },
+      fullRaw: { path: '/ws', entry_count: 2, output: 'a.ts\nb.ts\n' },
+      before: (raw: ToolCall) => {
+        expect(extractToolDetail(raw, 'list_dir')).toMatchObject({ kind: 'list_dir', output: undefined })
+        expect(toolBodyStillOwed(raw)).toBe(true)
+      },
+      after: (raw: ToolCall) => {
+        expect(extractToolDetail(raw, 'list_dir')).toMatchObject({ kind: 'list_dir', output: 'a.ts\nb.ts\n' })
+      },
+    },
+    {
+      name: 'fetch（content 整键删除）',
+      kindName: 'fetch',
+      liteRaw: { status_code: 200, content_type: 'text/html' },
+      fullRaw: { status_code: 200, content_type: 'text/html' },
+      fullContent: [{ type: 'content', content: { type: 'text', text: '<html>ok</html>' } }],
+      before: (raw: ToolCall) => {
+        expect(extractToolDetail(raw, 'fetch')).toMatchObject({ kind: 'fetch', output: undefined })
+        expect(toolBodyStillOwed(raw)).toBe(true)
+      },
+      after: (raw: ToolCall) => {
+        expect(extractToolDetail(raw, 'fetch')).toMatchObject({ kind: 'fetch', output: '<html>ok</html>' })
+      },
+    },
+    {
+      name: 'web_search（删 content，留 citations）',
+      kindName: 'search',
+      liteRaw: { citations: ['https://example.com/a'] },
+      fullRaw: { content: 'search snippet here', citations: ['https://example.com/a'] },
+      liteInput: { variant: 'WebSearch', query: 'foo' },
+      fullInput: { variant: 'WebSearch', query: 'foo' },
+      before: (raw: ToolCall) => {
+        const d = extractToolDetail(raw, 'search')
+        expect(d.kind).toBe('web_search')
+        if (d.kind === 'web_search') expect(d.content).toBeUndefined()
+        expect(toolBodyStillOwed(raw)).toBe(true)
+      },
+      after: (raw: ToolCall) => {
+        expect(extractToolDetail(raw, 'search')).toMatchObject({
+          kind: 'web_search',
+          content: 'search snippet here',
+        })
+      },
+    },
+    {
+      name: 'search_tool（删 content JSON，留 result_count）',
+      kindName: 'search_tool',
+      liteRaw: { result_count: 1 },
+      fullRaw: {
+        result_count: 1,
+        content: JSON.stringify({
+          results: [{ server: 'fs', tools: [{ tool_name: 'read_file', description: 'read', score: 1 }] }],
+        }),
+      },
+      liteInput: { variant: 'SearchTool', query: 'read' },
+      fullInput: { variant: 'SearchTool', query: 'read' },
+      before: (raw: ToolCall) => {
+        expect(extractToolDetail(raw, 'search_tool')).toMatchObject({ kind: 'search_tool', results: [] })
+        expect(toolBodyStillOwed(raw)).toBe(true)
+      },
+      after: (raw: ToolCall) => {
+        const d = extractToolDetail(raw, 'search_tool')
+        expect(d.kind).toBe('search_tool')
+        if (d.kind === 'search_tool') expect(d.results).toHaveLength(1)
+      },
+    },
+    {
+      name: '未知键长字符串（host 按 ≥512 字节删，不在正文键清单里）',
+      kindName: 'other',
+      liteRaw: { ok: true, count: 8 },
+      fullRaw: { ok: true, count: 8, result: 'z'.repeat(600) },
+      before: (raw: ToolCall) => {
+        expect((raw.rawOutput as { result?: string }).result).toBeUndefined()
+        expect(toolBodyStillOwed(raw)).toBe(true)
+      },
+      after: (raw: ToolCall) => {
+        expect((raw.rawOutput as { result: string }).result).toHaveLength(600)
+      },
+    },
+    {
+      name: '未知 lines 数组（host 2048 预算整键删除，元素 <512）',
+      kindName: 'other',
+      liteRaw: { count: 2 },
+      fullRaw: { count: 2, lines: ['y'.repeat(400), 'y'.repeat(390)] },
+      before: (raw: ToolCall) => {
+        expect((raw.rawOutput as { lines?: unknown }).lines).toBeUndefined()
+        expect(toolBodyStillOwed(raw)).toBe(true)
+      },
+      after: (raw: ToolCall) => {
+        const lines = (raw.rawOutput as { lines: string[] }).lines
+        expect(lines[0]).toHaveLength(400)
+        expect(lines[1]).toHaveLength(390)
+      },
+    },
+  ])('$name', ({ kindName, liteRaw, fullRaw, fullContent, liteInput, fullInput, before, after }) => {
+    const id = `c-${kindName}`
+    const lite: ToolCall = {
+      toolCallId: id,
+      kind: kindName,
+      status: 'completed',
+      rawOutput: liteRaw,
+      ...(liteInput ? { rawInput: liteInput } : {}),
+      _meta: { lite: { omitted: 4096 } },
+    }
+    before(lite)
+    const bodies = extractToolBodies([
+      env(1, {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: id,
+        rawOutput: fullRaw,
+        ...(fullContent ? { content: fullContent } : {}),
+        ...(fullInput ? { rawInput: fullInput } : {}),
+      }),
+    ])
+    const filled = applyToolBodies(
+      [
+        {
+          id: 't',
+          kind: 'tool',
+          title: kindName,
+          verb: 'Ran',
+          toolCallId: id,
+          kindName,
+          status: 'completed',
+          msgSeq: 1,
+          msgSeqEnd: 1,
+          liteOmitted: 4096,
+          raw: lite,
+        },
+      ],
+      bodies,
+    )
+    const row = filled[0] as Extract<ScrollEntry, { kind: 'tool' }>
+    expect(row.liteState).toBe('filled')
+    expect(((row.raw as ToolCall)._meta as { lite?: unknown }).lite).toBeUndefined()
+    after(row.raw!)
+  })
+
+  it('live 已写入的正文不被历史快照覆盖（骨架补全不得误伤）', () => {
+    const bodies = extractToolBodies([
+      env(2, {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'c1',
+        // 快照比 live 多一个正文键：不得因此把整段 rawOutput 换成旧终态。
+        rawOutput: {
+          Bash: { output: '历史快照里的旧终态', output_for_prompt: '旧 prompt 正文', exit_code: 0 },
+        },
+        content: [{ type: 'content', content: { type: 'text', text: '$ ls -al' } }],
+      }),
+    ])
+    const entries: ScrollEntry[] = [
+      {
+        id: 't',
+        kind: 'tool',
+        title: 'ls -al',
+        verb: 'Ran',
+        toolCallId: 'c1',
+        status: 'completed',
+        msgSeq: 1,
+        msgSeqEnd: 2,
+        liteOmitted: 900,
+        raw: {
+          toolCallId: 'c1',
+          kind: 'execute',
+          status: 'completed',
+          rawOutput: { Bash: { output: 'live 终态', exit_code: 0 } },
+          content: [{ type: 'content', omitted: 900 }],
+          _meta: { lite: { omitted: 900, fields: ['content'] } },
+        } as ToolCall,
+      },
+    ]
+    const once = applyToolBodies(entries, bodies)
+    const t = once[0] as Extract<ScrollEntry, { kind: 'tool' }>
+    expect((t.raw?.rawOutput as { Bash: { output: string } }).Bash.output).toBe('live 终态')
+    expect(t.raw?.content).toEqual([
+      { type: 'content', content: { type: 'text', text: '$ ls -al' } },
+    ])
   })
 })
 

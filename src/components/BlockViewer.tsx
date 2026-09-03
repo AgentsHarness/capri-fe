@@ -503,9 +503,7 @@ function ViewerBody({
   if (entry.kind === 'tool' && entry.raw) {
     if (toolEntryLitePending(entry)) {
       // 正文被 lite 裁掉：全文视图同样只给占位行（打开查看器已触发按需
-      // 补全，这里是补回来之前的过渡态）。判据要求补全坐标——没有
-      // [msgSeq, msgSeqEnd] 的行（host 透传回退整页无 msgSeq）点开也拉不
-      // 回来，占位行就是个死按钮。
+      // 补全，这里是补回来之前的过渡态）。失败才出现 [重试]。
       return (
         <LiteToolFill
           bytes={entry.liteOmitted}
