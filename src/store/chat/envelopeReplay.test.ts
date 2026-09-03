@@ -259,19 +259,38 @@ describe('replayUpdates', () => {
     ])
   })
 
-  it('见过 promptIndex 之后的无标记 user run 不画用户行', () => {
+  it('见过 promptIndex 之后的无标记 user run（如回合中插话）照常画用户行', () => {
     const handled: unknown[] = []
     const getStore = () =>
       ({ handleEvent: (ev: unknown) => handled.push(ev), appendLocalEntry: () => {}, topTasks: [] }) as unknown as ChatState
     replayUpdates(getStore as never, [
       env('user_message_chunk', { content: 'A', _meta: { promptIndex: 0 } }),
       env('agent_message_chunk', { content: 'a1' }),
-      env('user_message_chunk', { content: 'phantom' }),
+      env('user_message_chunk', { content: 'steer prompt' }),
       env('agent_message_chunk', { content: 'p1' }),
       env('user_message_chunk', { content: 'B', _meta: { promptIndex: 1 } }),
     ])
     const users = handled.filter((h) => (h as { type?: string }).type === 'user_message')
-    expect(users.map((h) => (h as { text?: string }).text)).toEqual(['A', 'B'])
+    expect(users.map((h) => (h as { text?: string }).text)).toEqual(['A', 'steer prompt', 'B'])
+  })
+
+  it('回放解析 interjection 包装文本并带上 isInterjection 标志', () => {
+    const handled: unknown[] = []
+    const getStore = () =>
+      ({ handleEvent: (ev: unknown) => handled.push(ev), appendLocalEntry: () => {}, topTasks: [] }) as unknown as ChatState
+    replayUpdates(getStore as never, [
+      env('user_message_chunk', {
+        content:
+          'The user sent a message while you were working:\n<user_query>\n提交完了就部署fe\n</user_query>\nMake sure to complete any unfinished tasks from previous turns.',
+      }),
+    ])
+    const users = handled.filter((h) => (h as { type?: string }).type === 'user_message')
+    expect(users).toEqual([
+      expect.objectContaining({
+        text: '提交完了就部署fe',
+        isInterjection: true,
+      }),
+    ])
   })
 })
 

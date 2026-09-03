@@ -134,7 +134,7 @@ export type AcpEvent =
    * Aggregated user message (history replay or live user_chunk).
    * `isCron` matches TUI UserPromptBlock::cron (scheduled /loop fire).
    */
-  | { type: 'user_message'; text: string; ts?: number; isCron?: boolean; msgSeq?: number; sessionId?: string }
+  | { type: 'user_message'; text: string; ts?: number; isCron?: boolean; isInterjection?: boolean; msgSeq?: number; sessionId?: string }
   | {
       type: 'thought'
       text: string

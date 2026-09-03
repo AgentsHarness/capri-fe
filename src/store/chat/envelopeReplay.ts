@@ -77,10 +77,9 @@ function newUserRunTurnTracker(): userRunTurnTracker {
 function trackerOnUserChunk(
   t: userRunTurnTracker,
   promptIndex: number | undefined,
-): { newRun: boolean; counts: boolean } {
+): { newRun: boolean } {
   const hasPI = promptIndex != null
   if (hasPI) t.seenMarker = true
-  const counts = !t.seenMarker || hasPI
   let newRun = !t.inUser
   if (t.inUser && (t.seenMarker || hasPI)) {
     newRun = hasPI !== t.hasCurrentPI || (hasPI && promptIndex !== t.currentRunPI)
@@ -90,7 +89,7 @@ function trackerOnUserChunk(
     t.currentRunPI = hasPI ? promptIndex! : 0
   }
   t.inUser = true
-  return { newRun, counts }
+  return { newRun }
 }
 
 function trackerOnNonUser(t: userRunTurnTracker): void {
@@ -268,6 +267,7 @@ export function replayUpdates(
   }
   let userBuf = ''
   let userIsCron = false
+  let userIsInterjection = false
   let userTs: number | undefined
   let turnStartTs: number | undefined
   /** Whether turnStartTs came from the authoritative _meta.turnStartMs. */
@@ -294,12 +294,14 @@ export function replayUpdates(
         type: 'user_message',
         text: userBuf,
         isCron: userIsCron || undefined,
+        isInterjection: userIsInterjection || undefined,
         ts: userTs,
         // 多 chunk 聚合的用户行取首条 chunk 的 msgSeq。
         ...(userMsgSeq != null ? { msgSeq: userMsgSeq } : {}),
       })
       userBuf = ''
       userIsCron = false
+      userIsInterjection = false
       userTs = undefined
       userMsgSeq = undefined
     }
@@ -335,9 +337,9 @@ export function replayUpdates(
           Number.isFinite(chunkMeta.promptIndex)
             ? chunkMeta.promptIndex
             : undefined
-        const { newRun, counts } = trackerOnUserChunk(userRun, pidx)
+        const { newRun } = trackerOnUserChunk(userRun, pidx)
         if (newRun) flushUser()
-        skipUserText = newRun && !counts
+        skipUserText = false
         if (!skipUserText) {
           const mid =
             typeof chunkMeta?.modelId === 'string' && chunkMeta.modelId
@@ -454,6 +456,7 @@ export function replayUpdates(
       if (sawTurnEnd) userAfterEnd = true
       userBuf += ev.text
       if (ev.isCron) userIsCron = true
+      if (ev.isInterjection) userIsInterjection = true
       if (ev.ts != null) userTs = ev.ts
       if (userMsgSeq == null && ev.msgSeq != null) userMsgSeq = ev.msgSeq
       continue

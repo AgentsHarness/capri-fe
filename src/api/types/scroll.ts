@@ -29,6 +29,8 @@ export type ScrollEntry =
        * StickyPrompt / finalizeTurn）——类型上不存在的字段对重构不可见。
        */
       isShell?: boolean
+      /** Mid-turn interjection (steer) — TUI UserPromptBlock::is_interjection. */
+      isInterjection?: boolean
       /** 回放归一化序号（host msgSeq）：产生该条目的首条信封序号；live 条目无此字段 → 排序/归并回退现有行为。 */
       msgSeq?: number
       /**

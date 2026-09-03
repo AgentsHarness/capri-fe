@@ -16,6 +16,8 @@ import {
 } from '../turn'
 import { applySessionModelState } from '../model'
 import { appendEntry } from '../entries'
+import { flushLiveStream, sealThought } from '../stream'
+import { nid } from '../ids'
 import { applyFollowUps, applyMcpInitProgress, SILENT_EXT_NOTIFICATIONS } from '../followUps'
 import { wireTaskId } from '../util'
 import {
@@ -452,18 +454,30 @@ export function handleExtMiscEvent(
         // broadcast_interjection): the agent injected a queued follow-up
         // (or an explicit x.ai/interject) into the running turn at a safe
         // gap. Wire params: {sessionId, text, interjectionId?}. Rendered
-        // as a session_event row so the user sees WHERE their steer landed
-        // (TUI shows the injected text inline); no optimistic local row —
-        // the broadcast is the single source (the pager dedupes its own
-        // echo by interjectionId, which the FE never mints).
+        // as a user prompt row (with isInterjection marker) so the user sees
+        // their steer inline like any other user message.
         const p = (ev.params ?? {}) as Record<string, unknown>
         const text = typeof p.text === 'string' ? p.text.trim() : ''
         if (!text) break
         const sid = (ev as { sessionId?: string }).sessionId
         if (!sid || sid === get().sessionId) {
-          appendEntry(set, {
-            kind: 'session_event',
-            text: `已插话（steer）: ${text}`,
+          const flushed = flushLiveStream(get())
+          const sealed = sealThought(flushed)
+          set({
+            ...sealed,
+            openAssistantId: undefined,
+            currentStreamStartMs: undefined,
+            entries: [
+              ...sealed.entries,
+              {
+                id: nid(),
+                kind: 'user',
+                text,
+                isInterjection: true,
+                ts: Date.now(),
+                expanded: false,
+              },
+            ],
           })
         }
         break
