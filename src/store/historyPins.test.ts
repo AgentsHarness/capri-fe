@@ -171,6 +171,25 @@ describe('本地置顶/待办', () => {
     expect(usePins.getState().todos['s1']).toBeUndefined()
   })
 
+  it('removeSessionPrefs 删除置顶与待办并写墓碑', () => {
+    usePins.getState().toggleSessionPin('s1')
+    usePins.getState().setTodoStatus('s1', 'todo')
+    expect(usePins.getState().pinnedSessions.has('s1')).toBe(true)
+    expect(usePins.getState().todos['s1']).toBe('todo')
+
+    usePins.getState().removeSessionPrefs('s1')
+    expect(usePins.getState().pinnedSessions.has('s1')).toBe(false)
+    expect(usePins.getState().todos['s1']).toBeUndefined()
+    expect(localEntries()[sessionKey('s1')].d).toBe(true)
+    expect(localEntries()[todoKey('s1')].d).toBe(true)
+  })
+
+  it('removeSessionPrefs 未命中的会话不触发写入', () => {
+    const before = localEntries()
+    usePins.getState().removeSessionPrefs('not-exist')
+    expect(localEntries()).toBe(before)
+  })
+
   it('setFePrefs 局部合并，且 liteReplay 被显式选过后才进投影', () => {
     usePins.getState().setFePrefs({ collapseToolGroups: false })
     expect(usePins.getState().fePrefs).toEqual({

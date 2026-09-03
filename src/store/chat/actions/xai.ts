@@ -7,6 +7,8 @@ import { scheduledTaskDeletedText } from '../tasks'
 import { INITIAL_TURNS } from '../history'
 import { noteHistoryProjection } from '../historyFill'
 import { loadHistoryWithTaskProbe } from '../loadHistory'
+import { usePins } from '../../historyPins'
+import { clearPlanMode } from '../modePersist'
 import { pushToast } from '../../toast'
 
 /**
@@ -350,6 +352,9 @@ export function xaiActions(set: SetState, get: () => ChatState) {
     const isCurrent = sessionId === get().sessionId
     try {
       await transport.sessionDelete(sessionId, cwd)
+      usePins.getState().removeSessionPrefs(sessionId)
+      get().clearCompletedNotice?.(sessionId)
+      clearPlanMode(sessionId)
       set({ statusText: `已删除会话 ${sessionId.slice(0, 8)}` })
       // Deleting the ACTIVE session lands in the EMPTY state (no
       // auto-new): reset all session-scoped state and drop the anchor.

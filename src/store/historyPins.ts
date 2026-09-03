@@ -273,6 +273,8 @@ export type HubPrefsState = PrefsView & {
   toggleSessionPin: (sessionId: string) => void
   /** 设置/清除会话待办状态：'todo' | 'completed' | null（清除）。 */
   setTodoStatus: (sessionId: string, status: TodoStatus | null) => void
+  /** 删除会话在 prefs 中的所有记录（置顶与待办写墓碑并同步 hub）。 */
+  removeSessionPrefs: (sessionId: string) => void
   /** 更新 FE 前端偏好（与置顶/待办同一 hub prefs 文档同步）。 */
   setFePrefs: (patch: Partial<FePrefs>) => void
   /** 把一份 hub 文档按条目并进本地（广播 / GET / PUT 响应共用）。 */
@@ -314,6 +316,18 @@ export const usePins = create<HubPrefsState>((set, get) => {
       }),
     setTodoStatus: (sessionId, status) =>
       write((entries, stamp) => putEntry(entries, todoKey(sessionId), status, stamp)),
+    removeSessionPrefs: (sessionId) => {
+      const s = get()
+      const sk = sessionKey(sessionId)
+      const tk = todoKey(sessionId)
+      if (!alive(s.entries, sk) && !alive(s.entries, tk)) return
+      write((entries, stamp) => {
+        let next = entries
+        if (alive(next, sk)) next = putEntry(next, sk, null, stamp)
+        if (alive(next, tk)) next = putEntry(next, tk, null, stamp)
+        return next
+      })
+    },
     setFePrefs: (patch) =>
       write((entries, stamp) => {
         let next = entries

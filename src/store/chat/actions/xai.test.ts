@@ -38,6 +38,8 @@ vi.mock('../../toast', () => ({
 
 import { transport } from '../../../api/client'
 import { pushToast } from '../../toast'
+import { usePins } from '../../historyPins'
+import { restorePlanMode, savePlanMode } from '../modePersist'
 
 /** 最小 ChatState：forkSession 只触碰这里列出的字段。 */
 function makeState(patch: Partial<ChatState> = {}): ChatState {
@@ -56,6 +58,7 @@ function makeState(patch: Partial<ChatState> = {}): ChatState {
     continueSession: vi.fn().mockResolvedValue(undefined),
     refreshSessions: vi.fn().mockResolvedValue(undefined),
     refreshWorkspaces: vi.fn().mockResolvedValue(undefined),
+    clearCompletedNotice: vi.fn(),
     ...patch,
   } as unknown as ChatState
   return state
@@ -141,6 +144,21 @@ describe('xaiActions.forkSession', () => {
     expect(resetToEmpty).not.toHaveBeenCalled()
     expect(state.refreshSessions).toHaveBeenCalled()
     expect(state.refreshWorkspaces).toHaveBeenCalled()
+  })
+
+  it('删除会话同步清理 prefs（置顶/待办）、completedNotice 和 planMode', async () => {
+    usePins.getState().toggleSessionPin('s-del')
+    usePins.getState().setTodoStatus('s-del', 'todo')
+    savePlanMode('s-del', true)
+    const clearCompletedNotice = vi.fn()
+    const state = makeState({ clearCompletedNotice })
+
+    await bind(state).deleteSession('s-del', '/w')
+
+    expect(usePins.getState().pinnedSessions.has('s-del')).toBe(false)
+    expect(usePins.getState().todos['s-del']).toBeUndefined()
+    expect(clearCompletedNotice).toHaveBeenCalledWith('s-del')
+    expect(restorePlanMode('s-del')).toEqual({})
   })
 })
 
