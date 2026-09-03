@@ -98,6 +98,20 @@ describe('classifyUserPrompt', () => {
     ).toEqual({ text: 'do it', isCron: true })
   })
 
+  it('interjection / interrupt 包装文本 → 剥壳并标记 isInterjection', () => {
+    expect(
+      classifyUserPrompt(
+        'The user sent a message while you were working:\n<user_query>\n提交完了就部署fe\n</user_query>\nMake sure to complete any unfinished tasks from previous turns.',
+      ),
+    ).toEqual({ text: '提交完了就部署fe', isCron: false, isInterjection: true })
+
+    expect(
+      classifyUserPrompt(
+        'The user interrupted the previous turn:\n<user_query>\n停止\n</user_query>\nMake sure to complete any unfinished tasks from previous turns.',
+      ),
+    ).toEqual({ text: '停止', isCron: false, isInterjection: false })
+  })
+
   it('隐藏内容 → null', () => {
     expect(classifyUserPrompt('<monitor-event x>')).toBeNull()
   })
@@ -107,10 +121,21 @@ describe('normalizeUserPromptText / userPromptTextsMatch', () => {
   it('剥 user_query 包裹并修整换行', () => {
     expect(normalizeUserPromptText('<user_query>\nhello\n</user_query>')).toBe('hello')
     expect(normalizeUserPromptText('hello')).toBe('hello')
+    expect(
+      normalizeUserPromptText(
+        'The user sent a message while you were working:\n<user_query>\n提交完了就部署fe\n</user_query>\nMake sure to complete any unfinished tasks from previous turns.',
+      ),
+    ).toBe('提交完了就部署fe')
   })
 
   it('匹配忽略包裹差异', () => {
     expect(userPromptTextsMatch('<user_query>hi</user_query>', 'hi')).toBe(true)
+    expect(
+      userPromptTextsMatch(
+        'The user sent a message while you were working:\n<user_query>\nhi\n</user_query>\nMake sure to complete any unfinished tasks from previous turns.',
+        'hi',
+      ),
+    ).toBe(true)
     expect(userPromptTextsMatch('a', 'b')).toBe(false)
   })
 })

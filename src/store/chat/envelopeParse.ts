@@ -339,6 +339,33 @@ export function extractCronPromptBody(text: string): string | null {
   return body || null
 }
 
+export const INTERJECTION_NOTE = 'The user sent a message while you were working:'
+export const INTERRUPT_NOTE = 'The user interrupted the previous turn:'
+
+/**
+ * Extract prompt body and interjection status from interjection / interrupt framing:
+ *   The user sent a message while you were working:
+ *   <user_query>
+ *   {prompt}
+ *   </user_query>
+ *   Make sure to complete any unfinished tasks from previous turns.
+ */
+export function extractInterjectionPromptBody(
+  text: string,
+): { text: string; isInterjection: boolean } | null {
+  const isInterjection = text.includes(INTERJECTION_NOTE)
+  const isInterrupt = !isInterjection && text.includes(INTERRUPT_NOTE)
+  if (!isInterjection && !isInterrupt) return null
+  const openTag = '<user_query>'
+  const closeTag = '</user_query>'
+  const openIdx = text.indexOf(openTag)
+  if (openIdx < 0) return null
+  const closeIdx = text.indexOf(closeTag, openIdx + openTag.length)
+  if (closeIdx < 0) return null
+  const body = text.slice(openIdx + openTag.length, closeIdx).trim()
+  return { text: body, isInterjection }
+}
+
 /**
  * TUI user_message_hidden_from_scrollback (legacy text-shape arm).
  * Cron is handled earlier by extractCronPromptBody; everything else under
@@ -369,12 +396,14 @@ export function userMessageHiddenFromScrollback(text: string): boolean {
 export function classifyUserPrompt(
   raw: string,
   forcedCron?: boolean,
-): { text: string; isCron: boolean } | null {
+): { text: string; isCron: boolean; isInterjection?: boolean } | null {
   const text = stripContextWrappers(raw)
   if (!text) return null
   if (forcedCron) return { text, isCron: true }
   const cronBody = extractCronPromptBody(text)
   if (cronBody != null) return { text: cronBody, isCron: true }
+  const ij = extractInterjectionPromptBody(text)
+  if (ij != null) return { text: ij.text, isCron: false, isInterjection: ij.isInterjection }
   if (userMessageHiddenFromScrollback(text)) return null
   return { text, isCron: false }
 }
@@ -382,6 +411,10 @@ export function classifyUserPrompt(
 /** Normalize user prompt text for optimistic-echo equality checks. */
 export function normalizeUserPromptText(text: string): string {
   let t = stripContextWrappers(text).trim()
+  const ij = extractInterjectionPromptBody(t)
+  if (ij != null) {
+    return ij.text
+  }
   // Agent may echo the model-facing <user_query> envelope; send() stores raw input.
   const open = '<user_query>'
   const close = '</user_query>'
@@ -706,6 +739,7 @@ function envelopeToEventsRaw(e: RawEnvelope): AcpEvent[] {
             type: 'user_message',
             text: classified.text,
             isCron: classified.isCron || undefined,
+            isInterjection: classified.isInterjection || undefined,
             ts,
           })
         }

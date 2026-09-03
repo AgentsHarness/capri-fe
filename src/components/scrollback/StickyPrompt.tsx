@@ -56,7 +56,9 @@ export function StickyPrompt({
               style={{
                 color: pinnedUser.isShell
                   ? 'var(--color-gn-cyan)'
-                  : 'var(--color-gn-accent-user)',
+                  : pinnedUser.isInterjection
+                    ? 'var(--color-gn-warning)'
+                    : 'var(--color-gn-accent-user)',
               }}
             >
               <IconGlyph
@@ -70,13 +72,26 @@ export function StickyPrompt({
                 color={
                   pinnedUser.isShell
                     ? 'var(--color-gn-cyan)'
-                    : 'var(--color-gn-accent-user)'
+                    : pinnedUser.isInterjection
+                      ? 'var(--color-gn-warning)'
+                      : 'var(--color-gn-accent-user)'
                 }
               />
             </span>
             <div className="min-w-0 flex-1 whitespace-pre-wrap break-words">
               {/* store 回退：提示这条 prompt 在可见列表上方。 */}
               {pinnedStore ? `${Glyphs.ellipsis} ` : ''}
+              {pinnedUser.isInterjection && (
+                <span
+                  className="mr-1.5 inline-block rounded px-1 py-0.5 text-[11px] font-medium leading-none select-none"
+                  style={{
+                    backgroundColor: 'color-mix(in srgb, var(--color-gn-warning) 18%, transparent)',
+                    color: 'var(--color-gn-warning)',
+                  }}
+                >
+                  引导
+                </span>
+              )}
               {collapseUserText(pinnedUser.text, USER_COLLAPSED_MAX_LINES).text}
             </div>
             <PromptTime ts={pinnedUser.ts} className="top-[14.5px]" />

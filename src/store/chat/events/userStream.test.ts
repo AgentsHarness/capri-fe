@@ -124,3 +124,23 @@ describe('userStream — 同流 thinking → answer 切换', () => {
     expect(rendered(state(), assistantOf(state())!)).toBe('ABC')
   })
 })
+
+describe('userStream — user_message 回放 / 注入', () => {
+  it('user_message 带 isInterjection 时创建带 isInterjection 的 user 行', () => {
+    const { set, get, state } = makeStore({ sessionId: 's1' })
+    handleUserStreamEvent(set, get, {
+      type: 'user_message',
+      text: '插话内容',
+      isInterjection: true,
+      ts: 12345,
+    })
+    const users = state().entries.filter((e) => e.kind === 'user')
+    expect(users).toHaveLength(1)
+    expect(users[0]).toMatchObject({
+      kind: 'user',
+      text: '插话内容',
+      isInterjection: true,
+      ts: 12345,
+    })
+  })
+})

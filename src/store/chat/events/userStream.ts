@@ -230,6 +230,9 @@ export function handleUserStreamEvent(
               kind: 'user',
               text: classified.text,
               isCron: classified.isCron || undefined,
+              isInterjection:
+                (ev.type === 'user_message' ? ev.isInterjection : classified.isInterjection) ||
+                undefined,
               ts,
               expanded: false,
               // 回放聚合用户行携带首条 chunk 的 msgSeq（live 事件无）。

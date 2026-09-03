@@ -360,6 +360,12 @@ export function Composer() {
   const submitCurrent = async () => {
     const trimmed = text.trim()
     if (!trimmed && !chips.some((c) => c.image)) return
+    const st = useChatStore.getState()
+    if (st.sessionId && st.historyLoading) {
+      pushToast('正在切换会话，请稍候再发送')
+      taRef.current?.focus()
+      return
+    }
     // 建会话 POST 在飞：不吞内容，发送挂起——收起本轮内容（含图片
     // chips），等创建收口后按序补发（见 pendingSendsRef 的 effect）。
     // 直接放行会让 send 的无会话分支再触发一次建会话，丢失右键 cwd。
@@ -406,7 +412,12 @@ export function Composer() {
    * start), so the row disappears as the new turn begins.
    */
   const sendFollowUp = (label: string) => {
-    void useChatStore.getState().send(label)
+    const st = useChatStore.getState()
+    if (st.sessionId && st.historyLoading) {
+      pushToast('正在切换会话，请稍候再发送')
+      return
+    }
+    void st.send(label)
   }
 
   /**
@@ -432,6 +443,11 @@ export function Composer() {
    * 守卫会把 Enter 静默吞掉。
    */
   const sendQueuedItem = async (id?: string) => {
+    const st = useChatStore.getState()
+    if (st.sessionId && st.historyLoading) {
+      pushToast('正在切换会话，请稍候再发送')
+      return
+    }
     const q = usePromptQueue.getState()
     if (q.sending) return
     // Stale-queue guard: the queue is tagged with the session it was
@@ -520,6 +536,11 @@ export function Composer() {
       return
     }
     const st = useChatStore.getState()
+    if (st.sessionId && st.historyLoading) {
+      pushToast('正在切换会话，请稍候再发送')
+      taRef.current?.focus()
+      return
+    }
     if (st.conn === 'busy') {
       await st.cancel()
       // Let the cancelled SSE land first so it can't clobber the new
@@ -598,6 +619,11 @@ export function Composer() {
       return
     }
     const st = useChatStore.getState()
+    if (st.sessionId && st.historyLoading) {
+      pushToast('正在切换会话，请稍候再发送')
+      taRef.current?.focus()
+      return
+    }
     if (st.conn === 'busy' && st.sessionId) {
       // TUI: Enter during a running turn → server-authoritative enqueue。
       // 走 send() 的忙分支（共享实现）：只入 agent 权威队列，不进
@@ -1536,6 +1562,11 @@ export function Composer() {
                   if (e.ctrlKey && (e.key === 'l' || e.key === 'L')) {
                     if (busy && text.trim()) {
                       e.preventDefault()
+                      const st = useChatStore.getState()
+                      if (st.sessionId && st.historyLoading) {
+                        pushToast('正在切换会话，请稍候再发送')
+                        return
+                      }
                       const { expandedText } = buildBlocks(text, chips)
                       void transport
                         .interject({ text: expandedText })

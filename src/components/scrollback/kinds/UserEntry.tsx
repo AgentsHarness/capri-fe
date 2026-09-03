@@ -37,10 +37,13 @@ export function UserEntry({
   // TUI: is_bash → "$ " (command color), is_cron → "↻  ", else prompt_arrow.
   // Shell-mode submissions carry the isShell marker from the store's send().
   const isShell = e.isShell === true
+  const isInterjection = e.isInterjection === true
   const prefixGlyph = isShell ? '$' : e.isCron ? Glyphs.cronPrompt : Glyphs.promptArrow
   const prefixColor = isShell
     ? 'var(--color-gn-cyan)'
-    : 'var(--color-gn-accent-user)'
+    : isInterjection
+      ? 'var(--color-gn-warning)'
+      : 'var(--color-gn-accent-user)'
   return (
     <EntryShell {...shell} bandBg={band}>
       <div className="relative">
@@ -57,9 +60,11 @@ export function UserEntry({
             ? 'shell command · click fold · 查看 / enter view'
             : e.isCron
               ? 'scheduled task · click fold · 查看 / enter view'
-              : foldable
-                ? 'click fold · 查看 / enter view'
-                : '查看 / enter view'
+              : isInterjection
+                ? '引导 (steer) · click fold · 查看 / enter view'
+                : foldable
+                  ? 'click fold · 查看 / enter view'
+                  : '查看 / enter view'
         }
       >
         {/* Same icon column as tool/thought bullets so ❯ / ↻ / ◆ / › line up.
@@ -73,6 +78,17 @@ export function UserEntry({
         <div className="min-w-0 flex-1 text-gn-fg">
           {lines.map((line, i) => (
             <div key={i} className="whitespace-pre-wrap break-words">
+              {i === 0 && isInterjection && (
+                <span
+                  className="mr-1.5 inline-block rounded px-1 py-0.5 text-[11px] font-medium leading-none select-none"
+                  style={{
+                    backgroundColor: 'color-mix(in srgb, var(--color-gn-warning) 18%, transparent)',
+                    color: 'var(--color-gn-warning)',
+                  }}
+                >
+                  引导
+                </span>
+              )}
               {/* Icon sits in a sibling column (flex gap); continuations already
                   share the first line's text start — no extra indent (TUI uses
                   prefix-width spaces only when prefix is inline on each line). */}
