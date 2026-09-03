@@ -26,6 +26,32 @@ export interface ModelsDevModel {
   }
 }
 
+/** 某一个 provider 上报的一组 effort 档位 */
+export interface EffortChoice {
+  /** 该组档位值，如 ['low','high','max'] */
+  values: string[]
+  /** 上报该组的 provider id 列表 */
+  providers: string[]
+}
+
+/** 同一模型在各 provider 下的 effort 候选组：按上报 provider 数降序 */
+export interface ModelsDevEfforts {
+  groups: EffortChoice[]
+}
+
+/** 某一个 provider 上报的上下文/输出上限组合 */
+export interface LimitChoice {
+  context?: number
+  output?: number
+  /** 上报该组的 provider id 列表 */
+  providers: string[]
+}
+
+/** 同一模型在各 provider 下的 limit 组合：按上报 provider 数降序 */
+export interface ModelsDevLimits {
+  groups: LimitChoice[]
+}
+
 export interface DiscoveredModel {
   remoteId: string
   configKey: string
@@ -34,6 +60,12 @@ export interface DiscoveredModel {
   maxCompletionTokens?: number
   supportsReasoning: boolean
   reasoningEfforts?: Array<{ value: string; label?: string; description?: string; default?: boolean }>
+  /** 各 provider 上报的 effort 档位组（按上报 provider 数降序），供用户整组勾选 */
+  effortChoices?: EffortChoice[]
+  /** 当前选中的 effort values（默认取上报 provider 最多的一组） */
+  selectedEfforts?: string[]
+  /** 各 provider 上报的 context/output 组合（按上报 provider 数降序），供用户下拉选择 */
+  limitChoices?: LimitChoice[]
   isExisting: boolean
   matchedDev: boolean
 }
@@ -160,6 +192,40 @@ export async function fetchRemoteModels(
 
 let cachedModelsDevMap: Map<string, ModelsDevModel> | null = null
 let modelsDevPromise: Promise<Map<string, ModelsDevModel>> | null = null
+/** remoteId（小写）-> 各 provider 上报的 effort 组（按 provider 数降序） */
+let cachedEffortChoices: Map<string, ModelsDevEfforts> | null = null
+/** remoteId（小写）-> 各 provider 上报的 context/output 组（按 provider 数降序） */
+let cachedLimitChoices: Map<string, ModelsDevLimits> | null = null
+
+/** 聚合：signature -> provider ids → 按 provider 数降序的 limit 候选组 */
+function buildLimitChoices(
+  limits: Map<string, Map<string, LimitChoice>>,
+): Map<string, ModelsDevLimits> {
+  const out = new Map<string, ModelsDevLimits>()
+  for (const [key, sigMap] of limits) {
+    const groups: LimitChoice[] = Array.from(sigMap.values()).sort(
+      (a, b) => b.providers.length - a.providers.length,
+    )
+    out.set(key, { groups })
+  }
+  return out
+}
+
+/** 聚合：signature -> values 与 signature -> provider ids → 按 provider 数降序的候选组 */
+function buildEffortChoices(
+  candidates: Map<string, Map<string, string[]>>,
+  providers: Map<string, Map<string, string[]>>,
+): Map<string, ModelsDevEfforts> {
+  const out = new Map<string, ModelsDevEfforts>()
+  for (const [key, sigMap] of candidates) {
+    const provMap = providers.get(key) ?? new Map<string, string[]>()
+    const groups: EffortChoice[] = Array.from(sigMap.entries())
+      .map(([sig, values]) => ({ values, providers: provMap.get(sig) ?? [] }))
+      .sort((a, b) => b.providers.length - a.providers.length)
+    out.set(key, { groups })
+  }
+  return out
+}
 
 /** 从 models.dev 拉取全量模型元数据并建立快速索引 Map */
 export async function getModelsDevMap(): Promise<Map<string, ModelsDevModel>> {
@@ -170,9 +236,18 @@ export async function getModelsDevMap(): Promise<Map<string, ModelsDevModel>> {
     try {
       const res = await fetch('https://models.dev/api.json', { signal: AbortSignal.timeout(8000) })
       if (!res.ok) return new Map()
-      const data = (await res.json()) as Record<string, { models?: Record<string, ModelsDevModel> }>
+      const data = (await res.json()) as Record<
+        string,
+        { models?: Record<string, ModelsDevModel> }
+      >
       const map = new Map<string, ModelsDevModel>()
-      for (const provider of Object.values(data)) {
+      // remoteId（小写）-> 各 provider 上报的 effort 组；slug 键只收第一次命中（与 map 同规则）
+      const effortCandidates = new Map<string, Map<string, string[]>>() // key -> (signature -> values)
+      const effortProviders = new Map<string, Map<string, string[]>>() // key -> (signature -> provider ids)
+      // remoteId（小写）-> 各 provider 上报的 context/output 组
+      const limitCandidates = new Map<string, Map<string, LimitChoice>>() // key -> (signature -> choice)
+      const seenSlugs = new Set<string>()
+      for (const [providerId, provider] of Object.entries(data)) {
         if (!provider.models) continue
         for (const [modelKey, modelObj] of Object.entries(provider.models)) {
           if (!modelObj || !modelObj.id) continue
@@ -185,9 +260,52 @@ export async function getModelsDevMap(): Promise<Map<string, ModelsDevModel>> {
             if (!map.has(slug)) map.set(slug, modelObj)
             if (!map.has(slug.toLowerCase())) map.set(slug.toLowerCase(), modelObj)
           }
+          // 本模型的索引键：完整 id 与（未占用时）slug，effort/limit 聚合共用
+          const keys = [modelObj.id.toLowerCase()]
+          if (modelObj.id.includes('/')) {
+            const slug = modelObj.id.split('/').pop()!.toLowerCase()
+            if (!seenSlugs.has(slug)) keys.push(slug)
+          }
+
+          // context/output 组合聚合
+          const ctx = modelObj.limit?.context
+          const out = modelObj.limit?.output
+          if (typeof ctx === 'number' || typeof out === 'number') {
+            const sig = `${ctx ?? ''}/${out ?? ''}`
+            for (const key of keys) {
+              if (!limitCandidates.has(key)) limitCandidates.set(key, new Map())
+              const sigMap = limitCandidates.get(key)!
+              const choice = sigMap.get(sig) ?? {
+                context: typeof ctx === 'number' ? ctx : undefined,
+                output: typeof out === 'number' ? out : undefined,
+                providers: [],
+              }
+              if (!choice.providers.includes(providerId)) choice.providers.push(providerId)
+              sigMap.set(sig, choice)
+            }
+          }
+
+          // effort 档位组聚合
+          const effortOpt = modelObj.reasoning_options?.find((o) => o.type === 'effort')
+          if (effortOpt?.values?.length) {
+            const sig = effortOpt.values.join(',')
+            for (const key of keys) {
+              if (!effortCandidates.has(key)) effortCandidates.set(key, new Map())
+              if (!effortProviders.has(key)) effortProviders.set(key, new Map())
+              effortCandidates.get(key)!.set(sig, effortOpt.values)
+              const provs = effortProviders.get(key)!.get(sig) ?? []
+              if (!provs.includes(providerId)) provs.push(providerId)
+              effortProviders.get(key)!.set(sig, provs)
+            }
+          }
+          if (modelObj.id.includes('/')) {
+            seenSlugs.add(modelObj.id.split('/').pop()!.toLowerCase())
+          }
         }
       }
       cachedModelsDevMap = map
+      cachedEffortChoices = buildEffortChoices(effortCandidates, effortProviders)
+      cachedLimitChoices = buildLimitChoices(limitCandidates)
       return map
     } catch {
       return new Map()
@@ -197,4 +315,36 @@ export async function getModelsDevMap(): Promise<Map<string, ModelsDevModel>> {
   })()
 
   return modelsDevPromise
+}
+
+/** 测试辅助：清空 models.dev 缓存（生产代码不应调用） */
+export function resetModelsDevCacheForTest(): void {
+  cachedModelsDevMap = null
+  cachedEffortChoices = null
+  cachedLimitChoices = null
+  modelsDevPromise = null
+}
+
+/**
+ * 取某模型在各 provider 下上报的 effort 档位组（按上报 provider 数降序）。
+ * 匹配优先级与 getModelsDevMap 索引一致：完整 id > 去前缀 slug。
+ */
+export function getEffortCandidates(remoteId: string): ModelsDevEfforts | undefined {
+  if (!cachedEffortChoices) return undefined
+  return (
+    cachedEffortChoices.get(remoteId.toLowerCase()) ||
+    cachedEffortChoices.get(remoteId.split('/').pop()?.toLowerCase() || '')
+  )
+}
+
+/**
+ * 取某模型在各 provider 下上报的 context/output 组合（按上报 provider 数降序）。
+ * 匹配优先级与 getModelsDevMap 索引一致：完整 id > 去前缀 slug。
+ */
+export function getLimitCandidates(remoteId: string): ModelsDevLimits | undefined {
+  if (!cachedLimitChoices) return undefined
+  return (
+    cachedLimitChoices.get(remoteId.toLowerCase()) ||
+    cachedLimitChoices.get(remoteId.split('/').pop()?.toLowerCase() || '')
+  )
 }
