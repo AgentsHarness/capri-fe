@@ -13,7 +13,7 @@ import {
 } from '../store/chat/modeFlags'
 import { applyUiSettings, applyToolsetSettings } from '../store/settings'
 import { pushToast } from '../store/toast'
-import { useFePrefs, useLiteReplay } from '../store/historyPins'
+import { historyViaHubRelay, useFePrefs, useLiteReplay } from '../store/historyPins'
 import { CustomModelsPanel } from './CustomModelsPanel'
 import {
   loadDefaultSelectedPermission,
@@ -560,6 +560,8 @@ function AskTimeoutSection({
 function FePrefsSection() {
   const collapseToolGroups = useFePrefs((s) => s.fePrefs.collapseToolGroups)
   const liteReplay = useLiteReplay()
+  useChatStore((s) => s.selectedHostId)
+  const viaRelay = historyViaHubRelay()
   const setFePrefs = useFePrefs((s) => s.setFePrefs)
   const [defaultSelectedPermission, setDefaultSelectedPermission] = useState<
     DefaultSelectedPermission
@@ -610,13 +612,18 @@ function FePrefsSection() {
         <div className="min-w-0 flex-1">
           <button
             type="button"
-            onClick={() => setFePrefs({ liteReplay: !liteReplay })}
+            disabled={!viaRelay}
+            onClick={() => viaRelay && setFePrefs({ liteReplay: !liteReplay })}
             className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-px text-[10.5px] ${
               liteReplay
                 ? 'border-gn-green/60 text-gn-green'
                 : 'border-gn-prompt-border text-gn-muted'
-            } hover:bg-gn-bg-highlight`}
-            title="切换会话 / 上滑翻页时是否只回放精简后的历史（只裁工具正文），改动即时生效"
+            } ${viaRelay ? 'hover:bg-gn-bg-highlight' : 'cursor-not-allowed opacity-60'}`}
+            title={
+              viaRelay
+                ? '走 hub 中转时是否精简回放（先 lite 再补 full），改动即时生效'
+                : '当前直连 host，始终拉全量；切到中转后此开关才生效'
+            }
           >
             <span
               className={`h-1.5 w-1.5 rounded-full ${
@@ -626,10 +633,8 @@ function FePrefsSection() {
             {liteReplay ? 'on' : 'off'}
           </button>
           <div className="mt-0.5 text-[10.5px] leading-snug text-gn-gutter">
-            精简回放 · 开：切会话更快——host 只裁工具正文（行数、顺序、用户/助手/思考
-            文本一律不动），被裁的工具输出在展开时按需补全，未补全的行显示
-            「输出已省略 · 1.2 MB」。关：整页逐字节全量回放。默认随部署模式（hub 开 /
-            local 关）。与置顶/待办同一 hub prefs 通道，跨端同步即时生效。
+            精简回放 · 仅 hub 中转生效。开：先拉精简时间线再补全文，切会话更快。
+            关：整页全量。直连本机（纯 local / 近路）始终全量，不走 lite+full。
           </div>
         </div>
       </div>

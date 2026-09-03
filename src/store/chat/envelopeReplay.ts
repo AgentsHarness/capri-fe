@@ -236,7 +236,26 @@ export function replayUpdates(
     if (!entryId) return
     if (seq != null) entryMsgSeqEnd.set(entryId, seq)
     const lite = liteMark(tc)
-    if (lite) entryLiteOmitted.set(entryId, lite.omitted + (entryLiteOmitted.get(entryId) ?? 0))
+    if (lite?.msgSeqEnd != null) {
+      const cur = entryMsgSeqEnd.get(entryId) ?? -1
+      if (lite.msgSeqEnd > cur) entryMsgSeqEnd.set(entryId, lite.msgSeqEnd)
+    }
+    if (lite && lite.omitted > 0) {
+      entryLiteOmitted.set(entryId, lite.omitted + (entryLiteOmitted.get(entryId) ?? 0))
+    }
+  }
+  const stampThoughtLite = (seq: number | undefined, ev: AcpEvent) => {
+    if (ev.type !== 'thought') return
+    const entryId = getStore().openThoughtId
+    if (!entryId) return
+    if (seq != null) entryMsgSeqEnd.set(entryId, seq)
+    if (ev.msgSeqEnd != null) {
+      const cur = entryMsgSeqEnd.get(entryId) ?? -1
+      if (ev.msgSeqEnd > cur) entryMsgSeqEnd.set(entryId, ev.msgSeqEnd)
+    }
+    if (ev.liteOmitted && ev.liteOmitted > 0) {
+      entryLiteOmitted.set(entryId, ev.liteOmitted + (entryLiteOmitted.get(entryId) ?? 0))
+    }
   }
   const stampNewEntries = (seq: number | undefined) => {
     const es = getStore().entries ?? []
@@ -442,6 +461,7 @@ export function replayUpdates(
       flushUser()
       getStore().handleEvent(ev)
       stampToolTouch(seq, ev)
+      stampThoughtLite(seq, ev)
     }
     stampNewEntries(seq)
   }
@@ -481,7 +501,7 @@ export function applyEntryLiteStats(
   }
   let changed = false
   const next = entries.map((e) => {
-    if (e.kind !== 'tool') return e
+    if (e.kind !== 'tool' && e.kind !== 'thought') return e
     const end = msgSeqEnd?.get(e.id)
     const omitted = liteOmitted?.get(e.id)
     if (end == null && omitted == null) return e

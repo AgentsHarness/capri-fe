@@ -82,9 +82,9 @@ export type FePrefs = {
   /** scrollback 中 toolcall 分组默认折叠（false = 分组默认展开）。 */
   collapseToolGroups: boolean
   /**
-   * 精简回放：历史分页请求带 detail=lite，host 只裁工具正文，展开时再
-   * 按需补全。默认值随部署模式而变（见 defaultLiteReplay）——hub 模式
-   * 整页历史要跨源走 hub，默认开；local 直连本机，默认关。
+   * 精简回放：历史分页请求带 detail=lite，idle 后再拉 full 填正文。
+   * 只在走 hub 中转时生效（见 historyViaHubRelay）；直连本机 / 纯 local
+   * 始终拉 full。没显式选过时默认随是否中转现算。
    */
   liteReplay: boolean
 }
@@ -98,12 +98,17 @@ type PrefsView = {
 }
 
 /**
- * liteReplay 默认值按部署模式取（不是硬编码字符串比较：模式由
- * transport.detectMode 判定，见 api/localTransport.ts）。可选调用：单测里
- * 常见的精简 transport mock 没带这个方法，一律按 local 默认（关）。
+ * 这条历史请求会不会绕 hub 中转。纯 local、以及 hub 模式下选中本机近路
+ * （isLocalDirect）都是直连 host，不必 lite+full。
  */
+export function historyViaHubRelay(): boolean {
+  if (transport.getConnectionMode?.() !== 'hub') return false
+  return transport.isLocalDirect?.() !== true
+}
+
+/** 没显式选过时：中转开、直连关。 */
 function defaultLiteReplay(): boolean {
-  return transport.getConnectionMode?.() === 'hub'
+  return historyViaHubRelay()
 }
 
 /**
@@ -522,10 +527,11 @@ export function isLiteReplayChosen(): boolean {
 }
 
 /**
- * 非 hook 同步读取「精简回放」生效值：文档没带过该键时按当前部署模式现算
- * （hub 开 / local 关）——建店早于 transport.detectMode，存下来的默认值不作数。
+ * 非 hook 同步读取「精简回放」生效值：直连永远 false；中转才看开关
+ * （没选过按中转默认开）。
  */
 export function currentLiteReplay(): boolean {
+  if (!historyViaHubRelay()) return false
   const s = usePins.getState()
   return liteReplayOf(s.entries, s.fePrefs.liteReplay)
 }
@@ -534,9 +540,9 @@ function liteReplayOf(entries: PrefsEntries, stored: boolean): boolean {
   return alive(entries, feKey('liteReplay')) ? stored : defaultLiteReplay()
 }
 
-/** 响应式读取（hub 广播 / 本地 toggle 后即时重渲染）。 */
+/** 响应式读取（hub 广播 / 本地 toggle 后即时重渲染）。直连恒为关。 */
 export function useLiteReplay(): boolean {
-  return usePins((s) => liteReplayOf(s.entries, s.fePrefs.liteReplay))
+  return usePins((s) => historyViaHubRelay() && liteReplayOf(s.entries, s.fePrefs.liteReplay))
 }
 
 /**

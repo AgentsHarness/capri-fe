@@ -6,11 +6,14 @@ import { useChatStore } from '../chat'
 import { runtime, clearContinueSessionTimer } from './globals'
 import {
   applyToolBodies,
+  extractThoughtRuns,
   extractToolBodies,
   flushScheduledPageFills,
   liteFillSummary,
+  pageFillWindow,
   resetLiteCapability,
   resetToolFillCache,
+  thoughtEntryNeedsFill,
   toolEntryLiteOmitted,
   toolEntryLitePending,
   toolEntryNeedsFill,
@@ -39,7 +42,8 @@ vi.mock('../../api/client', () => ({
     rewindExecute: vi.fn(),
     rewindPoints: vi.fn(),
     onEvent: vi.fn(() => () => {}),
-    getConnectionMode: vi.fn(() => 'local'),
+    getConnectionMode: vi.fn(() => 'hub'),
+    isLocalDirect: vi.fn(() => false),
     // setFePrefs 会防抖回写 hub —— 给全 prefs 三件套，免得模块级 push 抛错。
     prefsOrigin: vi.fn(() => ''),
     getPrefs: vi.fn(async () => ({ prefs: {} })),
@@ -175,6 +179,8 @@ const fullCalls = () =>
 
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.mocked(transport.getConnectionMode).mockReturnValue('hub')
+  vi.mocked(transport.isLocalDirect).mockReturnValue(false)
   // 后台补全走 requestIdleCallback（缺失才 setTimeout(0) 兜底）——一律置空
   // 走定时器分支，用例里的「转一轮宏任务」才是确定的。
   vi.stubGlobal('requestIdleCallback', undefined)
@@ -204,6 +210,24 @@ afterEach(() => {
 })
 
 describe('detail 请求档位与 host 能力回显', () => {
+  it('直连（纯 local）：即使开关开也不带 detail，直接 full', async () => {
+    vi.mocked(transport.getConnectionMode).mockReturnValue('local')
+    vi.mocked(transport.isLocalDirect).mockReturnValue(false)
+    usePins.getState().setFePrefs({ liteReplay: true })
+    const load = vi.mocked(transport.loadSessionHistory).mockResolvedValue(fullPage())
+    await useChatStore.getState().loadHistory(SID, CWD)
+    expect(load).toHaveBeenLastCalledWith(SID, CWD, { turnIndex: 1 })
+  })
+
+  it('hub 近路直连：即使开关开也不带 detail，直接 full', async () => {
+    vi.mocked(transport.getConnectionMode).mockReturnValue('hub')
+    vi.mocked(transport.isLocalDirect).mockReturnValue(true)
+    usePins.getState().setFePrefs({ liteReplay: true })
+    const load = vi.mocked(transport.loadSessionHistory).mockResolvedValue(fullPage())
+    await useChatStore.getState().loadHistory(SID, CWD)
+    expect(load).toHaveBeenLastCalledWith(SID, CWD, { turnIndex: 1 })
+  })
+
   it('开关开：首页带 detail=lite；条目记 msgSeqEnd / liteOmitted 坐标', async () => {
     usePins.getState().setFePrefs({ liteReplay: true })
     const load = vi.mocked(transport.loadSessionHistory).mockResolvedValue(litePage())
@@ -414,13 +438,12 @@ describe('只填工具正文的补全', () => {
     expect(useChatStore.getState().liteFillBusy ?? 0).toBe(0)
   })
 
-  it('更早轮翻页：lite 页按同一 offset/limit 窗口排队一份 detail=full', async () => {
+  it('更早轮翻页：只拉 lite，不自动再要一份 full', async () => {
     const load = vi
       .mocked(transport.loadSessionHistory)
       .mockResolvedValueOnce(litePage())
       .mockResolvedValue(litePage({ updates: litePage().updates?.slice(0, 3) }))
     await useChatStore.getState().loadHistory(SID, CWD)
-    // 丢掉首页排的那份整轮补全，只看翻页这一发。
     resetToolFillCache()
     useChatStore.setState({
       historySessionId: SID,
@@ -436,10 +459,7 @@ describe('只填工具正文的补全', () => {
     await useChatStore.getState().loadMoreHistory()
     expect(load).toHaveBeenCalledWith(SID, CWD, { offset: 0, limit: 3, detail: 'lite' })
     await new Promise((r) => setTimeout(r, 5))
-
-    const full = fullCalls()
-    expect(full).toHaveLength(1)
-    expect(full[0]?.[2]).toMatchObject({ offset: 0, limit: 3, detail: 'full' })
+    expect(fullCalls()).toHaveLength(0)
   })
 
   it('排队中的补全可以立刻催发（点顶部进度图标），已发出的不重复', async () => {
@@ -902,5 +922,73 @@ describe('live 事件续写被裁的工具行', () => {
     expect(e.liteState).toBeUndefined()
     expect(toolEntryLiteOmitted(e)).toBe(true)
     expect(liteFillSummary(useChatStore.getState())).toBe('1.0.0')
+  })
+})
+
+describe('极致 lite：合成窗口与 thought 补全', () => {
+  it('pageFillWindow 用 lite.msgSeqEnd 还原被合成掉的信封区间', () => {
+    const updates = [
+      env(10, { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'q' } }),
+      env(11, {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'c1',
+        status: 'completed',
+        _meta: { lite: { omitted: 900, msgSeqEnd: 14 } },
+      }),
+      env(15, { sessionUpdate: 'turn_completed', stop_reason: 'end_turn' }),
+    ]
+    expect(pageFillWindow(updates)).toEqual({ offset: 10, limit: 6 })
+  })
+
+  it('extractThoughtRuns 把连续 thought chunk 拼成一段', () => {
+    const updates = [
+      env(1, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: '甲' } }),
+      env(2, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: '乙' } }),
+      env(3, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '答' } }),
+    ]
+    expect(extractThoughtRuns(updates)).toEqual([{ msgSeq: 1, msgSeqEnd: 2, text: '甲乙' }])
+  })
+
+  it('合成 thought 信封回放成一行，展开时按 msgSeqEnd 拉 full', async () => {
+    const thoughtLite = env(1, {
+      sessionUpdate: 'agent_thought_chunk',
+      content: { type: 'text', omitted: 1700 },
+      _meta: { lite: { omitted: 1700, msgSeqEnd: 3 } },
+    })
+    vi.mocked(transport.loadSessionHistory)
+      .mockResolvedValueOnce({
+        updates: [
+          env(0, { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: '问' } }),
+          thoughtLite,
+          env(4, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '答' } }),
+        ],
+        promptStarts: [0],
+        totalCount: 5,
+        projected: 'lite',
+        omittedBytes: 1700,
+      })
+      .mockResolvedValue({
+        updates: [
+          env(0, { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: '问' } }),
+          env(1, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: '先想' } }),
+          env(2, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: '再想' } }),
+          env(3, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: '然后' } }),
+          env(4, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '答' } }),
+        ],
+        promptStarts: [0],
+        totalCount: 5,
+      })
+    usePins.getState().setFePrefs({ liteReplay: true })
+    await useChatStore.getState().loadHistory(SID, CWD)
+    const th = useChatStore.getState().entries.find((e) => e.kind === 'thought')
+    expect(th).toBeTruthy()
+    expect(thoughtEntryNeedsFill(th!)).toBe(true)
+    expect(th!.msgSeq).toBe(1)
+    expect(th!.msgSeqEnd).toBe(3)
+
+    await useChatStore.getState().fillToolEntryDetail(th!.id)
+    const filled = useChatStore.getState().entries.find((e) => e.kind === 'thought')
+    expect(filled?.liteState).toBe('filled')
+    expect(filled?.text).toBe('先想再想然后')
   })
 })

@@ -33,7 +33,7 @@ export function viewerOpenActions(set: SetState, get: () => ChatState) {
     }
     if (e.kind === 'tool' && !e.raw && !e.title) return
     // 「查看」= 展开全文：lite 裁掉的正文在这里按需补回（非 lite 行 no-op）。
-    if (e.kind === 'tool') void fillEntryRange(set, get, target)
+    if (e.kind === 'tool' || e.kind === 'thought') void fillEntryRange(set, get, target)
     if (e.kind === 'bg_task' && e.taskId) {
       // Live rows (bgTaskIndex) keep the entry-backed viewer + live poll.
       // Replay display rows are NOT in the index — open the task viewer

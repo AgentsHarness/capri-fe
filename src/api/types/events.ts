@@ -154,6 +154,10 @@ export type AcpEvent =
       agentTimestampMs?: number
       /** 回放归一化序号（host msgSeq，仅历史回放事件携带）。 */
       msgSeq?: number
+      /** lite 合成 thought 跑的最后一条信封 msgSeq。 */
+      msgSeqEnd?: number
+      /** host lite 裁掉的 thought 正文字节。 */
+      liteOmitted?: number
       /** host attachStreamMeta 提升的 params._meta.eventId（透传，不当接缝主键）。 */
       eventId?: string
       /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */

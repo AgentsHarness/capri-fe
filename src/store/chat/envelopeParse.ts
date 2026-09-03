@@ -250,12 +250,15 @@ export function liteMark(update: unknown): LiteProjectionMark | undefined {
   if (!lite || typeof lite !== 'object' || Array.isArray(lite)) return undefined
   const o = lite as Record<string, unknown>
   const omitted = typeof o.omitted === 'number' && Number.isFinite(o.omitted) ? o.omitted : 0
-  if (omitted <= 0) return undefined
+  const msgSeqEnd =
+    typeof o.msgSeqEnd === 'number' && Number.isFinite(o.msgSeqEnd) ? o.msgSeqEnd : undefined
+  if (omitted <= 0 && msgSeqEnd == null) return undefined
   return {
     omitted,
     fields: Array.isArray(o.fields)
       ? (o.fields.filter((f) => typeof f === 'string') as string[])
       : [],
+    ...(msgSeqEnd != null ? { msgSeqEnd } : {}),
   }
 }
 
@@ -665,7 +668,8 @@ function envelopeToEventsRaw(e: RawEnvelope): AcpEvent[] {
     }
     case 'agent_thought_chunk': {
       const text = contentTextParts(contentParts(up.content))
-      if (!text) return []
+      const mark = liteMark(up)
+      if (!text && !mark) return []
       const agentTs = finiteMetaNumber(meta.agentTimestampMs)
       const streamStart = finiteMetaNumber(meta.streamStartMs)
       const elapsedMs =
@@ -674,11 +678,12 @@ function envelopeToEventsRaw(e: RawEnvelope): AcpEvent[] {
           : undefined
       return [{
         type: 'thought',
-        text,
+        text: text || '…',
         ...(elapsedMs != null ? { elapsedMs } : {}),
         ...(finiteMetaNumber(meta.turnStartMs) != null ? { turnStartMs: finiteMetaNumber(meta.turnStartMs) } : {}),
         ...(streamStart != null ? { streamStartMs: streamStart } : {}),
         ...(agentTs != null ? { agentTimestampMs: agentTs } : {}),
+        ...(mark ? { liteOmitted: mark.omitted, ...(mark.msgSeqEnd != null ? { msgSeqEnd: mark.msgSeqEnd } : {}) } : {}),
       }]
     }
     case 'user_message_chunk': {

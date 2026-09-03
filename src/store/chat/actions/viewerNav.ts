@@ -30,6 +30,9 @@ export function viewerNavActions(set: SetState, get: () => ChatState) {
   },
 
   toggleThought: (id) => {
+    const cur = get().entries.find((e) => e.id === id)
+    const next =
+      cur != null && cur.kind === 'thought' ? nextThoughtMode(thoughtDisplayMode(cur)) : null
     set({
       entries: get().entries.map((e) =>
         e.id === id && e.kind === 'thought'
@@ -39,6 +42,7 @@ export function viewerNavActions(set: SetState, get: () => ChatState) {
       selectedId: id,
       focusMode: 'scrollback',
     })
+    if (next === 'expanded') void fillEntryRange(set, get, id)
   },
 
   toggleUser: (id) => {
