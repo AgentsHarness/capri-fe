@@ -406,7 +406,8 @@ export function settleTurnEntries(entries: ScrollEntry[]): ScrollEntry[] {
         ...e,
         streaming: false,
         elapsed,
-        displayMode: 'collapsed',
+        // foldPinned（display_mode_pinned）豁免收口折叠。
+        ...(e.foldPinned ? {} : { displayMode: 'collapsed' as const }),
         finishedAt: Date.now(),
       })
       continue

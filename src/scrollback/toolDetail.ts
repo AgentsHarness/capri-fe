@@ -35,6 +35,9 @@ export type SearchFile = {
 
 export type KvPair = { key: string; value: string }
 
+/** AskUserQuestion 的一组问答（answer 为空串表示用户未作答）。 */
+export type AskUserQaPair = { question: string; answer: string }
+
 /** One tool surfaced by `search_tool` (TUI DiscoveredTool). */
 export type DiscoveredTool = {
   name: string
@@ -158,6 +161,9 @@ export type ToolDetail =
       error?: string
       /** Flattened rawInput fields when nothing better is available. */
       inputArgs: KvPair[]
+      /** AskUserQuestion 结构化问答对（TUI other.rs parse_ask_user_qa_pairs），
+       *  命中时正文渲染编号问答行、不再走 StdoutPanel。 */
+      qaPairs?: AskUserQaPair[]
     }
 
 // ── helpers ──────────────────────────────────────────────────────────
@@ -388,7 +394,13 @@ export function detailIsEmpty(d: ToolDetail): boolean {
     case 'use_tool':
       return !d.output && !d.args.length && !d.error
     case 'generic':
-      return !d.output && !d.content && !d.inputArgs.length && !d.error
+      return (
+        !d.output &&
+        !d.content &&
+        !d.inputArgs.length &&
+        !d.error &&
+        !d.qaPairs?.length
+      )
   }
 }
 
@@ -541,9 +553,10 @@ function flattenArgs(obj: Record<string, unknown> | undefined, skip: Set<string>
   const out: KvPair[] = []
   for (const [k, v] of Object.entries(obj)) {
     if (skip.has(k)) continue
-    if (v == null) continue
     let display: string
-    if (typeof v === 'string') display = v
+    // TUI tracker.rs Value::Null => "null"：null 参数也要显示（key: null）。
+    if (v == null) display = 'null'
+    else if (typeof v === 'string') display = v
     else if (typeof v === 'number' || typeof v === 'boolean') display = String(v)
     else {
       try {
@@ -866,6 +879,23 @@ function simpleDiffLines(oldText: string, newText: string, startLine = 1): DiffL
 
 type DiffOp = { type: 'equal' | 'insert' | 'delete'; line: string }
 
+/**
+ * 两个 hunk 之间的分隔行文案（TUI edit.rs hunk_separator + hunk_gap_lines）：
+ * 被跳过的不变行数可算时显示 `… N unchanged lines`（单数 `… 1 unchanged line`），
+ * 否则退回裸 `…`。行数用新文件行号（Equal/Insert 的 newNo）计算——上一 hunk
+ * 最后一个非删除行到下一 hunk 第一个非删除行之间；后一个 hunk 没有新文件行、
+ * 或行号非单调（合并多调用时后一次编辑落在前面）都退回裸 `…`。
+ */
+export function hunkGapSeparator(prevLines: DiffLine[], nextLines: DiffLine[]): string {
+  const prevLast = [...prevLines].reverse().find((l) => l.newNo != null)?.newNo
+  const nextFirst = nextLines.find((l) => l.newNo != null)?.newNo
+  if (prevLast != null && nextFirst != null) {
+    const gap = nextFirst - prevLast - 1
+    if (gap > 0) return gap === 1 ? '… 1 unchanged line' : `… ${gap} unchanged lines`
+  }
+  return '…'
+}
+
 /** Simple LCS-based line diff (small inputs). */
 function diffLines(a: string[], b: string[]): DiffOp[] {
   const m = a.length
@@ -926,8 +956,8 @@ function extractEditHunks(tc: ToolCall): { lines: DiffLine[]; ins: number; del: 
                 : typeof d.new_line === 'number'
                   ? d.new_line
                   : 1
-          if (lines.length) lines.push({ kind: 'gap', text: '…' })
           const hunk = simpleDiffLines(oldT, newT, start)
+          if (lines.length) lines.push({ kind: 'gap', text: hunkGapSeparator(lines, hunk) })
           for (const hl of hunk) {
             if (hl.kind === 'insert') ins++
             if (hl.kind === 'delete') del++
@@ -946,8 +976,8 @@ function extractEditHunks(tc: ToolCall): { lines: DiffLine[]; ins: number; del: 
     let ins = 0
     let del = 0
     diffs.forEach((d, i) => {
-      if (i > 0) lines.push({ kind: 'gap', text: '…' })
       const hunk = simpleDiffLines(d.oldText, d.newText, d.newLine ?? 1)
+      if (i > 0) lines.push({ kind: 'gap', text: hunkGapSeparator(lines, hunk) })
       for (const hl of hunk) {
         if (hl.kind === 'insert') ins++
         if (hl.kind === 'delete') del++
@@ -1072,6 +1102,88 @@ function maybePretty(s: string): string {
   } catch {
     return s
   }
+}
+
+// ── ask user (AskUserQuestion) ───────────────────────────────────────
+
+/**
+ * AskUserQuestion 输出 → 问答对（TUI other.rs parse_ask_user_qa_pairs）。
+ *
+ * 识别 TUI 接受的几种输出形态：
+ * **Path A：** `User has answered your questions: "Q1"="A1", "Q2"="A2". You can now…`
+ * **Path D（取消）：** `User declined to answer…` → 无问答对
+ * **Paths B/C（plan mode）：** `- "Q1"\n  Answer: A1\n- "Q2"\n  (No answer provided)`
+ *
+ * 返回空数组表示不是可识别的问答格式，调用方保持 generic 兜底。
+ * 引号值按 TUI 的宽松扫描处理（`"="` 定界、`, "` 分隔），转义引号不做反转义。
+ */
+export function parseAskUserQaPairs(output: string): AskUserQaPair[] {
+  // Path A: "User has answered your questions: "Q"="A", "Q"="A". You can now..."
+  const pathAPrefix = 'User has answered your questions: '
+  if (output.startsWith(pathAPrefix)) {
+    let remaining = output.slice(pathAPrefix.length)
+    // Strip the trailing ". You can now continue with the user's answers in mind."
+    const pathASuffix = ". You can now continue with the user's answers in mind."
+    if (remaining.endsWith(pathASuffix)) {
+      remaining = remaining.slice(0, -pathASuffix.length)
+    }
+    const pairs: AskUserQaPair[] = []
+    while (remaining.length > 0) {
+      // Expect: "question"="answer" [optional annotations...]
+      if (!remaining.startsWith('"')) break
+      remaining = remaining.slice(1)
+      const qEnd = remaining.indexOf('"="')
+      if (qEnd < 0) break
+      const question = remaining.slice(0, qEnd)
+      remaining = remaining.slice(qEnd + 3)
+      // 答案直到下一个 `", "`（下一对）或串尾
+      const sep = remaining.indexOf(', "')
+      const answerEnd = sep < 0 ? remaining.length : sep
+      let answerText = remaining.slice(0, answerEnd)
+      if (answerText.endsWith('"')) answerText = answerText.slice(0, -1)
+      // 去掉注解后缀（选中预览 / 用户备注），只留标签本身
+      const preview = answerText.indexOf(' selected preview:')
+      if (preview >= 0) answerText = answerText.slice(0, preview)
+      const notes = answerText.indexOf(' user notes:')
+      if (notes >= 0) answerText = answerText.slice(0, notes)
+      pairs.push({ question, answer: answerText })
+      remaining = remaining.slice(answerEnd)
+      if (remaining.startsWith(', ')) remaining = remaining.slice(2)
+    }
+    return pairs
+  }
+
+  // Path D: cancelled —— 无问答对
+  if (output.startsWith('User declined to answer')) return []
+
+  // Paths B/C: plan mode —— bullet 格式
+  // - "Q1"\n  Answer: A1\n- "Q2"\n  (No answer provided)
+  if (output.includes('Questions asked') && output.includes('- "')) {
+    const pairs: AskUserQaPair[] = []
+    const lines = output.split('\n')
+    let i = 0
+    while (i < lines.length) {
+      const line = lines[i].replace(/^[\s-]+/, '').trim()
+      if (line.startsWith('"') && line.endsWith('"')) {
+        let answer = ''
+        if (i + 1 < lines.length) {
+          const next = lines[i + 1].trim()
+          if (next.startsWith('Answer: ')) {
+            answer = next.slice('Answer: '.length)
+            i += 1
+          } else if (next === '(No answer provided)') {
+            answer = ''
+            i += 1
+          }
+        }
+        pairs.push({ question: line.slice(1, -1), answer })
+      }
+      i += 1
+    }
+    if (pairs.length > 0) return pairs
+  }
+
+  return []
 }
 
 // ── public API ───────────────────────────────────────────────────────
@@ -1343,14 +1455,18 @@ export function extractToolDetail(tc: ToolCall, kindName?: string): ToolDetail {
     const args = extractUseToolArgs(ri)
     const output =
       contentText(tc) || extractUseToolOutput(raw) || undefined
+    // TUI tracker.rs（UseTool 失败分支）：error = output.take()
+    //   .unwrap_or("Tool call failed") ——原始输出文本直接当 error 展示（红），
+    // 正文不再重复显示 output；成功路径不受影响。
+    const error = isFail ? output || 'Tool call failed' : undefined
     return {
       kind: 'use_tool',
       toolName,
       server,
       action,
       args,
-      output,
-      error: isFail ? 'Tool failed' : undefined,
+      output: isFail ? undefined : output,
+      error,
     }
   }
 
@@ -1361,6 +1477,22 @@ export function extractToolDetail(tc: ToolCall, kindName?: string): ToolDetail {
     (typeof raw === 'string' ? raw : raw != null ? safeJson(raw) : undefined)
   const name = title || kind
   const colon = name.indexOf(': ')
+  // AskUserQuestion 结构化问答输出（按输出文本识别，不依赖工具名；
+  // TUI other.rs 对所有 Other 块的 output 都先试 parse_ask_user_qa_pairs）。
+  // 命中时不产出 output，正文改由 GenericBody 渲染编号问答行。
+  const qaPairs = output ? parseAskUserQaPairs(output) : []
+  if (qaPairs.length > 0) {
+    return {
+      kind: 'generic',
+      name,
+      summary: title,
+      label: colon > 0 ? name.slice(0, colon) : undefined,
+      content: colon > 0 ? name.slice(colon + 2) : undefined,
+      error: isFail ? contentText(tc) || 'Failed' : undefined,
+      inputArgs: flattenArgs(ri, new Set(['variant'])),
+      qaPairs,
+    }
+  }
   return {
     kind: 'generic',
     name,

@@ -315,7 +315,15 @@ function remapEditExpanded(
     // the old default" and those do flip).
     if (!!e.expanded !== oldExpanded) return e
     changed = true
-    return { ...e, expanded: newExpanded }
+    // displayMode 与 expanded 布尔同步镜像（toolDisplayMode 读侧优先
+    // displayMode，只写布尔会把钉在三态档上的行洗错）。
+    return {
+      ...e,
+      expanded: newExpanded,
+      displayMode: newExpanded
+        ? ('expanded' as const)
+        : ('collapsed' as const),
+    }
   })
   return { entries: changed ? next : entries, changed }
 }

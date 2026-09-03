@@ -300,7 +300,10 @@ export function handleTurnEndEvent(
                   ...e,
                   streaming: false,
                   finishedAt: Date.now(),
-                  displayMode: 'collapsed' as const,
+                  // foldPinned（display_mode_pinned）豁免收口折叠。
+                  ...(e.foldPinned
+                    ? {}
+                    : { displayMode: 'collapsed' as const }),
                 }
               }
               if (

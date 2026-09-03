@@ -342,10 +342,23 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
         }
         if (t.scrollTop < prevTop && dist >= 4) {
           followRef.current = false
-        } else if (dist < 4) {
+        } else if (dist <= 1) {
+          // 真正贴底才恢复（TUI 钳底语义，nav.rs:398-419）；dist<4 的带宽
+          // 只留给 unfollow 判定。钳底后由 overscroll 重挂的场景见 onWheel
+          // ——已在底部时浏览器不再发 scroll 事件。
           followRef.current = true
         }
         scheduleUpdatePinned()
+      }}
+      onWheel={(e) => {
+        // TUI 钳底后 overscroll 才重挂 follow（nav.rs:391-419）：已贴底
+        // （dist<=1）再向下滚 = overscroll → 重新跟随。
+        if (e.deltaY > 0 && e.currentTarget instanceof HTMLElement) {
+          const t = e.currentTarget
+          if (t.scrollHeight - t.scrollTop - t.clientHeight <= 1) {
+            followRef.current = true
+          }
+        }
       }}
       onTouchStart={onPagingTouchStart}
       onTouchMove={onPagingTouchMove}

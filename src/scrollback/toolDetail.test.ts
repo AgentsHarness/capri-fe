@@ -3,6 +3,8 @@ import type { ToolCall } from '../api/types'
 import {
   contentText,
   extractToolDetail,
+  hunkGapSeparator,
+  parseAskUserQaPairs,
   readPathOf,
   skillNameFromPath,
   type DiffLine,
@@ -334,6 +336,28 @@ describe('extractToolDetail — edit', () => {
     expect(d.lines.some((l) => l.text === 'three' && l.kind === 'insert')).toBe(true)
   })
 
+  it('hunk 间 gap 文案带不变行数（TUI hunk_gap_lines）', () => {
+    const d = detail(
+      {
+        rawInput: { path: '/x.ts' },
+        rawOutput: {
+          SearchReplace: {
+            EditsApplied: {
+              details: [
+                { old_string: 'a', new_string: 'b', new_line: 3 },
+                { old_string: 'x', new_string: 'y', new_line: 9 },
+              ],
+            },
+          },
+        },
+      },
+      'edit',
+    )
+    if (d.kind !== 'edit') throw new Error('expected edit')
+    const gap = d.lines.find((l) => l.kind === 'gap')
+    expect(gap?.text).toBe('… 5 unchanged lines')
+  })
+
   it('failed → 空 diff + error', () => {
     const d = detail({ status: 'failed', rawInput: { path: 'x' }, content: 'no' }, 'edit')
     expect(d).toMatchObject({ kind: 'edit', lines: [], insertions: 0, deletions: 0 })
@@ -490,7 +514,7 @@ describe('extractToolDetail — use_tool / mcp', () => {
     expect(byKey.big).toBe('m'.repeat(4000) + '…')
   })
 
-  it('tool_input 嵌套对象 → 只展开其字段；null 值跳过', () => {
+  it('tool_input 嵌套对象 → 只展开其字段；null 值显示 "null"（TUI Value::Null）', () => {
     const d = detail(
       { rawInput: { toolName: 'slack_post', tool_input: { channel: 'dev', text: 'hi', extra: null } } },
       'use_tool',
@@ -499,6 +523,7 @@ describe('extractToolDetail — use_tool / mcp', () => {
     expect(d.args).toEqual([
       { key: 'channel', value: 'dev' },
       { key: 'text', value: 'hi' },
+      { key: 'extra', value: 'null' },
     ])
   })
 
@@ -516,6 +541,99 @@ describe('extractToolDetail — use_tool / mcp', () => {
   it('Text tagged output', () => {
     const d = detail({ rawInput: { tool_name: 'x' }, rawOutput: { Text: { text: 'plain' } } }, 'use_tool')
     expect(d).toMatchObject({ kind: 'use_tool', output: 'plain' })
+  })
+
+  it('失败时原始 output 转为 error（TUI output.take()），正文不再双显', () => {
+    const d = detail(
+      { status: 'failed', rawInput: { tool_name: 'x' }, content: 'boom happened' },
+      'use_tool',
+    )
+    expect(d).toMatchObject({ kind: 'use_tool', error: 'boom happened', output: undefined })
+
+    // 无输出时兜底 "Tool call failed"
+    const d2 = detail({ status: 'failed', rawInput: { tool_name: 'x' } }, 'use_tool')
+    expect(d2).toMatchObject({ kind: 'use_tool', error: 'Tool call failed', output: undefined })
+
+    // 成功路径不受影响
+    const ok = detail(
+      { rawInput: { tool_name: 'x' }, rawOutput: { MCP: { OkayOutput: 'done' } } },
+      'use_tool',
+    )
+    expect(ok).toMatchObject({ kind: 'use_tool', output: 'done', error: undefined })
+  })
+})
+
+describe('extractToolDetail — ask_user（AskUserQuestion 问答输出）', () => {
+  const answered =
+    'User has answered your questions: "Which framework?"="React", "Package manager?"="pnpm". You can now continue with the user\'s answers in mind.'
+
+  it('Path A：多对问答解析；尾部提示句剥离', () => {
+    expect(parseAskUserQaPairs(answered)).toEqual([
+      { question: 'Which framework?', answer: 'React' },
+      { question: 'Package manager?', answer: 'pnpm' },
+    ])
+    // 无尾部提示句也能解析
+    expect(parseAskUserQaPairs('User has answered your questions: "Q"="A"')).toEqual([
+      { question: 'Q', answer: 'A' },
+    ])
+  })
+
+  it('Path A：注解后缀剥离（selected preview / user notes）；空 body → 空', () => {
+    expect(
+      parseAskUserQaPairs(
+        'User has answered your questions: "Theme?"="Dark selected preview: #000 background". You can now continue with the user\'s answers in mind.',
+      ),
+    ).toEqual([{ question: 'Theme?', answer: 'Dark' }])
+    expect(
+      parseAskUserQaPairs('User has answered your questions: "Q"="A user notes: likes it"'),
+    ).toEqual([{ question: 'Q', answer: 'A' }])
+    expect(parseAskUserQaPairs('User has answered your questions: ')).toEqual([])
+  })
+
+  it('Path B/C：plan mode bullet 格式；Answer / (No answer provided)', () => {
+    const plan = 'Questions asked\n- "Deploy where?"\n  Answer: staging\n- "DNS ready?"\n  (No answer provided)'
+    expect(parseAskUserQaPairs(plan)).toEqual([
+      { question: 'Deploy where?', answer: 'staging' },
+      { question: 'DNS ready?', answer: '' },
+    ])
+  })
+
+  it('Path D / 非问答输出 → 空数组（generic 兜底）', () => {
+    expect(parseAskUserQaPairs('User declined to answer')).toEqual([])
+    expect(parseAskUserQaPairs('plain tool output')).toEqual([])
+  })
+
+  it('extractToolDetail：问答输出 → generic.qaPairs；解析不出 → 普通 generic', () => {
+    const d = detail({ title: 'AskUserQuestion', content: answered }, 'other')
+    expect(d).toMatchObject({
+      kind: 'generic',
+      qaPairs: [
+        { question: 'Which framework?', answer: 'React' },
+        { question: 'Package manager?', answer: 'pnpm' },
+      ],
+    })
+    if (d.kind !== 'generic') throw new Error('expected generic')
+    // 命中问答形态时不再产出 output（正文渲染问答行，不渲染 stdout）
+    expect(d.output).toBeUndefined()
+
+    const g = detail({ title: 'AskUserQuestion', content: 'User declined to answer' }, 'other')
+    if (g.kind !== 'generic') throw new Error('expected generic')
+    expect(g.qaPairs).toBeUndefined()
+  })
+})
+
+describe('hunkGapSeparator（TUI hunk_gap_lines 语义）', () => {
+  const ins = (newNo: number) => ({ kind: 'insert' as const, newNo, text: 'x' })
+  const del = (oldNo: number) => ({ kind: 'delete' as const, oldNo, text: 'x' })
+
+  it('间隔行数 = 下一 hunk 首行 − 上一 hunk 末行 − 1（单复数）', () => {
+    expect(hunkGapSeparator([ins(3)], [ins(9)])).toBe('… 5 unchanged lines')
+    expect(hunkGapSeparator([ins(3)], [ins(5)])).toBe('… 1 unchanged line')
+  })
+
+  it('无新文件行 / 非单调行号 → 裸 …（纯删除 hunk、后一次编辑落在前面）', () => {
+    expect(hunkGapSeparator([ins(3)], [del(5)])).toBe('…')
+    expect(hunkGapSeparator([ins(9)], [ins(3)])).toBe('…')
   })
 })
 

@@ -150,7 +150,7 @@ export function WorkspaceBar({
           常驻可见，高度不变（min-h 仍在布局里），wsBarH 连续测量，
           钉住的用户提示头始终与栏底齐平。 */}
       <div
-        className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} flex min-h-[37px] min-w-0 flex-wrap items-center gap-x-2 gap-y-1 py-2 text-[14px] select-none transition-opacity duration-300 ${
+        className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} flex min-h-[37px] sm:h-[37px] min-w-0 flex-wrap items-center gap-x-2 gap-y-1 py-1 sm:py-0 text-[13px] select-none transition-opacity duration-300 ${
           fadeHidden ? 'pointer-events-none opacity-0' : 'opacity-100'
         }`}
         aria-hidden={fadeHidden || undefined}
@@ -161,7 +161,7 @@ export function WorkspaceBar({
             branch → "{icon} detached"); worktrees get the `wt` badge. */}
         {gitInfo?.branch ? (
           <span
-            className="flex min-w-0 max-w-[18vw] items-center gap-1 truncate font-mono text-[13px] text-gn-cyan sm:max-w-[24vw]"
+            className="flex min-w-0 max-w-[18vw] items-center gap-1 truncate font-mono text-[13px] leading-none text-gn-cyan sm:max-w-[24vw]"
             title={
               gitInfo.isWorktree
                 ? `${gitInfo.branch} · worktree${gitInfo.mainRepo ? ` of ${gitInfo.mainRepo}` : ''}`
@@ -184,7 +184,7 @@ export function WorkspaceBar({
             repo when present. */}
         {cwd ? (
           <span
-            className="flex min-w-0 max-w-[30vw] items-center truncate font-mono text-[13px] text-gn-gray-dim sm:max-w-[52vw]"
+            className="flex min-w-0 max-w-[30vw] items-center truncate font-mono text-[13px] leading-none text-gn-gray-dim sm:max-w-[52vw]"
             title={cwd}
           >
             {shortCwd(cwd, homeDir)}

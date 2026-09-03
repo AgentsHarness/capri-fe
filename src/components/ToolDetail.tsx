@@ -14,8 +14,10 @@ import {
   detailIsEmpty,
   discoveredToolAction,
   extractToolDetail,
+  hunkGapSeparator,
   toolBodyOmitted,
   truncateLines,
+  type AskUserQaPair,
   type DiffLine,
   type ToolDetail as Detail,
 } from '../scrollback/toolDetail'
@@ -307,13 +309,11 @@ function ReadBody({
         </div>
       )
     }
-    return <MetaLine>(image)</MetaLine>
+    // (image) 占位只在行头后缀（toolHeaderExtra）显示一次，正文不重复。
+    return null
   }
-  if (d.media === 'pdf') {
-    // TUI header suffix carries the page count; the body has nothing to show.
-    return <MetaLine>{d.pages != null ? `(${d.pages} pages)` : '(pdf)'}</MetaLine>
-  }
-  if (d.empty) return <MetaLine>(empty)</MetaLine>
+  // (N pages)/(pdf)/(empty) 同样只在行头后缀显示；正文没有可画的内容。
+  if (d.media === 'pdf' || d.empty) return null
   if (!d.content) return <MetaLine>(no content)</MetaLine>
 
   const base = d.lineStart ?? 1
@@ -397,16 +397,12 @@ function ExecuteBody({
         </div>
       ) : null}
 
+      {/* TUI execute.rs：只在 output 为空时才渲染错误行；有输出时不追加
+          红色 exit-code/error 行（错误信息已在行头后缀）。 */}
       {d.error && !d.output ? <ErrorLine text={d.error} /> : null}
 
       {d.output ? (
         <StdoutPanel text={d.output} full={full} first={EXEC_FIRST} last={EXEC_LAST} />
-      ) : null}
-
-      {d.error && d.output ? (
-        <div className="text-[11px]" style={{ color: 'var(--color-gn-accent-error)' }}>
-          {d.error}
-        </div>
       ) : null}
     </div>
   )
@@ -442,8 +438,9 @@ function EditBody({
       {all.map((x, i) => (
         <Fragment key={i}>
           {i > 0 && (
+            // TUI 合并块同样用 hunk_gap_lines 计算被跳过的不变行数。
             <div className="py-0.5 text-center font-mono text-[11px] text-gn-gutter">
-              …
+              {hunkGapSeparator(all[i - 1].lines, all[i].lines)}
             </div>
           )}
           <EditHunkPanel d={x} full={full} />
@@ -465,17 +462,10 @@ function EditHunkPanel({
   const [visible, setVisible] = useState(VIEWER_PAGE_LINES)
   if (!d.lines.length) return <MetaLine>(no diff)</MetaLine>
 
-  let lines = d.lines
-  if (!full && lines.length > 40) {
-    const head = lines.slice(0, 20)
-    const tail = lines.slice(-10)
-    const hidden = lines.length - 30
-    lines = [
-      ...head,
-      { kind: 'gap' as const, text: `… +${hidden} lines` },
-      ...tail,
-    ]
-  }
+  // TUI edit.rs Truncated/Expanded 走同一条 render_diff_hunks_core 路径全量
+  // 渲染（只受视口预算约束）；@@ hunk 头行也从不上屏（@@ 只存在于补丁文本，
+  // toolDetail 产出保留 header 行供未来复制补丁用）。
+  const lines = d.lines.filter((l) => l.kind !== 'header')
   const showMore = visible < lines.length
   const shown = showMore ? lines.slice(0, visible) : lines
 
@@ -505,10 +495,9 @@ function EditHunkPanel({
 }
 
 function DiffRow({ line, gutterW }: { line: DiffLine; gutterW: number }) {
+  // TUI render_diff_hunks_core 从不渲染 @@ hunk 头行。
   if (line.kind === 'header') {
-    return (
-      <div className="px-2 font-mono text-[11px] text-gn-cyan">{line.text}</div>
-    )
+    return null
   }
   if (line.kind === 'gap') {
     return (
@@ -624,7 +613,9 @@ function ListDirBody({
 }) {
   if (d.error) return <ErrorLine text={d.error} />
   if (!d.output) return <MetaLine>(empty)</MetaLine>
-  return <StdoutPanel text={d.output} full={full} first={INLINE_MAX} last={0} />
+  // TUI list_dir.rs：Truncated/Expanded 都全量渲染所有行（仅视口滚动裁剪），
+  // first=Infinity 表示不给 StdoutPanel 截断窗口。
+  return <StdoutPanel text={d.output} full={full} first={Infinity} last={0} />
 }
 
 // ── fetch ────────────────────────────────────────────────────────────
@@ -682,10 +673,18 @@ function WebSearchBody({
       ) : null}
       {d.citations.length > 0 ? (
         <div className="space-y-0.5 px-1">
+          {/* TUI citation 可 OpenLink —— 这里用原生 <a> 新开标签页。 */}
           {d.citations.map((c, i) => (
-            <div key={i} className="truncate font-mono text-[11px] text-gn-link">
+            <a
+              key={i}
+              href={c}
+              target="_blank"
+              rel="noreferrer"
+              title={c}
+              className="block truncate font-mono text-[11px] text-gn-link"
+            >
               {i + 1}. {c}
-            </div>
+            </a>
           ))}
         </div>
       ) : null}
@@ -731,10 +730,56 @@ function UseToolBody({
   return (
     <div className="space-y-1">
       <KvRows rows={d.args} />
-      {d.error && !d.output ? <ErrorLine text={d.error} /> : null}
+      {/* TUI use_tool.rs：error 出现就渲染红行（失败时 toolDetail 已把原始
+          output 挪进 error，正文不会再有 output，不存在双显）。 */}
+      {d.error ? <ErrorLine text={d.error} /> : null}
       {d.output ? (
         <StdoutPanel text={d.output} full={full} first={INLINE_MAX} last={0} />
       ) : null}
+    </div>
+  )
+}
+
+// ── ask user ─────────────────────────────────────────────────────────
+
+/**
+ * TUI other.rs AskUserQuestion 问答渲染：`N. question`（primary）+ 编号对齐的
+ * `→ answer`（accent_user）；未作答显示 dim 的 `(no answer)`。
+ */
+function AskUserQaBody({ pairs }: { pairs: AskUserQaPair[] }) {
+  return (
+    <div className="space-y-0.5 py-0.5">
+      {pairs.map((p, i) => {
+        // 答案行箭头与问题文本左对齐（编号 "N. " 宽度 + 1 列）。
+        const indent = `${String(i + 1).length + 2}ch`
+        return (
+          <div key={i} className="px-2 font-mono text-[12px] leading-[1.4]">
+            <div className="flex min-w-0">
+              <span className="shrink-0 whitespace-pre text-gn-muted">{`${i + 1}. `}</span>
+              <span className="min-w-0 flex-1 whitespace-pre-wrap break-words text-gn-fg">
+                {p.question}
+              </span>
+            </div>
+            {p.answer ? (
+              <div
+                className="flex min-w-0"
+                style={{ color: 'var(--color-gn-accent-user)' }}
+              >
+                <span className="shrink-0 whitespace-pre" style={{ width: indent }}>
+                  {'→ '}
+                </span>
+                <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">
+                  {p.answer}
+                </span>
+              </div>
+            ) : (
+              <div className="whitespace-pre text-gn-gray-dim" style={{ paddingLeft: indent }}>
+                (no answer)
+              </div>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -748,6 +793,9 @@ function GenericBody({
   d: Extract<Detail, { kind: 'generic' }>
   full: boolean
 }) {
+  // AskUserQuestion 问答输出（TUI other.rs）：问答行替代 stdout，与 TUI 一样
+  // 不再原样输出工具结果文本。
+  if (d.qaPairs?.length) return <AskUserQaBody pairs={d.qaPairs} />
   return (
     <div className="space-y-1">
       <KvRows rows={d.inputArgs} />

@@ -6,6 +6,10 @@ import {
   thoughtModeStepUp,
   type ThoughtDisplayMode,
 } from '../../../scrollback/thoughtMode'
+import {
+  nextToolFoldMode,
+  toolDisplayMode,
+} from '../../../scrollback/entryState'
 import { hookGroupsHaveContent } from '../../../scrollback/hookRuns'
 import { currentCollapseToolGroups } from '../../historyPins'
 import { fillEntryRange } from '../historyFill'
@@ -15,18 +19,33 @@ import { selectableRowIds } from '../turn'
 export function viewerNavActions(set: SetState, get: () => ChatState) {
   return {
   toggleTool: (id) => {
+    // TUI next_fold_mode 三态循环（entryState.nextToolFoldMode）：
+    // read Collapsed→Truncated→Collapsed；generic（Other）流式态
+    // Truncated↔Expanded；其余 Collapsed↔Expanded。expanded 布尔同步
+    // 镜像（≠collapsed 即展开），旧读侧不用逐个迁移。
     // 展开即「要看正文」：lite 裁掉的行按 [msgSeq, msgSeqEnd] 区间按需补回
     // （非 lite 行 no-op；折叠回去不打扰）。
     const cur = get().entries.find((e) => e.id === id)
-    const willExpand = cur != null && cur.kind === 'tool' && !cur.expanded
+    const before =
+      cur != null && cur.kind === 'tool' ? toolDisplayMode(cur) : 'collapsed'
+    const running =
+      cur?.kind === 'tool' &&
+      (cur.status === 'pending' || cur.status === 'in_progress')
+    const after =
+      cur != null && cur.kind === 'tool'
+        ? nextToolFoldMode(cur.kindName, before, !!running)
+        : 'collapsed'
+    const willShow = after !== 'collapsed'
     set({
       entries: get().entries.map((e) =>
-        e.id === id && e.kind === 'tool' ? { ...e, expanded: !e.expanded } : e,
+        e.id === id && e.kind === 'tool'
+          ? { ...e, displayMode: after, expanded: willShow }
+          : e,
       ),
       selectedId: id,
       focusMode: 'scrollback',
     })
-    if (willExpand) void fillEntryRange(set, get, id)
+    if (willShow) void fillEntryRange(set, get, id)
   },
 
   toggleThought: (id) => {
@@ -36,7 +55,13 @@ export function viewerNavActions(set: SetState, get: () => ChatState) {
     set({
       entries: get().entries.map((e) =>
         e.id === id && e.kind === 'thought'
-          ? { ...e, displayMode: nextThoughtMode(thoughtDisplayMode(e)) }
+          ? {
+              ...e,
+              displayMode: nextThoughtMode(thoughtDisplayMode(e)),
+              // 手动手势 → display_mode_pinned（TUI selection.rs:278）：
+              // 收口不再无条件折回 collapsed。
+              foldPinned: true,
+            }
           : e,
       ),
       selectedId: id,
@@ -137,7 +162,7 @@ export function viewerNavActions(set: SetState, get: () => ChatState) {
     if (!entry) return
 
     const memberCollapsed =
-      (entry.kind === 'tool' && !entry.expanded) ||
+      (entry.kind === 'tool' && toolDisplayMode(entry) === 'collapsed') ||
       (entry.kind === 'thought' && thoughtDisplayMode(entry) === 'collapsed')
 
     // ← on already-collapsed member inside an expanded group → fold the group
@@ -159,10 +184,20 @@ export function viewerNavActions(set: SetState, get: () => ChatState) {
     }
 
     if (entry.kind === 'tool') {
-      if (!!entry.expanded === expanded) return
+      // ←/→ 语义（TUI collapse_selected/expand_selected）：← 折到最小形态，
+      // → 直接全量展开。displayMode 与 expanded 布尔同步镜像。
+      if (toolDisplayMode(entry) === (expanded ? 'expanded' : 'collapsed')) return
       set({
         entries: entries.map((e) =>
-          e.id === selectedId && e.kind === 'tool' ? { ...e, expanded } : e,
+          e.id === selectedId && e.kind === 'tool'
+            ? {
+                ...e,
+                displayMode: (expanded ? 'expanded' : 'collapsed') as
+                  | 'expanded'
+                  | 'collapsed',
+                expanded,
+              }
+            : e,
         ),
         focusMode: 'scrollback',
       })
@@ -171,9 +206,8 @@ export function viewerNavActions(set: SetState, get: () => ChatState) {
       return
     }
     if (entry.kind === 'thought') {
-      // Three-state ladder (TUI collapse_mode/expand_selected): → steps up
-      // collapsed → truncated → expanded; ← steps down expanded → truncated
-      // → collapsed.
+      // →/← = TUI expand_selected/collapse_selected（直接到 Expanded/
+      // Collapsed，不逐档爬梯）。
       const cur = thoughtDisplayMode(entry)
       const target: ThoughtDisplayMode = expanded
         ? thoughtModeStepUp(cur)
@@ -182,7 +216,7 @@ export function viewerNavActions(set: SetState, get: () => ChatState) {
       set({
         entries: entries.map((e) =>
           e.id === selectedId && e.kind === 'thought'
-            ? { ...e, displayMode: target }
+            ? { ...e, displayMode: target, foldPinned: true }
             : e,
         ),
         focusMode: 'scrollback',
@@ -245,7 +279,7 @@ export function viewerNavActions(set: SetState, get: () => ChatState) {
     const e = entries.find((x) => x.id === selectedId)
     if (!e) return
     // Inline fold only (←/→/click/Space). Enter uses openViewer instead.
-    if (e.kind === 'tool') get().setExpanded(!e.expanded)
+    if (e.kind === 'tool') get().setExpanded(toolDisplayMode(e) !== 'collapsed')
     else if (e.kind === 'thought') get().toggleThought(e.id)
     else if (e.kind === 'user') get().setExpanded(!e.expanded)
     else if (e.kind === 'btw') get().toggleBtw(e.id)

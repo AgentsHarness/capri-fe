@@ -58,6 +58,28 @@ import { COLUMN_PAD_X_CLASS, CONTENT_COLUMN_CLASS } from '../theme/layout'
 /** Poll interval for live bg_task stdout while the viewer is open. */
 const BG_TASK_POLL_MS = 1500
 
+/**
+ * BgTaskBlock::preamble 的 description 预处理（bg_task.rs）：逐行裁掉行尾空白，
+ * 连续空行折叠成一个空行，避免多行描述把 preamble 撑长。
+ */
+function preambleDescLines(desc: string): string[] {
+  const whole = desc.trim()
+  if (!whole) return []
+  const out: string[] = []
+  let prevBlank = false
+  for (const line of whole.split('\n')) {
+    const trimmed = line.replace(/\s+$/, '')
+    if (!trimmed) {
+      if (prevBlank) continue
+      prevBlank = true
+    } else {
+      prevBlank = false
+    }
+    out.push(trimmed)
+  }
+  return out
+}
+
 /** Synthesize a bg_task entry from a task-only view (top strip / replay). */
 function taskViewToEntry(v: ViewerTask): ScrollEntry {
   return {
@@ -612,18 +634,31 @@ function ViewerBody({
     )
   }
   if (entry.kind === 'bg_task') {
-    // TUI for_bg_task: command preamble + stdout lines.
+    // TUI BgTaskBlock::preamble：description（primary 色逐行，行尾空白裁掉、
+    // 连续空行折叠）+ 空行 + `$ command`（bash 高亮 FE 暂无，保持纯色）。
     const stdout = entry.output ?? ''
+    const descLines = preambleDescLines(entry.title)
     return (
       <div className="space-y-3">
-        {(entry.command || entry.title) && (
+        {(entry.title || entry.command) && (
           <div className="rounded border border-gn-prompt-border bg-gn-bg-dark px-3 py-2 font-mono text-[12px] leading-relaxed text-gn-fg">
-            <div className="mb-1 text-[10px] uppercase tracking-wider text-gn-gutter">
-              command
-            </div>
-            <div className="whitespace-pre-wrap break-all">
-              {entry.command || entry.title}
-            </div>
+            {descLines.length > 0 && (
+              <div>
+                {descLines.map((line, i) => (
+                  <div key={i} className="whitespace-pre-wrap break-words">
+                    {line || '\u00a0'}
+                  </div>
+                ))}
+              </div>
+            )}
+            {entry.command ? (
+              <div className={descLines.length > 0 ? 'mt-2' : ''}>
+                <span className="whitespace-pre text-gn-gray-dim">$ </span>
+                <span className="whitespace-pre-wrap break-all">
+                  {entry.command}
+                </span>
+              </div>
+            ) : null}
             {entry.outputFile && (
               <div className="mt-1.5 truncate text-[10px] text-gn-muted" title={entry.outputFile}>
                 log · {entry.outputFile}

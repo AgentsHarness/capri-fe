@@ -9,21 +9,42 @@ function opts(over: Partial<AccentResolveOpts> = {}): AccentResolveOpts {
 const noPaint = { show: false, color: 'transparent', animated: false }
 
 describe('resolveAccent — finish flash', () => {
-  it('thought 完成闪：thinking 色，折叠时短 tick', () => {
-    const p = resolveAccent(opts({ kind: 'thought', finishedAt: 9_999 }))
-    expect(p).toMatchObject({ show: true, color: Accents.thinking, animated: false, collapsedGlyph: true })
+  it('thought 完成闪：thinking 色；折叠行不画 rail（TUI Collapsed 门）', () => {
+    const p = resolveAccent(
+      opts({ kind: 'thought', finishedAt: 9_999, expanded: true }),
+    )
+    expect(p).toMatchObject({ show: true, color: Accents.thinking, animated: false })
+    const collapsed = resolveAccent(opts({ kind: 'thought', finishedAt: 9_999 }))
+    expect(collapsed).toEqual(noPaint)
   })
 
-  it('tool execute 完成闪：成功绿 / 失败红', () => {
-    const ok = resolveAccent(opts({ kind: 'tool', kindName: 'execute', finishedAt: 9_999 }))
-    expect(ok).toMatchObject({ show: true, color: Accents.success, collapsedGlyph: true })
-    const bad = resolveAccent(opts({ kind: 'tool', kindName: 'execute', failed: true, finishedAt: 9_999 }))
+  it('tool execute 完成闪：成功绿 / 失败红（展开态）', () => {
+    const ok = resolveAccent(
+      opts({ kind: 'tool', kindName: 'execute', finishedAt: 9_999, expanded: true }),
+    )
+    expect(ok).toMatchObject({ show: true, color: Accents.success })
+    const bad = resolveAccent(
+      opts({ kind: 'tool', kindName: 'execute', failed: true, finishedAt: 9_999, expanded: true }),
+    )
     expect(bad).toMatchObject({ show: true, color: Accents.error })
   })
 
   it('standard 工具完成闪：tool 色 / 失败 error', () => {
-    const p = resolveAccent(opts({ kind: 'tool', kindName: 'mcp', finishedAt: 9_999 }))
+    const p = resolveAccent(
+      opts({ kind: 'tool', kindName: 'mcp', finishedAt: 9_999, expanded: true }),
+    )
     expect(p).toMatchObject({ color: Accents.tool })
+  })
+
+  it('never / edit 家族失败也闪绿（TUI unwrap_or(accent_success)）', () => {
+    const bad = resolveAccent(
+      opts({ kind: 'tool', kindName: 'read', failed: true, finishedAt: 9_999, expanded: true }),
+    )
+    expect(bad).toMatchObject({ show: true, color: Accents.success })
+    const badEdit = resolveAccent(
+      opts({ kind: 'tool', kindName: 'edit', failed: true, finishedAt: 9_999, expanded: true }),
+    )
+    expect(badEdit).toMatchObject({ show: true, color: Accents.success })
   })
 
   it('窗口外不闪（>= FINISH_FLASH_MS 前）', () => {

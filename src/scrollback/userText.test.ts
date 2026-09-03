@@ -22,6 +22,27 @@ describe('userVisualLines', () => {
     expect(userVisualLines('a\n\nb')).toBe(3)
     expect(userVisualLines('a\nb\nc\nd')).toBe(4)
   })
+
+  it('CJK/全角宽字符按 2 列计（TUI 按显示宽度折行）', () => {
+    // 31 个汉字 = 62 显示列 → 2 行（按字符数 31 只会算成 1 行）。
+    expect(userVisualLines('汉'.repeat(31))).toBe(2)
+    // 30 个汉字 = 60 列 → 恰好 1 行。
+    expect(userVisualLines('汉'.repeat(30))).toBe(1)
+    // 全角符号（￥）同宽。
+    expect(userVisualLines('￥'.repeat(31))).toBe(2)
+  })
+
+  it('Emoji 按宽字符计列', () => {
+    expect(userVisualLines('🚀'.repeat(31))).toBe(2)
+    expect(userVisualLines('😀'.repeat(30))).toBe(1)
+  })
+
+  it('混排宽度求和（宽 2 窄 1）', () => {
+    // 20 汉字(40 列) + 20 窄字符(20 列) = 60 列 → 1 行。
+    expect(userVisualLines('汉'.repeat(20) + 'a'.repeat(20))).toBe(1)
+    // 再多一个汉字 → 62 列 → 2 行。
+    expect(userVisualLines('汉'.repeat(21) + 'a'.repeat(20))).toBe(2)
+  })
 })
 
 describe('userIsFoldable', () => {
@@ -48,6 +69,16 @@ describe('collapseUserText', () => {
     const { text, truncated } = collapseUserText('x'.repeat(200), 2)
     expect(truncated).toBe(true)
     expect(text.startsWith('x'.repeat(118))).toBe(true)
+    expect(text.endsWith(Glyphs.ellipsis)).toBe(true)
+  })
+
+  it('CJK 长行截头按显示列宽算（宽字符整体不切半）', () => {
+    const { text, truncated } = collapseUserText('汉'.repeat(200), 2)
+    expect(truncated).toBe(true)
+    // 120 列配额 - 2 列省略号 = 118 列 = 59 个汉字（按字符数 118 会得到
+    // 双倍宽度、撑爆折叠行）。
+    expect(text.startsWith('汉'.repeat(59))).toBe(true)
+    expect(text.startsWith('汉'.repeat(60))).toBe(false)
     expect(text.endsWith(Glyphs.ellipsis)).toBe(true)
   })
 

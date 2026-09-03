@@ -51,7 +51,7 @@ export function UserEntry({
           shell.onSelect()
           if (foldable) toggleUser(e.id)
         }}
-        className="group relative flex w-full min-w-0 items-start gap-1.5 py-[11px] text-left font-ui text-[13.5px] leading-[1.35]"
+        className="group relative flex w-full min-w-0 select-text items-start gap-1.5 py-[11px] text-left font-ui text-[13.5px] leading-[1.35]"
         title={
           isShell
             ? 'shell command · click fold · 查看 / enter view'
