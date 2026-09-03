@@ -184,6 +184,7 @@ export function subagentViewAppend(
       const sealed = sealSubagentStreaming(items)
       const tc = ev.toolCallUpdate || {}
       const toolCallId = toolCallIdOf(tc)
+      // 与主滚动区相同：空 id 等 host 注入合成 ID，不再匿名认领。
       if (!toolCallId) {
         return sealed
       }
