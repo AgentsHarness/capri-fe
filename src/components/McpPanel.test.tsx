@@ -393,14 +393,14 @@ describe('McpPanel — 管理操作', () => {
 describe('McpPanel — 添加服务器表单', () => {
   it('必填校验：name/command 缺失', async () => {
     renderPanel()
-    fireEvent.click(screen.getByRole('button', { name: '＋ 添加服务器' }))
+    fireEvent.click(screen.getByRole('button', { name: '添加服务器' }))
     fireEvent.click(screen.getByRole('button', { name: '添加' }))
     expect(await screen.findByText('name 和 command 为必填项')).not.toBeNull()
   })
 
   it('args 空格分割 / JSON 数组 / env 解析后提交', async () => {
     renderPanel()
-    fireEvent.click(screen.getByRole('button', { name: '＋ 添加服务器' }))
+    fireEvent.click(screen.getByRole('button', { name: '添加服务器' }))
     const inputs = screen.getAllByRole('textbox')
     fireEvent.change(inputs[0], { target: { value: 'fs' } })
     fireEvent.change(inputs[1], { target: { value: 'npx' } })
@@ -426,7 +426,7 @@ describe('McpPanel — 添加服务器表单', () => {
 
   it('env 格式错误 / args JSON 非字符串数组 → formError', async () => {
     renderPanel()
-    fireEvent.click(screen.getByRole('button', { name: '＋ 添加服务器' }))
+    fireEvent.click(screen.getByRole('button', { name: '添加服务器' }))
     const inputs = screen.getAllByRole('textbox')
     fireEvent.change(inputs[0], { target: { value: 'fs' } })
     fireEvent.change(inputs[1], { target: { value: 'npx' } })
@@ -440,7 +440,7 @@ describe('McpPanel — 添加服务器表单', () => {
   it('添加失败 → formError', async () => {
     mcpAdd.mockRejectedValueOnce(new Error('spawn failed'))
     renderPanel()
-    fireEvent.click(screen.getByRole('button', { name: '＋ 添加服务器' }))
+    fireEvent.click(screen.getByRole('button', { name: '添加服务器' }))
     const inputs = screen.getAllByRole('textbox')
     fireEvent.change(inputs[0], { target: { value: 'fs' } })
     fireEvent.change(inputs[1], { target: { value: 'npx' } })
@@ -452,7 +452,7 @@ describe('McpPanel — 添加服务器表单', () => {
 describe('McpPanel — 调用工具 / 读取资源', () => {
   async function openCallForm() {
     renderPanel()
-    fireEvent.click(screen.getByRole('button', { name: '＋ 调用工具' }))
+    fireEvent.click(screen.getByRole('button', { name: '调用工具' }))
     // 等 refreshList 先把 fs 选项渲染出来（jsdom select 值需要对应 option）
     await waitFor(() => expect(screen.getByRole('option', { name: 'fs' })).not.toBeNull())
     // server select + tool input（input[list] 也是 combobox role）
@@ -505,7 +505,7 @@ describe('McpPanel — 调用工具 / 读取资源', () => {
     setStore({ mcpServers: [{ name: 'fs', status: 'ready' }] })
     mcpList.mockResolvedValue([{ name: 'fs', enabled: true } as McpListServer])
     renderPanel()
-    fireEvent.click(screen.getByRole('button', { name: '＋ 读取资源' }))
+    fireEvent.click(screen.getByRole('button', { name: '读取资源' }))
     await waitFor(() => expect(screen.getByRole('option', { name: 'fs' })).not.toBeNull())
     // 读取表单只有 server select 是 combobox（uri input 无 list）
     fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: 'fs' } })

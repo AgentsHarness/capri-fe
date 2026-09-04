@@ -840,8 +840,8 @@ export function McpPanel({
                     : 'text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
                 }`}
               >
-                <Plus size={12} />
-                <span>{addOpen ? '− 收起添加表单' : '＋ 添加服务器'}</span>
+                <Plus size={12} className={addOpen ? 'rotate-45 transition-transform' : 'transition-transform'} />
+                <span>{addOpen ? '收起添加表单' : '添加服务器'}</span>
               </button>
 
               <button
@@ -865,7 +865,7 @@ export function McpPanel({
                 }`}
               >
                 <Play size={11} />
-                <span>{callOpen ? '− 收起调用工具' : '＋ 调用工具'}</span>
+                <span>{callOpen ? '收起调用工具' : '调用工具'}</span>
               </button>
 
               <button
@@ -889,7 +889,7 @@ export function McpPanel({
                 }`}
               >
                 <Terminal size={11} />
-                <span>{readOpen ? '− 收起读取资源' : '＋ 读取资源'}</span>
+                <span>{readOpen ? '收起读取资源' : '读取资源'}</span>
               </button>
             </div>
           </div>
@@ -906,7 +906,7 @@ export function McpPanel({
                     value={form.name}
                     onChange={(e) => setForm({ ...form, name: e.target.value })}
                     placeholder="filesystem"
-                    className="mt-0.5 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2.5 py-1 font-mono text-[11.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
+                    className="mt-0.5 box-border h-7 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 font-mono text-[11.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
                   />
                 </label>
                 <label className="block">
@@ -916,7 +916,7 @@ export function McpPanel({
                     value={form.command}
                     onChange={(e) => setForm({ ...form, command: e.target.value })}
                     placeholder="npx"
-                    className="mt-0.5 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2.5 py-1 font-mono text-[11.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
+                    className="mt-0.5 box-border h-7 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 font-mono text-[11.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
                   />
                 </label>
               </div>
@@ -927,7 +927,7 @@ export function McpPanel({
                   value={form.args}
                   onChange={(e) => setForm({ ...form, args: e.target.value })}
                   placeholder='空格分隔，或 JSON 数组，如 ["-y","pkg"]'
-                  className="mt-0.5 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2.5 py-1 font-mono text-[11.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
+                  className="mt-0.5 box-border h-7 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 font-mono text-[11.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
                 />
               </label>
               <label className="block">
@@ -961,7 +961,7 @@ export function McpPanel({
                   type="button"
                   disabled={adding}
                   onClick={() => void submitAdd()}
-                  className="rounded bg-gn-blue px-3 py-1 text-[11px] font-medium text-black hover:opacity-90 disabled:opacity-50"
+                  className="rounded border border-gn-prompt-border bg-gn-bg-highlight px-3 py-1 text-[11px] font-medium text-gn-fg hover:bg-gn-bg-hover hover:border-gn-prompt-border-active disabled:opacity-50"
                 >
                   {adding ? '添加中…' : '添加'}
                 </button>
@@ -996,7 +996,7 @@ export function McpPanel({
                       const server = e.target.value
                       setCallForm((f) => ({ ...f, server, tool: '' }))
                     }}
-                    className="mt-0.5 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 font-mono text-[11.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
+                    className="mt-0.5 box-border h-7 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 font-mono text-[11.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
                   >
                     <option value="">— 选择服务器 —</option>
                     {rows.map((r) => (
@@ -1014,7 +1014,7 @@ export function McpPanel({
                     value={callForm.tool}
                     onChange={(e) => setCallForm({ ...callForm, tool: e.target.value })}
                     placeholder="工具名（可从已连接服务器的工具列表选择）"
-                    className="mt-0.5 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 font-mono text-[11.5px] text-gn-fg outline-none placeholder:text-gn-gray focus:border-gn-prompt-border-active"
+                    className="mt-0.5 box-border h-7 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 font-mono text-[11.5px] text-gn-fg outline-none placeholder:text-gn-gray focus:border-gn-prompt-border-active"
                   />
                   <datalist id="mcp-call-tools">
                     {list
@@ -1058,7 +1058,7 @@ export function McpPanel({
                   type="button"
                   disabled={calling}
                   onClick={() => void submitCall()}
-                  className="rounded bg-gn-blue px-3 py-1 text-[11px] font-medium text-black hover:opacity-90 disabled:opacity-50"
+                  className="rounded border border-gn-prompt-border bg-gn-bg-highlight px-3 py-1 text-[11px] font-medium text-gn-fg hover:bg-gn-bg-hover hover:border-gn-prompt-border-active disabled:opacity-50"
                 >
                   {calling ? '调用中…' : '调用'}
                 </button>
@@ -1113,7 +1113,7 @@ export function McpPanel({
                   <select
                     value={readForm.server}
                     onChange={(e) => setReadForm((f) => ({ ...f, server: e.target.value }))}
-                    className="mt-0.5 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 font-mono text-[11.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
+                    className="mt-0.5 box-border h-7 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 font-mono text-[11.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
                   >
                     <option value="">— 选择服务器 —</option>
                     {rows.map((r) => (
@@ -1130,7 +1130,7 @@ export function McpPanel({
                     value={readForm.uri}
                     onChange={(e) => setReadForm({ ...readForm, uri: e.target.value })}
                     placeholder="file:///… 或 mcp://… 等资源 URI"
-                    className="mt-0.5 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 font-mono text-[11.5px] text-gn-fg outline-none placeholder:text-gn-gray focus:border-gn-prompt-border-active"
+                    className="mt-0.5 box-border h-7 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 font-mono text-[11.5px] text-gn-fg outline-none placeholder:text-gn-gray focus:border-gn-prompt-border-active"
                   />
                 </label>
               </div>
@@ -1158,7 +1158,7 @@ export function McpPanel({
                   type="button"
                   disabled={reading}
                   onClick={() => void submitRead()}
-                  className="rounded bg-gn-blue px-3 py-1 text-[11px] font-medium text-black hover:opacity-90 disabled:opacity-50"
+                  className="rounded border border-gn-prompt-border bg-gn-bg-highlight px-3 py-1 text-[11px] font-medium text-gn-fg hover:bg-gn-bg-hover hover:border-gn-prompt-border-active disabled:opacity-50"
                 >
                   {reading ? '读取中…' : '读取'}
                 </button>
