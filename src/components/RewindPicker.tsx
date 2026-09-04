@@ -491,7 +491,7 @@ export function RewindPicker() {
                 onClick={closeRewind}
                 className="mt-3 w-full rounded px-3 py-1.5 text-[12px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg"
               >
-                知道了（enter / esc）
+                知道了<span className="hidden sm:inline">（<span className="gn-kbd">Enter</span> / <span className="gn-kbd">Esc</span>）</span>
               </button>
             </div>
           ) : phase === 'error' ? (
@@ -590,7 +590,7 @@ function RadioRow({
           : 'text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg'
       } ${disabled ? 'cursor-not-allowed opacity-40 hover:bg-transparent hover:text-gn-fg2' : ''}`}
     >
-      <span className={`font-mono text-[11px] ${active ? 'text-gn-cyan' : 'text-gn-muted'}`}>
+      <span className={`gn-kbd ${active ? '!text-gn-cyan !border-gn-cyan/50' : ''}`}>
         {k}
       </span>
       <span className="text-gn-muted" aria-hidden>

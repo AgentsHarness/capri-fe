@@ -340,7 +340,9 @@ export function ContentSearchModal() {
               {result.totalMatches} 处匹配 / {result.totalFiles} 个文件
             </span>
           )}
-          <span className="ml-auto">↑/↓ 选择 · Enter 复制 路径:行号 · Esc 关闭</span>
+          <span className="ml-auto hidden sm:inline">
+            <span className="gn-kbd">↑</span>/<span className="gn-kbd">↓</span> 选择 · <span className="gn-kbd">Enter</span> 复制 路径:行号 · <span className="gn-kbd">Esc</span> 关闭
+          </span>
         </footer>
       </div>
     </div>

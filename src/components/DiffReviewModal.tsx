@@ -287,7 +287,7 @@ export function DiffReviewModal() {
               通知态 · 无法回执
             </span>
           )}
-          <span className="ml-auto text-[11px] text-gn-muted">esc 取消</span>
+          <span className="ml-auto hidden items-center gap-1 text-[11px] text-gn-muted sm:inline-flex"><span className="gn-kbd">Esc</span> 取消</span>
         </header>
 
         {files.length === 0 ? (

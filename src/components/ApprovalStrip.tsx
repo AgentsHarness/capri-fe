@@ -628,7 +628,7 @@ export function ApprovalStrip() {
                 </div>
                 {collapsible && !expanded && (
                   <div className="mt-1.5 flex items-center justify-between border-t border-gn-prompt-border/40 pt-1 text-[11px] text-gn-muted">
-                    <span>… <span className="gn-kbd">Ctrl-F</span> to expand</span>
+                    <span>… <span className="gn-kbd hidden sm:inline-flex">Ctrl-F</span><span className="hidden sm:inline"> to expand</span></span>
                     <span className="font-mono text-[10px] text-gn-gutter">
                       +{commandLines.length - (PERMISSION_COLLAPSED_ROWS - 1)} 行
                     </span>
@@ -640,7 +640,7 @@ export function ApprovalStrip() {
             {hasAlways && (!mcp.isMcp || !!mcp.serverPrefix) && (
               <div className="flex flex-wrap items-center justify-between gap-1.5 rounded-md border border-gn-cyan/30 bg-gn-cyan/5 px-2.5 py-1.5 text-[11.5px] text-gn-cyan">
                 <span>
-                  {mcp.isMcp ? "←/→ 切换允许范围" : "←/→ 调整始终允许范围"}
+                  <span className="hidden sm:inline"><span className="gn-kbd">←</span>/<span className="gn-kbd">→</span> </span>{mcp.isMcp ? "切换允许范围" : "调整始终允许范围"}
                 </span>
                 <div className="flex items-center gap-1.5">
                   <span
@@ -814,7 +814,7 @@ export function ApprovalStrip() {
             </div>
           </div>
 
-          <div className="border-t border-gn-prompt-border/50 bg-gn-bg-dark/80 px-3.5 py-1.5 text-[11px] text-gn-muted">
+          <div className="hidden border-t border-gn-prompt-border/50 bg-gn-bg-dark/80 px-3.5 py-1.5 text-[11px] text-gn-muted sm:block">
             {parked ? (
               <div className="flex items-center gap-1.5 text-gn-yellow">
                 <span className="shrink-0 text-gn-yellow" aria-hidden>

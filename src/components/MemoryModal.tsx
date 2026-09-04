@@ -151,7 +151,7 @@ export function MemoryModal() {
             {Glyphs.diamondFilled}
           </span>
           <span className="text-[13px] font-bold text-gn-fg">记忆</span>
-          <span className="ml-auto text-[11px] text-gn-muted">esc 关闭</span>
+          <span className="ml-auto hidden items-center gap-1 text-[11px] text-gn-muted sm:inline-flex"><span className="gn-kbd">Esc</span> 关闭</span>
         </header>
 
         <div className="flex max-h-[62vh] flex-col gap-3 overflow-y-auto px-4 py-3">

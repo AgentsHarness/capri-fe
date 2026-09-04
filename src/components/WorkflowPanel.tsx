@@ -210,10 +210,11 @@ export function WorkflowPanel() {
           {detailRun && (
             <button
               type="button"
+              aria-label="← 返回列表 (esc)"
               onClick={() => setSelectedWorkflowRunId(undefined)}
               className="shrink-0 rounded px-2 py-0.5 text-[11px] text-gn-plan hover:bg-gn-bg-highlight"
             >
-              ← 返回列表 (esc)
+              ← 返回列表 <span className="hidden sm:inline">(<span className="gn-kbd">Esc</span>)</span>
             </button>
           )}
           <button

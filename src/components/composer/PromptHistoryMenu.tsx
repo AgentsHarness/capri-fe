@@ -86,12 +86,20 @@ export function PromptHistoryMenu({
           )
         })}
       </div>
-      <div className="flex items-center justify-between gap-2 border-t border-gn-prompt-border px-3 py-[3px] text-[10px] text-gn-muted">
+      <div className="hidden sm:flex items-center justify-between gap-2 border-t border-gn-prompt-border px-3 py-1 text-[10px] text-gn-muted">
         <span
           className="min-w-0 truncate"
           title="↑/↓ 选择 · Enter/Tab 填入 · Esc 关闭；填入 ! 前缀的历史会重新进入 shell 模式"
         >
-          ↑/↓ 选择 · Enter/Tab 填入 · Esc 关闭
+          <span
+            className="sr-only"
+            title="↑/↓ 选择 · Enter/Tab 填入 · Esc 关闭；填入 ! 前缀的历史会重新进入 shell 模式"
+          >
+            ↑/↓ 选择 · Enter/Tab 填入 · Esc 关闭
+          </span>
+          <span aria-hidden="true">
+            <span className="gn-kbd">↑</span>/<span className="gn-kbd">↓</span> 选择 · <span className="gn-kbd">Enter</span>/<span className="gn-kbd">Tab</span> 填入 · <span className="gn-kbd">Esc</span> 关闭
+          </span>
         </span>
       </div>
     </div>
