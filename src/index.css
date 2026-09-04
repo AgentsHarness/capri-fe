@@ -147,6 +147,17 @@ body {
   scrollbar-width: thin;
 }
 
+/* ── Queue strip drag (composer/QueueStrip) ─────────────────────
+   Applied to <body> while a queue row is being dragged: kills text
+   selection (a selection drag would fire pointercancel mid-reorder)
+   and shows the grabbing cursor outside the row itself. */
+body.gn-queue-dragging {
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: grabbing;
+  touch-action: none;
+}
+
 /* ── TUI floating surfaces ─────────────────────────────────────────
    Sidebar / scrollback language: flat bg-base, 1px prompt-border,
    no elevation, no glass. Corners are a slight 4px radius so the
