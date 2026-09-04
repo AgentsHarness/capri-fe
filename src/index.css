@@ -383,9 +383,47 @@ body {
    suppressed (会话行的「处理中」加载图标靠 animate-spin 自转). */
 @media (prefers-reduced-motion: reduce) {
   .animate-pulse,
-  .animate-spin {
+  .animate-spin,
+  .gn-card-rise {
     animation: none !important;
   }
+}
+
+/* ── 等待输入卡片（权限条 / 提问卡）入场：轻微上浮 + 淡入 ───────────── */
+@keyframes gn-card-rise {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.gn-card-rise {
+  animation: gn-card-rise 0.18s ease-out;
+}
+
+/* 卡片内的按键提示（快捷键样式）。span 而非 kbd：避免浏览器/UA 样式差异，
+   主题 token 直接继承。 */
+.gn-kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 3px;
+  margin-inline: 1.5px;
+  border: 1px solid color-mix(in srgb, var(--color-gn-prompt-border) 80%, transparent);
+  border-radius: 3px;
+  background: var(--color-gn-bg-code);
+  color: var(--color-gn-fg2);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1;
+  vertical-align: middle;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.25);
 }
 
 /* ── Scrollback render-window culling ────────────────────────────────

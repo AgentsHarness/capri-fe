@@ -7,6 +7,7 @@ import {
   type RefObject,
   type WheelEvent as ReactWheelEvent,
 } from 'react'
+import { useTouchUi } from '../hooks/useTouchUi'
 
 /**
  * User-message directory rail (TUI timeline sidebar).
@@ -53,30 +54,13 @@ export type UserMessageNavProps = {
   scrollParentRef?: RefObject<HTMLElement | null>
 }
 
-/** Coarse pointer / no-hover — treat as mobile touch UI. */
-function useIsTouchUi() {
-  const [touch, setTouch] = useState(() => {
-    if (typeof window === 'undefined' || !window.matchMedia) return false
-    return window.matchMedia('(hover: none), (pointer: coarse)').matches
-  })
-  useEffect(() => {
-    if (typeof window === 'undefined' || !window.matchMedia) return
-    const mq = window.matchMedia('(hover: none), (pointer: coarse)')
-    const apply = () => setTouch(mq.matches)
-    apply()
-    mq.addEventListener?.('change', apply)
-    return () => mq.removeEventListener?.('change', apply)
-  }, [])
-  return touch
-}
-
 export function UserMessageNav({
   items,
   activeId,
   onJump,
   scrollParentRef,
 }: UserMessageNavProps) {
-  const isTouch = useIsTouchUi()
+  const isTouch = useTouchUi()
   /** Click rail → expand list (desktop + mobile). Hover never expands. */
   const [directoryOpen, setDirectoryOpen] = useState(false)
   const [hoveredId, setHoveredId] = useState<string | null>(null)

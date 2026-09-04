@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { Check, Circle, CircleDot, Diamond, Timer } from 'lucide-react'
 import { useChatStore } from '../store/chat'
 import type { AskQuestion } from '../api/types'
-import { Glyphs } from '../theme/glyphs'
 import { Markdown } from './Markdown'
 import { ensureToolsetSettings, toolsetSettings } from '../store/settings'
 
@@ -12,7 +12,7 @@ import { ensureToolsetSettings, toolsetSettings } from '../store/settings'
  * (portaled into Composer's anchor), one question per step:
  *
  *   Tab / Shift+Tab   next / previous question (clamped)
- *   j/k or ↑/↓        move the option cursor (focused row expands)
+ *   j/k or ↑/↓        move the option cursor
  *   1-9               jump to that option (single: select + next question;
  *                     multi: toggle)
  *   Enter             select the focused option (single: select + next
@@ -29,16 +29,17 @@ import { ensureToolsetSettings, toolsetSettings } from '../store/settings'
  *   skip_interview    { outcome:"skip_interview", partial_answers:{qText:label} }   (plan mode)
  *   cancelled         { outcome:"cancelled" }
  *
- * Timeout presentation (honest, per the ask_user_question wire type):
- * the ACP request today carries NO deadline (AskUserQuestionExtRequest =
- * sessionId/toolCallId/questions/mode — see grok-build …/ask_user_question/
- * types.rs), so no countdown is fabricated here. When the wire DOES carry
- * `deadlineAt` (unix ms — a future agent extension), the card shows the
- * real remaining time and, on expiry, waits for the agent to close the
- * interaction (the tool times out agent-side and resolves the request);
- * the FE never auto-answers on timeout. Without a deadline, the card shows
- * a config-derived static hint (`[toolset.ask_user_question]`, defaults
- * enabled / 1800s — the agent's own defaults) only while enabled.
+ * Timeout presentation (live countdown):
+ * - The wire deadline (`deadlineAt`, unix ms — a future agent extension;
+ *   today's AskUserQuestionExtRequest carries none) counts down live and,
+ *   on expiry, waits for the agent to close the interaction (the tool
+ *   times out agent-side and resolves the request); the FE never
+ *   auto-answers on timeout.
+ * - Without a wire deadline the card derives its deadline from
+ *   `[toolset.ask_user_question]` (defaults enabled / 1800s — the agent's
+ *   own RESPONSE_TIMEOUT default): arrival time + timeout_secs, ticking
+ *   once per second. Same zero behavior: label switches to 「已超时」 and
+ *   the agent's own timeout closes the request.
  */
 const ANCHOR_ID = 'capri-xai-question-anchor'
 
@@ -46,16 +47,25 @@ const ANCHOR_ID = 'capri-xai-question-anchor'
 const DEFAULT_ASK_TIMEOUT_SECS = 1800
 
 /**
- * Extract an optional deadline from the request params. Today's ACP wire
- * (AskUserQuestionExtRequest) has no deadline field — this only fires for
- * a future agent extension `deadlineAt` (unix ms). Invalid / past values
- * are treated as absent so no bogus countdown is ever rendered.
+ * Resolve the card's deadline. Priority:
+ *  1. wire `deadlineAt` (unix ms — future agent extension; today's ACP
+ *     AskUserQuestionExtRequest has no deadline field). Past values are
+ *     kept (not treated as absent) so a card that opened near the wire
+ *     deadline still shows 「已超时」 instead of silently switching to the
+ *     config-derived budget.
+ *  2. Config budget: arrival (Date.now()) + [toolset.ask_user_question]
+ *     timeout_secs × 1000 (default enabled / 1800s — the agent's own
+ *     RESPONSE_TIMEOUT). timeout_enabled=false → no deadline (never
+ *     expires, no countdown rendered).
  */
-function extractDeadlineMs(params: Record<string, unknown> | undefined): number | undefined {
+function resolveDeadlineMs(params: Record<string, unknown> | undefined): number | undefined {
   const v = params?.deadlineAt
-  const n = typeof v === 'number' && Number.isFinite(v) ? v : NaN
-  if (Number.isNaN(n) || n <= Date.now()) return undefined
-  return n
+  if (typeof v === 'number' && Number.isFinite(v)) return v
+  const aq = toolsetSettings()?.ask_user_question
+  if (aq?.timeout_enabled === false) return undefined
+  const secs = aq?.timeout_secs
+  const secsOk = typeof secs === 'number' && Number.isInteger(secs) && secs > 0
+  return Date.now() + (secsOk ? secs : DEFAULT_ASK_TIMEOUT_SECS) * 1000
 }
 
 /** Remaining-time label: h:mm:ss ≥ 1h, else mm:ss. */
@@ -90,26 +100,28 @@ export function QuestionModal() {
   const [inputActive, setInputActive] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  // Toolset config for the static timeout hint (host-safe subset of
-  // [toolset.ask_user_question]). Fire-and-forget: the hint appears once
-  // the cached section resolves; a failed fetch just leaves no hint.
+  // Toolset config for the countdown ([toolset.ask_user_question] —
+  // host-safe subset). Fire-and-forget: the countdown starts once the
+  // cached section resolves; a failed fetch falls back to the agent's
+  // default budget (enabled / 1800s).
   useEffect(() => {
     void ensureToolsetSettings()
   }, [])
 
-  // Deadline, remembered per request: evaluated once when the request
-  // arrives (and kept past expiry, so the card shows 「已超时」 instead of
-  // reclassifying the request as deadline-less after the fact).
+  // Deadline, remembered per request: the wire `deadlineAt` when present,
+  // else arrival-time + configured timeout_secs (agent default 1800s),
+  // captured once on arrival so the countdown never re-arms on re-renders.
+  // timeout_enabled=false → no deadline at all (never expires).
   const [deadlineMs, setDeadlineMs] = useState<number | undefined>(() =>
-    extractDeadlineMs(req?.params),
+    resolveDeadlineMs(req?.params),
   )
   useEffect(() => {
-    setDeadlineMs(extractDeadlineMs(req?.params))
-    // 新请求行（requestId 变化）或同请求 params 更新 → 重新评估 deadline。
+    setDeadlineMs(resolveDeadlineMs(req?.params))
+    // 新请求行（requestId 变化）→ 重新评估 deadline；同请求 params 更新
+    // 只在 wire deadline 变化时生效（resolveDeadlineMs 结果稳定）。
   }, [req])
 
-  // Live remaining time when the wire carries a deadline (future agent
-  // extension; today's ACP request never includes one).
+  // Live remaining time (ticks once per second while a deadline exists).
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
     if (deadlineMs == null) return
@@ -359,60 +371,69 @@ export function QuestionModal() {
   const cur = Math.min(cursor[activeTab] ?? 0, max)
   const multi = !!q?.multiSelect
   const isLast = activeTab >= questions.length - 1
+  const hasAnyPreview = !!q?.options.some((o) => !!o.preview?.trim())
   const focusedOpt = q?.options[cur]
   const previewText = focusedOpt?.preview?.trim() ? focusedOpt.preview : undefined
 
-  // 超时呈现（诚实原则：wire 无 deadline 时不造倒计时）：
-  // - deadlineAt 存在（未来 agent 扩展）→ 真实剩余时间，到点等 agent 收尾；
-  // - 否则基于 [toolset.ask_user_question] 的静态提示，仅 enabled 时显示
-  //   （缺省 enabled=true / 1800s，与 agent 侧默认一致）。
-  const aq = toolsetSettings()?.ask_user_question
+  // 超时呈现：resolveDeadlineMs 解析出的 deadline 实时倒数；到点不自动
+  // 应答，等待 agent 侧超时收尾（FE 从不代答）。
   const remainingMs = deadlineMs != null ? deadlineMs - now : undefined
+  const expired = remainingMs !== undefined && remainingMs <= 0
   const timeoutLine =
     deadlineMs != null
-      ? remainingMs !== undefined && remainingMs > 0
-        ? `提问倒计时 ${formatRemaining(remainingMs)}`
-        : '提问已超时，等待 agent 收尾…'
-      : aq?.timeout_enabled === false
-        ? undefined
-        : (() => {
-            const secs = aq?.timeout_secs
-            const secsOk =
-              typeof secs === 'number' && Number.isInteger(secs) && secs > 0
-            const eff = secsOk ? (secs as number) : DEFAULT_ASK_TIMEOUT_SECS
-            return secsOk
-              ? `本会话提问超时 ${eff} 秒后自动放弃`
-              : `本会话提问超时 ${eff} 秒后自动放弃（默认）`
-          })()
+      ? expired
+        ? '提问已超时，等待 agent 收尾…'
+        : `提问倒计时 ${formatRemaining(remainingMs as number)}`
+      : undefined
 
   return createPortal(
     <div
-      className="mx-auto mb-1.5 w-full max-w-[640px] overflow-hidden rounded border border-gn-magenta/40 bg-gn-bg-base"
+      className="gn-card-rise mx-auto mb-2 w-full max-w-[640px] overflow-hidden rounded-lg border border-gn-magenta/50 bg-gn-bg-base shadow-xl"
       role="dialog"
       aria-label="ask user question"
     >
-      <header className="gn-modal-header">
-        <span className="text-gn-magenta" aria-hidden>
-          {Glyphs.diamondFilled}
-        </span>
-        <span className="text-[13px] font-bold text-gn-fg">
-          {planMode ? '设计问题' : '提问'}
-        </span>
+      <header className="flex min-h-[38px] items-center gap-2 border-b border-gn-prompt-border/70 bg-gn-bg-dark/60 px-3.5 py-1.5">
+        <Diamond size={12} strokeWidth={2.5} className="shrink-0 text-gn-magenta" aria-hidden />
+        <span className="text-[13px] font-bold text-gn-fg">{planMode ? '设计问题' : '提问'}</span>
         {multi ? (
-          <span className="text-[11px] text-gn-muted">可多选</span>
+          <span className="rounded border border-gn-magenta/30 bg-gn-magenta/10 px-1.5 py-0.5 text-[10.5px] font-medium text-gn-magenta">
+            可多选
+          </span>
         ) : null}
-        <span className="ml-auto shrink-0 text-[11px] text-gn-muted">
-          {questions.length > 0 ? `第 ${activeTab + 1}/${questions.length} 题` : ''}
-        </span>
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          {timeoutLine ? (
+            <span
+              className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[11px] ${
+                expired
+                  ? 'border-gn-red/40 bg-gn-red/10 text-gn-red font-medium'
+                  : 'border-gn-prompt-border/60 bg-gn-bg-code text-gn-muted tabular-nums'
+              }`}
+              role="status"
+            >
+              <Timer size={11} strokeWidth={2.5} className="shrink-0" aria-hidden />
+              <span>{timeoutLine}</span>
+            </span>
+          ) : null}
+          {questions.length > 0 ? (
+            <span className="font-mono text-[11px] text-gn-muted">
+              第 {activeTab + 1}/{questions.length} 题
+            </span>
+          ) : null}
+        </div>
       </header>
 
-      <div className="gn-no-scrollbar max-h-[50vh] overflow-y-auto bg-gn-bg-base px-3 py-2.5">
+      <div className="bg-gn-bg-base p-3.5">
         {q ? (
           <fieldset>
-            <legend className="mb-2 text-[13px] font-semibold leading-snug text-gn-fg">
+            <legend className="mb-2.5 text-[13.5px] font-semibold leading-snug text-gn-fg">
               {q.question}
             </legend>
-            <div className="flex flex-col gap-1.5">
+            {/* 选项区（含自由输入行）内部滚动；当存在预览时限制高度以容纳预览窗 */}
+            <div
+              className={`gn-no-scrollbar flex flex-col gap-1.5 overflow-y-auto pr-0.5 ${
+                hasAnyPreview ? 'max-h-[36vh]' : 'max-h-[48vh]'
+              }`}
+            >
               {q.options.map((opt, oi) => {
                 const set = selected[activeTab] ?? new Set<number>()
                 const active = set.has(oi)
@@ -426,162 +447,177 @@ export function QuestionModal() {
                       setCursor((prev) => ({ ...prev, [activeTab]: oi }))
                       toggleOption(activeTab, oi, multi)
                     }}
-                    className={`flex items-start gap-2 rounded px-3 py-1.5 text-left text-[12.5px] leading-snug transition-colors min-h-9 outline-none ${
- focused
-                        ? 'bg-gn-bg-highlight text-gn-fg'
-                        : 'text-gn-fg2 hover:bg-gn-bg-highlight'
+                    className={`flex min-h-9 items-start gap-2.5 rounded-md border px-3 py-2 text-left text-[12.5px] leading-snug transition-all outline-none ${
+                      active
+                        ? focused
+                          ? 'border-gn-magenta bg-gn-magenta/15 text-gn-fg ring-1 ring-gn-magenta/50'
+                          : 'border-gn-magenta/50 bg-gn-magenta/10 text-gn-fg'
+                        : focused
+                          ? 'border-gn-prompt-border bg-gn-bg-highlight text-gn-fg ring-1 ring-gn-prompt-border'
+                          : 'border-gn-prompt-border/60 bg-gn-bg-base text-gn-fg2 hover:border-gn-prompt-border hover:bg-gn-bg-highlight/60'
                     }`}
                   >
                     {oi < 9 ? (
-                      <span className="w-4 shrink-0 text-right font-mono text-[10.5px] text-gn-gutter">
+                      <span className="mt-[2px] w-4 shrink-0 text-center font-mono text-[10.5px] text-gn-gutter">
                         {oi + 1}
                       </span>
-                    ) : null}
+                    ) : (
+                      <span className="w-4 shrink-0" />
+                    )}
                     <span
-                      className={`mt-[1px] shrink-0 text-[11px] ${
- active ? 'text-gn-magenta' : 'text-gn-gutter'
+                      className={`mt-[2px] flex w-4 shrink-0 items-center justify-center ${
+                        active ? 'text-gn-magenta' : 'text-gn-gutter'
                       }`}
                       aria-hidden
                     >
-                      {multi
-                        ? active
-                          ? Glyphs.checkMark
-                          : Glyphs.diamondHollow
-                        : active
-                          ? Glyphs.diamondFilled
-                          : Glyphs.diamondHollow}
+                      {active ? (
+                        multi ? (
+                          <Check size={13} strokeWidth={2.5} />
+                        ) : (
+                          <CircleDot size={13} strokeWidth={2} />
+                        )
+                      ) : (
+                        <Circle size={13} strokeWidth={2} />
+                      )}
                     </span>
                     <span className="min-w-0 flex-1">
-                      {focused ? (
-                        <>
-                          <span className="block">{opt.label}</span>
-                          {opt.description ? (
-                            <span className="block text-[11px] text-gn-muted">
-                              {opt.description}
-                            </span>
-                          ) : null}
-                        </>
-                      ) : (
-                        // Collapsed single line: `label description…` (TUI).
-                        <span className="block truncate">
-                          {opt.label}
-                          {opt.description ? `  ${opt.description}` : ''}
+                      <span className="block font-medium text-gn-fg">{opt.label}</span>
+                      {opt.description ? (
+                        <span className="mt-0.5 block text-[11.5px] leading-relaxed text-gn-muted">
+                          {opt.description}
                         </span>
-                      )}
+                      ) : null}
                     </span>
                   </button>
                 )
               })}
-              <input
-                ref={inputRef}
-                type="text"
-                value={freeform[activeTab] ?? ''}
-                onChange={(e) =>
-                  setFreeform((prev) => ({ ...prev, [activeTab]: e.target.value }))
-                }
-                onFocus={() => {
-                  setInputActive(true)
-                  // TUI activate_freeform_input: single-select exclusivity —
-                  // focusing "Other" clears the option selection.
-                  if (!multi) setSelected((prev) => ({ ...prev, [activeTab]: new Set() }))
-                }}
-                onBlur={() => setInputActive(false)}
-                placeholder="其他…（自由输入）"
-                className="rounded border border-gn-prompt-border bg-gn-bg-dark px-3 py-1.5 text-[12.5px] text-gn-fg outline-none placeholder:text-gn-gray focus:border-gn-magenta/50"
-              />
+              <div
+                className={`flex items-center gap-2.5 rounded-md border px-3 py-1.5 transition-all ${
+                  inputActive
+                    ? 'border-gn-magenta bg-gn-bg-dark ring-1 ring-gn-magenta/50'
+                    : 'border-gn-prompt-border/60 bg-gn-bg-base hover:border-gn-prompt-border'
+                }`}
+              >
+                <span className="w-4 shrink-0 text-center font-mono text-[10.5px] text-gn-gutter">
+                  +
+                </span>
+                <span className="flex w-4 shrink-0 items-center justify-center text-gn-gutter">
+                  <Circle size={12} strokeWidth={2} />
+                </span>
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={freeform[activeTab] ?? ''}
+                  onChange={(e) =>
+                    setFreeform((prev) => ({ ...prev, [activeTab]: e.target.value }))
+                  }
+                  onFocus={() => {
+                    setInputActive(true)
+                    // TUI activate_freeform_input: single-select exclusivity —
+                    // focusing "Other" clears the option selection.
+                    if (!multi) setSelected((prev) => ({ ...prev, [activeTab]: new Set() }))
+                  }}
+                  onBlur={() => setInputActive(false)}
+                  placeholder="其他…（自由输入）"
+                  className="min-w-0 flex-1 bg-transparent text-[12.5px] text-gn-fg outline-none placeholder:text-gn-gray"
+                />
+              </div>
             </div>
           </fieldset>
         ) : null}
 
-        {/* TUI focused_preview: the focused option's preview, panel bottom. */}
-        {previewText ? (
-          <div className="mt-2 rounded border border-gn-prompt-border bg-gn-bg-dark px-2.5 py-2">
-            <div className="mb-0.5 text-[10.5px] font-semibold uppercase tracking-wide text-gn-muted">
-              preview
+        {/* 选项预览区域：题目只要存在带 preview 的选项，就预留固定高度（h-28），
+            在不同选项间切换时卡片高度恒定不动，彻底杜绝跳变抖动。 */}
+        {hasAnyPreview ? (
+          <div className="mt-2.5 flex h-28 flex-col rounded-md border border-gn-prompt-border/70 bg-gn-bg-dark p-2.5 transition-colors">
+            <div className="mb-1 flex shrink-0 items-center justify-between text-[10.5px] font-semibold uppercase tracking-wider text-gn-muted">
+              <span className="flex min-w-0 items-center gap-1.5">
+                <span>选项说明</span>
+                {focusedOpt?.label && (
+                  <span className="max-w-[360px] truncate font-normal normal-case text-gn-fg2">
+                    · {focusedOpt.label}
+                  </span>
+                )}
+              </span>
+              <span className="shrink-0 font-mono text-[10px] lowercase text-gn-gray">
+                preview
+              </span>
             </div>
-            <div className="gn-no-scrollbar max-h-36 overflow-y-auto text-[12px] text-gn-fg2">
-              <Markdown source={previewText} />
+            <div className="gn-no-scrollbar min-h-0 flex-1 overflow-y-auto text-[12px] leading-relaxed text-gn-fg2">
+              {previewText ? (
+                <Markdown source={previewText} />
+              ) : (
+                <div className="flex h-full select-none items-center justify-center text-[11.5px] italic text-gn-muted/50">
+                  该选项无详细说明
+                </div>
+              )}
             </div>
           </div>
         ) : null}
       </div>
 
-      <footer className="gn-modal-footer flex flex-wrap items-center gap-2">
-        {questions.length > 0 ? (
-          <span className="text-[11px] text-gn-muted">
-            第 <span className="text-gn-fg2">{activeTab + 1}</span>/
-            {questions.length} 题
-          </span>
-        ) : null}
-        {isLast ? (
+      <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-gn-prompt-border/70 bg-gn-bg-dark/60 px-3.5 py-2">
+        <div className="flex items-center gap-1.5">
+          {planMode ? (
+            <>
+              <button
+                type="button"
+                onClick={() =>
+                  void respondXai(req.requestId, {
+                    outcome: 'chat_about_this',
+                    partial_answers: partialAnswers(),
+                  })
+                }
+                className="min-h-8 rounded px-2.5 py-1 text-[12px] text-gn-fg2 transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+              >
+                与 Agent 继续讨论
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  void respondXai(req.requestId, {
+                    outcome: 'skip_interview',
+                    partial_answers: partialAnswers(),
+                  })
+                }
+                className="min-h-8 rounded px-2.5 py-1 text-[12px] text-gn-fg2 transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+              >
+                跳过提问，直接规划
+              </button>
+            </>
+          ) : null}
           <button
             type="button"
-            onClick={() => submitAccepted()}
-            className="min-h-9 rounded bg-gn-bg-highlight px-4 py-1 text-[12.5px] font-semibold text-gn-fg hover:bg-gn-bg-hover"
+            onClick={() => void dismissXai(req.requestId)}
+            className="min-h-8 rounded px-2.5 py-1 text-[12px] text-gn-red transition-colors hover:bg-gn-diff-del-bg"
           >
-            提交
+            取消
           </button>
-        ) : (
-          <button
-            type="button"
-            onClick={() => setActiveTab((t) => clampTab(t + 1))}
-            className="min-h-9 rounded bg-gn-bg-base px-3 py-1 text-[12.5px] text-gn-fg2 hover:bg-gn-bg-highlight"
-          >
-            下一题 →
-          </button>
-        )}
-        {planMode ? (
-          <>
+        </div>
+
+        <div className="ml-auto flex items-center gap-2">
+          {isLast ? (
             <button
               type="button"
-              onClick={() =>
-                void respondXai(req.requestId, {
-                  outcome: 'chat_about_this',
-                  partial_answers: partialAnswers(),
-                })
-              }
-              className="min-h-9 rounded px-3 py-1 text-[12.5px] text-gn-fg2 hover:bg-gn-bg-highlight"
+              onClick={() => submitAccepted()}
+              className="min-h-8 rounded bg-gn-bg-highlight px-4 py-1 text-[12.5px] font-semibold text-gn-fg transition-colors hover:bg-gn-bg-hover"
             >
-              与 Agent 继续讨论
+              提交
             </button>
+          ) : (
             <button
               type="button"
-              onClick={() =>
-                void respondXai(req.requestId, {
-                  outcome: 'skip_interview',
-                  partial_answers: partialAnswers(),
-                })
-              }
-              className="min-h-9 rounded px-3 py-1 text-[12.5px] text-gn-fg2 hover:bg-gn-bg-highlight"
+              onClick={() => setActiveTab((t) => clampTab(t + 1))}
+              className="min-h-8 rounded border border-gn-prompt-border/80 bg-gn-bg-base px-3 py-1 text-[12.5px] text-gn-fg2 transition-colors hover:bg-gn-bg-highlight"
             >
-              跳过提问，直接规划
+              下一题 →
             </button>
-          </>
-        ) : null}
-        <button
-          type="button"
-          onClick={() => void dismissXai(req.requestId)}
-          className="ml-auto min-h-9 rounded px-3 py-1 text-[12.5px] text-gn-red hover:bg-gn-diff-del-bg"
-        >
-          取消
-        </button>
+          )}
+        </div>
       </footer>
 
-      {timeoutLine ? (
-        <div
-          className="border-t border-gn-prompt-border/60 px-3 py-1.5 text-[11px] text-gn-muted"
-          role="status"
-        >
-          {timeoutLine}
-        </div>
-      ) : null}
-
-      <div className="border-t border-gn-prompt-border/60 px-3 py-1.5 text-[11px] text-gn-muted">
-        <span className="text-gn-fg2">j/k</span> 选择 ·{' '}
-        <span className="text-gn-fg2">1-9</span> 直达 ·{' '}
-        <span className="text-gn-fg2">Enter</span> 选中 ·{' '}
-        <span className="text-gn-fg2">Tab</span> 切题
-        {multi ? ' · Space 多选' : ''} · <span className="text-gn-fg2">Esc</span> 关闭
+      <div className="border-t border-gn-prompt-border/50 bg-gn-bg-dark/80 px-3.5 py-1.5 text-[11px] text-gn-muted">
+        <span className="gn-kbd">j</span><span className="gn-kbd">k</span> 选择 · <span className="gn-kbd">1-9</span> 直达 · <span className="gn-kbd">Enter</span> 选中 · <span className="gn-kbd">Tab</span> 切题{multi ? <> · <span className="gn-kbd">Space</span> 多选</> : ''} · <span className="gn-kbd">Esc</span> 关闭
       </div>
     </div>,
     anchorEl,

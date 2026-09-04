@@ -53,16 +53,24 @@ afterEach(() => {
 })
 
 describe('QuestionModal timeout 呈现', () => {
-  it('wire 无 deadline + 配置开启 → 静态提示（基于配置秒数），不渲染倒计时', async () => {
-    transportMock.settings.mockResolvedValue({
-      toolset: { ask_user_question: { timeout_enabled: true, timeout_secs: 45 } },
-    })
-    await ensureToolsetSettings()
-    renderCard({})
-    await waitFor(() =>
-      expect(screen.getByText('本会话提问超时 45 秒后自动放弃')).not.toBeNull(),
-    )
-    expect(screen.queryByText(/倒计时/)).toBeNull()
+  it('wire 无 deadline + 配置开启 → 按配置秒数实时倒计时并逐秒递减', async () => {
+    vi.useFakeTimers()
+    try {
+      transportMock.settings.mockResolvedValue({
+        toolset: { ask_user_question: { timeout_enabled: true, timeout_secs: 45 } },
+      })
+      await ensureToolsetSettings()
+      renderCard({})
+      const status = () => screen.getByRole('status')
+      // deadline = 请求到达 + 45s，先显示满值。
+      expect(status().textContent).toContain('提问倒计时 0:45')
+      act(() => {
+        vi.advanceTimersByTime(5000)
+      })
+      expect(status().textContent).toContain('提问倒计时 0:40')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('wire 无 deadline + timeout 关闭 → 不显示任何超时提示', async () => {
@@ -76,13 +84,12 @@ describe('QuestionModal timeout 呈现', () => {
     expect(screen.queryByText(/倒计时|超时/)).toBeNull()
   })
 
-  it('wire 无 deadline + 未配置 → 提示 agent 默认 1800 秒并标注默认', async () => {
+  it('wire 无 deadline + 未配置 → 按 agent 默认 1800 秒倒计时', async () => {
     transportMock.settings.mockResolvedValue({})
     await ensureToolsetSettings()
     renderCard({})
-    await waitFor(() =>
-      expect(screen.getByText('本会话提问超时 1800 秒后自动放弃（默认）')).not.toBeNull(),
-    )
+    // 1800s = 30:00。
+    expect(screen.getByRole('status').textContent).toContain('提问倒计时 30:00')
   })
 
   it('wire 带 deadlineAt（未来扩展）→ 真实倒计时，到点等待 agent 收尾', async () => {
@@ -105,13 +112,15 @@ describe('QuestionModal timeout 呈现', () => {
     }
   })
 
-  it('deadlineAt 非法/已过期 → 不渲染倒计时，回退静态提示', async () => {
+  it('wire deadlineAt 已过期 → 直接显示已超时（保留过期 deadline，不回退配置预算）', async () => {
     transportMock.settings.mockResolvedValue({
       toolset: { ask_user_question: { timeout_enabled: true, timeout_secs: 45 } },
     })
     await ensureToolsetSettings()
     renderCard({ deadlineAt: 1000 }) // 早已过期
-    await waitFor(() => expect(screen.getByText('本会话提问超时 45 秒后自动放弃')).not.toBeNull())
+    await waitFor(() =>
+      expect(screen.getByText('提问已超时，等待 agent 收尾…')).not.toBeNull(),
+    )
     expect(screen.queryByText(/倒计时/)).toBeNull()
   })
 })
@@ -194,5 +203,38 @@ describe('QuestionModal 键盘选择 + 提交', () => {
         answers: { 'M?': ['X'] },
       }),
     )
+  })
+
+  it('选项无 preview 时不渲染预览容器', async () => {
+    renderCard({
+      questions: [
+        { question: 'Q?', options: [{ label: 'A' }, { label: 'B' }] },
+      ],
+    })
+    await waitFor(() => expect(screen.getByText('Q?')).not.toBeNull())
+    expect(screen.queryByText('选项说明')).toBeNull()
+  })
+
+  it('存在 preview 选项时预留固定预览框，切换选项时稳定展示相应预览或占位', async () => {
+    renderCard({
+      questions: [
+        {
+          question: 'Q?',
+          options: [
+            { label: 'Opt1', preview: 'Preview content 1' },
+            { label: 'Opt2' },
+          ],
+        },
+      ],
+    })
+    await waitFor(() => expect(screen.getByText('Q?')).not.toBeNull())
+    // 初始游标在 Opt1，展示预览框及 Opt1 说明
+    expect(screen.getByText(/选项说明/)).not.toBeNull()
+    expect(screen.getByText('Preview content 1')).not.toBeNull()
+
+    // 移动游标至 Opt2（无 preview）：预览框不消失，展示占位文案
+    fireEvent.keyDown(window, { key: 'j' })
+    await waitFor(() => expect(screen.getByText('该选项无详细说明')).not.toBeNull())
+    expect(screen.getByText(/选项说明/)).not.toBeNull()
   })
 })

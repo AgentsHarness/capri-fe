@@ -532,267 +532,315 @@ export function ApprovalStrip() {
   const provenance = subagentProvenance(req)
 
   return (
-    // Background band is confined to the content column (max-w-[960px],
-    // same as scrollback/composer) — the strip must not read wider than
-    // the conversation it approves.
     <div
-      className={`${CONTENT_COLUMN_CLASS} border-t border-gn-yellow/30 bg-gn-bg-dark py-2.5`}
+      className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} py-1.5`}
+      data-parked={parked || undefined}
     >
-      <div className={COLUMN_PAD_X_CLASS}>
-        {provenance && (
-          <div className="mb-1 text-[11px] text-gn-muted">{provenance}</div>
-        )}
-        <div className="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px]">
-          <span className="text-gn-yellow animate-pulse" aria-hidden>
-            <IconGlyph glyph={Glyphs.diamondFilled} color="currentColor" />
-          </span>
-          <span className="font-bold text-gn-yellow">waiting on you</span>
-          <span className="text-gn-muted truncate">{req.method}</span>
-          <span className="ml-auto flex shrink-0 items-center gap-1.5">
-            <button
-              type="button"
-              onClick={() => void resetPermissions()}
-              className="rounded px-2 py-[3px] text-[11px] text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
-              title="x.ai/permissions/reset — 忘记已记忆的权限规则（始终允许模式等）"
-            >
-              重置权限规则
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                // Opens the followup input INSIDE the reject option row
-                // (TUI RejectOnce followup — no separate input line); a
-                // second click closes it. Without a reject option the
-                // button rejects directly (nothing to attach feedback to).
-                if (followupOpen) {
-                  setFollowupOpen(false)
-                  setFollowupText('')
-                  setRejectOption(undefined)
-                  return
-                }
-                const firstReject = options.find(isRejectOption)
-                if (firstReject) {
-                  setRejectOption(firstReject.optionId)
-                  setFollowupOpen(true)
-                  setFollowupText('')
-                } else {
-                  void respond(req.requestId, undefined, true)
-                }
-              }}
-              className={`inline-flex items-center gap-1 rounded px-2 py-[3px] text-[11px] transition-colors ${
- followupOpen
-                  ? 'bg-gn-diff-del-bg text-gn-red'
-                  : 'text-gn-red hover:bg-gn-diff-del-bg'
-              }`}
-              title="拒绝并取消该请求（可附带给 agent 的反馈）"
-            >
-              <IconGlyph glyph={Glyphs.ballotX} color="currentColor" />
-              reject
-            </button>
-          </span>
-        </div>
-        {command && (
-          <div className="mb-2 pl-5">
-            <div className="whitespace-pre-wrap break-words font-mono text-[12px] leading-snug text-gn-fg2">
-              {commandLines
-                .slice(0, expanded || !collapsible ? commandLines.length : PERMISSION_COLLAPSED_ROWS - 1)
-                .join('\n')}
+      <div
+        className={`gn-card-rise mx-auto w-full max-w-[640px] overflow-hidden rounded-lg border bg-gn-bg-base shadow-xl transition-all ${
+          parked
+            ? "border-gn-yellow/30 opacity-85 ring-1 ring-gn-yellow/20"
+            : "border-gn-yellow/50 ring-1 ring-gn-yellow/30"
+        }`}
+      >
+          {provenance && (
+            <div className="border-b border-gn-prompt-border/50 bg-gn-bg-dark/80 px-3.5 py-1 font-mono text-[11px] text-gn-cyan">
+              {provenance}
             </div>
-            {collapsible && !expanded && (
-              <div className="mt-0.5 text-[11px] text-gn-muted">
-                … Ctrl-F to expand
-              </div>
-            )}
-          </div>
-        )}
-        {hasAlways && (!mcp.isMcp || !!mcp.serverPrefix) && (
-          <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 pl-5 text-[11.5px] text-gn-cyan">
-            <span>
-              {mcp.isMcp ? '←/→ 切换允许范围' : '←/→ 调整始终允许范围'}
-            </span>
+          )}
+          <header className="flex min-h-[38px] items-center gap-2 border-b border-gn-prompt-border/70 bg-gn-bg-dark/60 px-3.5 py-1.5">
             <span
-              className="rounded border border-gn-cyan/40 bg-gn-bg-base px-1.5 py-[1px] font-mono"
-              title={
-                mcp.isMcp && mcp.serverPrefix
-                  ? '精确工具: 仅该工具 · 整个 server: 该服务器的全部工具'
-                  : undefined
-              }
+              className={`shrink-0 text-gn-yellow ${parked ? "" : "animate-pulse"}`}
+              aria-hidden
             >
-              {scopeText}
+              <IconGlyph glyph={Glyphs.diamondFilled} color="currentColor" />
             </span>
-            {!mcp.isMcp && patternEdit === null && (
+            <span className="text-[13px] font-bold text-gn-yellow">waiting on you</span>
+            <span
+              className="max-w-[160px] truncate rounded border border-gn-prompt-border/60 bg-gn-bg-code px-1.5 py-0.5 font-mono text-[11px] text-gn-muted sm:max-w-[240px]"
+              title={req.method}
+            >
+              {req.method}
+            </span>
+            <div className="ml-auto flex shrink-0 items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => void resetPermissions()}
+                className="rounded px-2 py-0.5 text-[11px] text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+                title="x.ai/permissions/reset — 忘记已记忆的权限规则（始终允许模式等）"
+              >
+                重置权限规则
+              </button>
               <button
                 type="button"
                 onClick={() => {
-                  setScopeIdx(SCOPE_PRESETS.length - 1)
-                  setPatternEdit(command)
+                  // Opens the followup input INSIDE the reject option row
+                  // (TUI RejectOnce followup — no separate input line); a
+                  // second click closes it. Without a reject option the
+                  // button rejects directly (nothing to attach feedback to).
+                  if (followupOpen) {
+                    setFollowupOpen(false)
+                    setFollowupText("")
+                    setRejectOption(undefined)
+                    return
+                  }
+                  const firstReject = options.find(isRejectOption)
+                  if (firstReject) {
+                    setRejectOption(firstReject.optionId)
+                    setFollowupOpen(true)
+                    setFollowupText("")
+                  } else {
+                    void respond(req.requestId, undefined, true)
+                  }
                 }}
-                className="rounded px-1.5 py-[1px] text-[10.5px] text-gn-cyan transition-colors hover:bg-gn-bg-highlight"
-                title="打开自由模式 glob 编辑器（TUI e 键）"
+                className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium transition-colors ${
+                  followupOpen
+                    ? "border border-gn-red/40 bg-gn-diff-del-bg text-gn-red"
+                    : "text-gn-red hover:bg-gn-diff-del-bg"
+                }`}
+                title="拒绝并取消该请求（可附带给 agent 的反馈）"
               >
-                e 编辑
+                <IconGlyph glyph={Glyphs.ballotX} color="currentColor" />
+                <span>reject</span>
               </button>
-            )}
-          </div>
-        )}
-        {/* Free-form bash pattern editor (TUI e key → PatternEdit focus):
-            single-line input pre-filled with the command; Enter persists
-            the pattern as {commandParts:[pattern], isGlob:true}, Esc
-            discards. Mouse users get 保存/取消. */}
-        {!mcp.isMcp && patternEdit !== null && (
-          <div className="mb-2 flex items-center gap-1.5 pl-5">
-            <input
-              autoFocus
-              value={patternEdit}
-              onChange={(e) => setPatternEdit(e.target.value)}
-              onFocus={(e) => {
-                const v = e.target.value
-                e.target.setSelectionRange(v.length, v.length)
-              }}
-              placeholder="glob 模式，如 gh api repos/*"
-              className="min-w-0 flex-1 rounded border border-gn-cyan/40 bg-gn-bg-base px-2 py-1 font-mono text-[12px] text-gn-fg outline-none placeholder:text-gn-muted"
-            />
-            <button
-              type="button"
-              onClick={() => {
-                const text = patternEdit.trim()
-                const target =
-                  options.find((o) => o.optionId === 'allow-always-command') ??
-                  options[sel] ??
-                  options.find(isAlwaysOption)
-                setPatternEdit(null)
-                if (!text || !target) return
-                void respond(
-                  req.requestId,
-                  target.optionId,
-                  false,
-                  isAlwaysOption(target)
-                    ? { commandParts: [text], isGlob: true }
-                    : undefined,
-                )
-              }}
-              className="shrink-0 rounded px-2 py-1 text-[11px] text-gn-cyan transition-colors hover:bg-gn-bg-highlight"
-              title="Enter 确认 · 以 glob 模式保存"
-            >
-              保存
-            </button>
-            <button
-              type="button"
-              onClick={() => setPatternEdit(null)}
-              className="shrink-0 rounded px-2 py-1 text-[11px] text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
-              title="Esc 取消"
-            >
-              取消
-            </button>
-          </div>
-        )}
-        {/* TUI PermissionView: options are full-width rows, one per line —
-            j/k ↑/↓ walk them, Enter or 1-N pick. Always vertical; never
-            wraps into a horizontal row on wide screens. The reject row
-            embeds its followup input (TUI RejectOnce followup) instead of
-            opening a separate input line. */}
-        <div className="flex flex-col gap-1.5 pl-0 sm:pl-5">
-          {options.map((opt, i) =>
-            isRejectOption(opt) && followupOpen && rejectOption === opt.optionId ? (
+            </div>
+          </header>
+
+          <div className="p-3.5 space-y-2.5">
+            {command && (
               <div
-                key={opt.optionId}
-                className="flex min-h-10 w-full items-center gap-1.5 rounded border border-gn-red/50 bg-gn-bg-base px-3 py-1.5"
+                className={`rounded-md border border-gn-prompt-border/70 bg-gn-bg-code p-2.5 transition-colors ${
+                  collapsible ? "cursor-pointer hover:border-gn-yellow/40 hover:bg-gn-bg-highlight/40" : ""
+                }`}
+                onClick={collapsible ? () => setExpanded((x) => !x) : undefined}
+                title={
+                  collapsible
+                    ? expanded
+                      ? "点击收起（Ctrl-F）"
+                      : "点击展开完整命令（Ctrl-F）"
+                    : undefined
+                }
               >
-                <span className="mr-1.5 font-mono text-gn-muted">{i + 1}</span>
+                <div className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[12px] leading-relaxed text-gn-fg2">
+                  {commandLines
+                    .slice(0, expanded || !collapsible ? commandLines.length : PERMISSION_COLLAPSED_ROWS - 1)
+                    .join("\n")}
+                </div>
+                {collapsible && !expanded && (
+                  <div className="mt-1.5 flex items-center justify-between border-t border-gn-prompt-border/40 pt-1 text-[11px] text-gn-muted">
+                    <span>… <span className="gn-kbd">Ctrl-F</span> to expand</span>
+                    <span className="font-mono text-[10px] text-gn-gutter">
+                      +{commandLines.length - (PERMISSION_COLLAPSED_ROWS - 1)} 行
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {hasAlways && (!mcp.isMcp || !!mcp.serverPrefix) && (
+              <div className="flex flex-wrap items-center justify-between gap-1.5 rounded-md border border-gn-cyan/30 bg-gn-cyan/5 px-2.5 py-1.5 text-[11.5px] text-gn-cyan">
+                <span>
+                  {mcp.isMcp ? "←/→ 切换允许范围" : "←/→ 调整始终允许范围"}
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className="rounded border border-gn-cyan/40 bg-gn-bg-base px-2 py-0.5 font-mono text-[11px] font-semibold text-gn-cyan"
+                    title={
+                      mcp.isMcp && mcp.serverPrefix
+                        ? "精确工具: 仅该工具 · 整个 server: 该服务器的全部工具"
+                        : undefined
+                    }
+                  >
+                    {scopeText}
+                  </span>
+                  {!mcp.isMcp && patternEdit === null && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setScopeIdx(SCOPE_PRESETS.length - 1)
+                        setPatternEdit(command)
+                      }}
+                      className="rounded border border-gn-cyan/30 bg-gn-bg-base px-2 py-0.5 text-[10.5px] font-medium text-gn-cyan transition-colors hover:bg-gn-cyan/20"
+                      title="打开自由模式 glob 编辑器（TUI e 键）"
+                    >
+                      e 编辑
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {!mcp.isMcp && patternEdit !== null && (
+              <div className="flex items-center gap-1.5 rounded-md border border-gn-cyan/40 bg-gn-bg-base p-1.5">
                 <input
                   autoFocus
-                  value={followupText}
-                  onChange={(e) => setFollowupText(e.target.value)}
-                  placeholder="给 agent 的反馈（可选，Enter 拒绝）…"
-                  className="min-w-0 flex-1 bg-transparent text-[12.5px] text-gn-fg outline-none placeholder:text-gn-muted"
+                  value={patternEdit}
+                  onChange={(e) => setPatternEdit(e.target.value)}
+                  onFocus={(e) => {
+                    const v = e.target.value
+                    e.target.setSelectionRange(v.length, v.length)
+                  }}
+                  placeholder="glob 模式，如 gh api repos/*"
+                  className="min-w-0 flex-1 bg-transparent px-2 py-0.5 font-mono text-[12px] text-gn-fg outline-none placeholder:text-gn-muted"
                 />
                 <button
                   type="button"
                   onClick={() => {
-                    const text = followupText.trim()
-                    const ro = rejectOption
-                    setFollowupOpen(false)
-                    setFollowupText('')
-                    setRejectOption(undefined)
-                    void respond(req.requestId, ro, true, undefined, text || undefined)
+                    const text = patternEdit.trim()
+                    const target =
+                      options.find((o) => o.optionId === "allow-always-command") ??
+                      options[sel] ??
+                      options.find(isAlwaysOption)
+                    setPatternEdit(null)
+                    if (!text || !target) return
+                    void respond(
+                      req.requestId,
+                      target.optionId,
+                      false,
+                      isAlwaysOption(target)
+                        ? { commandParts: [text], isGlob: true }
+                        : undefined,
+                    )
                   }}
-                  className="shrink-0 rounded px-2 py-1 text-[11px] text-gn-red transition-colors hover:bg-gn-diff-del-bg"
-                  title="Enter 确认 · Esc 关闭"
+                  className="shrink-0 rounded bg-gn-cyan/20 border border-gn-cyan/40 px-2.5 py-0.5 text-[11px] font-medium text-gn-cyan transition-colors hover:bg-gn-cyan/30"
+                  title="Enter 确认 · 以 glob 模式保存"
                 >
-                  确认拒绝
+                  保存
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPatternEdit(null)}
+                  className="shrink-0 rounded px-2 py-0.5 text-[11px] text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+                  title="Esc 取消"
+                >
+                  取消
                 </button>
               </div>
-            ) : (
-              <button
-                key={opt.optionId}
-                type="button"
-                onMouseEnter={() => setSel(i)}
-                onClick={() => {
-                  // TUI RejectOnce: clicking a reject row opens the followup
-                  // input inside the row instead of answering directly.
-                  if (isRejectOption(opt)) {
-                    setRejectOption(opt.optionId)
-                    setFollowupOpen(true)
-                    setFollowupText('')
-                    return
-                  }
-                  void respond(
-                    req.requestId,
-                    opt.optionId,
-                    false,
-                    isAlwaysOption(opt) ? scopeForPreset() : undefined,
-                  )
-                }}
-                className={`min-h-10 w-full rounded px-3 py-1.5 text-left text-[12.5px] transition-colors ${
- i === sel
-                    ? 'bg-gn-bg-highlight text-gn-fg'
-                    : 'text-gn-fg hover:bg-gn-bg-highlight'
-                }`}
-              >
-                <span className="mr-1.5 font-mono text-gn-muted">{i + 1}</span>
-                {/* Radio marker: solid for always-allow rows AND the
-                    selected row (TUI `1 (●) …` rows), hollow otherwise. */}
-                <span
-                  className={`mr-1.5 ${
- isAlwaysOption(opt)
-                      ? 'text-gn-cyan'
-                      : i === sel
-                        ? 'text-gn-yellow'
-                        : 'text-gn-muted'
-                  }`}
-                  aria-hidden
-                >
-                  {isAlwaysOption(opt) || i === sel ? '●' : '○'}
+            )}
+
+            <div className="flex flex-col gap-1.5">
+              {options.map((opt, i) =>
+                isRejectOption(opt) && followupOpen && rejectOption === opt.optionId ? (
+                  <div
+                    key={opt.optionId}
+                    className="flex min-h-10 w-full items-center gap-2 rounded-md border border-gn-red/60 bg-gn-red/10 px-3 py-1.5 ring-1 ring-gn-red/30 transition-all"
+                  >
+                    <span className="w-5 shrink-0 text-center font-mono text-[11px] font-medium text-gn-red">
+                      {i + 1}
+                    </span>
+                    <input
+                      autoFocus
+                      value={followupText}
+                      onChange={(e) => setFollowupText(e.target.value)}
+                      placeholder="给 agent 的反馈（可选，Enter 拒绝）…"
+                      className="min-w-0 flex-1 bg-transparent text-[12.5px] text-gn-fg outline-none placeholder:text-gn-muted"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const text = followupText.trim()
+                        const ro = rejectOption
+                        setFollowupOpen(false)
+                        setFollowupText("")
+                        setRejectOption(undefined)
+                        void respond(req.requestId, ro, true, undefined, text || undefined)
+                      }}
+                      className="shrink-0 rounded bg-gn-red/20 border border-gn-red/40 px-2.5 py-1 text-[11.5px] font-medium text-gn-red transition-colors hover:bg-gn-red/30"
+                      title="Enter 确认 · Esc 关闭"
+                    >
+                      确认拒绝
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    key={opt.optionId}
+                    type="button"
+                    onMouseEnter={() => setSel(i)}
+                    onClick={() => {
+                      // TUI RejectOnce: clicking a reject row opens the followup
+                      // input inside the row instead of answering directly.
+                      if (isRejectOption(opt)) {
+                        setRejectOption(opt.optionId)
+                        setFollowupOpen(true)
+                        setFollowupText("")
+                        return
+                      }
+                      void respond(
+                        req.requestId,
+                        opt.optionId,
+                        false,
+                        isAlwaysOption(opt) ? scopeForPreset() : undefined,
+                      )
+                    }}
+                    className={`flex min-h-10 w-full items-center gap-2.5 rounded-md border px-3 py-1.5 text-left text-[12.5px] transition-all outline-none ${
+                      i === sel
+                        ? "bg-gn-bg-highlight border-gn-yellow/50 text-gn-fg ring-1 ring-gn-yellow/30 shadow-sm"
+                        : "bg-gn-bg-base border-gn-prompt-border/60 text-gn-fg2 hover:bg-gn-bg-highlight/60 hover:border-gn-prompt-border"
+                    }`}
+                  >
+                    <span className="w-5 shrink-0 text-center font-mono text-[11px] text-gn-gutter">
+                      {i + 1}
+                    </span>
+                    {/* Radio marker: solid for always-allow rows AND the
+                        selected row (TUI `1 (●) …` rows), hollow otherwise. */}
+                    <span
+                      className={`flex w-4 shrink-0 items-center justify-center ${
+                        isAlwaysOption(opt)
+                          ? "text-gn-cyan"
+                          : i === sel
+                            ? "text-gn-yellow"
+                            : "text-gn-muted"
+                      }`}
+                      aria-hidden
+                    >
+                      {isAlwaysOption(opt) || i === sel ? "●" : "○"}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate font-medium">
+                      {opt.name || opt.label || opt.optionId}
+                    </span>
+                    {isAlwaysOption(opt) && (
+                      <span className="shrink-0 rounded bg-gn-cyan/15 border border-gn-cyan/30 px-1.5 py-0.5 font-mono text-[10.5px] text-gn-cyan">
+                        always
+                      </span>
+                    )}
+                    {i === sel && (
+                      <span className="shrink-0 font-mono text-[11px] text-gn-yellow opacity-75">
+                        ↵
+                      </span>
+                    )}
+                  </button>
+                ),
+              )}
+            </div>
+          </div>
+
+          <div className="border-t border-gn-prompt-border/50 bg-gn-bg-dark/80 px-3.5 py-1.5 text-[11px] text-gn-muted">
+            {parked ? (
+              <div className="flex items-center gap-1.5 text-gn-yellow">
+                <span className="shrink-0 text-gn-yellow" aria-hidden>
+                  <IconGlyph glyph={Glyphs.diamondFilled} color="currentColor" />
                 </span>
-                {opt.name || opt.label || opt.optionId}
-                {isAlwaysOption(opt) && (
-                  <span className="ml-1.5 text-[10.5px] text-gn-cyan">always</span>
-                )}
-              </button>
-            ),
-          )}
-        </div>
-        <div className="mt-1.5 pl-5 text-[11px] text-gn-muted">
-          {parked ? (
-            <span>
-              <span className="text-gn-fg2">Tab/Space</span> 返回权限卡 ·{' '}
-              <span className="text-gn-fg2">Ctrl+C</span> 取消请求
-            </span>
-          ) : (
-            <span>
-              ↑/↓ 或 j/k 选择 · <span className="text-gn-fg2">1-9</span> 直接选 ·{' '}
-              <span className="text-gn-fg2">Enter</span> 确认 ·{' '}
-              <span className="text-gn-fg2">Esc</span> 暂停键盘
-              {arrowsEnabled
-                ? ` · ←/→ ${mcp.isMcp ? '切换允许范围' : '调整始终允许范围'}`
-                : ''}
-              {!mcp.isMcp && hasAlways && patternEdit === null ? ' · e 编辑模式' : ''}
-              {collapsible && !expanded ? ' · Ctrl+F 展开命令' : ''}
-            </span>
-          )}
+                <span>
+                  键盘已暂停 — <span className="gn-kbd">Tab</span> / <span className="gn-kbd">Space</span> 返回权限卡 · <span className="gn-kbd">Ctrl+C</span> 取消请求
+                </span>
+              </div>
+            ) : (
+              <div className="text-gn-muted leading-relaxed">
+                <span className="gn-kbd">↑</span>/<span className="gn-kbd">↓</span> 或 <span className="gn-kbd">j</span>/<span className="gn-kbd">k</span> 选择 · <span className="gn-kbd">1-9</span> 直接选 · <span className="gn-kbd">Enter</span> 确认 · <span className="gn-kbd">Esc</span> 暂停键盘
+                {arrowsEnabled ? (
+                  <> · <span className="gn-kbd">←</span>/<span className="gn-kbd">→</span> {mcp.isMcp ? "切换允许范围" : "调整始终允许范围"}</>
+                ) : null}
+                {!mcp.isMcp && hasAlways && patternEdit === null ? (
+                  <> · <span className="gn-kbd">e</span> 编辑模式</>
+                ) : null}
+                {collapsible && !expanded ? (
+                  <> · <span className="gn-kbd">Ctrl+F</span> 展开命令</>
+                ) : null}
+              </div>
+            )}
+          </div>
         </div>
       </div>
-    </div>
   )
 }
 
