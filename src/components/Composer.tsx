@@ -1153,9 +1153,15 @@ export function Composer() {
       className="flex min-h-4 items-center gap-1.5 pb-2 pr-0.5 font-ui text-[12px] leading-[1.4] text-gn-gray select-none"
       style={{ paddingLeft: COMPOSER_BODY_PAD_LEFT_PX }}
     >
-      {escHint === 'clear'
-        ? '再按一次 Esc 清空草稿（回合不受影响）'
-        : '再按一次 Esc 打开 rewind 选择器'}
+      {escHint === 'clear' ? (
+        <span>
+          再按一次 <span className="gn-kbd">Esc</span> 清空草稿（回合不受影响）
+        </span>
+      ) : (
+        <span>
+          再按一次 <span className="gn-kbd">Esc</span> 打开 rewind 选择器
+        </span>
+      )}
     </div>
   )
 
@@ -2156,7 +2162,8 @@ export function Composer() {
               </span>
             )}
 
-            <span ref={modeRef} className="relative z-30 inline-flex shrink-0">
+            {/* 模式按钮（点击弹出弹窗，在弹窗内提供 Plan 独立开关与权限模式切换） */}
+            <span ref={modeRef} className="relative z-30 inline-flex shrink-0 items-center">
               <span style={{ color: sepColor }} className="px-1">
                 {Glyphs.middleDot}
               </span>

@@ -325,13 +325,13 @@ export function QuickAddModelsModal({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center gn-modal-dim p-4"
+      className="fixed inset-0 z-[60] flex items-center justify-center gn-modal-dim p-2 sm:p-4"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose()
       }}
     >
       <div
-        className="gn-modal-panel flex w-full max-w-[700px] flex-col max-h-[85vh] text-[12px]"
+        className="gn-modal-panel flex w-full max-w-[700px] flex-col max-h-[90dvh] sm:max-h-[85vh] text-[12px]"
         role="dialog"
         aria-modal="true"
         aria-label="快速添加自定义模型"
@@ -340,7 +340,7 @@ export function QuickAddModelsModal({
         <header className="gn-modal-header">
           <Zap className="h-4 w-4 text-gn-cyan shrink-0" aria-hidden />
           <span className="text-[13px] font-bold text-gn-fg">快速拉取并添加模型</span>
-          <span className="text-[11px] text-gn-muted">（从 /v1/models 批量发现并写入配置）</span>
+          <span className="hidden sm:inline text-[11px] text-gn-muted">（从 /v1/models 批量发现并写入配置）</span>
           <button
             type="button"
             onClick={onClose}
@@ -352,7 +352,7 @@ export function QuickAddModelsModal({
         </header>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+        <div className="flex-1 overflow-y-auto px-3 py-2.5 space-y-2.5 sm:px-4 sm:py-3 sm:space-y-3">
           {/* Step 1: 端点配置 */}
           <div className="rounded border border-gn-prompt-border/60 bg-gn-bg-dark/40 p-3 space-y-2">
             <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-gn-gutter font-semibold">
@@ -450,15 +450,15 @@ export function QuickAddModelsModal({
               </label>
             </div>
 
-            <div className="flex items-center justify-between pt-1">
-              <span className="text-[10.5px] text-gn-gutter">
+            <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:items-center sm:justify-between">
+              <span className="text-[10px] text-gn-gutter sm:text-[10.5px]">
                 请求时会自动尝试 `/models` 与 `/v1/models`，同时连接 models.dev 补全上下文与推理参数。
               </span>
               <button
                 type="button"
                 disabled={fetching || !customBaseUrl.trim()}
                 onClick={() => void handleFetch()}
-                className="rounded bg-gn-bg-highlight px-3 py-1 text-[11.5px] font-medium text-gn-fg hover:bg-gn-bg-hover disabled:cursor-not-allowed disabled:opacity-40 flex items-center gap-1.5"
+                className="flex w-full items-center justify-center gap-1.5 rounded bg-gn-bg-highlight px-3 py-1.5 text-[11.5px] font-medium text-gn-fg hover:bg-gn-bg-hover disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto sm:py-1"
               >
                 {fetching ? (
                   <>
@@ -487,19 +487,19 @@ export function QuickAddModelsModal({
           {/* Step 2: 模型列表及筛选 */}
           {discoveredModels.length > 0 && (
             <div className="space-y-2">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gn-prompt-border/40 pb-1.5">
-                <div className="flex items-center gap-2">
-                  <div className="relative">
+              <div className="flex flex-col gap-2 border-b border-gn-prompt-border/40 pb-1.5 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="relative flex-1 min-w-[140px] sm:flex-none">
                     <Search className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-gn-gutter" />
                     <input
                       type="text"
                       value={searchFilter}
                       onChange={(e) => setSearchFilter(e.target.value)}
                       placeholder="搜索模型名称或 ID…"
-                      className="w-48 rounded border border-gn-prompt-border bg-gn-bg-dark pl-6 pr-2 py-0.5 text-[11px] text-gn-fg outline-none focus:border-gn-prompt-border-active placeholder:text-gn-gutter"
+                      className="w-full rounded border border-gn-prompt-border bg-gn-bg-dark pl-6 pr-2 py-0.5 text-[11px] text-gn-fg outline-none focus:border-gn-prompt-border-active placeholder:text-gn-gutter sm:w-48"
                     />
                   </div>
-                  <span className="text-[11px] text-gn-muted">
+                  <span className="text-[10.5px] text-gn-muted sm:text-[11px]">
                     共 {discoveredModels.length} 个（已选 {selectedRemoteIds.size} 个）
                   </span>
                 </div>
@@ -535,7 +535,7 @@ export function QuickAddModelsModal({
               )}
 
               {/* 列表区域 */}
-              <div className="max-h-[320px] overflow-y-auto rounded border border-gn-prompt-border/60 divide-y divide-gn-prompt-border/30 bg-gn-bg-dark/30">
+              <div className="max-h-[42vh] sm:max-h-[320px] overflow-y-auto rounded border border-gn-prompt-border/60 divide-y divide-gn-prompt-border/30 bg-gn-bg-dark/30">
                 {filteredModels.length === 0 ? (
                   <div className="py-6 text-center text-[11px] text-gn-muted">
                     没有匹配的模型条目
@@ -585,7 +585,7 @@ export function QuickAddModelsModal({
                               onChange={(e) => updateConfigKey(item.remoteId, e.target.value)}
                               onClick={(e) => e.stopPropagation()}
                               className="rounded border border-gn-prompt-border/40 bg-gn-bg-base px-1 py-px text-[10.5px] text-gn-fg outline-none focus:border-gn-prompt-border"
-                              style={{ width: `${Math.max(item.configKey.length + 2, 12)}ch` }}
+                              style={{ width: `${Math.max(item.configKey.length + 2, 12)}ch`, maxWidth: 'calc(100% - 6ch)' }}
                             />
                             <span>]</span>
                           </div>
@@ -658,32 +658,40 @@ export function QuickAddModelsModal({
         </div>
 
         {/* Footer */}
-        <footer className="gn-modal-footer flex items-center justify-between">
-          <div className="text-[11px] text-gn-muted">
+        <footer className="gn-modal-footer flex items-center justify-between gap-2">
+          <div className="truncate text-[11px] text-gn-muted">
             {discoveredModels.length > 0 ? (
               <span>
                 将把勾选的 <strong className="text-gn-fg">{selectedRemoteIds.size}</strong> 个模型写入{' '}
-                <code className="text-gn-fg2">~/.grok/config.toml</code>
+                <code className="hidden text-gn-fg2 sm:inline">~/.grok/config.toml</code>
               </span>
             ) : (
               <span>点击「获取模型列表」扫描端点</span>
             )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             <button
               type="button"
               onClick={onClose}
-              className="rounded px-3 py-1 text-[12px] text-gn-muted hover:text-gn-fg"
+              className="rounded px-2.5 py-1 text-[11px] text-gn-muted hover:text-gn-fg sm:px-3 sm:text-[12px]"
             >
               取消
             </button>
             <button
               type="button"
+              aria-label={`添加所选模型 (${selectedRemoteIds.size})`}
               disabled={saving || selectedRemoteIds.size === 0}
               onClick={() => void handleSaveSelected()}
-              className="rounded bg-gn-bg-highlight px-3.5 py-1 text-[12px] font-semibold text-gn-fg hover:bg-gn-bg-hover disabled:cursor-not-allowed disabled:opacity-40 flex items-center gap-1"
+              className="flex items-center gap-1 rounded bg-gn-bg-highlight px-3 py-1 text-[11.5px] font-semibold text-gn-fg hover:bg-gn-bg-hover disabled:cursor-not-allowed disabled:opacity-40 sm:px-3.5 sm:text-[12px]"
             >
-              {saving ? '正在写入配置…' : `添加所选模型 (${selectedRemoteIds.size})`}
+              {saving ? (
+                '正在写入配置…'
+              ) : (
+                <>
+                  <span className="hidden sm:inline">添加所选模型 ({selectedRemoteIds.size})</span>
+                  <span className="sm:hidden">添加 ({selectedRemoteIds.size})</span>
+                </>
+              )}
             </button>
           </div>
         </footer>

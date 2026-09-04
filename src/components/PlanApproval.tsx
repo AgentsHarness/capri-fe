@@ -326,10 +326,10 @@ export function PlanApproval() {
           </button>
         </div>
 
-        <div className="mt-1.5 pl-0 text-[11px] text-gn-muted sm:pl-5">
-          <span className="text-gn-fg2">a</span> 批准 ·{' '}
-          <span className="text-gn-fg2">Enter</span> 提交 ·{' '}
-          <span className="text-gn-fg2">s</span> 写意见
+        <div className="mt-1.5 hidden pl-0 text-[11px] text-gn-muted sm:block sm:pl-5">
+          <span className="gn-kbd">a</span> 批准 ·{' '}
+          <span className="gn-kbd">Enter</span> 提交 ·{' '}
+          <span className="gn-kbd">s</span> 写意见
           {selection && (
             <>
               {' · '}

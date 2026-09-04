@@ -11,6 +11,7 @@ import {
 } from '../modeFlags'
 import { appendEntry } from '../entries'
 import { pushToast } from '../../toast'
+import { savePlanMode } from '../modePersist'
 
 export function modeActions(set: SetState, get: () => ChatState) {
   const actions = {
@@ -145,15 +146,14 @@ export function modeActions(set: SetState, get: () => ChatState) {
       perm === 'yolo'
     const inAuto = s.autoMode === true || perm === 'auto'
 
-    const current = inPlan
-      ? 'plan'
-      : inAlways
-        ? 'always-approve'
-        : inAuto
-          ? 'auto'
-          : 'normal'
+    if (target === 'plan') {
+      // Plan 作为独立开关：点选 plan 即 toggle 开关（若已开则关闭，若关则开启）
+      await actions.togglePlanMode()
+      return
+    }
 
-    if (current === target) return
+    const currentPerm = inAlways ? 'always-approve' : inAuto ? 'auto' : 'normal'
+    if (currentPerm === target && !inPlan) return
 
     const prev = {
       planMode: s.planMode,
@@ -172,43 +172,28 @@ export function modeActions(set: SetState, get: () => ChatState) {
         permissionMode: undefined,
         statusText: '已切换到 normal 模式',
       })
+      if (sid) savePlanMode(sid, false)
       try {
-        await transport.setMode('default', sid).catch(() => {})
+        if (inPlan) {
+          await transport.togglePlanMode(sid).catch(() => {})
+        }
         await transport.setMode('normal', sid)
         persistConfirmedPermission({})
       } catch (e) {
         set(prev)
+        if (sid) savePlanMode(sid, prev.planMode)
         appendEntry(set, {
           kind: 'error',
           text: `切换 normal 模式失败: ${e instanceof Error ? e.message : String(e)}`,
         })
       }
-    } else if (target === 'plan') {
-      get().showModeBanner('Switched to mode: Plan')
-      set({
-        planMode: true,
-        permissionMode: undefined,
-        autoMode: false,
-        yoloMode: false,
-        statusText: '已切换到 plan 模式',
-      })
-      try {
-        await transport.setMode('plan', sid)
-      } catch (e) {
-        set(prev)
-        appendEntry(set, {
-          kind: 'error',
-          text: `切换 plan 模式失败: ${e instanceof Error ? e.message : String(e)}`,
-        })
-      }
     } else if (target === 'auto') {
       get().showModeBanner('Switched to mode: Auto')
       set({
-        planMode: false,
         autoMode: true,
         yoloMode: false,
         permissionMode: undefined,
-        statusText: '已切换到 auto 模式',
+        statusText: inPlan ? '已切换到 plan·auto 模式' : '已切换到 auto 模式',
       })
       try {
         await transport.setMode('auto', sid)
@@ -223,14 +208,13 @@ export function modeActions(set: SetState, get: () => ChatState) {
     } else if (target === 'always-approve') {
       get().showModeBanner('Switched to mode: Always-Approve')
       set({
-        planMode: false,
         autoMode: false,
         yoloMode: true,
         permissionMode: undefined,
-        statusText: '已切换到 always-approve 模式',
+        statusText: inPlan ? '已切换到 plan·always-approve 模式' : '已切换到 always-approve 模式',
       })
       try {
-        const ok = await turnOnAlwaysApprove(set, false, sid)
+        const ok = await turnOnAlwaysApprove(set, inPlan, sid)
         if (!ok) throw new Error('host 暂不支持切换 always-approve')
       } catch (e) {
         set(prev)
@@ -244,11 +228,44 @@ export function modeActions(set: SetState, get: () => ChatState) {
 
   togglePlanMode: async () => {
     const s = get()
+    const sid = s.sessionId
     const inPlan = s.planMode === true || s.permissionMode === 'plan'
-    if (inPlan) {
-      await actions.selectMode('normal')
-    } else {
-      await actions.selectMode('plan')
+    const targetPlan = !inPlan
+    const prev = {
+      planMode: s.planMode,
+      permissionMode: s.permissionMode,
+      statusText: s.statusText,
+    }
+
+    set({
+      planMode: targetPlan,
+      ...(targetPlan ? {} : s.permissionMode === 'plan' ? { permissionMode: undefined } : {}),
+      statusText: targetPlan ? '已开启 plan 模式' : '已退出 plan 模式',
+    })
+    get().showModeBanner(targetPlan ? 'Switched to mode: Plan' : 'Exited mode: Plan')
+    if (sid) {
+      savePlanMode(sid, targetPlan)
+    }
+
+    try {
+      await transport.togglePlanMode(sid)
+    } catch {
+      try {
+        if (targetPlan) {
+          await transport.setMode('plan', sid)
+        } else {
+          await transport.setMode('default', sid).catch(() => {})
+        }
+      } catch (e) {
+        set(prev)
+        if (sid) {
+          savePlanMode(sid, prev.planMode)
+        }
+        appendEntry(set, {
+          kind: 'error',
+          text: `切换 plan 模式失败: ${e instanceof Error ? e.message : String(e)}`,
+        })
+      }
     }
   },
 

@@ -91,8 +91,10 @@ export function FilePickerMenu({
           ))
         )}
       </div>
-      <div className="flex items-center justify-between gap-2 border-t border-gn-prompt-border px-3 py-[3px] text-[10px] text-gn-muted">
-        <span className="min-w-0 truncate">↑/↓ 选择 · Enter/Tab 填入 · Esc 关闭</span>
+      <div className="hidden sm:flex items-center justify-between gap-2 border-t border-gn-prompt-border px-3 py-1 text-[10px] text-gn-muted">
+        <span className="min-w-0 truncate">
+          <span className="gn-kbd">↑</span>/<span className="gn-kbd">↓</span> 选择 · <span className="gn-kbd">Enter</span>/<span className="gn-kbd">Tab</span> 填入 · <span className="gn-kbd">Esc</span> 关闭
+        </span>
       </div>
     </div>
   )

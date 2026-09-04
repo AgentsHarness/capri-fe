@@ -239,13 +239,15 @@ export function QueueEditModal() {
           </div>
 
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] leading-snug text-gn-gutter">
-            <span>Enter 保存 · Shift+Enter 换行 · Esc 取消</span>
+            <span className="hidden sm:inline">
+              <span className="gn-kbd">Enter</span> 保存 · <span className="gn-kbd">Shift</span>+<span className="gn-kbd">Enter</span> 换行 · <span className="gn-kbd">Esc</span> 取消
+            </span>
             {draft.trim() === '' && images.length > 0 ? (
               <span className="text-gn-muted">正文为空：只发附图</span>
             ) : null}
             {blank ? (
               <span className="text-gn-warning">
-                正文与附图都为空：不保存这条改动，改回内容或 Esc 取消
+                正文与附图都为空：不保存这条改动，改回内容或取消
               </span>
             ) : null}
             {images.length > 0 ? <span>{queuedImageEditNote(row)}</span> : null}

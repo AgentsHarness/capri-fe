@@ -616,7 +616,7 @@ export function QuestionModal() {
         </div>
       </footer>
 
-      <div className="border-t border-gn-prompt-border/50 bg-gn-bg-dark/80 px-3.5 py-1.5 text-[11px] text-gn-muted">
+      <div className="hidden border-t border-gn-prompt-border/50 bg-gn-bg-dark/80 px-3.5 py-1.5 text-[11px] text-gn-muted sm:block">
         <span className="gn-kbd">j</span><span className="gn-kbd">k</span> 选择 · <span className="gn-kbd">1-9</span> 直达 · <span className="gn-kbd">Enter</span> 选中 · <span className="gn-kbd">Tab</span> 切题{multi ? <> · <span className="gn-kbd">Space</span> 多选</> : ''} · <span className="gn-kbd">Esc</span> 关闭
       </div>
     </div>,

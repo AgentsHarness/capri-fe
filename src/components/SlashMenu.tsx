@@ -221,21 +221,46 @@ export function SlashMenu({
             className="min-w-0 truncate text-gn-fg2"
             title={`没有匹配的命令 — Enter 把 /${query} 原样发给 agent（不再拦截）`}
           >
-            没有匹配 — Enter 按原文发送 /{query}
+            <span
+              className="sr-only"
+              title={`没有匹配的命令 — Enter 把 /${query} 原样发给 agent（不再拦截）`}
+            >
+              Enter 按原文发送 /{query}
+            </span>
+            <span className="hidden sm:inline" aria-hidden="true">
+              没有匹配 — <span className="gn-kbd">Enter</span> 按原文发送 /{query}
+            </span>
+            <span className="sm:hidden">没有匹配，将按原文发送 /{query}</span>
           </span>
         ) : args ? (
           <span
-            className="min-w-0 truncate text-gn-muted"
+            className="min-w-0 truncate text-gn-muted hidden sm:inline"
             title="↑/↓ 选择参数 · Enter 选定并执行 · Tab 只填不执行 · 继续打字可过滤 · Esc 关闭"
           >
-            ↑/↓ 选择参数 · Enter 选定并执行 · Tab 只填不执行 · Esc 关闭
+            <span
+              className="sr-only"
+              title="↑/↓ 选择参数 · Enter 选定并执行 · Tab 只填不执行 · 继续打字可过滤 · Esc 关闭"
+            >
+              ↑/↓ 选择参数 · Enter 选定并执行 · Tab 只填不执行 · Esc 关闭
+            </span>
+            <span aria-hidden="true">
+              <span className="gn-kbd">↑</span>/<span className="gn-kbd">↓</span> 选择参数 · <span className="gn-kbd">Enter</span> 选定并执行 · <span className="gn-kbd">Tab</span> 只填不执行 · <span className="gn-kbd">Esc</span> 关闭
+            </span>
           </span>
         ) : (
           <span
-            className="min-w-0 truncate text-gn-muted"
+            className="min-w-0 truncate text-gn-muted hidden sm:inline"
             title="↑/↓ 选择命令 · Tab 补全 · Enter 执行（还差参数的先展开参数列表）· Esc 关闭 · 想发原文：行首加空格或 \/"
           >
-            ↑/↓ 选择 · Tab 补全 · Enter 执行 · Esc 关闭
+            <span
+              className="sr-only"
+              title="↑/↓ 选择命令 · Tab 补全 · Enter 执行（还差参数的先展开参数列表）· Esc 关闭 · 想发原文：行首加空格或 \/"
+            >
+              ↑/↓ 选择 · Tab 补全 · Enter 执行 · Esc 关闭
+            </span>
+            <span aria-hidden="true">
+              <span className="gn-kbd">↑</span>/<span className="gn-kbd">↓</span> 选择 · <span className="gn-kbd">Tab</span> 补全 · <span className="gn-kbd">Enter</span> 执行 · <span className="gn-kbd">Esc</span> 关闭
+            </span>
           </span>
         )}
         {canLiteral && (

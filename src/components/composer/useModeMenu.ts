@@ -1,24 +1,19 @@
 import { useEffect, useRef, useState } from 'react'
 import { useChatStore } from '../../store/chat'
 
-export type ModeId = 'normal' | 'plan' | 'auto' | 'always-approve'
+export type PermId = 'normal' | 'auto' | 'always-approve'
 
-export type ModeOption = {
-  id: ModeId
+export type PermOption = {
+  id: PermId
   label: string
   desc: string
 }
 
-export const MODE_OPTIONS: ModeOption[] = [
+export const PERMISSION_OPTIONS: PermOption[] = [
   {
     id: 'normal',
     label: 'Normal',
     desc: '标准模式，敏感操作按需审批',
-  },
-  {
-    id: 'plan',
-    label: 'Plan',
-    desc: '计划模式，只读探索并规划方案',
   },
   {
     id: 'auto',
@@ -33,8 +28,8 @@ export const MODE_OPTIONS: ModeOption[] = [
 ]
 
 /**
- * 运行模式切换菜单 hook（composer 底部右下角模式槽）。
- * 控制弹窗开关、视口固定定位计算、当前模式识别与模式切换动作。
+ * 运行模式与权限菜单 hook（composer 底部右下角）。
+ * Plan 模式作为独立开关（可与任意权限叠加），权限模式为单选项。
  */
 export function useModeMenu() {
   const planMode = useChatStore((s) => s.planMode)
@@ -42,6 +37,7 @@ export function useModeMenu() {
   const yoloMode = useChatStore((s) => s.yoloMode)
   const autoMode = useChatStore((s) => s.autoMode)
   const selectMode = useChatStore((s) => s.selectMode)
+  const togglePlanMode = useChatStore((s) => s.togglePlanMode)
 
   const [modeOpen, setModeOpen] = useState(false)
   const modeRef = useRef<HTMLSpanElement>(null)
@@ -62,25 +58,19 @@ export function useModeMenu() {
     perm === 'yolo'
   const inAuto = autoMode === true || perm === 'auto'
 
-  const currentModeId: ModeId = inPlan
-    ? 'plan'
-    : inAlways
-      ? 'always-approve'
-      : inAuto
-        ? 'auto'
-        : 'normal'
+  const currentPermId: PermId = inAlways
+    ? 'always-approve'
+    : inAuto
+      ? 'auto'
+      : 'normal'
+
+  const currentPermLabel = currentPermId
 
   const currentModeLabel = inPlan
-    ? inAlways
-      ? 'plan·always'
-      : inAuto
-        ? 'plan·auto'
-        : 'plan'
-    : inAlways
-      ? 'always-approve'
-      : inAuto
-        ? 'auto'
-        : 'normal'
+    ? currentPermId === 'normal'
+      ? 'plan'
+      : `plan·${currentPermId === 'always-approve' ? 'always' : currentPermId}`
+    : currentPermLabel
 
   useEffect(() => {
     if (!modeOpen) {
@@ -96,8 +86,8 @@ export function useModeMenu() {
       const vw = window.innerWidth
       const vh = window.innerHeight
       const bottom = Math.max(pad, vh - r.top + gap)
-      const maxH = Math.max(120, Math.min(320, r.top - pad))
-      const width = Math.min(260, vw - pad * 2)
+      const maxH = Math.max(140, Math.min(360, r.top - pad))
+      const width = Math.min(280, vw - pad * 2)
       let left = r.right - width
       left = Math.max(pad, Math.min(left, vw - pad - width))
       const right = vw - left - width
@@ -130,9 +120,13 @@ export function useModeMenu() {
     }
   }, [modeOpen])
 
-  const switchMode = (target: ModeId) => {
+  const switchPerm = (target: PermId) => {
     setModeOpen(false)
     void selectMode(target)
+  }
+
+  const togglePlan = () => {
+    void togglePlanMode()
   }
 
   return {
@@ -141,9 +135,11 @@ export function useModeMenu() {
     modeRef,
     modeBtnRef,
     modeMenuPos,
-    currentModeId,
-    currentModeLabel,
     inPlan,
-    switchMode,
+    currentModeLabel,
+    currentPermId,
+    currentPermLabel,
+    switchPerm,
+    togglePlan,
   }
 }
