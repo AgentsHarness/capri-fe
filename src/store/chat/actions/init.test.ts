@@ -117,6 +117,24 @@ describe('initChat 多会话与双 FE 全局模式同步', () => {
     cleanup()
   })
 
+  it('检索引擎状态流（search_fuzzy_status）即使 sessionId 是 "agent" 也要放行', () => {
+    // host 用 agent 自报的 sessionId 给 fuzzy 状态打标签（字面量 "agent"，
+    // 永远不等于会话 UUID）——顶层会话过滤一旦拦截，@ 选择器就再也拿不到
+    // 任何匹配结果。
+    const cleanup = initChat(set, get, api)
+
+    const ev = {
+      type: 'search_fuzzy_status',
+      sessionId: 'agent',
+      params: { sessionId: 'agent', searchId: 'sr-1', matches: [], done: true },
+    }
+    eventHandler!(ev)
+
+    expect(state.handleEvent).toHaveBeenCalledWith(ev)
+
+    cleanup()
+  })
+
   it('同源多 Tab 同步：监听 storage 事件可在另一 Tab 切换模式后即时同步', () => {
     const cleanup = initChat(set, get, api)
 

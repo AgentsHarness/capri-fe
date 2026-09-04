@@ -36,8 +36,50 @@ export function useAtPicker(opts: AtPickerOpts) {
   const [atQuery, setAtQuery] = useState('')
   const [atSel, setAtSel] = useState(0)
   const atTokenStartRef = useRef(-1)
-  const atOpeningRef = useRef(false)
   const atTimerRef = useRef<number | null>(null)
+  /** 最新一次待查 query（open 在飞时敲进来的新 query 由它接管）。 */
+  const atQueryRef = useRef('')
+  /** 共享的 open promise：连打时后来的 keystroke 等同一发 open，不再被丢弃。 */
+  const atSessionRef = useRef<Promise<string | null> | null>(null)
+
+  /** Open — or join the in-flight open of — the engine session; null = no engine. */
+  const atSession = (): Promise<string | null> => {
+    const existing = useChatStore.getState().fileSearch?.searchId
+    if (existing) return Promise.resolve(existing)
+    const running = atSessionRef.current
+    if (running) return running
+    const opening = (async () => {
+      try {
+        const st = useChatStore.getState()
+        const res = await transport.searchFuzzyOpen(st.cwd ? { cwd: st.cwd } : {})
+        const sid =
+          res && typeof res === 'object' && typeof res.searchId === 'string'
+            ? res.searchId
+            : undefined
+        if (!sid) return null
+        // root: match paths come back absolute under it — the store cuts it
+        // off so the popover shows/inserts the relative path (the wire's
+        // highlight indices are relative offsets too).
+        useChatStore.setState({
+          fileSearch: {
+            searchId: sid,
+            ...(st.cwd ? { root: st.cwd } : {}),
+            matches: [],
+            done: true,
+          },
+        })
+        return sid
+      } catch {
+        return null // no engine (old host / no workspace) — picker stays empty
+      }
+    })()
+    atSessionRef.current = opening
+    // 失败的 open 不缓存，下一按键重试。
+    void opening.then((sid) => {
+      if (!sid && atSessionRef.current === opening) atSessionRef.current = null
+    })
+    return opening
+  }
 
   /** Arm/refresh the engine for `query`; no-op without a workspace. */
   const atSearch = (query: string) => {
@@ -45,43 +87,31 @@ export function useAtPicker(opts: AtPickerOpts) {
       window.clearTimeout(atTimerRef.current)
       atTimerRef.current = null
     }
+    atQueryRef.current = query
     if (query === '') return // engine requires a non-empty query
-    const fire = async () => {
-      let searchId = useChatStore.getState().fileSearch?.searchId
-      if (!searchId) {
-        if (atOpeningRef.current) return
-        atOpeningRef.current = true
-        try {
-          const st = useChatStore.getState()
-          const res = await transport.searchFuzzyOpen(
-            st.cwd ? { cwd: st.cwd } : {},
-          )
-          const sid =
-            res && typeof res === 'object' && typeof res.searchId === 'string'
-              ? res.searchId
-              : undefined
-          if (!sid) return
-          searchId = sid
-          useChatStore.setState({
-            fileSearch: { searchId, matches: [], done: true },
-          })
-        } catch {
-          return // no engine (old host / no workspace) — picker stays empty
-        } finally {
-          atOpeningRef.current = false
-        }
-      }
-      try {
-        await transport.searchFuzzyChange({ searchId, query, limit: 20 })
-      } catch {
-        /* stale searchId or engine hiccup — next keystroke retries */
-      }
-    }
     // Debounce: the engine owns per-query versioning; this only limits
     // request spam while typing.
     atTimerRef.current = window.setTimeout(() => {
       atTimerRef.current = null
-      void fire()
+      void (async () => {
+        const searchId = await atSession()
+        if (!searchId) return
+        // open 期间又敲了字：那一发由新 keystroke 的定时器负责，旧 query 不追发。
+        const q = atQueryRef.current
+        if (!q || q !== query) return
+        // 快照未到前先标 pending，浮层画“搜索中…”而不是假的“没有匹配的文件”。
+        const cur = useChatStore.getState().fileSearch
+        if (cur) useChatStore.setState({ fileSearch: { ...cur, done: false } })
+        try {
+          await transport.searchFuzzyChange({ searchId, query: q, limit: 20 })
+        } catch {
+          const now = useChatStore.getState().fileSearch
+          if (now?.searchId === searchId) {
+            useChatStore.setState({ fileSearch: { ...now, done: true } })
+          }
+          /* stale searchId or engine hiccup — next keystroke retries */
+        }
+      })()
     }, 120)
   }
 
@@ -94,7 +124,8 @@ export function useAtPicker(opts: AtPickerOpts) {
     const searchId = useChatStore.getState().fileSearch?.searchId
     useChatStore.setState({ fileSearch: null })
     if (searchId) void transport.searchFuzzyClose({ searchId }).catch(() => {})
-    atOpeningRef.current = false
+    atQueryRef.current = ''
+    atSessionRef.current = null
     atTokenStartRef.current = -1
     setAtOpen(false)
     setAtQuery('')

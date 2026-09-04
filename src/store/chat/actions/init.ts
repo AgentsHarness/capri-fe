@@ -125,7 +125,11 @@ export function initChat(
         ev.type === 'scheduled_task_fired' ||
         ev.type === 'session_rewound' ||
         ev.type === 'git_head_changed' ||
-        ev.type === 'permissions_reset'
+        ev.type === 'permissions_reset' ||
+        // 检索引擎状态流：host 用 agent 自报的 sessionId（模糊搜索是字面量
+        // "agent"，非会话 UUID）打标签，按会话过滤必然全量丢弃。消费方
+        // （@ 选择器）自己用 searchId 认权威，见 events/extMisc.ts。
+        ev.type === 'search_fuzzy_status'
       if (
         !isGlobalEvent &&
         evSid != null &&
