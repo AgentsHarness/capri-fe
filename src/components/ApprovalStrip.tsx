@@ -548,7 +548,7 @@ export function ApprovalStrip() {
               {provenance}
             </div>
           )}
-          <header className="flex min-h-[38px] items-center gap-2 border-b border-gn-prompt-border/70 bg-gn-bg-dark/60 px-3.5 py-1.5">
+          <header className="flex min-h-[38px] items-center gap-1.5 border-b border-gn-prompt-border/70 bg-gn-bg-dark/60 px-3 py-1.5 sm:gap-2 sm:px-3.5">
             <span
               className={`shrink-0 text-gn-yellow ${parked ? "" : "animate-pulse"}`}
               aria-hidden
@@ -556,20 +556,16 @@ export function ApprovalStrip() {
               <IconGlyph glyph={Glyphs.diamondFilled} color="currentColor" />
             </span>
             <span className="text-[13px] font-bold text-gn-yellow">waiting on you</span>
-            <span
-              className="max-w-[160px] truncate rounded border border-gn-prompt-border/60 bg-gn-bg-code px-1.5 py-0.5 font-mono text-[11px] text-gn-muted sm:max-w-[240px]"
-              title={req.method}
-            >
-              {req.method}
-            </span>
             <div className="ml-auto flex shrink-0 items-center gap-1.5">
               <button
                 type="button"
+                aria-label="重置权限规则"
                 onClick={() => void resetPermissions()}
                 className="rounded px-2 py-0.5 text-[11px] text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
                 title="x.ai/permissions/reset — 忘记已记忆的权限规则（始终允许模式等）"
               >
-                重置权限规则
+                <span className="hidden sm:inline">重置权限规则</span>
+                <span className="sm:hidden">重置规则</span>
               </button>
               <button
                 type="button"

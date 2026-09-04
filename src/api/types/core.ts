@@ -62,9 +62,13 @@ export type FePrefsDoc = {
 
 
 
+/** Toast 提示类型 */
+export type ToastType = 'info' | 'success' | 'warning' | 'error'
+
 /** One completion toast (ToastStack) — session finished while away. */
 export type Toast = {
   id: string
   text: string
+  type?: ToastType
 }
 

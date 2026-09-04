@@ -9,6 +9,7 @@ export type {
   PrefsEntries,
   PrefsEntry,
   Toast,
+  ToastType,
   TodoStatus,
 } from './types/core'
 export type {

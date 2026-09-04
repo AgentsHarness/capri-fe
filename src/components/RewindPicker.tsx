@@ -1,5 +1,5 @@
-import { loadBool, saveBool } from '../lib/storage'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { loadBool, saveBool } from '../lib/storage'
 import { useChatStore } from '../store/chat'
 import { pushToast } from '../store/toast'
 import type { RewindConflict, RewindExecuteResult, RewindMode, RewindPoint } from '../api/types'
@@ -11,23 +11,13 @@ import { KEY } from '../lib/keys'
  *
  * Phases:
  *   cancel-offer — the host is busy when the picker opens: ask whether to
- *     cancel the running turn before rewinding (y) or let it finish (n —
- *     closes the panel). Confirming cancels the turn (cancelTurn) and then
- *     loads the rewind points, like the TUI's CancelTurnThenProceed.
- *   loading → picker (j/k move, Enter selects) → confirm (y/a/n) →
+ *     cancel the running turn before rewinding or let it finish.
+ *   loading → picker (j/k or arrow move, Enter selects) → confirm →
  *     executing → modal closes on success; failures render the error
- *     phase with retry (existing inline-error behavior preserved).
+ *     phase with retry.
  *   warning — rewind succeeded but files conflicted with external edits
  *     (mode=all): they were overwritten from snapshots; the list is shown
- *     before the modal closes so the surprise is surfaced, not silent.
- *
- * confirm-before-rewind is a persistent setting: the confirm layer's
- * "Yes, and don't ask again" flips `capri-fe.confirmBeforeRewind` to false
- * in localStorage (TUI confirm_before_rewind); later rewinds execute
- * immediately without the confirm layer.
- *
- * Draft custody: while the picker is open the composer's draft is parked
- * in the store (`stashedDraft`) and restored on close — see Composer.
+ *     before the modal closes.
  */
 const CONFIRM_KEY = KEY.confirmBeforeRewind
 
@@ -60,13 +50,13 @@ export function RewindPicker() {
     point: RewindPoint
     mode: 'yes' | 'always'
   }>()
-  // Rewind scope: conversation-only (TUI default) or all (files too).
-  // Reset per selection so a fresh pick always starts conversation-only.
+  // Rewind scope: conversation-only (default) or all (files too).
   const [rewindMode, setRewindMode] = useState<RewindMode>('conversation_only')
   const [executing, setExecuting] = useState(false)
   // Last successful rewind outcome (warning phase / toast payload).
   const [outcome, setOutcome] = useState<RewindExecuteResult>()
   const panelRef = useRef<HTMLDivElement>(null)
+  const rowRefs = useRef<(HTMLButtonElement | null)[]>([])
   const reqSeq = useRef(0)
   // One-shot open flow (busy check + initial fetch) per open.
   const wasOpen = useRef(false)
@@ -79,9 +69,8 @@ export function RewindPicker() {
     setError(undefined)
     try {
       const list = await rewindPoints()
-      // A newer open superseded this one (or the modal closed mid-flight).
       if (seq === reqSeq.current) {
-        setPoints(list)
+        setPoints(Array.isArray(list) ? list : [])
         setCursor(0)
         setPhase('picker')
       }
@@ -110,7 +99,6 @@ export function RewindPicker() {
     setExecuting(false)
     executingRef.current = false
     if (!sessionId) {
-      // No active session — the picker renders the no-session notice.
       setPhase('loading')
       return
     }
@@ -136,16 +124,11 @@ export function RewindPicker() {
       setPhase('executing')
       try {
         const res = await rewindExecute(point.index, rewindMode)
-        // File conflicts with external edits (mode=all): the snapshots
-        // already overwrote them — surface the list before closing so
-        // the surprise isn't silent (agent force=true clobbers).
         if (res?.conflicts && res.conflicts.length > 0) {
           setOutcome(res)
           setPhase('warning')
           return
         }
-        // Clean success: close to reveal the rewound scrollback; a
-        // "restored N files" toast carries the file-revert feedback.
         const reverted = res?.revertedFiles?.length ?? 0
         if (rewindMode === 'all' && reverted > 0) {
           pushToast(
@@ -169,8 +152,6 @@ export function RewindPicker() {
   const selectPoint = useCallback(
     (p: RewindPoint) => {
       if (executingRef.current) return
-      // Fresh pick always starts conversation-only (TUI default); the
-      // confirm layer offers "对话+文件" for points with snapshots.
       setRewindMode('conversation_only')
       if (confirmBeforeRewind()) {
         setPending({ point: p, mode: 'yes' })
@@ -183,22 +164,25 @@ export function RewindPicker() {
     [execute],
   )
 
-  /** Cancel-offer "y": cancel the running turn, then proceed to rewind. */
+  /** Cancel-offer: cancel the running turn, then proceed to rewind. */
   const cancelTurnThenProceed = useCallback(async () => {
     setPhase('loading')
-    // TUI rewind dispatch cancels with cancel_subagents: true — a running
-    // subagent belongs to the timeline being rewound, so it must stop too
-    // (a plain cancel now defaults to keeping subagents running).
     await cancelTurn({ cancelSubagents: true })
     void fetchPoints()
   }, [cancelTurn, fetchPoints])
 
-  // Newest first (倒序) — highest index on top. Cursor/rows/keyboard all
-  // index this same sorted list.
+  // Newest first (倒序) — highest index on top.
   const list = useMemo(
-    () => [...points].sort((a, b) => b.index - a.index),
+    () => (Array.isArray(points) ? [...points].sort((a, b) => b.index - a.index) : []),
     [points],
   )
+
+  // 键盘移动光标时自动滚入视野
+  useEffect(() => {
+    if (phase === 'picker' && typeof rowRefs.current[cursor]?.scrollIntoView === 'function') {
+      rowRefs.current[cursor]?.scrollIntoView({ block: 'nearest' })
+    }
+  }, [cursor, phase])
 
   useEffect(() => {
     if (!open) return
@@ -208,7 +192,7 @@ export function RewindPicker() {
         e.stopPropagation()
       }
       if (e.key === 'Escape') {
-        if (phase === 'executing') return // in-flight rewind is uninterruptible
+        if (phase === 'executing') return
         prevent()
         closeRewind()
         return
@@ -228,7 +212,6 @@ export function RewindPicker() {
           break
         }
         case 'confirm': {
-          // Cursor rows: 0 仅对话 · 1 对话+文件 · 2 y · 3 a · 4 n.
           const filesAllowed = !pending || pending.point.hasFileChanges !== false
           if (e.key === 'j' || e.key === 'ArrowDown') {
             prevent()
@@ -292,7 +275,6 @@ export function RewindPicker() {
           break
         }
         case 'warning': {
-          // Acknowledge the conflict list and close (enter / esc).
           if (e.key === 'Enter' || e.key === 'Escape') {
             prevent()
             closeRewind()
@@ -337,7 +319,7 @@ export function RewindPicker() {
       <div
         ref={panelRef}
         tabIndex={-1}
-        className="mt-8 w-full max-w-[460px] gn-modal-panel"
+        className="mt-8 flex w-full max-w-[480px] flex-col max-h-[82vh] overflow-hidden gn-modal-panel outline-none"
       >
         <header className="gn-modal-header">
           <span className="font-mono text-[13px] font-bold text-gn-fg">/rewind</span>
@@ -350,32 +332,49 @@ export function RewindPicker() {
           </button>
         </header>
 
-        <div className="py-1">
+        <div className="flex-1 min-h-0 overflow-y-auto">
           {!sessionId ? (
             <div className="px-4 py-6 text-center text-[12px] text-gn-muted">
               暂无活动会话
             </div>
           ) : phase === 'cancel-offer' ? (
-            <div className="px-4 py-5">
-              <div className="text-[13px] font-bold text-gn-fg">
-                当前有回合正在运行
+            <div className="p-4 space-y-3">
+              <div className="rounded border border-gn-warning/30 bg-gn-warning/10 p-3 text-[12px]">
+                <div className="font-semibold text-gn-warning">当前有回合正在运行</div>
+                <div className="mt-1 text-[11.5px] leading-snug text-gn-fg2">
+                  执行回退将截断正在运行的回合。你可以选择取消当前回合立即回退，或等待它完成。
+                </div>
               </div>
-              <div className="mt-1 text-[12px] leading-snug text-gn-muted">
-                取消当前回合并回卷？还是等它完成？
-              </div>
-              <div className="mt-3 space-y-1">
-                <RadioRow
-                  k="y"
-                  label="取消回合并回卷"
-                  active={offerCursor === 0}
+
+              <div className="space-y-1.5">
+                <button
+                  type="button"
                   onClick={() => void cancelTurnThenProceed()}
-                />
-                <RadioRow
-                  k="n"
-                  label="等它完成"
-                  active={offerCursor === 1}
+                  className={`flex w-full items-center justify-between rounded border px-3 py-2 text-left text-[12px] transition-colors ${
+                    offerCursor === 0
+                      ? 'bg-gn-bg-highlight border-gn-cyan/50 text-gn-fg'
+                      : 'border-gn-prompt-border/50 text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg'
+                  }`}
+                >
+                  <div>
+                    <div className="font-medium">取消当前回合并回退</div>
+                    <div className="text-[11px] text-gn-muted mt-0.5">立即终止当前回合，载入历史回退点</div>
+                  </div>
+                </button>
+                <button
+                  type="button"
                   onClick={closeRewind}
-                />
+                  className={`flex w-full items-center justify-between rounded border px-3 py-2 text-left text-[12px] transition-colors ${
+                    offerCursor === 1
+                      ? 'bg-gn-bg-highlight border-gn-cyan/50 text-gn-fg'
+                      : 'border-gn-prompt-border/50 text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg'
+                  }`}
+                >
+                  <div>
+                    <div className="font-medium">等它完成</div>
+                    <div className="text-[11px] text-gn-muted mt-0.5">关闭弹窗，等待任务执行完毕后再回退</div>
+                  </div>
+                </button>
               </div>
             </div>
           ) : phase === 'loading' ? (
@@ -396,59 +395,86 @@ export function RewindPicker() {
               </div>
             )
           ) : phase === 'confirm' && pending ? (
-            <div className="px-4 py-5">
-              <div className="text-[12px] leading-snug text-gn-fg">
-                回退到{' '}
-                <span className="font-mono text-gn-cyan">#{pending.point.index}</span>
-                {pending.point.summary ? ` — ${pending.point.summary}` : ''}？
+            <div className="p-4 space-y-3.5">
+              {/* 目标检查点摘要卡片 */}
+              <div className="rounded border border-gn-prompt-border/70 bg-gn-bg-dark/60 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="rounded border border-gn-cyan/40 bg-gn-cyan/10 px-1.5 py-0.5 font-mono text-[11px] font-bold text-gn-cyan">
+                    #{pending.point.index}
+                  </span>
+                  <span className="font-mono text-[10.5px] text-gn-muted">
+                    {formatPointTime(pending.point.timestamp)}
+                  </span>
+                </div>
+                <div className="mt-1.5 text-[12px] leading-snug text-gn-fg break-words">
+                  {pending.point.summary || `第 #${pending.point.index} 轮历史检查点`}
+                </div>
               </div>
-              <div className="mt-1 font-mono text-[10px] text-gn-muted">
-                {formatPointTime(pending.point.timestamp)}
+
+              {/* 回退范围 */}
+              <div>
+                <div className="text-[11px] font-semibold text-gn-muted mb-1.5">
+                  回退范围
+                </div>
+                <div className="space-y-1">
+                  <RadioRow
+                    label="仅对话"
+                    description="仅回退聊天记录，保留工作区中的文件修改"
+                    active={confirmCursor === 0}
+                    checked={rewindMode === 'conversation_only'}
+                    onClick={() => setRewindMode('conversation_only')}
+                  />
+                  <RadioRow
+                    label="对话 + 文件"
+                    description="同时将工作区文件还原至该检查点的快照状态"
+                    disabled={pending.point.hasFileChanges === false}
+                    active={confirmCursor === 1}
+                    checked={rewindMode === 'all'}
+                    onClick={() => setRewindMode('all')}
+                  />
+                  {pending.point.hasFileChanges === false && (
+                    <div className="pl-2 pt-0.5 text-[10.5px] text-gn-gutter">
+                      该回退点无文件快照，仅支持对话回退
+                    </div>
+                  )}
+                </div>
               </div>
-              <div className="mt-3 space-y-1">
-                <RadioRow
-                  k="c"
-                  label="仅对话"
-                  active={confirmCursor === 0}
-                  checked={rewindMode === 'conversation_only'}
-                  onClick={() => setRewindMode('conversation_only')}
-                />
-                <RadioRow
-                  k="f"
-                  label="对话+文件"
-                  disabled={pending.point.hasFileChanges === false}
-                  active={confirmCursor === 1}
-                  checked={rewindMode === 'all'}
-                  onClick={() => setRewindMode('all')}
-                />
-                {pending.point.hasFileChanges === false ? (
-                  <div className="pl-3 text-[10px] text-gn-gutter">
-                    该回退点无文件快照，仅支持对话回退
-                  </div>
-                ) : null}
-              </div>
-              <div className="mt-3 space-y-1">
-                <RadioRow
-                  k="y"
-                  label="是"
-                  active={confirmCursor === 2}
-                  onClick={() => void execute(pending.point, 'yes')}
-                />
-                <RadioRow
-                  k="a"
-                  label="是，且不再询问（下次直接回卷）"
-                  active={confirmCursor === 3}
-                  onClick={() => void execute(pending.point, 'always')}
-                />
-                <RadioRow
-                  k="n"
-                  label="否"
-                  active={confirmCursor === 4}
+
+              {/* 操作按钮栏 */}
+              <div className="pt-2 border-t border-gn-prompt-border/40 flex items-center justify-between gap-2">
+                <button
+                  type="button"
                   onClick={() => {
                     setPending(undefined)
                     setPhase('picker')
                   }}
-                />
+                  className={`rounded border border-gn-prompt-border/60 px-3 py-1.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg transition-colors ${
+                    confirmCursor === 4 ? 'bg-gn-bg-highlight text-gn-fg ring-1 ring-gn-prompt-border' : ''
+                  }`}
+                >
+                  返回列表
+                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void execute(pending.point, 'always')}
+                    className={`rounded px-2.5 py-1.5 text-[11.5px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg transition-colors ${
+                      confirmCursor === 3 ? 'bg-gn-bg-highlight text-gn-fg ring-1 ring-gn-prompt-border' : ''
+                    }`}
+                    title="确认并以后不再弹出确认提示"
+                  >
+                    不再询问并回退
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void execute(pending.point, 'yes')}
+                    className={`rounded bg-gn-cyan/15 border border-gn-cyan/50 px-4 py-1.5 text-[12px] font-semibold text-gn-cyan hover:bg-gn-cyan/25 transition-colors ${
+                      confirmCursor === 2 ? 'ring-2 ring-gn-cyan/50' : ''
+                    }`}
+                  >
+                    确认回退
+                  </button>
+                </div>
               </div>
             </div>
           ) : phase === 'executing' ? (
@@ -491,7 +517,7 @@ export function RewindPicker() {
                 onClick={closeRewind}
                 className="mt-3 w-full rounded px-3 py-1.5 text-[12px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg"
               >
-                知道了<span className="hidden sm:inline">（<span className="gn-kbd">Enter</span> / <span className="gn-kbd">Esc</span>）</span>
+                知道了
               </button>
             </div>
           ) : phase === 'error' ? (
@@ -524,36 +550,55 @@ export function RewindPicker() {
               没有可用的回退点
             </div>
           ) : (
-            list.map((p, i) => (
-              <button
-                key={p.index}
-                type="button"
-                disabled={executing}
-                onClick={() => selectPoint(p)}
-                className={`flex w-full items-start gap-3 border-b border-gn-prompt-border/50 px-4 py-2 text-left hover:bg-gn-bg-highlight disabled:opacity-50 ${ i === cursor ? 'bg-gn-bg-highlight' : '' }`}
-                title={`回退到索引 ${p.index} — 删除该点之后的对话内容`}
-              >
-                <span className="shrink-0 rounded border border-gn-prompt-border px-1 font-mono text-[10px] leading-[16px] text-gn-cyan">
-                  #{p.index}
-                </span>
-                <span className="min-w-0 flex-1">
-                  {p.summary ? (
-                    <span className="block break-words text-[12px] leading-snug text-gn-fg">
-                      {p.summary}
-                    </span>
-                  ) : null}
-                  <span className="block pt-0.5 font-mono text-[10px] text-gn-muted">
-                    {formatPointTime(p.timestamp)}
-                    {p.hasFileChanges === false
-                      ? ' · 仅对话'
-                      : p.hasFileChanges === true
-                        ? ' · 对话+文件'
-                        : ''}
-                    {pending?.point.index === p.index && executing ? ' · 回退中…' : ''}
+            <div className="divide-y divide-gn-prompt-border/40">
+              {list.map((p, i) => (
+                <button
+                  key={p.index}
+                  ref={(el) => {
+                    rowRefs.current[i] = el
+                  }}
+                  type="button"
+                  disabled={executing}
+                  onClick={() => selectPoint(p)}
+                  className={`flex w-full items-start gap-3 px-4 py-2.5 text-left transition-colors ${
+                    i === cursor
+                      ? 'bg-gn-bg-highlight text-gn-fg'
+                      : 'hover:bg-gn-bg-highlight/60 text-gn-fg2'
+                  } disabled:opacity-50`}
+                  title={`回退到索引 #${p.index} — 删除该点之后的对话内容`}
+                >
+                  <span
+                    className={`shrink-0 rounded border px-1 font-mono text-[10.5px] leading-[16px] ${
+                      i === cursor
+                        ? 'border-gn-cyan/60 bg-gn-cyan/15 text-gn-cyan'
+                        : 'border-gn-prompt-border text-gn-cyan'
+                    }`}
+                  >
+                    #{p.index}
                   </span>
-                </span>
-              </button>
-            ))
+                  <span className="min-w-0 flex-1">
+                    {p.summary ? (
+                      <span className="block break-words text-[12px] leading-snug text-gn-fg">
+                        {p.summary}
+                      </span>
+                    ) : (
+                      <span className="block text-[12px] leading-snug text-gn-fg2">
+                        第 #{p.index} 轮历史检查点
+                      </span>
+                    )}
+                    <span className="block pt-0.5 font-mono text-[10px] text-gn-muted">
+                      {formatPointTime(p.timestamp)}
+                      {p.hasFileChanges === false
+                        ? ' · 仅对话'
+                        : p.hasFileChanges === true
+                          ? ' · 对话+文件'
+                          : ''}
+                      {pending?.point.index === p.index && executing ? ' · 回退中…' : ''}
+                    </span>
+                  </span>
+                </button>
+              ))}
+            </div>
           )}
         </div>
       </div>
@@ -561,42 +606,47 @@ export function RewindPicker() {
   )
 }
 
-/** TUI render_radio_row port: key · (●/○) label, cursor-highlighted. */
+/** 单选行组件（纯粹的图形化选项，不展示键盘符号） */
 function RadioRow({
-  k,
   label,
+  description,
   active,
   checked,
   disabled,
   onClick,
 }: {
-  k: string
   label: string
+  description?: string
   active: boolean
-  /** Radio dot state (defaults to `active` — used by the rewind mode rows). */
   checked?: boolean
   disabled?: boolean
   onClick: () => void
 }) {
-  const dot = checked ?? active
+  const isChecked = checked ?? active
   return (
     <button
       type="button"
       disabled={disabled}
       onClick={onClick}
-      className={`flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-[12px] ${
- active
-          ? 'bg-gn-bg-highlight text-gn-fg'
-          : 'text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg'
-      } ${disabled ? 'cursor-not-allowed opacity-40 hover:bg-transparent hover:text-gn-fg2' : ''}`}
+      className={`group relative flex w-full items-start gap-2.5 rounded px-3 py-1.5 text-left text-[12px] transition-colors border ${
+        active
+          ? 'bg-gn-bg-highlight border-gn-prompt-border-active text-gn-fg'
+          : isChecked
+            ? 'bg-gn-bg-highlight/40 border-gn-prompt-border/60 text-gn-fg'
+            : 'border-transparent text-gn-fg2 hover:bg-gn-bg-highlight/30 hover:text-gn-fg'
+      } ${disabled ? 'cursor-not-allowed opacity-40 hover:bg-transparent hover:border-transparent hover:text-gn-fg2' : ''}`}
     >
-      <span className={`gn-kbd ${active ? '!text-gn-cyan !border-gn-cyan/50' : ''}`}>
-        {k}
+      <span className={`mt-0.5 shrink-0 ${isChecked ? 'text-gn-cyan' : 'text-gn-muted'}`} aria-hidden>
+        {isChecked ? '●' : '○'}
       </span>
-      <span className="text-gn-muted" aria-hidden>
-        {dot ? '●' : '○'}
-      </span>
-      <span className="min-w-0 flex-1">{label}</span>
+      <div className="min-w-0 flex-1">
+        <div className="leading-snug">{label}</div>
+        {description && (
+          <div className="text-[10.5px] text-gn-muted leading-tight mt-0.5">
+            {description}
+          </div>
+        )}
+      </div>
     </button>
   )
 }
@@ -615,7 +665,7 @@ function conflictLabel(c: RewindConflict): string {
   }
 }
 
-/** Rewind point timestamp → "MM/DD HH:MM" (epoch s / ms / ISO all accepted). */
+/** Rewind point timestamp → "YYYY/MM/DD HH:MM" (epoch s / ms / ISO all accepted). */
 function formatPointTime(ts: number | string | undefined): string {
   if (ts == null || ts === '') return ''
   const n = Number(ts)
