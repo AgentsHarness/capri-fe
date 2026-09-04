@@ -46,6 +46,10 @@ export const gitRpc = {
     )
   },
 
+  async gitInit(this: TransportCore, opts: { cwd?: string } = {}): Promise<{ ok: boolean; output?: string }> {
+    return postGitEndpoint<{ ok: boolean; output?: string }>(this, '/api/git/init', opts)
+  },
+
   async gitPush(this: TransportCore, opts: {
     cwd?: string
     remote?: string

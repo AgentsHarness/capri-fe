@@ -23,6 +23,7 @@ const h = vi.hoisted(() => {
       gitPush: vi.fn(),
       gitPull: vi.fn(),
       gitFetch: vi.fn(),
+      gitInit: vi.fn(),
       gitStashList: vi.fn(),
       gitStashPop: vi.fn(),
       gitStashDrop: vi.fn(),
@@ -100,6 +101,7 @@ beforeEach(() => {
   transport.gitPush.mockReset().mockResolvedValue({ ok: true })
   transport.gitPull.mockReset().mockResolvedValue({ ok: true })
   transport.gitFetch.mockReset().mockResolvedValue({ ok: true })
+  transport.gitInit.mockReset().mockResolvedValue({ ok: true })
   transport.gitStashList.mockReset().mockResolvedValue({
     ok: true,
     stashes: [
@@ -529,5 +531,21 @@ describe('GitPanel — 移动端多Tab与高级特性', () => {
         index: 'stash@{0}',
       }),
     )
+  })
+
+  it('非 git 仓库提示与一键初始化，且隐藏其他功能', async () => {
+    transport.gitStatus.mockRejectedValueOnce(new Error('fatal: not a git repository (or any parent up to /)'))
+    render(<GitPanel open onClose={() => {}} />)
+    expect(await screen.findByText('当前目录不是 git 仓库')).not.toBeNull()
+    // Tab 导航按钮不应显示
+    expect(screen.queryByRole('button', { name: '历史' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '分支与同步' })).toBeNull()
+    // 底部提交栏不应显示
+    expect(screen.queryByPlaceholderText('提交信息（Enter 提交）')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'commit' })).toBeNull()
+
+    const initBtn = screen.getByRole('button', { name: /初始化 Git 仓库/ })
+    fireEvent.click(initBtn)
+    await waitFor(() => expect(transport.gitInit).toHaveBeenCalledWith({ cwd: '/work' }))
   })
 })
