@@ -1182,7 +1182,7 @@ export function Composer() {
     // runtime-measured paddingRight (gutterPx) instead — see the
     // measurement effect above.
     <div
-      className="safe-pb bg-gn-bg-base pt-1"
+      className="safe-pb bg-gn-bg-base pt-1 touch-pan-x overscroll-none"
       style={gutterPx ? { paddingRight: `${gutterPx}px` } : undefined}
     >
       <div className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS}`}>
@@ -2118,7 +2118,7 @@ export function Composer() {
                       : 'Build anything'
                 }
                 spellCheck={false}
-                className="gn-no-scrollbar min-h-[20px] flex-1 resize-none bg-transparent font-ui text-[13.5px] leading-[1.55] text-gn-fg outline-none placeholder:text-gn-gray"
+                className="gn-no-scrollbar min-h-[20px] flex-1 resize-none bg-transparent font-ui text-[13.5px] leading-[1.55] text-gn-fg outline-none placeholder:text-gn-gray touch-pan-y"
               />
               {slashLiteral && (
                 // 转义生效的即时回执：这行不会被当命令执行，Enter 原样发出。

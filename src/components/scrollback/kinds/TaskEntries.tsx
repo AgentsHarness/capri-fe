@@ -38,11 +38,11 @@ export function SubagentEntry({
         <span className="min-w-0 truncate font-mono text-[12.5px] text-gn-muted">
           {e.title}
         </span>
-        {(e.persona || e.role || e.model) && (
+        {(e.persona || e.role || e.model || e.reasoningEffort) && (
           // wire 标识符理论上可超长：min-w-0 truncate 与标题同规则，
           // 不把行撑出内容列（截断细节 hover/查看器可见）。
           <span className="min-w-0 truncate text-[11px] text-gn-gutter">
-            {subagentMeta(e.persona, e.role, e.model)}
+            {subagentMeta(e.persona, e.role, e.model, e.reasoningEffort)}
           </span>
         )}
         {e.detail && (

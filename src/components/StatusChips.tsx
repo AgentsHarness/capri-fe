@@ -865,9 +865,9 @@ export function RunningTasksBar({
                 <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-gn-fg">
                   {e.title}
                 </span>
-                {e.kind === 'subagent' && (e.persona || e.role || e.model) && (
+                {e.kind === 'subagent' && (e.persona || e.role || e.model || e.reasoningEffort) && (
                   <span className="shrink-0 font-mono text-[10px] text-gn-gutter">
-                    {subagentMeta(e.persona, e.role, e.model)}
+                    {subagentMeta(e.persona, e.role, e.model, e.reasoningEffort)}
                   </span>
                 )}
                 {e.detail && (

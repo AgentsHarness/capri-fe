@@ -2,6 +2,7 @@ export {
   subagentFinishStatus,
   applySubagentFinish,
   handleSubagentEvent,
+  resolveSubagentModelAndEffort,
   SUBAGENT_VIEW_PAGE_SIZE,
 } from './subagentEvent'
 export {

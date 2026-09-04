@@ -10,7 +10,10 @@ import {
 } from '../globals'
 import {
   applyCollapsedEditBlocksFromCache,
+  applyModeFlags,
   ensureDefaultModeFlags,
+  loadGlobalModeFlags,
+  MODE_FLAGS_KEY,
   saveModeFlags,
   savePlanMode,
 } from '../modeFlags'
@@ -102,7 +105,24 @@ export function initChat(
       ) {
         clearSubagentSettleTimer()
       }
+      // 全局广播事件族：模式变更（yolo_mode_changed）、会话列表（sessions_changed）、
+      // 宿主变更（hosts_changed）、偏好变更（prefs_changed）、MCP 工具/服务变更、
+      // 调度任务生命周期（created/deleted/fired）、会话回退通知（session_rewound）等属于
+      // 跨会话或全局关注的事件，即使宿主或中间层附带了 sessionId 也不得按
+      // 单会话过滤规则在顶层拦截丢弃。
+      const isGlobalEvent =
+        ev.type === 'yolo_mode_changed' ||
+        ev.type === 'sessions_changed' ||
+        ev.type === 'hosts_changed' ||
+        ev.type === 'prefs_changed' ||
+        ev.type === 'mcp_tools_changed' ||
+        ev.type === 'mcp_servers_updated' ||
+        ev.type === 'scheduled_task_created' ||
+        ev.type === 'scheduled_task_deleted' ||
+        ev.type === 'scheduled_task_fired' ||
+        ev.type === 'session_rewound'
       if (
+        !isGlobalEvent &&
         evSid != null &&
         evSid !== s.sessionId &&
         ev.type !== 'hello' &&
@@ -212,7 +232,29 @@ export function initChat(
     const pinsSyncTimer = setTimeout(() => {
       void usePins.getState().syncPrefsFromHub()
     }, 0)
+    // 多 Tab 同步：监听 storage 事件，当另一标签页（同源）切换了全局权限模式
+    // （yoloMode / autoMode / normal）时，本标签页即使在看不同会话也立即同步。
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === MODE_FLAGS_KEY) {
+        const flags = loadGlobalModeFlags()
+        if (flags.yoloMode === true || flags.autoMode === true) {
+          applyModeFlags(set, flags as Record<string, unknown>)
+        } else {
+          set({
+            yoloMode: false,
+            autoMode: false,
+            permissionMode: undefined,
+          })
+        }
+      }
+    }
+    if (typeof window !== 'undefined') {
+      window.addEventListener('storage', onStorage)
+    }
     return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('storage', onStorage)
+      }
       clearTimeout(pinsSyncTimer)
       clearTimeout(uiPrefetchTimer)
       unsub()

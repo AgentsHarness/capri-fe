@@ -18,7 +18,7 @@ import { pushToast } from '../../toast'
  * 轮次 = historyTurnIdx，往后逐行 +1；shell 直执行行（!cmd）不经 agent、
  * 不算轮次。定位不到（target 落在窗口外）→ 不截断，交给对齐重载收敛。
  */
-function truncateEntriesTo(target: number, set: SetState, get: () => ChatState): void {
+export function truncateEntriesTo(target: number, set: SetState, get: () => ChatState): void {
   const st = get()
   const entries = st.entries
   if (entries.length === 0) return
@@ -60,7 +60,7 @@ const REWIND_ALIGN_BACKOFF_MS = 250
  * 行为直接重载。探测失败（网络瞬断）不阻塞，继续下一轮，最终由调用方
  * 收口。返回 false = 重试窗口内仍未对齐，调用方保留本地截断视图。
  */
-async function waitRewindAligned(
+export async function waitRewindAligned(
   sessionId: string,
   cwd: string,
   target: number | undefined,

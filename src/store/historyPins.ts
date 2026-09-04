@@ -524,6 +524,23 @@ transport.onEvent((ev) => {
   usePins.getState().absorb(raw, 'hub')
 })
 
+// 多 Tab 本地同步：Local 直连模式无 hub 广播，监听 storage 事件让同源标签页即时同步
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (e.key === PIN_KEY && e.newValue) {
+      const parsed = loadJSON<Record<string, unknown>>(PIN_KEY, {})
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.v === 3) {
+        const incoming = sanitizeEntries(parsed.entries)
+        const cur = usePins.getState().entries
+        const merged = pruneTombstones(mergeEntries(cur, incoming))
+        if (!sameEntries(merged, cur)) {
+          usePins.setState({ entries: merged, ...project(merged) })
+        }
+      }
+    }
+  })
+}
+
 // ── FE 前端偏好访问 ───────────────────────────────────────────────────
 
 /**

@@ -348,7 +348,7 @@ export function TopBar({
   // context on this chrome, absolute z-40 children still lose to later
   // siblings and chat text "shows through" the history panel.
   return (
-    <header className="relative z-40 select-none border-b border-gn-prompt-border bg-gn-bg-base">
+    <header className="relative z-40 select-none border-b border-gn-prompt-border bg-gn-bg-base touch-pan-x overscroll-none">
       {/* Main row: host switcher + actions. */}
       <div className="flex shrink-0 items-center gap-2 px-3 py-[6px] sm:px-4 text-[12px] text-gn-muted">
         {/* Desktop-only sidebar collapse toggle — sits left of the host switcher. */}
@@ -746,7 +746,7 @@ export function TopBar({
                     }}
                   />
                 )}
-                <div className="gn-no-scrollbar min-h-0 overflow-y-auto">
+                <div className="gn-no-scrollbar min-h-0 overflow-y-auto touch-pan-y overscroll-contain">
                   {historySearchOpen && historySearchActive ? null : <SessionHistoryList />}
                 </div>
               </div>
@@ -775,7 +775,7 @@ export function TopBar({
                 aria-label="close"
                 onClick={() => setMoreOpen(false)}
               />
-              <div className="absolute right-0 top-full z-40 mt-1 max-h-[70vh] w-64 max-w-[90vw] overflow-y-auto gn-menu">
+              <div className="absolute right-0 top-full z-40 mt-1 max-h-[70vh] w-64 max-w-[90vw] overflow-y-auto gn-menu touch-pan-y overscroll-contain">
                 <div className="px-3 pb-1 pt-1.5 text-[10px] uppercase tracking-wider text-gn-gutter">
                   more
                 </div>

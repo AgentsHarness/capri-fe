@@ -133,3 +133,128 @@ describe('handleExtMiscEvent — models_update', () => {
     expect(state().reasoningEffort).toBe('low')
   })
 })
+
+describe('handleExtMiscEvent — scheduled_task_deleted 跨会话同步', () => {
+  it('其他会话删除定时任务：本会话任务列表能成功移除该任务，且不污染本会话滚动区提示行', () => {
+    const task = {
+      taskId: 'task-123',
+      prompt: 'do something',
+      interval: '1h',
+      status: 'active' as const,
+    }
+    const { set, get, state } = makeStore({
+      sessionId: 's1',
+      scheduledTasks: [task],
+      entries: [],
+    })
+
+    const ev: AcpEvent = {
+      type: 'scheduled_task_deleted',
+      sessionId: 'other-session',
+      taskId: 'task-123',
+      reason: 'deleted',
+    } as AcpEvent
+
+    handleExtMiscEvent(set, get, ev)
+
+    // 全局 scheduledTasks 必须被移除
+    expect(state().scheduledTasks).toEqual([])
+    // entries 不能插入非本会话的 session_event 提示行
+    expect(state().entries).toHaveLength(0)
+  })
+
+  it('当前会话删除定时任务：本会话任务列表移除，且生成可见的提示行', () => {
+    const task = {
+      taskId: 'task-123',
+      prompt: 'do something',
+      interval: '1h',
+      status: 'active' as const,
+    }
+    const { set, get, state } = makeStore({
+      sessionId: 's1',
+      scheduledTasks: [task],
+      entries: [],
+    })
+
+    const ev: AcpEvent = {
+      type: 'scheduled_task_deleted',
+      sessionId: 's1',
+      taskId: 'task-123',
+      reason: 'deleted',
+    } as AcpEvent
+
+    handleExtMiscEvent(set, get, ev)
+
+    expect(state().scheduledTasks).toEqual([])
+    expect(state().entries).toHaveLength(1)
+    expect(state().entries[0].kind).toBe('session_event')
+  })
+})
+
+describe('handleExtMiscEvent — model 与 session_rewound 跨会话同步', () => {
+  it('非当前会话的 model 事件：更新侧边栏 workspaces 缓存中对应会话的 currentModelId', () => {
+    const ws = [
+      {
+        cwd: '/work',
+        label: 'work',
+        sessions: [
+          { sessionId: 's1', cwd: '/work', currentModelId: 'grok-3' },
+          { sessionId: 'other-session', cwd: '/work', currentModelId: 'grok-3' },
+        ],
+      },
+    ]
+    const { set, get, state } = makeStore({
+      sessionId: 's1',
+      modelName: 'Grok 3',
+      workspaces: ws,
+    })
+
+    const ev: AcpEvent = {
+      type: 'model',
+      sessionId: 'other-session',
+      modelId: 'grok-4',
+      modelName: 'Grok 4',
+    } as AcpEvent
+
+    handleExtMiscEvent(set, get, ev)
+
+    // 本会话当前模型不变
+    expect(state().modelName).toBe('Grok 3')
+    // workspaces 里 other-session 的 currentModelId 更新为 grok-4
+    const target = state().workspaces[0].sessions.find((s) => s.sessionId === 'other-session')
+    expect(target?.currentModelId).toBe('grok-4')
+  })
+
+  it('session_rewound 事件：刷新会话列表并对当前会话执行截断', () => {
+    const refreshSessions = vi.fn()
+    const refreshWorkspaces = vi.fn()
+    const entries = [
+      { id: 'u0', kind: 'user' as const, text: 'q0' },
+      { id: 'a0', kind: 'assistant' as const, text: 'a0' },
+      { id: 'u1', kind: 'user' as const, text: 'q1' },
+      { id: 'a1', kind: 'assistant' as const, text: 'a1' },
+    ]
+    const { set, get, state } = makeStore({
+      sessionId: 's1',
+      cwd: '/work',
+      entries,
+      refreshSessions,
+      refreshWorkspaces,
+    })
+
+    const ev: AcpEvent = {
+      type: 'session_rewound',
+      sessionId: 's1',
+      targetPromptIndex: 1,
+    } as AcpEvent
+
+    handleExtMiscEvent(set, get, ev)
+
+    expect(refreshSessions).toHaveBeenCalled()
+    expect(refreshWorkspaces).toHaveBeenCalled()
+    // 截断到 targetPromptIndex 1：保留 u0/a0，切除 u1/a1
+    expect(state().entries.map((e) => e.id)).toEqual(['u0', 'a0'])
+  })
+})
+
+
