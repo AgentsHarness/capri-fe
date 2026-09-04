@@ -86,7 +86,7 @@ export function ModelMenu({ models, pos, menu }: ModelMenuProps) {
       <div className="shrink-0 border-b border-gn-prompt-border px-3 py-1.5 text-[11px] font-bold text-gn-fg2">
         切换模型
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto touch-pan-y overscroll-contain">
         {models.map((m) => {
           const rawEfforts = m.reasoningEfforts ?? []
           const defEffort = rawEfforts.find((e) => e.default) ?? rawEfforts[0]

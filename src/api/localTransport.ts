@@ -26,6 +26,8 @@ type HubWsFrame =
   | { type: 'hello'; service?: string; hosts?: unknown; defaultHostId?: string; seqs?: Record<string, number>; [k: string]: unknown }
   | { type: 'events'; events: AcpEvent[] }
   | { type: 'ping'; ts?: number }
+  /** 新 hub 对 subscribe 控制帧的回执：该 host 当前的 seq 水位。 */
+  | { type: 'subscribed'; host?: string; seq?: number }
   | { type: string; [k: string]: unknown }
 
 /**
@@ -245,6 +247,32 @@ export class LocalTransport {
     this.syncLocalSSE()
     // 每次切换都重新核对这台 host 的本机端口归属（已验证且端口没变则零请求）。
     if (hostId) void this.verifyLocalRoute(hostId)
+    // 让 hub 将这条 live 连接的事件流改指向新 host：hub 端按订阅者分流后，
+    // 页面不再收到别的 host 一个字节（切 host 不必重连、不必重新换 ticket）。
+    // 同时声明"新 host 从头算"：切过来的 transcript 由 loadHistory 从 host
+    // 持久化历史重建，hub 环形缓冲里的旧事件不是缺口。hub 的 subscribed 回执
+    // 通常随后就到并按它对齐水位，但回执晚于第一条 live 事件时，没有这个声明
+    // 就会按 after=0 把整段缓冲拉回来当新事件追加。
+    if (hostId) this.seq.seedFromLive(hostId)
+    this.sendSubscribeFrame()
+  }
+
+  /**
+   * 在活的 hub WS 上声明「本页面只关心选中 host」。hub 回一条
+   * {type:'subscribed',host,seq}，由 onWsMessage 拿去对齐该 host 的 seq
+   * 水位。连接还没建起来（首次加载时 host 往往晚于 WS 选定）时不用补发：
+   * connectWS 会把选中 host 直接写进 ?host=。
+   */
+  private sendSubscribeFrame(): void {
+    if (this.mode !== 'hub') return
+    const ws = this.ws
+    if (!ws || ws.readyState !== WebSocket.OPEN) return
+    const hostId = this.selectedHostId ?? ''
+    try {
+      ws.send(JSON.stringify({ v: 1, type: 'subscribe', host: hostId }))
+    } catch {
+      // 连接正好在关闭中：重连后的 ?host= 会带上同样的选择。
+    }
   }
 
   getHost(): string | null {
@@ -1409,6 +1437,14 @@ export class LocalTransport {
     // Ask the hub to flate-compress events frames; the browser
     // DecompressionStream API decodes them.
     if (typeof DecompressionStream !== 'undefined') params.set('c', '1')
+    // 分流：告诉 hub 这个页面只关心选中 host 的事件。首帧之前 host 往往
+    // 还没选定（宿主列表要一次跨网往返），落回上次选中的持久值，让建连即
+    // 起就是过滤态；选错了也会被随后的 subscribe 帧改正。旧 hub 不认这个
+    // 参数也照常工作（照样全推，客户端 emit 里那层过滤兜底）。
+    const scope = this.selectedHostId ?? loadStr(KEY.host)
+    if (this.mode === 'hub' && scope) {
+      params.set('host', scope)
+    }
     u.search = params.toString()
     u.hash = ''
     return u.toString()
@@ -1459,12 +1495,20 @@ export class LocalTransport {
 
   private reconcileSeq(seqs?: Record<string, number>) {
     if (!seqs || !this.selectedHostId) return
+    const hubSeq = seqs[this.selectedHostId]
+    if (typeof hubSeq !== 'number') return
+    this.reconcileHostSeq(this.selectedHostId, hubSeq)
+  }
+
+  /**
+   * 把某个 host 的本地 seq 水位对齐到 hub 报的权威值。hello.seqs（重连）
+   * 与 subscribed 回执（切 host）走同一条判断。
+   */
+  private reconcileHostSeq(hostId: string, hubSeq: number): void {
     // 双连接：选中本机时本机事件以本地 SSE 为权威（hub 路丢弃），
     // 缺口由本地 SSE 重连后的 gapPull 负责，不在此按 hub 补拉。
     if (this.isLocalDirect()) return
-    const hubSeq = seqs[this.selectedHostId]
-    if (typeof hubSeq !== 'number') return
-    const mine = this.seq.watermark(this.selectedHostId)
+    const mine = this.seq.watermark(hostId)
     // 全新页面（本 tab 一条 live 事件都没收过，水位还是 0）：hub 的 seq 是它
     // 累计到现在的值，这不是"缺口"。transcript 由 loadHistory 从 host 持久化
     // 历史重建，此时按 after=0 补拉会把 hub 缓冲整段当 live 事件追加到末尾
@@ -1472,7 +1516,7 @@ export class LocalTransport {
     // 对话末尾莫名多出一串历史事件"。hub 侧 hello 带 seqs 的用途是「重连的
     // FE 补自己的缺口」，水位为 0 时只对齐、不补拉。
     if (mine === 0) {
-      this.seq.resetHost(this.selectedHostId, hubSeq)
+      this.seq.resetHost(hostId, hubSeq)
       return
     }
     // hub 报的 seq 比本地水位低 = host/hub 重启后序号从头计数（hello 的
@@ -1480,10 +1524,10 @@ export class LocalTransport {
     // 会把重启后**所有** live 事件静默丢弃，直到序号重新爬过旧水位
     // ——用户看到的是「连着但永远不更新」，只能刷新页面。
     if (hubSeq < mine) {
-      this.seq.resetHost(this.selectedHostId, hubSeq)
+      this.seq.resetHost(hostId, hubSeq)
       return
     }
-    if (hubSeq > mine) void this.seq.gapPull(this.selectedHostId, mine, this.gen)
+    if (hubSeq > mine) void this.seq.gapPull(hostId, mine, this.gen)
   }
 
   /**
@@ -1499,8 +1543,13 @@ export class LocalTransport {
    * 3) 透传 resync 给上层触发重建（store 侧防抖：重建进行中的新
    *    resync 直接忽略，绝不并发重建）。
    */
-  private handleResyncFrame(fromSeq: unknown, gen: number): void {
+  private handleResyncFrame(fromSeq: unknown, gen: number, hostId?: unknown): void {
     if (gen !== this.gen) return
+    // seq 计数器是 per-host 的，别的 host 的慢消费信号与本 host 毫无关系：
+    // 拿 B 的 fromSeq 顶 A 的水位，会把 A 之后所有低于它的事件静默丢掉。
+    // 新 hub 的 resync 帧带 hostId，归属不符直接忽略；旧 hub 不带 hostId，
+    // 退回原语义（只能当作本 host 的信号）。
+    if (typeof hostId === 'string' && hostId && hostId !== this.selectedHostId) return
     const seq =
       typeof fromSeq === 'number' && Number.isSafeInteger(fromSeq) && fromSeq > 0
         ? fromSeq
@@ -1538,6 +1587,15 @@ export class LocalTransport {
     }
     if (!data || typeof data !== 'object' || !('type' in data)) return
     if (data.type === 'ping') return
+    if (data.type === 'subscribed') {
+      // 切 host 的 subscribe 回执：以 hub 报的该 host 水位对齐本地序号。
+      // 只认当前选中 host 的回执——连续快点选时旧回执不能拿来对齐新 host。
+      const d = data as { host?: unknown; seq?: unknown }
+      if (d.host && d.host === this.selectedHostId && typeof d.seq === 'number') {
+        this.reconcileHostSeq(this.selectedHostId, d.seq)
+      }
+      return
+    }
     if (data.type === 'hello' && (data as { service?: string }).service === 'hub') {
       this.emit(data as unknown as AcpEvent)
       this.reconcileSeq((data as { seqs?: Record<string, number> }).seqs)
@@ -1552,10 +1610,22 @@ export class LocalTransport {
           // 对齐去重）。远程 host 事件不受影响。
           const evHost = (ev as { hostId?: string }).hostId
           if (this.isLocalDirect() && evHost === this.selectedHostId) continue
-          // resync 是 hub 的控制标记（无 hostId/seq），不能进 seq 排序
-          // 通路（会被当 flat event 原样透传），单独拦截处理。
+          // 未选中 host 的事件一律不进排序引擎。它们最终也会在 emit 里被
+          // 丢掉，但在那之前会先污染序号状态：本 tab 对该 host 水位是 0，
+          // 第一条事件就会打一发 GET /api/events?host=X&after=0，把 hub
+          // 环形缓冲整段（上限 6000 条）拉回来再全部丢弃；非选中 host 的
+          // pending 也就此堆积。hub 侧分流后正常情况下收不到，但老 hub
+          // 不分流、以及首屏 host 选定之前的窗口（连接还不带 ?host=）都在
+          // 这条守卫的覆盖范围内。
+          if (this.mode === 'hub' && evHost && evHost !== this.selectedHostId) continue
+          // resync 是 hub 的控制标记（无 seq，新 hub 带 hostId），不能进 seq
+          // 排序通路（会被当 flat event 原样透传），单独拦截处理。
           if ((ev as { type?: string }).type === 'resync') {
-            this.handleResyncFrame((ev as { fromSeq?: unknown }).fromSeq, gen)
+            this.handleResyncFrame(
+              (ev as { fromSeq?: unknown }).fromSeq,
+              gen,
+              (ev as { hostId?: unknown }).hostId,
+            )
             continue
           }
           this.acceptSequencedEvent(ev as SequencedEvent, gen)

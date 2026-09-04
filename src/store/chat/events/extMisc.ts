@@ -28,6 +28,8 @@ import {
   updateScheduledTaskFire,
   upsertScheduledTask,
 } from '../tasks'
+import { truncateEntriesTo, waitRewindAligned } from '../actions/xai'
+import { loadHistoryWithTaskProbe } from '../loadHistory'
 
 export function handleExtMiscEvent(
   set: SetState,
@@ -91,21 +93,18 @@ export function handleExtMiscEvent(
         upsertScheduledTask(set, parseScheduledTask(ev))
         break
       case 'scheduled_task_deleted': {
-        // 多会话广播（host withSid 约定）：非当前会话的删除事件不得
-        // 移除本会话任务，也不得在本会话滚动区留提示行。
-        if (ev.sessionId && ev.sessionId !== get().sessionId) break
         const p = (ev.params ?? {}) as Record<string, unknown>
         const id = wireTaskId(ev.taskId, p.taskId, p.task_id)
         if (id) removeScheduledTask(set, id)
-        // 每个删除原因都要有可见反馈（session_event 行，announcements /
-        // workflow 同款形态）：expired / completed / deleted / shutdown
-        // 各有文案，unknown 或缺失回退「定时任务已移除」。
-        const rawParams = (ev.rawParams ?? {}) as Record<string, unknown>
-        const reason = scheduledTaskDeleteReason(ev.reason, p, rawParams)
-        appendEntry(set, {
-          kind: 'session_event',
-          text: scheduledTaskDeletedText(reason),
-        })
+        // 多会话广播（host withSid 约定）：非当前会话的删除事件不污染本会话滚动区提示行
+        if (!ev.sessionId || ev.sessionId === get().sessionId) {
+          const rawParams = (ev.rawParams ?? {}) as Record<string, unknown>
+          const reason = scheduledTaskDeleteReason(ev.reason, p, rawParams)
+          appendEntry(set, {
+            kind: 'session_event',
+            text: scheduledTaskDeletedText(reason),
+          })
+        }
         break
       }
       case 'scheduled_task_fired': {
@@ -332,22 +331,69 @@ export function handleExtMiscEvent(
         }
         break
       case 'model': {
-        // 多会话广播（host withSid 约定）：非当前会话的 model 直接忽略。
-        if (ev.sessionId && ev.sessionId !== get().sessionId) break
-        // 会话切换中忽略：load 时模型映射广播（model_changed → model）
-        // 会带新模型的默认 effort（如 low），覆盖 load 响应恢复的用户
-        // 原档位（如 max）；切换期间以 HTTP load 响应为准。
-        if (get().historyLoading) break
-        const name =
-          (ev.modelName && String(ev.modelName).trim()) ||
-          (ev.modelId && String(ev.modelId).trim()) ||
-          undefined
-        set({
-          modelName: name,
-          reasoningEffort: ev.reasoningEffort
-            ? String(ev.reasoningEffort)
-            : get().reasoningEffort,
-        })
+        const sid = ev.sessionId
+        // 如果是当前会话，更新当前视图的模型显示
+        if (!sid || sid === get().sessionId) {
+          if (!get().historyLoading) {
+            const name =
+              (ev.modelName && String(ev.modelName).trim()) ||
+              (ev.modelId && String(ev.modelId).trim()) ||
+              undefined
+            set({
+              modelName: name,
+              reasoningEffort: ev.reasoningEffort
+                ? String(ev.reasoningEffort)
+                : get().reasoningEffort,
+            })
+          }
+        }
+        // 跨会话同步：更新侧边栏 workspaces 缓存中该会话的 currentModelId，另一端即时响应
+        if (sid) {
+          const modelId = ev.modelId && String(ev.modelId).trim()
+          if (modelId) {
+            const nextWorkspaces = get().workspaces.map((ws) => ({
+              ...ws,
+              sessions: ws.sessions.map((s) =>
+                s.sessionId === sid ? { ...s, currentModelId: modelId } : s,
+              ),
+            }))
+            set({ workspaces: nextWorkspaces })
+          }
+        }
+        break
+      }
+      case 'session_rewound': {
+        const sid = ev.sessionId
+        if (!sid) break
+        const currentCwd = get().cwd
+        // 若当前前端正在查看被回退的会话，截断视图并对齐重载，防止历史分叉与幽灵消息
+        if (sid === get().sessionId && currentCwd) {
+          const p = (ev.params ?? {}) as Record<string, unknown>
+          const target = typeof (ev as { targetPromptIndex?: unknown }).targetPromptIndex === 'number'
+            ? (ev as { targetPromptIndex: number }).targetPromptIndex
+            : typeof p.targetPromptIndex === 'number'
+              ? p.targetPromptIndex
+              : undefined
+          if (target != null) {
+            truncateEntriesTo(target, set, get)
+          }
+          void waitRewindAligned(sid, currentCwd, target, get).then(async (aligned) => {
+            if (aligned && get().sessionId === sid && get().cwd === currentCwd) {
+              const keep = get().scheduledTasks
+              await loadHistoryWithTaskProbe(get, sid, currentCwd)
+              if (keep.length > 0 && get().sessionId === sid && get().cwd === currentCwd) {
+                set({ scheduledTasks: keep })
+              }
+              set({
+                statusText: target != null
+                  ? `会话已在另一端回退到第 ${target} 个提示`
+                  : '会话已在另一端回退',
+              })
+            }
+          })
+        }
+        void get().refreshSessions()
+        void get().refreshWorkspaces()
         break
       }
       case 'config_options_update': {

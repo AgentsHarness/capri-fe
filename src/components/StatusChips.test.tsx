@@ -3,7 +3,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import type { ScrollEntry, ToolCall } from '../api/types'
 import { useChatStore } from '../store/chat'
 import { fillAllLiteTurns } from '../store/chat/historyFill'
-import { LiteFillChip } from './StatusChips'
+import { LiteFillChip, RunningTasksBar } from './StatusChips'
 import { WorkspaceBar } from './TopBar'
 import { SPINNER_FRAMES } from '../theme/glyphs'
 
@@ -158,3 +158,27 @@ describe('LiteFillChip 在 WorkspaceBar 簇里的位置', () => {
     expect(screen.queryByRole('button', { name: /精简回放/ })).toBeNull()
   })
 })
+
+describe('RunningTasksBar — 子代理展示', () => {
+  it('带 model 和 reasoningEffort 时正确渲染 model(effort)', () => {
+    const subEntry: ScrollEntry = {
+      id: 'sub-row-1',
+      kind: 'subagent',
+      title: 'reviewer',
+      status: 'started',
+      running: true,
+      model: 'grok-4',
+      reasoningEffort: 'high',
+      subagentId: 'sa-1',
+    }
+    render(
+      <RunningTasksBar
+        entries={[subEntry]}
+        topTasks={[]}
+        open={true}
+      />,
+    )
+    expect(screen.getByText('(grok-4(high))')).toBeInTheDocument()
+  })
+})
+

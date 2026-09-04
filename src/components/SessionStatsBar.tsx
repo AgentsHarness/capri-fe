@@ -35,7 +35,7 @@ export function SessionStatsBar() {
 
   // 无数据 / 无任何活动历史（空会话）→ 不渲染内容。但保留底部间距
   // 占位（与 stats 显示时 pb-4 等量）：composer 直接贴底会显得局促。
-  const bottomSpacer = <div className="pb-4" aria-hidden="true" />
+  const bottomSpacer = <div className="pb-4 touch-pan-x overscroll-none" aria-hidden="true" />
   if (
     !stats ||
     (stats.turns === 0 &&
@@ -86,7 +86,7 @@ export function SessionStatsBar() {
 
   return (
     <div
-      className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} mt-1 pb-4`}
+      className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} mt-1 pb-4 touch-pan-x overscroll-none`}
       title={`回合 ${stats.turns} · 步 ${stats.steps} · LLM 总耗时 ${stats.llmDurationMs}ms${
         stats.toolDurationMs != null ? ` · 工具耗时 ${stats.toolDurationMs}ms` : ''
       }${

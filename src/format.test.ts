@@ -88,6 +88,16 @@ describe('subagentMeta', () => {
     expect(subagentMeta('P', ' R ', 'M')).toBe(' (P · R · M)')
     expect(subagentMeta(undefined, 'Writer')).toBe(' (Writer)')
   })
+
+  it('带 effort 时模型显示为 model(effort)', () => {
+    expect(subagentMeta('Builder', 'builder', 'grok-4', 'high')).toBe(' (Builder · grok-4(high))')
+    expect(subagentMeta(undefined, undefined, 'grok-4', 'low')).toBe(' (grok-4(low))')
+    expect(subagentMeta('P', 'R', 'M', 'medium')).toBe(' (P · R · M(medium))')
+    // 若 model 自身已有括号形式的 effort，不重复拼接
+    expect(subagentMeta(undefined, undefined, 'grok-4(high)', 'high')).toBe(' (grok-4(high))')
+    // 只有 effort 无 model 时回退显示 effort
+    expect(subagentMeta('Builder', undefined, undefined, 'high')).toBe(' (Builder · high)')
+  })
 })
 
 describe('fmtBytes', () => {

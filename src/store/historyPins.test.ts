@@ -426,6 +426,26 @@ describe('syncPrefsFromHub', () => {
     expect(usePins.getState().todos['s1']).toBeUndefined()
     expect(hub.entries[todoKey('s1')].d).toBe(true)
   })
+
+  it('多 Tab 本地同步：监听 storage 事件自动合并另一 Tab 的置顶与待办变更', () => {
+    const cur = usePins.getState().entries
+    const incomingEntries = {
+      ...cur,
+      [sessionKey('tab2-sess')]: { v: 'tab2-sess', at: Date.now() + 1000, site: 'tab2' },
+      [todoKey('tab2-todo')]: { v: 'todo', at: Date.now() + 1000, site: 'tab2' },
+    }
+    const payload = JSON.stringify({ v: 3, entries: incomingEntries })
+    window.localStorage.setItem(KEY.historyPins, payload)
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: KEY.historyPins,
+        newValue: payload,
+      }),
+    )
+
+    expect(usePins.getState().pinnedSessions.has('tab2-sess')).toBe(true)
+    expect(usePins.getState().todos['tab2-todo']).toBe('todo')
+  })
 })
 
 // ── 排序 ─────────────────────────────────────────────────────────────

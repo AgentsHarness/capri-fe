@@ -53,6 +53,65 @@ export function applySubagentFinish(
   })
 }
 
+/**
+ * 解析子代理的模型与 effort：
+ * 1. 优先读取显式 wire 字段：fields.reasoning_effort / fields.reasoningEffort / fields.effort；
+ * 2. fields.model 若自带 "name(effort)" 括号形式，拆出内嵌 effort；
+ * 3. 若无显式 effort：
+ *    - 若模型缺省或与父会话模型相同，继承父会话当前的 reasoningEffort；
+ *    - 若为不同模型，匹配目录 availableModels：若支持 reasoningEffort，取模型配置的默认 effort；
+ */
+export function resolveSubagentModelAndEffort(
+  fields: Record<string, unknown>,
+  state: {
+    modelName?: string
+    reasoningEffort?: string
+    models?: import('../../api/types').ModelOption[]
+  },
+): { model?: string; reasoningEffort?: string } {
+  let model = nonBlankStr(fields.model)
+  let explicitEffort = nonBlankStr(
+    fields.reasoning_effort ?? fields.reasoningEffort ?? fields.effort,
+  )
+
+  if (model) {
+    const match = model.match(/^(.+?)\s*\(([^)]+)\)$/)
+    if (match) {
+      model = match[1].trim()
+      if (!explicitEffort) explicitEffort = match[2].trim()
+    }
+  }
+
+  const parentOpt = state.models?.find(
+    (m) => m.name === state.modelName || m.modelId === state.modelName,
+  )
+  const isSameAsParent =
+    !model ||
+    (state.modelName &&
+      (model === state.modelName ||
+        (parentOpt && (model === parentOpt.modelId || model === parentOpt.name))))
+
+  const resolvedModel = model || parentOpt?.name || parentOpt?.modelId || state.modelName || undefined
+
+  let reasoningEffort = explicitEffort
+  if (!reasoningEffort) {
+    if (isSameAsParent) {
+      reasoningEffort = state.reasoningEffort || undefined
+    } else if (model && state.models?.length) {
+      const matched = state.models.find(
+        (m) => m.modelId === model || (m.name && m.name.toLowerCase() === model.toLowerCase()),
+      )
+      if (matched && matched.supportsReasoningEffort !== false) {
+        reasoningEffort =
+          matched.reasoningEffort ||
+          matched.reasoningEfforts?.find((e) => e.default)?.value
+      }
+    }
+  }
+
+  return { model: resolvedModel, reasoningEffort }
+}
+
 /** subagent_spawned / subagent_finished (session_notification carrier). */
 export function handleSubagentEvent(
   get: () => ChatState,
@@ -76,6 +135,7 @@ export function handleSubagentEvent(
     // stream is broadcast with this id — the block viewer's mini
     // scrollback is keyed by it (TUI subagent_views 同款).
     const childSid = nonBlankStr(fields.child_session_id)
+    const { model, reasoningEffort } = resolveSubagentModelAndEffort(fields, get())
     // Spawn metadata (SubagentSpawned wire fields): the model the child
     // runs, its persona / role and agent type. Stored so the scrollback
     // row and the block viewer can show them (TUI SubagentBlock meta).
@@ -104,7 +164,8 @@ export function handleSubagentEvent(
           startedAt: Date.now(),
           subagentId: id,
           ...(childSid ? { childSessionId: childSid } : {}),
-          model: nonBlankStr(fields.model),
+          model,
+          reasoningEffort,
           persona: nonBlankStr(fields.persona),
           role: nonBlankStr(fields.role),
           subagentType: nonBlankStr(fields.subagent_type),

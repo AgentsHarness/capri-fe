@@ -53,7 +53,7 @@ export function FilePickerMenu({
           <span className="min-w-0 truncate text-[10px] text-gn-muted">@ 前缀触发</span>
         )}
       </div>
-      <div ref={listRef} className="gn-no-scrollbar max-h-56 overflow-y-auto">
+      <div ref={listRef} className="gn-no-scrollbar max-h-56 overflow-y-auto touch-pan-y overscroll-contain">
         {!showList ? (
           <div className="px-3 py-3 text-[11px] text-gn-muted">
             输入以过滤文件（相对工作目录路径）

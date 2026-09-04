@@ -771,3 +771,255 @@ describe('本机近路与 hub base 隔离（同源部署）', () => {
     expect(t.apiUrl('/api/sessions')).toBe('/api/sessions')
   })
 })
+
+/** hub 分流：页面把选中 host 告诉 hub（?host= + 运行时 subscribe 帧），
+ * hub 就只推这台的事件。测试面是 transport 与 hub 的握手：URL 参数、
+ * subscribe 帧、subscribed 回执的水位对齐、以及别的 host 的 resync 不再
+ * 污染本 host 的序号。 */
+describe('hub 按 host 分流（/ws/fe ?host= + subscribe）', () => {
+  type SeqProbe = {
+    seq: { watermark(hostId: string): number }
+    gen: number
+    acceptSequencedEvent(ev: unknown, gen: number): void
+  }
+  const probe = (t: unknown) => t as SeqProbe
+
+  /** jsdom 没有 WebSocket：记下每个实例（含 send 与 url），供手工喂帧。 */
+  class FakeWS {
+    static readonly CONNECTING = 0
+    static readonly OPEN = 1
+    static readonly CLOSING = 2
+    static readonly CLOSED = 3
+    readyState = 1
+    binaryType = 'blob'
+    onopen: (() => void) | null = null
+    onmessage: ((m: MessageEvent) => void) | null = null
+    onclose: (() => void) | null = null
+    onerror: (() => void) | null = null
+    sent: string[] = []
+    url = ''
+    instances: FakeWS[] = []
+    constructor(url: string, instances: FakeWS[]) {
+      this.url = url
+      this.instances = instances
+      instances.push(this)
+    }
+    send(data: string) {
+      this.sent.push(data)
+    }
+    close() {
+      this.readyState = 3
+    }
+  }
+
+  let instances: FakeWS[] = []
+  let fetchUrls: string[] = []
+
+  beforeEach(() => {
+    instances = []
+    fetchUrls = []
+    vi.stubGlobal('EventSource', class {
+      static readonly OPEN = 1
+      readyState = 1
+      onopen: (() => void) | null = null
+      onmessage: ((m: MessageEvent) => void) | null = null
+      onerror: (() => void) | null = null
+      constructor(_url: string) {}
+      close() {}
+    })
+    vi.stubGlobal(
+      'WebSocket',
+      class extends FakeWS {
+        constructor(url: string) {
+          super(url, instances)
+        }
+      },
+    )
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        fetchUrls.push(url)
+        if (url.endsWith('/api/ws-ticket')) {
+          return new Response(JSON.stringify({ ok: true, ticket: 'tk' }), { status: 200 })
+        }
+        return new Response(JSON.stringify({ ok: true, events: [] }), { status: 200 })
+      }),
+    )
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    localStorage.clear()
+  })
+
+  const flush = async () => {
+    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 0))
+  }
+
+  /** 建一条 hub 模式的活连接（connect → ticket → onopen）。 */
+  async function openHub(hostId: string | null) {
+    const t = new LocalTransport('', 'hub-secret')
+    t.setConnectionMode('hub', 'https://hub.example')
+    if (hostId) t.setHost(hostId)
+    t.connect()
+    await flush()
+    const ws = instances[instances.length - 1]
+    ws.onopen?.()
+    return { t, ws }
+  }
+
+  const frame = (ws: FakeWS, data: unknown) =>
+    ws.onmessage?.({ data: JSON.stringify(data) } as MessageEvent)
+
+  it('建连时把选中 host 写进 ?host=', async () => {
+    await openHub('A')
+    const u = new URL(instances[0].url)
+    expect(u.searchParams.get('host')).toBe('A')
+  })
+
+  it('还没选中 host 时不带 host 参数（旧行为：hub 全推）', async () => {
+    await openHub(null)
+    const u = new URL(instances[0].url)
+    expect(u.searchParams.has('host')).toBe(false)
+  })
+
+  it('切 host 在活连接上发 subscribe 帧，不重连', async () => {
+    const { t, ws } = await openHub('A')
+    const before = instances.length
+    t.setHost('B')
+    await flush()
+    expect(instances).toHaveLength(before) // 没有新连接
+    const sub = ws.sent.map((s) => JSON.parse(s) as Record<string, unknown>)
+    expect(sub).toContainEqual({ v: 1, type: 'subscribe', host: 'B' })
+  })
+
+  it('还没选中 host 时落回上次选中的持久值（建连即过滤，不留全推窗口）', async () => {
+    localStorage.setItem('capri-fe.host', 'A')
+    await openHub(null)
+    const u = new URL(instances[0].url)
+    expect(u.searchParams.get('host')).toBe('A')
+  })
+
+  it('切到从未看过的 host：首条事件不得按 after=0 整段补拉（回执晚到也成立）', async () => {
+    const { t, ws } = await openHub('A')
+    t.setHost('B')
+    await flush()
+    fetchUrls.length = 0
+    // subscribed 回执还没到，B 的第一条 live 事件先到了
+    frame(ws, { v: 1, type: 'events', events: [{ type: 'chunk', hostId: 'B', seq: 900 }] })
+    await flush()
+    expect(fetchUrls.filter((u) => u.includes('/api/events'))).toEqual([])
+    const seen: unknown[] = []
+    t.onEvent((ev) => seen.push(ev))
+    frame(ws, { v: 1, type: 'events', events: [{ type: 'chunk', hostId: 'B', seq: 901 }] })
+    await flush()
+    expect(seen).toHaveLength(1)
+  })
+
+  it('subscribed 回执（水位 0）只对齐序号，绝不 from=0 整段补拉', async () => {
+    const { t, ws } = await openHub('A')
+    fetchUrls.length = 0
+    frame(ws, { v: 1, type: 'subscribed', host: 'A', seq: 114020 })
+    await flush()
+    expect(fetchUrls.filter((u) => u.includes('/api/events'))).toEqual([])
+    expect(probe(t).seq.watermark('A')).toBe(114020)
+    // 对齐之后该 host 的真实事件照常放出，不再触发整段补拉
+    const seen: unknown[] = []
+    t.onEvent((ev) => seen.push(ev))
+    frame(ws, { v: 1, type: 'events', events: [{ type: 'chunk', hostId: 'A', seq: 114021 }] })
+    await flush()
+    expect(seen).toHaveLength(1)
+    expect(fetchUrls.filter((u) => u.includes('/api/events'))).toEqual([])
+  })
+
+  it('subscribed 报的水位高于本地才是真缺口，按 after=本地水位 补拉', async () => {
+    const { t, ws } = await openHub('A')
+    // 连续放出 seq 1..5，本地水位才真的停在 5
+    frame(ws, {
+      v: 1,
+      type: 'events',
+      events: [1, 2, 3, 4, 5].map((seq) => ({ type: 'chunk', hostId: 'A', seq })),
+    })
+    await flush()
+    expect(probe(t).seq.watermark('A')).toBe(5)
+    fetchUrls.length = 0
+    frame(ws, { v: 1, type: 'subscribed', host: 'A', seq: 8 })
+    await flush()
+    expect(fetchUrls.filter((u) => u.includes('/api/events'))).toEqual([
+      'https://hub.example/api/events?host=A&after=5',
+    ])
+  })
+
+  it('subscribed 回执只认当前选中 host（快点选时旧回执不得污染新 host）', async () => {
+    const { t, ws } = await openHub('A')
+    frame(ws, { v: 1, type: 'subscribed', host: 'B', seq: 500 })
+    await flush()
+    expect(probe(t).seq.watermark('B')).toBe(0)
+    expect(probe(t).seq.watermark('A')).toBe(0)
+  })
+
+  it('别的 host 的 resync 不再顶本 host 水位（旧 hub 无 hostId 时照旧生效）', async () => {
+    const { t, ws } = await openHub('A')
+    const seen: Array<Record<string, unknown>> = []
+    t.onEvent((ev) => seen.push(ev as Record<string, unknown>))
+    for (const s of [1, 2, 3]) {
+      frame(ws, { v: 1, type: 'events', events: [{ type: 'chunk', hostId: 'A', seq: s }] })
+    }
+    await flush()
+    // 新 hub：resync 带 hostId=B（B 的慢消费风暴），与 A 无关
+    frame(ws, { v: 1, type: 'events', events: [{ type: 'resync', fromSeq: 9000, hostId: 'B' }] })
+    await flush()
+    expect(probe(t).seq.watermark('A')).toBe(3)
+    expect(seen.filter((e) => e.type === 'resync')).toEqual([])
+    // A 的后续事件照常放出（回归点：曾经被静默丢掉）
+    frame(ws, { v: 1, type: 'events', events: [{ type: 'chunk', hostId: 'A', seq: 4 }] })
+    await flush()
+    expect(seen.filter((e) => e.hostId === 'A')).toHaveLength(4)
+
+    // 旧 hub：无 hostId 的 resync 只能按原语义当本 host 的信号
+    frame(ws, { v: 1, type: 'events', events: [{ type: 'resync', fromSeq: 9000 }] })
+    await flush()
+    expect(probe(t).seq.watermark('A')).toBe(8999)
+    expect(seen.filter((e) => e.type === 'resync')).toHaveLength(1)
+  })
+
+  it('未选中 host 时（老 hub 不分流 / 首屏窗口）别的 host 事件不得进排序引擎', async () => {
+    localStorage.clear()
+    const { t, ws } = await openHub(null)
+    const seen: unknown[] = []
+    t.onEvent((ev) => seen.push(ev))
+    await flush()
+    fetchUrls.length = 0
+    frame(ws, {
+      v: 1,
+      type: 'events',
+      events: [
+        { type: 'chunk', hostId: 'B', seq: 900 },
+        { type: 'resync', fromSeq: 4000, hostId: 'B' },
+      ],
+    })
+    await flush()
+    // 既不送达，也不为 B 打一发 after=0 的整段补拉
+    expect(seen).toEqual([])
+    expect(fetchUrls.filter((u) => u.includes('/api/events'))).toEqual([])
+    expect(probe(t).seq.watermark('B')).toBe(0)
+  })
+
+  it('非选中 host 的事件仍被客户端过滤掉（老 hub 不分流时的兜底）', async () => {
+    const { t, ws } = await openHub('A')
+    const seen: unknown[] = []
+    t.onEvent((ev) => seen.push(ev))
+    frame(ws, {
+      v: 1,
+      type: 'events',
+      events: [
+        { type: 'chunk', hostId: 'B', seq: 1 },
+        { type: 'chunk', hostId: 'A', seq: 1 },
+      ],
+    })
+    await flush()
+    expect(seen).toHaveLength(1)
+    expect((seen[0] as { hostId?: string }).hostId).toBe('A')
+  })
+})

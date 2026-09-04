@@ -371,6 +371,14 @@ export type AcpEvent =
       params?: { total?: number; connected?: number; sessionId?: string }
     }
   | { type: 'sessions_changed'; params?: Record<string, unknown> }
+  | {
+      type: 'session_rewound'
+      sessionId?: string
+      targetPromptIndex?: number
+      params?: {
+        targetPromptIndex?: number
+      }
+    }
   /** Hub-level: a host paired / came online / dropped off (capri-hub). */
   | { type: 'hosts_changed'; params?: Record<string, unknown> }
   /**

@@ -234,7 +234,7 @@ function AppShell({ onLogout }: { onLogout: () => void }) {
   }, [])
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-gn-bg-base text-gn-fg font-ui transition-colors duration-150">
+    <div className="flex h-full h-[100dvh] min-h-0 flex-col overflow-hidden overscroll-none bg-gn-bg-base text-gn-fg font-ui transition-colors duration-150">
       <TopBar
         onOpenMcp={() => setMcpOpen((v) => !v)}
         onOpenGit={() => setGitOpen((v) => !v)}
@@ -247,7 +247,7 @@ function AppShell({ onLogout }: { onLogout: () => void }) {
       <div className="flex min-h-0 flex-1">
         {/* Persistent desktop history sidebar; mobile history lives in the TopBar dropdown. */}
         <HistorySidebar />
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           {/* Workspace + git — sticky scrollback header (TUI status-bar left). */}
           <Scrollback onOpenMcp={() => setMcpOpen(true)} />
           {/* Composer + strips stay in flow at the bottom of main — no

@@ -470,7 +470,7 @@ function subagentChrome(
       {e.status === 'completed' ? Glyphs.checkMark : Glyphs.ballotX}
     </span>
   )
-  const meta = subagentMeta(e.persona, e.role, e.model).trim()
+  const meta = subagentMeta(e.persona, e.role, e.model, e.reasoningEffort).trim()
   const elapsedMs = running
     ? e.startedAt != null
       ? now - e.startedAt

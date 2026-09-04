@@ -188,6 +188,8 @@ export type ScrollEntry =
       childSessionId?: string
       /** Effective model ID used by the subagent (wire `model`). */
       model?: string
+      /** Reasoning effort used by the subagent (wire `reasoning_effort` / `effort` or inherited). */
+      reasoningEffort?: string
       /** Named persona applied to this subagent (wire `persona`). */
       persona?: string
       /** Role that supplied defaults (wire `role`). */

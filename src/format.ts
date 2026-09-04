@@ -52,19 +52,29 @@ export function fmtElapsedCompact(ms: number): string {
  * Subagent metadata parenthetical — TUI format_subagent_meta parity
  * (xai-grok-pager app/subagent.rs): `(persona · role · model)` with the
  * persona/role deduped when they name the same title, or `''` when
- * nothing is present.
+ * nothing is present. When effort is known, the model is formatted as
+ * `model(effort)`.
  */
 export function subagentMeta(
   persona?: string,
   role?: string,
   model?: string,
+  effort?: string,
 ): string {
   const clean = (v: string | undefined): string | undefined =>
     v && v.trim() ? v.trim() : undefined
   let p = clean(persona)
   let r = clean(role)
   if (p && r && p.toLowerCase() === r.toLowerCase()) r = undefined
-  const parts = [p, r, clean(model)].filter((v): v is string => !!v)
+  const m = clean(model)
+  const eff = clean(effort)
+  let formattedModel: string | undefined
+  if (m) {
+    formattedModel = eff && !m.includes('(') ? `${m}(${eff})` : m
+  } else if (eff) {
+    formattedModel = eff
+  }
+  const parts = [p, r, formattedModel].filter((v): v is string => !!v)
   return parts.length ? ` (${parts.join(' · ')})` : ''
 }
 

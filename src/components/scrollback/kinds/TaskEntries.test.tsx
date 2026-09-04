@@ -108,6 +108,17 @@ describe('SubagentEntry — 整行单击弹查看器', () => {
     expect(btn.className).not.toMatch(/border/)
     expect(btn.className).not.toMatch(/py-/)
   })
+
+  it('带 model 和 reasoningEffort 时正确渲染 model(effort)', () => {
+    const e = subagentEntry({
+      id: 'sa1',
+      status: 'completed',
+      model: 'grok-4',
+      reasoningEffort: 'high',
+    })
+    render(<SubagentEntry e={e} chrome={makeChrome(e)} />)
+    expect(screen.getByText('(grok-4(high))')).toBeInTheDocument()
+  })
 })
 
 const bgTaskEntry = (
