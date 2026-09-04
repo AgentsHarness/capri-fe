@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { initChat } from './init'
 import type { ChatState, SetState } from '../types'
 import type { StoreApi } from 'zustand'
-import { MODE_FLAGS_KEY } from '../modeFlags'
+import { MODE_FLAGS_KEY, PLAN_FLAGS_KEY } from '../modeFlags'
 import { saveJSON } from '../../../lib/storage'
 
 let eventHandler: ((ev: unknown) => void) | undefined
@@ -152,6 +152,48 @@ describe('initChat 多会话与双 FE 全局模式同步', () => {
 
     expect(state.yoloMode).toBe(true)
     expect(state.permissionMode).toBe('always-approve')
+
+    cleanup()
+  })
+
+  it('同源多 Tab 同步：监听 storage 事件可在另一 Tab 切换/退出当前会话 planMode 时即时同步', () => {
+    state.sessionId = 'sess-current'
+    state.planMode = false
+    const cleanup = initChat(set, get, api)
+
+    // 模拟另一个 Tab 将当前会话 sess-current 切换为 plan 模式
+    saveJSON(PLAN_FLAGS_KEY, { 'sess-current': true, 'sess-other': false })
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: PLAN_FLAGS_KEY,
+        newValue: JSON.stringify({ 'sess-current': true }),
+      }),
+    )
+
+    // 本 Tab 当前会话立即开启 planMode
+    expect(state.planMode).toBe(true)
+
+    // 模拟另一个 Tab 退出 plan 模式（例如审批通过 exit_plan_mode 或 Shift+Tab）
+    saveJSON(PLAN_FLAGS_KEY, { 'sess-current': false, 'sess-other': false })
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: PLAN_FLAGS_KEY,
+        newValue: JSON.stringify({ 'sess-current': false }),
+      }),
+    )
+
+    // 本 Tab 当前会话立即关闭 planMode
+    expect(state.planMode).toBe(false)
+
+    // 模拟另一个 Tab 修改了非当前会话 sess-other 的 plan 模式，本会话不受影响
+    saveJSON(PLAN_FLAGS_KEY, { 'sess-current': false, 'sess-other': true })
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: PLAN_FLAGS_KEY,
+        newValue: JSON.stringify({ 'sess-other': true }),
+      }),
+    )
+    expect(state.planMode).toBe(false)
 
     cleanup()
   })

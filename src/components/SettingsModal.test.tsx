@@ -139,7 +139,14 @@ describe('SettingsModal', () => {
     await waitFor(() => expect(tab('Agent 配置')).not.toBeNull())
     // 四个可编辑分类 + 一个只读的 Agent 配置（不再按分组拆成多栏）
     expect(
-      screen.getAllByRole('tab').map((t) => t.textContent),
+      screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label')),
+    ).toEqual(['行为偏好', '问答超时', '前端偏好', '自定义模型', 'Agent 配置'])
+    // 移动端短标签（均分 Tab，无需横向滑动）与桌面端长标签并存
+    expect(
+      screen.getAllByRole('tab').map((t) => t.querySelector('.sm\\:hidden')?.textContent),
+    ).toEqual(['行为', '问答', '前端', '模型', 'Agent'])
+    expect(
+      screen.getAllByRole('tab').map((t) => t.querySelector('.hidden.sm\\:inline')?.textContent),
     ).toEqual(['行为偏好', '问答超时', '前端偏好', '自定义模型', 'Agent 配置'])
     // 默认分类 = 行为偏好：可编辑行在，只读 dump 不在同一屏
     expect(screen.getByText('权限默认')).toBeInTheDocument()
@@ -425,5 +432,24 @@ describe('SettingsModal', () => {
     fireEvent.keyDown(inputEl, { key: 'Enter' })
     fireEvent.blur(inputEl)
     expect(transport.updateSettings).toHaveBeenCalledTimes(1)
+  })
+
+  it('移动端分类做成 tab：满宽等分短文案，避免横向滑动', async () => {
+    openModal()
+    const { container } = render(<SettingsModal />)
+    await waitFor(() => expect(tab('行为偏好')).not.toBeNull())
+
+    const tablist = container.querySelector('[role="tablist"]')!
+    const tabsContainer = tablist.firstElementChild as HTMLElement
+    // 容器使用 w-full（移动端满宽），而非 min-w-max（避免强制超出视口横向滑动）
+    expect(tabsContainer.className).toContain('w-full')
+    expect(tabsContainer.className).not.toContain('min-w-max')
+
+    const tabs = screen.getAllByRole('tab')
+    for (const t of tabs) {
+      // 每个 tab 均分宽度且文字居中
+      expect(t.className).toContain('flex-1')
+      expect(t.className).toContain('text-center')
+    }
   })
 })

@@ -900,18 +900,9 @@ export const slashCommands: SlashCommand[] = [
   },
   {
     name: 'plan',
-    description: '进入计划模式（已进入时提示用 /view-plan，Shift+Tab 退出）',
+    description: '切换计划模式（开启或关闭）',
     run: () => {
-      const st = useChatStore.getState()
-      // TUI dispatch_enter_plan_mode parity: re-running /plan while
-      // already in plan (incl. the plan·auto / plan·always overlays) is
-      // a no-op with a "use /view-plan" toast — the flag check mirrors
-      // store togglePlanMode's own guard.
-      if (st.planMode === true || st.permissionMode === 'plan') {
-        status('已在 plan 模式，用 /view-plan 查看当前 plan')
-        return
-      }
-      void st.togglePlanMode()
+      void useChatStore.getState().togglePlanMode()
     },
   },
   {

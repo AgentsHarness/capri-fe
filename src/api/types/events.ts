@@ -379,6 +379,7 @@ export type AcpEvent =
         targetPromptIndex?: number
       }
     }
+  | { type: 'permissions_reset'; params?: Record<string, unknown> }
   /** Hub-level: a host paired / came online / dropped off (capri-hub). */
   | { type: 'hosts_changed'; params?: Record<string, unknown> }
   /**

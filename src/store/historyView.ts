@@ -46,3 +46,15 @@ export const useHistoryView = create<
     },
   }
 })
+
+// 多 Tab 本地同步：监听 storage 事件让视图模式（workspace / marked）即时同步
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (e.key === VIEW_KEY && e.newValue) {
+      const { mode } = load()
+      if (mode !== useHistoryView.getState().mode) {
+        useHistoryView.setState({ mode })
+      }
+    }
+  })
+}

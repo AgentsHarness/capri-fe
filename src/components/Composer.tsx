@@ -65,6 +65,8 @@ import { useEscLadder } from './composer/useEscLadder'
 import { clearEscArm, escArmTimestamp } from '../hooks/useScrollbackKeys'
 import { useModelMenu } from './composer/useModelMenu'
 import { ModelMenu } from './composer/ModelMenu'
+import { useModeMenu } from './composer/useModeMenu'
+import { ModeMenu } from './composer/ModeMenu'
 import { PromptHistoryMenu } from './composer/PromptHistoryMenu'
 import { QueueStrip } from './composer/QueueStrip'
 import { QueueEditModal } from './composer/QueueEditModal'
@@ -156,10 +158,6 @@ export function Composer() {
   const setTasksBarOpen = useChatStore((s) => s.setTasksBarOpen)
   const modelName = useChatStore((s) => s.modelName)
   const reasoningEffort = useChatStore((s) => s.reasoningEffort)
-  const permissionMode = useChatStore((s) => s.permissionMode)
-  const yoloMode = useChatStore((s) => s.yoloMode)
-  const autoMode = useChatStore((s) => s.autoMode)
-  const planMode = useChatStore((s) => s.planMode)
   const focusMode = useChatStore((s) => s.focusMode)
   const turnStartedAt = useChatStore((s) => s.turnStartedAt)
   const openThoughtId = useChatStore((s) => s.openThoughtId)
@@ -178,6 +176,18 @@ export function Composer() {
     modelRef,
     modelBtnRef,
   } = modelMenu
+
+  // ── 模式菜单（开关/定位/切换）— composer/useModeMenu.ts ──
+  const modeMenu = useModeMenu()
+  const {
+    modeOpen,
+    setModeOpen,
+    modeMenuPos,
+    modeRef,
+    modeBtnRef,
+    currentModeLabel,
+    inPlan,
+  } = modeMenu
 
   // ── 队首去向徽标（follow_up_behavior 对齐）─────────────────────────
   // 队列第一行在「立即发送」左侧标注队首的下一个去向：
@@ -1074,9 +1084,13 @@ export function Composer() {
     ]
   }, [preview])
 
-  const borderColor = promptFocused
-    ? 'var(--color-gn-prompt-border-active)'
-    : 'var(--color-gn-prompt-border)'
+  const borderColor = inPlan
+    ? promptFocused
+      ? 'var(--color-gn-orange)'
+      : 'color-mix(in srgb, var(--color-gn-orange) 85%, transparent)'
+    : promptFocused
+      ? 'var(--color-gn-prompt-border-active)'
+      : 'var(--color-gn-prompt-border)'
 
   // Caption opacity: focused 0.6 / unfocused 0.4 of text_secondary (chrome_caption_style)
   const captionColor = promptFocused
@@ -1088,6 +1102,13 @@ export function Composer() {
   const flagColor = promptFocused
     ? 'var(--color-gn-gray)'
     : 'color-mix(in srgb, var(--color-gn-gray) 50%, var(--color-gn-bg-base))'
+
+  // Mode button color: orange for plan, cyan for active auto/always, captionColor for normal
+  const modeColor = inPlan
+    ? 'var(--color-gn-orange)'
+    : currentModeLabel !== 'normal'
+      ? 'var(--color-gn-cyan)'
+      : captionColor
 
   // Prefix: accent_user when focused, gray_dim when not (PromptStyle::accent_color)
   const prefixColor = promptFocused
@@ -1103,56 +1124,23 @@ export function Composer() {
     return base
   }, [conn, modelName, reasoningEffort])
 
-  const flags = useMemo(() => {
-    const out: { text: string; color?: string }[] = []
-    // Host name lives in the top-left switcher (with conn status), not here.
+  const tokensText = useMemo(() => {
     if (usage?.used != null && usage?.size != null) {
-      out.push({ text: `${fmtTok(usage.used)}/${fmtTok(usage.size)}` })
+      return `${fmtTok(usage.used)}/${fmtTok(usage.size)}`
     }
-    // Plan mode (Shift+Tab cycle / /plan) — TUI prompt mode flag. The
-    // plan·auto / plan·always overlays (/auto & /always while in plan)
-    // render as compound chips, like the TUI's stacked mode flags.
-    const inPlan = planMode === true || permissionMode === 'plan'
-    // Permission mode (TUI prompt flag: ask / auto / always-approve).
-    // Store is the agent-confirmed live mode (hello / yolo_mode_changed /
-    // a setMode that already succeeded) — config.toml is not painted here.
-    // Only non-ask modes are surfaced. A stale permissionMode
-    // ('ask'/'default') must NOT shadow the optimistic local
-    // yoloMode/autoMode flags set by /auto & friends.
-    const permMode =
-      permissionMode && !['ask', 'default', 'plan'].includes(permissionMode)
-        ? permissionMode
-        : yoloMode
-          ? 'always-approve'
-          : autoMode
-            ? 'auto'
-            : undefined
-    // Wire spelling variants (always_approve / yolo) render as the single
-    // canonical display name 'always-approve'.
-    const permChip =
-      permMode === 'always-approve' || permMode === 'always_approve' || permMode === 'yolo'
-        ? 'always-approve'
-        : permMode
-    if (inPlan && permChip) {
-      out.push({ text: `plan·${permChip}`, color: 'var(--color-gn-cyan)' })
-    } else if (inPlan) {
-      out.push({ text: 'plan', color: 'var(--color-gn-cyan)' })
-    } else if (permChip) {
-      out.push({ text: permChip, color: 'var(--color-gn-cyan)' })
-    }
-    // /multiline input mode (TUI /multiline) — persistent prompt hint.
-    // statusText is a dep so the /multiline command's status update
-    // refreshes this flag.
+    return null
+  }, [usage])
+
+  const otherFlags = useMemo(() => {
+    const out: { text: string; color?: string }[] = []
     if (isMultilineEnabled()) {
       out.push({ text: 'multiline', color: 'var(--color-gn-cyan)' })
     }
-    // error/offline 不在这里回显：host/hub 错误只进顶部横幅
-    // （ErrorBanner），model 槽的 disconnected 已表达连接态。
     return out
     // statusText 是 /multiline 命令的变更信号（命令只写 localStorage +
     // statusText，多行 chip 靠这个 dep 重算）——非多余依赖。
     // oxlint-disable-next-line react-hooks/exhaustive-deps
-  }, [usage, statusText, permissionMode, yoloMode, autoMode, planMode])
+  }, [statusText])
 
   // ── Inline queue strip：忙时 Enter 只入队，消息正文在 composer 上方。
   // 渲染归 composer/QueueStrip.tsx（状态归 useQueueNav）。
@@ -2129,20 +2117,23 @@ export function Composer() {
             </div>
 
           {/* Model + flags on the bottom border (断线), right-aligned.
-              Model menu uses position:fixed (viewport-pinned) so it is not
-              clipped by body overflow on mobile. Flags get their own truncate. */}
+              Model menu & Mode menu use position:fixed (viewport-pinned) so they are not
+              clipped by body overflow on mobile. */}
           <div
             className="pointer-events-none absolute -bottom-[5px] right-2 flex max-w-[75%] items-center gap-0 text-[11px] leading-none"
             style={{
               background: 'var(--color-gn-bg-base)',
             }}
-            title={[modelLabel, ...flags.map((f) => f.text)].join(' · ')}
+            title={[modelLabel, tokensText, currentModeLabel, ...otherFlags.map((f) => f.text)].filter(Boolean).join(' · ')}
           >
             <span ref={modelRef} className="relative z-30 inline-flex shrink-0">
               <button
                 ref={modelBtnRef}
                 type="button"
-                onClick={() => setModelOpen((v) => !v)}
+                onClick={() => {
+                  if (!modelOpen) setModeOpen(false)
+                  setModelOpen((v) => !v)
+                }}
                 className="pointer-events-auto max-w-[220px] truncate rounded px-0.5 transition-colors hover:bg-gn-bg-highlight"
                 style={{ color: captionColor }}
                 title={`${modelLabel} · 点击切换模型`}
@@ -2153,8 +2144,42 @@ export function Composer() {
                 <ModelMenu models={models} pos={modelMenuPos} menu={modelMenu} />
               )}
             </span>
+
+            {tokensText && (
+              <span className="inline-flex items-center">
+                <span style={{ color: sepColor }} className="px-1">
+                  {Glyphs.middleDot}
+                </span>
+                <span className="truncate" style={{ color: flagColor }}>
+                  {tokensText}
+                </span>
+              </span>
+            )}
+
+            <span ref={modeRef} className="relative z-30 inline-flex shrink-0">
+              <span style={{ color: sepColor }} className="px-1">
+                {Glyphs.middleDot}
+              </span>
+              <button
+                ref={modeBtnRef}
+                type="button"
+                onClick={() => {
+                  if (!modeOpen) setModelOpen(false)
+                  setModeOpen((v) => !v)
+                }}
+                className="pointer-events-auto max-w-[160px] cursor-pointer truncate rounded px-0.5 transition-colors hover:bg-gn-bg-highlight"
+                style={{ color: modeColor }}
+                title={`当前模式: ${currentModeLabel} · 点击切换模式`}
+              >
+                {currentModeLabel}
+              </button>
+              {modeOpen && modeMenuPos && (
+                <ModeMenu pos={modeMenuPos} menu={modeMenu} />
+              )}
+            </span>
+
             <span className="flex min-w-0 items-center truncate">
-              {flags.map((f, i) => (
+              {otherFlags.map((f, i) => (
                 <span key={i} className="inline-flex items-center">
                   <span style={{ color: sepColor }} className="px-1">
                     {Glyphs.middleDot}

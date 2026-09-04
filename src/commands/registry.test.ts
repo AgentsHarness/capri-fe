@@ -378,20 +378,14 @@ describe('slash command runs — 会话类', () => {
     expect(fake.openPlanViewer).toHaveBeenCalledTimes(4)
   })
 
-  it('/plan 已进入 plan 模式 → 提示用 /view-plan（TUI modes.rs 对齐），不改切换语义', () => {
+  it('/plan 支持开启与关闭切换（调用 togglePlanMode）', () => {
     fake.planMode = true
     run('plan')
-    expect(fake.togglePlanMode).not.toHaveBeenCalled()
-    expect(fake.statusText).toBe('已在 plan 模式，用 /view-plan 查看当前 plan')
-    // plan·auto / plan·always 叠加态（permissionMode==='plan'）同样视为已进入。
-    fake.planMode = false
-    fake.permissionMode = 'plan'
-    run('plan')
-    expect(fake.togglePlanMode).not.toHaveBeenCalled()
-    // 未进入 → 照常切换。
-    fake.permissionMode = undefined
-    run('plan')
     expect(fake.togglePlanMode).toHaveBeenCalledTimes(1)
+
+    fake.planMode = false
+    run('plan')
+    expect(fake.togglePlanMode).toHaveBeenCalledTimes(2)
   })
 
   it('/fork 参数（TUI parse_fork_args 对齐）：--worktree / --no-worktree / 互斥 / directive 拒绝', () => {

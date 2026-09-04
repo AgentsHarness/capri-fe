@@ -42,8 +42,10 @@ type CategoryKey = 'behavior' | 'ask' | 'fe' | 'custom' | 'agent'
 
 type Category = {
   key: CategoryKey
-  /** 左栏按钮文案（同时是右侧面板标题）。 */
+  /** 桌面端左栏按钮文案（同时是右侧面板标题）。 */
   label: string
+  /** 移动端顶部 Tab 标签（精炼短文案，占满一屏无需横向滑动）。 */
+  shortLabel: string
   /** 面板顶部一句说明。 */
   desc: string
 }
@@ -217,21 +219,25 @@ export function SettingsModal() {
       {
         key: 'behavior',
         label: '行为偏好',
+        shortLabel: '行为',
         desc: '改动写回 host 配置并即时生效。',
       },
       {
         key: 'ask',
         label: '问答超时',
+        shortLabel: '问答',
         desc: '提问卡片的超时策略；agent 只在会话启动时解析，改动只影响新会话。',
       },
       {
         key: 'fe',
         label: '前端偏好',
+        shortLabel: '前端',
         desc: '通过 hub 同步，不写入 host config.toml。',
       },
       {
         key: 'custom',
         label: '自定义模型',
+        shortLabel: '模型',
         desc: '',
       },
     ]
@@ -239,6 +245,7 @@ export function SettingsModal() {
       list.push({
         key: 'agent',
         label: 'Agent 配置',
+        shortLabel: 'Agent',
         desc: 'Agent config.toml，仅展示；请在 host 侧编辑配置。',
       })
     }
@@ -346,7 +353,7 @@ export function SettingsModal() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center gn-modal-dim p-4"
+      className="fixed inset-0 z-50 flex items-start justify-center gn-modal-dim p-2 sm:p-4"
       role="dialog"
       aria-modal="true"
       aria-label="settings"
@@ -357,7 +364,7 @@ export function SettingsModal() {
       <div
         ref={panelRef}
         tabIndex={-1}
-        className="mt-4 mb-4 flex max-h-[80vh] w-full max-w-[560px] flex-col overflow-hidden gn-modal-panel sm:mt-8 sm:max-w-[860px]"
+        className="mt-2 mb-2 flex max-h-[88dvh] w-full max-w-[560px] flex-col overflow-hidden gn-modal-panel sm:mt-8 sm:mb-4 sm:max-h-[80vh] sm:max-w-[860px]"
       >
         <header className="gn-modal-header">
           <span className="text-[13px] font-bold text-gn-fg">settings</span>
@@ -365,29 +372,28 @@ export function SettingsModal() {
             ›
           </span>
           <span className="truncate text-[12px] text-gn-fg2">{current.label}</span>
-          <span className="ml-auto font-mono text-[10.5px] text-gn-gutter">
+          <span className="ml-auto hidden font-mono text-[10.5px] text-gn-gutter sm:inline">
             v{__APP_VERSION__}
           </span>
           <button
             type="button"
             onClick={close}
-            className="rounded px-2 py-0.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+            className="ml-auto rounded px-2 py-0.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg sm:ml-0"
           >
             esc
           </button>
         </header>
 
-        {/* 顶栏之下左右分区：左分类 / 右内容（窄屏分类折成横向条）。 */}
+        {/* 顶栏之下：移动端为顶部 Tab 栏（等宽短标签，无需横向滑动），桌面端为左侧边栏。 */}
         <div className="flex min-h-0 min-w-0 flex-1 flex-col sm:flex-row">
           <nav
             ref={navRef}
             role="tablist"
             aria-label="设置分类"
-            aria-orientation="vertical"
             onKeyDown={onNavKeyDown}
-            className="gn-no-scrollbar shrink-0 overflow-x-auto border-b border-gn-prompt-border px-2 py-2 sm:w-[186px] sm:overflow-x-hidden sm:overflow-y-auto sm:border-b-0 sm:border-r sm:border-gn-prompt-border/60"
+            className="gn-no-scrollbar shrink-0 overflow-x-auto border-b border-gn-prompt-border bg-gn-bg-dark/30 p-1.5 sm:w-[186px] sm:overflow-x-hidden sm:overflow-y-auto sm:border-b-0 sm:border-r sm:border-gn-prompt-border/60 sm:bg-transparent sm:p-2"
           >
-            <div className="flex min-w-max gap-1 sm:min-w-0 sm:flex-col sm:gap-0.5">
+            <div className="flex w-full gap-1 sm:min-w-0 sm:flex-col sm:gap-0.5">
               {cats.map((c) => {
                 const on = c.key === current.key
                 return (
@@ -396,12 +402,18 @@ export function SettingsModal() {
                     type="button"
                     role="tab"
                     data-cat={c.key}
+                    aria-label={c.label}
                     aria-selected={on}
                     onClick={() => setActive(c.key)}
-                    className={`w-full shrink-0 truncate rounded px-2 py-1.5 text-left text-[12px] transition-colors ${ on ? 'bg-gn-bg-highlight font-medium text-gn-fg' : 'text-gn-muted hover:bg-gn-bg-highlight/60 hover:text-gn-fg2' }`}
+                    className={`flex-1 min-w-0 truncate rounded py-1.5 px-1 text-center text-[12px] transition-colors sm:flex-none sm:w-full sm:px-2 sm:py-1.5 sm:text-left ${
+                      on
+                        ? 'bg-gn-bg-highlight font-medium text-gn-fg'
+                        : 'text-gn-muted hover:bg-gn-bg-highlight/60 hover:text-gn-fg2'
+                    }`}
                     title={c.label}
                   >
-                    {c.label}
+                    <span className="sm:hidden">{c.shortLabel}</span>
+                    <span className="hidden sm:inline">{c.label}</span>
                   </button>
                 )
               })}
@@ -414,7 +426,7 @@ export function SettingsModal() {
             className="min-h-0 flex-1 overflow-y-auto"
           >
             {current.desc ? (
-              <div className="border-b border-gn-prompt-border/50 px-4 py-2 text-[10.5px] leading-snug text-gn-fg2">
+              <div className="border-b border-gn-prompt-border/50 px-3 py-1.5 text-[11px] leading-snug text-gn-fg2 sm:px-4 sm:py-2 sm:text-[10.5px]">
                 {current.desc}
               </div>
             ) : null}
@@ -454,24 +466,33 @@ const NAV_MOVE_KEYS = new Set([
 
 /**
  * One settings row: key + hint on the left, control on the right. Narrow
- * panes (and mobile) stack the control under the label instead of squeezing
- * a fixed-width label column.
+ * panes (and mobile) stack the control under the label for multi-item choices,
+ * while keeping single toggles / inputs inline for a clean mobile settings layout.
  */
 function SettingRow({
   label,
   hint,
   code,
+  stackOnMobile = false,
   children,
 }: {
   label: string
   hint?: string
   /** 配置键名，悬停可见，界面不直接展示。 */
   code?: string
+  /** 移动端多选项（如 ChoicePills）强制换行堆叠，默认单控件左右同行。 */
+  stackOnMobile?: boolean
   children: ReactNode
 }) {
   return (
-    <div className="flex flex-col gap-1.5 border-b border-gn-prompt-border/40 px-4 py-2.5 last:border-b-0 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
-      <div className="min-w-0 sm:flex-1">
+    <div
+      className={`border-b border-gn-prompt-border/40 px-3 py-2.5 last:border-b-0 sm:px-4 sm:py-2.5 ${
+        stackOnMobile
+          ? 'flex flex-col gap-1.5 sm:flex-row sm:items-start sm:justify-between sm:gap-6'
+          : 'flex items-start justify-between gap-3 sm:gap-6'
+      }`}
+    >
+      <div className="min-w-0 flex-1">
         <div className="text-[12px] leading-snug text-gn-fg" title={code ?? label}>
           {label}
         </div>
@@ -479,7 +500,11 @@ function SettingRow({
           <div className="mt-0.5 text-[10.5px] leading-snug text-gn-fg2">{hint}</div>
         ) : null}
       </div>
-      <div className="flex min-w-0 shrink-0 flex-wrap items-start gap-1 sm:max-w-[58%] sm:justify-end">
+      <div
+        className={`flex min-w-0 shrink-0 flex-wrap items-center gap-1 sm:max-w-[58%] sm:justify-end ${
+          stackOnMobile ? 'self-start pt-0.5 sm:pt-0' : 'self-center sm:self-start'
+        }`}
+      >
         {children}
       </div>
     </div>
@@ -506,8 +531,8 @@ function TogglePill({
       disabled={disabled}
       onClick={onClick}
       title={title}
-      className={`inline-flex items-center gap-1.5 rounded px-2 py-px text-[10.5px] ${
- on ? 'bg-gn-bg-highlight text-gn-green' : 'text-gn-muted hover:bg-gn-bg-highlight'
+      className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-[11px] transition-colors sm:px-2 sm:py-px sm:text-[10.5px] ${
+        on ? 'bg-gn-bg-highlight font-medium text-gn-green' : 'text-gn-muted hover:bg-gn-bg-highlight'
       } disabled:opacity-50`}
     >
       <span
@@ -544,9 +569,9 @@ function ChoicePills<T extends string>({
               if (on) return
               onPick(c.id)
             }}
-            className={`rounded px-2 py-px text-[10.5px] ${
- on
-                ? 'bg-gn-bg-highlight text-gn-green cursor-default'
+            className={`rounded px-2.5 py-1 text-[11px] transition-colors sm:px-2 sm:py-px sm:text-[10.5px] ${
+              on
+                ? 'bg-gn-bg-highlight font-medium text-gn-green cursor-default'
                 : 'text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
             } disabled:opacity-50`}
           >
@@ -634,6 +659,7 @@ function ConsumedSettings({
         label="权限默认"
         code="permission_mode"
         hint="新会话 / Agent 启动时的默认权限；改动同时应用到当前会话。"
+        stackOnMobile
       >
         <ChoicePills
           choices={PERM_CHOICES}
@@ -646,6 +672,7 @@ function ConsumedSettings({
         label="忙时处理"
         code="follow_up_behavior"
         hint="引导：工具调用完成后注入（不取消回合）；排队：等当前回合结束后发送。"
+        stackOnMobile
       >
         <ChoicePills
           choices={FOLLOW_UP_CHOICES}
@@ -750,7 +777,7 @@ function AskTimeoutSection({
               commitSecs()
             }
           }}
-          className="w-32 rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 text-[12px] text-gn-fg outline-none placeholder:text-gn-gray focus:border-gn-magenta/50"
+          className="w-28 rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 text-[12px] text-gn-fg outline-none placeholder:text-gn-gray focus:border-gn-magenta/50 sm:w-32"
         />
       </SettingRow>
     </section>
@@ -814,6 +841,7 @@ function FePrefsSection() {
         label="审批默认选项"
         code="default_selected_permission"
         hint="审批弹窗里默认选中哪一行。"
+        stackOnMobile
       >
         <ChoicePills
           choices={DEFAULT_SELECTED_PERMISSION_UI}
