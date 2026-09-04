@@ -1,5 +1,15 @@
 import type { CustomModelConfig } from '../api/types'
 
+/** 自定义模型稳定排序：优先按显示名（或 id）不区分大小写字母序，相同则按 id 兜底。 */
+export function compareCustomModels(a: CustomModelConfig, b: CustomModelConfig): number {
+  const nameA = a.name?.trim() || a.id
+  const nameB = b.name?.trim() || b.id
+  return (
+    nameA.localeCompare(nameB, undefined, { sensitivity: 'base' }) ||
+    a.id.localeCompare(b.id)
+  )
+}
+
 export interface EndpointOption {
   key: string
   baseUrl: string
@@ -91,7 +101,9 @@ export function extractEndpoints(models: CustomModelConfig[]): EndpointOption[] 
       })
     }
   }
-  return Array.from(map.values())
+  return Array.from(map.values()).sort(
+    (a, b) => b.count - a.count || a.baseUrl.localeCompare(b.baseUrl),
+  )
 }
 
 /** 生成合法的 TOML 配置节键名（防止重名冲突） */

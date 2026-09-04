@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { CustomModelsPanel } from './CustomModelsPanel'
 
 const sampleModels = [
@@ -95,6 +95,20 @@ describe('CustomModelsPanel', () => {
     expect(screen.getByText('GPT-4o')).toBeDefined()
   })
 
+  it('renders models stably sorted by display name or id', async () => {
+    render(<CustomModelsPanel />)
+
+    await waitFor(() => {
+      expect(screen.getByText('DeepSeek Chat')).toBeDefined()
+    })
+
+    const rows = screen.getAllByRole('button', { name: '编辑' }).map((btn) => {
+      const row = btn.closest('div[class*="justify-between"]') as HTMLElement
+      return within(row).getByText(/Claude Sonnet|DeepSeek Chat|GPT-4o/).textContent
+    })
+    expect(rows).toEqual(['Claude Sonnet', 'DeepSeek Chat', 'GPT-4o'])
+  })
+
   it('supports modifying model id and renames model on save', async () => {
     render(<CustomModelsPanel />)
 
@@ -102,9 +116,9 @@ describe('CustomModelsPanel', () => {
       expect(screen.getByText('DeepSeek Chat')).toBeDefined()
     })
 
-    // Click edit on first model (ds-chat)
-    const editBtns = screen.getAllByRole('button', { name: '编辑' })
-    fireEvent.click(editBtns[0])
+    // Click edit on model ds-chat (DeepSeek Chat)
+    const row = screen.getByText('DeepSeek Chat').closest('div[class*="justify-between"]') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: '编辑' }))
 
     // Verify id input is NOT disabled and has initial value
     const idInput = screen.getByDisplayValue('ds-chat') as HTMLInputElement
@@ -143,8 +157,8 @@ describe('CustomModelsPanel', () => {
     })
 
     // Edit ds-chat
-    const editBtns = screen.getAllByRole('button', { name: '编辑' })
-    fireEvent.click(editBtns[0])
+    const row = screen.getByText('DeepSeek Chat').closest('div[class*="justify-between"]') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: '编辑' }))
 
     const idInput = screen.getByDisplayValue('ds-chat') as HTMLInputElement
     // Change id to gpt-4o which already exists
@@ -163,8 +177,8 @@ describe('CustomModelsPanel', () => {
       expect(screen.getByText('DeepSeek Chat')).toBeDefined()
     })
 
-    const editBtns = screen.getAllByRole('button', { name: '编辑' })
-    fireEvent.click(editBtns[0])
+    const row = screen.getByText('DeepSeek Chat').closest('div[class*="justify-between"]') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: '编辑' }))
 
     const idInput = screen.getByDisplayValue('ds-chat') as HTMLInputElement
     fireEvent.change(idInput, { target: { value: 'ds-chat-renamed' } })
@@ -188,8 +202,8 @@ describe('CustomModelsPanel', () => {
       expect(screen.getByText('DeepSeek Chat')).toBeDefined()
     })
 
-    const editBtns = screen.getAllByRole('button', { name: '编辑' })
-    fireEvent.click(editBtns[0])
+    const row = screen.getByText('DeepSeek Chat').closest('div[class*="justify-between"]') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: '编辑' }))
 
     // Change only the display name, keep id ds-chat
     const nameInput = screen.getByDisplayValue('DeepSeek Chat') as HTMLInputElement
