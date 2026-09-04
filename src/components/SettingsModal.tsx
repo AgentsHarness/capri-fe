@@ -408,7 +408,7 @@ export function SettingsModal() {
                     aria-label={c.label}
                     aria-selected={on}
                     onClick={() => setActive(c.key)}
-                    className={`flex-1 min-w-0 truncate rounded py-1.5 px-1 text-center text-[12px] transition-colors sm:flex-none sm:w-full sm:px-2 sm:py-1.5 sm:text-left ${
+                    className={`flex-1 min-w-0 truncate rounded py-1.5 px-1 text-center text-[12px] transition-colors focus:outline-none sm:flex-none sm:w-full sm:px-2 sm:py-1.5 sm:text-left ${
                       on
                         ? 'bg-gn-bg-highlight font-medium text-gn-fg'
                         : 'text-gn-muted hover:bg-gn-bg-highlight/60 hover:text-gn-fg2'

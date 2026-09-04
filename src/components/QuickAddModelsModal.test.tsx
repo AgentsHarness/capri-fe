@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QuickAddModelsModal } from './QuickAddModelsModal'
 import {
+  compareCustomModels,
   extractEndpoints,
   generateModelConfigKey,
   fetchRemoteModels,
@@ -45,6 +46,22 @@ describe('QuickAddModelsModal helpers', () => {
     expect(generateModelConfigKey('deepseek-chat', existing)).toBe('deepseek-chat')
     expect(generateModelConfigKey('deepseek-ai/DeepSeek-V3', existing)).toBe('deepseek-v3')
     expect(generateModelConfigKey('gpt-4o', existing)).toBe('gpt-4o-3')
+  })
+
+  it('compareCustomModels deterministically sorts by name or id', () => {
+    const list: CustomModelConfig[] = [
+      { id: 'gpt-4o', model: 'gpt-4o' },
+      { id: 'ds-chat', name: 'DeepSeek Chat', model: 'deepseek-chat' },
+      { id: 'claude-sonnet', name: 'Claude Sonnet', model: 'claude-3-5-sonnet' },
+      { id: 'ds-reasoner', name: 'DeepSeek Reasoner', model: 'deepseek-reasoner' },
+    ]
+    const sorted = [...list].sort(compareCustomModels)
+    expect(sorted.map((m) => m.name || m.id)).toEqual([
+      'Claude Sonnet',
+      'DeepSeek Chat',
+      'DeepSeek Reasoner',
+      'gpt-4o',
+    ])
   })
 
   describe('fetchRemoteModels', () => {

@@ -68,7 +68,7 @@ export function QuickAddModelsModal({
       const id = m.model || m.id
       if (id) seen.add(id)
     }
-    return Array.from(seen)
+    return Array.from(seen).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
   }, [customBaseUrl, existingModels])
 
   // 选 baseUrl 后重置模型选择；选模型后用（baseUrl, 模型）命中的本地配置回填 key/后端
@@ -535,7 +535,7 @@ export function QuickAddModelsModal({
               )}
 
               {/* 列表区域 */}
-              <div className="max-h-[42vh] sm:max-h-[320px] overflow-y-auto rounded border border-gn-prompt-border/60 divide-y divide-gn-prompt-border/30 bg-gn-bg-dark/30">
+              <div className="max-h-[42vh] sm:max-h-[320px] overflow-y-auto rounded border border-gn-prompt-border/60 bg-gn-bg-dark/30">
                 {filteredModels.length === 0 ? (
                   <div className="py-6 text-center text-[11px] text-gn-muted">
                     没有匹配的模型条目
@@ -546,8 +546,8 @@ export function QuickAddModelsModal({
                     return (
                       <div
                         key={item.remoteId}
-                        className={`flex items-start gap-2.5 px-3 py-2 transition-colors ${
- isSelected ? 'bg-gn-bg-highlight/30' : 'hover:bg-gn-bg-dark/60'
+                        className={`flex items-start gap-2.5 border-b border-gn-prompt-border/30 px-3 py-2 last:border-b-0 transition-[background-color] duration-150 ${
+                          isSelected ? 'bg-gn-bg-highlight/30' : 'hover:bg-gn-bg-dark/60'
                         }`}
                       >
                         <input

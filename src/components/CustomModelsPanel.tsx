@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Plus, Search, Zap } from 'lucide-react'
 import { transport } from '../api/client'
 import type { CustomModelConfig } from '../api/types'
+import { compareCustomModels } from '../lib/quickAddModels'
 import { pushToast } from '../store/toast'
 import { Glyphs } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
@@ -54,9 +55,10 @@ export function CustomModelsPanel() {
   const [searchQuery, setSearchQuery] = useState('')
 
   const filteredModels = useMemo(() => {
-    if (!searchQuery.trim()) return models
+    const list = [...models].sort(compareCustomModels)
+    if (!searchQuery.trim()) return list
     const q = searchQuery.trim().toLowerCase()
-    return models.filter(
+    return list.filter(
       (m) =>
         m.id.toLowerCase().includes(q) ||
         (m.model && m.model.toLowerCase().includes(q)) ||
@@ -67,7 +69,8 @@ export function CustomModelsPanel() {
 
   const refresh = useCallback(async () => {
     try {
-      setModels(await transport.listCustomModels())
+      const list = await transport.listCustomModels()
+      setModels([...list].sort(compareCustomModels))
       setError(undefined)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -129,7 +132,7 @@ export function CustomModelsPanel() {
   }
 
   return (
-    <section className="border-b border-gn-prompt-border/50 py-1 last:border-b-0">
+    <section className="py-1">
       <div className="flex items-center justify-between px-3 pt-2 pb-1 sm:px-4">
         <span className="text-[10px] uppercase tracking-wider text-gn-gutter">
           [model.*] 自定义模型<span className="hidden sm:inline">（BYOK）</span>
@@ -138,7 +141,7 @@ export function CustomModelsPanel() {
           <button
             type="button"
             onClick={() => setEditing({ id: '' })}
-            className="flex items-center gap-1 rounded px-2 py-1 text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg sm:py-px"
+            className="flex items-center gap-1 rounded px-2 py-1 text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg focus:outline-none sm:py-px"
           >
             <Plus className="h-3 w-3 text-gn-gutter" />
             <span>新增模型</span>
@@ -146,7 +149,7 @@ export function CustomModelsPanel() {
           <button
             type="button"
             onClick={() => setQuickAddOpen(true)}
-            className="flex items-center gap-1 rounded px-2 py-1 text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg sm:py-px"
+            className="flex items-center gap-1 rounded px-2 py-1 text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg focus:outline-none sm:py-px"
             title="从已有或自定义端点拉取 /v1/models 批量添加"
           >
             <Zap className="h-3 w-3 text-gn-cyan" />
@@ -217,11 +220,11 @@ export function CustomModelsPanel() {
                   没有匹配的自定义模型
                 </div>
               ) : (
-                <div className="overflow-hidden rounded border border-gn-prompt-border/40 divide-y divide-gn-prompt-border/25 bg-gn-bg-dark/25">
+                <div className="overflow-hidden rounded border border-gn-prompt-border/40 bg-gn-bg-dark/25">
                   {filteredModels.map((m) => (
                     <div
                       key={m.id}
-                      className="flex items-center justify-between gap-2 px-2.5 py-1.5 transition-colors hover:bg-gn-bg-highlight/30"
+                      className="flex items-center justify-between gap-2 border-b border-gn-prompt-border/25 px-2.5 py-1.5 last:border-b-0 transition-[background-color] duration-150 hover:bg-gn-bg-highlight/30"
                     >
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-[12px] font-medium leading-snug text-gn-fg">
@@ -243,14 +246,14 @@ export function CustomModelsPanel() {
                             <button
                               type="button"
                               onClick={() => void del(m.id)}
-                              className="rounded bg-gn-diff-del-bg px-1.5 py-0.5 text-[10.5px] font-medium text-gn-red hover:bg-gn-red/20"
+                              className="rounded bg-gn-diff-del-bg px-1.5 py-0.5 text-[10.5px] font-medium text-gn-red hover:bg-gn-red/20 focus:outline-none"
                             >
                               确定
                             </button>
                             <button
                               type="button"
                               onClick={() => setConfirmDelete(null)}
-                              className="rounded px-1.5 py-0.5 text-[10.5px] text-gn-muted hover:text-gn-fg"
+                              className="rounded px-1.5 py-0.5 text-[10.5px] text-gn-muted hover:text-gn-fg focus:outline-none"
                             >
                               取消
                             </button>
@@ -260,14 +263,14 @@ export function CustomModelsPanel() {
                             <button
                               type="button"
                               onClick={() => setEditing({ ...m })}
-                              className="rounded border border-gn-prompt-border/50 px-1.5 py-0.5 text-[10.5px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg"
+                              className="rounded border border-gn-prompt-border/50 px-1.5 py-0.5 text-[10.5px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg focus:outline-none"
                             >
                               编辑
                             </button>
                             <button
                               type="button"
                               onClick={() => setConfirmDelete(m.id)}
-                              className="rounded border border-gn-prompt-border/50 px-1.5 py-0.5 text-[10.5px] text-gn-muted hover:border-gn-red/50 hover:text-gn-red"
+                              className="rounded border border-gn-prompt-border/50 px-1.5 py-0.5 text-[10.5px] text-gn-muted hover:border-gn-red/50 hover:text-gn-red focus:outline-none"
                             >
                               删除
                             </button>
