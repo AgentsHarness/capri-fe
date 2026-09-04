@@ -567,12 +567,16 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
   if (!open) return null
 
   const branch = status?.branch ?? gitInfo?.branch
-  const notRepo = /not a git repository/i.test(statusError ?? '')
+  const notRepo =
+    /not a git repository/i.test(statusError ?? '') ||
+    /could not find repository/i.test(statusError ?? '') ||
+    /notgitrepo/i.test(statusError ?? '') ||
+    ((statusError === 'Internal error' || statusError?.includes('Internal error')) && !branch)
   const busy = busyOp != null
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center gn-modal-dim p-0 sm:p-4"
+      className="fixed inset-0 z-50 flex items-start justify-center gn-modal-dim p-2 sm:p-4"
       role="dialog"
       aria-modal="true"
       aria-label="git"
@@ -583,97 +587,103 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
       <div
         ref={panelRef}
         tabIndex={-1}
-        className="flex h-full w-full flex-col bg-gn-bg-dark text-gn-fg shadow-2xl sm:mt-8 sm:h-auto sm:max-h-[85vh] sm:max-w-[940px] sm:rounded-lg sm:border sm:border-gn-prompt-border"
+        className="my-auto sm:mt-8 flex h-[92vh] sm:h-auto sm:max-h-[85vh] w-full max-w-[940px] flex-col overflow-hidden rounded-xl sm:rounded-2xl border border-gn-prompt-border bg-gn-bg-dark text-gn-fg shadow-2xl gn-modal-panel outline-none"
       >
         {/* Top bar header */}
         <header className="flex h-12 shrink-0 items-center gap-2 border-b border-gn-prompt-border bg-gn-bg-base px-3 sm:px-4">
           <span className="text-[14px] font-bold text-gn-fg">git</span>
-          {branch ? (
-            <span
-              className="flex min-w-0 items-center gap-1 truncate font-mono text-[12px] text-gn-cyan"
-              title={branch}
-            >
-              <span className="shrink-0" aria-hidden>
-                ⎇
-              </span>
-              <span className="truncate">{branch === '(detached)' ? 'detached' : branch}</span>
-              {status?.ahead != null && status.ahead > 0 && (
-                <span className="shrink-0 font-bold text-gn-yellow" title="领先上游的未推送提交">
-                  ↑{status.ahead}
-                </span>
-              )}
-              {status?.behind != null && status.behind > 0 && (
-                <span className="shrink-0 font-bold text-gn-muted" title="落后上游的提交">
-                  ↓{status.behind}
-                </span>
-              )}
-            </span>
-          ) : null}
 
-          {rows.length > 0 && (
-            <span className="hidden font-mono text-[11px] text-gn-muted md:inline">
-              {rows.filter((r) => r.status === 'staged').length} staged ·{' '}
-              {rows.filter((r) => r.status === 'modified').length} modified ·{' '}
-              {rows.filter((r) => r.status === 'untracked').length} untracked
-            </span>
+          {!notRepo && (
+            <>
+              {branch ? (
+                <span
+                  className="flex min-w-0 items-center gap-1 truncate font-mono text-[12px] text-gn-cyan"
+                  title={branch}
+                >
+                  <span className="shrink-0" aria-hidden>
+                    ⎇
+                  </span>
+                  <span className="truncate">{branch === '(detached)' ? 'detached' : branch}</span>
+                  {status?.ahead != null && status.ahead > 0 && (
+                    <span className="shrink-0 font-bold text-gn-yellow" title="领先上游的未推送提交">
+                      ↑{status.ahead}
+                    </span>
+                  )}
+                  {status?.behind != null && status.behind > 0 && (
+                    <span className="shrink-0 font-bold text-gn-muted" title="落后上游的提交">
+                      ↓{status.behind}
+                    </span>
+                  )}
+                </span>
+              ) : null}
+
+              {rows.length > 0 && (
+                <span className="hidden font-mono text-[11px] text-gn-muted md:inline">
+                  {rows.filter((r) => r.status === 'staged').length} staged ·{' '}
+                  {rows.filter((r) => r.status === 'modified').length} modified ·{' '}
+                  {rows.filter((r) => r.status === 'untracked').length} untracked
+                </span>
+              )}
+
+              {/* Tab Navigation */}
+              <div className="ml-auto flex items-center gap-1 rounded bg-gn-bg-dark/80 p-0.5 text-[11.5px]">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('changes')}
+                  className={`rounded px-2.5 py-1 transition-colors ${
+                    activeTab === 'changes'
+                      ? 'bg-gn-bg-highlight font-medium text-gn-fg'
+                      : 'text-gn-muted hover:text-gn-fg'
+                  }`}
+                >
+                  变更{rows.length > 0 ? ` · ${rows.length}` : ''}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('log')}
+                  className={`rounded px-2.5 py-1 transition-colors ${
+                    activeTab === 'log'
+                      ? 'bg-gn-bg-highlight font-medium text-gn-fg'
+                      : 'text-gn-muted hover:text-gn-fg'
+                  }`}
+                >
+                  历史
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('sync')}
+                  className={`rounded px-2.5 py-1 transition-colors ${
+                    activeTab === 'sync'
+                      ? 'bg-gn-bg-highlight font-medium text-gn-fg'
+                      : 'text-gn-muted hover:text-gn-fg'
+                  }`}
+                >
+                  分支与同步
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  void refresh()
+                  void refreshBranches()
+                  if (activeTab === 'log') void refreshLog()
+                  if (activeTab === 'sync') void refreshStashes()
+                }}
+                disabled={loading}
+                className="rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-40"
+                title="重新拉取 git 状态"
+              >
+                <span className="hidden sm:inline text-[11px] px-1">刷新</span>
+                <RefreshCw size={13} className={`inline ${loading ? 'animate-spin' : ''}`} />
+              </button>
+            </>
           )}
 
-          {/* Tab Navigation */}
-          <div className="ml-auto flex items-center gap-1 rounded bg-gn-bg-dark/80 p-0.5 text-[11.5px]">
-            <button
-              type="button"
-              onClick={() => setActiveTab('changes')}
-              className={`rounded px-2.5 py-1 transition-colors ${
-                activeTab === 'changes'
-                  ? 'bg-gn-bg-highlight font-medium text-gn-fg'
-                  : 'text-gn-muted hover:text-gn-fg'
-              }`}
-            >
-              变更{rows.length > 0 ? ` · ${rows.length}` : ''}
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab('log')}
-              className={`rounded px-2.5 py-1 transition-colors ${
-                activeTab === 'log'
-                  ? 'bg-gn-bg-highlight font-medium text-gn-fg'
-                  : 'text-gn-muted hover:text-gn-fg'
-              }`}
-            >
-              历史
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab('sync')}
-              className={`rounded px-2.5 py-1 transition-colors ${
-                activeTab === 'sync'
-                  ? 'bg-gn-bg-highlight font-medium text-gn-fg'
-                  : 'text-gn-muted hover:text-gn-fg'
-              }`}
-            >
-              分支与同步
-            </button>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => {
-              void refresh()
-              void refreshBranches()
-              if (activeTab === 'log') void refreshLog()
-              if (activeTab === 'sync') void refreshStashes()
-            }}
-            disabled={loading}
-            className="rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-40"
-            title="重新拉取 git 状态"
-          >
-            <span className="hidden sm:inline text-[11px] px-1">刷新</span>
-            <RefreshCw size={13} className={`inline ${loading ? 'animate-spin' : ''}`} />
-          </button>
           <button
             type="button"
             onClick={onClose}
-            className="rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+            className="ml-auto rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
             aria-label="关闭"
             title="关闭 (Esc)"
           >
@@ -682,30 +692,67 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
         </header>
 
         {/* Content area */}
-        {statusError && !status ? (
-          <div className="flex flex-1 flex-col items-center justify-center p-6 text-center">
-            <div className="text-[13px] text-gn-red">{statusError}</div>
-            <div className="mt-1 text-[11.5px] text-gn-muted">
-              {notRepo ? '当前目录不是 git 仓库' : 'host 调用失败'}
+        {notRepo ? (
+          <div className="flex flex-1 flex-col items-center justify-center p-8 text-center">
+            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gn-bg-highlight text-gn-cyan border border-gn-prompt-border/60 shadow-sm">
+              <GitBranchIcon size={26} />
             </div>
-            <button
-              type="button"
-              onClick={() => void refresh()}
-              className="mt-3 rounded border border-gn-prompt-border bg-gn-bg-base px-4 py-1.5 text-[12px] text-gn-fg hover:bg-gn-bg-highlight"
-            >
-              重试
-            </button>
+            <div className="mt-4 text-[16px] font-semibold text-gn-fg">
+              当前目录不是 git 仓库
+            </div>
+            <p className="mt-2 max-w-md text-[12.5px] leading-relaxed text-gn-muted">
+              当前工作区路径 <span className="font-mono text-gn-cyan">{cwd || '当前路径'}</span> 尚未初始化 Git 版本控制 (not a git repository)。
+              一键初始化后即可直接使用暂存、提交、分支管理等功能。
+            </p>
+            <div className="mt-2 font-mono text-[11px] text-gn-gutter">
+              ({statusError})
+            </div>
+            <div className="mt-6 flex items-center gap-3">
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() =>
+                  runOp('init', async () => {
+                    await transport.gitInit?.({ cwd })
+                    await refresh()
+                  })
+                }
+                className="flex items-center gap-1.5 rounded-lg bg-gn-green/20 border border-gn-green/40 px-4 py-2 text-[12.5px] font-medium text-gn-green hover:bg-gn-green/30 disabled:opacity-40 shadow-sm"
+              >
+                <Plus size={15} /> 初始化 Git 仓库 (git init)
+              </button>
+              <button
+                type="button"
+                onClick={() => void refresh()}
+                className="rounded-lg border border-gn-prompt-border bg-gn-bg-base px-3.5 py-2 text-[12px] text-gn-fg hover:bg-gn-bg-highlight"
+              >
+                重试
+              </button>
+            </div>
           </div>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col sm:flex-row">
             {activeTab === 'changes' && (
-              <>
-                {/* File list sidebar */}
-                <div
-                  className={`gn-no-scrollbar shrink-0 overflow-y-auto border-r border-gn-prompt-border bg-gn-bg-base/40 ${
-                    selectedPath ? 'hidden sm:block sm:w-72' : 'w-full sm:w-72'
-                  }`}
-                >
+              statusError && !status ? (
+                <div className="flex flex-1 flex-col items-center justify-center p-6 text-center">
+                  <div className="text-[13px] text-gn-red">{statusError}</div>
+                  <div className="mt-1 text-[11.5px] text-gn-muted">host 调用失败</div>
+                  <button
+                    type="button"
+                    onClick={() => void refresh()}
+                    className="mt-3 rounded border border-gn-prompt-border bg-gn-bg-base px-4 py-1.5 text-[12px] text-gn-fg hover:bg-gn-bg-highlight"
+                  >
+                    重试
+                  </button>
+                </div>
+              ) : (
+                <>
+                  {/* File list sidebar */}
+                  <div
+                    className={`gn-no-scrollbar shrink-0 overflow-y-auto border-r border-gn-prompt-border bg-gn-bg-base/40 ${
+                      selectedPath ? 'hidden sm:block sm:w-72' : 'w-full sm:w-72'
+                    }`}
+                  >
                   {/* 分支折叠栏（保持测试用例兼容性） */}
                   <div className="border-b border-gn-prompt-border/50 px-3 pb-1.5 pt-2">
                     <div className="text-[10px] uppercase tracking-wider text-gn-gutter">
@@ -972,7 +1019,8 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                   )}
                 </div>
               </>
-            )}
+            )
+          )}
 
             {/* Tab: History Log */}
             {activeTab === 'log' && (
@@ -1252,12 +1300,16 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
           </div>
         )}
 
-        {/* Footer Commit Bar (only in Changes tab) */}
-        {activeTab === 'changes' && (
+        {/* Footer Commit Bar (only in Changes tab and not notRepo) */}
+        {!notRepo && activeTab === 'changes' && (
           <footer className="gn-modal-footer flex flex-col gap-2 bg-gn-bg-base px-3 py-2.5 sm:px-4">
             {statusError && (
-              <div className="rounded bg-gn-diff-del-bg px-2.5 py-1 text-[11px] text-gn-red font-mono truncate">
-                {statusError}
+              <div
+                className={`rounded px-2.5 py-1 text-[11px] font-mono truncate ${
+                  notRepo ? 'bg-gn-bg-highlight text-gn-muted' : 'bg-gn-diff-del-bg text-gn-red'
+                }`}
+              >
+                {notRepo ? `提示：当前目录不是 git 仓库 (${statusError})` : statusError}
               </div>
             )}
             {opError && (
