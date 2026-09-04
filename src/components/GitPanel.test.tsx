@@ -19,6 +19,16 @@ const h = vi.hoisted(() => {
       gitCommit: vi.fn(),
       gitStash: vi.fn(),
       gitCheckout: vi.fn(),
+      gitLog: vi.fn(),
+      gitPush: vi.fn(),
+      gitPull: vi.fn(),
+      gitFetch: vi.fn(),
+      gitStashList: vi.fn(),
+      gitStashPop: vi.fn(),
+      gitStashDrop: vi.fn(),
+      gitBranchCreate: vi.fn(),
+      gitBranchDelete: vi.fn(),
+      gitStageContent: vi.fn(),
       onEvent: vi.fn(),
     },
   }
@@ -72,6 +82,41 @@ beforeEach(() => {
   transport.gitCommit.mockReset().mockResolvedValue(undefined)
   transport.gitStash.mockReset().mockResolvedValue(undefined)
   transport.gitCheckout.mockReset().mockResolvedValue(undefined)
+  transport.gitLog.mockReset().mockResolvedValue({
+    ok: true,
+    commits: [
+      {
+        hash: '1234567890abcdef',
+        shortHash: '1234567',
+        author: 'Alice',
+        email: 'alice@example.com',
+        timestamp: 1600000000,
+        date: '2 hours ago',
+        message: 'feat: add awesome feature',
+        refs: 'HEAD -> main, origin/main',
+      },
+    ],
+  })
+  transport.gitPush.mockReset().mockResolvedValue({ ok: true })
+  transport.gitPull.mockReset().mockResolvedValue({ ok: true })
+  transport.gitFetch.mockReset().mockResolvedValue({ ok: true })
+  transport.gitStashList.mockReset().mockResolvedValue({
+    ok: true,
+    stashes: [
+      {
+        index: 0,
+        ref: 'stash@{0}',
+        hash: 'abc1234',
+        date: '10 mins ago',
+        message: 'WIP on main',
+      },
+    ],
+  })
+  transport.gitStashPop.mockReset().mockResolvedValue({ ok: true })
+  transport.gitStashDrop.mockReset().mockResolvedValue({ ok: true })
+  transport.gitBranchCreate.mockReset().mockResolvedValue({ ok: true })
+  transport.gitBranchDelete.mockReset().mockResolvedValue({ ok: true })
+  transport.gitStageContent.mockReset().mockResolvedValue(undefined)
   transport.onEvent.mockReset().mockReturnValue(vi.fn())
 })
 
@@ -345,5 +390,144 @@ describe('GitPanel — 操作按钮', () => {
     expect(screen.getByRole('button', { name: /main/ })).toBeDisabled()
     fireEvent.click(screen.getAllByRole('button', { name: 'stage' })[0])
     expect(await screen.findByText(/stage c\.ts 失败: stage boom/)).not.toBeNull()
+  })
+})
+
+describe('GitPanel — 移动端多Tab与高级特性', () => {
+  it('全部暂存 (Stage All) 与 全部取消 (Unstage All)', async () => {
+    render(<GitPanel open onClose={() => {}} />)
+    await screen.findByText('a.ts')
+    fireEvent.click(screen.getByRole('button', { name: '全部暂存' }))
+    await waitFor(() =>
+      expect(transport.gitStage).toHaveBeenCalledWith({
+        cwd: '/work',
+        paths: ['c.ts', 'b.ts'],
+      }),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '全部取消' }))
+    await waitFor(() =>
+      expect(transport.gitUnstage).toHaveBeenCalledWith({
+        cwd: '/work',
+        paths: ['a.ts'],
+      }),
+    )
+  })
+
+  it('AI 生成 Commit 信息', async () => {
+    render(<GitPanel open onClose={() => {}} />)
+    await screen.findByText('a.ts')
+    const aiBtn = screen.getByRole('button', { name: /AI 描述/ })
+    fireEvent.click(aiBtn)
+    const input = screen.getByPlaceholderText('提交信息（Enter 提交）') as HTMLInputElement
+    expect(input.value).toMatch(/^feat: update a\.ts/)
+  })
+
+  it('Hunk 块级暂存', async () => {
+    transport.gitDiffs.mockResolvedValue({
+      files: [
+        {
+          path: 'a.ts',
+          type: 'edit',
+          additions: 1,
+          deletions: 1,
+          patch: 'diff --git a/a.ts b/a.ts\n@@ -1,3 +1,3 @@\n-old code\n+new awesome code',
+        },
+      ],
+    })
+    render(<GitPanel open onClose={() => {}} />)
+    fireEvent.click(await screen.findByText('a.ts'))
+    const stageHunkBtn = await screen.findByRole('button', { name: '暂存此块' })
+    fireEvent.click(stageHunkBtn)
+    await waitFor(() => {
+      expect(transport.gitStageContent).toHaveBeenCalled()
+      expect(transport.gitStage).toHaveBeenCalledWith({
+        cwd: '/work',
+        paths: ['a.ts'],
+      })
+    })
+  })
+
+  it('切换到历史 Tab (log) → 显示 commit 列表', async () => {
+    render(<GitPanel open onClose={() => {}} />)
+    await screen.findByText('a.ts')
+    fireEvent.click(screen.getByRole('button', { name: '历史' }))
+    expect(await screen.findByText('feat: add awesome feature')).not.toBeNull()
+    expect(screen.getByText('1234567')).not.toBeNull()
+    expect(screen.getByText('Alice')).not.toBeNull()
+    expect(transport.gitLog).toHaveBeenCalledWith({ cwd: '/work', maxCount: 30 })
+  })
+
+  it('切换到分支与同步 Tab (sync) → Fetch / Pull / Push 操作', async () => {
+    render(<GitPanel open onClose={() => {}} />)
+    await screen.findByText('a.ts')
+    fireEvent.click(screen.getByRole('button', { name: '分支与同步' }))
+    expect(await screen.findByText('远程仓库同步')).not.toBeNull()
+
+    // Fetch
+    fireEvent.click(screen.getByRole('button', { name: /Fetch/ }))
+    await waitFor(() => expect(transport.gitFetch).toHaveBeenCalledWith({ cwd: '/work' }))
+
+    // Pull
+    fireEvent.click(screen.getByRole('button', { name: /Pull/ }))
+    await waitFor(() => expect(transport.gitPull).toHaveBeenCalledWith({ cwd: '/work' }))
+
+    // Push
+    fireEvent.click(screen.getByRole('button', { name: /Push/ }))
+    await waitFor(() => expect(transport.gitPush).toHaveBeenCalledWith({ cwd: '/work' }))
+  })
+
+  it('新建分支与删除分支', async () => {
+    render(<GitPanel open onClose={() => {}} />)
+    await screen.findByText('a.ts')
+    fireEvent.click(screen.getByRole('button', { name: '分支与同步' }))
+
+    const input = await screen.findByPlaceholderText('新分支名称')
+    fireEvent.change(input, { target: { value: 'feature/mobile-git' } })
+    fireEvent.click(screen.getByRole('button', { name: '新建' }))
+    await waitFor(() =>
+      expect(transport.gitBranchCreate).toHaveBeenCalledWith({
+        cwd: '/work',
+        branch: 'feature/mobile-git',
+        checkout: true,
+      }),
+    )
+
+    // 删除 dev 分支（非当前分支）
+    const deleteBtns = screen.getAllByTitle('删除此分支')
+    fireEvent.click(deleteBtns[0])
+    await waitFor(() =>
+      expect(transport.gitBranchDelete).toHaveBeenCalledWith({
+        cwd: '/work',
+        branch: 'dev',
+        force: true,
+      }),
+    )
+  })
+
+  it('Stash 列表管理：Pop 与 Drop', async () => {
+    render(<GitPanel open onClose={() => {}} />)
+    await screen.findByText('a.ts')
+    fireEvent.click(screen.getByRole('button', { name: '分支与同步' }))
+
+    expect(await screen.findByText('WIP on main')).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Pop' }))
+    await waitFor(() =>
+      expect(transport.gitStashPop).toHaveBeenCalledWith({
+        cwd: '/work',
+        index: 'stash@{0}',
+      }),
+    )
+
+    // Drop 两段确认
+    fireEvent.click(screen.getByRole('button', { name: 'Drop' }))
+    expect(screen.getByRole('button', { name: '确认？' })).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '确认？' }))
+    await waitFor(() =>
+      expect(transport.gitStashDrop).toHaveBeenCalledWith({
+        cwd: '/work',
+        index: 'stash@{0}',
+      }),
+    )
   })
 })
