@@ -1,5 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { X } from 'lucide-react'
+import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  ExternalLink,
+  Play,
+  Plus,
+  RefreshCw,
+  Search,
+  Sliders,
+  Terminal,
+  Trash2,
+  Wrench,
+  X,
+} from 'lucide-react'
 import { useChatStore, type McpServerInfo } from '../store/chat'
 import { transport, type McpListServer, type McpToolInfo } from '../api/client'
 
@@ -7,27 +22,9 @@ import { transport, type McpListServer, type McpToolInfo } from '../api/client'
  * MCP server panel (x.ai/mcp/server_status + host /api/mcp/*) — web
  * counterpart of the TUI /mcps modal.
  *
- * Both halves render `rows` — the merged view of the event stream
- * (mcp_server_status) and GET /api/mcp/list. `mcp_server_status` is an
- * incremental notification (only fired on status change, never replayed
- * when the panel opens), so the event stream alone is usually empty;
- * the list is what makes the panel informative on first open.
- *
- * Upper half: 服务器状态 — read-only status rows plus the aggregate MCP
- * init progress (mcp_init_progress: `MCP (connected/total)` bar while
- * connecting).
- *
- * Lower half: 管理 — the same rows with their config (rows marked
- * `agent-list` came in from the list response); per-row 启用/禁用 toggle
- * (/api/mcp-toggle), per-tool 启用/禁用 toggle (/api/mcp-toggle-tool —
- * the tool list comes from the list response's session.tools, degraded to
- * 无工具信息 when absent), 删除 (/api/mcp-remove, window.confirm), 认证
- * (/api/mcp-auth-trigger — url/code shown inline), plus a collapsible
- * 添加服务器 form (/api/mcp-add). Merge rule: the event stream wins for
- * status, the list supplements config/source. Every host call degrades to
- * an inline error line — the read-only 服务器状态 view is never affected.
- * mcp_tools_changed / mcp_servers_updated bump mcpVersion, which
- * re-triggers the list fetch while the panel is open.
+ * Renders `rows` — the merged view of the event stream (mcp_server_status)
+ * and GET /api/mcp/list. Single unified card list with real-time status,
+ * server actions, configuration details, tool management, and debug console.
  */
 export function McpPanel({
   open,
@@ -57,16 +54,25 @@ export function McpPanel({
   const [toolBusy, setToolBusy] = useState<{ server: string; tool: string } | null>(null)
   const [actionError, setActionError] = useState<string>()
   const [authResult, setAuthResult] = useState<{ name: string; url?: string; code?: string; message?: string } | null>(null)
+  const [copiedCode, setCopiedCode] = useState(false)
+
+  // ── 交互/折叠状态 ──
+  const [searchQuery, setSearchQuery] = useState('')
+  const [collapsedTools, setCollapsedTools] = useState<Record<string, boolean>>({})
+
+  // ── 添加服务器表单 ──
   const [addOpen, setAddOpen] = useState(false)
   const [form, setForm] = useState({ name: '', command: '', args: '', env: '' })
   const [formError, setFormError] = useState<string>()
   const [adding, setAdding] = useState(false)
+
   // ── 调用工具 / 读取资源（x.ai/mcp/call · x.ai/mcp/read_resource）──
   const [callOpen, setCallOpen] = useState(false)
   const [callForm, setCallForm] = useState({ server: '', tool: '', args: '' })
   const [callResult, setCallResult] = useState<string>()
   const [callError, setCallError] = useState<string>()
   const [calling, setCalling] = useState(false)
+
   const [readOpen, setReadOpen] = useState(false)
   const [readForm, setReadForm] = useState({ server: '', uri: '' })
   const [readResult, setReadResult] = useState<string>()
@@ -106,12 +112,6 @@ export function McpPanel({
     return () => window.removeEventListener('keydown', onKey, true)
   }, [open, onClose, refreshList])
 
-  /**
-   * mcp_tools_changed / mcp_servers_updated only bump mcpVersion — the
-   * notification carries no server data — so re-fetch the list while the
-   * panel is open. The mount/open fetch above covers the first value;
-   * refreshList's reqSeq guard keeps a late response from overwriting.
-   */
   const seenMcpVersion = useRef(mcpVersion)
   useEffect(() => {
     if (seenMcpVersion.current === mcpVersion) return
@@ -122,9 +122,7 @@ export function McpPanel({
   /**
    * Merge rule: event-stream rows (mcp_server_status) win for status;
    * the agent-list result supplements config/source and adds rows the
-   * stream has not reported yet. `rows` is the panel's single source of
-   * truth — both halves render it (the stream alone is empty on a fresh
-   * open, since status events are only pushed on change).
+   * stream has not reported yet. Single unified row list.
    */
   const rows = useMemo(() => {
     const map = new Map<string, McpRow>()
@@ -141,15 +139,11 @@ export function McpPanel({
           env: existing.env ?? l.env,
           url: existing.url ?? l.url,
           enabled: l.enabled,
-          // Config-only fields the event stream never carries.
           displayName: l.displayName,
           sourceLabel: l.sourceLabel,
           authRequired: l.authRequired,
           setupRequired: l.setupRequired,
           toolCount: l.toolCount,
-          // Tool list comes from the agent list only (event-stream rows
-          // carry no tools). `??` keeps the last-known list when the
-          // fresh response omits it.
           tools: l.tools ?? existing.tools,
           fromList: true,
         })
@@ -178,12 +172,39 @@ export function McpPanel({
     return [...map.values()]
   }, [mcpServers, list])
 
+  // 统计数值
+  const stats = useMemo(() => {
+    let connected = 0
+    let totalTools = 0
+    for (const r of rows) {
+      const st = rowStatus(r)
+      if (st === 'ready' || st === 'connected') connected++
+      totalTools += toolCountOf(r) ?? 0
+    }
+    return { connected, totalTools }
+  }, [rows])
+
+  // 搜索过滤
+  const filteredRows = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase()
+    if (!q) return rows
+    return rows.filter((r) => {
+      if (r.name.toLowerCase().includes(q)) return true
+      if (r.displayName?.toLowerCase().includes(q)) return true
+      if (r.command?.toLowerCase().includes(q)) return true
+      if (r.url?.toLowerCase().includes(q)) return true
+      if (r.tools?.some((t) => t.name.toLowerCase().includes(q) || t.displayName?.toLowerCase().includes(q))) {
+        return true
+      }
+      return false
+    })
+  }, [rows, searchQuery])
+
   const runAction = async (
     name: string,
     action: 'toggle' | 'remove' | 'auth',
     fn: () => Promise<unknown>,
   ) => {
-    // Server-level actions are exclusive with per-tool toggles too.
     if (busy || toolBusy) return
     setBusy({ name, action })
     setActionError(undefined)
@@ -200,17 +221,10 @@ export function McpPanel({
   const toggleServer = (name: string, enabled: boolean) =>
     void runAction(name, 'toggle', async () => {
       await mcpToggle(name, enabled)
-      // Success → update the local list state only.
       setList((prev) => prev.map((s) => (s.name === name ? { ...s, enabled } : s)))
       useChatStore.setState({ statusText: `已${enabled ? '启用' : '禁用'} MCP 服务器 ${name}` })
     })
 
-  /**
-   * Per-tool enable/disable (POST /api/mcp-toggle-tool — TUI /mcps tool
-   * row toggle → x.ai/mcp/toggle_tool). Optimistic local flip + silent
-   * refresh so the list converges with the agent (the tools_changed
-   * notification also bumps mcpVersion, which re-fetches on its own).
-   */
   const toggleTool = async (server: string, tool: string, enabled: boolean) => {
     if (busy || toolBusy) return
     setToolBusy({ server, tool })
@@ -222,9 +236,7 @@ export function McpPanel({
           s.name === server
             ? {
                 ...s,
-                tools: s.tools?.map((t) =>
-                  t.name === tool ? { ...t, enabled } : t,
-                ),
+                tools: s.tools?.map((t) => (t.name === tool ? { ...t, enabled } : t)),
               }
             : s,
         ),
@@ -251,9 +263,6 @@ export function McpPanel({
   const authServer = (name: string) =>
     void runAction(name, 'auth', async () => {
       const r = await mcpAuthTrigger(name)
-      // 只放行 http(s)：这是全仓唯一绕过 react-markdown 协议过滤的裸
-      // <a href>，host/agent 回一个 javascript:/data: URL 就会被点击执行。
-      // 被过滤掉的 URL 不写进 url，卡片自然落到「已触发认证流程」兜底文案。
       const url =
         typeof r.url === 'string' && /^https?:\/\//i.test(r.url) ? r.url : undefined
       setAuthResult({ name, ...r, url })
@@ -283,7 +292,6 @@ export function McpPanel({
       useChatStore.setState({ statusText: `已添加 MCP 服务器 ${name}` })
       setAddOpen(false)
       setForm({ name: '', command: '', args: '', env: '' })
-      // Pull the fresh config into the list so the row appears immediately.
       void refreshList()
     } catch (e) {
       setFormError(`添加失败: ${e instanceof Error ? e.message : String(e)}`)
@@ -292,7 +300,6 @@ export function McpPanel({
     }
   }
 
-  /** x.ai/mcp/call — 调用一个已配置服务器的工具（arguments 为可选 JSON）。 */
   const submitCall = async () => {
     const server = callForm.server.trim()
     const tool = callForm.tool.trim()
@@ -324,7 +331,6 @@ export function McpPanel({
     }
   }
 
-  /** x.ai/mcp/read_resource — 读取服务器暴露的资源（server + uri）。 */
   const submitRead = async () => {
     const server = readForm.server.trim()
     const uri = readForm.uri.trim()
@@ -346,6 +352,18 @@ export function McpPanel({
     }
   }
 
+  /** 快捷调用某个工具：打开调用工具表单并预填参数 */
+  const quickCallTool = (server: string, tool: string) => {
+    setCallForm({ server, tool, args: '' })
+    setCallError(undefined)
+    setCallResult(undefined)
+    setAddOpen(false)
+    setReadOpen(false)
+    setCallOpen(true)
+  }
+
+  const [copiedResult, setCopiedResult] = useState(false)
+
   if (!open) return null
 
   return (
@@ -361,185 +379,339 @@ export function McpPanel({
       <div
         ref={panelRef}
         tabIndex={-1}
-        className="mt-8 w-full max-w-[620px] gn-modal-panel"
+        className="mt-6 flex w-full max-w-[680px] max-h-[85vh] flex-col gn-modal-panel shadow-2xl"
       >
-        <header className="gn-modal-header">
-          <span className="text-[13px] font-bold text-gn-fg">MCP servers</span>
-          <span className="text-[11px] text-gn-muted">
-            {rows.length} 个服务器
-          </span>
-          <button
-            type="button"
-            onClick={onClose}
-            className="ml-auto rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
-            aria-label="关闭"
-            title="关闭 (Esc)"
-          >
-            <X size={14} aria-hidden />
-          </button>
+        {/* ── 顶部 Header ────────────────────────────────────── */}
+        <header className="gn-modal-header justify-between py-2.5">
+          <div className="flex items-center gap-2.5">
+            <div className="flex items-center gap-1.5">
+              <Wrench size={15} className="text-gn-blue" aria-hidden />
+              <span className="text-[13px] font-bold tracking-tight text-gn-fg">MCP servers</span>
+            </div>
+            <div className="flex items-center gap-1.5 text-[11px] text-gn-muted">
+              <span className="rounded bg-gn-bg-highlight px-1.5 py-0.5 font-medium text-gn-fg2">
+                {rows.length} 个服务器
+              </span>
+              {rows.length > 0 && (
+                <span className="hidden sm:inline">
+                  · {stats.connected} 就绪 · {stats.totalTools} 工具
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void refreshList()}
+              disabled={listLoading}
+              className="flex items-center gap-1 rounded border border-gn-prompt-border/70 bg-gn-bg-dark/60 px-2 py-1 text-[11px] text-gn-muted transition-colors hover:border-gn-prompt-border hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
+              title="重新读取 host 的 MCP 配置"
+            >
+              <RefreshCw size={12} className={listLoading ? 'animate-spin' : ''} aria-hidden />
+              <span>{listLoading ? '刷新中…' : '刷新列表'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+              aria-label="关闭"
+              title="关闭 (Esc)"
+            >
+              <X size={15} aria-hidden />
+            </button>
+          </div>
         </header>
 
-        <div className="max-h-[62vh] overflow-y-auto">
-          {/* ── 上半区: 服务器状态（合并行，只读） ─────────────────── */}
-          {(mcpInit || rows.length > 0) && (
-            <div className="px-4 pt-2.5 pb-1 text-[10px] uppercase tracking-wider text-gn-gutter">
-              服务器状态
-            </div>
-          )}
-          {mcpInit && !(mcpInit.total > 0 && mcpInit.connected >= mcpInit.total) ? (
-            <div className="border-b border-gn-prompt-border/50 px-4 py-2">
+        {/* ── 连接中进度横幅 ─────────────────────────────────── */}
+        {mcpInit && !(mcpInit.total > 0 && mcpInit.connected >= mcpInit.total) ? (
+          <div className="border-b border-gn-prompt-border/50 bg-gn-bg-dark/80 px-4 py-2">
+            <div className="flex items-center justify-between text-[11.5px]">
               <div className="flex items-center gap-2">
                 <span className="h-2 w-2 shrink-0 rounded-full bg-gn-yellow animate-pulse" />
-                <span className="text-[12px] text-gn-fg2">
+                <span className="font-medium text-gn-fg2">
                   {mcpInit.total > 0
                     ? `MCP 初始化中 · ${mcpInit.connected}/${mcpInit.total} 已连接`
                     : 'MCP 初始化中…（等待服务器计数）'}
                 </span>
               </div>
-              {mcpInit.total > 0 ? (
-                <div className="mt-1.5 h-1 w-full overflow-hidden rounded bg-gn-bg-highlight">
-                  <div
-                    className="h-full rounded bg-gn-yellow transition-[width] duration-300"
-                    style={{
-                      width: `${Math.min(100, Math.round((mcpInit.connected / mcpInit.total) * 100))}%`,
-                    }}
-                  />
-                </div>
-              ) : null}
+              {mcpInit.total > 0 && (
+                <span className="font-mono text-[10.5px] text-gn-muted">
+                  {Math.round((mcpInit.connected / mcpInit.total) * 100)}%
+                </span>
+              )}
             </div>
-          ) : null}
-          {rows.length === 0 ? null : (
-            rows.map((s) => (
-              <div
-                key={s.name}
-                className="flex items-start gap-2.5 border-b border-gn-prompt-border/50 px-4 py-2"
-              >
-                <span
-                  className={`mt-[5px] h-2 w-2 shrink-0 rounded-full ${statusDot(rowStatus(s))}`}
-                  title={rowStatus(s) ?? 'unknown'}
+            {mcpInit.total > 0 && (
+              <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-gn-bg-highlight">
+                <div
+                  className="h-full rounded-full bg-gn-yellow transition-[width] duration-300"
+                  style={{
+                    width: `${Math.min(100, Math.round((mcpInit.connected / mcpInit.total) * 100))}%`,
+                  }}
                 />
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                    <span className="truncate font-mono text-[12.5px] text-gn-fg">
-                      {s.name}
-                    </span>
-                    {s.displayName && s.displayName !== s.name ? (
-                      <span className="min-w-0 truncate text-[11px] text-gn-fg2">
-                        {s.displayName}
-                      </span>
-                    ) : null}
-                    <McpFlags row={s} />
-                    <span className="shrink-0 text-[11px] text-gn-muted">
-                      {rowStatus(s) ?? 'unknown'}
-                      {rowSource(s) ? ` · ${rowSource(s)}` : ''}
-                    </span>
-                  </div>
-                  {s.reason ? (
-                    <div className="truncate text-[11px] text-gn-gutter">
-                      {s.reason}
-                    </div>
-                  ) : null}
-                  {s.detail ? (
-                    <div className="mt-0.5 whitespace-pre-wrap break-words font-mono text-[11px] leading-snug text-gn-muted">
-                      {s.detail}
-                    </div>
-                  ) : null}
-                </div>
               </div>
-            ))
-          )}
-
-          {/* ── 下半区: 管理 ──────────────────────────────────────── */}
-          <div className="flex items-center gap-2 px-4 pt-3 pb-1">
-            <span className="text-[10px] uppercase tracking-wider text-gn-gutter">
-              管理
-            </span>
-            <button
-              type="button"
-              onClick={() => void refreshList()}
-              disabled={listLoading}
-              className="rounded px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
-              title="重新读取 host 的 MCP 配置"
-            >
-              {listLoading ? '刷新中…' : '刷新列表'}
-            </button>
+            )}
           </div>
+        ) : null}
 
-          {listError ? (
-            <div className="px-4 py-2">
-              <div className="rounded border border-gn-diff-del-bg px-2 py-1.5 text-[11px] text-gn-red">
-                {listError}
+        {/* ── 全局错误/提示条 ───────────────────────────────── */}
+        {listError ? (
+          <div className="border-b border-gn-prompt-border/50 bg-gn-diff-del-bg/30 px-4 py-2 text-[11px] text-gn-red">
+            {listError}
+          </div>
+        ) : null}
+
+        {actionError ? (
+          <div className="border-b border-gn-prompt-border/50 bg-gn-diff-del-bg/30 px-4 py-2 text-[11px] text-gn-red">
+            {actionError}
+          </div>
+        ) : null}
+
+        {/* ── 快速搜索过滤栏（多服务器时显示） ──────────────── */}
+        {rows.length > 2 && (
+          <div className="border-b border-gn-prompt-border/40 bg-gn-bg-dark/30 px-4 py-1.5">
+            <div className="relative flex items-center">
+              <Search size={12} className="absolute left-2 text-gn-muted" aria-hidden />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="搜索 MCP 服务器名称、命令或工具…"
+                className="w-full rounded border border-gn-prompt-border/60 bg-gn-bg-base/70 py-1 pr-7 pl-6.5 text-[11px] text-gn-fg placeholder:text-gn-muted/70 outline-none focus:border-gn-prompt-border-active"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-2 text-gn-muted hover:text-gn-fg"
+                  title="清空搜索"
+                >
+                  <X size={12} />
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── 服务器卡片列表区 ───────────────────────────────── */}
+        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+          {!listError && rows.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-12 text-center">
+              <Sliders size={32} className="text-gn-muted/40 mb-2" aria-hidden />
+              <div className="text-[12.5px] font-medium text-gn-fg2">没有已配置的服务器</div>
+              <div className="mt-1 text-[11px] text-gn-muted">
+                点击下方「＋ 添加服务器」配置首个 MCP
               </div>
             </div>
-          ) : null}
-
-          {!listError && rows.length === 0 ? (
-            <div className="px-4 py-3 text-center text-[12px] text-gn-muted">
-              没有已配置的服务器
+          ) : filteredRows.length === 0 ? (
+            <div className="py-8 text-center text-[12px] text-gn-muted">
+              未找到匹配「{searchQuery}」的 MCP 服务器
             </div>
           ) : (
-            rows.map((s) => {
+            filteredRows.map((s) => {
               const busyThis = busy?.name === s.name
-              const isBusy = (a: 'toggle' | 'remove' | 'auth') =>
-                busyThis && busy.action === a
+              const isBusy = (a: 'toggle' | 'remove' | 'auth') => busyThis && busy.action === a
               const enabled = s.enabled !== false
+              const status = rowStatus(s)
+              const source = rowSource(s)
+              const toolCount = toolCountOf(s)
+              const isToolsCollapsed = collapsedTools[s.name] ?? false
+
               return (
                 <div
                   key={s.name}
-                  className="border-b border-gn-prompt-border/50 px-4 py-2"
+                  className={`group rounded-lg border transition-all ${
+                    enabled
+                      ? 'border-gn-prompt-border/70 bg-gn-bg-dark/40 hover:border-gn-prompt-border'
+                      : 'border-gn-prompt-border/40 bg-gn-bg-dark/20 opacity-80'
+                  }`}
                 >
-                  <div className="flex items-start gap-2">
+                  {/* 卡片头部行 */}
+                  <div className="flex items-start justify-between gap-3 p-3 pb-2.5">
                     <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                        <span className="truncate font-mono text-[12.5px] text-gn-fg">
+                      {/* 第一行: 状态指示灯 + 名称 + 标签 + 状态文本 */}
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span
+                          className={`h-2 w-2 shrink-0 rounded-full ${statusDot(status)}`}
+                          title={status ?? 'unknown'}
+                        />
+                        <span className="font-mono text-[13px] font-semibold text-gn-fg tracking-tight">
                           {s.name}
                         </span>
+
+                        {s.displayName && s.displayName !== s.name && (
+                          <span className="text-[11.5px] text-gn-fg2">
+                            ({s.displayName})
+                          </span>
+                        )}
+
                         {s.fromList && (
                           <span
-                            className="shrink-0 rounded border border-gn-prompt-border px-1 text-[9px] leading-[14px] text-gn-cyan"
+                            className="shrink-0 rounded border border-gn-prompt-border/80 bg-gn-bg-base/60 px-1.5 py-px text-[9.5px] leading-[13px] text-gn-cyan"
                             title="来自 GET /api/mcp/list（host 配置），非事件流"
                           >
                             agent-list
                           </span>
                         )}
-                        {s.displayName && s.displayName !== s.name ? (
-                          <span className="min-w-0 truncate text-[11px] text-gn-fg2">
-                            {s.displayName}
-                          </span>
-                        ) : null}
+
                         <McpFlags row={s} />
-                        <span className="shrink-0 text-[11px] text-gn-muted">
-                          {rowStatus(s) ?? '未连接'}
-                          {rowSource(s) ? ` · ${rowSource(s)}` : ''}
+
+                        <span className="ml-0.5 shrink-0 font-mono text-[10.5px] text-gn-muted">
+                          {status ?? '未连接'}
+                          {source ? ` · ${source}` : ''}
                         </span>
                       </div>
-                      {s.command ? (
-                        <div className="mt-0.5 truncate font-mono text-[11px] text-gn-muted" title={s.command}>
-                          {s.command}
-                          {s.args?.length ? ` ${s.args.join(' ')}` : ''}
+
+                      {/* 命令行 / URL / 环境变量展示 */}
+                      <div className="mt-1.5 space-y-1">
+                        {s.command ? (
+                          <div
+                            className="flex items-center gap-1.5 font-mono text-[11px] text-gn-muted bg-gn-bg-base/60 px-2 py-0.5 rounded border border-gn-prompt-border/40"
+                            title={s.command}
+                          >
+                            <Terminal size={11} className="shrink-0 text-gn-gutter" aria-hidden />
+                            <span className="truncate">
+                              {s.command}
+                              {s.args?.length ? ` ${s.args.join(' ')}` : ''}
+                            </span>
+                          </div>
+                        ) : null}
+
+                        {s.url ? (
+                          <div
+                            className="flex items-center gap-1.5 font-mono text-[11px] text-gn-muted bg-gn-bg-base/60 px-2 py-0.5 rounded border border-gn-prompt-border/40"
+                            title={s.url}
+                          >
+                            <span className="text-gn-gutter">🌐</span>
+                            <span className="truncate">{s.url}</span>
+                          </div>
+                        ) : null}
+
+                        {s.env && Object.keys(s.env).length > 0 ? (
+                          <div
+                            className="truncate font-mono text-[10.5px] text-gn-gutter"
+                            title={Object.keys(s.env).join(', ')}
+                          >
+                            env: {Object.keys(s.env).join(', ')}
+                          </div>
+                        ) : null}
+                      </div>
+
+                      {/* 错误与原因诊断 */}
+                      {s.reason ? (
+                        <div className="mt-1.5 rounded border border-gn-diff-del-bg/50 bg-gn-diff-del-bg/20 px-2 py-1 text-[11px] text-gn-red">
+                          <span className="font-semibold">原因:</span> {s.reason}
                         </div>
                       ) : null}
-                      {s.url ? (
-                        <div className="mt-0.5 truncate font-mono text-[11px] text-gn-muted" title={s.url}>
-                          {s.url}
+
+                      {s.detail ? (
+                        <div className="mt-1 whitespace-pre-wrap break-words rounded bg-gn-bg-base/80 p-2 font-mono text-[10.5px] leading-snug text-gn-muted border border-gn-prompt-border/30">
+                          {s.detail}
                         </div>
                       ) : null}
-                      {s.env && Object.keys(s.env).length > 0 ? (
-                        <div className="mt-0.5 truncate font-mono text-[11px] text-gn-gutter" title={Object.keys(s.env).join(', ')}>
-                          env: {Object.keys(s.env).join(', ')}
+                    </div>
+
+                    {/* 右上角服务器操作按钮组 */}
+                    <div className="flex shrink-0 items-center gap-1.5 pt-0.5">
+                      <button
+                        type="button"
+                        disabled={busy != null || toolBusy != null}
+                        onClick={() => void toggleServer(s.name, !enabled)}
+                        className={`rounded border px-2 py-1 text-[11px] font-medium transition-colors disabled:opacity-50 ${
+                          enabled
+                            ? 'border-gn-prompt-border bg-gn-bg-base/80 text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg'
+                            : 'border-gn-green/40 bg-gn-green/10 text-gn-green hover:bg-gn-green/20'
+                        }`}
+                        title={enabled ? '禁用该服务器（/api/mcp-toggle）' : '启用该服务器（/api/mcp-toggle）'}
+                      >
+                        {isBusy('toggle') ? '…' : enabled ? '禁用' : '启用'}
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={busy != null || toolBusy != null}
+                        onClick={() => void authServer(s.name)}
+                        className={`rounded border px-2 py-1 text-[11px] font-medium transition-colors disabled:opacity-50 ${
+                          s.authRequired || status === 'needs_auth'
+                            ? 'border-gn-orange/50 bg-gn-orange/10 text-gn-orange hover:bg-gn-orange/20'
+                            : 'border-gn-prompt-border bg-gn-bg-base/80 text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
+                        }`}
+                        title="触发 OAuth 认证（/api/mcp-auth-trigger）"
+                      >
+                        {isBusy('auth') ? '…' : '认证'}
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={busy != null || toolBusy != null}
+                        onClick={() => removeServer(s.name)}
+                        className="rounded border border-gn-prompt-border/60 bg-gn-bg-base/60 p-1 text-gn-muted transition-colors hover:border-gn-red/50 hover:bg-gn-diff-del-bg/30 hover:text-gn-red disabled:opacity-50"
+                        title="删除该服务器（/api/mcp-remove）"
+                      >
+                        {isBusy('remove') ? '…' : <Trash2 size={13} aria-hidden />}
+                        <span className="sr-only">删除</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* 认证结果横幅展示 */}
+                  {authResult && authResult.name === s.name && (
+                    <div className="mx-3 mb-2.5 rounded border border-gn-cyan/30 bg-gn-cyan/5 p-2.5 text-[11.5px] leading-snug">
+                      <div className="flex items-center gap-1.5 font-medium text-gn-cyan mb-1">
+                        <ExternalLink size={12} />
+                        <span>OAuth 认证信息</span>
+                      </div>
+                      {authResult.url ? (
+                        <div className="break-all mt-1 flex items-center justify-between gap-2">
+                          <span className="text-gn-muted">认证链接:</span>
+                          <a
+                            href={authResult.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="truncate text-gn-cyan underline font-mono text-[11px] hover:text-gn-link"
+                          >
+                            {authResult.url}
+                          </a>
                         </div>
                       ) : null}
-                      {/* 工具列表 — agent wire session.tools（camelCase）。
-                          三态区分：有列表 → 计数+可启停；列表为空 → 该服务器
-                          没有工具；wire 未带列表 → 退回 toolCount，仍无则
-                          无工具信息（优雅降级，不报错）。 */}
-                      <div className="mt-1.5">
-                        <span className="text-[10px] uppercase tracking-wider text-gn-gutter">
+                      {authResult.code ? (
+                        <div className="mt-1 flex items-center justify-between gap-2">
+                          <div className="break-all font-mono">认证码: {authResult.code}</div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void navigator.clipboard?.writeText(authResult.code || '')
+                              setCopiedCode(true)
+                              setTimeout(() => setCopiedCode(false), 2000)
+                            }}
+                            className="flex items-center gap-1 rounded border border-gn-prompt-border bg-gn-bg-base px-1.5 py-0.5 text-[10px] text-gn-muted hover:text-gn-fg"
+                            title="复制认证码"
+                          >
+                            {copiedCode ? <Check size={11} className="text-gn-green" /> : <Copy size={11} />}
+                            <span>{copiedCode ? '已复制' : '复制'}</span>
+                          </button>
+                        </div>
+                      ) : null}
+                      {authResult.message ? (
+                        <div className="mt-1 text-gn-fg2 break-all">{authResult.message}</div>
+                      ) : null}
+                      {!authResult.url && !authResult.code && !authResult.message ? (
+                        <div className="text-gn-muted">已触发认证流程（无额外信息）</div>
+                      ) : null}
+                    </div>
+                  )}
+
+                  {/* 工具管理区域 */}
+                  <div className="border-t border-gn-prompt-border/40 bg-gn-bg-base/40 px-3 py-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5">
+                        <Wrench size={11} className="text-gn-muted" aria-hidden />
+                        <span className="text-[10.5px] font-semibold uppercase tracking-wider text-gn-fg2">
                           工具
-                          {toolCountOf(s) != null ? ` (${toolCountOf(s)})` : ''}
+                          {toolCount != null ? ` (${toolCount})` : ''}
                         </span>
                         {s.tools == null ? (
-                          <span className="ml-2 text-[11px] text-gn-muted">
+                          <span className="text-[11px] text-gn-muted">
                             无工具信息
                             {s.authRequired
                               ? '（需要认证后才会拉取工具）'
@@ -548,137 +720,185 @@ export function McpPanel({
                                 : ''}
                           </span>
                         ) : s.tools.length === 0 ? (
-                          <span className="ml-2 text-[11px] text-gn-muted">
+                          <span className="text-[11px] text-gn-muted">
                             该服务器没有工具
                           </span>
-                        ) : (
-                          <div className="mt-1 space-y-0.5">
-                            {s.tools.map((t) => (
-                              <div key={t.name} className="flex items-center gap-2">
+                        ) : null}
+                      </div>
+
+                      {s.tools && s.tools.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setCollapsedTools((prev) => ({ ...prev, [s.name]: !isToolsCollapsed }))
+                          }
+                          className="flex items-center gap-1 text-[10.5px] text-gn-muted hover:text-gn-fg"
+                        >
+                          <span>{isToolsCollapsed ? `展开 (${s.tools.length})` : '收起'}</span>
+                          {isToolsCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+                        </button>
+                      )}
+                    </div>
+
+                    {/* 工具具体条目 */}
+                    {s.tools && s.tools.length > 0 && !isToolsCollapsed && (
+                      <div className="mt-2 max-h-64 overflow-y-auto divide-y divide-gn-prompt-border/20 rounded border border-gn-prompt-border/40 bg-gn-bg-dark/40">
+                        {s.tools.map((t) => {
+                          const tEnabled = t.enabled !== false
+                          const isToolItemBusy = toolBusy?.server === s.name && toolBusy?.tool === t.name
+
+                          return (
+                            <div
+                              key={t.name}
+                              className="flex items-center justify-between gap-2 px-2.5 py-1.5 hover:bg-gn-bg-highlight/30 transition-colors"
+                            >
+                              <div className="flex items-center gap-2 min-w-0 flex-1">
                                 <span
                                   className={`h-1.5 w-1.5 shrink-0 rounded-full ${
- t.enabled !== false ? 'bg-gn-green' : 'bg-gn-gutter'
+                                    tEnabled ? 'bg-gn-green' : 'bg-gn-gutter'
                                   }`}
-                                  title={t.enabled !== false ? '已启用' : '已禁用'}
+                                  title={tEnabled ? '已启用' : '已禁用'}
                                 />
-                                <span
-                                  className="min-w-0 flex-1 truncate font-mono text-[11px] text-gn-fg2"
-                                  title={t.description ? `${t.name} — ${t.description}` : t.name}
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-1.5">
+                                    <span
+                                      className="font-mono text-[11px] font-medium text-gn-fg truncate"
+                                      title={t.description ? `${t.name} — ${t.description}` : t.name}
+                                    >
+                                      {t.displayName ?? t.name}
+                                    </span>
+                                    {t.displayName && t.displayName !== t.name && (
+                                      <span className="font-mono text-[10px] text-gn-muted truncate">
+                                        ({t.name})
+                                      </span>
+                                    )}
+                                  </div>
+                                  {t.description && (
+                                    <div className="text-[10px] text-gn-muted truncate leading-tight mt-0.5">
+                                      {t.description}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div className="flex shrink-0 items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => quickCallTool(s.name, t.name)}
+                                  className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                                  title={`在下方调试窗口中调试工具 ${t.name}`}
                                 >
-                                  {t.displayName ?? t.name}
-                                </span>
+                                  <Play size={10} />
+                                  <span>调试</span>
+                                </button>
                                 <button
                                   type="button"
                                   disabled={busy != null || toolBusy != null}
-                                  onClick={() =>
-                                    void toggleTool(s.name, t.name, t.enabled === false)
-                                  }
-                                  className={`shrink-0 rounded px-1.5 py-px text-[10.5px] disabled:opacity-50 ${
- t.enabled !== false
+                                  onClick={() => void toggleTool(s.name, t.name, !tEnabled)}
+                                  className={`shrink-0 rounded px-1.5 py-0.5 text-[10.5px] transition-colors disabled:opacity-50 ${
+                                    tEnabled
                                       ? 'text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
                                       : 'bg-gn-bg-highlight text-gn-fg'
                                   }`}
-                                  title={`${t.enabled !== false ? '禁用' : '启用'}工具 ${t.name}（/api/mcp/toggle-tool）`}
+                                  title={`${tEnabled ? '禁用' : '启用'}工具 ${t.name}（/api/mcp/toggle-tool）`}
                                 >
-                                  {toolBusy?.server === s.name && toolBusy?.tool === t.name
-                                    ? '…'
-                                    : t.enabled !== false
-                                      ? '禁用'
-                                      : '启用'}
+                                  {isToolItemBusy ? '…' : tEnabled ? '禁用' : '启用'}
                                 </button>
                               </div>
-                            ))}
-                          </div>
-                        )}
+                            </div>
+                          )
+                        })}
                       </div>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-1.5 pt-0.5">
-                      <button
-                        type="button"
-                        disabled={busy != null || toolBusy != null}
-                        onClick={() => void toggleServer(s.name, !enabled)}
-                        className={`rounded px-2 py-0.5 text-[11px] disabled:opacity-50 ${
- enabled
-                            ? 'text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
-                            : 'bg-gn-bg-highlight text-gn-fg'
-                        }`}
-                        title={enabled ? '禁用该服务器（/api/mcp-toggle）' : '启用该服务器（/api/mcp-toggle）'}
-                      >
-                        {isBusy('toggle') ? '…' : enabled ? '禁用' : '启用'}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={busy != null || toolBusy != null}
-                        onClick={() => void authServer(s.name)}
-                        className="rounded px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
-                        title="触发 OAuth 认证（/api/mcp-auth-trigger）"
-                      >
-                        {isBusy('auth') ? '…' : '认证'}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={busy != null || toolBusy != null}
-                        onClick={() => removeServer(s.name)}
-                        className="rounded px-2 py-0.5 text-[11px] text-gn-red hover:bg-gn-diff-del-bg disabled:opacity-50"
-                        title="删除该服务器（/api/mcp-remove）"
-                      >
-                        {isBusy('remove') ? '…' : '删除'}
-                      </button>
-                    </div>
+                    )}
                   </div>
-                  {authResult && authResult.name === s.name && (
-                    <div className="mt-1.5 rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1.5 text-[11px] leading-snug text-gn-muted">
-                      {authResult.url ? (
-                        <div className="break-all">
-                          认证链接:{' '}
-                          <a
-                            href={authResult.url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-gn-cyan underline"
-                          >
-                            {authResult.url}
-                          </a>
-                        </div>
-                      ) : null}
-                      {authResult.code ? (
-                        <div className="break-all font-mono">认证码: {authResult.code}</div>
-                      ) : null}
-                      {authResult.message ? (
-                        <div className="break-all">{authResult.message}</div>
-                      ) : null}
-                      {!authResult.url && !authResult.code && !authResult.message ? (
-                        <div>已触发认证流程（无额外信息）</div>
-                      ) : null}
-                    </div>
-                  )}
                 </div>
               )
             })
           )}
+        </div>
 
-          {actionError ? (
-            <div className="px-4 py-2">
-              <div className="rounded border border-gn-diff-del-bg px-2 py-1.5 text-[11px] text-gn-red">
-                {actionError}
-              </div>
+        {/* ── 底部调试与添加工具栏 ───────────────────────────── */}
+        <footer className="gn-modal-footer flex flex-col gap-2 bg-gn-bg-dark/40">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setAddOpen((v) => {
+                    const next = !v
+                    if (next) {
+                      setCallOpen(false)
+                      setReadOpen(false)
+                    }
+                    return next
+                  })
+                  setFormError(undefined)
+                }}
+                className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                  addOpen
+                    ? 'bg-gn-bg-highlight text-gn-fg'
+                    : 'text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
+                }`}
+              >
+                <Plus size={12} />
+                <span>{addOpen ? '− 收起添加表单' : '＋ 添加服务器'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setCallOpen((v) => {
+                    const next = !v
+                    if (next) {
+                      setAddOpen(false)
+                      setReadOpen(false)
+                    }
+                    return next
+                  })
+                  setCallError(undefined)
+                  setCallResult(undefined)
+                }}
+                className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                  callOpen
+                    ? 'bg-gn-bg-highlight text-gn-fg'
+                    : 'text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
+                }`}
+              >
+                <Play size={11} />
+                <span>{callOpen ? '− 收起调用工具' : '＋ 调用工具'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setReadOpen((v) => {
+                    const next = !v
+                    if (next) {
+                      setAddOpen(false)
+                      setCallOpen(false)
+                    }
+                    return next
+                  })
+                  setReadError(undefined)
+                  setReadResult(undefined)
+                }}
+                className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                  readOpen
+                    ? 'bg-gn-bg-highlight text-gn-fg'
+                    : 'text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
+                }`}
+              >
+                <Terminal size={11} />
+                <span>{readOpen ? '− 收起读取资源' : '＋ 读取资源'}</span>
+              </button>
             </div>
-          ) : null}
+          </div>
 
-          {/* ── 添加服务器 ───────────────────────────────────────── */}
-          <div className="border-t border-gn-prompt-border/50 px-4 py-2">
-            <button
-              type="button"
-              onClick={() => {
-                setAddOpen((v) => !v)
-                setFormError(undefined)
-              }}
-              className="rounded px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-            >
-              {addOpen ? '− 收起添加表单' : '＋ 添加服务器'}
-            </button>
-            {addOpen && (
-              <div className="mt-2 space-y-2">
+          {/* ── 展开: 添加服务器面板 ── */}
+          {addOpen && (
+            <div className="mt-1 max-h-[50vh] overflow-y-auto rounded-lg border border-gn-prompt-border/70 bg-gn-bg-base p-3 space-y-2.5">
+              <div className="text-[11.5px] font-bold text-gn-fg">添加 MCP 服务器</div>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 <label className="block">
                   <span className="text-[10px] uppercase tracking-wider text-gn-gutter">name *</span>
                   <input
@@ -686,7 +906,7 @@ export function McpPanel({
                     value={form.name}
                     onChange={(e) => setForm({ ...form, name: e.target.value })}
                     placeholder="filesystem"
-                    className="mt-0.5 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 font-mono text-[12px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
+                    className="mt-0.5 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2.5 py-1 font-mono text-[11.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
                   />
                 </label>
                 <label className="block">
@@ -696,88 +916,78 @@ export function McpPanel({
                     value={form.command}
                     onChange={(e) => setForm({ ...form, command: e.target.value })}
                     placeholder="npx"
-                    className="mt-0.5 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 font-mono text-[12px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
+                    className="mt-0.5 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2.5 py-1 font-mono text-[11.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
                   />
                 </label>
-                <label className="block">
-                  <span className="text-[10px] uppercase tracking-wider text-gn-gutter">args</span>
-                  <input
-                    type="text"
-                    value={form.args}
-                    onChange={(e) => setForm({ ...form, args: e.target.value })}
-                    placeholder='空格分隔，或 JSON 数组，如 ["-y","pkg"]'
-                    className="mt-0.5 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 font-mono text-[12px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
-                  />
-                </label>
-                <label className="block">
-                  <span className="text-[10px] uppercase tracking-wider text-gn-gutter">env</span>
-                  <textarea
-                    value={form.env}
-                    onChange={(e) => setForm({ ...form, env: e.target.value })}
-                    placeholder={"每行 KEY=value"}
-                    rows={2}
-                    className="mt-0.5 w-full resize-y rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 font-mono text-[12px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
-                  />
-                </label>
-                {formError ? (
-                  <div className="rounded border border-gn-diff-del-bg px-2 py-1.5 text-[11px] text-gn-red">
-                    {formError}
-                  </div>
-                ) : null}
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    disabled={adding}
-                    onClick={() => void submitAdd()}
-                    className="rounded bg-gn-bg-highlight px-3 py-1 text-[11px] text-gn-fg hover:bg-gn-bg-highlight disabled:opacity-50"
-                  >
-                    {adding ? '添加中…' : '添加'}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={adding}
-                    onClick={() => {
-                      setAddOpen(false)
-                      setFormError(undefined)
-                    }}
-                    className="rounded px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
-                  >
-                    取消
-                  </button>
-                </div>
               </div>
-            )}
-          </div>
-
-          {/* ── 调用工具 / 读取资源（x.ai/mcp/call · x.ai/mcp/read_resource）── */}
-          <div className="border-t border-gn-prompt-border/50 px-4 py-2">
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setCallOpen((v) => !v)
-                  setCallError(undefined)
-                  setCallResult(undefined)
-                }}
-                className="rounded px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-              >
-                {callOpen ? '− 收起调用工具' : '＋ 调用工具'}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setReadOpen((v) => !v)
-                  setReadError(undefined)
-                  setReadResult(undefined)
-                }}
-                className="rounded px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-              >
-                {readOpen ? '− 收起读取资源' : '＋ 读取资源'}
-              </button>
+              <label className="block">
+                <span className="text-[10px] uppercase tracking-wider text-gn-gutter">args</span>
+                <input
+                  type="text"
+                  value={form.args}
+                  onChange={(e) => setForm({ ...form, args: e.target.value })}
+                  placeholder='空格分隔，或 JSON 数组，如 ["-y","pkg"]'
+                  className="mt-0.5 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2.5 py-1 font-mono text-[11.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
+                />
+              </label>
+              <label className="block">
+                <span className="text-[10px] uppercase tracking-wider text-gn-gutter">env</span>
+                <textarea
+                  value={form.env}
+                  onChange={(e) => setForm({ ...form, env: e.target.value })}
+                  placeholder={"每行 KEY=value"}
+                  rows={2}
+                  className="mt-0.5 w-full resize-y rounded border border-gn-prompt-border bg-gn-bg-dark px-2.5 py-1 font-mono text-[11.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
+                />
+              </label>
+              {formError ? (
+                <div className="rounded border border-gn-diff-del-bg px-2 py-1 text-[11px] text-gn-red">
+                  {formError}
+                </div>
+              ) : null}
+              <div className="flex items-center justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  disabled={adding}
+                  onClick={() => {
+                    setAddOpen(false)
+                    setFormError(undefined)
+                  }}
+                  className="rounded px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  disabled={adding}
+                  onClick={() => void submitAdd()}
+                  className="rounded bg-gn-blue px-3 py-1 text-[11px] font-medium text-black hover:opacity-90 disabled:opacity-50"
+                >
+                  {adding ? '添加中…' : '添加'}
+                </button>
+              </div>
             </div>
+          )}
 
-            {callOpen && (
-              <div className="mt-2 space-y-2">
+          {/* ── 展开: 调用工具面板 ── */}
+          {callOpen && (
+            <div className="mt-1 max-h-[50vh] overflow-y-auto rounded-lg border border-gn-prompt-border/70 bg-gn-bg-base p-3 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <div className="text-[11.5px] font-bold text-gn-fg">调试 MCP 工具调用</div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCallOpen(false)
+                    setCallError(undefined)
+                    setCallResult(undefined)
+                  }}
+                  className="text-gn-muted hover:text-gn-fg"
+                >
+                  <X size={13} />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 <label className="block">
                   <span className="text-[10px] uppercase tracking-wider text-gn-gutter">server *</span>
                   <select
@@ -786,7 +996,7 @@ export function McpPanel({
                       const server = e.target.value
                       setCallForm((f) => ({ ...f, server, tool: '' }))
                     }}
-                    className="mt-0.5 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 font-mono text-[12px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
+                    className="mt-0.5 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 font-mono text-[11.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
                   >
                     <option value="">— 选择服务器 —</option>
                     {rows.map((r) => (
@@ -804,7 +1014,7 @@ export function McpPanel({
                     value={callForm.tool}
                     onChange={(e) => setCallForm({ ...callForm, tool: e.target.value })}
                     placeholder="工具名（可从已连接服务器的工具列表选择）"
-                    className="mt-0.5 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 font-mono text-[12px] text-gn-fg outline-none placeholder:text-gn-gray focus:border-gn-prompt-border-active"
+                    className="mt-0.5 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 font-mono text-[11.5px] text-gn-fg outline-none placeholder:text-gn-gray focus:border-gn-prompt-border-active"
                   />
                   <datalist id="mcp-call-tools">
                     {list
@@ -812,59 +1022,98 @@ export function McpPanel({
                       ?.tools?.map((t) => <option key={t.name} value={t.name} />)}
                   </datalist>
                 </label>
-                <label className="block">
-                  <span className="text-[10px] uppercase tracking-wider text-gn-gutter">arguments（可选 JSON）</span>
-                  <textarea
-                    value={callForm.args}
-                    onChange={(e) => setCallForm({ ...callForm, args: e.target.value })}
-                    placeholder='{"path": "/tmp/x"}'
-                    rows={2}
-                    className="mt-0.5 w-full resize-y rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 font-mono text-[12px] text-gn-fg outline-none placeholder:text-gn-gray focus:border-gn-prompt-border-active"
-                  />
-                </label>
-                {callError ? (
-                  <div className="rounded border border-gn-diff-del-bg px-2 py-1.5 text-[11px] text-gn-red">
-                    {callError}
-                  </div>
-                ) : null}
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    disabled={calling}
-                    onClick={() => void submitCall()}
-                    className="rounded bg-gn-bg-highlight px-3 py-1 text-[11px] text-gn-fg hover:bg-gn-bg-highlight disabled:opacity-50"
-                  >
-                    {calling ? '调用中…' : '调用'}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={calling}
-                    onClick={() => {
-                      setCallOpen(false)
-                      setCallError(undefined)
-                      setCallResult(undefined)
-                    }}
-                    className="rounded px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
-                  >
-                    取消
-                  </button>
+              </div>
+
+              <label className="block">
+                <span className="text-[10px] uppercase tracking-wider text-gn-gutter">arguments（可选 JSON）</span>
+                <textarea
+                  value={callForm.args}
+                  onChange={(e) => setCallForm({ ...callForm, args: e.target.value })}
+                  placeholder='{"path": "/tmp/x"}'
+                  rows={2}
+                  className="mt-0.5 w-full resize-y rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 font-mono text-[11.5px] text-gn-fg outline-none placeholder:text-gn-gray focus:border-gn-prompt-border-active"
+                />
+              </label>
+
+              {callError ? (
+                <div className="rounded border border-gn-diff-del-bg px-2 py-1 text-[11px] text-gn-red">
+                  {callError}
                 </div>
-                {callResult ? (
+              ) : null}
+
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={calling}
+                  onClick={() => {
+                    setCallOpen(false)
+                    setCallError(undefined)
+                    setCallResult(undefined)
+                  }}
+                  className="rounded px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  disabled={calling}
+                  onClick={() => void submitCall()}
+                  className="rounded bg-gn-blue px-3 py-1 text-[11px] font-medium text-black hover:opacity-90 disabled:opacity-50"
+                >
+                  {calling ? '调用中…' : '调用'}
+                </button>
+              </div>
+
+              {callResult ? (
+                <div className="mt-2">
+                  <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-gn-gutter mb-1">
+                    <span>调用结果</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void navigator.clipboard?.writeText(callResult)
+                        setCopiedResult(true)
+                        setTimeout(() => setCopiedResult(false), 2000)
+                      }}
+                      className="flex items-center gap-1 text-gn-muted hover:text-gn-fg"
+                    >
+                      {copiedResult ? <Check size={11} className="text-gn-green" /> : <Copy size={11} />}
+                      <span>{copiedResult ? '已复制' : '复制结果'}</span>
+                    </button>
+                  </div>
                   <pre className="gn-no-scrollbar max-h-44 overflow-auto whitespace-pre-wrap break-all rounded border border-gn-prompt-border bg-gn-bg-dark p-2 font-mono text-[10.5px] leading-snug text-gn-fg2">
                     {callResult}
                   </pre>
-                ) : null}
-              </div>
-            )}
+                </div>
+              ) : null}
+            </div>
+          )}
 
-            {readOpen && (
-              <div className="mt-2 space-y-2">
+          {/* ── 展开: 读取资源面板 ── */}
+          {readOpen && (
+            <div className="mt-1 max-h-[50vh] overflow-y-auto rounded-lg border border-gn-prompt-border/70 bg-gn-bg-base p-3 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <div className="text-[11.5px] font-bold text-gn-fg">读取 MCP 资源</div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setReadOpen(false)
+                    setReadError(undefined)
+                    setReadResult(undefined)
+                  }}
+                  className="text-gn-muted hover:text-gn-fg"
+                >
+                  <X size={13} />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 <label className="block">
                   <span className="text-[10px] uppercase tracking-wider text-gn-gutter">server *</span>
                   <select
                     value={readForm.server}
                     onChange={(e) => setReadForm((f) => ({ ...f, server: e.target.value }))}
-                    className="mt-0.5 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 font-mono text-[12px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
+                    className="mt-0.5 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 font-mono text-[11.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
                   >
                     <option value="">— 选择服务器 —</option>
                     {rows.map((r) => (
@@ -881,45 +1130,65 @@ export function McpPanel({
                     value={readForm.uri}
                     onChange={(e) => setReadForm({ ...readForm, uri: e.target.value })}
                     placeholder="file:///… 或 mcp://… 等资源 URI"
-                    className="mt-0.5 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 font-mono text-[12px] text-gn-fg outline-none placeholder:text-gn-gray focus:border-gn-prompt-border-active"
+                    className="mt-0.5 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 font-mono text-[11.5px] text-gn-fg outline-none placeholder:text-gn-gray focus:border-gn-prompt-border-active"
                   />
                 </label>
-                {readError ? (
-                  <div className="rounded border border-gn-diff-del-bg px-2 py-1.5 text-[11px] text-gn-red">
-                    {readError}
-                  </div>
-                ) : null}
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    disabled={reading}
-                    onClick={() => void submitRead()}
-                    className="rounded bg-gn-bg-highlight px-3 py-1 text-[11px] text-gn-fg hover:bg-gn-bg-highlight disabled:opacity-50"
-                  >
-                    {reading ? '读取中…' : '读取'}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={reading}
-                    onClick={() => {
-                      setReadOpen(false)
-                      setReadError(undefined)
-                      setReadResult(undefined)
-                    }}
-                    className="rounded px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
-                  >
-                    取消
-                  </button>
+              </div>
+
+              {readError ? (
+                <div className="rounded border border-gn-diff-del-bg px-2 py-1 text-[11px] text-gn-red">
+                  {readError}
                 </div>
-                {readResult ? (
+              ) : null}
+
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={reading}
+                  onClick={() => {
+                    setReadOpen(false)
+                    setReadError(undefined)
+                    setReadResult(undefined)
+                  }}
+                  className="rounded px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  disabled={reading}
+                  onClick={() => void submitRead()}
+                  className="rounded bg-gn-blue px-3 py-1 text-[11px] font-medium text-black hover:opacity-90 disabled:opacity-50"
+                >
+                  {reading ? '读取中…' : '读取'}
+                </button>
+              </div>
+
+              {readResult ? (
+                <div className="mt-2">
+                  <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-gn-gutter mb-1">
+                    <span>资源内容</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void navigator.clipboard?.writeText(readResult)
+                        setCopiedResult(true)
+                        setTimeout(() => setCopiedResult(false), 2000)
+                      }}
+                      className="flex items-center gap-1 text-gn-muted hover:text-gn-fg"
+                    >
+                      {copiedResult ? <Check size={11} className="text-gn-green" /> : <Copy size={11} />}
+                      <span>{copiedResult ? '已复制' : '复制内容'}</span>
+                    </button>
+                  </div>
                   <pre className="gn-no-scrollbar max-h-44 overflow-auto whitespace-pre-wrap break-all rounded border border-gn-prompt-border bg-gn-bg-dark p-2 font-mono text-[10.5px] leading-snug text-gn-fg2">
                     {readResult}
                   </pre>
-                ) : null}
-              </div>
-            )}
-          </div>
-        </div>
+                </div>
+              ) : null}
+            </div>
+          )}
+        </footer>
       </div>
     </div>
   )
@@ -932,19 +1201,12 @@ type McpRow = McpServerInfo & {
   env?: Record<string, string>
   url?: string
   enabled?: boolean
-  /** Agent list `displayName` — human label next to the stable name. */
   displayName?: string
-  /** Agent list `sourceLabel` — display overlay for the `source` enum. */
   sourceLabel?: string
-  /** Session flags: OAuth pending / required config missing. */
   authRequired?: boolean
   setupRequired?: boolean
-  /** Agent-side tool count (present even when `tools` is not). */
   toolCount?: number
-  /** Tool list from the agent list response (session.tools); undefined
-   *  when the wire carried none (→ 无工具信息). */
   tools?: McpToolInfo[]
-  /** True when this row came (at least in part) from GET /api/mcp/list. */
   fromList: boolean
 }
 
@@ -973,7 +1235,7 @@ function McpFlags({ row }: { row: McpRow }) {
     <>
       {row.authRequired ? (
         <span
-          className="shrink-0 rounded border border-gn-prompt-border px-1 text-[9px] leading-[14px] text-gn-orange"
+          className="shrink-0 rounded border border-gn-orange/60 bg-gn-orange/10 px-1.5 py-px text-[9.5px] leading-[13px] text-gn-orange"
           title="该服务器需要认证（agent session.authRequired）"
         >
           需要认证
@@ -981,7 +1243,7 @@ function McpFlags({ row }: { row: McpRow }) {
       ) : null}
       {row.setupRequired ? (
         <span
-          className="shrink-0 rounded border border-gn-prompt-border px-1 text-[9px] leading-[14px] text-gn-yellow"
+          className="shrink-0 rounded border border-gn-yellow/60 bg-gn-yellow/10 px-1.5 py-px text-[9.5px] leading-[13px] text-gn-yellow"
           title="该服务器缺少必填配置（agent session.setupRequired）"
         >
           需要配置
@@ -995,6 +1257,7 @@ function statusDot(status?: string): string {
   if (!status) return 'bg-gn-gutter'
   switch (status) {
     case 'ready':
+    case 'connected':
       return 'bg-gn-green shadow-[0_0_6px_rgba(158,206,106,.5)]'
     case 'initializing':
       return 'bg-gn-yellow animate-pulse'

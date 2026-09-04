@@ -106,10 +106,10 @@ describe('McpPanel — 打开/关闭与状态区', () => {
       ],
     })
     renderPanel()
-    // 服务器状态区与管理区的合并行都会出现该名字
-    expect((await screen.findAllByText('fs')).length).toBeGreaterThanOrEqual(2)
+    // 统一卡片渲染该名字
+    expect((await screen.findAllByText('fs')).length).toBeGreaterThanOrEqual(1)
     expect(screen.getByText('2 个服务器')).not.toBeNull()
-    expect(screen.getAllByText('db').length).toBeGreaterThanOrEqual(2)
+    expect(screen.getAllByText('db').length).toBeGreaterThanOrEqual(1)
     expect(screen.getAllByText('oauth').length).toBeGreaterThanOrEqual(1)
     expect(screen.queryByText(/尚未收到服务器状态通知/)).toBeNull()
     expect(mcpList).toHaveBeenCalled()
@@ -131,8 +131,8 @@ describe('McpPanel — 打开/关闭与状态区', () => {
     const { container } = renderPanel()
     expect(await screen.findByText('2 个服务器')).not.toBeNull()
     expect(screen.queryByText(/尚未收到服务器状态通知/)).toBeNull()
-    // 上半区吃的是合并行：每行在状态区与管理区各出现一次
-    expect((await screen.findAllByText('gh')).length).toBeGreaterThanOrEqual(2)
+    // 统一卡片渲染
+    expect((await screen.findAllByText('gh')).length).toBeGreaterThanOrEqual(1)
     // 事件流没有 status 时，list 的 authRequired 推导出行状态
     expect(container.textContent).toContain('needs_auth · managed')
     expect(container.textContent).toContain('ready · local')
@@ -146,9 +146,9 @@ describe('McpPanel — 打开/关闭与状态区', () => {
     ] as McpListServer[])
     const { container } = renderPanel()
     expect((await screen.findAllByText('gh')).length).toBeGreaterThan(0)
-    // 状态区 + 管理区各一枚徽标，且只有这两枚（fs 行无 flag）
-    expect(screen.getAllByText('需要认证')).toHaveLength(2)
-    expect(screen.getAllByText('需要配置')).toHaveLength(2)
+    // 统一卡片上的一枚徽标（fs 行无 flag）
+    expect(screen.getAllByText('需要认证')).toHaveLength(1)
+    expect(screen.getAllByText('需要配置')).toHaveLength(1)
     // 「为什么看不到工具」在工具区也有解释
     expect(container.textContent).toContain('无工具信息（需要认证后才会拉取工具）')
     expect(container.textContent).toContain('无工具信息（需要配置后才会拉取工具）')
@@ -281,7 +281,7 @@ describe('McpPanel — 管理操作', () => {
       { name: 'fs', status: 'ready', source: 'local', toolCount: 4, authRequired: true },
     ] as McpListServer[])
     const { container } = renderPanel()
-    expect((await screen.findAllByText('fs')).length).toBeGreaterThanOrEqual(2)
+    expect((await screen.findAllByText('fs')).length).toBeGreaterThanOrEqual(1)
     // 事件流的 error 覆盖 list 的 ready（连 authRequired 推导也不越权）
     expect(container.textContent).toContain('error · local')
     expect(container.textContent).not.toContain('ready')
