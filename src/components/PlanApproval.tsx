@@ -128,18 +128,6 @@ export function PlanApproval() {
         }
         return
       }
-      if (typing) return // letters type normally (composer draft / feedback)
-      if (e.key === 'a') {
-        e.preventDefault()
-        e.stopImmediatePropagation()
-        void respondXai(req.requestId, { outcome: 'approved' })
-        return
-      }
-      if (e.key === 's') {
-        e.preventDefault()
-        e.stopImmediatePropagation()
-        feedbackRef.current?.focus()
-      }
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
@@ -324,18 +312,6 @@ export function PlanApproval() {
           >
             稍后再说
           </button>
-        </div>
-
-        <div className="mt-1.5 hidden pl-0 text-[11px] text-gn-muted sm:block sm:pl-5">
-          <span className="gn-kbd">a</span> 批准 ·{' '}
-          <span className="gn-kbd">Enter</span> 提交 ·{' '}
-          <span className="gn-kbd">s</span> 写意见
-          {selection && (
-            <>
-              {' · '}
-              <span className="text-gn-fg2">点击行</span> 重新锚定选择
-            </>
-          )}
         </div>
       </div>
     </div>

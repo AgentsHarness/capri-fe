@@ -117,15 +117,9 @@ describe('PlanApproval', () => {
     expect(screen.getByText('第二行')).toBeInTheDocument()
   })
 
-  it('键盘：a 批准；s 聚焦意见框；Enter 空→批准', () => {
+  it('键盘：Enter 空→批准', () => {
     setRequest({ planContent: PLAN })
     render(<PlanApproval />)
-    key('a')
-    expect(actions().respondXai).toHaveBeenLastCalledWith('r1', { outcome: 'approved' })
-
-    key('s')
-    expect(document.activeElement).toBe(screen.getByPlaceholderText('修改意见（留空时 Enter 直接批准）'))
-
     key('Enter')
     expect(actions().respondXai).toHaveBeenLastCalledWith('r1', { outcome: 'approved' })
   })

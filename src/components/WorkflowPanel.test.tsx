@@ -185,69 +185,34 @@ describe('WorkflowPanel', () => {
     setup({ w1: run({ name: 'D', status: 'running', elapsedMs: 100 }) })
     render(<WorkflowPanel />)
     fireEvent.click(screen.getByText('D'))
-    fireEvent.click(screen.getByRole('button', { name: /暂停 \(p\)/ }))
+    fireEvent.click(screen.getByRole('button', { name: '暂停' }))
     expect(controlMock).toHaveBeenCalledWith('w1', 'pause')
-    fireEvent.click(screen.getByRole('button', { name: '← 返回列表 (esc)' }))
+    fireEvent.click(screen.getByRole('button', { name: '返回列表' }))
     expect(useChatStore.getState().selectedWorkflowRunId).toBeUndefined()
     expect(dialogText()).toContain('工作流运行面板')
   })
 
-  it('键盘：j 移动光标 + Enter 打开详情；Esc 返回列表再 Esc 关闭', () => {
+  it('键盘：ArrowDown 移动光标 + Enter 打开详情；Esc 返回列表再 Esc 关闭', () => {
     setup({
       w1: run({ name: 'A1' }),
       w2: run({ runId: 'w2', name: 'B2', status: 'paused', firstSeenAt: 90 }),
     })
     render(<WorkflowPanel />)
-    fireEvent.keyDown(window, { key: 'j' })
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
     fireEvent.keyDown(window, { key: 'Enter' })
     expect(useChatStore.getState().selectedWorkflowRunId).toBe('w2')
     expect(dialogText()).toContain('运行详情 · B2')
-    // 详情内 j/k 无效；Esc 回列表
-    fireEvent.keyDown(window, { key: 'j' })
+    // Esc 回列表
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(useChatStore.getState().selectedWorkflowRunId).toBeUndefined()
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(useChatStore.getState().workflowPanelOpen).toBe(false)
   })
 
-  it('键盘：p/r/x/s 作用于光标行（列表）或详情运行', () => {
-    setup({ w1: run({ name: 'A1' }), w2: run({ runId: 'w2', name: 'B2', status: 'paused', firstSeenAt: 90 }) })
-    render(<WorkflowPanel />)
-    fireEvent.keyDown(window, { key: 'p' })
-    expect(controlMock).toHaveBeenCalledWith('w1', 'pause')
-    fireEvent.keyDown(window, { key: 'j' })
-    fireEvent.keyDown(window, { key: 'r' })
-    expect(controlMock).toHaveBeenCalledWith('w2', 'resume')
-    fireEvent.keyDown(window, { key: 'x' })
-    expect(controlMock).toHaveBeenCalledWith('w2', 'stop')
-    fireEvent.keyDown(window, { key: 's' })
-    expect(saveMock).toHaveBeenCalledWith('w2')
-    // 详情视图：作用于 detailRun（w2 paused → 只能停止，不能暂停）
-    fireEvent.keyDown(window, { key: 'Enter' })
-    fireEvent.keyDown(window, { key: 'x' })
-    expect(controlMock).toHaveBeenCalledWith('w2', 'stop')
-    fireEvent.keyDown(window, { key: 'p' })
-    expect(controlMock).toHaveBeenCalledTimes(4)
-  })
-
-  it('budget_limited 可 r 恢复；done 不可 p/x/r', () => {
-    setup({ w1: run({ name: 'B1', status: 'budget_limited' }), w2: run({ runId: 'w2', name: 'D1', status: 'done', firstSeenAt: 90 }) })
-    render(<WorkflowPanel />)
-    fireEvent.keyDown(window, { key: 'r' })
-    expect(controlMock).toHaveBeenCalledWith('w1', 'resume')
-    controlMock.mockClear()
-    fireEvent.keyDown(window, { key: 'p' })
-    expect(controlMock).not.toHaveBeenCalled()
-    fireEvent.keyDown(window, { key: 'j' })
-    fireEvent.keyDown(window, { key: 'x' })
-    fireEvent.keyDown(window, { key: 'r' })
-    expect(controlMock).not.toHaveBeenCalled()
-  })
-
-  it('esc 按钮 / 背景点击关闭面板', () => {
+  it('关闭按钮 / 背景点击关闭面板', () => {
     setup({ w1: run({ name: 'A1' }) })
     const first = render(<WorkflowPanel />)
-    fireEvent.click(screen.getByRole('button', { name: 'esc' }))
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }))
     expect(useChatStore.getState().workflowPanelOpen).toBe(false)
     first.unmount()
     setup({ w1: run({ name: 'A1' }) })

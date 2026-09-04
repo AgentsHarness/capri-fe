@@ -327,11 +327,11 @@ describe('SettingsModal', () => {
     expect(useChatStore.getState().settingsOpen).toBe(false)
   })
 
-  it('esc 按钮关闭', async () => {
+  it('关闭按钮关闭', async () => {
     openModal()
     render(<SettingsModal />)
     await waitFor(() => expect(screen.getByRole('dialog')).not.toBeNull())
-    fireEvent.click(screen.getByText('esc'))
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }))
     expect(useChatStore.getState().settingsOpen).toBe(false)
   })
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Search } from 'lucide-react'
+import { Search, X } from 'lucide-react'
 import { useChatStore } from '../store/chat'
 import { transport } from '../api/client'
 import { pushToast } from '../store/toast'
@@ -201,18 +201,6 @@ export function ContentSearchModal() {
         closeContentSearch()
         return
       }
-      // In the input: only Escape/arrows/Enter are intercepted — typing
-      // (including j/k) must reach the field.
-      const inInput = e.target === inputRef.current
-      if (!inInput && (e.key === 'j' || e.key === 'k')) {
-        prevent()
-        setSel((s) =>
-          e.key === 'j'
-            ? Math.min(rows.length - 1, s + 1)
-            : Math.max(0, s - 1),
-        )
-        return
-      }
       if (e.key === 'ArrowDown') {
         prevent()
         setSel((s) => Math.min(rows.length - 1, s + 1))
@@ -253,9 +241,11 @@ export function ContentSearchModal() {
           <button
             type="button"
             onClick={closeContentSearch}
-            className="ml-auto rounded px-2 py-0.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+            className="ml-auto rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+            aria-label="关闭"
+            title="关闭 (Esc)"
           >
-            esc
+            <X size={14} aria-hidden />
           </button>
         </header>
 
@@ -333,16 +323,13 @@ export function ContentSearchModal() {
           )}
         </div>
 
-        <footer className="gn-modal-footer flex items-center gap-3 py-1.5 text-[10px] text-gn-muted">
+        <footer className="gn-modal-footer flex items-center justify-between py-1.5 text-[10px] text-gn-muted">
           {result && (
             <span>
               {result.truncated ? '结果已截断 · ' : ''}
               {result.totalMatches} 处匹配 / {result.totalFiles} 个文件
             </span>
           )}
-          <span className="ml-auto hidden sm:inline">
-            <span className="gn-kbd">↑</span>/<span className="gn-kbd">↓</span> 选择 · <span className="gn-kbd">Enter</span> 复制 路径:行号 · <span className="gn-kbd">Esc</span> 关闭
-          </span>
         </footer>
       </div>
     </div>

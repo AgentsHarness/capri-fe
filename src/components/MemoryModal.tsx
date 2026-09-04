@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { X } from 'lucide-react'
 import { useChatStore } from '../store/chat'
 import { Glyphs } from '../theme/glyphs'
 
@@ -151,7 +152,15 @@ export function MemoryModal() {
             {Glyphs.diamondFilled}
           </span>
           <span className="text-[13px] font-bold text-gn-fg">记忆</span>
-          <span className="ml-auto hidden items-center gap-1 text-[11px] text-gn-muted sm:inline-flex"><span className="gn-kbd">Esc</span> 关闭</span>
+          <button
+            type="button"
+            onClick={closeMemory}
+            className="ml-auto rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+            aria-label="关闭弹窗"
+            title="关闭 (Esc)"
+          >
+            <X size={14} aria-hidden />
+          </button>
         </header>
 
         <div className="flex max-h-[62vh] flex-col gap-3 overflow-y-auto px-4 py-3">

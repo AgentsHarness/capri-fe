@@ -90,11 +90,10 @@ describe('PromptHistoryMenu', () => {
     expect(unselText.className).not.toContain('font-semibold')
   })
 
-  it('页脚键盘提示与斜杠面板同构（Enter/Tab 填入）', () => {
+  it('页脚不渲染冗余键盘提示行', () => {
     render(
       <PromptHistoryMenu history={items} selected={0} onHover={noop} onPick={noop} />,
     )
-    const hint = screen.getByText(/↑\/↓ 选择 · Enter\/Tab 填入 · Esc 关闭/)
-    expect(hint).toBeInTheDocument()
+    expect(screen.queryByText(/↑\/↓ 选择/)).toBeNull()
   })
 })

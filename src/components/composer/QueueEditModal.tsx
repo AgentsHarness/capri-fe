@@ -143,9 +143,11 @@ export function QueueEditModal() {
           <button
             type="button"
             onClick={() => usePromptQueue.getState().cancelEdit()}
-            className="ml-auto rounded px-2 py-0.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+            className="ml-auto rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+            aria-label="关闭"
+            title="关闭 (Esc)"
           >
-            esc
+            <X size={14} aria-hidden />
           </button>
         </header>
 
@@ -239,9 +241,6 @@ export function QueueEditModal() {
           </div>
 
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] leading-snug text-gn-gutter">
-            <span className="hidden sm:inline">
-              <span className="gn-kbd">Enter</span> 保存 · <span className="gn-kbd">Shift</span>+<span className="gn-kbd">Enter</span> 换行 · <span className="gn-kbd">Esc</span> 取消
-            </span>
             {draft.trim() === '' && images.length > 0 ? (
               <span className="text-gn-muted">正文为空：只发附图</span>
             ) : null}

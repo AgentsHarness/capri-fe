@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { X } from 'lucide-react'
 import { loadBool, saveBool } from '../lib/storage'
 import { useChatStore } from '../store/chat'
 import { pushToast } from '../store/toast'
@@ -199,63 +200,32 @@ export function RewindPicker() {
       }
       switch (phase) {
         case 'cancel-offer': {
-          if (e.key === 'j' || e.key === 'k' || e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
             prevent()
             setOfferCursor((c) => (c + 1) % 2)
-          } else if (e.key === 'y' || (e.key === 'Enter' && offerCursor === 0)) {
+          } else if (e.key === 'Enter') {
             prevent()
-            void cancelTurnThenProceed()
-          } else if (e.key === 'n' || (e.key === 'Enter' && offerCursor === 1)) {
-            prevent()
-            closeRewind()
+            if (offerCursor === 0) {
+              void cancelTurnThenProceed()
+            } else {
+              closeRewind()
+            }
           }
           break
         }
         case 'confirm': {
-          const filesAllowed = !pending || pending.point.hasFileChanges !== false
-          if (e.key === 'j' || e.key === 'ArrowDown') {
-            prevent()
-            setConfirmCursor((c) => Math.min(4, c + 1))
-          } else if (e.key === 'k' || e.key === 'ArrowUp') {
-            prevent()
-            setConfirmCursor((c) => Math.max(0, c - 1))
-          } else if (e.key === 'c') {
-            prevent()
-            setRewindMode('conversation_only')
-          } else if (e.key === 'f' && filesAllowed) {
-            prevent()
-            setRewindMode('all')
-          } else if (e.key === 'y') {
+          if (e.key === 'Enter') {
             prevent()
             if (pending) void execute(pending.point, 'yes')
-          } else if (e.key === 'a') {
-            prevent()
-            if (pending) void execute(pending.point, 'always')
-          } else if (e.key === 'n') {
-            prevent()
-            setPending(undefined)
-            setPhase('picker')
-          } else if (e.key === 'Enter') {
-            prevent()
-            if (!pending) return
-            if (confirmCursor === 0) setRewindMode('conversation_only')
-            else if (confirmCursor === 1) {
-              if (filesAllowed) setRewindMode('all')
-            } else if (confirmCursor === 2) void execute(pending.point, 'yes')
-            else if (confirmCursor === 3) void execute(pending.point, 'always')
-            else {
-              setPending(undefined)
-              setPhase('picker')
-            }
           }
           break
         }
         case 'picker': {
           const max = list.length - 1
-          if (e.key === 'j' || e.key === 'ArrowDown') {
+          if (e.key === 'ArrowDown') {
             prevent()
             setCursor((c) => Math.min(max, c + 1))
-          } else if (e.key === 'k' || e.key === 'ArrowUp') {
+          } else if (e.key === 'ArrowUp') {
             prevent()
             setCursor((c) => Math.max(0, c - 1))
           } else if (e.key === 'Enter') {
@@ -268,7 +238,7 @@ export function RewindPicker() {
           break
         }
         case 'error': {
-          if (e.key === 'Enter' || e.key === 'r') {
+          if (e.key === 'Enter') {
             prevent()
             if (pending) void execute(pending.point, pending.mode)
           }
@@ -326,9 +296,11 @@ export function RewindPicker() {
           <button
             type="button"
             onClick={closeRewind}
-            className="ml-auto rounded px-2 py-0.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+            className="ml-auto rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+            aria-label="关闭"
+            title="关闭 (Esc)"
           >
-            esc
+            <X size={14} aria-hidden />
           </button>
         </header>
 

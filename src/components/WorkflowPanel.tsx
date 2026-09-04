@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { X } from 'lucide-react'
 import { useChatStore } from '../store/chat'
 import type { WorkflowRun } from '../store/chat'
 import { fmtElapsedCompact, fmtTok } from '../format'
@@ -113,13 +114,13 @@ export function WorkflowPanel() {
         else setOpen(false)
         return
       }
-      if (e.key === 'j' || e.key === 'ArrowDown') {
+      if (e.key === 'ArrowDown') {
         if (detailRun) return
         prevent()
         setCursor((c) => Math.min(list.length - 1, c + 1))
         return
       }
-      if (e.key === 'k' || e.key === 'ArrowUp') {
+      if (e.key === 'ArrowUp') {
         if (detailRun) return
         prevent()
         setCursor((c) => Math.max(0, c - 1))
@@ -132,32 +133,6 @@ export function WorkflowPanel() {
           setSelectedWorkflowRunId(run.runId)
         }
         return
-      }
-      if (!activeRun) return
-      if (e.key === 'p') {
-        if (canPause(activeRun.status)) {
-          prevent()
-          workflowControl(activeRun.runId, 'pause')
-        }
-        return
-      }
-      if (e.key === 'r') {
-        if (canResume(activeRun.status)) {
-          prevent()
-          workflowControl(activeRun.runId, 'resume')
-        }
-        return
-      }
-      if (e.key === 'x') {
-        if (canStop(activeRun.status)) {
-          prevent()
-          workflowControl(activeRun.runId, 'stop')
-        }
-        return
-      }
-      if (e.key === 's') {
-        prevent()
-        void saveWorkflowScript(activeRun.runId)
       }
     }
     window.addEventListener('keydown', onKey, true)
@@ -210,19 +185,21 @@ export function WorkflowPanel() {
           {detailRun && (
             <button
               type="button"
-              aria-label="← 返回列表 (esc)"
+              aria-label="返回列表"
               onClick={() => setSelectedWorkflowRunId(undefined)}
               className="shrink-0 rounded px-2 py-0.5 text-[11px] text-gn-plan hover:bg-gn-bg-highlight"
             >
-              ← 返回列表 <span className="hidden sm:inline">(<span className="gn-kbd">Esc</span>)</span>
+              ← 返回列表
             </button>
           )}
           <button
             type="button"
             onClick={() => setOpen(false)}
-            className="ml-auto rounded px-2 py-0.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+            className="ml-auto rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+            aria-label="关闭"
+            title="关闭 (Esc)"
           >
-            esc
+            <X size={14} aria-hidden />
           </button>
         </header>
 
@@ -593,7 +570,7 @@ function RunDetail({ run }: { run: WorkflowRun }) {
         </div>
       )}
 
-      {/* Control buttons gated by status (p/r/x keyboard mirrors these). */}
+      {/* Control buttons gated by status. */}
       <div className="mt-3 flex flex-wrap items-center gap-1 border-t border-gn-prompt-border/60 pt-2">
         {canPause(run.status) && (
           <button
@@ -603,7 +580,7 @@ function RunDetail({ run }: { run: WorkflowRun }) {
             className={ctlBtn}
             title="提示词路径: 请暂停工作流（workflow 工具 pause）"
           >
-            暂停 (p)
+            暂停
           </button>
         )}
         {canResume(run.status) && (
@@ -614,7 +591,7 @@ function RunDetail({ run }: { run: WorkflowRun }) {
             className={ctlBtn}
             title="提示词路径: 请恢复工作流（workflow 工具 resume）"
           >
-            恢复 (r)
+            恢复
           </button>
         )}
         {canStop(run.status) && (
@@ -625,7 +602,7 @@ function RunDetail({ run }: { run: WorkflowRun }) {
             className={dangerBtn}
             title="提示词路径: 请停止工作流（workflow 工具 stop）"
           >
-            停止 (x)
+            停止
           </button>
         )}
         <button
@@ -634,7 +611,7 @@ function RunDetail({ run }: { run: WorkflowRun }) {
           className={ctlBtn}
           title="复制该运行的工作流脚本到剪贴板（仅当 workflow_updated 携带 script 字段）"
         >
-          保存脚本 (s)
+          保存脚本
         </button>
       </div>
     </div>

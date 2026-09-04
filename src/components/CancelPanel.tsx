@@ -96,11 +96,9 @@ export function CancelPanel() {
       e.stopImmediatePropagation()
       switch (e.key) {
         case 'ArrowUp':
-        case 'k':
           setSel((s) => Math.max(0, s - 1))
           break
         case 'ArrowDown':
-        case 'j':
           setSel((s) => Math.min(CANCEL_OPTIONS.length - 1, s + 1))
           break
         case 'Tab': {
@@ -118,7 +116,6 @@ export function CancelPanel() {
           closeCancelPanel()
           break
         default:
-          if (/^[1-4]$/.test(e.key)) pick(Number(e.key) - 1)
           break // swallow — blocking card
       }
     }
@@ -165,9 +162,6 @@ export function CancelPanel() {
               <span className="ml-2 text-[11px] text-gn-muted">{opt.desc}</span>
             </button>
           ))}
-        </div>
-        <div className="mt-1.5 hidden text-[11px] text-gn-muted sm:block sm:pl-5">
-          <span className="gn-kbd">1-4</span> / <span className="gn-kbd">↑</span><span className="gn-kbd">↓</span> 选择 · <span className="gn-kbd">Enter</span> 确认 · <span className="gn-kbd">Esc</span> 继续运行 · <span className="gn-kbd">Ctrl+C</span> 直接取消
         </div>
       </div>
     </div>

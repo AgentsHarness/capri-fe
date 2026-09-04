@@ -215,68 +215,31 @@ export function SlashMenu({
           </div>
         )}
       </div>
-      <div className="flex items-center justify-between gap-2 border-t border-gn-prompt-border px-3 py-[3px] text-[10px]">
-        {unknown ? (
-          <span
-            className="min-w-0 truncate text-gn-fg2"
-            title={`没有匹配的命令 — Enter 把 /${query} 原样发给 agent（不再拦截）`}
-          >
+      {(unknown || canLiteral) && (
+        <div className="flex items-center justify-between gap-2 border-t border-gn-prompt-border px-3 py-[3px] text-[10px]">
+          {unknown ? (
             <span
-              className="sr-only"
+              className="min-w-0 truncate text-gn-fg2"
               title={`没有匹配的命令 — Enter 把 /${query} 原样发给 agent（不再拦截）`}
             >
-              Enter 按原文发送 /{query}
+              没有匹配，按原文发送 /{query}
             </span>
-            <span className="hidden sm:inline" aria-hidden="true">
-              没有匹配 — <span className="gn-kbd">Enter</span> 按原文发送 /{query}
-            </span>
-            <span className="sm:hidden">没有匹配，将按原文发送 /{query}</span>
-          </span>
-        ) : args ? (
-          <span
-            className="min-w-0 truncate text-gn-muted hidden sm:inline"
-            title="↑/↓ 选择参数 · Enter 选定并执行 · Tab 只填不执行 · 继续打字可过滤 · Esc 关闭"
-          >
-            <span
-              className="sr-only"
-              title="↑/↓ 选择参数 · Enter 选定并执行 · Tab 只填不执行 · 继续打字可过滤 · Esc 关闭"
+          ) : null}
+          {canLiteral && (
+            // 首词撞上真命令、但你要发原文时的鼠标入口（键盘等价：行首空格 / \/）。
+            // 放在页脚最右：靠输入框，且不与左侧的键盘提示抢位。
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={onLiteral}
+              title={'在这行行首补一个 \\，作为普通消息发送（等价：行首加空格）'}
+              className={`ml-auto ${menuActionClass()}`}
             >
-              ↑/↓ 选择参数 · Enter 选定并执行 · Tab 只填不执行 · Esc 关闭
-            </span>
-            <span aria-hidden="true">
-              <span className="gn-kbd">↑</span>/<span className="gn-kbd">↓</span> 选择参数 · <span className="gn-kbd">Enter</span> 选定并执行 · <span className="gn-kbd">Tab</span> 只填不执行 · <span className="gn-kbd">Esc</span> 关闭
-            </span>
-          </span>
-        ) : (
-          <span
-            className="min-w-0 truncate text-gn-muted hidden sm:inline"
-            title="↑/↓ 选择命令 · Tab 补全 · Enter 执行（还差参数的先展开参数列表）· Esc 关闭 · 想发原文：行首加空格或 \/"
-          >
-            <span
-              className="sr-only"
-              title="↑/↓ 选择命令 · Tab 补全 · Enter 执行（还差参数的先展开参数列表）· Esc 关闭 · 想发原文：行首加空格或 \/"
-            >
-              ↑/↓ 选择 · Tab 补全 · Enter 执行 · Esc 关闭
-            </span>
-            <span aria-hidden="true">
-              <span className="gn-kbd">↑</span>/<span className="gn-kbd">↓</span> 选择 · <span className="gn-kbd">Tab</span> 补全 · <span className="gn-kbd">Enter</span> 执行 · <span className="gn-kbd">Esc</span> 关闭
-            </span>
-          </span>
-        )}
-        {canLiteral && (
-          // 首词撞上真命令、但你要发原文时的鼠标入口（键盘等价：行首空格 / \/）。
-          // 放在页脚最右：靠输入框，且不与左侧的键盘提示抢位。
-          <button
-            type="button"
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={onLiteral}
-            title={'在这行行首补一个 \\，作为普通消息发送（等价：行首加空格）'}
-            className={menuActionClass()}
-          >
-            作为原文发送
-          </button>
-        )}
-      </div>
+              作为原文发送
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 }

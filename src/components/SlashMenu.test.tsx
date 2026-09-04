@@ -97,22 +97,19 @@ describe('SlashMenu', () => {
     expect(Element.prototype.scrollIntoView).toHaveBeenCalled()
   })
 
-  it('有匹配 → 操作提示 + 位置计数，转义写法在 title 里', () => {
+  it('有匹配 → 位置计数正确，不渲染冗余键盘提示行', () => {
     render(
       <SlashMenu input="/co" selected={1} matches={matches()} onHover={noop} onPick={noop} />,
     )
-    const hint = screen.getByText(/↑\/↓ 选择 · Tab 补全 · Enter 执行 · Esc 关闭/)
-    expect(hint).toBeInTheDocument()
-    expect(hint.getAttribute('title')).toContain(String.raw`\/`)
-    expect(hint.getAttribute('title')).toContain('空格')
+    expect(screen.queryByText(/↑\/↓ 选择/)).toBeNull()
     expect(screen.getByText('2/2')).toBeInTheDocument()
   })
 
-  it('无匹配 → 页脚说明 Enter 按原文发送（不再是错误）', () => {
+  it('无匹配 → 页脚说明按原文发送（不再是错误）', () => {
     render(
       <SlashMenu input="/xyz foo" selected={0} matches={[]} onHover={noop} onPick={noop} />,
     )
-    expect(screen.getByText(/Enter 按原文发送 \/xyz/)).toBeInTheDocument()
+    expect(screen.getByText(/没有匹配，按原文发送 \/xyz/)).toBeInTheDocument()
     expect(screen.getByText('没有匹配的命令')).toBeInTheDocument()
     expect(screen.queryByText(/未知命令/)).not.toBeInTheDocument()
   })
@@ -185,7 +182,7 @@ describe('SlashMenu', () => {
     render(
       <SlashMenu input="/" selected={0} matches={[]} onHover={noop} onPick={noop} />,
     )
-    expect(screen.getByText(/↑\/↓ 选择 · Tab 补全 · Enter 执行 · Esc 关闭/)).toBeInTheDocument()
+    expect(screen.queryByText(/↑\/↓ 选择/)).toBeNull()
     expect(screen.getByText('/ 前缀触发')).toBeInTheDocument()
   })
 
@@ -199,7 +196,7 @@ describe('SlashMenu', () => {
     expect(screen.getByText('计划模式')).toBeInTheDocument()
   })
 
-  it('参数阶段：表头带命令名，行是候选参数，页脚换成参数键盘提示', () => {
+  it('参数阶段：表头带命令名，行是候选参数', () => {
     const onPick = vi.fn()
     render(
       <SlashMenu
@@ -218,7 +215,7 @@ describe('SlashMenu', () => {
     expect(screen.getByText('high (active)')).toBeInTheDocument()
     expect(screen.getByText('默认档')).toBeInTheDocument()
     expect(screen.getByText('1/2')).toBeInTheDocument()
-    expect(screen.getByText(/↑\/↓ 选择参数 · Enter 选定并执行/)).toBeInTheDocument()
+    expect(screen.queryByText(/↑\/↓ 选择参数/)).toBeNull()
     fireEvent.click(screen.getByText('low'))
     expect(onPick).toHaveBeenCalledWith(1)
   })

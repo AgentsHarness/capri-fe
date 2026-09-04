@@ -42,8 +42,8 @@ describe('RewindPicker', () => {
     expect(screen.getByText('当前有回合正在运行')).toBeInTheDocument()
     expect(screen.getByText('取消当前回合并回退')).toBeInTheDocument()
 
-    // 键盘触发 y
-    fireEvent.keyDown(window, { key: 'y' })
+    // 点击触发取消并回退
+    fireEvent.click(screen.getByText('取消当前回合并回退'))
     await waitFor(() => {
       expect(cancelTurn).toHaveBeenCalledWith({ cancelSubagents: true })
     })
@@ -113,12 +113,12 @@ describe('RewindPicker', () => {
       expect(screen.getByText(/第一轮/)).toBeInTheDocument()
     })
 
-    // 按 y 确认执行回退
+    // 点击确认执行回退
     rewindExecute.mockResolvedValueOnce({
       targetPromptIndex: 1,
       conversationTruncated: true,
     })
-    fireEvent.keyDown(window, { key: 'y' })
+    fireEvent.click(screen.getByRole('button', { name: '确认回退' }))
 
     await waitFor(() => {
       expect(rewindExecute).toHaveBeenCalledWith(1, 'conversation_only')
@@ -150,7 +150,7 @@ describe('RewindPicker', () => {
       expect(screen.getByRole('button', { name: '确认回退' })).toBeInTheDocument()
     })
 
-    // 模拟执行返回 conflict
+    // 点击执行返回 conflict
     rewindExecute.mockResolvedValueOnce({
       targetPromptIndex: 1,
       conversationTruncated: true,
@@ -159,7 +159,7 @@ describe('RewindPicker', () => {
       ],
     })
 
-    fireEvent.keyDown(window, { key: 'y' })
+    fireEvent.click(screen.getByRole('button', { name: '确认回退' }))
 
     await waitFor(() => {
       expect(screen.getByText(/个文件与外部修改冲突/)).toBeInTheDocument()

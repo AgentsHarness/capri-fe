@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, Circle, CircleDot, Diamond, Timer } from 'lucide-react'
+import { Check, Circle, CircleDot, Diamond, Timer, X } from 'lucide-react'
 import { useChatStore } from '../store/chat'
 import type { AskQuestion } from '../api/types'
 import { Markdown } from './Markdown'
@@ -263,11 +263,9 @@ export function QuestionModal() {
       let handled = true
       switch (e.key) {
         case 'ArrowDown':
-        case 'j':
           setCursor((prev) => ({ ...prev, [qi]: Math.min(max, cur + 1) }))
           break
         case 'ArrowUp':
-        case 'k':
           setCursor((prev) => ({ ...prev, [qi]: Math.max(0, cur - 1) }))
           break
         case 'Tab':
@@ -294,60 +292,8 @@ export function QuestionModal() {
           // native button activation never fires.
           if (q?.multiSelect && cur < q.options.length) toggleOption(qi, cur, true)
           break
-        case 'z': {
-          // TUI z (interactions.rs): jump to the freeform line and enter
-          // input mode immediately (no-op effect when the card has none —
-          // every FE card renders the freeform row).
-          setInputActive(true)
-          requestAnimationFrame(() => inputRef.current?.focus())
-          break
-        }
-        case 'y': {
-          // TUI y: copy the focused answer (label + description) so it can
-          // be pasted elsewhere. Plain y only — the freeform input owns
-          // keys while active (handled above).
-          const opt = q?.options[cur]
-          if (opt?.label) {
-            void navigator.clipboard
-              ?.writeText(
-                [opt.label, opt.description].filter(Boolean).join('\n\n'),
-              )
-              .catch(() => {})
-          }
-          break
-        }
-        case '[':
-          // TUI [ / ]: previous / next question (same as Shift+Tab / Tab).
-          setActiveTab((t2) => clampTab(t2 - 1))
-          break
-        case ']':
-          setActiveTab((t2) => clampTab(t2 + 1))
-          break
-        case 'X':
-          // TUI Shift+X: dismiss the whole card — the agent continues
-          // without answers (same cancelled outcome as Esc).
-          void dismissXai(req.requestId)
-          break
         default:
-          if (/^[1-9]$/.test(e.key)) {
-            const idx = Number(e.key) - 1
-            if (q && idx < q.options.length) {
-              setCursor((prev) => ({ ...prev, [qi]: idx }))
-              if (q.multiSelect) {
-                toggleOption(qi, idx, true)
-              } else {
-                const nextSelected = { ...selected, [qi]: new Set([idx]) }
-                setSelected(nextSelected)
-                if (qi < questions.length - 1) {
-                  setActiveTab(qi + 1)
-                } else {
-                  submitAccepted(nextSelected)
-                }
-              }
-            }
-          } else {
-            handled = false
-          }
+          handled = false
       }
       if (handled) {
         e.preventDefault()
@@ -419,6 +365,15 @@ export function QuestionModal() {
               第 {activeTab + 1}/{questions.length} 题
             </span>
           ) : null}
+          <button
+            type="button"
+            onClick={() => void dismissXai(req.requestId)}
+            className="rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+            aria-label="关闭"
+            title="关闭 (Esc)"
+          >
+            <X size={14} aria-hidden />
+          </button>
         </div>
       </header>
 
@@ -457,13 +412,6 @@ export function QuestionModal() {
                           : 'border-gn-prompt-border/60 bg-gn-bg-base text-gn-fg2 hover:border-gn-prompt-border hover:bg-gn-bg-highlight/60'
                     }`}
                   >
-                    {oi < 9 ? (
-                      <span className="mt-[2px] w-4 shrink-0 text-center font-mono text-[10.5px] text-gn-gutter">
-                        {oi + 1}
-                      </span>
-                    ) : (
-                      <span className="w-4 shrink-0" />
-                    )}
                     <span
                       className={`mt-[2px] flex w-4 shrink-0 items-center justify-center ${
                         active ? 'text-gn-magenta' : 'text-gn-gutter'
@@ -615,10 +563,6 @@ export function QuestionModal() {
           )}
         </div>
       </footer>
-
-      <div className="hidden border-t border-gn-prompt-border/50 bg-gn-bg-dark/80 px-3.5 py-1.5 text-[11px] text-gn-muted sm:block">
-        <span className="gn-kbd">j</span><span className="gn-kbd">k</span> 选择 · <span className="gn-kbd">1-9</span> 直达 · <span className="gn-kbd">Enter</span> 选中 · <span className="gn-kbd">Tab</span> 切题{multi ? <> · <span className="gn-kbd">Space</span> 多选</> : ''} · <span className="gn-kbd">Esc</span> 关闭
-      </div>
     </div>,
     anchorEl,
   )

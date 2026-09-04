@@ -253,9 +253,6 @@ export function BlockViewer() {
               </>
             )}
           </div>
-          <span className="hidden text-[10px] text-gn-gutter sm:inline">
-            esc close · scroll to read
-          </span>
           <button
             type="button"
             onClick={() => closeViewer()}
@@ -350,9 +347,6 @@ function BlockBodyDialog({ entry, onClose }: { entry: ScrollEntry; onClose: () =
               </div>
             ) : null}
           </div>
-          <span className="hidden text-[10px] text-gn-gutter sm:inline">
-            esc close · scroll to read
-          </span>
           <button
             type="button"
             onClick={onClose}
