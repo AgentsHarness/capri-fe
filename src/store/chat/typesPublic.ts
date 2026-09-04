@@ -110,7 +110,11 @@ export type WorkflowRun = {
 
 /** One fuzzy file-search match (x.ai/search/fuzzy/status FuzzyMatch). */
 export type FileSearchMatch = {
-  /** File path relative to the search root (workspace cwd). */
+  /**
+   * Path the picker shows and inserts. The wire's `path` is absolute; the
+   * store cuts the search root off (the wire's `indices` are offsets into
+   * that relative form), so this is normally relative to the workspace cwd.
+   */
   path: string
   /** Match score (higher is better) when the wire carries it. */
   score?: number
@@ -125,6 +129,11 @@ export type FileSearchMatch = {
  */
 export type FileSearchState = {
   searchId: string
+  /**
+   * Root the engine searches (`cwd` passed to search/fuzzy open). Match
+   * paths are absolute under it; it's what gets stripped for display.
+   */
+  root?: string
   matches: FileSearchMatch[]
   /** True when the engine finished the current query (status done flag). */
   done: boolean

@@ -279,4 +279,94 @@ describe('handleExtMiscEvent — model 与 session_rewound 跨会话同步', () 
   })
 })
 
+describe('handleExtMiscEvent — search_fuzzy_status（@ 文件选择器引擎流）', () => {
+  // 真实 wire 形状（host 转发 x.ai/search/fuzzy/status）：path 是**绝对路径**，
+  // indices 却是**相对 cwd** 的字符偏移，顶层 sessionId 是 agent 自报的
+  // "agent" 而非会话 UUID。
+  const wireEvent = (searchId: string, matches: unknown[]): AcpEvent =>
+    ({
+      type: 'search_fuzzy_status',
+      sessionId: 'agent',
+      params: {
+        sessionId: 'agent',
+        searchId,
+        total: 471,
+        done: true,
+        generation: 3,
+        matches,
+      },
+    }) as AcpEvent
+
+  it('落库为相对 cwd 的路径，highlight 偏移与相对路径对齐', () => {
+    const { set, get, state } = makeStore({
+      fileSearch: { searchId: 'sr-1', root: '/ws/acp-fe', matches: [], done: true },
+    })
+    handleExtMiscEvent(
+      set,
+      get,
+      wireEvent('sr-1', [
+        {
+          path: '/ws/acp-fe/src/components/Composer.tsx',
+          name: 'Composer.tsx',
+          score: 109,
+          type: 'file',
+          indices: [15, 16, 17, 18],
+        },
+        {
+          path: '/ws/acp-fe/src/store',
+          name: 'store',
+          score: 109,
+          type: 'directory',
+          indices: [4, 5, 6, 7, 8],
+        },
+      ]),
+    )
+    const fs = state().fileSearch
+    expect(fs).toMatchObject({
+      searchId: 'sr-1',
+      root: '/ws/acp-fe',
+      total: 471,
+      done: true,
+      matches: [
+        { path: 'src/components/Composer.tsx', score: 109, matchedIndices: [15, 16, 17, 18] },
+        { path: 'src/store', score: 109, matchedIndices: [4, 5, 6, 7, 8] },
+      ],
+    })
+    // 偏移与相对路径对齐后，指着的正是命中的字符
+    const spells = fs!.matches.map((x) =>
+      (x.matchedIndices ?? []).map((i) => x.path[i]).join(''),
+    )
+    expect(spells).toEqual(['Comp', 'store'])
+  })
+
+  it('root 前缀不匹配的路径原样保留（偏移照 wire 走）', () => {
+    const { set, get, state } = makeStore({
+      fileSearch: { searchId: 'sr-1', root: '/ws/acp-fe', matches: [], done: true },
+    })
+    handleExtMiscEvent(
+      set,
+      get,
+      wireEvent('sr-1', [
+        { path: '/etc/hosts', name: 'hosts', type: 'file', indices: [5, 6, 7] },
+      ]),
+    )
+    expect(state().fileSearch?.matches).toEqual([
+      { path: '/etc/hosts', matchedIndices: [5, 6, 7] },
+    ])
+  })
+
+  it('非本 picker 的 searchId（陈旧会话）与 picker 已关闭时都丢弃', () => {
+    const stale = makeStore({
+      fileSearch: { searchId: 'sr-mine', root: '/ws', matches: [], done: true },
+    })
+    handleExtMiscEvent(stale.set, stale.get, wireEvent('sr-other', []))
+    expect(stale.state().fileSearch?.matches).toEqual([])
+    expect(stale.state().fileSearch?.done).toBe(true)
+
+    const closed = makeStore({ fileSearch: null })
+    handleExtMiscEvent(closed.set, closed.get, wireEvent('sr-other', []))
+    expect(closed.state().fileSearch).toBeNull()
+  })
+})
+
 

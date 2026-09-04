@@ -31,6 +31,20 @@ import {
 import { truncateEntriesTo, waitRewindAligned } from '../actions/xai'
 import { loadHistoryWithTaskProbe } from '../loadHistory'
 
+/**
+ * Cut the fuzzy-search root off an absolute match path. The engine returns
+ * `path` absolute but `indices` count into the workspace-relative form, so
+ * the @ popover can only show/highlight/insert the relative one. Paths the
+ * root doesn't prefix (already relative, or a stale cwd) are left alone.
+ */
+function searchRelativePath(path: string, root: string | undefined): string {
+  if (!root) return path
+  const base = root.endsWith('/') ? root.slice(0, -1) : root
+  if (path === base) return '.'
+  const prefix = `${base}/`
+  return path.startsWith(prefix) ? path.slice(prefix.length) : path
+}
+
 export function handleExtMiscEvent(
   set: SetState,
   get: () => ChatState,
@@ -271,7 +285,7 @@ export function handleExtMiscEvent(
       case 'search_fuzzy_status': {
         // @ file-picker engine stream (workspace run_fuzzy_notifications,
         // forwarded by the host as this typed event): {sessionId, searchId,
-        // matches: [{path, score, matchedIndices}], total, done,
+        // matches: [{path, name, score, type, indices}], total, done,
         // generation}. Each generation carries the FULL match snapshot —
         // replace wholesale. Feeds only the Composer popover; no
         // scrollback row (the TUI shows this inside its /search panel).
@@ -289,16 +303,20 @@ export function handleExtMiscEvent(
             if (m == null || typeof m !== 'object') continue
             const o = m as Record<string, unknown>
             if (typeof o.path !== 'string' || !o.path) continue
+            // The wire's `path` is absolute while `indices` count into the
+            // workspace-relative form (`/…/acp-fe/src/store` + [4..8] = the
+            // chars "store"), so the open-time root is cut before storing —
+            // that's the form the popover shows, highlights, and inserts.
+            const relPath = searchRelativePath(o.path, cur.root)
+            // Older hosts spelled the same offsets `matchedIndices`.
+            const raw = Array.isArray(o.indices) ? o.indices : o.matchedIndices
+            const matched = Array.isArray(raw)
+              ? raw.filter((x): x is number => typeof x === 'number')
+              : []
             matches.push({
-              path: o.path,
+              path: relPath,
               ...(typeof o.score === 'number' ? { score: o.score } : {}),
-              ...(Array.isArray(o.matchedIndices)
-                ? {
-                    matchedIndices: o.matchedIndices.filter(
-                      (x): x is number => typeof x === 'number',
-                    ),
-                  }
-                : {}),
+              ...(matched.length > 0 ? { matchedIndices: matched } : {}),
             })
           }
         }
