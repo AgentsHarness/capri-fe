@@ -356,8 +356,10 @@ export interface ChatModeState {
    * nudged by yolo_mode_changed / modes_update payloads.
    */
   planMode: boolean
-  /** /plan — enter plan mode only (no-op while already in plan). */
+  /** /plan — toggle plan mode (enters plan if off, exits to normal if on). */
   togglePlanMode: () => Promise<void>
+  /** Switch directly to a target mode (normal / plan / auto / always-approve). */
+  selectMode: (mode: 'normal' | 'plan' | 'auto' | 'always-approve') => Promise<void>
   /** Shift+Tab mode cycle: Normal → Plan → Auto → Always-approve → Normal. */
   cycleMode: () => Promise<void>
   /** /auto — toggle auto permission mode (normal ↔ auto, plan ↔ plan·auto). */

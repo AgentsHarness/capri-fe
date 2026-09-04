@@ -13,7 +13,7 @@ import { appendEntry } from '../entries'
 import { pushToast } from '../../toast'
 
 export function modeActions(set: SetState, get: () => ChatState) {
-  return {
+  const actions = {
   cycleMode: async () => {
     const cycle = bumpReseedGen()
     const s = get()
@@ -133,27 +133,122 @@ export function modeActions(set: SetState, get: () => ChatState) {
     }
   },
 
-  /**
-   * /plan — enter plan mode only. Running /plan again while already in
-   * plan (including the plan·auto / plan·always overlays) is a no-op: plan
-   * can only be left via the Shift+Tab cycle back to Normal.
-   */
+  selectMode: async (target: 'normal' | 'plan' | 'auto' | 'always-approve') => {
+    const s = get()
+    const sid = s.sessionId
+    const inPlan = s.planMode === true || s.permissionMode === 'plan'
+    const perm = (s.permissionMode || '').toLowerCase()
+    const inAlways =
+      s.yoloMode === true ||
+      perm === 'always-approve' ||
+      perm === 'always_approve' ||
+      perm === 'yolo'
+    const inAuto = s.autoMode === true || perm === 'auto'
+
+    const current = inPlan
+      ? 'plan'
+      : inAlways
+        ? 'always-approve'
+        : inAuto
+          ? 'auto'
+          : 'normal'
+
+    if (current === target) return
+
+    const prev = {
+      planMode: s.planMode,
+      permissionMode: s.permissionMode,
+      yoloMode: s.yoloMode,
+      autoMode: s.autoMode,
+      statusText: s.statusText,
+    }
+
+    if (target === 'normal') {
+      get().showModeBanner('Switched to mode: Normal')
+      set({
+        planMode: false,
+        autoMode: false,
+        yoloMode: false,
+        permissionMode: undefined,
+        statusText: '已切换到 normal 模式',
+      })
+      try {
+        await transport.setMode('default', sid).catch(() => {})
+        await transport.setMode('normal', sid)
+        persistConfirmedPermission({})
+      } catch (e) {
+        set(prev)
+        appendEntry(set, {
+          kind: 'error',
+          text: `切换 normal 模式失败: ${e instanceof Error ? e.message : String(e)}`,
+        })
+      }
+    } else if (target === 'plan') {
+      get().showModeBanner('Switched to mode: Plan')
+      set({
+        planMode: true,
+        permissionMode: undefined,
+        autoMode: false,
+        yoloMode: false,
+        statusText: '已切换到 plan 模式',
+      })
+      try {
+        await transport.setMode('plan', sid)
+      } catch (e) {
+        set(prev)
+        appendEntry(set, {
+          kind: 'error',
+          text: `切换 plan 模式失败: ${e instanceof Error ? e.message : String(e)}`,
+        })
+      }
+    } else if (target === 'auto') {
+      get().showModeBanner('Switched to mode: Auto')
+      set({
+        planMode: false,
+        autoMode: true,
+        yoloMode: false,
+        permissionMode: undefined,
+        statusText: '已切换到 auto 模式',
+      })
+      try {
+        await transport.setMode('auto', sid)
+        persistConfirmedPermission({ autoMode: true, permissionMode: 'auto' })
+      } catch (e) {
+        set(prev)
+        appendEntry(set, {
+          kind: 'error',
+          text: `切换 auto 模式失败: ${e instanceof Error ? e.message : String(e)}`,
+        })
+      }
+    } else if (target === 'always-approve') {
+      get().showModeBanner('Switched to mode: Always-Approve')
+      set({
+        planMode: false,
+        autoMode: false,
+        yoloMode: true,
+        permissionMode: undefined,
+        statusText: '已切换到 always-approve 模式',
+      })
+      try {
+        const ok = await turnOnAlwaysApprove(set, false, sid)
+        if (!ok) throw new Error('host 暂不支持切换 always-approve')
+      } catch (e) {
+        set(prev)
+        appendEntry(set, {
+          kind: 'error',
+          text: `切换 always-approve 模式失败: ${e instanceof Error ? e.message : String(e)}`,
+        })
+      }
+    }
+  },
+
   togglePlanMode: async () => {
     const s = get()
-    if (s.planMode === true || s.permissionMode === 'plan') {
-      set({ statusText: '已在 plan 模式（Shift+Tab 退出）' })
-      return
-    }
-    const prev = { planMode: s.planMode, permissionMode: s.permissionMode }
-    set({ planMode: true, permissionMode: undefined, statusText: '已切换到 plan 模式' })
-    try {
-      await transport.setMode('plan', s.sessionId)
-    } catch (e) {
-      set(prev)
-      appendEntry(set, {
-        kind: 'error',
-        text: `切换 plan 模式失败: ${e instanceof Error ? e.message : String(e)}`,
-      })
+    const inPlan = s.planMode === true || s.permissionMode === 'plan'
+    if (inPlan) {
+      await actions.selectMode('normal')
+    } else {
+      await actions.selectMode('plan')
     }
   },
 
@@ -309,7 +404,11 @@ export function modeActions(set: SetState, get: () => ChatState) {
     }
   },
 
-  respondXai: async (requestId, result, error) => {
+  respondXai: async (
+    requestId: string,
+    result?: Record<string, unknown>,
+    error?: string,
+  ) => {
     const req = get().xaiRequests.find((r) => r.requestId === requestId)
     try {
       await transport.respondClientRequest(requestId, result, error)
@@ -357,4 +456,6 @@ export function modeActions(set: SetState, get: () => ChatState) {
     await get().respondXai(requestId, { outcome: 'cancelled' })
   },
   } satisfies Partial<ChatState>
+
+  return actions
 }

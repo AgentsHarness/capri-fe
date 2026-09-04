@@ -130,15 +130,15 @@ export function CustomModelsPanel() {
 
   return (
     <section className="border-b border-gn-prompt-border/50 py-1 last:border-b-0">
-      <div className="flex items-center justify-between px-4 pt-2 pb-1">
+      <div className="flex items-center justify-between px-3 pt-2 pb-1 sm:px-4">
         <span className="text-[10px] uppercase tracking-wider text-gn-gutter">
-          [model.*] 自定义模型（BYOK）
+          [model.*] 自定义模型<span className="hidden sm:inline">（BYOK）</span>
         </span>
-        <div className="flex items-center gap-1.5">
+        <div className="flex shrink-0 items-center gap-1.5">
           <button
             type="button"
             onClick={() => setEditing({ id: '' })}
-            className="flex items-center gap-1 rounded px-2 py-px text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg"
+            className="flex items-center gap-1 rounded px-2 py-1 text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg sm:py-px"
           >
             <Plus className="h-3 w-3 text-gn-gutter" />
             <span>新增模型</span>
@@ -146,7 +146,7 @@ export function CustomModelsPanel() {
           <button
             type="button"
             onClick={() => setQuickAddOpen(true)}
-            className="flex items-center gap-1 rounded px-2 py-px text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg"
+            className="flex items-center gap-1 rounded px-2 py-1 text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg sm:py-px"
             title="从已有或自定义端点拉取 /v1/models 批量添加"
           >
             <Zap className="h-3 w-3 text-gn-cyan" />
@@ -164,7 +164,7 @@ export function CustomModelsPanel() {
           onSave={save}
         />
       ) : (
-        <div className="px-4 pb-2 space-y-1.5">
+        <div className="space-y-1.5 px-3 pb-2 sm:px-4">
           {loading ? (
             <div className="py-2 text-[11.5px] text-gn-muted">加载中…</div>
           ) : error ? (
@@ -186,7 +186,7 @@ export function CustomModelsPanel() {
             <>
               {/* 工具栏：统计与快速搜索 */}
               <div className="flex items-center justify-between gap-2 text-[10.5px]">
-                <span className="text-gn-gutter">
+                <span className="truncate text-gn-gutter">
                   {searchQuery ? (
                     <>
                       找到 <span className="font-semibold text-gn-fg">{filteredModels.length}</span> / {models.length} 个模型
@@ -198,14 +198,14 @@ export function CustomModelsPanel() {
                   )}
                 </span>
                 {models.length >= 3 && (
-                  <div className="relative">
+                  <div className="relative shrink-0">
                     <Search className="pointer-events-none absolute left-1.5 top-1/2 -translate-y-1/2 h-3 w-3 text-gn-gutter" />
                     <input
                       type="text"
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                       placeholder="搜索模型、Slug 或 Base URL…"
-                      className="w-44 rounded border border-gn-prompt-border bg-gn-bg-dark pl-5 pr-2 py-0.5 text-[10.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active placeholder:text-gn-gutter"
+                      className="w-28 rounded border border-gn-prompt-border bg-gn-bg-dark pl-5 pr-2 py-0.5 text-[10.5px] text-gn-fg outline-none transition-all placeholder:text-gn-gutter focus:w-40 focus:border-gn-prompt-border-active sm:w-44 sm:focus:w-44"
                     />
                   </div>
                 )}
@@ -342,9 +342,9 @@ function ModelForm({
     }
 
   return (
-    <div className="border-t border-gn-prompt-border/40 px-4 py-2">
+    <div className="border-t border-gn-prompt-border/40 px-3 py-2 sm:px-4">
       {/* 常用字段 —— 对齐实际配置里最常见的用法；其余进「高级设置」。 */}
-      <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+      <div className="grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-2 sm:gap-y-1.5">
         <Field label="id（配置节键，必填）">
           <input
             className={inputCls}
@@ -435,7 +435,7 @@ function ModelForm({
         {advancedOpen && (
           <>
             <div className="mt-1 text-[10px] uppercase tracking-wider text-gn-gutter">元信息</div>
-            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+            <div className="grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-2 sm:gap-y-1.5">
               <Field label="agent_type（系统提示身份）">
                 <input
                   className={inputCls}
@@ -461,7 +461,7 @@ function ModelForm({
             </div>
 
             <div className="mt-2 text-[10px] uppercase tracking-wider text-gn-gutter">鉴权</div>
-            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+            <div className="grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-2 sm:gap-y-1.5">
               <Field label="env_key（逗号分隔可多个）">
                 <input
                   className={inputCls}
@@ -509,7 +509,7 @@ function ModelForm({
             </div>
 
             <div className="mt-2 text-[10px] uppercase tracking-wider text-gn-gutter">采样参数</div>
-            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+            <div className="grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-2 sm:gap-y-1.5">
               <Field label="temperature">
                 <input
                   className={inputCls}
@@ -556,7 +556,7 @@ function ModelForm({
             </div>
 
             <div className="mt-2 text-[10px] uppercase tracking-wider text-gn-gutter">推理档位</div>
-            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+            <div className="grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-2 sm:gap-y-1.5">
               <Field label="reasoning_effort（默认档）">
                 <select
                   className={inputCls}
@@ -575,7 +575,7 @@ function ModelForm({
             </div>
 
             <div className="mt-2 text-[10px] uppercase tracking-wider text-gn-gutter">目录与显示</div>
-            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+            <div className="grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-2 sm:gap-y-1.5">
               <BoolField label="hidden" value={d.hidden} onChange={(v) => set('hidden', v)} />
               <BoolField label="supported_in_api" value={d.supported_in_api} onChange={(v) => set('supported_in_api', v)} />
               <BoolField label="use_concise" value={d.use_concise} onChange={(v) => set('use_concise', v)} />
@@ -657,7 +657,7 @@ function Field({
   wide?: boolean
 }) {
   return (
-    <label className={`block min-w-0 ${wide ? 'col-span-2' : ''}`}>
+    <label className={`block min-w-0 ${wide ? 'col-span-1 sm:col-span-2' : ''}`}>
       <span className="mb-0.5 block text-[10px] text-gn-muted">{label}</span>
       {children}
     </label>

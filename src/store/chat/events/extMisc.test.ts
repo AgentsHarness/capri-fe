@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { handleExtMiscEvent } from './extMisc'
 import type { AcpEvent, ScrollEntry } from '../../../api/types'
 import type { ChatState, SetState } from '../types'
+import { restorePlanMode } from '../modeFlags'
 
 function makeStore(initial: Partial<ChatState> = {}) {
   let state = { entries: [], sessionId: 's1', ...initial } as ChatState
@@ -254,6 +255,27 @@ describe('handleExtMiscEvent — model 与 session_rewound 跨会话同步', () 
     expect(refreshWorkspaces).toHaveBeenCalled()
     // 截断到 targetPromptIndex 1：保留 u0/a0，切除 u1/a1
     expect(state().entries.map((e) => e.id)).toEqual(['u0', 'a0'])
+  })
+
+  it('modes_update 事件更新其他会话的 planMode 时，安全更新本地 planModes 缓存且不影响当前会话', () => {
+    const { set, get, state } = makeStore({
+      sessionId: 's1',
+      planMode: false,
+    })
+
+    const ev: AcpEvent = {
+      type: 'modes_update',
+      sessionId: 'other-session',
+      modes: { currentModeId: 'plan' },
+    } as AcpEvent
+
+    handleExtMiscEvent(set, get, ev)
+
+    // 当前会话 s1 planMode 不受影响
+    expect(state().planMode).toBe(false)
+    // other-session 的 planMode 写入了缓存
+    const restored = restorePlanMode('other-session')
+    expect(restored.planMode).toBe(true)
   })
 })
 

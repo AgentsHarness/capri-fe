@@ -67,7 +67,23 @@ export const useThemeStore = create<ThemeState>((set, get) => ({
     const mq = window.matchMedia('(prefers-color-scheme: dark)')
     const onChange = () => get().syncSystem()
     mq.addEventListener('change', onChange)
-    return () => mq.removeEventListener('change', onChange)
+
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === STORAGE_KEY && e.newValue) {
+        const preference = loadPreference()
+        const resolved = apply(preference)
+        set({ preference, resolved })
+      }
+    }
+    if (typeof window !== 'undefined') {
+      window.addEventListener('storage', onStorage)
+    }
+    return () => {
+      mq.removeEventListener('change', onChange)
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('storage', onStorage)
+      }
+    }
   },
 }))
 

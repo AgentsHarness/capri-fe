@@ -3,7 +3,7 @@ import type { FileSearchMatch } from '../typesPublic'
 import { applyQueueChanged } from '../../promptQueue'
 import type { ChatState, SetState } from '../types'
 import { runtime } from '../globals'
-import { sessionModesPatch } from '../modeFlags'
+import { extractModeFlags, savePlanMode, sessionModesPatch } from '../modeFlags'
 import {
   adoptTurn,
   busyPlausibleForView,
@@ -312,12 +312,20 @@ export function handleExtMiscEvent(
         })
         break
       }
-      case 'modes_update':
+      case 'modes_update': {
+        const sid = ev.sessionId
+        if (sid) {
+          const flags = extractModeFlags(ev.modes)
+          if (typeof flags?.planMode === 'boolean') {
+            savePlanMode(sid, flags.planMode)
+          }
+        }
         // 多会话广播守卫（同 ready/model）：非当前会话的 modes 快照
         // 不得覆盖本会话的模式标志。
-        if (ev.sessionId && ev.sessionId !== get().sessionId) break
+        if (sid && sid !== get().sessionId) break
         set({ modes: ev.modes, ...(sessionModesPatch(get, ev.modes) ?? {}) })
         break
+      }
       case 'session_info':
         // 多会话广播（host withSid 约定）：非当前会话的会话信息忽略
         // （别的会话的 session_info_update 不能改写本会话的标题）。
@@ -396,6 +404,13 @@ export function handleExtMiscEvent(
         void get().refreshWorkspaces()
         break
       }
+      case 'permissions_reset':
+        set({ statusText: '已重置已记忆的权限规则' })
+        appendEntry(set, {
+          kind: 'session_event',
+          text: '已重置已记忆的权限规则',
+        })
+        break
       case 'config_options_update': {
         // Best-effort: ACP config options may carry current model id/name.
         const opts = ev.configOptions as

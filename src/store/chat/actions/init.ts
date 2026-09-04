@@ -13,7 +13,9 @@ import {
   applyModeFlags,
   ensureDefaultModeFlags,
   loadGlobalModeFlags,
+  loadPlanModes,
   MODE_FLAGS_KEY,
+  PLAN_FLAGS_KEY,
   saveModeFlags,
   savePlanMode,
 } from '../modeFlags'
@@ -105,13 +107,14 @@ export function initChat(
       ) {
         clearSubagentSettleTimer()
       }
-      // 全局广播事件族：模式变更（yolo_mode_changed）、会话列表（sessions_changed）、
+      // 全局广播事件族：模式变更（yolo_mode_changed / modes_update）、会话列表（sessions_changed）、
       // 宿主变更（hosts_changed）、偏好变更（prefs_changed）、MCP 工具/服务变更、
       // 调度任务生命周期（created/deleted/fired）、会话回退通知（session_rewound）等属于
       // 跨会话或全局关注的事件，即使宿主或中间层附带了 sessionId 也不得按
       // 单会话过滤规则在顶层拦截丢弃。
       const isGlobalEvent =
         ev.type === 'yolo_mode_changed' ||
+        ev.type === 'modes_update' ||
         ev.type === 'sessions_changed' ||
         ev.type === 'hosts_changed' ||
         ev.type === 'prefs_changed' ||
@@ -120,7 +123,9 @@ export function initChat(
         ev.type === 'scheduled_task_created' ||
         ev.type === 'scheduled_task_deleted' ||
         ev.type === 'scheduled_task_fired' ||
-        ev.type === 'session_rewound'
+        ev.type === 'session_rewound' ||
+        ev.type === 'git_head_changed' ||
+        ev.type === 'permissions_reset'
       if (
         !isGlobalEvent &&
         evSid != null &&
@@ -233,7 +238,7 @@ export function initChat(
       void usePins.getState().syncPrefsFromHub()
     }, 0)
     // 多 Tab 同步：监听 storage 事件，当另一标签页（同源）切换了全局权限模式
-    // （yoloMode / autoMode / normal）时，本标签页即使在看不同会话也立即同步。
+    // （yoloMode / autoMode / normal）或当前会话的 planMode 时，本标签页立即同步。
     const onStorage = (e: StorageEvent) => {
       if (e.key === MODE_FLAGS_KEY) {
         const flags = loadGlobalModeFlags()
@@ -245,6 +250,18 @@ export function initChat(
             autoMode: false,
             permissionMode: undefined,
           })
+        }
+      } else if (e.key === PLAN_FLAGS_KEY) {
+        const curSid = get().sessionId
+        if (curSid) {
+          const planModes = loadPlanModes()
+          const shouldBePlan = planModes[curSid]
+          if (typeof shouldBePlan === 'boolean' && shouldBePlan !== get().planMode) {
+            set({
+              planMode: shouldBePlan,
+              ...(shouldBePlan ? {} : get().permissionMode === 'plan' ? { permissionMode: undefined } : {}),
+            })
+          }
         }
       }
     }

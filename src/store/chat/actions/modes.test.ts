@@ -5,6 +5,7 @@ import type { ChatState, SetState } from '../types'
 vi.mock('../../../api/client', () => ({
   transport: {
     respondClientRequest: vi.fn().mockResolvedValue(undefined),
+    setMode: vi.fn().mockResolvedValue({ ok: true }),
   },
 }))
 
@@ -41,10 +42,7 @@ function bind(state: ChatState) {
   const set: SetState = (partial) => {
     Object.assign(state, typeof partial === 'function' ? partial(state) : partial)
   }
-  return modeActions(set, () => state) as Pick<
-    ChatState,
-    'respondXai' | 'respondPermission'
-  >
+  return modeActions(set, () => state)
 }
 
 const card = (requestId: string, method = 'x.ai/ask_user_question') => ({
@@ -121,5 +119,48 @@ describe('respondXai', () => {
     await bind(state).respondXai('r2', { outcome: 'approved' })
     expect(state.planMode).toBe(false)
     expect(state.permissionMode).toBeUndefined()
+  })
+})
+
+describe('togglePlanMode & selectMode', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(transport.setMode as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true })
+  })
+
+  it('togglePlanMode: 未在 plan 模式时进入 plan 模式', async () => {
+    const state = makeState({ planMode: false, showModeBanner: vi.fn() })
+    await bind(state).togglePlanMode()
+    expect(state.planMode).toBe(true)
+    expect(transport.setMode).toHaveBeenCalledWith('plan', 's1')
+  })
+
+  it('togglePlanMode: 已在 plan 模式时退出 plan 模式并切回 normal', async () => {
+    const state = makeState({ planMode: true, showModeBanner: vi.fn() })
+    await bind(state).togglePlanMode()
+    expect(state.planMode).toBe(false)
+    expect(transport.setMode).toHaveBeenCalledWith('normal', 's1')
+  })
+
+  it('selectMode: 可在 normal / plan / auto 之间自由切换', async () => {
+    const state = makeState({ planMode: false, autoMode: false, showModeBanner: vi.fn() })
+    
+    // 切换到 auto
+    await bind(state).selectMode('auto')
+    expect(state.autoMode).toBe(true)
+    expect(state.planMode).toBe(false)
+    expect(transport.setMode).toHaveBeenCalledWith('auto', 's1')
+
+    // 切换到 plan
+    await bind(state).selectMode('plan')
+    expect(state.planMode).toBe(true)
+    expect(state.autoMode).toBe(false)
+    expect(transport.setMode).toHaveBeenCalledWith('plan', 's1')
+
+    // 切换回 normal
+    await bind(state).selectMode('normal')
+    expect(state.planMode).toBe(false)
+    expect(state.autoMode).toBe(false)
+    expect(transport.setMode).toHaveBeenCalledWith('normal', 's1')
   })
 })
