@@ -1,5 +1,5 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { Composer } from './Composer'
 import { useChatStore } from '../store/chat'
 import { usePromptQueue } from '../store/promptQueue'
@@ -113,5 +113,94 @@ describe('Composer 切换会话中发送不吞内容', () => {
     expect(pushToast).not.toHaveBeenCalled()
     expect(textarea.value).toBe('')
     expect(transport.prompt).toHaveBeenCalled()
+  })
+
+  describe('触控/移动端焦点守卫与视觉状态', () => {
+    const originalMatchMedia = window.matchMedia
+
+    afterEach(() => {
+      window.matchMedia = originalMatchMedia
+    })
+
+    it('触控设备下：未获真实焦点时 promptFocused 为 0，不虚假显示激活边框', () => {
+      window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+        matches: query.includes('coarse'),
+        media: query,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      }))
+      useChatStore.setState({ focusMode: 'prompt' })
+
+      const { container } = render(<Composer />)
+      const chrome = container.querySelector('[data-prompt-focused]')
+      expect(chrome?.getAttribute('data-prompt-focused')).toBe('0')
+
+      const textarea = screen.getByRole('textbox')
+      fireEvent.focus(textarea)
+      expect(chrome?.getAttribute('data-prompt-focused')).toBe('1')
+
+      fireEvent.blur(textarea)
+      expect(chrome?.getAttribute('data-prompt-focused')).toBe('0')
+    })
+
+    it('触控设备下：focusMode 从 scrollback 切回 prompt 时，不自动弹起软键盘（不调用 focus）', () => {
+      window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+        matches: query.includes('coarse'),
+        media: query,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      }))
+      useChatStore.setState({ focusMode: 'scrollback' })
+
+      render(<Composer />)
+      const textarea = screen.getByRole('textbox')
+      const focusSpy = vi.spyOn(textarea, 'focus')
+
+      useChatStore.setState({ focusMode: 'prompt' })
+      expect(focusSpy).not.toHaveBeenCalled()
+    })
+
+    it('触控设备下：发送消息后自动调用 blur 收起输入法，不强占焦点', async () => {
+      window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+        matches: query.includes('coarse'),
+        media: query,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      }))
+      useChatStore.setState({ historyLoading: false, conn: 'ready' })
+
+      render(<Composer />)
+      const textarea = screen.getByRole('textbox')
+      const blurSpy = vi.spyOn(textarea, 'blur')
+
+      fireEvent.change(textarea, { target: { value: '触控端发送' } })
+      fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter' })
+
+      await waitFor(() => {
+        expect(blurSpy).toHaveBeenCalled()
+      })
+    })
+
+    it('桌面设备下：初次挂载不偷抢焦点，focusMode 切回 prompt 时响应聚焦', async () => {
+      window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+        matches: false,
+        media: query,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      }))
+      useChatStore.setState({ focusMode: 'scrollback' })
+
+      render(<Composer />)
+      const textarea = screen.getByRole('textbox')
+      const focusSpy = vi.spyOn(textarea, 'focus')
+
+      // 桌面端状态实际切回 prompt 时聚焦
+      act(() => {
+        useChatStore.setState({ focusMode: 'prompt' })
+      })
+      await waitFor(() => {
+        expect(focusSpy).toHaveBeenCalled()
+      })
+    })
   })
 })

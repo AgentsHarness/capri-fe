@@ -71,6 +71,7 @@ import { QueueEditModal } from './composer/QueueEditModal'
 import { useQueueNav } from './composer/useQueueNav'
 import { useSlashMenu } from './composer/useSlashMenu'
 import { useAtPicker } from './composer/useAtPicker'
+import { useTouchUi } from '../hooks/useTouchUi'
 
 /** ── Composer frame ───────────────────────────────────────────────────
  * Rounded border box (container border + radius) — no font glyphs, no
@@ -79,6 +80,7 @@ import { useAtPicker } from './composer/useAtPicker'
  * behind them with the base background ("断线").
  */
 export function Composer() {
+  const isTouch = useTouchUi()
   const [text, setText] = useState('')
   const [focused, setFocused] = useState(false)
   // TUI paste chips: stashed multi-line content behind `[Pasted: N lines]`
@@ -102,8 +104,8 @@ export function Composer() {
     setText('')
     setChips([])
     setHistOpen(false)
-    taRef.current?.focus()
-  }, [composerClearNonce])
+    if (!isTouch) taRef.current?.focus()
+  }, [composerClearNonce, isTouch])
   // Mirror the draft length for the global handler (write-only store
   // field — nothing subscribes, so per-keystroke updates cost no render).
   useEffect(() => {
@@ -369,7 +371,7 @@ export function Composer() {
     const st = useChatStore.getState()
     if (st.sessionId && st.historyLoading) {
       pushToast('正在切换会话，请稍候再发送')
-      taRef.current?.focus()
+      if (!isTouch) taRef.current?.focus()
       return
     }
     // 建会话 POST 在飞：不吞内容，发送挂起——收起本轮内容（含图片
@@ -380,7 +382,11 @@ export function Composer() {
       setText('')
       setChips([])
       pendingSendsRef.current.push({ text: expandedText, blocks })
-      taRef.current?.focus()
+      if (isTouch) {
+        taRef.current?.blur()
+      } else {
+        taRef.current?.focus()
+      }
       return
     }
     // 原文发送写法（`\/…` / 行首空白 + `/…`）的前缀是 composer 语法，
@@ -393,7 +399,11 @@ export function Composer() {
     // swallows transport errors into conn: 'error'). History keeps the
     // `\`, so recalling a literal `/…` prompt does not run a command.
     if (useChatStore.getState().conn !== 'error') pushHistory(escapeSlash(expandedText))
-    taRef.current?.focus()
+    if (isTouch) {
+      taRef.current?.blur()
+    } else {
+      taRef.current?.focus()
+    }
   }
 
   /**
@@ -407,7 +417,7 @@ export function Composer() {
     setShellMode(item.shell === true)
     setHistOpen(false)
     setPendingCaret(item.text.length)
-    taRef.current?.focus()
+    if (!isTouch) taRef.current?.focus()
   }
 
   /**
@@ -544,7 +554,7 @@ export function Composer() {
     const st = useChatStore.getState()
     if (st.sessionId && st.historyLoading) {
       pushToast('正在切换会话，请稍候再发送')
-      taRef.current?.focus()
+      if (!isTouch) taRef.current?.focus()
       return
     }
     if (st.conn === 'busy') {
@@ -596,7 +606,11 @@ export function Composer() {
     // Record history only when the host accepted the command — shell
     // submissions are tagged so recalling them re-enters shell mode.
     if (useChatStore.getState().conn !== 'error') pushHistory(cmd, true)
-    taRef.current?.focus()
+    if (isTouch) {
+      taRef.current?.blur()
+    } else {
+      taRef.current?.focus()
+    }
   }
 
   /**
@@ -627,7 +641,7 @@ export function Composer() {
     const st = useChatStore.getState()
     if (st.sessionId && st.historyLoading) {
       pushToast('正在切换会话，请稍候再发送')
-      taRef.current?.focus()
+      if (!isTouch) taRef.current?.focus()
       return
     }
     if (st.conn === 'busy' && st.sessionId) {
@@ -643,7 +657,11 @@ export function Composer() {
       setText('')
       setChips([])
       void useChatStore.getState().send(expandedText, blocks)
-      taRef.current?.focus()
+      if (isTouch) {
+        taRef.current?.blur()
+      } else {
+        taRef.current?.focus()
+      }
       return
     }
     await submitCurrent()
@@ -725,7 +743,7 @@ export function Composer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rewindOpen])
 
-  const promptFocused = focused || focusMode === 'prompt'
+  const promptFocused = isTouch ? focused : focused || focusMode === 'prompt'
 
   // ── TUI turn status line (turn_status.rs) ──
   // `⠧ Thinking…  1m20s ⇣12k [stop]` while busy; hidden when idle —
@@ -887,12 +905,16 @@ export function Composer() {
     setPendingCaret(null)
   }, [pendingCaret])
 
-  // Keep focus in sync with store focusMode (Tab toggles) — but skip the
-  // initial mount so a page refresh doesn't steal focus into the composer.
-  const focusInitRef = useRef(true)
+  // Keep focus in sync with store focusMode (Tab toggles on desktop) — but skip
+  // initial mount & StrictMode remounts so page enter/refresh never steals focus.
+  // Touch devices (mobile) never auto-focus from store changes (prevents soft keyboard popup).
+  const prevFocusModeRef = useRef(focusMode)
   useEffect(() => {
-    if (focusInitRef.current) {
-      focusInitRef.current = false
+    const prev = prevFocusModeRef.current
+    prevFocusModeRef.current = focusMode
+    if (prev === focusMode) return
+    if (isTouch) {
+      if (focusMode !== 'prompt') taRef.current?.blur()
       return
     }
     if (focusMode === 'prompt') {
@@ -900,7 +922,7 @@ export function Composer() {
     } else {
       taRef.current?.blur()
     }
-  }, [focusMode])
+  }, [focusMode, isTouch])
 
   /** Inline a chip's stashed content at its label range (TUI expand_element).
    *  Image chips never carry a label in the buffer — they are always
@@ -1403,8 +1425,8 @@ export function Composer() {
           style={{ borderColor }}
           data-prompt-focused={promptFocused ? '1' : '0'}
           onMouseDown={(e) => {
-            // Clicking chrome focuses the textarea (don't steal from buttons).
-            if ((e.target as HTMLElement).closest('button, a')) return
+            // Clicking chrome focuses the textarea on desktop (don't steal from buttons; skip on touch devices).
+            if (isTouch || (e.target as HTMLElement).closest('button, a')) return
             taRef.current?.focus()
           }}
         >
