@@ -62,7 +62,7 @@ describe('ApprovalStrip — 渲染', () => {
     expect(container.firstChild).toBeNull()
   })
 
-  it('bash 请求：waiting on you + method + 命令 + 选项行', () => {
+  it('bash 请求：waiting on you + 命令 + 选项行', () => {
     setPending([
       req({
         params: {
@@ -73,7 +73,6 @@ describe('ApprovalStrip — 渲染', () => {
     ])
     const { container } = render(<ApprovalStrip />)
     expect(container.textContent).toContain('waiting on you')
-    expect(container.textContent).toContain('bash')
     expect(container.textContent).toContain('ls -la')
     // remember_tool_approvals=false → always 行被过滤
     expect(screen.getByRole('button', { name: /允许一次/ })).not.toBeNull()
