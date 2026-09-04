@@ -154,10 +154,11 @@ describe('QuestionModal 键盘选择 + 提交', () => {
     )
   })
 
-  it('最后一题按数字键 → 提交该项', async () => {
+  it('点击选项直接选中该项并提交', async () => {
     renderCard(twoOptions)
     await waitFor(() => expect(screen.getByText('Q?')).not.toBeNull())
-    fireEvent.keyDown(window, { key: '2' })
+    fireEvent.click(screen.getByText('B'))
+    fireEvent.click(screen.getByRole('button', { name: '提交' }))
     await waitFor(() =>
       expect(respondXaiMock).toHaveBeenCalledWith('r1', {
         outcome: 'accepted',
@@ -177,7 +178,7 @@ describe('QuestionModal 键盘选择 + 提交', () => {
     fireEvent.keyDown(window, { key: 'Enter' })
     expect(respondXaiMock).not.toHaveBeenCalled()
     // 前进到第二题，聚焦第 2 项后 Enter → 提交两题
-    fireEvent.keyDown(window, { key: 'j' })
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
     fireEvent.keyDown(window, { key: 'Enter' })
     await waitFor(() =>
       expect(respondXaiMock).toHaveBeenCalledWith('r1', {
@@ -233,7 +234,7 @@ describe('QuestionModal 键盘选择 + 提交', () => {
     expect(screen.getByText('Preview content 1')).not.toBeNull()
 
     // 移动游标至 Opt2（无 preview）：预览框不消失，展示占位文案
-    fireEvent.keyDown(window, { key: 'j' })
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
     await waitFor(() => expect(screen.getByText('该选项无详细说明')).not.toBeNull())
     expect(screen.getByText(/选项说明/)).not.toBeNull()
   })

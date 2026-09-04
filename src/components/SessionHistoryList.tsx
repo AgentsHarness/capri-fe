@@ -1078,7 +1078,6 @@ export function SessionHistoryList() {
                   ✕
                 </span>
                 <span className="text-[13px] font-bold text-gn-fg">删除会话</span>
-                <span className="ml-auto hidden items-center gap-1 text-[11px] text-gn-muted sm:inline-flex"><span className="gn-kbd">Esc</span> 关闭</span>
               </header>
               <div className="px-4 py-3 text-[12.5px] leading-relaxed text-gn-fg2">
                 确定删除会话

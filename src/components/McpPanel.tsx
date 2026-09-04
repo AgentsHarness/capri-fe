@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { X } from 'lucide-react'
 import { useChatStore, type McpServerInfo } from '../store/chat'
 import { transport, type McpListServer, type McpToolInfo } from '../api/client'
 
@@ -370,9 +371,11 @@ export function McpPanel({
           <button
             type="button"
             onClick={onClose}
-            className="ml-auto rounded px-2 py-0.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+            className="ml-auto rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+            aria-label="关闭"
+            title="关闭 (Esc)"
           >
-            esc
+            <X size={14} aria-hidden />
           </button>
         </header>
 

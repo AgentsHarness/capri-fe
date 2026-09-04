@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { X } from 'lucide-react'
 import { useChatStore } from '../store/chat'
 import { Glyphs } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
@@ -287,7 +288,15 @@ export function DiffReviewModal() {
               通知态 · 无法回执
             </span>
           )}
-          <span className="ml-auto hidden items-center gap-1 text-[11px] text-gn-muted sm:inline-flex"><span className="gn-kbd">Esc</span> 取消</span>
+          <button
+            type="button"
+            onClick={close}
+            className="ml-auto rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+            aria-label="关闭弹窗"
+            title="关闭 (Esc)"
+          >
+            <X size={14} aria-hidden />
+          </button>
         </header>
 
         {files.length === 0 ? (
