@@ -1,13 +1,13 @@
 import { useState } from 'react'
 import { GripVertical } from 'lucide-react'
 import { usePromptQueue, imageMarkerLabels, queueRowText, queuedImages } from '../../store/promptQueue'
-import { COMPOSER_BODY_PAD_LEFT_PX, ICON_COL_CLASS } from '../../theme/layout'
+import { COMPOSER_BODY_PAD_LEFT_PX } from '../../theme/layout'
 import { ImageLightbox, type InlineImage } from '../scrollback/InlineImages'
 import type { QueuedPrompt } from '../../store/promptQueue'
 import type { useQueueNav } from './useQueueNav'
 
 type QueueStripProps = {
-  /** useQueueNav() 的返回（选择/焦点/拖拽状态与抓手事件）。 */
+  /** useQueueNav() 的返回（选择/焦点/拖拽状态与整行拖拽事件）。 */
   nav: ReturnType<typeof useQueueNav>
   /** 行内「立即发送」/ 双 Enter 队首发送（见 Composer.sendQueuedItem）。 */
   sendQueuedItem: (id?: string) => void
@@ -21,7 +21,8 @@ type QueueStripProps = {
 
 /**
  * Inline queue strip：忙时 Enter 只入队，消息正文在 composer 上方。
- * 每行常驻 立即发送 / 编辑 / 删除；左侧抓手拖拽排序。字号与 status 行一致。
+ * 每行常驻 立即发送 / 编辑 / 删除；除按钮外整行可拖拽排序（拖动阈值
+ * 以下视作点击，不误杀选中）。字号与 status 行一致。
  * 展开开关（queuePanelOpen）与选择/焦点/拖拽状态归 useQueueNav。
  * 「编辑」只置 store 的 editIndex —— 正文在 QueueEditModal 弹窗里改
  * （行内只有一行截断宽度，长提示词没法盲改）。
@@ -60,45 +61,78 @@ export function QueueStrip({
       className="select-none pb-2 pr-0.5 font-ui text-[13.5px] leading-[1.4]"
       style={{ paddingLeft: COMPOSER_BODY_PAD_LEFT_PX }}
     >
-      <div className="gn-no-scrollbar flex max-h-28 flex-col gap-0.5 overflow-y-auto">
+      {/* 行距固定 gap-1：条目变多时滚动，不压缩行间距；启用 touch-pan-y 优化触屏手势 */}
+      <div className="gn-no-scrollbar flex max-h-40 flex-col gap-1 overflow-y-auto touch-pan-y overscroll-contain">
         {queue.map((q: QueuedPrompt, i: number) => {
           const editing = queueEditIndex === i
           const selected = queueFocus && queueSel === i
           const actionClass =
-            'shrink-0 rounded px-1.5 py-[2px] text-gn-gray hover:bg-gn-bg-highlight hover:text-gn-fg'
+            'shrink-0 rounded px-1.5 py-1 sm:py-[2px] min-h-6 sm:min-h-0 text-gn-gray hover:bg-gn-bg-highlight hover:text-gn-fg'
           const labels = imageMarkerLabels(q.blocks)
           const images = queuedImages(q.blocks)
           const rowText = queueRowText(q)
+
+          // 拖拽状态与结果落点计算
+          const dragging = queueDrag != null && queueDrag.from === i
+          const targetTo = queueDrag != null ? (queueDrag.to ?? queueDrag.over) : 0
+          const targetSlot =
+            queueDrag != null
+              ? (queueDrag.slot ?? (queueDrag.over > queueDrag.from ? queueDrag.over + 1 : queueDrag.over))
+              : 0
+          const isNoOp = queueDrag != null && queueDrag.from === targetTo
+
+          // 落点指示线：在目标槽位处画平直青色线（slot = i 顶部，或队尾底部）
+          const showDropAbove = !isNoOp && queueDrag != null && targetSlot === i
+          const showDropBelow =
+            !isNoOp && queueDrag != null && targetSlot === queue.length && i === queue.length - 1
+          const showIndicator = showDropAbove || showDropBelow
+
           return (
             <div
               key={q.id}
               data-queue-idx={i}
-              onMouseEnter={() => setQueueSel(i)}
+              onMouseEnter={() => {
+                if (!queueDrag) setQueueSel(i)
+              }}
               onMouseDown={() => {
                 setQueueSel(i)
                 setQueueFocus(true)
               }}
-              className={`flex min-h-5 items-center gap-1.5 rounded py-0.5 ${
- selected || editing ? 'bg-gn-bg-highlight/70' : ''
-              } ${queueDrag?.from === i ? 'opacity-50' : ''} ${
-                queueDrag && queueDrag.over === i && queueDrag.from !== i
-                  ? 'border-t border-gn-cyan'
-                  : ''
-              }`}
+              onPointerDown={(e) => {
+                // 按钮上按住不触发整行拖拽（按钮照常点）。
+                if ((e.target as HTMLElement).closest('button')) return
+                onQueueGripPointerDown(i, e)
+              }}
+              onPointerMove={onQueueGripPointerMove}
+              onPointerUp={onQueueGripPointerUp}
+              onPointerCancel={(e) => {
+                // 触控拖拽中由全局 touch 事件闭环处理，不在此直接取消拖拽
+                if (e.pointerType !== 'touch' || !queueDrag) {
+                  onQueueGripPointerUp()
+                }
+              }}
+              style={{ WebkitTouchCallout: 'none' }}
+              className={`relative flex min-h-5 shrink-0 cursor-grab items-center gap-1.5 rounded py-0.5 ${
+                selected || editing ? 'bg-gn-bg-highlight/70' : ''
+              } ${dragging ? 'cursor-grabbing opacity-40' : ''}`}
             >
-              <button
-                type="button"
-                disabled={editing}
-                onPointerDown={(e) => onQueueGripPointerDown(i, e)}
-                onPointerMove={onQueueGripPointerMove}
-                onPointerUp={onQueueGripPointerUp}
-                onPointerCancel={onQueueGripPointerUp}
-                className={`${ICON_COL_CLASS} cursor-grab text-gn-gray touch-none hover:text-gn-fg active:cursor-grabbing disabled:cursor-default disabled:opacity-40`}
-                aria-label="拖拽排序"
+              {showIndicator ? (
+                <span
+                  data-drop-indicator
+                  className={`pointer-events-none absolute inset-x-0 z-10 h-0.5 bg-gn-cyan ${
+                    showDropBelow ? '-bottom-[2px]' : '-top-[2px]'
+                  }`}
+                  aria-hidden
+                />
+              ) : null}
+              <span
+                data-queue-grip
+                className="inline-flex h-6 w-5 sm:h-[1.2em] sm:w-[1.25em] shrink-0 items-center justify-center touch-none text-gn-gray hover:text-gn-fg active:text-gn-cyan cursor-grab active:cursor-grabbing select-none"
                 title="拖拽排序"
+                aria-hidden
               >
-                <GripVertical size={13} strokeWidth={2.25} aria-hidden />
-              </button>
+                <GripVertical size={17} className="h-[17px] w-[17px] sm:h-[13px] sm:w-[13px]" strokeWidth={2.25} />
+              </span>
               <div
                 className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden text-gn-gray"
                 title={q.degraded ? `发送失败：${q.errorText ?? ''}` : rowText}
@@ -145,8 +179,8 @@ export function QueueStrip({
                     e.stopPropagation()
                     onToggleMode?.()
                   }}
-                  className={`shrink-0 rounded px-1.5 py-[2px] transition-colors select-none ${
- headSteer
+                  className={`shrink-0 rounded px-1.5 py-1 sm:py-[2px] min-h-6 sm:min-h-0 transition-colors select-none ${
+                    headSteer
                       ? 'bg-gn-bg-highlight text-gn-cyan'
                       : 'text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg'
                   } disabled:cursor-not-allowed disabled:opacity-50`}
@@ -162,10 +196,11 @@ export function QueueStrip({
               <button
                 type="button"
                 onClick={() => sendQueuedItem(q.id)}
-                className="shrink-0 rounded px-1.5 py-[2px] text-gn-cyan hover:bg-gn-bg-highlight"
+                className="shrink-0 rounded px-1.5 py-1 sm:py-[2px] min-h-6 sm:min-h-0 text-gn-cyan hover:bg-gn-bg-highlight"
                 title="立即发送这条"
               >
-                立即发送
+                <span className="hidden sm:inline">立即发送</span>
+                <span className="sm:hidden">发送</span>
               </button>
               <button
                 type="button"
@@ -182,7 +217,7 @@ export function QueueStrip({
               <button
                 type="button"
                 onClick={() => usePromptQueue.getState().removeAt(q.id)}
-                className="shrink-0 rounded px-1.5 py-[2px] text-gn-gray hover:bg-gn-bg-highlight hover:text-gn-red"
+                className="shrink-0 rounded px-1.5 py-1 sm:py-[2px] min-h-6 sm:min-h-0 text-gn-gray hover:bg-gn-bg-highlight hover:text-gn-red active:text-gn-red"
                 aria-label="删除这条排队消息"
                 title="删除"
               >
