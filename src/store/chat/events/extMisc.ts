@@ -66,6 +66,13 @@ export function handleExtMiscEvent(
               ...(!hasExplicitEffort && snap.reasoningEffort && !modelChanged
                 ? { reasoningEffort: get().reasoningEffort || snap.reasoningEffort }
                 : {}),
+              // 目录刷新（config 热重载）不带显式档位时，会话当前档位
+              // 一律保留：snap.reasoningEffort 此时只是新目录的静态默认
+              // 档（extractEffortFromState 的回退路径），不能覆盖用户
+              // 在会话里选的档位。模型变了才允许落到新模型默认档。
+              ...(!hasExplicitEffort && !modelChanged && get().reasoningEffort
+                ? { reasoningEffort: get().reasoningEffort }
+                : {}),
             })
           }
           break

@@ -302,10 +302,9 @@ export function QuickAddModelsModal({
           ...(item.supportsReasoning ? { supports_reasoning_effort: true } : {}),
           ...(item.selectedEfforts && item.selectedEfforts.length > 0
             ? {
-                reasoning_efforts: item.selectedEfforts.map((v) => ({
-                  value: v,
-                  label: v,
-                })),
+                // 只写 value 不写 label：label 一旦与 value 错位，菜单 chip
+                // 会显示错文字且 agent 原样上报；value 本身已是标准档位词。
+                reasoning_efforts: item.selectedEfforts.map((v) => ({ value: v })),
               }
             : {}),
         }
