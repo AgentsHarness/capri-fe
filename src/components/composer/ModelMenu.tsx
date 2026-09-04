@@ -8,11 +8,24 @@ type ModelMenuProps = {
   menu: ReturnType<typeof useModelMenu>
 }
 
+const EFFORT_TOKENS = ['xhigh', 'minimal', 'medium', 'high', 'max', 'low', 'none'] as const
+
+function normalizeToken(s: string): string {
+  return s.trim().toLowerCase().replace(/[_\s-]/g, '')
+}
+
 /**
- * 过滤/规范化 effort 标签字符：子字符串匹配 low / medium / high / xhigh / max / minimal，
+ * 过滤/规范化 effort 标签字符：value/id 本身已是标准档位词时直接采用
+ * （防止上游错位 label 劫持显示）；否则在 label/value/id 里做子串匹配，
  * 命中即收敛为对应简写档位，避免 "Extra High Effort" 等长字符撑宽弹窗。
  */
 export function formatEffortLabel(e: { id?: string; label?: string; value?: string }): string {
+  for (const k of ['value', 'id'] as const) {
+    const v = e[k]
+    if (v && EFFORT_TOKENS.includes(normalizeToken(v) as (typeof EFFORT_TOKENS)[number])) {
+      return normalizeToken(v)
+    }
+  }
   const target = `${e.label || ''} ${e.value || ''} ${e.id || ''}`.toLowerCase()
   if (
     target.includes('xhigh') ||

@@ -307,9 +307,7 @@ describe('QuickAddModelsModal component', () => {
       expect(transport.upsertCustomModel).toHaveBeenCalledTimes(1)
       const callArg = vi.mocked(transport.upsertCustomModel).mock.calls[0][0]
       expect(callArg.reasoning_efforts).toEqual(
-        ['none', 'low', 'medium', 'high', 'max'].map((v) =>
-          expect.objectContaining({ value: v }),
-        ),
+        ['none', 'low', 'medium', 'high', 'max'].map((v) => ({ value: v })),
       )
     })
 

@@ -116,6 +116,16 @@ describe('ModelMenu', () => {
     expect(formatEffortLabel({ id: 'none', label: 'none', value: 'none' })).toBe('none')
   })
 
+  it('formatEffortLabel 在 value/id 是标准档位词时优先于错位 label', () => {
+    // config.toml 曾写出 label=medium/value=high 的错位条目：显示必须跟随 value
+    expect(formatEffortLabel({ id: 'high', label: 'medium', value: 'high' })).toBe('high')
+    expect(formatEffortLabel({ id: 'max', label: 'high', value: 'max' })).toBe('max')
+    // value 归一化（去连字符）后是标准词时同样优先（x-high → xhigh，id=high 不是标准匹配目标）
+    expect(formatEffortLabel({ id: 'high', label: 'X-High', value: 'x-high' })).toBe('xhigh')
+    // value/id 都不是标准词时才回落到 label 子串匹配
+    expect(formatEffortLabel({ id: 'tier1', label: 'High Effort', value: 'tier1' })).toBe('high')
+  })
+
   it('efforts 严格按语义权重从小到大排序展示', () => {
     const mixedModel: ModelOption = {
       modelId: 'test-model',
