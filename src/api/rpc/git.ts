@@ -1,22 +1,29 @@
 import type { TransportCore } from '../transport'
 import { findArrayField, unwrapExtResult, xaiCall } from './core'
-import type { GitBranch, GitBranchesData } from '../types'
+import type { GitBranch, GitBranchesData, GitLogEntry, GitStashItem } from '../types'
+
+async function postGitEndpoint<T>(core: TransportCore, path: string, body: Record<string, unknown>): Promise<T> {
+  const res = await core.fetch(core.url(path), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const data = (await res.json()) as T & { ok?: boolean; error?: string }
+  if (!res.ok || data.ok === false) {
+    throw new Error(data.error || `${path} failed (${res.status})`)
+  }
+  return data
+}
 
 export const gitRpc = {
   async gitInfo(this: TransportCore, 
     sessionId: string,
     cwd: string,
   ): Promise<{ branch?: string; isWorktree?: boolean; mainRepo?: string }> {
-    const res = await this.fetch(this.url('/api/git-info'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, cwd }),
+    return postGitEndpoint<{ branch?: string; isWorktree?: boolean; mainRepo?: string }>(this, '/api/git-info', {
+      sessionId,
+      cwd,
     })
-    const data = await res.json()
-    if (!res.ok || data.ok === false) {
-      throw new Error(data.error || `git-info failed (${res.status})`)
-    }
-    return data
   },
 
   async gitStatus(this: TransportCore, 
@@ -32,10 +39,75 @@ export const gitRpc = {
     from: string
     to: string
     paths?: string[]
+    includePatch?: boolean
   }): Promise<import('../types').GitDiffsData> {
     return unwrapExtResult<import('../types').GitDiffsData>(
       await xaiCall(this, '/api/git/diffs', opts),
     )
+  },
+
+  async gitPush(this: TransportCore, opts: {
+    cwd?: string
+    remote?: string
+    branch?: string
+    force?: boolean
+    setUpstream?: boolean
+  } = {}): Promise<{ ok: boolean; output?: string }> {
+    return postGitEndpoint<{ ok: boolean; output?: string }>(this, '/api/git/push', opts)
+  },
+
+  async gitPull(this: TransportCore, opts: {
+    cwd?: string
+    remote?: string
+    branch?: string
+    rebase?: boolean
+  } = {}): Promise<{ ok: boolean; output?: string }> {
+    return postGitEndpoint<{ ok: boolean; output?: string }>(this, '/api/git/pull', opts)
+  },
+
+  async gitFetch(this: TransportCore, opts: {
+    cwd?: string
+    remote?: string
+    prune?: boolean
+  } = {}): Promise<{ ok: boolean; output?: string }> {
+    return postGitEndpoint<{ ok: boolean; output?: string }>(this, '/api/git/fetch', opts)
+  },
+
+  async gitLog(this: TransportCore, opts: {
+    cwd?: string
+    maxCount?: number
+    skip?: number
+    branch?: string
+  } = {}): Promise<{ ok: boolean; commits: GitLogEntry[] }> {
+    return postGitEndpoint<{ ok: boolean; commits: GitLogEntry[] }>(this, '/api/git/log', opts)
+  },
+
+  async gitStashList(this: TransportCore, opts: { cwd?: string } = {}): Promise<{ ok: boolean; stashes: GitStashItem[] }> {
+    return postGitEndpoint<{ ok: boolean; stashes: GitStashItem[] }>(this, '/api/git/stash/list', opts)
+  },
+
+  async gitStashPop(this: TransportCore, opts: { cwd?: string; index?: string } = {}): Promise<{ ok: boolean; output?: string }> {
+    return postGitEndpoint<{ ok: boolean; output?: string }>(this, '/api/git/stash/pop', opts)
+  },
+
+  async gitStashDrop(this: TransportCore, opts: { cwd?: string; index?: string } = {}): Promise<{ ok: boolean; output?: string }> {
+    return postGitEndpoint<{ ok: boolean; output?: string }>(this, '/api/git/stash/drop', opts)
+  },
+
+  async gitBranchCreate(this: TransportCore, opts: {
+    cwd?: string
+    branch: string
+    checkout?: boolean
+  }): Promise<{ ok: boolean; output?: string }> {
+    return postGitEndpoint<{ ok: boolean; output?: string }>(this, '/api/git/branch/create', opts)
+  },
+
+  async gitBranchDelete(this: TransportCore, opts: {
+    cwd?: string
+    branch: string
+    force?: boolean
+  }): Promise<{ ok: boolean; output?: string }> {
+    return postGitEndpoint<{ ok: boolean; output?: string }>(this, '/api/git/branch/delete', opts)
   },
 
   async gitStage(this: TransportCore, opts: { cwd?: string; paths?: string[] }): Promise<unknown> {

@@ -171,6 +171,27 @@ export type GitBranchesData = {
   repoRoot?: string
 }
 
+/** Git commit log entry (/api/git/log). */
+export type GitLogEntry = {
+  hash: string
+  shortHash: string
+  author: string
+  email: string
+  timestamp: number
+  date: string
+  message: string
+  refs?: string
+}
+
+/** Git stash item (/api/git/stash/list). */
+export type GitStashItem = {
+  index: number
+  ref: string
+  hash: string
+  date: string
+  message: string
+}
+
 /**
  * One agent skill row from x.ai/skills/list (camelCase; the agent
  * registry carries a live `enabled` state — the host-side
