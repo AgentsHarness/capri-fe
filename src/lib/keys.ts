@@ -40,6 +40,8 @@ export const KEY = {
   confirmBeforeRewind: 'capri-fe.confirmBeforeRewind',
   /** 审批弹窗默认选中的权限项。 */
   defaultSelectedPermission: 'capri-fe.defaultSelectedPermission',
+  /** Git 面板历史 tab 的列宽（px，{author,date,hash}）。 */
+  gitLogColWidths: 'capri-fe.gitLogColWidths',
 
   // ── 会话/权限状态 ────────────────────────────────────────────
   /** 全局权限模式（yolo/auto/permissionMode/confirmedAsk）。 */

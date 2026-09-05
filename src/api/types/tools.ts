@@ -180,7 +180,23 @@ export type GitLogEntry = {
   timestamp: number
   date: string
   message: string
+  /** 多行提交说明 body（%b），空则缺省。 */
+  body?: string
+  /** Direct parent commit hashes, in git's parent order. */
+  parents?: string[]
   refs?: string
+}
+
+/**
+ * 仓库进行中状态（/api/git/state，host 直连 git，只读）。
+ * FE git 面板用它渲染 merge/rebase/cherry-pick 进行中与冲突文件横幅。
+ */
+export type GitRepoStateData = {
+  mergeInProgress: boolean
+  rebaseInProgress: boolean
+  cherryPickInProgress: boolean
+  conflicts: string[]
+  conflictCount: number
 }
 
 /** Git stash item (/api/git/stash/list). */
