@@ -170,10 +170,12 @@ describe('WorkflowPanel', () => {
     expect(screen.getByText('把特性上线')).not.toBeNull()
     expect(screen.getByText('elapsed · 5s')).not.toBeNull()
     expect(screen.getByText('40%')).not.toBeNull()
-    // phase rail：当前 phase 高亮 ▶
+    // phase rail：当前 phase 高亮（Play 图标标记）
     expect(screen.getByText('plan')).not.toBeNull()
     expect(screen.getByText('build')).not.toBeNull()
-    expect(dialogText()).toContain('▶')
+    expect(
+      screen.getByRole('dialog', { name: 'workflows' }).querySelector('svg.lucide-play'),
+    ).not.toBeNull()
     // agent roster + tokens
     expect(screen.getByText('主agent')).not.toBeNull()
     expect(screen.getByText('1.5K')).not.toBeNull()

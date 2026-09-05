@@ -1,4 +1,5 @@
 import type { TodoItem } from '../store/chat'
+import { Play, Square } from 'lucide-react'
 
 /**
  * Inline SVG check mark (glyphPaths checkMark path) — pure SVG, no font
@@ -39,6 +40,7 @@ function BallotXIcon() {
 /**
  * Status mark for one todo item (TUI todo pane glyphs). Shared so the
  * scrollback plan block renders the same marks as the badge panel.
+ * Lucide 图标用 1em 盒子对齐上面的 SVG mark，随字号缩放。
  */
 export function TodoMark({ status }: { status: TodoItem['status'] }) {
   switch (status) {
@@ -49,7 +51,11 @@ export function TodoMark({ status }: { status: TodoItem['status'] }) {
         </span>
       )
     case 'in_progress':
-      return <span className="text-gn-yellow">▶</span>
+      return (
+        <span className="text-gn-yellow">
+          <Play size={12} className="h-[1em] w-[1em] fill-current" aria-hidden />
+        </span>
+      )
     case 'cancelled':
       return (
         <span className="text-gn-muted">
@@ -57,6 +63,10 @@ export function TodoMark({ status }: { status: TodoItem['status'] }) {
         </span>
       )
     default:
-      return <span className="text-gn-muted">□</span>
+      return (
+        <span className="text-gn-muted">
+          <Square size={12} className="h-[1em] w-[1em]" aria-hidden />
+        </span>
+      )
   }
 }

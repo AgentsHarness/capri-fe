@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronRight, Circle, CircleCheck, CircleOff, Pencil, Pin, Plus, Trash2 } from 'lucide-react'
+import { ChevronRight, Circle, CircleCheck, CircleOff, Pencil, Pin, Plus, Trash2, X } from 'lucide-react'
 import { useChatStore } from '../store/chat'
 import type { SessionInfo, WorkspaceSummary } from '../api/types'
 import {
@@ -1074,9 +1074,7 @@ export function SessionHistoryList() {
               aria-label="删除会话"
             >
               <header className="gn-modal-header">
-                <span className="text-gn-red" aria-hidden>
-                  ✕
-                </span>
+                <X size={12} className="shrink-0 text-gn-red" aria-hidden />
                 <span className="text-[13px] font-bold text-gn-fg">删除会话</span>
               </header>
               <div className="px-4 py-3 text-[12.5px] leading-relaxed text-gn-fg2">

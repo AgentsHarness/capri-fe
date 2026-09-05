@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { X } from 'lucide-react'
+import { Check, Copy, X } from 'lucide-react'
 import { useChatStore } from '../store/chat'
 import { transport } from '../api/client'
 import type { SessionInfoDetail, SessionInfoExt } from '../api/types'
@@ -164,10 +164,15 @@ export function SessionInfoModal() {
                 <button
                   type="button"
                   onClick={() => void copyId()}
-                  className="shrink-0 rounded px-1.5 py-px text-[10px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                  className="shrink-0 rounded p-1 text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
                   title="复制 session id"
+                  aria-label="复制 session id"
                 >
-                  {copied ? '✓' : 'copy'}
+                  {copied ? (
+                    <Check size={11} className="text-gn-green" aria-hidden />
+                  ) : (
+                    <Copy size={11} aria-hidden />
+                  )}
                 </button>
               </span>
             ),

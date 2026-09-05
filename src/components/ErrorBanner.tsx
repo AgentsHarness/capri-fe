@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { X } from 'lucide-react'
 import { useChatStore } from '../store/chat'
 import type { LayerErr } from '../store/chat/types'
 
@@ -82,11 +83,11 @@ export function ErrorBanner() {
       <button
         type="button"
         onClick={dismissNotice}
-        className="shrink-0 rounded px-1.5 leading-[18px] opacity-70 hover:bg-gn-bg-highlight hover:opacity-100"
+        className="shrink-0 rounded p-1 opacity-70 hover:bg-gn-bg-highlight hover:opacity-100"
         title="关闭提示"
         aria-label="关闭提示"
       >
-        ✕
+        <X size={12} aria-hidden />
       </button>
     </div>
   )

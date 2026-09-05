@@ -7,7 +7,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from 'react'
-import { X } from 'lucide-react'
+import { ChevronRight, X } from 'lucide-react'
 import { useChatStore } from '../store/chat'
 import { transport, type SettingsPatch, type SettingsPayload } from '../api/client'
 import {
@@ -369,9 +369,7 @@ export function SettingsModal() {
       >
         <header className="gn-modal-header">
           <span className="text-[13px] font-bold text-gn-fg">settings</span>
-          <span className="text-gn-gutter" aria-hidden>
-            ›
-          </span>
+          <ChevronRight size={12} className="shrink-0 text-gn-gutter" aria-hidden />
           <span className="truncate text-[12px] text-gn-fg2">{current.label}</span>
           <span className="ml-auto hidden font-mono text-[10.5px] text-gn-gutter sm:inline">
             v{__APP_VERSION__}

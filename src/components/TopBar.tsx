@@ -157,8 +157,9 @@ export function WorkspaceBar({
         inert={fadeHidden || undefined}
       >
         {/* Git head (x.ai/git_head_changed) — TUI status-bar branch.
-            Detached HEAD renders as "⎇ detached" (TUI render.rs: empty
-            branch → "{icon} detached"); worktrees get the `wt` badge. */}
+            Detached HEAD renders as a branch icon + "detached" (TUI
+            render.rs: empty branch → "{icon} detached"); worktrees get
+            the `wt` badge. */}
         {gitInfo?.branch ? (
           <span
             className="flex min-w-0 max-w-[18vw] items-center gap-1 truncate font-mono text-[13px] leading-none text-gn-cyan sm:max-w-[24vw]"
@@ -168,9 +169,7 @@ export function WorkspaceBar({
                 : gitInfo.branch
             }
           >
-            <span className="shrink-0 text-gn-cyan" aria-hidden>
-              ⎇
-            </span>
+            <GitBranch size={12} className="shrink-0" aria-hidden />
             <span className="truncate">
               {gitInfo.branch === '(detached)' ? 'detached' : gitInfo.branch}
             </span>

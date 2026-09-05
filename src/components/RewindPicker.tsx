@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { X } from 'lucide-react'
+import { Circle, X } from 'lucide-react'
 import { loadBool, saveBool } from '../lib/storage'
 import { useChatStore } from '../store/chat'
 import { pushToast } from '../store/toast'
@@ -608,8 +608,8 @@ function RadioRow({
             : 'border-transparent text-gn-fg2 hover:bg-gn-bg-highlight/30 hover:text-gn-fg'
       } ${disabled ? 'cursor-not-allowed opacity-40 hover:bg-transparent hover:border-transparent hover:text-gn-fg2' : ''}`}
     >
-      <span className={`mt-0.5 shrink-0 ${isChecked ? 'text-gn-cyan' : 'text-gn-muted'}`} aria-hidden>
-        {isChecked ? '●' : '○'}
+      <span className={`mt-0.5 flex shrink-0 ${isChecked ? 'text-gn-cyan' : 'text-gn-muted'}`} aria-hidden>
+        <Circle size={11} className={isChecked ? 'fill-current' : ''} />
       </span>
       <div className="min-w-0 flex-1">
         <div className="leading-snug">{label}</div>
