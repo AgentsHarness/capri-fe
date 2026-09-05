@@ -17,6 +17,8 @@ beforeEach(() => {
   useChatStore.setState({
     contextOpen: true,
     closeContext: vi.fn(),
+    sessionInfoOpen: false,
+    sessionUsageOpen: false,
   })
   extMock.mockReset()
 })
@@ -144,13 +146,24 @@ describe('ContextModal', () => {
     expect(useChatStore.getState().closeContext).toHaveBeenCalledTimes(2)
   })
 
-  it('header 切换按钮 → closeContext + 打开 session info 弹窗', async () => {
+  it('header tab → 打开 session info 弹窗并关掉自己', async () => {
     extMock.mockResolvedValue({})
     render(<ContextModal />)
     await waitFor(() => expect(extMock).toHaveBeenCalled())
-    fireEvent.click(screen.getByRole('button', { name: 'session info →' }))
-    expect(useChatStore.getState().closeContext).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('tab', { name: 'Session info' }))
     expect(useChatStore.getState().sessionInfoOpen).toBe(true)
+    expect(useChatStore.getState().contextOpen).toBe(false)
+    expect(useChatStore.getState().sessionUsageOpen).toBe(false)
+  })
+
+  it('header tab → 打开 session usage 弹窗并关掉自己', async () => {
+    extMock.mockResolvedValue({})
+    render(<ContextModal />)
+    await waitFor(() => expect(extMock).toHaveBeenCalled())
+    fireEvent.click(screen.getByRole('tab', { name: 'Session usage' }))
+    expect(useChatStore.getState().sessionUsageOpen).toBe(true)
+    expect(useChatStore.getState().contextOpen).toBe(false)
+    expect(useChatStore.getState().sessionInfoOpen).toBe(false)
   })
 
   it('关闭后旧请求结果不落地（seq 守卫）', async () => {

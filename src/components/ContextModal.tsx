@@ -5,6 +5,7 @@ import { transport } from '../api/client'
 import type { SessionInfoExt } from '../api/types'
 import { fmtTok, fmtTokBig } from '../format'
 import { contextUrgencyColor } from '../theme/contextColor'
+import { UsageInfoTabs } from './UsageInfoTabs'
 
 /**
  * /context modal — web counterpart of the TUI `/context` command
@@ -24,12 +25,6 @@ import { contextUrgencyColor } from '../theme/contextColor'
 export function ContextModal() {
   const open = useChatStore((s) => s.contextOpen)
   const close = useChatStore((s) => s.closeContext)
-  const openSessionInfo = useChatStore((s) => s.openSessionInfo)
-  /** 切换到 Session info 弹窗：关掉自己、打开对方（同一事件里原子切换）。 */
-  const switchToSessionInfo = () => {
-    close()
-    openSessionInfo()
-  }
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>()
   const [data, setData] = useState<SessionInfoExt>()
@@ -209,22 +204,15 @@ export function ContextModal() {
           <span className="font-mono text-[13px] font-bold text-gn-fg">/context</span>
           <button
             type="button"
-            onClick={switchToSessionInfo}
-            className="ml-auto rounded px-2 py-0.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-            title="切换到 /session-info 弹窗"
-          >
-            session info →
-          </button>
-          <button
-            type="button"
             onClick={close}
-            className="rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+            className="ml-auto rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
             aria-label="关闭"
             title="关闭 (Esc)"
           >
             <X size={14} aria-hidden />
           </button>
         </header>
+        <UsageInfoTabs active="context" />
 
         <div className="py-1">
           {loading ? (

@@ -658,6 +658,14 @@ export interface ChatUiState {
   /** Open / close the /context detail modal. */
   openContext: () => void
   closeContext: () => void
+  /**
+   * /usage 本会话账本弹窗（x.ai/session/usage）。与 contextOpen /
+   * sessionInfoOpen 互斥（三个弹窗内部 tab 互通）。独立于 TopBar 的
+   * 宿主聚合 UsageModal（usageOpen）。
+   */
+  sessionUsageOpen: boolean
+  openSessionUsage: () => void
+  closeSessionUsage: () => void
   /** /usage modal visibility — 宿主侧 token 用量聚合 + billing credits。 */
   usageOpen: boolean
   openUsage: () => void

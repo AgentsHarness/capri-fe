@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { sessionsRpc } from './sessions'
+import { parseSessionUsage, sessionsRpc } from './sessions'
 import type { TransportCore } from '../transport'
 
 /** 最小 TransportCore：只提供 rewindExecute 用到的 fetch/url。 */
@@ -59,3 +59,69 @@ describe('sessionsRpc.rewindExecute', () => {
     )
   })
 })
+
+describe('sessionsRpc.sessionUsage', () => {
+  it('POST /api/session/usage，解开 usage 信封', async () => {
+    const t = rpcThis({
+      ok: true,
+      result: { usage: { inputTokens: 5, modelCalls: 1 } },
+    })
+    const res = await sessionsRpc.sessionUsage.call(t, { sessionId: 's1' })
+    expect(t.fetch).toHaveBeenCalledWith(
+      '/api/session/usage',
+      expect.objectContaining({
+        body: JSON.stringify({ sessionId: 's1' }),
+      }),
+    )
+    expect(res).toEqual({ inputTokens: 5, modelCalls: 1 })
+  })
+})
+
+describe('parseSessionUsage', () => {
+  it('解 { usage: PromptUsage } 信封 + camelCase', () => {
+    expect(
+      parseSessionUsage({
+        usage: {
+          inputTokens: 100,
+          outputTokens: 10,
+          modelCalls: 1,
+          costUsdTicks: 20_000_000,
+          numTurns: 3,
+          modelUsage: { grok: { inputTokens: 100, outputTokens: 10 } },
+        },
+      }),
+    ).toEqual({
+      inputTokens: 100,
+      outputTokens: 10,
+      modelCalls: 1,
+      costUsdTicks: 20_000_000,
+      numTurns: 3,
+      modelUsage: { grok: { inputTokens: 100, outputTokens: 10 } },
+    })
+  })
+
+  it('扁平 PromptUsage + snake_case', () => {
+    expect(
+      parseSessionUsage({
+        input_tokens: 8,
+        cost_usd_ticks: 0,
+        usage_is_incomplete: true,
+        cost_is_partial: true,
+        model_usage: { a: { input_tokens: 8, api_duration_ms: 500 } },
+      }),
+    ).toEqual({
+      inputTokens: 8,
+      costUsdTicks: 0,
+      costIsPartial: true,
+      usageIsIncomplete: true,
+      modelUsage: { a: { inputTokens: 8, apiDurationMs: 500 } },
+    })
+  })
+
+  it('脏数据 / 非对象 → 空对象', () => {
+    expect(parseSessionUsage(null)).toEqual({})
+    expect(parseSessionUsage([])).toEqual({})
+    expect(parseSessionUsage('nope')).toEqual({})
+  })
+}
+)

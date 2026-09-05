@@ -31,6 +31,8 @@ beforeEach(() => {
     sessionInfoOpen: true,
     closeSessionInfo: vi.fn(),
     sessionId: 'sess-42',
+    contextOpen: false,
+    sessionUsageOpen: false,
   })
   hostMock.mockReset().mockResolvedValue({ ...HOST })
   extMock.mockReset().mockResolvedValue({})
@@ -95,12 +97,13 @@ describe('SessionInfoModal', () => {
     await screen.findByText('My session')
   })
 
-  it('header 切换按钮 → closeSessionInfo + 打开 context 弹窗', async () => {
+  it('header tab → 打开 context 弹窗并关掉自己', async () => {
     render(<SessionInfoModal />)
     await screen.findByText('My session')
-    fireEvent.click(screen.getByRole('button', { name: 'context →' }))
-    expect(useChatStore.getState().closeSessionInfo).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('tab', { name: 'Context usage' }))
     expect(useChatStore.getState().contextOpen).toBe(true)
+    expect(useChatStore.getState().sessionInfoOpen).toBe(false)
+    expect(useChatStore.getState().sessionUsageOpen).toBe(false)
   })
 
   it('Model 行：catalog name 优先于 resolved', async () => {

@@ -824,6 +824,12 @@ export const slashCommands: SlashCommand[] = [
     run: () => void useChatStore.getState().openContext(),
   },
   {
+    name: 'usage',
+    aliases: ['cost'],
+    description: '查看本会话 token / 费用用量（弹窗）',
+    run: () => void useChatStore.getState().openSessionUsage(),
+  },
+  {
     name: 'loop',
     description: '创建定时任务',
     argHint: '[interval] <prompt>',

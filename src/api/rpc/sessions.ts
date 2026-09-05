@@ -10,6 +10,7 @@ import type {
   SessionState,
   SessionStats,
   SessionUsageData,
+  SessionUsageModel,
   WorkspaceGroup,
   WorkspaceSummary,
 } from '../types'
@@ -65,6 +66,65 @@ function parseSummaryRow(o: Record<string, unknown>, fallbackCwd: string): Works
       : typeof o.numMessages === 'number' && Number.isFinite(o.numMessages)
         ? { numMessages: o.numMessages }
         : {}),
+  }
+}
+
+function usageObj(v: unknown): Record<string, unknown> | undefined {
+  return v && typeof v === 'object' && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : undefined
+}
+
+function usageNum(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined
+}
+
+function usageTicks(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined
+}
+
+function parseUsageModel(o: Record<string, unknown>): SessionUsageModel {
+  const out: SessionUsageModel = {}
+  const set = (key: keyof SessionUsageModel, n: number | undefined) => {
+    if (n != null) (out as Record<string, number>)[key] = n
+  }
+  set('inputTokens', usageNum(o.inputTokens ?? o.input_tokens))
+  set('outputTokens', usageNum(o.outputTokens ?? o.output_tokens))
+  set('totalTokens', usageNum(o.totalTokens ?? o.total_tokens))
+  set('cachedReadTokens', usageNum(o.cachedReadTokens ?? o.cached_read_tokens))
+  set('cacheCreationTokens', usageNum(o.cacheCreationTokens ?? o.cache_creation_tokens))
+  set('reasoningTokens', usageNum(o.reasoningTokens ?? o.reasoning_tokens))
+  set('modelCalls', usageNum(o.modelCalls ?? o.model_calls))
+  set('apiDurationMs', usageNum(o.apiDurationMs ?? o.api_duration_ms))
+  set('costUsdTicks', usageTicks(o.costUsdTicks ?? o.cost_usd_ticks))
+  if (o.costIsPartial === true || o.cost_is_partial === true) out.costIsPartial = true
+  return out
+}
+
+/**
+ * `x.ai/session/usage` 防御性解析：接受 `{ usage: PromptUsage }` 信封或
+ * 扁平 PromptUsage，camelCase / snake_case 都行。脏数据降成空对象。
+ */
+export function parseSessionUsage(raw: unknown): SessionUsageData {
+  const root = usageObj(raw)
+  if (!root) return {}
+  const inner = usageObj(root.usage) ?? root
+  const modelRaw = usageObj(inner.modelUsage ?? inner.model_usage)
+  const modelUsage: Record<string, SessionUsageModel> = {}
+  if (modelRaw) {
+    for (const [k, v] of Object.entries(modelRaw)) {
+      const row = usageObj(v)
+      if (row) modelUsage[k] = parseUsageModel(row)
+    }
+  }
+  const numTurns = usageNum(inner.numTurns ?? inner.num_turns)
+  const usageIsIncomplete =
+    inner.usageIsIncomplete === true || inner.usage_is_incomplete === true
+  return {
+    ...parseUsageModel(inner),
+    ...(Object.keys(modelUsage).length > 0 ? { modelUsage } : {}),
+    ...(numTurns != null ? { numTurns } : {}),
+    ...(usageIsIncomplete ? { usageIsIncomplete: true } : {}),
   }
 }
 
@@ -604,9 +664,7 @@ export const sessionsRpc = {
 
   async sessionUsage(this: TransportCore, opts: { sessionId?: string } = {}): Promise<SessionUsageData> {
     const raw = unwrapExtResult<unknown>(await xaiCall(this, '/api/session/usage', opts))
-    return raw && typeof raw === 'object' && !Array.isArray(raw)
-      ? (raw as SessionUsageData)
-      : {}
+    return parseSessionUsage(raw)
   },
 
   async sessionStats(this: TransportCore, sessionId: string, cwd: string): Promise<SessionStats> {

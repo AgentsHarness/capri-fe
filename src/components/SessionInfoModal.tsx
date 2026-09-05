@@ -5,6 +5,7 @@ import { transport } from '../api/client'
 import type { SessionInfoDetail, SessionInfoExt } from '../api/types'
 import { fmtTok, shortCwd } from '../format'
 import { contextUrgencyColor } from '../theme/contextColor'
+import { UsageInfoTabs } from './UsageInfoTabs'
 
 /** agent 快照的按需抽取字段（x.ai/session/info，context 只取两个兜底数）。 */
 type AgentExt = Omit<SessionInfoExt, 'context'> & {
@@ -27,12 +28,6 @@ type AgentExt = Omit<SessionInfoExt, 'context'> & {
 export function SessionInfoModal() {
   const open = useChatStore((s) => s.sessionInfoOpen)
   const close = useChatStore((s) => s.closeSessionInfo)
-  const openContext = useChatStore((s) => s.openContext)
-  /** 切换到 /context 弹窗：关掉自己、打开对方（同一事件里原子切换）。 */
-  const switchToContext = () => {
-    close()
-    openContext()
-  }
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>()
   const [data, setData] = useState<SessionInfoDetail>()
@@ -251,22 +246,15 @@ export function SessionInfoModal() {
           <span className="font-mono text-[13px] font-bold text-gn-fg">/session-info</span>
           <button
             type="button"
-            onClick={switchToContext}
-            className="ml-auto rounded px-2 py-0.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-            title="切换到 /context 弹窗"
-          >
-            context →
-          </button>
-          <button
-            type="button"
             onClick={close}
-            className="rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+            className="ml-auto rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
             aria-label="关闭"
             title="关闭 (Esc)"
           >
             <X size={14} aria-hidden />
           </button>
         </header>
+        <UsageInfoTabs active="session-info" />
 
         <div className="py-1">
           {loading ? (
