@@ -30,6 +30,7 @@ const h = vi.hoisted(() => {
       gitBranchCreate: vi.fn(),
       gitBranchDelete: vi.fn(),
       gitStageContent: vi.fn(),
+      gitRepoState: vi.fn(),
       onEvent: vi.fn(),
     },
   }
@@ -92,7 +93,7 @@ beforeEach(() => {
         author: 'Alice',
         email: 'alice@example.com',
         timestamp: 1600000000,
-        date: '2 hours ago',
+        date: '2020-09-13T12:26:40.000Z',
         message: 'feat: add awesome feature',
         refs: 'HEAD -> main, origin/main',
       },
@@ -109,7 +110,7 @@ beforeEach(() => {
         index: 0,
         ref: 'stash@{0}',
         hash: 'abc1234',
-        date: '10 mins ago',
+        date: '2026-09-05T10:15:00+08:00',
         message: 'WIP on main',
       },
     ],
@@ -119,6 +120,13 @@ beforeEach(() => {
   transport.gitBranchCreate.mockReset().mockResolvedValue({ ok: true })
   transport.gitBranchDelete.mockReset().mockResolvedValue({ ok: true })
   transport.gitStageContent.mockReset().mockResolvedValue(undefined)
+  transport.gitRepoState.mockReset().mockResolvedValue({
+    mergeInProgress: false,
+    rebaseInProgress: false,
+    cherryPickInProgress: false,
+    conflicts: [],
+    conflictCount: 0,
+  })
   transport.onEvent.mockReset().mockReturnValue(vi.fn())
 })
 
@@ -142,6 +150,10 @@ describe('GitPanel — 打开/关闭与状态', () => {
     expect(screen.getByText('未跟踪')).not.toBeNull()
     expect(transport.gitStatus).toHaveBeenCalledWith({ cwd: '/work', includeUntracked: true })
     expect(transport.gitBranches).toHaveBeenCalledWith({ cwd: '/work' })
+    // 打开时静默 fetch，使 ahead/behind 反映远端真实状态
+    await waitFor(() => expect(transport.gitFetch).toHaveBeenCalledWith({ cwd: '/work' }))
+    // HEAD 锚点 chip（含提交主题 + 复制提示）
+    expect(await screen.findByTitle(/点击复制完整哈希/)).not.toBeNull()
 
     fireEvent.click(screen.getByRole('tab', { name: '分支与同步' }))
     expect(await screen.findByText('分支 · 2')).not.toBeNull()
@@ -149,14 +161,17 @@ describe('GitPanel — 打开/关闭与状态', () => {
   })
 
   it('status 失败 → 错误视图 + 重试；非 git 仓库提示', async () => {
-    transport.gitStatus.mockRejectedValueOnce(new Error('git err'))
+    // 打开时会触发两次 gitStatus（首次 + 静默 fetch 后补刷），用持续 rejection
+    // 保证错误视图稳定。
+    transport.gitStatus.mockRejectedValue(new Error('git err'))
     const { container } = render(<GitPanel open onClose={() => {}} />)
     expect((await screen.findAllByText('git err')).length).toBeGreaterThanOrEqual(1)
     expect(container.textContent).toContain('host 调用失败')
+    transport.gitStatus.mockResolvedValue(statusData)
     fireEvent.click(screen.getByRole('button', { name: '重试' }))
     expect(await screen.findByText('a.ts')).not.toBeNull()
 
-    transport.gitStatus.mockRejectedValueOnce(new Error('fatal: not a git repository (or any parent up to /)'))
+    transport.gitStatus.mockRejectedValue(new Error('fatal: not a git repository (or any parent up to /)'))
     const { container: c2 } = render(<GitPanel open onClose={() => {}} />)
     expect((await screen.findAllByText(/not a git repository/)).length).toBeGreaterThanOrEqual(2)
     expect(c2.textContent).toContain('当前目录不是 git 仓库')
@@ -201,7 +216,8 @@ describe('GitPanel — 打开/关闭与状态', () => {
     render(<GitPanel open onClose={() => {}} />)
     await screen.findByText('a.ts')
     act(() => evHandler?.({ type: 'sessions_changed' }))
-    await waitFor(() => expect(transport.gitStatus).toHaveBeenCalledTimes(2))
+    // 3 次 = 打开时 1 次 + 静默 fetch 后补刷 1 次 + 事件触发 1 次
+    await waitFor(() => expect(transport.gitStatus).toHaveBeenCalledTimes(3))
   })
 })
 
@@ -460,11 +476,15 @@ describe('GitPanel — 移动端多Tab与高级特性', () => {
   })
 
   it('切换到历史 Tab (log) → 显示 commit 列表', async () => {
-    render(<GitPanel open onClose={() => {}} />)
+    const { container } = render(<GitPanel open onClose={() => {}} />)
     await screen.findByText('a.ts')
     fireEvent.click(screen.getByRole('tab', { name: '历史' }))
-    expect(await screen.findByText('feat: add awesome feature')).not.toBeNull()
-    expect(screen.getByText('1234567')).not.toBeNull()
+    const detailPlaceholder = await screen.findByText('选择左侧提交查看详细信息')
+    expect(detailPlaceholder).toHaveClass('sm:w-[320px]', 'sm:shrink-0')
+    // HEAD 锚点 chip 与提交行可能出现同文案（同一提交），用 getAllByText
+    expect((await screen.findAllByText('feat: add awesome feature')).length).toBeGreaterThanOrEqual(1)
+    expect(container.querySelector('svg circle')).not.toBeNull()
+    expect(screen.getAllByText('1234567').length).toBeGreaterThanOrEqual(1)
     expect(screen.getByText('Alice')).not.toBeNull()
     expect(transport.gitLog).toHaveBeenCalledWith({ cwd: '/work', maxCount: 30 })
   })
@@ -543,7 +563,8 @@ describe('GitPanel — 移动端多Tab与高级特性', () => {
   })
 
   it('非 git 仓库提示与一键初始化，且隐藏其他功能', async () => {
-    transport.gitStatus.mockRejectedValueOnce(new Error('fatal: not a git repository (or any parent up to /)'))
+    // 持续 rejection：打开后会补刷一次 status，Once 会让非仓库视图闪没。
+    transport.gitStatus.mockRejectedValue(new Error('fatal: not a git repository (or any parent up to /)'))
     render(<GitPanel open onClose={() => {}} />)
     expect(await screen.findByText('当前目录不是 git 仓库')).not.toBeNull()
     // Tab 导航按钮不应显示
@@ -559,7 +580,7 @@ describe('GitPanel — 移动端多Tab与高级特性', () => {
   })
 
   it('IDEA 风格提交历史：支持按关键字过滤与查看详情', async () => {
-    transport.gitLog.mockResolvedValueOnce({
+    transport.gitLog.mockResolvedValue({
       ok: true,
       commits: [
         {
@@ -568,8 +589,9 @@ describe('GitPanel — 移动端多Tab与高级特性', () => {
           author: 'Alice',
           email: 'alice@x.ai',
           timestamp: 1600000000,
-          date: '1 hour ago',
+          date: '2020-09-13T12:26:40.000Z',
           message: 'feat(ui): idea git log layout',
+          body: '多行 body 说明第一行\n第二行',
           refs: 'HEAD -> main',
         },
         {
@@ -578,8 +600,19 @@ describe('GitPanel — 移动端多Tab与高级特性', () => {
           author: 'Bob',
           email: 'bob@x.ai',
           timestamp: 1600000010,
-          date: '2 hours ago',
+          date: '2020-09-13T12:26:50.000Z',
           message: 'fix: duplicate hunk header',
+        },
+      ],
+    })
+    transport.gitDiffs.mockResolvedValue({
+      files: [
+        {
+          path: 'src/ui.ts',
+          type: 'edit',
+          additions: 2,
+          deletions: 1,
+          patch: '@@ -1,3 +1,4 @@\n-old line\n+new line\n ctx line\n',
         },
       ],
     })
@@ -587,33 +620,131 @@ describe('GitPanel — 移动端多Tab与高级特性', () => {
     await screen.findByText('a.ts')
     fireEvent.click(screen.getByRole('tab', { name: '历史' }))
 
-    // 默认展示全部提交
-    expect(await screen.findByText('feat(ui): idea git log layout')).not.toBeNull()
+    // 默认展示全部提交（HEAD 锚点 chip 会重复首个提交的主题）
+    expect((await screen.findAllByText('feat(ui): idea git log layout')).length).toBeGreaterThanOrEqual(1)
     expect(screen.getByText('fix: duplicate hunk header')).not.toBeNull()
     expect(screen.getByText('HEAD -> main')).not.toBeNull()
 
-    // 过滤功能
+    // 日期统一格式化为本地 "YYYY-MM-DD HH:mm"
+    const dateTexts = screen.getAllByText(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)
+    expect(dateTexts.length).toBeGreaterThanOrEqual(2)
+
+    // 过滤功能（只匹配列表行：限定 button.group 内的消息 span）
     const searchInput = screen.getByPlaceholderText('搜索提交信息、作者、哈希...')
     fireEvent.change(searchInput, { target: { value: 'duplicate' } })
-    expect(screen.queryByText('feat(ui): idea git log layout')).toBeNull()
+    expect(
+      screen.queryByText('feat(ui): idea git log layout', { selector: 'button.group span.truncate' }),
+    ).toBeNull()
     expect(screen.getByText('fix: duplicate hunk header')).not.toBeNull()
 
     // 清空过滤
     fireEvent.change(searchInput, { target: { value: '' } })
-    expect(screen.getByText('feat(ui): idea git log layout')).not.toBeNull()
+    expect(screen.getAllByText('feat(ui): idea git log layout').length).toBeGreaterThanOrEqual(1)
 
     // 点击提交查看详情与 diff
-    fireEvent.click(screen.getByText('feat(ui): idea git log layout'))
+    const selectedCommitText = screen
+      .getAllByText('feat(ui): idea git log layout')
+      .find((el) => el.closest('button.group'))!
+    fireEvent.click(selectedCommitText)
     expect(await screen.findByText(/提交：/)).not.toBeNull()
+    expect(selectedCommitText.closest('button')).toHaveClass('ring-1', 'ring-inset', 'ring-gn-cyan/60')
+    // 完整提交信息 body 展示（RTL 默认归一化换行，用正则匹配）
+    expect(screen.getByText(/多行 body 说明第一行/)).not.toBeNull()
+    expect(screen.getByText(/第二行$/)).not.toBeNull()
+
+    // 展开文件查看 patch
+    fireEvent.click(screen.getByTitle('src/ui.ts'))
+    expect(await screen.findByText('new line')).not.toBeNull()
+    expect(screen.getByText('old line')).not.toBeNull()
+
+    // 验证图谱节点与垂直历史连线
+    const circles = document.querySelectorAll('[data-testid="git-graph-node"]')
+    expect(circles.length).toBeGreaterThanOrEqual(2)
+    // 第一个为 HEAD 空心圆环 (fill="none")，第二个为普通实心圆点
+    expect(circles[0].getAttribute('fill')).toBe('none')
+    expect(circles[0].getAttribute('stroke')).toBe('#3b82f6')
+    expect(circles[1].getAttribute('fill')).toBe('#3b82f6')
+    // 存在垂直连线路径
+    expect(document.querySelector('svg path')).not.toBeNull()
+  })
+
+  it('历史 tab 列宽：拖拽表头分隔柄调整并持久化', async () => {
+    localStorage.removeItem('capri-fe.gitLogColWidths')
+    render(<GitPanel open onClose={() => {}} />)
+    await screen.findByText('a.ts')
+    fireEvent.click(screen.getByRole('tab', { name: '历史' }))
+
+    // 默认作者列宽 110px（行单元格与表头联动）
+    const authorCell = await screen.findByTitle('Alice')
+    expect(authorCell.style.width).toBe('110px')
+
+    // 拖拽分隔柄 +50px → 列宽 160px
+    const handle = screen.getByRole('separator', { name: '调整作者列宽' })
+    fireEvent.pointerDown(handle, { clientX: 100, pointerId: 1 })
+    fireEvent.pointerMove(handle, { clientX: 150, pointerId: 1 })
+    fireEvent.pointerUp(handle, { pointerId: 1 })
+    expect(authorCell.style.width).toBe('160px')
+
+    // 键盘 ←/→ 步进 8px
+    fireEvent.keyDown(handle, { key: 'ArrowRight' })
+    expect(authorCell.style.width).toBe('168px')
+
+    // 持久化到 localStorage
+    expect(JSON.parse(localStorage.getItem('capri-fe.gitLogColWidths') ?? '{}')).toMatchObject({
+      author: 168,
+    })
   })
 
   it('变更列表左侧渲染紧凑图标按钮与状态徽章', async () => {
     render(<GitPanel open onClose={() => {}} />)
     await screen.findByText('a.ts')
-    // 状态徽章：S (staged), M (modified), U (untracked)
-    expect(screen.getByTitle('Staged (已暂存)')).not.toBeNull()
-    expect(screen.getByTitle('Modified (已修改)')).not.toBeNull()
-    expect(screen.getByTitle('Untracked (未跟踪)')).not.toBeNull()
+    // 状态徽章：字母按 changeType（M/U…），色调按 staged/unstaged
+    expect(screen.getByTitle('已暂存 · 修改')).not.toBeNull()
+    expect(screen.getByTitle('未暂存 · 修改')).not.toBeNull()
+    expect(screen.getByTitle('未跟踪 (untracked)')).not.toBeNull()
+
+    // 删除文件 → D 徽章（而非 M）
+    transport.gitStatus.mockResolvedValue({
+      branch: 'main',
+      staged: [{ path: 'gone.ts', type: 'delete', additions: 0, deletions: 9 }],
+      unstaged: [],
+    })
+    const p2 = render(<GitPanel open onClose={() => {}} />)
+    expect(await p2.findByText('gone.ts')).not.toBeNull()
+    expect(p2.getByTitle('已暂存 · 删除')).not.toBeNull()
+    const dBadge = p2.container.querySelector('span[title="已暂存 · 删除"]')
+    expect(dBadge?.textContent).toBe('D')
+  })
+
+  it('↑N 徽章点开未推送提交列表（range 查询 @{upstream}..HEAD）', async () => {
+    render(<GitPanel open onClose={() => {}} />)
+    await screen.findByText('a.ts')
+    fireEvent.click(screen.getByRole('button', { name: /查看 2 个未推送的提交/ }))
+    await waitFor(() =>
+      expect(transport.gitLog).toHaveBeenCalledWith({
+        cwd: '/work',
+        range: '@{upstream}..HEAD',
+        maxCount: 50,
+      }),
+    )
+    expect((await screen.findAllByText('feat: add awesome feature')).length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('merge 进行中 + 冲突 → 状态横幅展示冲突文件（最多 3 个）', async () => {
+    transport.gitRepoState.mockResolvedValue({
+      mergeInProgress: true,
+      rebaseInProgress: false,
+      cherryPickInProgress: false,
+      conflicts: ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts'],
+      conflictCount: 4,
+    })
+    render(<GitPanel open onClose={() => {}} />)
+    expect(await screen.findByText('merge 进行中')).not.toBeNull()
+    expect(screen.getByText(/4 个冲突文件待解决/)).not.toBeNull()
+    expect(screen.getByTitle('src/a.ts')).not.toBeNull()
+    expect(screen.getByTitle('src/c.ts')).not.toBeNull()
+    expect(screen.queryByTitle('src/d.ts')).toBeNull()
+    expect(screen.getByText('… 共 4 个文件')).not.toBeNull()
   })
 
   it('点击顶栏分支名跳转到分支与同步 Tab', async () => {
@@ -624,15 +755,32 @@ describe('GitPanel — 移动端多Tab与高级特性', () => {
     expect(screen.getByText('分支 · 2')).not.toBeNull()
   })
 
-  it('历史 Tab 选中提交后可返回列表', async () => {
+  it('变更筛选只显示对应文件，并在切换筛选时收起 diff', async () => {
     render(<GitPanel open onClose={() => {}} />)
     await screen.findByText('a.ts')
-    fireEvent.click(screen.getByRole('tab', { name: '历史' }))
-    fireEvent.click(await screen.findByText('feat: add awesome feature'))
-    expect(await screen.findByText(/提交：/)).not.toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: /返回提交列表/ }))
-    expect(screen.queryByText(/提交：/)).toBeNull()
-    expect(screen.getByText('feat: add awesome feature')).not.toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /暂存文件 1/ }))
+    expect(screen.getByText('a.ts')).not.toBeNull()
+    expect(screen.queryByText('b.ts')).toBeNull()
+    expect(screen.queryByText('c.ts')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /待暂存文件 2/ }))
+    expect(screen.queryByText('a.ts')).toBeNull()
+    expect(screen.getByText('b.ts')).not.toBeNull()
+    expect(screen.getByText('c.ts')).not.toBeNull()
   })
-}
-)
+
+  it('分支筛选支持按名称和远程分支搜索', async () => {
+    render(<GitPanel open onClose={() => {}} />)
+    await screen.findByText('a.ts')
+    fireEvent.click(screen.getByRole('tab', { name: '分支与同步' }))
+
+    const input = await screen.findByPlaceholderText('筛选分支')
+    fireEvent.change(input, { target: { value: 'origin/dev' } })
+    expect(screen.getByRole('button', { name: /dev/ })).not.toBeNull()
+    expect(screen.queryByRole('button', { name: /main/ })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: '清除分支筛选' }))
+    expect(screen.getByRole('button', { name: /main/ })).toBeDisabled()
+  })
+})

@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  AlertTriangle,
   ArrowDown,
   ArrowUp,
   Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   Clock,
   Copy,
   GitBranch as GitBranchIcon,
@@ -23,7 +25,16 @@ import {
 } from 'lucide-react'
 import { useChatStore } from '../store/chat'
 import { transport } from '../api/client'
-import type { GitBranch, GitFileChange, GitLogEntry, GitStashItem, GitStatusData } from '../api/types'
+import { KEY } from '../lib/keys'
+import { loadJSON, saveJSON } from '../lib/storage'
+import type {
+  GitBranch,
+  GitFileChange,
+  GitLogEntry,
+  GitRepoStateData,
+  GitStashItem,
+  GitStatusData,
+} from '../api/types'
 
 /**
  * Git panel — responsive mobile-first counterpart of the TUI git surface.
@@ -40,6 +51,7 @@ const CONFIRM_WINDOW_MS = 2000
 const PREVIEW_MAX_LINES = 1000
 
 type ActiveTab = 'changes' | 'log' | 'sync'
+type ChangeFilter = 'all' | 'staged' | 'unstaged'
 type RowStatus = 'staged' | 'modified' | 'untracked'
 
 type StatusRow = {
@@ -50,25 +62,50 @@ type StatusRow = {
   deletions: number
 }
 
-const STATUS_BADGE: Record<
-  RowStatus,
-  { label: string; title: string; className: string }
-> = {
-  staged: {
-    label: 'S',
-    title: 'Staged (已暂存)',
-    className: 'bg-gn-green/20 text-gn-green border-gn-green/40',
-  },
-  modified: {
-    label: 'M',
-    title: 'Modified (已修改)',
-    className: 'bg-gn-yellow/20 text-gn-yellow border-gn-yellow/40',
-  },
-  untracked: {
-    label: 'U',
-    title: 'Untracked (未跟踪)',
-    className: 'bg-gn-red/20 text-gn-red border-gn-red/40',
-  },
+/**
+ * 徽章字母按 changeType 语义映射（M/D/R/A/C/T/U），色调按 staged/unstaged/
+ * untracked 区分——文件是"被删了"还是"被改了"应该一眼可见，与是否已暂存
+ * 独立（VS Code 语义）。
+ */
+const TYPE_LETTER: Partial<Record<GitFileChange['type'], string>> = {
+  create: 'A',
+  edit: 'M',
+  delete: 'D',
+  rename: 'R',
+  copy: 'C',
+  typechange: 'T',
+  untracked: 'U',
+}
+
+const TYPE_LABEL: Record<GitFileChange['type'], string> = {
+  create: '新增',
+  edit: '修改',
+  delete: '删除',
+  rename: '重命名',
+  copy: '复制',
+  typechange: '类型变更',
+  untracked: '未跟踪',
+}
+
+function statusBadge(row: StatusRow): { label: string; title: string; className: string } {
+  const label = TYPE_LETTER[row.changeType] ?? 'M'
+  const toneClass =
+    row.status === 'staged'
+      ? 'bg-gn-green/20 text-gn-green border-gn-green/40'
+      : row.status === 'untracked'
+        ? 'bg-gn-red/20 text-gn-red border-gn-red/40'
+        : 'bg-gn-yellow/20 text-gn-yellow border-gn-yellow/40'
+  const stateLabel =
+    row.status === 'staged' ? '已暂存' : row.status === 'untracked' ? '未跟踪' : '未暂存'
+  const title =
+    row.changeType === 'untracked'
+      ? '未跟踪 (untracked)'
+      : `${stateLabel} · ${TYPE_LABEL[row.changeType] ?? label}`
+  return {
+    label,
+    title,
+    className: toneClass,
+  }
 }
 
 function toRows(data: GitStatusData): StatusRow[] {
@@ -157,6 +194,29 @@ function parseUnifiedDiffBlocks(patch: string): DiffHunkBlock[] {
   return blocks
 }
 
+/** 限制渲染行数（历史提交 patch 可能很大），超出的尾部折叠为一行提示。 */
+function capDiffBlocks(
+  blocks: DiffHunkBlock[],
+  max: number,
+): { blocks: DiffHunkBlock[]; truncated: boolean } {
+  let shown = 0
+  let truncated = false
+  const capped: DiffHunkBlock[] = []
+  for (const block of blocks) {
+    if (shown >= max) {
+      truncated = true
+      continue
+    }
+    const rows = block.rows.slice(0, max - shown)
+    if (rows.length < block.rows.length) truncated = true
+    shown += rows.length
+    capped.push({ header: block.header, rows })
+  }
+  return { blocks: capped.filter((b) => b.rows.length > 0), truncated }
+}
+
+const COMMIT_PATCH_MAX_LINES = 800
+
 function DiffRowView({ kind, text }: { kind: DiffRowKind; text: string }) {
   if (kind === 'header') {
     return <div className="px-2.5 py-0.5 font-mono text-[11px] text-gn-cyan/80 bg-gn-bg-dark/40">{text}</div>
@@ -218,10 +278,94 @@ function renderRefBadges(refs?: string) {
   )
 }
 
+import { buildGitGraph } from './git/gitGraph'
+import { GitGraphCell } from './git/GitGraphCell'
+
 function splitPath(path: string): { fileName: string; dirPath: string } {
   const lastSlash = path.lastIndexOf('/')
   if (lastSlash < 0) return { fileName: path, dirPath: '' }
   return { fileName: path.slice(lastSlash + 1), dirPath: path.slice(0, lastSlash + 1) }
+}
+
+/** ISO/epoch 日期串 → 本地 "YYYY-MM-DD HH:mm"；解析失败原样返回（兼容旧端返回的相对时间）。 */
+function formatGitDate(value: string): string {
+  if (!value) return ''
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return value
+  const p = (x: number) => String(x).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+/**
+ * 历史 tab 列宽（px）：作者/日期/哈希三列可拖拽调宽并持久化，
+ * 提交信息列占剩余空间（flex-1），图谱列宽由提交拓扑决定。
+ * 默认值按 "2026-09-05 20:15" 这类本地化日期不截断取的。
+ */
+type LogColWidths = { author: number; date: number; hash: number }
+const LOG_COL_DEFAULTS: LogColWidths = { author: 110, date: 120, hash: 64 }
+const LOG_COL_MIN = 48
+const LOG_COL_MAX = 360
+
+function clampLogColWidth(w: unknown): number {
+  return typeof w === 'number' && Number.isFinite(w)
+    ? Math.min(LOG_COL_MAX, Math.max(LOG_COL_MIN, Math.round(w)))
+    : 0
+}
+
+function loadLogColWidths(): LogColWidths {
+  // storage.loadJSON 只兜语法损坏，类型闸在这里补（存进去的可能是任意 JSON）。
+  const saved = loadJSON<Partial<LogColWidths>>(KEY.gitLogColWidths, {})
+  const pick = (v: unknown, fallback: number) => clampLogColWidth(v) || fallback
+  return {
+    author: pick(saved.author, LOG_COL_DEFAULTS.author),
+    date: pick(saved.date, LOG_COL_DEFAULTS.date),
+    hash: pick(saved.hash, LOG_COL_DEFAULTS.hash),
+  }
+}
+
+/**
+ * 表头列宽拖拽柄（右缘 8px 热区）：pointer capture 下拖动，鼠标/触摸通用；
+ * 键盘聚焦后 ←/→ 步进 8px。挂在可调列的表头单元格内，行宽随 state 联动。
+ */
+function LogColHandle({
+  label,
+  width,
+  onResize,
+}: {
+  label: string
+  width: number
+  onResize: (next: number) => void
+}) {
+  const drag = useRef<{ startX: number; startW: number } | null>(null)
+  return (
+    <span
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={label}
+      tabIndex={0}
+      className="absolute -right-1 top-0 z-10 h-full w-2 cursor-col-resize touch-none select-none hover:bg-gn-cyan/30 focus-visible:bg-gn-cyan/40 focus-visible:outline-none"
+      onPointerDown={(e) => {
+        drag.current = { startX: e.clientX, startW: width }
+        // jsdom 未实现 pointer capture；真实浏览器里丢了 capture 快速拖动会甩丢事件。
+        e.currentTarget.setPointerCapture?.(e.pointerId)
+        e.preventDefault()
+      }}
+      onPointerMove={(e) => {
+        if (drag.current) onResize(drag.current.startW + e.clientX - drag.current.startX)
+      }}
+      onPointerUp={() => {
+        drag.current = null
+      }}
+      onPointerCancel={() => {
+        drag.current = null
+      }}
+      onKeyDown={(e) => {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+        e.preventDefault()
+        onResize(width + (e.key === 'ArrowRight' ? 8 : -8))
+      }}
+    />
+  )
 }
 
 const TABS: { id: ActiveTab; label: string; shortLabel: string }[] = [
@@ -294,10 +438,10 @@ function FileRow({
   onDiscard: (e: React.MouseEvent) => void
 }) {
   const { fileName, dirPath } = splitPath(row.path)
-  const statusConfig = STATUS_BADGE[row.status]
+  const statusConfig = statusBadge(row)
   return (
     <div
-      className={`group flex items-center gap-1.5 border-b border-gn-prompt-border/20 px-2.5 py-2 min-h-11 sm:min-h-0 sm:py-1.5 transition-colors ${
+      className={`group flex items-center gap-1.5 border-b border-gn-prompt-border/20 px-2.5 py-1.5 min-h-10 sm:min-h-0 sm:py-1.5 transition-colors ${
         selected
           ? 'bg-gn-bg-highlight font-medium border-l-2 border-l-gn-cyan'
           : 'border-l-2 border-l-transparent hover:bg-gn-bg-highlight/60'
@@ -336,7 +480,7 @@ function FileRow({
               e.stopPropagation()
               onUnstage?.()
             }}
-            className="flex h-8 w-8 items-center justify-center rounded text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-40 sm:h-6 sm:w-6"
+            className="flex h-7 w-7 items-center justify-center rounded text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-40 sm:h-6 sm:w-6"
             title="取消暂存 (unstage)"
           >
             <Minus size={13} />
@@ -350,7 +494,7 @@ function FileRow({
               e.stopPropagation()
               onStage?.()
             }}
-            className="flex h-8 w-8 items-center justify-center rounded text-gn-green transition-colors hover:bg-gn-green/20 disabled:opacity-40 sm:h-6 sm:w-6"
+            className="flex h-7 w-7 items-center justify-center rounded text-gn-green transition-colors hover:bg-gn-green/20 disabled:opacity-40 sm:h-6 sm:w-6"
             title="加入暂存 (stage)"
           >
             <Plus size={13} />
@@ -363,8 +507,8 @@ function FileRow({
           onClick={onDiscard}
           className={`flex items-center justify-center rounded transition-colors disabled:opacity-40 ${
             armed
-              ? 'h-8 px-1.5 text-[10px] font-medium bg-gn-diff-del-bg text-gn-red border border-gn-red/40 sm:h-6'
-              : 'h-8 w-8 text-gn-muted hover:bg-gn-diff-del-bg hover:text-gn-red sm:h-6 sm:w-6'
+              ? 'h-7 px-1.5 text-[10px] font-medium bg-gn-diff-del-bg text-gn-red border border-gn-red/40 sm:h-6'
+              : 'h-7 w-7 text-gn-muted hover:bg-gn-diff-del-bg hover:text-gn-red sm:h-6 sm:w-6'
           }`}
           title={armed ? '再点一次确认丢弃更改（2 秒内）' : '丢弃该文件的更改 (discard)'}
         >
@@ -394,6 +538,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
   const gitInfo = useChatStore((s) => s.gitInfo)
 
   const [activeTab, setActiveTab] = useState<ActiveTab>('changes')
+  const [changeFilter, setChangeFilter] = useState<ChangeFilter>('all')
   const [status, setStatus] = useState<GitStatusData>()
   const [statusError, setStatusError] = useState<string>()
   const [loading, setLoading] = useState(false)
@@ -402,6 +547,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
   // Branches
   const [branches, setBranches] = useState<GitBranch[]>([])
   const [branchesError, setBranchesError] = useState<string>()
+  const [branchFilter, setBranchFilter] = useState('')
   const [branchesLoading, setBranchesLoading] = useState(false)
   const [armedCheckout, setArmedCheckout] = useState<{ branch: string; at: number } | null>(null)
   const [newBranchName, setNewBranchName] = useState('')
@@ -421,6 +567,26 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
   }>()
   const [stashes, setStashes] = useState<GitStashItem[]>([])
   const [stashLoading, setStashLoading] = useState(false)
+  // 历史 tab 列宽：拖动中实时更新 state（行随表头联动），落盘见下方 effect。
+  const [logColWidths, setLogColWidths] = useState<LogColWidths>(loadLogColWidths)
+  const updateLogColWidth = useCallback((col: keyof LogColWidths, w: number) => {
+    setLogColWidths((prev) => ({ ...prev, [col]: clampLogColWidth(w) || LOG_COL_DEFAULTS[col] }))
+  }, [])
+  useEffect(() => {
+    saveJSON(KEY.gitLogColWidths, logColWidths)
+  }, [logColWidths])
+
+  // 仓库进行中状态 / HEAD 锚点 / 未推送列表（只读信息）
+  const [repoState, setRepoState] = useState<GitRepoStateData>()
+  const [headCommit, setHeadCommit] = useState<GitLogEntry>()
+  const [copiedHeadHash, setCopiedHeadHash] = useState(false)
+  const [showUnpushed, setShowUnpushed] = useState(false)
+  const [unpushed, setUnpushed] = useState<{
+    loading: boolean
+    commits?: GitLogEntry[]
+    error?: string
+  }>()
+  const [openCommitFile, setOpenCommitFile] = useState<string>()
 
   // Selection & Diff
   const [selectedPath, setSelectedPath] = useState<string>()
@@ -443,6 +609,22 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
   const modifiedRows = useMemo(() => rows.filter((r) => r.status === 'modified'), [rows])
   const untrackedRows = useMemo(() => rows.filter((r) => r.status === 'untracked'), [rows])
   const unstagedRows = useMemo(() => rows.filter((r) => r.status !== 'staged'), [rows])
+  const visibleStagedRows = changeFilter === 'unstaged' ? [] : stagedRows
+  const visibleUnstagedRows = changeFilter === 'staged' ? [] : modifiedRows
+  const visibleUntrackedRows = changeFilter === 'staged' ? [] : untrackedRows
+  const visibleRowCount =
+    visibleStagedRows.length + visibleUnstagedRows.length + visibleUntrackedRows.length
+
+  useEffect(() => {
+    if (!selectedPath || changeFilter === 'all') return
+    const selected = rows.find((r) => r.path === selectedPath)
+    if (
+      (changeFilter === 'staged' && selected?.status !== 'staged') ||
+      (changeFilter === 'unstaged' && selected?.status === 'staged')
+    ) {
+      setSelectedPath(undefined)
+    }
+  }, [changeFilter, rows, selectedPath])
 
   const refresh = useCallback(
     async (opts: { silent?: boolean } = {}) => {
@@ -511,12 +693,46 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
     }
   }, [cwd])
 
+  // 进行中状态（merge/rebase/冲突）只读探测；失败视为无特殊状态。
+  const refreshRepoState = useCallback(async () => {
+    try {
+      setRepoState(await transport.gitRepoState({ cwd }))
+    } catch {
+      setRepoState(undefined)
+    }
+  }, [cwd])
+
+  // HEAD 锚点（短哈希 + 主题）。空仓库（无提交）返回空列表。
+  const refreshHead = useCallback(async () => {
+    try {
+      const res = await transport.gitLog?.({ cwd, maxCount: 1 })
+      setHeadCommit(res?.commits?.[0])
+    } catch {
+      setHeadCommit(undefined)
+    }
+  }, [cwd])
+
   // Fetch status/branches on open; tab-specific data only when that tab is shown.
   useEffect(() => {
     if (!open) return
     void refresh()
     void refreshBranches()
-  }, [open, refresh, refreshBranches])
+    void refreshRepoState()
+    void refreshHead()
+    // 打开时静默 fetch 一次，让 ahead/behind 反映远端真实状态；
+    // 离线/无远端时失败忽略，不阻塞首屏。
+    let alive = true
+    void (transport.gitFetch?.({ cwd }) ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => {
+        if (!alive) return
+        void refresh({ silent: true })
+        void refreshRepoState()
+      })
+    return () => {
+      alive = false
+    }
+  }, [open, refresh, refreshBranches, refreshRepoState, refreshHead, cwd])
 
   useEffect(() => {
     if (!open) return
@@ -531,11 +747,13 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
       if (ev.type === 'sessions_changed' || ev.type === 'git_head_changed') {
         void refresh({ silent: true })
         void refreshBranches()
+        void refreshRepoState()
+        void refreshHead()
         if (activeTab === 'log') void refreshLog()
       }
     })
     return unsub
-  }, [open, refresh, refreshBranches, refreshLog, activeTab])
+  }, [open, refresh, refreshBranches, refreshLog, refreshRepoState, refreshHead, activeTab])
 
   // Esc closes; focus panel for keyboard capture.
   useEffect(() => {
@@ -557,8 +775,10 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
     if (!open) return
     setSelectedPath(undefined)
     setDiff(undefined)
+    setChangeFilter('all')
     setSelectedCommitHash(undefined)
     setCommitFilter('')
+    setBranchFilter('')
     setCommitDiff(undefined)
     setCopiedHash(false)
     setOpError(undefined)
@@ -567,30 +787,59 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
     setArmedDiscard(null)
     setArmedCheckout(null)
     setArmedDropStash(null)
+    setShowUnpushed(false)
+    setUnpushed(undefined)
+    setCopiedHeadHash(false)
+    setOpenCommitFile(undefined)
   }, [open])
 
   // Load commit diff for selected commit in history tab
   useEffect(() => {
     if (!open || activeTab !== 'log' || !selectedCommitHash) {
       setCommitDiff(undefined)
+      setOpenCommitFile(undefined)
       return
     }
+    setOpenCommitFile(undefined)
     let alive = true
     setCommitDiff({ loading: true })
-    void transport
-      .gitDiffs?.({ cwd, from: `${selectedCommitHash}^`, to: selectedCommitHash })
-      ?.then((res) => {
+    const load = async () => {
+      try {
+        const res = await transport.gitDiffs?.({
+          cwd,
+          from: `${selectedCommitHash}^`,
+          to: selectedCommitHash,
+        })
         if (!alive) return
         setCommitDiff({ loading: false, files: res?.files ?? [] })
-      })
-      ?.catch(() => {
-        if (!alive) return
-        setCommitDiff({ loading: false, files: [] })
-      })
+      } catch {
+        // 根提交没有父提交（hash^ 失败）——与空树比较，展示首次提交的全部内容。
+        try {
+          const res = await transport.gitDiffs?.({
+            cwd,
+            from: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+            to: selectedCommitHash,
+          })
+          if (!alive) return
+          setCommitDiff({ loading: false, files: res?.files ?? [] })
+        } catch {
+          if (alive) setCommitDiff({ loading: false, files: [] })
+        }
+      }
+    }
+    void load()
     return () => {
       alive = false
     }
   }, [open, activeTab, selectedCommitHash, cwd])
+
+  const filteredBranches = useMemo(() => {
+    const q = branchFilter.trim().toLowerCase()
+    if (!q) return branches
+    return branches.filter(
+      (b) => b.name.toLowerCase().includes(q) || b.upstream?.toLowerCase().includes(q),
+    )
+  }, [branches, branchFilter])
 
   const filteredCommits = useMemo(() => {
     const q = commitFilter.trim().toLowerCase()
@@ -604,6 +853,11 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
         (c.refs && c.refs.toLowerCase().includes(q)),
     )
   }, [commits, commitFilter])
+
+  const { rows: gitGraphRows, graphWidth } = useMemo(
+    () => buildGitGraph(filteredCommits),
+    [filteredCommits],
+  )
 
   const selectedCommit = useMemo(() => {
     if (!selectedCommitHash) return undefined
@@ -697,6 +951,8 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
       try {
         await fn()
         await refresh({ silent: true })
+        // commit/pull/checkout/stash 等都会改变进行中状态，跟着刷一次。
+        void refreshRepoState()
         return true
       } catch (e) {
         setOpError(`${label} 失败: ${e instanceof Error ? e.message : String(e)}`)
@@ -705,7 +961,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
         setBusyOp(undefined)
       }
     },
-    [refresh],
+    [refresh, refreshRepoState],
   )
 
   const onDiscardClick = (e: React.MouseEvent, row: StatusRow) => {
@@ -771,6 +1027,23 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
       await transport.gitStash({ cwd })
       void refreshStashes()
     })
+  }
+
+  // ── 未推送提交列表（↑N 徽章点开）──────────────────────────────────
+  const toggleUnpushed = () => {
+    const next = !showUnpushed
+    setShowUnpushed(next)
+    if (!next) return
+    setUnpushed({ loading: true })
+    // @{upstream}..HEAD：本地领先的全部提交；无上游时 git 报错 → 友好提示。
+    void Promise.resolve(transport.gitLog?.({ cwd, range: '@{upstream}..HEAD', maxCount: 50 }))
+      .then((res) => setUnpushed({ loading: false, commits: res?.commits ?? [] }))
+      .catch((e) =>
+        setUnpushed({
+          loading: false,
+          error: e instanceof Error ? e.message : String(e),
+        }),
+      )
   }
 
   // ── AI commit message recommendation ──────────────────────────────
@@ -868,25 +1141,75 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
           <span className="text-[14px] font-bold text-gn-fg">git</span>
 
           {!notRepo && branch ? (
-            <button
-              type="button"
-              onClick={() => setActiveTab('sync')}
-              aria-label="查看分支与同步"
-              title={branch}
-              className="flex min-w-0 max-w-[46vw] items-center gap-1 truncate rounded px-1 py-0.5 font-mono text-[12px] text-gn-cyan hover:bg-gn-bg-highlight sm:max-w-[240px]"
-            >
-              <span className="shrink-0" aria-hidden>
-                ⎇
-              </span>
-              <span className="truncate">{branch === '(detached)' ? 'detached' : branch}</span>
-              {status?.ahead != null && status.ahead > 0 && (
-                <span className="shrink-0 rounded bg-gn-yellow/15 px-1 font-bold text-gn-yellow" title="领先上游的未推送提交">
-                  ↑{status.ahead}
+            <div className="flex min-w-0 items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setActiveTab('sync')}
+                aria-label="查看分支与同步"
+                title={branch}
+                className="flex min-w-0 max-w-[38vw] items-center gap-1 truncate rounded px-1 py-0.5 font-mono text-[12px] text-gn-cyan hover:bg-gn-bg-highlight sm:max-w-[220px]"
+              >
+                <span className="shrink-0" aria-hidden>
+                  ⎇
+                </span>
+                <span className="truncate">{branch === '(detached)' ? 'detached' : branch}</span>
+              </button>
+              {(status?.ahead ?? 0) > 0 && (
+                <button
+                  type="button"
+                  onClick={toggleUnpushed}
+                  aria-expanded={showUnpushed}
+                  aria-label={`查看 ${status?.ahead ?? 0} 个未推送的提交`}
+                  className={`flex h-7 shrink-0 items-center gap-0.5 rounded px-1.5 font-mono text-[11px] font-bold transition-colors ${
+                    showUnpushed
+                      ? 'bg-gn-yellow/25 text-gn-yellow'
+                      : 'bg-gn-yellow/15 text-gn-yellow hover:bg-gn-yellow/25'
+                  }`}
+                  title="领先上游的未推送提交 — 点击查看列表"
+                >
+                  ↑{status?.ahead}
+                  {showUnpushed ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
+                </button>
+              )}
+              {(status?.behind ?? 0) > 0 && (
+                <span
+                  className="shrink-0 rounded bg-gn-bg-highlight px-1.5 py-1 font-mono text-[11px] font-bold text-gn-muted"
+                  title="落后上游的提交（打开面板时会静默 fetch，数字更准）"
+                >
+                  ↓{status?.behind}
                 </span>
               )}
-              {status?.behind != null && status.behind > 0 && (
-                <span className="shrink-0 rounded bg-gn-bg-highlight px-1 font-bold text-gn-muted" title="落后上游的提交">
-                  ↓{status.behind}
+            </div>
+          ) : null}
+
+          {/* HEAD 锚点：短哈希点击复制，桌面端附提交主题 */}
+          {!notRepo && (status?.commit ?? headCommit?.hash) ? (
+            <button
+              type="button"
+              onClick={() => {
+                const hash = status?.commit ?? headCommit?.hash
+                if (!hash) return
+                void navigator.clipboard?.writeText(hash)
+                setCopiedHeadHash(true)
+                setTimeout(() => setCopiedHeadHash(false), 1500)
+              }}
+              className="hidden h-7 min-w-0 shrink-0 items-center gap-1 rounded px-1.5 font-mono text-[11px] text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg sm:flex"
+              title={
+                headCommit
+                  ? `${headCommit.shortHash} ${headCommit.message} — 点击复制完整哈希`
+                  : '复制 HEAD 完整哈希'
+              }
+              aria-label="复制 HEAD 完整哈希"
+            >
+              {copiedHeadHash ? (
+                <Check size={11} className="shrink-0 text-gn-green" />
+              ) : (
+                <Copy size={10} className="shrink-0 opacity-60" />
+              )}
+              <span className="shrink-0">{(status?.commit ?? headCommit?.hash)?.slice(0, 7)}</span>
+              {headCommit?.message && (
+                <span className="hidden max-w-[180px] truncate text-[10.5px] text-gn-muted/70 md:inline">
+                  {headCommit.message}
                 </span>
               )}
             </button>
@@ -934,6 +1257,44 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
           </div>
         </header>
 
+        {/* 未推送提交列表（↑N 徽章点开）— 内嵌展开条，避免移动端浮层裁切 */}
+        {!notRepo && showUnpushed && (
+          <div className="shrink-0 border-b border-gn-prompt-border bg-gn-bg-base/70 px-3 py-2">
+            <div className="flex min-w-0 items-center justify-between gap-2">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-gn-yellow">
+                未推送的提交
+              </span>
+              <span className="min-w-0 truncate font-mono text-[10px] text-gn-muted" title={status?.upstream}>
+                {status?.upstream ?? '（未配置上游）'}
+              </span>
+            </div>
+            <div className="gn-no-scrollbar mt-1 max-h-40 space-y-0.5 overflow-y-auto">
+              {unpushed?.loading ? (
+                <div className="py-1 text-[11px] text-gn-muted">加载中…</div>
+              ) : unpushed?.error ? (
+                <div className="py-1 text-[11px] text-gn-muted">
+                  {/upstream/i.test(unpushed.error)
+                    ? '当前分支没有配置上游，无法比较未推送提交'
+                    : unpushed.error}
+                </div>
+              ) : unpushed?.commits && unpushed.commits.length > 0 ? (
+                unpushed.commits.map((c) => (
+                  <div key={c.hash} className="flex min-w-0 items-center gap-2 text-[11px]">
+                    <span className="shrink-0 font-mono text-gn-cyan">{c.shortHash}</span>
+                    <span className="min-w-0 flex-1 truncate text-gn-fg2" title={c.message}>
+                      {c.message}
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <div className="py-1 text-[11px] text-gn-muted">
+                  没有未推送的提交（计数可能已过期，试试 Fetch 刷新）
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {!notRepo && (
           <nav
             role="tablist"
@@ -952,7 +1313,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                     aria-label={tab.label}
                     aria-selected={on}
                     onClick={() => setActiveTab(tab.id)}
-                    className={`flex min-w-0 flex-1 items-center justify-center gap-1 rounded px-2 py-2 text-[12.5px] transition-colors sm:flex-none sm:px-3 sm:py-1.5 sm:text-[12px] ${
+                    className={`flex min-w-0 flex-1 items-center justify-center gap-1 rounded px-1.5 py-1.5 text-[11.5px] transition-colors sm:flex-none sm:px-3 sm:py-1.5 sm:text-[12px] ${
                       on
                         ? 'bg-gn-bg-highlight font-medium text-gn-fg'
                         : 'text-gn-muted hover:bg-gn-bg-highlight/60 hover:text-gn-fg'
@@ -977,6 +1338,48 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
             {opError ?? statusError}
           </div>
         )}
+
+        {/* 进行中状态横幅（merge/rebase/cherry-pick + 冲突文件）— 只读信息，
+            处理动作本身交给 agent（对话中继续/中止）。 */}
+        {!notRepo &&
+          repoState &&
+          (repoState.mergeInProgress || repoState.rebaseInProgress || repoState.cherryPickInProgress) && (
+            <div
+              role="status"
+              className={`shrink-0 border-b px-3 py-1.5 text-[11px] leading-relaxed ${
+                repoState.conflictCount > 0
+                  ? 'border-gn-red/40 bg-gn-diff-del-bg/30 text-gn-red'
+                  : 'border-gn-yellow/40 bg-gn-yellow/10 text-gn-yellow'
+              }`}
+            >
+              <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+                <AlertTriangle size={12} className="shrink-0" aria-hidden />
+                <span className="font-semibold">
+                  {repoState.rebaseInProgress
+                    ? 'rebase 进行中'
+                    : repoState.mergeInProgress
+                      ? 'merge 进行中'
+                      : 'cherry-pick 进行中'}
+                </span>
+                {repoState.conflictCount > 0 ? (
+                  <span>· {repoState.conflictCount} 个冲突文件待解决</span>
+                ) : null}
+                <span className="text-gn-muted">（可在对话中让 agent 继续/中止该操作）</span>
+              </div>
+              {repoState.conflicts.length > 0 && (
+                <div className="mt-1 flex flex-col gap-0.5 font-mono text-[10.5px] text-gn-muted">
+                  {repoState.conflicts.slice(0, 3).map((p) => (
+                    <span key={p} className="min-w-0 truncate" title={p}>
+                      · {p}
+                    </span>
+                  ))}
+                  {repoState.conflicts.length > 3 && (
+                    <span>… 共 {repoState.conflicts.length} 个文件</span>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
         {/* Content area */}
         {notRepo ? (
@@ -1040,33 +1443,61 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                       selectedPath ? 'hidden sm:flex sm:w-[320px] lg:w-[360px]' : 'flex w-full sm:w-[320px] lg:w-[360px]'
                     }`}
                   >
-                    <div className="flex shrink-0 items-center justify-between gap-2 border-b border-gn-prompt-border/50 px-3 py-2">
-                      <span className="text-[10px] uppercase tracking-wider text-gn-gutter">
-                        工作区状态 · {rows.length}
-                      </span>
-                      <div className="flex items-center gap-1">
-                        {unstagedRows.length > 0 && (
-                          <button
-                            type="button"
-                            onClick={onStageAll}
-                            disabled={busy}
-                            className="rounded bg-gn-bg-highlight px-2 py-1 text-[10.5px] text-gn-green hover:bg-gn-green/20 sm:px-1.5 sm:py-0.5 sm:text-[10px]"
-                            title="一键暂存所有修改"
-                          >
-                            全部暂存
-                          </button>
-                        )}
-                        {stagedRows.length > 0 && (
-                          <button
-                            type="button"
-                            onClick={onUnstageAll}
-                            disabled={busy}
-                            className="rounded bg-gn-bg-highlight px-2 py-1 text-[10.5px] text-gn-muted hover:bg-gn-bg-base sm:px-1.5 sm:py-0.5 sm:text-[10px]"
-                            title="一键取消暂存全部文件"
-                          >
-                            全部取消
-                          </button>
-                        )}
+                    <div className="flex shrink-0 flex-col gap-2 border-b border-gn-prompt-border/50 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="flex min-w-0 items-center justify-between gap-2">
+                        <span className="text-[10px] uppercase tracking-wider text-gn-gutter">
+                          工作区状态 · {rows.length}
+                        </span>
+
+                      </div>
+                      <div className="flex min-w-0 items-center justify-between gap-2">
+                        <div className="flex min-w-0 flex-1 gap-1 rounded bg-gn-bg-dark/50 p-0.5" role="group" aria-label="筛选工作区文件">
+                          {([
+                            ['all', '全部', rows.length],
+                            ['staged', '暂存', stagedRows.length],
+                            ['unstaged', '待暂存', unstagedRows.length],
+                          ] as const).map(([filter, label, count]) => (
+                            <button
+                              key={filter}
+                              type="button"
+                              aria-pressed={changeFilter === filter}
+                              aria-label={`${label}文件 ${count}`}
+                              onClick={() => setChangeFilter(filter)}
+                              className={`flex min-h-7 min-w-0 flex-1 items-center justify-center gap-1 rounded px-1.5 text-[10px] transition-colors sm:min-h-0 sm:flex-none sm:px-2 sm:py-0.5 sm:text-[10.5px] ${
+                                changeFilter === filter
+                                  ? 'bg-gn-bg-highlight font-medium text-gn-fg'
+                                  : 'text-gn-muted hover:bg-gn-bg-highlight/60 hover:text-gn-fg'
+                              }`}
+                            >
+                              <span className="truncate">{label}</span>
+                              <span className="font-mono text-[10px] text-gn-gutter">{count}</span>
+                            </button>
+                          ))}
+                        </div>
+                        <div className="flex items-center gap-1">
+                          {unstagedRows.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={onStageAll}
+                              disabled={busy}
+                              className="rounded bg-gn-bg-highlight px-2 py-1 text-[10.5px] text-gn-green hover:bg-gn-green/20 disabled:opacity-40 sm:px-1.5 sm:py-0.5 sm:text-[10px]"
+                              title="一键暂存所有修改"
+                            >
+                              全部暂存
+                            </button>
+                          )}
+                          {stagedRows.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={onUnstageAll}
+                              disabled={busy}
+                              className="rounded bg-gn-bg-highlight px-2 py-1 text-[10.5px] text-gn-muted hover:bg-gn-bg-base disabled:opacity-40 sm:px-1.5 sm:py-0.5 sm:text-[10px]"
+                              title="一键取消暂存全部文件"
+                            >
+                              全部取消
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </div>
 
@@ -1074,14 +1505,14 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                       {loading && rows.length === 0 && (
                         <div className="px-3 py-3 text-[11px] text-gn-muted">加载中…</div>
                       )}
-                      {!loading && rows.length === 0 && (
+                      {!loading && visibleRowCount === 0 && (
                         <div className="px-3 py-8 text-center text-[12px] text-gn-muted">
-                          工作区没有改动 ✓
+                          {rows.length === 0 ? '工作区没有改动 ✓' : '当前筛选没有文件'}
                         </div>
                       )}
 
-                      <ChangeGroup title="已暂存" count={stagedRows.length} tone="green">
-                        {stagedRows.map((row) => (
+                      <ChangeGroup title="已暂存" count={visibleStagedRows.length} tone="green">
+                        {visibleStagedRows.map((row) => (
                           <FileRow
                             key={row.path}
                             row={row}
@@ -1098,8 +1529,8 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                           />
                         ))}
                       </ChangeGroup>
-                      <ChangeGroup title="已修改" count={modifiedRows.length} tone="yellow">
-                        {modifiedRows.map((row) => (
+                      <ChangeGroup title="已修改" count={visibleUnstagedRows.length} tone="yellow">
+                        {visibleUnstagedRows.map((row) => (
                           <FileRow
                             key={row.path}
                             row={row}
@@ -1116,8 +1547,8 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                           />
                         ))}
                       </ChangeGroup>
-                      <ChangeGroup title="未跟踪" count={untrackedRows.length} tone="red">
-                        {untrackedRows.map((row) => (
+                      <ChangeGroup title="未跟踪" count={visibleUntrackedRows.length} tone="red">
+                        {visibleUntrackedRows.map((row) => (
                           <FileRow
                             key={row.path}
                             row={row}
@@ -1148,7 +1579,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                         <button
                           type="button"
                           onClick={() => setSelectedPath(undefined)}
-                          className="flex min-h-9 items-center gap-1 text-[12.5px] text-gn-cyan"
+                          className="flex min-h-8 items-center gap-1 text-[12px] text-gn-cyan"
                         >
                           <ChevronLeft size={16} /> 返回文件列表
                         </button>
@@ -1239,7 +1670,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
             {activeTab === 'log' && (
               <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
                 <div
-                  className={`shrink-0 items-center justify-between gap-2 border-b border-gn-prompt-border bg-gn-bg-base/60 px-3 py-2 ${
+                  className={`shrink-0 items-center justify-between gap-2 border-b border-gn-prompt-border bg-gn-bg-base/60 px-2 py-1.5 ${
                     selectedCommit ? 'hidden sm:flex' : 'flex'
                   }`}
                 >
@@ -1279,17 +1710,33 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                   </div>
                 </div>
 
-                <div className="flex min-h-0 flex-1 flex-col overflow-hidden sm:flex-row">
-                  <div
+                    <div className="flex min-h-0 flex-1 flex-col overflow-hidden sm:flex-row">
+                      <div
                     className={`min-w-0 flex-col border-gn-prompt-border/60 sm:border-r ${
                       selectedCommit ? 'hidden sm:flex sm:flex-1' : 'flex flex-1'
                     }`}
                   >
-                    <div className="flex shrink-0 items-center border-b border-gn-prompt-border/40 bg-gn-bg-base/80 px-3 py-1.5 text-[10.5px] font-medium uppercase tracking-wider text-gn-gutter select-none">
+                    <div className="flex shrink-0 items-center border-b border-gn-prompt-border/40 bg-gn-bg-base/80 px-1.5 py-1 text-[10px] font-medium uppercase tracking-wider text-gn-gutter select-none">
+                      <span style={{ width: graphWidth }} className="shrink-0" aria-hidden="true" />
                       <span className="min-w-0 flex-1">提交信息</span>
-                      <span className="hidden w-24 shrink-0 text-left md:inline">作者</span>
-                      <span className="hidden w-24 shrink-0 text-left sm:inline">日期</span>
-                      <span className="w-16 shrink-0 text-right">哈希</span>
+                      <span
+                        className="relative hidden shrink-0 text-left md:inline"
+                        style={{ width: logColWidths.author }}
+                      >
+                        作者
+                        <LogColHandle label="调整作者列宽" width={logColWidths.author} onResize={(w) => updateLogColWidth('author', w)} />
+                      </span>
+                      <span
+                        className="relative hidden shrink-0 text-left sm:inline"
+                        style={{ width: logColWidths.date }}
+                      >
+                        日期
+                        <LogColHandle label="调整日期列宽" width={logColWidths.date} onResize={(w) => updateLogColWidth('date', w)} />
+                      </span>
+                      <span className="relative shrink-0 text-right" style={{ width: logColWidths.hash }}>
+                        哈希
+                        <LogColHandle label="调整哈希列宽" width={logColWidths.hash} onResize={(w) => updateLogColWidth('hash', w)} />
+                      </span>
                     </div>
 
                     <div className="gn-no-scrollbar flex-1 divide-y divide-gn-prompt-border/20 overflow-y-auto">
@@ -1302,39 +1749,47 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                           {commitFilter ? '未找到匹配的提交' : '暂无提交记录'}
                         </div>
                       ) : (
-                        filteredCommits.map((c) => {
+                        filteredCommits.map((c, index) => {
                           const isSelected = selectedCommit?.hash === c.hash
                           return (
-                            <div
+                            <button
+                              type="button"
                               key={c.hash}
                               onClick={() => setSelectedCommitHash(c.hash)}
-                              className={`flex cursor-pointer items-center gap-2 px-3 py-2.5 text-[12px] transition-colors sm:py-1.5 ${
+                              className={`group flex h-7 w-full shrink-0 cursor-pointer items-center gap-0 px-1.5 text-left text-[11.5px] leading-none transition-colors ${
                                 isSelected
-                                  ? 'border-l-2 border-gn-cyan bg-gn-bg-highlight font-medium text-gn-fg'
-                                  : 'border-l-2 border-transparent text-gn-fg2 hover:bg-gn-bg-highlight/40 hover:text-gn-fg'
+                                  ? 'ring-1 ring-inset ring-gn-cyan/60 bg-gn-bg-highlight font-medium text-gn-fg'
+                                  : 'text-gn-fg2 hover:bg-gn-bg-highlight/40 hover:text-gn-fg'
                               }`}
                             >
-                              <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                                <div className="flex min-w-0 items-center gap-1.5 truncate">
-                                  {renderRefBadges(c.refs)}
-                                  <span className="truncate font-mono" title={c.message}>
-                                    {c.message}
-                                  </span>
-                                </div>
-                                <div className="truncate text-[10.5px] text-gn-muted sm:hidden">
-                                  {c.author} · {c.date}
-                                </div>
-                              </div>
-                              <span className="hidden w-24 shrink-0 truncate font-mono text-[11px] text-gn-muted md:inline" title={c.author}>
+                              <GitGraphCell row={gitGraphRows[index]} width={graphWidth} />
+                              <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate">
+                                {renderRefBadges(c.refs)}
+                                <span className="truncate font-mono" title={c.message}>
+                                  {c.message}
+                                </span>
+                              </span>
+                              <span
+                                className="hidden shrink-0 truncate font-mono text-[11px] text-gn-muted md:inline"
+                                style={{ width: logColWidths.author }}
+                                title={c.author}
+                              >
                                 {c.author}
                               </span>
-                              <span className="hidden w-24 shrink-0 truncate text-[11px] text-gn-muted sm:inline" title={c.date}>
-                                {c.date}
+                              <span
+                                className="hidden shrink-0 truncate text-[11px] text-gn-muted sm:inline"
+                                style={{ width: logColWidths.date }}
+                                title={c.date}
+                              >
+                                {formatGitDate(c.date)}
                               </span>
-                              <span className="w-16 shrink-0 text-right font-mono text-[10.5px] text-gn-cyan">
+                              <span
+                                className="shrink-0 text-right font-mono text-[10.5px] text-gn-cyan"
+                                style={{ width: logColWidths.hash }}
+                              >
                                 {c.shortHash}
                               </span>
-                            </div>
+                            </button>
                           )
                         })
                       )}
@@ -1347,7 +1802,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                         <button
                           type="button"
                           onClick={() => setSelectedCommitHash(undefined)}
-                          className="flex min-h-9 items-center gap-1 text-[12.5px] text-gn-cyan"
+                          className="flex min-h-8 items-center gap-1 text-[12px] text-gn-cyan"
                         >
                           <ChevronLeft size={16} /> 返回提交列表
                         </button>
@@ -1373,6 +1828,12 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                           </button>
                         </div>
 
+                        {selectedCommit.body && (
+                          <div className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-gn-muted">
+                            {selectedCommit.body}
+                          </div>
+                        )}
+
                         <div className="flex flex-col gap-1 text-[11px] text-gn-muted">
                           <div>
                             <span className="text-gn-gutter">作者：</span>
@@ -1381,7 +1842,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                           </div>
                           <div className="flex items-center gap-1 text-[10.5px]">
                             <Clock size={11} className="shrink-0" />
-                            <span>{selectedCommit.date}</span>
+                            <span title={selectedCommit.date}>{formatGitDate(selectedCommit.date)}</span>
                           </div>
                           {selectedCommit.refs && (
                             <div className="pt-0.5">{renderRefBadges(selectedCommit.refs)}</div>
@@ -1399,18 +1860,68 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                           ) : commitDiff?.error ? (
                             <div className="px-3 py-2 text-[11px] text-gn-muted">无附加文件差异</div>
                           ) : commitDiff?.files && commitDiff.files.length > 0 ? (
-                            commitDiff.files.map((f) => (
-                              <div
-                                key={f.path}
-                                className="flex items-center justify-between rounded px-2 py-2 font-mono text-[11px] hover:bg-gn-bg-highlight/40 sm:py-1"
-                                title={f.path}
-                              >
-                                <span className="min-w-0 flex-1 truncate text-gn-fg">{f.path}</span>
-                                <span className="ml-2 shrink-0 text-[10px] tabular-nums text-gn-gutter">
-                                  +{f.additions}−{f.deletions}
-                                </span>
-                              </div>
-                            ))
+                            commitDiff.files.map((f) => {
+                              const expanded = openCommitFile === f.path
+                              const capped =
+                                expanded && f.patch
+                                  ? capDiffBlocks(parseUnifiedDiffBlocks(f.patch), COMMIT_PATCH_MAX_LINES)
+                                  : undefined
+                              return (
+                                <div key={f.path} className="overflow-hidden rounded bg-gn-bg-dark/40">
+                                  <button
+                                    type="button"
+                                    onClick={() => setOpenCommitFile(expanded ? undefined : f.path)}
+                                    aria-expanded={expanded}
+                                    className="flex w-full min-h-8 items-center justify-between gap-2 rounded px-2 py-2 text-left font-mono text-[11px] hover:bg-gn-bg-highlight/40 sm:min-h-0 sm:py-1.5"
+                                    title={f.path}
+                                  >
+                                    {expanded ? (
+                                      <ChevronDown size={11} className="shrink-0 text-gn-muted" />
+                                    ) : (
+                                      <ChevronRight size={11} className="shrink-0 text-gn-muted" />
+                                    )}
+                                    <span className="min-w-0 flex-1 truncate text-gn-fg">{f.path}</span>
+                                    <span className="ml-2 shrink-0 text-[10px] tabular-nums text-gn-gutter">
+                                      +{f.additions}−{f.deletions}
+                                    </span>
+                                  </button>
+                                  {expanded && (
+                                    <div className="border-t border-gn-prompt-border/30">
+                                      {capped && capped.blocks.length > 0 ? (
+                                        <>
+                                          {capped.blocks
+                                            .filter((b) => b.header !== 'File Header')
+                                            .map((block, bi) => (
+                                              <div
+                                                key={bi}
+                                                className="border-b border-gn-prompt-border/10 last:border-b-0"
+                                              >
+                                                <div className="truncate bg-gn-bg-base/60 px-2 py-0.5 font-mono text-[10px] text-gn-cyan/90">
+                                                  {block.header}
+                                                </div>
+                                                {block.rows.map((r, ri) => (
+                                                  <DiffRowView key={ri} kind={r.kind} text={r.text} />
+                                                ))}
+                                              </div>
+                                            ))}
+                                          {capped.truncated && (
+                                            <div className="px-2 py-1 font-mono text-[10px] text-gn-gutter">
+                                              … diff 过大，仅显示前 {COMMIT_PATCH_MAX_LINES} 行
+                                            </div>
+                                          )}
+                                        </>
+                                      ) : (
+                                        <div className="px-2 py-1.5 text-[10.5px] text-gn-muted">
+                                          {f.patch != null
+                                            ? '（无内容 diff）'
+                                            : '无 patch 内容（可能是二进制文件）'}
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              )
+                            })
                           ) : (
                             <div className="py-3 text-center text-[11px] text-gn-muted">
                               {commitDiff ? '无修改文件记录' : '点击提交查看改动详情'}
@@ -1420,7 +1931,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                       </div>
                     </div>
                   ) : (
-                    <div className="hidden flex-1 items-center justify-center text-[12px] text-gn-muted sm:flex">
+                    <div className="hidden items-center justify-center text-[12px] text-gn-muted sm:flex sm:w-[320px] sm:shrink-0 md:w-[360px]">
                       选择左侧提交查看详细信息
                     </div>
                   )}
@@ -1449,7 +1960,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                           await transport.gitFetch?.({ cwd })
                         })
                       }
-                      className="flex min-h-9 items-center justify-center gap-1 rounded border border-gn-prompt-border bg-gn-bg-base px-2 py-1.5 text-[11.5px] text-gn-fg hover:bg-gn-bg-highlight disabled:opacity-40 sm:min-h-0 sm:px-2.5 sm:py-1"
+                      className="flex min-h-8 items-center justify-center gap-1 rounded border border-gn-prompt-border bg-gn-bg-base px-2 py-1.5 text-[11.5px] text-gn-fg hover:bg-gn-bg-highlight disabled:opacity-40 sm:min-h-0 sm:px-2.5 sm:py-1"
                     >
                       <RefreshCw size={11} />
                       Fetch
@@ -1463,7 +1974,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                           await transport.gitPull?.({ cwd })
                         })
                       }
-                      className="flex min-h-9 items-center justify-center gap-1 rounded border border-gn-prompt-border bg-gn-bg-base px-2 py-1.5 text-[11.5px] text-gn-fg hover:bg-gn-bg-highlight disabled:opacity-40 sm:min-h-0 sm:px-2.5 sm:py-1"
+                      className="flex min-h-8 items-center justify-center gap-1 rounded border border-gn-prompt-border bg-gn-bg-base px-2 py-1.5 text-[11.5px] text-gn-fg hover:bg-gn-bg-highlight disabled:opacity-40 sm:min-h-0 sm:px-2.5 sm:py-1"
                     >
                       <ArrowDown size={11} />
                       Pull
@@ -1477,7 +1988,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                           await transport.gitPush?.({ cwd })
                         })
                       }
-                      className="flex min-h-9 items-center justify-center gap-1 rounded border border-gn-green/40 bg-gn-green/20 px-2 py-1.5 text-[11.5px] font-medium text-gn-green hover:bg-gn-green/30 disabled:opacity-40 sm:min-h-0 sm:px-3 sm:py-1"
+                      className="flex min-h-8 items-center justify-center gap-1 rounded border border-gn-green/40 bg-gn-green/20 px-2 py-1.5 text-[11.5px] font-medium text-gn-green hover:bg-gn-green/30 disabled:opacity-40 sm:min-h-0 sm:px-3 sm:py-1"
                     >
                       <ArrowUp size={11} />
                       Push
@@ -1497,13 +2008,35 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                       <div className="mt-1.5 text-[10.5px] leading-snug text-gn-red">{branchesError}</div>
                     )}
 
+                    <div className="relative mt-2.5 shrink-0">
+                      <Search size={12} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-gn-muted" />
+                      <input
+                        type="search"
+                        value={branchFilter}
+                        onChange={(e) => setBranchFilter(e.target.value)}
+                        placeholder="筛选分支"
+                        aria-label="筛选分支"
+                        className="h-8 w-full rounded border border-gn-prompt-border bg-gn-bg-dark pl-7 pr-7 text-[11.5px] text-gn-fg outline-none focus:border-gn-cyan/60 sm:h-7"
+                      />
+                      {branchFilter && (
+                        <button
+                          type="button"
+                          onClick={() => setBranchFilter('')}
+                          aria-label="清除分支筛选"
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-gn-muted hover:text-gn-fg"
+                        >
+                          <X size={12} />
+                        </button>
+                      )}
+                    </div>
+
                     <div className="mt-2.5 flex shrink-0 flex-col gap-1.5 sm:flex-row sm:items-center">
                       <input
                         type="text"
                         value={newBranchName}
                         onChange={(e) => setNewBranchName(e.target.value)}
                         placeholder="新分支名称"
-                        className="h-9 min-w-0 flex-1 rounded border border-gn-prompt-border bg-gn-bg-dark px-2 text-[11.5px] text-gn-fg outline-none focus:border-gn-green/60 sm:h-7"
+                        className="h-8 min-w-0 flex-1 rounded border border-gn-prompt-border bg-gn-bg-dark px-2 text-[11.5px] text-gn-fg outline-none focus:border-gn-green/60 sm:h-7"
                       />
                       <div className="flex items-center gap-1.5">
                         <label className="flex shrink-0 cursor-pointer select-none items-center gap-1 text-[11px] text-gn-muted">
@@ -1530,7 +2063,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                               await refreshBranches()
                             })
                           }}
-                          className="flex h-9 shrink-0 items-center gap-1 rounded bg-gn-bg-highlight px-2.5 text-[11.5px] text-gn-fg hover:bg-gn-prompt-border disabled:opacity-40 sm:h-7"
+                          className="flex h-8 shrink-0 items-center gap-1 rounded bg-gn-bg-highlight px-2.5 text-[11.5px] text-gn-fg hover:bg-gn-prompt-border disabled:opacity-40 sm:h-7"
                         >
                           <Plus size={12} /> 新建
                         </button>
@@ -1544,7 +2077,10 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                       {!branchesLoading && branches.length === 0 && !branchesError && (
                         <div className="py-4 text-center text-[11px] text-gn-muted">无分支信息</div>
                       )}
-                      {branches.map((b) => {
+                      {!branchesLoading && branches.length > 0 && filteredBranches.length === 0 && (
+                        <div className="py-4 text-center text-[11px] text-gn-muted">没有匹配的分支</div>
+                      )}
+                      {filteredBranches.map((b) => {
                         const armed = armedCheckout?.branch === b.name
                         return (
                           <div
@@ -1621,7 +2157,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                               <div className="min-w-0 flex-1 truncate font-mono">
                                 <span className="mr-1.5 text-gn-cyan">{s.ref}</span>
                                 <span className="text-gn-fg">{s.message}</span>
-                                <span className="ml-1.5 text-[10px] text-gn-muted">({s.date})</span>
+                                <span className="ml-1.5 text-[10px] text-gn-muted" title={s.date}>({formatGitDate(s.date)})</span>
                               </div>
                               <div className="ml-0 flex shrink-0 items-center gap-1 sm:ml-1.5">
                                 <button
@@ -1703,13 +2239,13 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                     }
                   }}
                   placeholder="提交信息（Enter 提交）"
-                  className="min-h-9 min-w-0 flex-1 rounded border border-gn-prompt-border bg-gn-bg-dark px-2.5 text-[12px] text-gn-fg outline-none placeholder:text-gn-gray focus:border-gn-green/60 sm:min-h-8"
+                  className="min-h-8 min-w-0 flex-1 rounded border border-gn-prompt-border bg-gn-bg-dark px-2.5 text-[12px] text-gn-fg outline-none placeholder:text-gn-gray focus:border-gn-green/60 sm:min-h-8"
                 />
                 <button
                   type="button"
                   onClick={onGenerateCommitMsg}
                   disabled={rows.length === 0 || busy}
-                  className="flex h-9 shrink-0 items-center gap-1 rounded border border-gn-prompt-border bg-gn-bg-highlight/60 px-2.5 text-[11.5px] text-gn-cyan hover:bg-gn-bg-highlight disabled:opacity-40 sm:h-auto sm:py-1"
+                  className="flex h-8 shrink-0 items-center gap-1 rounded border border-gn-prompt-border bg-gn-bg-highlight/60 px-2.5 text-[11.5px] text-gn-cyan hover:bg-gn-bg-highlight disabled:opacity-40 sm:h-auto sm:py-1"
                   title="根据当前改动自动生成规范的提交信息"
                   aria-label="AI 描述"
                 >
@@ -1747,7 +2283,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                       if (ok) setCommitMsg('')
                     })
                   }}
-                  className="min-h-9 shrink-0 rounded border border-gn-green/40 bg-gn-green/20 px-3 py-1 text-[12px] font-medium text-gn-green hover:bg-gn-green/30 disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-0"
+                  className="min-h-8 shrink-0 rounded border border-gn-green/40 bg-gn-green/20 px-3 py-1 text-[12px] font-medium text-gn-green hover:bg-gn-green/30 disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-0"
                   title={
                     stagedRows.length === 0 && !amend
                       ? '请先暂存文件，或勾选 amend'
@@ -1761,7 +2297,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                   type="button"
                   disabled={!canCommit}
                   onClick={onCommitAndPush}
-                  className="flex min-h-9 shrink-0 items-center gap-1 rounded border border-gn-prompt-border bg-gn-bg-base px-2.5 py-1 text-[12px] text-gn-fg hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-0"
+                  className="flex min-h-8 shrink-0 items-center gap-1 rounded border border-gn-prompt-border bg-gn-bg-base px-2.5 py-1 text-[12px] text-gn-fg hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-0"
                   title="提交并推送到远端"
                 >
                   <GitCommit size={12} />
@@ -1773,7 +2309,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                   type="button"
                   disabled={busy}
                   onClick={onStashClick}
-                  className="min-h-9 shrink-0 rounded border border-gn-prompt-border bg-gn-bg-base px-2.5 py-1 text-[12px] text-gn-fg hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-0"
+                  className="min-h-8 shrink-0 rounded border border-gn-prompt-border bg-gn-bg-base px-2.5 py-1 text-[12px] text-gn-fg hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-0"
                   title="git stash — 暂存全部未提交更改"
                 >
                   stash
