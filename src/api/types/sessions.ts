@@ -424,20 +424,37 @@ export type SessionState = {
 
 
 /**
- * x.ai/session/usage result — the agent's session token usage
- * (camelCase wire; snake_case accepted). All fields optional — the
- * exact payload varies by agent version; the UI degrades when absent.
+ * One model row of `x.ai/session/usage` (`PromptUsageModel`, camelCase;
+ * snake_case accepted). Cost ticks are 1e10 per USD; absent means
+ * unknown — never treat as free.
  */
-export type SessionUsageData = {
-  totalTokens?: number
+export type SessionUsageModel = {
   inputTokens?: number
   outputTokens?: number
-  /** Context window size when the agent reports it. */
-  contextSize?: number
-  [k: string]: unknown
+  totalTokens?: number
+  cachedReadTokens?: number
+  cacheCreationTokens?: number
+  reasoningTokens?: number
+  modelCalls?: number
+  apiDurationMs?: number
+  /** Server cost in USD ticks (`1e10` ticks = $1). */
+  costUsdTicks?: number
+  /** Some folded calls lacked cost, so any shown cost is untrustworthy. */
+  costIsPartial?: boolean
 }
 
-
+/**
+ * `x.ai/session/usage` result — the agent's session token/cost ledger
+ * (`SessionUsageResponse.usage` / flattened `PromptUsage`). Totals live
+ * at the top level; `modelUsage` is the per-model breakdown. All fields
+ * optional — the UI degrades when absent.
+ */
+export type SessionUsageData = SessionUsageModel & {
+  modelUsage?: Record<string, SessionUsageModel>
+  numTurns?: number
+  /** Ledger may under-count (open subagents, drain timeout, …). */
+  usageIsIncomplete?: boolean
+}
 
 /**
  * One agent skill row from x.ai/skills/list (camelCase; the agent
@@ -450,13 +467,6 @@ export type AgentSkill = {
   scope?: string
   description?: string
 }
-
-/**
- * x.ai/session/usage result — the agent's session token usage
- * (camelCase wire; snake_case accepted). All fields optional — the
- * exact payload varies by agent version; the UI degrades when absent.
- */
-
 
 /**
  * One `x.ai/follow_ups` turn-end suggestion. Wire shape (TUI

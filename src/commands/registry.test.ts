@@ -73,6 +73,7 @@ interface FakeChat {
   openSessionInfo: ReturnType<typeof vi.fn>
   sessionInfoOpen?: boolean
   openContext: ReturnType<typeof vi.fn>
+  openSessionUsage: ReturnType<typeof vi.fn>
   togglePlanMode: ReturnType<typeof vi.fn>
   openPlanViewer: ReturnType<typeof vi.fn>
   planViewerOpen?: boolean
@@ -133,6 +134,7 @@ beforeEach(() => {
       fake.sessionInfoOpen = true
     }),
     openContext: vi.fn(),
+    openSessionUsage: vi.fn(),
     togglePlanMode: vi.fn(),
     openPlanViewer: vi.fn(() => {
       fake.planViewerOpen = true
@@ -192,6 +194,7 @@ describe('matchSlash', () => {
     expect(m?.cmd.name).toBe('model')
     expect(m?.args).toBe('grok-3')
     expect(matchSlash('/CLEAR')?.cmd.name).toBe('new')
+    expect(matchSlash('/cost')?.cmd.name).toBe('usage')
     expect(matchSlash('/unknown x')).toBeNull()
   })
 
@@ -319,7 +322,7 @@ describe('filterSlashCommands', () => {
 })
 
 describe('slash command runs — 会话类', () => {
-  it('/new /resume /compact /rewind /fork /recap /session-info /context /plan /timestamps /settings /flush', () => {
+  it('/new /resume /compact /rewind /fork /recap /session-info /context /usage /plan /timestamps /settings /flush', () => {
     run('new')
     expect(fake.newSession).toHaveBeenCalled()
     run('resume')
@@ -337,6 +340,8 @@ describe('slash command runs — 会话类', () => {
     expect(fake.sessionInfoOpen).toBe(true)
     run('context')
     expect(fake.openContext).toHaveBeenCalled()
+    run('usage')
+    expect(fake.openSessionUsage).toHaveBeenCalled()
     run('plan')
     expect(fake.togglePlanMode).toHaveBeenCalled()
     run('timestamps')

@@ -105,6 +105,7 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
   viewerTask: undefined,
   sessionInfoOpen: false,
   contextOpen: false,
+  sessionUsageOpen: false,
   usageOpen: false,
   planViewerOpen: false,
   tasksBarOpen: false,
@@ -225,11 +226,29 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
 
   closeHistory: () => set({ historyOpen: false }),
 
-  openSessionInfo: () => set({ sessionInfoOpen: true }),
+  openSessionInfo: () =>
+    set((s) =>
+      s.sessionInfoOpen && !s.contextOpen && !s.sessionUsageOpen
+        ? s
+        : { sessionInfoOpen: true, contextOpen: false, sessionUsageOpen: false },
+    ),
   closeSessionInfo: () => set({ sessionInfoOpen: false }),
 
-  openContext: () => set({ contextOpen: true }),
+  openContext: () =>
+    set((s) =>
+      s.contextOpen && !s.sessionInfoOpen && !s.sessionUsageOpen
+        ? s
+        : { contextOpen: true, sessionInfoOpen: false, sessionUsageOpen: false },
+    ),
   closeContext: () => set({ contextOpen: false }),
+
+  openSessionUsage: () =>
+    set((s) =>
+      s.sessionUsageOpen && !s.sessionInfoOpen && !s.contextOpen
+        ? s
+        : { sessionUsageOpen: true, sessionInfoOpen: false, contextOpen: false },
+    ),
+  closeSessionUsage: () => set({ sessionUsageOpen: false }),
 
   openUsage: () => set({ usageOpen: true }),
   closeUsage: () => set({ usageOpen: false }),
