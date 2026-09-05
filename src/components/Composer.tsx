@@ -33,7 +33,7 @@ import {
   IMAGE_THUMB_CLASS,
 } from '../theme/layout'
 import { IconGlyph } from './IconGlyph'
-import { X } from 'lucide-react'
+import { ArrowDown, ArrowDownToLine, X } from 'lucide-react'
 import { fmtTok } from '../format'
 import { SlashMenu } from './SlashMenu'
 import { FilePickerMenu } from './FilePickerMenu'
@@ -1327,10 +1327,11 @@ export function Composer() {
                 {/* 生成速度（字符/秒）：host 推送的 gen_rate（流式实时，输出结束清除）。 */}
                 {busy && genRateLabel != null && (
                   <span
-                    className="tabular-nums text-gn-gray"
+                    className="flex items-center gap-0.5 tabular-nums text-gn-gray"
                     title={`生成速度 ≈${genRateLabel} 字符/s（host 推送的 gen_rate 字符吞吐；只在输出过程中显示，输出结束清除）`}
                   >
-                    ⇣{genRateLabel}c
+                    <ArrowDown size={10} aria-hidden />
+                    {genRateLabel}c
                   </span>
                 )}
                 {/* [↓] send-to-background (TUI DemoteToBackground) — hover
@@ -1353,9 +1354,10 @@ export function Composer() {
                           })
                         })
                     }}
-                    className="rounded px-1.5 py-[2px] text-gn-gray hover:bg-gn-bg-highlight hover:text-gn-cyan min-h-6 sm:min-h-0"
+                    className="flex items-center rounded p-1 text-gn-gray hover:bg-gn-bg-highlight hover:text-gn-cyan min-h-6 sm:min-h-0"
+                    aria-label="将当前命令转入后台"
                   >
-                    [↓]
+                    <ArrowDownToLine size={12} aria-hidden />
                   </button>
                 )}
                 {busy && (

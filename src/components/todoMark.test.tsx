@@ -8,13 +8,13 @@ describe('TodoMark', () => {
     expect(done.container.querySelector('svg')).not.toBeNull()
 
     const doing = render(<TodoMark status="in_progress" />)
-    expect(doing.container.textContent).toBe('▶')
+    expect(doing.container.querySelector('svg.lucide-play')).not.toBeNull()
 
     const cancelled = render(<TodoMark status="cancelled" />)
     expect(cancelled.container.querySelector('svg')).not.toBeNull()
 
     const pending = render(<TodoMark status="pending" />)
-    expect(pending.container.textContent).toBe('□')
+    expect(pending.container.querySelector('svg.lucide-square')).not.toBeNull()
   })
 
   it('CheckMarkIcon 独立渲染', () => {

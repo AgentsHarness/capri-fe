@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { X } from 'lucide-react'
+import { Check, Circle, Play, X } from 'lucide-react'
 import { useChatStore } from '../store/chat'
 import type { WorkflowRun } from '../store/chat'
 import { fmtElapsedCompact, fmtTok } from '../format'
@@ -286,20 +286,20 @@ function runElapsedMs(run: WorkflowRun): number | undefined {
 }
 
 /** TUI agent_glyph_and_style (workflows.rs): ● running · ✓ done ·
- *  ✗ failed · ◌ other. */
+ *  ✗ failed · ◌ other — 用 lucide 等价图标呈现。 */
 function agentGlyph(state?: string) {
   switch (state) {
     case 'running':
-      return <span className="text-gn-plan">●</span>
+      return <Circle size={11} className="fill-current text-gn-plan" aria-hidden />
     case 'done':
     case 'completed':
     case 'complete':
-      return <span className="text-gn-green">✓</span>
+      return <Check size={11} className="text-gn-green" aria-hidden />
     case 'failed':
     case 'interrupted':
-      return <span className="text-gn-red">✗</span>
+      return <X size={11} className="text-gn-red" aria-hidden />
     default:
-      return <span className="text-gn-gray-dim">◌</span>
+      return <Circle size={11} className="text-gn-gray-dim" aria-hidden />
   }
 }
 
@@ -513,8 +513,12 @@ function RunDetail({ run }: { run: WorkflowRun }) {
  current ? 'text-gn-plan' : 'text-gn-muted'
                   }`}
                 >
-                  <span className="w-4 shrink-0" aria-hidden>
-                    {current ? '▶' : '·'}
+                  <span className="flex w-4 shrink-0 items-center justify-center" aria-hidden>
+                    {current ? (
+                      <Play size={10} className="fill-current" />
+                    ) : (
+                      <Circle size={8} className="fill-current" />
+                    )}
                   </span>
                   <span className="min-w-0 flex-1 truncate" title={ph.title}>
                     {ph.title}

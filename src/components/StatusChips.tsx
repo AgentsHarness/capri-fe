@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ReactNode, RefObject } from 'react'
 import { createPortal } from 'react-dom'
+import { Blocks, Repeat } from 'lucide-react'
 import { Glyphs, SPINNER_FRAMES } from '../theme/glyphs'
 import {
   fillAllLiteTurns,
@@ -909,9 +910,7 @@ export function RunningTasksBar({
                 className="group flex min-h-6 items-center gap-1.5 py-[2px] text-[12px] leading-snug hover:bg-gn-bg-highlight"
                 title={t.prompt || t.taskId}
               >
-                <span className="shrink-0 font-mono text-[11px] text-gn-plan" aria-hidden>
-                  ↻
-                </span>
+                <Repeat size={11} className="shrink-0 text-gn-plan" aria-hidden />
                 <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-gn-fg">
                   {t.prompt || `Task ${t.taskId.slice(0, 8)}`}
                 </span>
@@ -996,9 +995,7 @@ export function McpChip({ onOpen }: { onOpen: () => void }) {
       className="shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-gray-dim hover:bg-gn-bg-highlight hover:text-gn-muted"
       title={`MCP 服务器 ${connected}/${total} 已连接 · 点击打开 MCP 面板`}
     >
-      <span className="mr-1" aria-hidden>
-        ⠋
-      </span>
+      <Blocks size={11} className="mr-1 shrink-0" aria-hidden />
       MCP ({connected}/{total})
     </button>
   )

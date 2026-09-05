@@ -142,8 +142,11 @@ describe('GitPanel — 打开/关闭与状态', () => {
     expect(screen.getByText('b.ts')).not.toBeNull()
     expect(screen.getByText('c.ts')).not.toBeNull()
     expect(screen.getByTitle('main')).not.toBeNull()
-    expect(screen.getByText('↑2')).not.toBeNull()
-    expect(screen.getByText('↓1')).not.toBeNull()
+    expect(screen.getByLabelText('查看 2 个未推送的提交')).not.toBeNull()
+    // behind 徽章（带 title 提示）文本含数量
+    expect(
+      screen.getByTitle('落后上游的提交（打开面板时会静默 fetch，数字更准）')?.textContent,
+    ).toContain('1')
     expect(screen.getByText('1 staged · 1 modified · 1 untracked')).not.toBeNull()
     expect(screen.getByText('已暂存')).not.toBeNull()
     expect(screen.getByText('已修改')).not.toBeNull()
@@ -191,7 +194,7 @@ describe('GitPanel — 打开/关闭与状态', () => {
   it('工作区无改动 → 空态', async () => {
     transport.gitStatus.mockResolvedValue({ branch: 'main', staged: [], unstaged: [] })
     render(<GitPanel open onClose={() => {}} />)
-    expect(await screen.findByText('工作区没有改动 ✓')).not.toBeNull()
+    expect(await screen.findByText('工作区没有改动')).not.toBeNull()
   })
 
   it('Esc / 背景点击关闭', async () => {
@@ -407,6 +410,23 @@ describe('GitPanel — 操作按钮', () => {
       expect(transport.gitCheckout).toHaveBeenCalledWith({ cwd: '/work', branch: 'dev' }),
     )
     await waitFor(() => expect(transport.gitBranches).toHaveBeenCalledTimes(2))
+  })
+
+  it('分支行「切换」按钮 → 两段确认 checkout', async () => {
+    render(<GitPanel open onClose={() => {}} />)
+    await screen.findByText('a.ts')
+    fireEvent.click(screen.getByRole('tab', { name: '分支与同步' }))
+
+    const switchBtn = await screen.findByRole('button', { name: '切换' })
+    fireEvent.click(switchBtn)
+    // 第一击 → 进入待确认态（文案变「确认」），尚未 checkout
+    expect(screen.getByRole('button', { name: '确认' })).not.toBeNull()
+    expect(transport.gitCheckout).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: '确认' }))
+    await waitFor(() =>
+      expect(transport.gitCheckout).toHaveBeenCalledWith({ cwd: '/work', branch: 'dev' }),
+    )
   })
 
   it('当前分支按钮禁用；操作失败 → opError 行', async () => {
@@ -668,7 +688,7 @@ describe('GitPanel — 移动端多Tab与高级特性', () => {
     expect(document.querySelector('svg path')).not.toBeNull()
   })
 
-  it('历史 tab 列宽：拖拽表头分隔柄调整并持久化', async () => {
+  it('历史 tab 列宽：分隔柄跟随光标（左列变宽、右邻让位）并持久化', async () => {
     localStorage.removeItem('capri-fe.gitLogColWidths')
     render(<GitPanel open onClose={() => {}} />)
     await screen.findByText('a.ts')
@@ -677,21 +697,32 @@ describe('GitPanel — 移动端多Tab与高级特性', () => {
     // 默认作者列宽 110px（行单元格与表头联动）
     const authorCell = await screen.findByTitle('Alice')
     expect(authorCell.style.width).toBe('110px')
+    const dateCell = screen.getByTitle('2020-09-13T12:26:40.000Z')
 
-    // 拖拽分隔柄 +50px → 列宽 160px
-    const handle = screen.getByRole('separator', { name: '调整作者列宽' })
-    fireEvent.pointerDown(handle, { clientX: 100, pointerId: 1 })
-    fireEvent.pointerMove(handle, { clientX: 150, pointerId: 1 })
-    fireEvent.pointerUp(handle, { pointerId: 1 })
+    // 拖「作者|日期」分隔柄 +50px → 作者变宽，日期让位
+    const authorHandle = screen.getByRole('separator', { name: '调整作者列宽' })
+    fireEvent.pointerDown(authorHandle, { clientX: 100, pointerId: 1 })
+    fireEvent.pointerMove(authorHandle, { clientX: 150, pointerId: 1 })
+    fireEvent.pointerUp(authorHandle, { pointerId: 1 })
     expect(authorCell.style.width).toBe('160px')
+    expect(dateCell.style.width).toBe('70px')
 
-    // 键盘 ←/→ 步进 8px
-    fireEvent.keyDown(handle, { key: 'ArrowRight' })
-    expect(authorCell.style.width).toBe('168px')
+    // 键盘 →：作者列继续 +8（日期只剩 6px 余量）
+    fireEvent.keyDown(authorHandle, { key: 'ArrowRight' })
+    expect(authorCell.style.width).toBe('166px')
+
+    // 拖「提交信息|作者」分隔柄 +50px → 作者让位，日期不动
+    const messageHandle = screen.getByRole('separator', { name: '调整提交信息列宽' })
+    fireEvent.pointerDown(messageHandle, { clientX: 200, pointerId: 1 })
+    fireEvent.pointerMove(messageHandle, { clientX: 250, pointerId: 1 })
+    fireEvent.pointerUp(messageHandle, { pointerId: 1 })
+    expect(authorCell.style.width).toBe('116px')
+    expect(dateCell.style.width).toBe('64px')
 
     // 持久化到 localStorage
     expect(JSON.parse(localStorage.getItem('capri-fe.gitLogColWidths') ?? '{}')).toMatchObject({
-      author: 168,
+      author: 116,
+      date: 64,
     })
   })
 

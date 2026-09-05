@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { Copy, Network, Pencil, RefreshCw, Trash2, Zap } from 'lucide-react'
+import { Copy, Network, Pencil, RefreshCw, Trash2, X, Zap } from 'lucide-react'
 import type { HostInfo } from '../api/types'
 import { transport } from '../api/client'
 import { useChatStore } from '../store/chat'
@@ -187,10 +187,10 @@ export function ModalShell({
           <button
             type="button"
             onClick={onClose}
-            className="ml-auto rounded px-2 py-0.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+            className="ml-auto rounded p-1 text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
             aria-label="关闭"
           >
-            ✕
+            <X size={13} aria-hidden />
           </button>
         </header>
         {children}

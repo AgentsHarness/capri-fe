@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Plus, Search, Zap } from 'lucide-react'
+import { Plus, Search, X, Zap } from 'lucide-react'
 import { transport } from '../api/client'
 import type { CustomModelConfig } from '../api/types'
 import { compareCustomModels } from '../lib/quickAddModels'
@@ -771,9 +771,10 @@ function KVEditor({
               delete next[k]
               onChange(Object.keys(next).length > 0 ? next : undefined)
             }}
-            className="rounded px-1 text-[11px] text-gn-muted hover:text-gn-red"
+            className="rounded p-0.5 text-gn-muted hover:text-gn-red"
+            aria-label="删除该行"
           >
-            ✕
+            <X size={11} aria-hidden />
           </button>
         </div>
       ))}
@@ -865,9 +866,10 @@ function EffortListEditor({
           <button
             type="button"
             onClick={() => update(rows.filter((_, j) => j !== i))}
-            className="rounded px-1 text-[11px] text-gn-muted hover:text-gn-red"
+            className="rounded p-0.5 text-gn-muted hover:text-gn-red"
+            aria-label="删除该行"
           >
-            ✕
+            <X size={11} aria-hidden />
           </button>
         </div>
       ))}

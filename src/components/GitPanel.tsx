@@ -8,6 +8,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronUp,
+  CircleHelp,
   Clock,
   Copy,
   GitBranch as GitBranchIcon,
@@ -303,12 +304,16 @@ function formatGitDate(value: string): string {
  */
 type LogColWidths = { author: number; date: number; hash: number }
 const LOG_COL_DEFAULTS: LogColWidths = { author: 110, date: 120, hash: 64 }
-const LOG_COL_MIN = 48
+const LOG_COL_MIN: Record<keyof LogColWidths, number> = { author: 48, date: 64, hash: 48 }
 const LOG_COL_MAX = 360
+/** 提交信息列（flex 剩余空间）的宽度底线。 */
+const LOG_MESSAGE_MIN = 120
+/** 表头/行容器 px-1.5 的左右内边距合计，测容器宽算信息列实际宽时扣掉。 */
+const LOG_HEADER_PAD_X = 12
 
 function clampLogColWidth(w: unknown): number {
   return typeof w === 'number' && Number.isFinite(w)
-    ? Math.min(LOG_COL_MAX, Math.max(LOG_COL_MIN, Math.round(w)))
+    ? Math.min(LOG_COL_MAX, Math.max(LOG_COL_MIN.author, Math.round(w)))
     : 0
 }
 
@@ -323,48 +328,124 @@ function loadLogColWidths(): LogColWidths {
   }
 }
 
+/** 可拖的分隔线：以线左侧列命名（message = 提交信息|作者 之间的线）。 */
+type LogDivider = 'message' | 'author' | 'date'
+
 /**
- * 表头列宽拖拽柄（右缘 8px 热区）：pointer capture 下拖动，鼠标/触摸通用；
- * 键盘聚焦后 ←/→ 步进 8px。挂在可调列的表头单元格内，行宽随 state 联动。
+ * 分隔线拖拽的宽度分配：左列变宽多少，右邻列（不够再往右）就让多少，
+ * 保证被拖的线始终贴住光标——行布局是 [图谱][信息 flex][作者][日期][哈希]，
+ * 弹性列在左侧，若让弹性列吸收增量，分界线会往反方向跑（Swing 表格
+ * NEXT_COLUMN 模式的等价物）。
+ */
+function computeDividerWidths(
+  boundary: LogDivider,
+  dx: number,
+  snap: { widths: LogColWidths; contentW: number; graphW: number },
+): LogColWidths {
+  const s = snap.widths
+  const next = { ...s }
+  if (dx === 0) return next
+  if (boundary === 'message') {
+    if (dx > 0) {
+      // 信息列变宽：依次向作者/日期/哈希要空间（各自不低于下限）
+      let need = dx
+      for (const col of ['author', 'date', 'hash'] as const) {
+        const give = Math.min(need, next[col] - LOG_COL_MIN[col])
+        next[col] -= give
+        need -= give
+        if (need <= 0) break
+      }
+    } else {
+      // 信息列收窄：空间给作者列，底线是信息列自身不小于 LOG_MESSAGE_MIN
+      const message = snap.contentW - snap.graphW - s.author - s.date - s.hash
+      const give = Math.min(-dx, Math.max(0, message - LOG_MESSAGE_MIN), LOG_COL_MAX - s.author)
+      next.author = s.author + give
+    }
+  } else if (boundary === 'author') {
+    if (dx > 0) {
+      const give = Math.min(dx, s.date - LOG_COL_MIN.date)
+      next.author = s.author + give
+      next.date = s.date - give
+    } else {
+      const give = Math.min(-dx, s.author - LOG_COL_MIN.author)
+      next.author = s.author - give
+      next.date = s.date + give
+    }
+  } else {
+    if (dx > 0) {
+      const give = Math.min(dx, s.hash - LOG_COL_MIN.hash)
+      next.date = s.date + give
+      next.hash = s.hash - give
+    } else {
+      const give = Math.min(-dx, s.date - LOG_COL_MIN.date)
+      next.date = s.date - give
+      next.hash = s.hash + give
+    }
+  }
+  return next
+}
+
+/**
+ * 表头列宽分隔柄：右缘 8px 热区、中央 1px 可见分隔线（悬停/拖动高亮）。
+ * pointer capture 下拖动，鼠标/触摸通用；键盘聚焦后 ←/→ 步进 8px。
+ * 拖拽期间接管 body 光标与禁选中，快速甩出热区也不丢手感。
  */
 function LogColHandle({
   label,
-  width,
-  onResize,
+  onDragStart,
+  onDrag,
 }: {
   label: string
-  width: number
-  onResize: (next: number) => void
+  onDragStart: () => void
+  onDrag: (dx: number) => void
 }) {
-  const drag = useRef<{ startX: number; startW: number } | null>(null)
+  const drag = useRef<{ startX: number } | null>(null)
+  // 面板在拖拽中关掉时还原 body 光标/选中态
+  useEffect(
+    () => () => {
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    },
+    [],
+  )
   return (
     <span
       role="separator"
       aria-orientation="vertical"
       aria-label={label}
       tabIndex={0}
-      className="absolute -right-1 top-0 z-10 h-full w-2 cursor-col-resize touch-none select-none hover:bg-gn-cyan/30 focus-visible:bg-gn-cyan/40 focus-visible:outline-none"
+      className="group absolute -right-1 top-0 z-10 flex h-full w-2 cursor-col-resize touch-none select-none items-center justify-center"
       onPointerDown={(e) => {
-        drag.current = { startX: e.clientX, startW: width }
+        drag.current = { startX: e.clientX }
         // jsdom 未实现 pointer capture；真实浏览器里丢了 capture 快速拖动会甩丢事件。
         e.currentTarget.setPointerCapture?.(e.pointerId)
         e.preventDefault()
+        onDragStart()
+        document.body.style.cursor = 'col-resize'
+        document.body.style.userSelect = 'none'
       }}
       onPointerMove={(e) => {
-        if (drag.current) onResize(drag.current.startW + e.clientX - drag.current.startX)
+        if (drag.current) onDrag(e.clientX - drag.current.startX)
       }}
       onPointerUp={() => {
         drag.current = null
+        document.body.style.cursor = ''
+        document.body.style.userSelect = ''
       }}
       onPointerCancel={() => {
         drag.current = null
+        document.body.style.cursor = ''
+        document.body.style.userSelect = ''
       }}
       onKeyDown={(e) => {
         if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
         e.preventDefault()
-        onResize(width + (e.key === 'ArrowRight' ? 8 : -8))
+        onDragStart()
+        onDrag(e.key === 'ArrowRight' ? 8 : -8)
       }}
-    />
+    >
+      <span className="h-full w-px bg-gn-prompt-border/70 transition-colors group-hover:bg-gn-cyan group-active:bg-gn-cyan group-focus-visible:bg-gn-cyan" />
+    </span>
   )
 }
 
@@ -569,9 +650,13 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
   const [stashLoading, setStashLoading] = useState(false)
   // 历史 tab 列宽：拖动中实时更新 state（行随表头联动），落盘见下方 effect。
   const [logColWidths, setLogColWidths] = useState<LogColWidths>(loadLogColWidths)
-  const updateLogColWidth = useCallback((col: keyof LogColWidths, w: number) => {
-    setLogColWidths((prev) => ({ ...prev, [col]: clampLogColWidth(w) || LOG_COL_DEFAULTS[col] }))
-  }, [])
+  const logHeaderRef = useRef<HTMLDivElement>(null)
+  const colDrag = useRef<{
+    boundary: LogDivider
+    widths: LogColWidths
+    contentW: number
+    graphW: number
+  } | null>(null)
   useEffect(() => {
     saveJSON(KEY.gitLogColWidths, logColWidths)
   }, [logColWidths])
@@ -858,6 +943,25 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
     () => buildGitGraph(filteredCommits),
     [filteredCommits],
   )
+
+  // 列宽拖拽：pointerdown 时对当前宽度/容器宽/图谱宽做快照，move 期间
+  // 一律从快照推算，避免增量在 clamp 时累积误差。
+  const beginColDrag = useCallback(
+    (boundary: LogDivider) => {
+      colDrag.current = {
+        boundary,
+        widths: logColWidths,
+        contentW: (logHeaderRef.current?.clientWidth ?? 0) - LOG_HEADER_PAD_X,
+        graphW: graphWidth,
+      }
+    },
+    [logColWidths, graphWidth],
+  )
+  const dragColDivider = useCallback((boundary: LogDivider, dx: number) => {
+    const snap = colDrag.current
+    if (snap?.boundary !== boundary) return
+    setLogColWidths(computeDividerWidths(boundary, dx, snap))
+  }, [])
 
   const selectedCommit = useMemo(() => {
     if (!selectedCommitHash) return undefined
@@ -1149,9 +1253,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                 title={branch}
                 className="flex min-w-0 max-w-[38vw] items-center gap-1 truncate rounded px-1 py-0.5 font-mono text-[12px] text-gn-cyan hover:bg-gn-bg-highlight sm:max-w-[220px]"
               >
-                <span className="shrink-0" aria-hidden>
-                  ⎇
-                </span>
+                <GitBranchIcon size={12} className="shrink-0" aria-hidden />
                 <span className="truncate">{branch === '(detached)' ? 'detached' : branch}</span>
               </button>
               {(status?.ahead ?? 0) > 0 && (
@@ -1167,7 +1269,8 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                   }`}
                   title="领先上游的未推送提交 — 点击查看列表"
                 >
-                  ↑{status?.ahead}
+                  <ArrowUp size={10} className="shrink-0" aria-hidden />
+                  {status?.ahead}
                   {showUnpushed ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
                 </button>
               )}
@@ -1176,7 +1279,8 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                   className="shrink-0 rounded bg-gn-bg-highlight px-1.5 py-1 font-mono text-[11px] font-bold text-gn-muted"
                   title="落后上游的提交（打开面板时会静默 fetch，数字更准）"
                 >
-                  ↓{status?.behind}
+                  <ArrowDown size={10} className="shrink-0" aria-hidden />
+                  {status?.behind}
                 </span>
               )}
             </div>
@@ -1507,7 +1611,14 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                       )}
                       {!loading && visibleRowCount === 0 && (
                         <div className="px-3 py-8 text-center text-[12px] text-gn-muted">
-                          {rows.length === 0 ? '工作区没有改动 ✓' : '当前筛选没有文件'}
+                          {rows.length === 0 ? (
+                            <span className="inline-flex items-center gap-1">
+                              工作区没有改动
+                              <Check size={12} className="text-gn-green" aria-hidden />
+                            </span>
+                          ) : (
+                            '当前筛选没有文件'
+                          )}
                         </div>
                       )}
 
@@ -1716,26 +1827,43 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                       selectedCommit ? 'hidden sm:flex sm:flex-1' : 'flex flex-1'
                     }`}
                   >
-                    <div className="flex shrink-0 items-center border-b border-gn-prompt-border/40 bg-gn-bg-base/80 px-1.5 py-1 text-[10px] font-medium uppercase tracking-wider text-gn-gutter select-none">
+                    <div
+                      ref={logHeaderRef}
+                      className="flex shrink-0 items-center border-b border-gn-prompt-border/40 bg-gn-bg-base/80 px-1.5 py-1 text-[10px] font-medium uppercase tracking-wider text-gn-gutter select-none"
+                    >
                       <span style={{ width: graphWidth }} className="shrink-0" aria-hidden="true" />
-                      <span className="min-w-0 flex-1">提交信息</span>
+                      <span className="relative min-w-0 flex-1 pr-2">
+                        提交信息
+                        <LogColHandle
+                          label="调整提交信息列宽"
+                          onDragStart={() => beginColDrag('message')}
+                          onDrag={(dx) => dragColDivider('message', dx)}
+                        />
+                      </span>
                       <span
-                        className="relative hidden shrink-0 text-left md:inline"
+                        className="relative hidden shrink-0 px-2 text-left md:inline"
                         style={{ width: logColWidths.author }}
                       >
                         作者
-                        <LogColHandle label="调整作者列宽" width={logColWidths.author} onResize={(w) => updateLogColWidth('author', w)} />
+                        <LogColHandle
+                          label="调整作者列宽"
+                          onDragStart={() => beginColDrag('author')}
+                          onDrag={(dx) => dragColDivider('author', dx)}
+                        />
                       </span>
                       <span
-                        className="relative hidden shrink-0 text-left sm:inline"
+                        className="relative hidden shrink-0 px-2 text-left sm:inline"
                         style={{ width: logColWidths.date }}
                       >
                         日期
-                        <LogColHandle label="调整日期列宽" width={logColWidths.date} onResize={(w) => updateLogColWidth('date', w)} />
+                        <LogColHandle
+                          label="调整日期列宽"
+                          onDragStart={() => beginColDrag('date')}
+                          onDrag={(dx) => dragColDivider('date', dx)}
+                        />
                       </span>
-                      <span className="relative shrink-0 text-right" style={{ width: logColWidths.hash }}>
+                      <span className="shrink-0 pl-2 text-left" style={{ width: logColWidths.hash }}>
                         哈希
-                        <LogColHandle label="调整哈希列宽" width={logColWidths.hash} onResize={(w) => updateLogColWidth('hash', w)} />
                       </span>
                     </div>
 
@@ -1763,28 +1891,28 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                               }`}
                             >
                               <GitGraphCell row={gitGraphRows[index]} width={graphWidth} />
-                              <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate">
+                              <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate pr-2">
                                 {renderRefBadges(c.refs)}
                                 <span className="truncate font-mono" title={c.message}>
                                   {c.message}
                                 </span>
                               </span>
                               <span
-                                className="hidden shrink-0 truncate font-mono text-[11px] text-gn-muted md:inline"
+                                className="hidden shrink-0 truncate px-2 font-mono text-[11px] text-gn-muted md:inline"
                                 style={{ width: logColWidths.author }}
                                 title={c.author}
                               >
                                 {c.author}
                               </span>
                               <span
-                                className="hidden shrink-0 truncate text-[11px] text-gn-muted sm:inline"
+                                className="hidden shrink-0 truncate px-2 text-[11px] text-gn-muted sm:inline"
                                 style={{ width: logColWidths.date }}
                                 title={c.date}
                               >
                                 {formatGitDate(c.date)}
                               </span>
                               <span
-                                className="shrink-0 text-right font-mono text-[10.5px] text-gn-cyan"
+                                className="shrink-0 pl-2 text-left font-mono text-[10.5px] text-gn-cyan"
                                 style={{ width: logColWidths.hash }}
                               >
                                 {c.shortHash}
@@ -1946,9 +2074,19 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                   <div className="flex min-w-0 items-center gap-2">
                     <UploadCloud size={16} className="shrink-0 text-gn-cyan" />
                     <span className="text-[13px] font-medium text-gn-fg">远程仓库同步</span>
-                    <span className="ml-1 font-mono text-[11px] text-gn-muted">
-                      {status?.ahead ? `领先 ↑${status.ahead}` : '已是最新'}
-                      {status?.behind ? ` · 落后 ↓${status.behind}` : ''}
+                    <span className="ml-1 flex min-w-0 items-center gap-1 font-mono text-[11px] text-gn-muted">
+                      {status?.ahead ? (
+                        <span className="flex shrink-0 items-center gap-0.5">
+                          领先 <ArrowUp size={10} aria-hidden /> {status.ahead}
+                        </span>
+                      ) : (
+                        '已是最新'
+                      )}
+                      {status?.behind ? (
+                        <span className="flex shrink-0 items-center gap-0.5">
+                          {'· 落后'} <ArrowDown size={10} aria-hidden /> {status.behind}
+                        </span>
+                      ) : null}
                     </span>
                   </div>
                   <div className="grid grid-cols-3 gap-1.5 sm:flex sm:items-center">
@@ -2095,8 +2233,14 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                                 b.current ? 'font-medium text-gn-green' : 'text-gn-fg2 hover:text-gn-fg'
                               }`}
                             >
-                              <span className="w-3.5 shrink-0 text-[10.5px]">
-                                {b.current ? '✓' : armed ? '?' : '⎇'}
+                              <span className="flex w-3.5 shrink-0 items-center justify-center">
+                                {b.current ? (
+                                  <Check size={11} className="text-gn-green" aria-hidden />
+                                ) : armed ? (
+                                  <CircleHelp size={11} className="text-gn-yellow" aria-hidden />
+                                ) : (
+                                  <GitBranchIcon size={11} aria-hidden />
+                                )}
                               </span>
                               <span className="truncate">{b.name}</span>
                               {b.upstream && (
@@ -2104,20 +2248,35 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                               )}
                             </button>
                             {!b.current && (
-                              <button
-                                type="button"
-                                disabled={busy}
-                                onClick={() => {
-                                  void runOp(`删除分支 ${b.name}`, async () => {
-                                    await transport.gitBranchDelete?.({ cwd, branch: b.name, force: true })
-                                    await refreshBranches()
-                                  })
-                                }}
-                                className="p-1.5 text-gn-muted transition-colors hover:text-gn-red sm:p-1"
-                                title="删除此分支"
-                              >
-                                <Trash2 size={12} />
-                              </button>
+                              <div className="flex shrink-0 items-center gap-1">
+                                <button
+                                  type="button"
+                                  disabled={busy}
+                                  onClick={() => onCheckoutClick(b)}
+                                  className={`shrink-0 rounded border px-2 py-1 text-[10.5px] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                                    armed
+                                      ? 'border-gn-cyan/60 bg-gn-cyan/15 text-gn-cyan'
+                                      : 'border-gn-prompt-border bg-gn-bg-base text-gn-fg hover:bg-gn-bg-highlight'
+                                  }`}
+                                  title={armed ? '再点一次确认切换' : '切换到此分支'}
+                                >
+                                  {armed ? '确认' : '切换'}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={busy}
+                                  onClick={() => {
+                                    void runOp(`删除分支 ${b.name}`, async () => {
+                                      await transport.gitBranchDelete?.({ cwd, branch: b.name, force: true })
+                                      await refreshBranches()
+                                    })
+                                  }}
+                                  className="p-1.5 text-gn-muted transition-colors hover:text-gn-red sm:p-1"
+                                  title="删除此分支"
+                                >
+                                  <Trash2 size={12} />
+                                </button>
+                              </div>
                             )}
                           </div>
                         )
@@ -2131,14 +2290,6 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                         <GitPullRequest size={15} className="text-gn-muted" /> Stash 暂存箱
                         <span className="font-mono text-[10.5px] font-normal text-gn-muted">({stashes.length})</span>
                       </span>
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={onStashClick}
-                        className="rounded border border-gn-prompt-border bg-gn-bg-base px-2 py-1 text-[10.5px] text-gn-fg hover:bg-gn-bg-highlight disabled:opacity-40"
-                      >
-                        暂存当前改动 (Stash)
-                      </button>
                     </div>
 
                     <div className="gn-no-scrollbar mt-2.5 min-h-[140px] max-h-[360px] flex-1 space-y-1 overflow-y-auto">

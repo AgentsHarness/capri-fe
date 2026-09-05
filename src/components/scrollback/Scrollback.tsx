@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { ArrowUp } from 'lucide-react'
 import type { ScrollEntry } from '../../api/types'
 import { useChatStore } from '../../store/chat'
 import {
@@ -422,7 +423,10 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
           ) : historyLoadError ? (
             <span className="text-gn-red">{historyLoadError} · 点击重试</span>
           ) : (
-            '↑ 点击或在顶部上拉加载上一轮'
+            <span className="inline-flex items-center gap-1">
+              <ArrowUp size={10} aria-hidden />
+              点击或在顶部上拉加载上一轮
+            </span>
           )}
         </button>
       )}

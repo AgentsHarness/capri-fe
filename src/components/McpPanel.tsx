@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Copy,
   ExternalLink,
+  Globe,
   Play,
   Plus,
   RefreshCw,
@@ -582,7 +583,7 @@ export function McpPanel({
                             className="flex items-center gap-1.5 font-mono text-[11px] text-gn-muted bg-gn-bg-base/60 px-2 py-0.5 rounded border border-gn-prompt-border/40"
                             title={s.url}
                           >
-                            <span className="text-gn-gutter">🌐</span>
+                            <Globe size={11} className="shrink-0 text-gn-gutter" aria-hidden />
                             <span className="truncate">{s.url}</span>
                           </div>
                         ) : null}
