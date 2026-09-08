@@ -345,6 +345,68 @@ describe('handleExtMiscEvent — modes_update 同步 composer plan', () => {
   })
 })
 
+describe('handleExtMiscEvent — commands_update / config_options_update / model', () => {
+  it('availableCommands 写入当前会话 slash 菜单', () => {
+    const { set, get, state } = makeStore({ sessionId: 's1', agentCommands: [] })
+    handleExtMiscEvent(set, get, {
+      type: 'commands_update',
+      sessionId: 's1',
+      availableCommands: [{ name: 'deploy', description: 'deploy app', input: { hint: 'env' } }],
+    } as AcpEvent)
+    expect(state().agentCommands).toEqual([
+      { name: 'deploy', description: 'deploy app', argHint: 'env' },
+    ])
+  })
+
+  it('非当前会话的 commands_update 不改 slash 菜单', () => {
+    const { set, get, state } = makeStore({
+      sessionId: 's1',
+      agentCommands: [{ name: 'keep', description: 'k' }],
+    })
+    handleExtMiscEvent(set, get, {
+      type: 'commands_update',
+      sessionId: 'other',
+      commands: [{ name: 'deploy', description: 'd' }],
+    } as AcpEvent)
+    expect(state().agentCommands).toEqual([{ name: 'keep', description: 'k' }])
+  })
+
+  it('config_options_update 同步模型名与思考档位', () => {
+    const { set, get, state } = makeStore({ sessionId: 's1' })
+    handleExtMiscEvent(set, get, {
+      type: 'config_options_update',
+      sessionId: 's1',
+      configOptions: [
+        {
+          id: 'model',
+          currentValue: 'grok-4',
+          options: [{ value: 'grok-4', name: 'Grok 4' }],
+        },
+        { id: 'reasoning_effort', currentValue: 'high' },
+      ],
+    } as AcpEvent)
+    expect(state().modelName).toBe('Grok 4')
+    expect(state().reasoningEffort).toBe('high')
+  })
+
+  it('model 换模且未带 effort → 清掉旧模型档位', () => {
+    const { set, get, state } = makeStore({
+      sessionId: 's1',
+      modelName: 'Grok 3',
+      reasoningEffort: 'high',
+      workspaces: [],
+    })
+    handleExtMiscEvent(set, get, {
+      type: 'model',
+      sessionId: 's1',
+      modelId: 'grok-4',
+      modelName: 'Grok 4',
+    } as AcpEvent)
+    expect(state().modelName).toBe('Grok 4')
+    expect(state().reasoningEffort).toBeUndefined()
+  })
+})
+
 describe('handleExtMiscEvent — search_fuzzy_status（@ 文件选择器引擎流）', () => {
   // 真实 wire 形状（host 转发 x.ai/search/fuzzy/status）：path 是**绝对路径**，
   // indices 却是**相对 cwd** 的字符偏移，顶层 sessionId 是 agent 自报的

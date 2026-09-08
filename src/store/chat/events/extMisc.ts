@@ -384,11 +384,18 @@ export function handleExtMiscEvent(
               (ev.modelName && String(ev.modelName).trim()) ||
               (ev.modelId && String(ev.modelId).trim()) ||
               undefined
+            const effort =
+              ev.reasoningEffort && String(ev.reasoningEffort).trim()
+                ? String(ev.reasoningEffort).trim()
+                : undefined
+            const modelChanged = name != null && name !== get().modelName
             set({
               modelName: name,
-              reasoningEffort: ev.reasoningEffort
-                ? String(ev.reasoningEffort)
-                : get().reasoningEffort,
+              ...(effort
+                ? { reasoningEffort: effort }
+                : modelChanged
+                  ? { reasoningEffort: undefined }
+                  : {}),
             })
           }
         }
@@ -449,10 +456,18 @@ export function handleExtMiscEvent(
         })
         break
       case 'config_options_update': {
-        // Best-effort: ACP config options may carry current model id/name.
+        if (ev.sessionId && ev.sessionId !== get().sessionId) break
+        // Best-effort: ACP config options may carry current model id/name
+        // and reasoning_effort (composer 模型槽括号档位).
         const opts = ev.configOptions as
-          | Array<{ id?: string; type?: string; currentValue?: unknown; options?: Array<{ value?: string; name?: string }> }>
-          | { model?: string; modelId?: string; modelName?: string }
+          | Array<{
+              id?: string
+              type?: string
+              category?: string
+              currentValue?: unknown
+              options?: Array<{ value?: string; name?: string }>
+            }>
+          | { model?: string; modelId?: string; modelName?: string; reasoningEffort?: string }
           | undefined
         if (!opts) break
         if (Array.isArray(opts)) {
@@ -460,29 +475,50 @@ export function handleExtMiscEvent(
             (o) =>
               o?.id === 'model' ||
               o?.type === 'model' ||
+              o?.category === 'model' ||
               String(o?.id || '').toLowerCase().includes('model'),
           )
+          const effortOpt = opts.find(
+            (o) =>
+              o?.id === 'reasoning_effort' ||
+              o?.id === 'thought_level' ||
+              o?.category === 'thought_level',
+          )
+          const patch: Partial<ChatState> = {}
           if (modelOpt?.currentValue != null) {
             const cv = String(modelOpt.currentValue)
             const named = modelOpt.options?.find((x) => x.value === cv)?.name
-            set({ modelName: (named && String(named)) || cv })
+            patch.modelName = (named && String(named)) || cv
           }
+          if (effortOpt?.currentValue != null && String(effortOpt.currentValue).trim()) {
+            patch.reasoningEffort = String(effortOpt.currentValue).trim()
+          }
+          if (Object.keys(patch).length > 0) set(patch)
         } else {
           const name =
             (opts.modelName && String(opts.modelName)) ||
             (opts.modelId && String(opts.modelId)) ||
             (opts.model && String(opts.model))
-          if (name) set({ modelName: name })
+          const effort =
+            typeof opts.reasoningEffort === 'string' && opts.reasoningEffort.trim()
+              ? opts.reasoningEffort.trim()
+              : undefined
+          if (name || effort) {
+            set({
+              ...(name ? { modelName: name } : {}),
+              ...(effort ? { reasoningEffort: effort } : {}),
+            })
+          }
         }
         break
       }
       case 'commands_update': {
         // ACP `available_commands_update` (host-forwarded as
-        // `{type:'commands_update', commands, sessionId}` — `commands`
-        // is the agent's `AvailableCommand[]` passed through untouched).
-        // Defensive extraction: the array may be absent/malformed; only
-        // well-formed entries are kept (name required, rest best-effort).
-        const raw = ev.commands
+        // `{type:'commands_update', commands, sessionId}`). Live wire
+        // used to drop `availableCommands`; accept both keys. 非当前
+        // 会话不得改写本会话 slash 菜单。
+        if (ev.sessionId && ev.sessionId !== get().sessionId) break
+        const raw = ev.commands ?? ev.availableCommands
         const list = Array.isArray(raw) ? raw : []
         const agentCommands: AgentCommand[] = []
         for (const item of list) {

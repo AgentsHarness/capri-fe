@@ -32,6 +32,7 @@ describe('resetSessionState', () => {
     expect(partial.newSessionPending).toBe(false)
     expect(partial.awaitingNext).toBe(false)
     expect(partial.planMode).toBe(false)
+    expect(partial.agentCommands).toEqual([])
     expect(partial.pending).toEqual([])
     expect(partial.toolIndex).toEqual({})
     expect(partial.subagentIndex).toEqual({})

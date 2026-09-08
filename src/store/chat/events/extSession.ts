@@ -98,8 +98,11 @@ export function handleExtSessionEvent(
         // （host withSid 约定）不代表会话级变更，不做过滤。
         // The agent sends snake_case ({yolo_mode, auto_mode, permission_mode});
         // accept both spellings (camelCase first for host-normalized paths).
-        // applyModeFlags merges (absent keys never wipe local flags) and
-        // keeps planMode armed underneath permission broadcasts.
+        // applyModeFlags keeps planMode armed underneath permission
+        // broadcasts; a named permissionMode (ask/auto/always-approve)
+        // is authoritative for the yolo/auto flags when those keys are
+        // absent, so a lone permission_mode:ask cannot leave the
+        // composer stuck on always-approve.
         applyModeFlags(set, (ev.params ?? {}) as Record<string, unknown>)
         break
       case 'mcp_server_status': {

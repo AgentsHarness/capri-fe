@@ -277,6 +277,12 @@ export type AcpEvent =
       type: 'client_request_resolved'
       requestId: string
       sessionId?: string
+      /** 被结算的请求方法（x.ai/exit_plan_mode 等），旧 host 可能缺。 */
+      method?: string
+      cancelled?: boolean
+      error?: string
+      outcome?: string
+      result?: Record<string, unknown>
     }
   /**
    * Host: agent session/load is about to replay the conversation over SSE
@@ -300,8 +306,13 @@ export type AcpEvent =
     }
   /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
   | { type: 'modes_update'; modes?: unknown; sessionId?: string; msgSeq?: number }
-  | { type: 'config_options_update'; configOptions?: unknown; msgSeq?: number }
-  | { type: 'commands_update'; commands?: unknown }
+  | { type: 'config_options_update'; configOptions?: unknown; sessionId?: string; msgSeq?: number }
+  | {
+      type: 'commands_update'
+      commands?: unknown
+      availableCommands?: unknown
+      sessionId?: string
+    }
   | {
       type: 'session_info'
       /** 回放归一化序号（host msgSeq，仅历史回放事件携带）。 */

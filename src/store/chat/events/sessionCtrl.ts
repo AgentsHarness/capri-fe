@@ -7,6 +7,7 @@ import {
 } from '../pending'
 import { appendEntry } from '../entries'
 import { loadHistoryWithTaskProbe } from '../loadHistory'
+import { markPlanExitApproved } from '../modeFlags'
 export function handleSessionCtrlEvent(
   set: SetState,
   get: () => ChatState,
@@ -91,16 +92,34 @@ export function handleSessionCtrlEvent(
         const rid = ev.requestId
         if (!rid) break
         const s = get()
+        const card = s.xaiRequests.find((p) => p.requestId === rid)
         if (
           !s.pending.some((p) => p.requestId === rid) &&
-          !s.xaiRequests.some((r) => r.requestId === rid)
+          !card
         ) {
           break
         }
+        const method = ev.method || card?.method
+        const outcome =
+          ev.outcome ||
+          (ev.result && typeof ev.result.outcome === 'string' ? ev.result.outcome : undefined)
+        const cancelled =
+          ev.cancelled === true ||
+          outcome === 'cancelled' ||
+          (typeof ev.error === 'string' && ev.error.length > 0)
+        const leavePlan =
+          method === 'x.ai/exit_plan_mode' && !cancelled
         set({
           pending: s.pending.filter((p) => p.requestId !== rid),
           xaiRequests: s.xaiRequests.filter((r) => r.requestId !== rid),
+          ...(leavePlan
+            ? {
+                planMode: false,
+                ...(s.permissionMode === 'plan' ? { permissionMode: undefined } : {}),
+              }
+            : {}),
         })
+        if (leavePlan) markPlanExitApproved()
         break
       }
       case 'session_load_started': {

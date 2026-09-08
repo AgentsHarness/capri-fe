@@ -804,8 +804,13 @@ function envelopeToEventsRaw(e: RawEnvelope): AcpEvent[] {
       const ms = up.modeState ?? (typeof up.currentModeId === 'string' ? { currentModeId: up.currentModeId } : undefined)
       return ms ? [{ type: 'modes_update', modes: ms }] : []
     }
+    case 'available_commands_update':
+      return [{
+        type: 'commands_update',
+        commands: up.availableCommands ?? up.available_commands ?? up.commands,
+      }]
     case 'config_option_update':
-      return [{ type: 'config_options_update', configOptions: up.configOptions }]
+      return [{ type: 'config_options_update', configOptions: up.configOptions ?? up.options }]
     case 'session_info_update': {
       const titleIsManual = meta['x.ai/titleIsManual']
       return [{

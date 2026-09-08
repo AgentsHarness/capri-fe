@@ -100,3 +100,43 @@ describe('client_request 会话归属', () => {
     expect(state.respondXai).toHaveBeenCalledWith('r9', undefined, expect.stringContaining('前端不支持方法'))
   })
 })
+
+describe('client_request_resolved 退出 plan', () => {
+  it('另一端批准 exit_plan_mode → 清掉本页 plan 标记', () => {
+    const state = makeState({
+      planMode: true,
+      permissionMode: 'plan',
+      xaiRequests: [
+        { requestId: 'r2', method: 'x.ai/exit_plan_mode', params: {} },
+      ],
+    })
+    const { set, get } = bind(state)
+    handleSessionCtrlEvent(set, get, {
+      type: 'client_request_resolved',
+      requestId: 'r2',
+      method: 'x.ai/exit_plan_mode',
+      outcome: 'approved',
+    } as AcpEvent)
+    expect(state.planMode).toBe(false)
+    expect(state.permissionMode).toBeUndefined()
+    expect(state.xaiRequests).toEqual([])
+  })
+
+  it('cancelled / 超时不清 plan', () => {
+    const state = makeState({
+      planMode: true,
+      xaiRequests: [
+        { requestId: 'r2', method: 'x.ai/exit_plan_mode', params: {} },
+      ],
+    })
+    const { set, get } = bind(state)
+    handleSessionCtrlEvent(set, get, {
+      type: 'client_request_resolved',
+      requestId: 'r2',
+      method: 'x.ai/exit_plan_mode',
+      cancelled: true,
+    } as AcpEvent)
+    expect(state.planMode).toBe(true)
+    expect(state.xaiRequests).toEqual([])
+  })
+})
