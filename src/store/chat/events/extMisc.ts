@@ -344,16 +344,23 @@ export function handleExtMiscEvent(
       }
       case 'modes_update': {
         const sid = ev.sessionId
-        if (sid) {
+        // 多会话广播守卫（同 ready/model）：非当前会话的 modes 快照
+        // 不得覆盖本会话的模式标志。其它会话只更新 planModes 缓存。
+        if (sid && sid !== get().sessionId) {
           const flags = extractModeFlags(ev.modes)
           if (typeof flags?.planMode === 'boolean') {
             savePlanMode(sid, flags.planMode)
           }
+          break
         }
-        // 多会话广播守卫（同 ready/model）：非当前会话的 modes 快照
-        // 不得覆盖本会话的模式标志。
-        if (sid && sid !== get().sessionId) break
-        set({ modes: ev.modes, ...(sessionModesPatch(get, ev.modes) ?? {}) })
+        // 当前会话走 sessionModesPatch（含 exit_plan_mode 宽限期）：宽限
+        // 内丢掉的 plan-ON 不得写入 planModes 缓存，否则刷新会把刚退出
+        // 的 composer 又涂回 plan。
+        const patch = sessionModesPatch(get, ev.modes)
+        if (sid && typeof patch?.planMode === 'boolean') {
+          savePlanMode(sid, patch.planMode)
+        }
+        set({ modes: ev.modes, ...(patch ?? {}) })
         break
       }
       case 'session_info':

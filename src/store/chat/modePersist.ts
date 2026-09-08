@@ -510,3 +510,8 @@ export function currentReseedGen(): number {
 export function markPlanExitApproved(): void {
   planExitApprovedAt = Date.now()
 }
+
+/** 测试用：清掉 exit_plan_mode 宽限期，避免用例互相污染。 */
+export function resetPlanExitApprovedForTest(): void {
+  planExitApprovedAt = 0
+}
