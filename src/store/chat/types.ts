@@ -871,8 +871,13 @@ export interface ChatActions {
   renameSession: (title: string) => Promise<void>
   /** x.ai/subagent/cancel. */
   cancelSubagent: (subagentId: string) => Promise<void>
-  /** x.ai/task/kill — kill a background task. */
-  killTask: (taskId: string) => Promise<void>
+  /**
+   * x.ai/task/kill — kill a background task. `notifyAgent: false` asks the
+   * agent to do it silently (kill source `teardown`): it will not be woken
+   * with a "killed by the user" note for this task. Default keeps the agent
+   * informed (`clientUi`).
+   */
+  killTask: (taskId: string, opts?: { notifyAgent?: boolean }) => Promise<void>
   /** x.ai/session/delete — delete a session (TUI /delete). */
   deleteSession: (sessionId: string, cwd: string) => Promise<void>
   /** x.ai/session/compact — compress the active session's context (TUI /compact). */

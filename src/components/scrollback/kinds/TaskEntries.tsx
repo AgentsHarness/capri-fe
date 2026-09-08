@@ -1,6 +1,7 @@
 import type { ScrollEntry } from '../../../api/types'
 import { subagentMeta } from '../../../format'
 import { InlineAction } from '../../InlineAction'
+import { KillTaskAction } from '../../KillTaskAction'
 import { Bullet, EntryShell } from '../EntryShell'
 import { ViewButton } from '../ViewButton'
 import type { EntryChrome } from '../chrome'
@@ -148,11 +149,9 @@ export function BgTaskEntry({
           </span>
         )}
         {e.running && e.taskId && (
-          <InlineAction
-            label="kill"
-            title="x.ai/task/kill"
+          <KillTaskAction
             className="ml-auto"
-            onRun={() => void killTask(e.taskId!)}
+            onKill={(notifyAgent) => void killTask(e.taskId!, { notifyAgent })}
           />
         )}
       </div>

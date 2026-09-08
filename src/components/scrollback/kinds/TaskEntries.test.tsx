@@ -159,7 +159,7 @@ describe('BgTaskEntry — 与 Agent 行同形态', () => {
     }
   })
 
-  it('运行中的行点 kill：只终止任务，不弹查看器', () => {
+  it('运行中的行点 kill：先问要不要通知 agent，不弹查看器也不立刻杀', () => {
     const e = bgTaskEntry({
       id: 'bg1',
       status: 'started',
@@ -175,8 +175,38 @@ describe('BgTaskEntry — 与 Agent 行同形态', () => {
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: /kill/ }))
-    expect(killTask).toHaveBeenCalledWith('t-1')
+    expect(killTask).not.toHaveBeenCalled()
     expect(openViewer).not.toHaveBeenCalled()
+    expect(screen.getByText('终止并通知 agent')).toBeTruthy()
+    expect(screen.getByText('静默终止')).toBeTruthy()
+  })
+
+  it('选「静默终止」→ killTask 带 notifyAgent:false（wire 上 source=teardown）', () => {
+    const e = bgTaskEntry({
+      id: 'bg1',
+      status: 'started',
+      running: true,
+      taskId: 't-1',
+    })
+    const killTask = vi.fn()
+    render(<BgTaskEntry e={e} chrome={makeChrome(e, vi.fn(), vi.fn(), killTask)} />)
+    fireEvent.click(screen.getByRole('button', { name: /kill/ }))
+    fireEvent.click(screen.getByText('静默终止'))
+    expect(killTask).toHaveBeenCalledWith('t-1', { notifyAgent: false })
+  })
+
+  it('选「终止并通知 agent」→ killTask 带 notifyAgent:true', () => {
+    const e = bgTaskEntry({
+      id: 'bg1',
+      status: 'started',
+      running: true,
+      taskId: 't-1',
+    })
+    const killTask = vi.fn()
+    render(<BgTaskEntry e={e} chrome={makeChrome(e, vi.fn(), vi.fn(), killTask)} />)
+    fireEvent.click(screen.getByRole('button', { name: /kill/ }))
+    fireEvent.click(screen.getByText('终止并通知 agent'))
+    expect(killTask).toHaveBeenCalledWith('t-1', { notifyAgent: true })
   })
 
   it('kill 是 [kill] 纯文本，无外边框（不把行高撑起来）', () => {

@@ -35,17 +35,20 @@ export function cancelActions(set: SetState, get: () => ChatState) {
       })
     }
     if (opts?.stopTasks) {
+      // Bulk stop-all is the agent's `teardown` case (TUI dashboard stop-all
+      // sends it too): one turn-cancel must not stack up a "killed by the
+      // user" wake per task.
       const s = get()
       for (const e of s.entries) {
         if (e.kind === 'bg_task' && e.running && e.taskId) {
-          void get().killTask(e.taskId)
+          void get().killTask(e.taskId, { notifyAgent: false })
         } else if (e.kind === 'subagent' && e.running && e.subagentId) {
           void get().cancelSubagent(e.subagentId)
         }
       }
       // Restored top-strip tasks are running by definition (host probe).
       for (const t of s.topTasks) {
-        if (t.taskId) void get().killTask(t.taskId)
+        if (t.taskId) void get().killTask(t.taskId, { notifyAgent: false })
       }
     } else if (opts?.cancelSubagents) {
       const s = get()
