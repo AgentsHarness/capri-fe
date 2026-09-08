@@ -917,9 +917,10 @@ describe('补全合并纯函数', () => {
       'total 8',
     )
     expect(bodies.get('c1')?.hasContent).toBe(true)
+    expect(bodies.get('c1')?.rawInput).toEqual({ command: 'ls -al' })
   })
 
-  it('applyToolBodies：只动 raw.rawOutput / raw.content / liteState，并抹掉 lite 标记', () => {
+  it('applyToolBodies：只动 raw.rawInput / rawOutput / content / liteState，并抹掉 lite 标记', () => {
     const bodies = extractToolBodies(fullToolEnvelopes())
     const entries: ScrollEntry[] = [
       { id: 'u', kind: 'user', text: '跑一下', msgSeq: 0 },
@@ -953,8 +954,91 @@ describe('补全合并纯函数', () => {
     ])
     expect(((t.raw as ToolCall)._meta as { lite?: unknown }).lite).toBeUndefined()
     expect(t.status).toBe('completed')
+    // rawInput 也回填：full 页里那条 tool_call 的参数。
+    expect((t.raw as ToolCall).rawInput).toEqual({ command: 'ls -al' })
     // 幂等：再填一次没有变化 → 原数组引用。
     expect(applyToolBodies(once, bodies)).toBe(once)
+  })
+
+  /**
+   * B 类根治：lite 的 rawInput 白名单只留行头键（pattern / path / glob …），
+   * 展开卡片要用的参数（search 的 output_mode / -i / multiline、use_tool 的
+   * tool_input、generic 参数）只在 full 页里。正文补全不碰 rawInput，必须
+   * 在这里合并回来，否则这些参数在 lite 回放里永久缺失。
+   */
+  it('补全把 full 的 rawInput 合并回 lite 行（展开卡片参数不再缺）', () => {
+    const fullInput = {
+      pattern: 'foo',
+      path: '/w',
+      output_mode: 'files_with_matches',
+      '-i': true,
+      multiline: true,
+    }
+    const bodies = extractToolBodies([
+      env(1, { sessionUpdate: 'tool_call', toolCallId: 'c9', kind: 'search', rawInput: fullInput }),
+      env(2, {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'c9',
+        status: 'completed',
+        rawOutput: { Grep: { match_count: 3 } },
+      }),
+    ])
+    const entries: ScrollEntry[] = [
+      {
+        id: 't',
+        kind: 'tool',
+        title: 'grep foo',
+        verb: 'Searched',
+        toolCallId: 'c9',
+        kindName: 'search',
+        status: 'completed',
+        msgSeq: 1,
+        msgSeqEnd: 2,
+        liteOmitted: 40,
+        raw: {
+          toolCallId: 'c9',
+          kind: 'search',
+          status: 'completed',
+          // lite 投影后的样子：白名单只留 pattern / path。
+          rawInput: { pattern: 'foo', path: '/w' },
+          rawOutput: { Grep: { match_count: 3 } },
+          _meta: { lite: { omitted: 40, fields: ['rawInput.output_mode'] } },
+        } as ToolCall,
+      },
+    ]
+    const row = applyToolBodies(entries, bodies)[0] as Extract<ScrollEntry, { kind: 'tool' }>
+    expect((row.raw as ToolCall).rawInput).toEqual(fullInput)
+    // 展开卡片按完整参数渲染：不再回落成 mode: content、开关也不丢。
+    expect(extractToolDetail(row.raw as ToolCall, 'search')).toMatchObject({
+      outputMode: 'files',
+      caseInsensitive: true,
+      multiline: true,
+    })
+  })
+
+  it('没带 lite 标记的行不动 rawInput（live 写的可能比快照新）', () => {
+    const bodies = extractToolBodies([
+      env(1, { sessionUpdate: 'tool_call', toolCallId: 'c9', rawInput: { pattern: 'old' } }),
+      env(2, { sessionUpdate: 'tool_call_update', toolCallId: 'c9', rawOutput: { Grep: {} } }),
+    ])
+    const entries: ScrollEntry[] = [
+      {
+        id: 't',
+        kind: 'tool',
+        title: 'grep',
+        verb: 'Searched',
+        toolCallId: 'c9',
+        kindName: 'search',
+        raw: {
+          toolCallId: 'c9',
+          kind: 'search',
+          rawInput: { pattern: 'live' },
+          rawOutput: { Grep: {} },
+        } as ToolCall,
+      },
+    ]
+    const row = applyToolBodies(entries, bodies)[0] as Extract<ScrollEntry, { kind: 'tool' }>
+    expect((row.raw as ToolCall).rawInput).toEqual({ pattern: 'live' })
   })
 
   /**

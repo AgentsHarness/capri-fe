@@ -386,7 +386,8 @@ export function toolBodyStillOwed(tc: ToolCall): boolean {
 /**
  * 这条工具调用的正文有没有被 lite 裁掉：`_meta.lite` 标记（FE 补全后会抹
  * 掉）或 rawOutput / content 上的 `{"omitted": n}` 占位，任一命中即算被裁。
- * 只看正文两处——rawInput 里被裁的参数按契约不参与补全，不能据此判整行未填。
+ * 只看正文两处——rawInput 被裁的参数由补全随正文一并合并回（historyFill
+ * fillRaw），不在这里判「整行未填」。
  */
 export function toolBodyOmitted(tc: ToolCall): boolean {
   const meta = (tc as { _meta?: unknown })._meta
