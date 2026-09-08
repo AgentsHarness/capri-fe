@@ -1016,6 +1016,49 @@ describe('补全合并纯函数', () => {
     })
   })
 
+  /**
+   * host 对 command 仍按 512/256 封顶（lite 可以裁），但 full 里有完整命令：
+   * 补全必须用 full 的值覆盖「…[已省略 N 字节]」截断串，否则展开后命令永远
+   * 只剩开头。
+   */
+  it('补全用 full 的完整 command 覆盖 lite 的「…[已省略 N 字节]」截断串', () => {
+    const cmd = 'ha' + 'x'.repeat(618)
+    const bodies = extractToolBodies([
+      env(1, {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'c8',
+        kind: 'execute',
+        rawInput: { command: cmd, timeout: 300 },
+      }),
+      env(2, {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'c8',
+        rawOutput: { Bash: { output: 'ok', exit_code: 0 } },
+      }),
+    ])
+    const entries: ScrollEntry[] = [
+      {
+        id: 't',
+        kind: 'tool',
+        title: 'Run',
+        verb: 'Ran',
+        toolCallId: 'c8',
+        kindName: 'execute',
+        raw: {
+          toolCallId: 'c8',
+          kind: 'execute',
+          // host 投影后的截断形态：前 256 字节 + 省略后缀。
+          rawInput: { command: 'ha' + 'x'.repeat(254) + '…[已省略 364 字节]', timeout: 300 },
+          rawOutput: { Bash: { output: 'ok', exit_code: 0 } },
+          _meta: { lite: { omitted: 364, fields: ['rawInput.command'] } },
+        } as ToolCall,
+      },
+    ]
+    const row = applyToolBodies(entries, bodies)[0] as Extract<ScrollEntry, { kind: 'tool' }>
+    expect((row.raw as ToolCall).rawInput).toEqual({ command: cmd, timeout: 300 })
+    expect(extractToolDetail(row.raw as ToolCall, 'execute')).toMatchObject({ command: cmd })
+  })
+
   it('没带 lite 标记的行不动 rawInput（live 写的可能比快照新）', () => {
     const bodies = extractToolBodies([
       env(1, { sessionUpdate: 'tool_call', toolCallId: 'c9', rawInput: { pattern: 'old' } }),

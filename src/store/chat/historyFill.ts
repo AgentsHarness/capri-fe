@@ -478,11 +478,13 @@ function fillRaw(raw: ToolCall | undefined, body: ToolBody): ToolCall {
   // rawInput 同样要回填：lite 只留行头白名单键，其余参数（search 的
   // output_mode / -i / multiline、use_tool 的 tool_input、generic 参数）
   // 只有 full 页里才有。只补带 lite 标记的 raw——没标记说明这份 rawInput
-  // 是 live 写的，历史快照可能更旧。白名单键两边同值，所以按 full 打底、
-  // 当前值覆盖：缺的键补齐，live 新增的键不被抹掉。
+  // 是 live 写的，历史快照可能更旧。full 是权威值：删掉的键补回来，被
+  // 512/256 封顶截过的值（command 会截成「前 256 字节 + …[已省略 N 字节]」）
+  // 也换回完整值；当前值只保留 full 没有的键。
   if (body.hasRawInput && isPlainObj(body.rawInput) && hasLiteMark(next)) {
-    const merged: Record<string, unknown> = { ...body.rawInput }
+    const merged: Record<string, unknown> = {}
     if (isPlainObj(next.rawInput)) Object.assign(merged, next.rawInput)
+    Object.assign(merged, body.rawInput)
     next.rawInput = merged
   }
   return clearLiteMark(next)
