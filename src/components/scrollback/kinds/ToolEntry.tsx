@@ -89,8 +89,11 @@ export function ToolEntry({
         />
         {bare ? (
           // TUI SentMessageToolCallBlock: one bold sentence, no noun/target split.
+          // flex-1 + break-words so a long error sentence wraps inside the
+          // content column instead of overflowing on mobile (truncate only
+          // ellipsizes when the flex item already has a bounded width).
           <span
-            className="min-w-0 truncate font-bold"
+            className="min-w-0 flex-1 break-words font-bold"
             style={{ color: verbColor }}
           >
             {bare}

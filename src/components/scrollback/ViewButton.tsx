@@ -64,7 +64,7 @@ export function HeaderWithView({
   children: ReactNode
 }) {
   return (
-    <div className="flex w-full items-center gap-0.5">
+    <div className="flex w-full min-w-0 items-center gap-0.5">
       <button
         type="button"
         onClick={(ev) => {

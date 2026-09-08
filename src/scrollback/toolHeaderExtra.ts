@@ -283,8 +283,16 @@ export function toolHeaderExtra(
             : undefined
         if (sentence) return { bare: sentence }
         // TUI OtherToolCallBlock splits `Label: content` into a bold label and
-        // plain content (e.g. "Memory search: \"auth\"").
-        if (d.label && d.content) return { verb: d.label, target: d.content }
+        // plain content (e.g. "Memory search: \"auth\"", "Ask: …", "Skill: name").
+        // The split is for short nouns. A full sentence that happens to contain
+        // ": " (host unknown-tool title: "Agent tried calling a tool that
+        // doesn't exist: {name}") must stay one line — putting it in the
+        // shrink-0 verb overflows the mobile content column.
+        if (d.label && d.content) {
+          const labelWords = d.label.trim().split(/\s+/).filter(Boolean).length
+          if (labelWords <= 3) return { verb: d.label, target: d.content }
+          return { bare: d.name }
+        }
         return { target: d.name }
       }
       default:

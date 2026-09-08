@@ -202,6 +202,34 @@ describe('TUI 行头复刻（surface / 名词改写）', () => {
     expect(text).toBe('Sent message to subagent')
   })
 
+  it('未知工具整句标题折行，不放进 shrink-0 名词', () => {
+    const title = "Agent tried calling a tool that doesn't exist: foo_bar"
+    const r = render(
+      <EntryView
+        e={toolEntry({
+          kindName: 'other',
+          status: 'failed',
+          rawTitle: title,
+          rawInput: {},
+        })}
+        selected={false}
+        pendingFreeze={false}
+        now={Date.now()}
+      />,
+    )
+    const btn = r.container.querySelector('button')
+    expect(btn?.textContent).toContain(title)
+    const sentence = [...(btn?.querySelectorAll('span') ?? [])].find((s) =>
+      (s.textContent ?? '').includes("doesn't exist"),
+    )
+    expect(sentence).toBeTruthy()
+    expect(sentence!.className).toMatch(/\bbreak-words\b/)
+    expect(sentence!.className).toMatch(/\bflex-1\b/)
+    expect(sentence!.className).not.toMatch(/\bshrink-0\b/)
+    expect(sentence!.className).not.toMatch(/\btruncate\b/)
+    r.unmount()
+  })
+
   it('Skill 工具调用行 → "Skill: name" 拆成名词与内容', () => {
     const text = renderHeader(
       toolEntry({

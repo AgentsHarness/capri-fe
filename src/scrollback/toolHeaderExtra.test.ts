@@ -221,6 +221,21 @@ describe('toolHeaderExtra — list_dir / fetch / web_search / use_tool', () => {
       verb: 'Memory search',
       target: '"auth"',
     })
+    expect(he({ title: 'Skill: deploy' }, 'custom')).toEqual({
+      verb: 'Skill',
+      target: 'deploy',
+    })
+  })
+
+  it('generic 整句标题（含冒号）不拆成 verb —— 避免 shrink-0 名词撑出窄列', () => {
+    expect(
+      he(
+        { title: "Agent tried calling a tool that doesn't exist: foo_bar" },
+        'custom',
+      ),
+    ).toEqual({
+      bare: "Agent tried calling a tool that doesn't exist: foo_bar",
+    })
   })
 
   it('子代理消息行 → 整句标题（TUI SentMessagePresentation，随状态改写）', () => {
