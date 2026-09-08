@@ -2,6 +2,16 @@ import type { TransportCore } from '../transport'
 import { assertRpcOk, findArrayField, readRpcJson } from './core'
 
 /** 后台任务 / subagent 控制：取消、终止、查询输出。 */
+
+/**
+ * `x.ai/task/kill` 的终止来源，即 agent 侧 `TaskKillSource` 的 wire 名。
+ * 它决定任务收尾时 agent 要不要唤醒模型：
+ * - `clientUi`：单条 UI 终止，agent 会在完成通知里补一句
+ *   "This task was killed by the user — do not restart it."
+ * - `teardown`：agent 视为已把结果交付给调用方，不再为这条任务唤醒。
+ */
+export type TaskKillSource = 'clientUi' | 'teardown'
+
 export const tasksRpc = {
   async cancelSubagent(this: TransportCore, subagentId: string, sessionId?: string) {
     const res = await this.fetch(this.url('/api/subagent-cancel'), {
@@ -22,11 +32,15 @@ export const tasksRpc = {
    * `{result: {result: {taskId, outcome}}}` through the ExtMethodResult
    * envelope, and `outcome` is the only truthful verdict: not_found is
    * delivered inside a successful response, so callers MUST branch on it.
+   *
+   * `source` is the kill's provenance and the only lever on whether the agent
+   * is woken about it — omitted, the agent applies its `clientUi` default.
    */
   async killTask(
     this: TransportCore,
     taskId: string,
     sessionId?: string,
+    source?: TaskKillSource,
   ): Promise<'killed' | 'already_exited' | 'not_found' | 'unknown'> {
     const res = await this.fetch(this.url('/api/task-kill'), {
       method: 'POST',
@@ -34,6 +48,7 @@ export const tasksRpc = {
       body: JSON.stringify({
         taskId,
         ...(sessionId ? { sessionId } : {}),
+        ...(source ? { source } : {}),
       }),
     })
     const data = await readRpcJson(res)

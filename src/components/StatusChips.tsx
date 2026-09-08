@@ -1,5 +1,4 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { ReactNode, RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { Blocks, Repeat } from 'lucide-react'
 import { Glyphs, SPINNER_FRAMES } from '../theme/glyphs'
@@ -15,6 +14,8 @@ import type { ScrollEntry, TopTask } from '../api/types'
 import { useSessionSpinner } from '../hooks/sessionState'
 import { TodoMark, CheckMarkIcon } from './todoMark'
 import { InlineAction } from './InlineAction'
+import { ChipDropdown } from './ChipDropdown'
+import { KillTaskAction } from './KillTaskAction'
 import { fmtTok, fmtElapsedCompact, filterRunningEntries, subagentMeta, type RunningEntry } from '../format'
 import type { TodoItem } from '../store/chat'
 
@@ -387,85 +388,6 @@ export function LiteFillChip() {
 
 /** TUI goal_detail budget_color semantics: >80% error, ≥50% warning, else success. */
 const GOAL_BUDGET_BAR_W = 14
-
-/** Helper shared by GoalChip / RunningChip dropdown panels. */
-function ChipDropdown({
-  open,
-  onClose,
-  children,
-  label,
-  widthClass,
-  anchorRef,
-}: {
-  open: boolean
-  onClose: () => void
-  children: ReactNode
-  label: string
-  widthClass?: string
-  anchorRef: RefObject<HTMLElement | null>
-}) {
-  // Viewport-pinned placement (same measure-and-clamp pattern as the
-  // composer model picker): a pure `absolute right-0` anchor assumes the
-  // trigger chip sits flush right, but on mobile the chip cluster wraps —
-  // the goal chip often lands mid-row, pushing a w-96 panel past the
-  // LEFT edge of the screen. Measure the chip and clamp so both edges
-  // stay inside the viewport; re-place on resize/scroll.
-  const [pos, setPos] = useState<{ left: number; top: number; width: number } | null>(null)
-  useLayoutEffect(() => {
-    if (!open) {
-      setPos(null)
-      return
-    }
-    const place = () => {
-      const el = anchorRef.current
-      if (!el) return
-      const r = el.getBoundingClientRect()
-      const pad = 8
-      const gap = 4 // mt-1
-      const vw = window.innerWidth
-      // Match the panel's width classes: w-96 capped by max-w-[92vw]
-      // (w-80 fallback keeps the same viewport math).
-      const width = Math.min(
-        widthClass === 'w-96' ? 384 : widthClass === 'w-80' ? 320 : 384,
-        Math.floor(vw * 0.92),
-      )
-      // Prefer right-aligning to the chip (TUI goal-detail sits under
-      // the status item), then shift left so the panel never leaves the
-      // screen on either side.
-      const left = Math.max(pad, Math.min(r.right - width, vw - pad - width))
-      setPos({ left, top: r.bottom + gap, width })
-    }
-    place()
-    window.addEventListener('resize', place)
-    window.addEventListener('scroll', place, true)
-    return () => {
-      window.removeEventListener('resize', place)
-      window.removeEventListener('scroll', place, true)
-    }
-  }, [open, anchorRef, widthClass])
-  if (!open) return null
-  return (
-    <>
-      <button
-        type="button"
-        className="fixed inset-0 z-30 cursor-default"
-        aria-label="close"
-        onClick={onClose}
-      />
-      {pos ? (
-        <div
-          className={`fixed z-40 max-h-[55vh] max-w-[92vw] overflow-y-auto gn-menu ${widthClass ?? 'w-80'}`}
-          style={{ left: pos.left, top: pos.top, width: pos.width }}
-        >
-          <div className="px-3 pb-1 pt-1.5 text-[10px] uppercase tracking-wider text-gn-gutter">
-            {label}
-          </div>
-          {children}
-        </div>
-      ) : null}
-    </>
-  )
-}
 
 /**
  * Goal status chip — TUI agent status-bar `goal` item:
@@ -928,10 +850,8 @@ export function RunningTasksBar({
                     {t.command}
                   </span>
                 )}
-                <InlineAction
-                  label="kill"
-                  title="x.ai/task/kill"
-                  onRun={() => void killTask(t.taskId)}
+                <KillTaskAction
+                  onKill={(notifyAgent) => void killTask(t.taskId, { notifyAgent })}
                 />
               </div>
             ))}
@@ -976,10 +896,8 @@ export function RunningTasksBar({
                   />
                 )}
                 {e.kind === 'bg_task' && e.taskId && (
-                  <InlineAction
-                    label="kill"
-                    title="x.ai/task/kill"
-                    onRun={() => void killTask(e.taskId!)}
+                  <KillTaskAction
+                    onKill={(notifyAgent) => void killTask(e.taskId!, { notifyAgent })}
                   />
                 )}
               </div>

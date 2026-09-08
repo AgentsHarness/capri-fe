@@ -92,7 +92,7 @@ export type EntryChrome = {
   toggleUser: (id: string) => void
   toggleBtw: (id: string) => void
   cancelSubagent: (id: string) => void
-  killTask: (id: string) => void
+  killTask: (id: string, opts?: { notifyAgent?: boolean }) => void
   liveText: string | undefined
   thoughtText: string | undefined
   bodyRef: { current: HTMLDivElement | null }

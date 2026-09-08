@@ -1,4 +1,5 @@
 import { transport } from '../../../api/client'
+import type { TaskKillSource } from '../../../api/rpc/tasks'
 import type { ScrollEntry } from '../../../api/types'
 import type { ChatState, SetState } from '../types'
 import { nid } from '../ids'
@@ -330,16 +331,24 @@ export function xaiActions(set: SetState, get: () => ChatState) {
     }
   },
 
-  killTask: async (taskId) => {
+  killTask: async (taskId, opts) => {
+    // notifyAgent 决定 wire 上的 source：false → teardown（agent 收尾时不再
+    // 为这条任务唤醒模型）；其余一律 clientUi，与 agent 自己的缺省一致。
+    const source: TaskKillSource = opts?.notifyAgent === false ? 'teardown' : 'clientUi'
     try {
       // 结果必须读 outcome：agent 把 not_found 包在成功响应里返回，
       // 只看 HTTP ok 会把"这个进程里没有这条任务"演成"正在终止"。
-      const outcome = await transport.killTask(taskId, get().sessionId)
+      const outcome = await transport.killTask(taskId, get().sessionId, source)
       if (outcome === 'killed') {
         // task_completed 紧随其后，由它把行结算掉；statusText 只在回合
         // 运行时可见，所以这里同时给一条 toast。
         set({ statusText: '正在终止后台任务…' })
-        pushToast('已请求终止后台任务', { type: 'success' })
+        pushToast(
+          source === 'teardown'
+            ? '已请求静默终止后台任务（不通知 agent）'
+            : '已请求终止后台任务',
+          { type: 'success' },
+        )
         return
       }
       if (outcome === 'already_exited') {
