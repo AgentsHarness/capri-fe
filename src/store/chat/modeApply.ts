@@ -63,15 +63,15 @@ export function extractModeFlags(
   }
   // The agent's session-mode catalog uses `currentModeId` (session/new|load
   // `modes` AND the stored current_mode_update update — both carry
-  // {currentModeId} directly). 'plan'/'default'/'ask' drive the plan
-  // dimension; the agent also mirrors permission modes as session-mode ids
-  // ('auto' / 'always-approve' / 'yolo'), so those restore the permission
-  // flags when no explicit permissionMode key is present. Unknown ids are
-  // left alone so the local flags survive.
+  // {currentModeId} directly). Plan is only `plan`; every other id (default /
+  // ask / auto / always-approve / unknown custom modes) is not plan — same
+  // as TUI SessionMode::from_id (unknown → Default). The agent also mirrors
+  // permission modes as session-mode ids ('auto' / 'always-approve' / 'yolo'),
+  // so those restore the permission flags when no explicit permissionMode
+  // key is present.
   const currentMode = read('currentModeId', 'current_mode_id')
   if (typeof currentMode === 'string' && currentMode) {
-    if (currentMode === 'plan') out.planMode = true
-    else if (NON_PLAN_MODES.has(currentMode)) out.planMode = false
+    out.planMode = currentMode === 'plan'
     if (perm == null) {
       if (currentMode === 'auto') {
         out.autoMode = true

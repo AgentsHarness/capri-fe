@@ -377,6 +377,14 @@ describe('envelopeToEvents', () => {
 
     const usage = envelopeToEvents(env('session/update', { sessionUpdate: 'usage_update', used: 100, size: 200, cost: 3 }))
     expect(usage[0]).toMatchObject({ type: 'usage', used: 100, size: 200, cost: 3 })
+
+    const mode = envelopeToEvents(
+      env('session/update', { sessionUpdate: 'current_mode_update', currentModeId: 'plan' }),
+    )
+    expect(mode[0]).toMatchObject({
+      type: 'modes_update',
+      modes: { currentModeId: 'plan' },
+    })
   })
 
   it('turn_completed → turn_completed 事件', () => {

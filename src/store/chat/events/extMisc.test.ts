@@ -1,8 +1,9 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { handleExtMiscEvent } from './extMisc'
 import type { AcpEvent, ScrollEntry } from '../../../api/types'
 import type { ChatState, SetState } from '../types'
 import { restorePlanMode } from '../modeFlags'
+import { markPlanExitApproved, resetPlanExitApprovedForTest } from '../modePersist'
 
 function makeStore(initial: Partial<ChatState> = {}) {
   let state = { entries: [], sessionId: 's1', ...initial } as ChatState
@@ -270,6 +271,12 @@ describe('handleExtMiscEvent — model 与 session_rewound 跨会话同步', () 
     // 截断到 targetPromptIndex 1：保留 u0/a0，切除 u1/a1
     expect(state().entries.map((e) => e.id)).toEqual(['u0', 'a0'])
   })
+})
+
+describe('handleExtMiscEvent — modes_update 同步 composer plan', () => {
+  beforeEach(() => {
+    resetPlanExitApprovedForTest()
+  })
 
   it('modes_update 事件更新其他会话的 planMode 时，安全更新本地 planModes 缓存且不影响当前会话', () => {
     const { set, get, state } = makeStore({
@@ -290,6 +297,51 @@ describe('handleExtMiscEvent — model 与 session_rewound 跨会话同步', () 
     // other-session 的 planMode 写入了缓存
     const restored = restorePlanMode('other-session')
     expect(restored.planMode).toBe(true)
+  })
+
+  it('当前会话 modes_update currentModeId=plan → composer planMode 打开', () => {
+    const { set, get, state } = makeStore({
+      sessionId: 's1',
+      planMode: false,
+    })
+    handleExtMiscEvent(set, get, {
+      type: 'modes_update',
+      sessionId: 's1',
+      modes: { currentModeId: 'plan' },
+    } as AcpEvent)
+    expect(state().planMode).toBe(true)
+    expect(restorePlanMode('s1')).toEqual({ planMode: true })
+  })
+
+  it('exit_plan_mode 宽限内迟到的 plan-ON 不写入 planModes 缓存', () => {
+    markPlanExitApproved()
+    const { set, get, state } = makeStore({
+      sessionId: 's1',
+      planMode: false,
+    })
+    handleExtMiscEvent(set, get, {
+      type: 'modes_update',
+      sessionId: 's1',
+      modes: { currentModeId: 'plan' },
+    } as AcpEvent)
+    expect(state().planMode).toBe(false)
+    expect(restorePlanMode('s1')).toEqual({})
+  })
+
+  it('当前会话 modes_update currentModeId=default → composer 退出 plan', () => {
+    const { set, get, state } = makeStore({
+      sessionId: 's1',
+      planMode: true,
+      permissionMode: 'plan',
+    })
+    handleExtMiscEvent(set, get, {
+      type: 'modes_update',
+      sessionId: 's1',
+      modes: { currentModeId: 'default' },
+    } as AcpEvent)
+    expect(state().planMode).toBe(false)
+    expect(state().permissionMode).toBeUndefined()
+    expect(restorePlanMode('s1')).toEqual({ planMode: false })
   })
 })
 
