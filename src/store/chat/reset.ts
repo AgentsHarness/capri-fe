@@ -69,6 +69,7 @@ export function resetSessionState(set: (partial: Partial<ChatState>) => void): v
     // 权限模式是进程级全局状态（agent 客户端级广播），不随会话复位；
     // planMode 是会话态，复位清空（replay/current_mode_update 恢复）。
     planMode: false,
+    agentCommands: [],
     mcpServers: [],
     mcpInit: undefined,
     selectedId: null,

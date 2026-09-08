@@ -175,6 +175,7 @@ export async function loadHistory(
       // localStorage (empty after an agent-restart clear, so a config
       // default of always-approve never came back).
       planMode: false,
+      agentCommands: [],
       mcpServers: [],
       mcpInit: undefined,
       selectedId: null,

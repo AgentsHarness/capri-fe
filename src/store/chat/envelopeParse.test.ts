@@ -385,6 +385,17 @@ describe('envelopeToEvents', () => {
       type: 'modes_update',
       modes: { currentModeId: 'plan' },
     })
+
+    const cmds = envelopeToEvents(
+      env('session/update', {
+        sessionUpdate: 'available_commands_update',
+        availableCommands: [{ name: 'deploy', description: 'd' }],
+      }),
+    )
+    expect(cmds[0]).toMatchObject({
+      type: 'commands_update',
+      commands: [{ name: 'deploy', description: 'd' }],
+    })
   })
 
   it('turn_completed → turn_completed 事件', () => {

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { extractModeFlags, sessionModesPatch } from './modeApply'
+import { applyModeFlags, extractModeFlags, sessionModesPatch } from './modeApply'
 import {
   markPlanExitApproved,
   resetPlanExitApprovedForTest,
@@ -59,5 +59,31 @@ describe('sessionModesPatch — 模型进出 plan', () => {
     expect(sessionModesPatch(getState({ planMode: false }), { currentModeId: 'plan' })).toEqual(
       null,
     )
+  })
+})
+
+describe('applyModeFlags — 权限广播', () => {
+  it('只有 permission_mode:ask 时清掉 yolo/auto，composer 不再卡在 always-approve', () => {
+    const patches: unknown[] = []
+    const set = ((p: unknown) => {
+      patches.push(p)
+    }) as never
+    applyModeFlags(set, { permission_mode: 'ask' })
+    expect(patches[0]).toMatchObject({
+      permissionMode: 'ask',
+      yoloMode: false,
+      autoMode: false,
+    })
+  })
+
+  it('显式 yolo_mode 优先于 permission_mode 推导', () => {
+    const patches: unknown[] = []
+    applyModeFlags(((p: unknown) => {
+      patches.push(p)
+    }) as never, { permission_mode: 'ask', yolo_mode: true })
+    expect(patches[0]).toMatchObject({
+      permissionMode: 'ask',
+      yoloMode: true,
+    })
   })
 })

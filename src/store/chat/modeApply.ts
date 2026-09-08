@@ -156,10 +156,29 @@ export function applyModeFlags(set: SetState, p: Record<string, unknown>): void 
   const patch: Partial<
     Pick<ChatState, 'yoloMode' | 'autoMode' | 'permissionMode' | 'planMode'>
   > = {}
+  if (perm !== undefined && !stalePlan) {
+    patch.permissionMode = perm
+    if (perm === 'plan') {
+      patch.planMode = true
+    } else if (yolo === undefined && auto === undefined) {
+      // permissionMode 是权限维度的权威：只有 ask 没有 yolo_mode:false
+      // 时，缺键合并会把 composer 卡在 always-approve。plan 不碰 yolo/auto
+      // （plan·always 叠加）。
+      const p = perm.toLowerCase()
+      if (p === 'always-approve' || p === 'always_approve' || p === 'yolo') {
+        patch.yoloMode = true
+        patch.autoMode = false
+      } else if (p === 'auto') {
+        patch.autoMode = true
+        patch.yoloMode = false
+      } else if (NON_PLAN_MODES.has(p) || p === 'ask') {
+        patch.yoloMode = false
+        patch.autoMode = false
+      }
+    }
+  }
   if (yolo !== undefined) patch.yoloMode = yolo
   if (auto !== undefined) patch.autoMode = auto
-  if (perm !== undefined && !stalePlan) patch.permissionMode = perm
-  if (perm === 'plan' && !stalePlan) patch.planMode = true
   set(patch)
 }
 
