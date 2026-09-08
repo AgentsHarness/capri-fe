@@ -85,6 +85,27 @@ export function envelopeAgentTimestampMs(env: unknown): number | undefined {
   return typeof v === 'number' && Number.isFinite(v) ? v : undefined
 }
 
+export function envelopeStreamStartMs(env: unknown): number | undefined {
+  const v = envelopeMeta(env as RawEnvelope).streamStartMs
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined
+}
+
+/**
+ * Snapshot coverage of one generation stream, keyed by live event type so
+ * thought and assistant of the same streamStartMs stay independent.
+ * Agent persistence merges consecutive text chunks into a pending complete
+ * block and only writes it when the block ends — a mid-block history load
+ * therefore has no key for the in-progress kind.
+ */
+export function envelopeReplayStreamKey(env: unknown): string | undefined {
+  const kind = (env as RawEnvelope).params?.update?.sessionUpdate
+  const ss = envelopeStreamStartMs(env)
+  if (ss == null) return undefined
+  if (kind === 'agent_message_chunk') return `chunk:${ss}`
+  if (kind === 'agent_thought_chunk') return `thought:${ss}`
+  return undefined
+}
+
 function finiteMetaNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
@@ -524,6 +545,9 @@ function replayUpdateKeys(
       const keys = text
         ? (() => {
             const classified = classifyUserPrompt(text, displayAsCron)
+            // 故意不把 `_meta.bash_command` 折进 key：live 侧的 user_chunk
+            // 事件不带该标记（host bridge 只镜像 displayText/displayAsCron），
+            // 带上就永远对不上，快照后补拉的同一行会多出一条。
             return classified
               ? [textKey('user', classified.text, classified.isCron)]
               : []
@@ -628,6 +652,22 @@ function envelopeContentMeta(up: Record<string, unknown>): Record<string, unknow
   return (object._meta ?? object.meta ?? {}) as Record<string, unknown>
 }
 
+/**
+ * user_message_chunk 是不是 direct-bash（TUI `!`）：认块 `_meta.bash_command`。
+ * host 回吐时 ContentChunk 通常是单块对象，数组形态（多块 chunk）也照认第一
+ * 个带标记的 text 块。
+ */
+export function userChunkIsBash(up: Record<string, unknown>): boolean {
+  const metaOf = (block: unknown): Record<string, unknown> | undefined => {
+    if (!block || typeof block !== 'object') return undefined
+    const meta = (block as Record<string, unknown>)._meta ?? (block as Record<string, unknown>).meta
+    return meta && typeof meta === 'object' ? (meta as Record<string, unknown>) : undefined
+  }
+  const content = up.content
+  const candidates = Array.isArray(content) ? content : [content]
+  return candidates.some((item) => typeof metaOf(item)?.bash_command === 'string')
+}
+
 function contentTextParts(parts: ContentPart[]): string {
   return parts
     .filter((part): part is Extract<ContentPart, { kind: 'text' }> => part.kind === 'text')
@@ -725,6 +765,10 @@ function envelopeToEventsRaw(e: RawEnvelope): AcpEvent[] {
       if (chunkMeta?.hostTurn === true) return []
       const blockMeta = envelopeContentMeta(up)
       if (blockMeta.hideFromScrollback === true) return []
+      // TUI `!` 直连 shell：host 把命令原样回吐成 user chunk，块 `_meta.
+      // bash_command` 是唯一身份来源（正文里没有 `!` 前缀），少了它回放里
+      // 这条命令会和普通 prompt 长得一模一样。
+      const isShell = userChunkIsBash(up)
       const parts = contentParts(up.content)
       const raw =
         typeof blockMeta.displayText === 'string'
@@ -740,6 +784,7 @@ function envelopeToEventsRaw(e: RawEnvelope): AcpEvent[] {
             text: classified.text,
             isCron: classified.isCron || undefined,
             isInterjection: classified.isInterjection || undefined,
+            isShell: isShell || undefined,
             ts,
           })
         }

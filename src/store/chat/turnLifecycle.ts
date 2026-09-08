@@ -20,7 +20,7 @@ import {
   type HookRouting,
 } from './hookRouting'
 import { lifecycleEntry } from './hookAttach'
-import { userRowText } from '../promptQueue'
+import { isBashBlocks, userRowText } from '../promptQueue'
 
 /** Selectable row ids in display order (entries + synthetic group headers). */
 export type StreamBufKind = 'thought' | 'assistant'
@@ -151,6 +151,9 @@ export function adoptTurn(
     // 纯图片行的权威正文是空的（agent 的 queue text 只拼 text blocks）——
     // 用每张图的标记兜底，收养出来的用户行才不是一条空白。
     text: userRowText(adopted.text, adopted.blocks),
+    // 排队的 direct-bash 命令出队开跑：$ 前缀只能从本地那份 blocks 认
+    // （广播正文不带块 `_meta`）。
+    ...(isBashBlocks(adopted.blocks) ? { isShell: true } : {}),
     ts: Date.now(),
   }
   set({
@@ -373,8 +376,8 @@ export function tailAlreadyTurnEnded(entries: ScrollEntry[]): boolean {
  * TUI idle watcher cue (turn_status.rs format_still_running): counts-first,
  * "·"-joined, pluralized kinds, " still running" suffix — e.g.
  * `"2 commands · 1 monitor still running"`. Live rows (running) and
- * restored top-strip tasks (topTasks) count; the host only surfaces
- * liveness-probed tasks, so a restored task is a genuinely running one.
+ * top-strip tasks (topTasks — the agent's own registry) count, so every
+ * task behind this cue is one this session can actually kill.
  *
  * A replayed 'started' row WITHOUT its completion is deliberately NOT
  * counted: history replay renders task_backgrounded as a display-only row

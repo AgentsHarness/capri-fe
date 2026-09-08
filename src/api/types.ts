@@ -38,6 +38,7 @@ export type {
   SessionUsageModel,
   TaskTimelineEvent,
   TopTask,
+  DetachedTask,
   WorkspaceGroup,
   WorkspaceSummary,
 } from './types/sessions'

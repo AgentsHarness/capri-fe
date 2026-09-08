@@ -100,6 +100,24 @@ describe('extractToolDetail — execute', () => {
     expect(d2).toMatchObject({ output: 'out', exitCode: 3 })
   })
 
+  it('Bash internally-tagged 字节数组 output / output_for_prompt 兜底', () => {
+    const bytes = [...'hello\n'].map((c) => c.charCodeAt(0))
+    const d = detail(
+      { rawInput: { command: 'echo' }, rawOutput: { type: 'Bash', output: bytes, exit_code: 0 } },
+      'execute',
+    )
+    expect(d).toMatchObject({ kind: 'execute', output: 'hello\n', exitCode: 0 })
+
+    const d2 = detail(
+      {
+        rawInput: { command: 'echo' },
+        rawOutput: { type: 'Bash', output_for_prompt: 'from-prompt', exit_code: 0 },
+      },
+      'execute',
+    )
+    expect(d2).toMatchObject({ output: 'from-prompt' })
+  })
+
   it('非零 exit code → error；signal 优先于 exit code', () => {
     const d1 = detail(
       { rawInput: { command: 'ls' }, rawOutput: { Bash: { exit_code: 2 } } },

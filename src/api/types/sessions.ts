@@ -133,18 +133,12 @@ export type TaskTimelineEvent = {
 }
 
 /**
- * One restored running task — the top task strip's state row. Populated
- * at session resume from the host's liveness probe; NOT a scrollback
- * entry (no scrollback pollution), lives only in the top strip and
- * updates via live task events.
- */
-
-
-/**
- * One restored running task — the top task strip's state row. Populated
- * at session resume from the host's liveness probe; NOT a scrollback
- * entry (no scrollback pollution), lives only in the top strip and
- * updates via live task events.
+ * One running task of THIS session's agent — the top task strip's state
+ * row. Populated from the agent's live registry (x.ai/task/list) at
+ * resume and kept fresh by the poller; NOT a scrollback entry (no
+ * scrollback pollution), lives only in the top strip and updates via live
+ * task events. Every row here is killable — that is the whole point of
+ * sourcing the strip from the registry instead of a liveness probe.
  */
 export type TopTask = {
   taskId: string
@@ -153,8 +147,23 @@ export type TopTask = {
   isMonitor?: boolean
   /** Absolute path to the on-disk log (wire output_file). */
   outputFile?: string
-  /** Restored from the persisted timeline (host liveness probe). */
-  restored?: boolean
+}
+
+/**
+ * A still-running background command the agent's registry does NOT know
+ * (host `detached` on /api/session-running-tasks): left behind by a
+ * previous grok process or held by another client (an open TUI on the
+ * same session). We surface it as a one-off status-bar hint with its pid —
+ * never as a task row, because the UI cannot kill it.
+ */
+export type DetachedTask = {
+  taskId: string
+  command?: string
+  description?: string
+  monitorDescription?: string
+  outputFile?: string
+  /** Process the kernel says is holding the output log (0 = unknown). */
+  pid?: number
 }
 
 /**

@@ -32,6 +32,42 @@ import {
 } from '../subagent'
 import { handleResyncRebuild } from '../resync'
 
+/** TUI `CWD_GIT_REFRESH_TTL`：状态栏读路径的懒探盘间隔。git_head_changed
+ *  只在 HEAD 真的变了才发；外部 `git checkout` 若通知丢失/错标，FE 没有
+ *  TUI 每帧 `cwd_git_info_lazy` 的退路，必须自己按这个 TTL 补拉。 */
+export const GIT_INFO_REFRESH_MS = 5_000
+
+function watchGitInfo(get: () => ChatState): () => void {
+  let timer: ReturnType<typeof setInterval> | undefined
+  const pull = () => {
+    void get().refreshGitInfo?.()
+  }
+  const start = () => {
+    if (timer != null) return
+    timer = setInterval(pull, GIT_INFO_REFRESH_MS)
+  }
+  const stop = () => {
+    if (timer == null) return
+    clearInterval(timer)
+    timer = undefined
+  }
+  const onVis = () => {
+    if (document.visibilityState === 'visible') start()
+    else stop()
+  }
+  const onFocus = () => pull()
+  if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+    start()
+  }
+  document.addEventListener('visibilitychange', onVis)
+  window.addEventListener('focus', onFocus)
+  return () => {
+    stop()
+    document.removeEventListener('visibilitychange', onVis)
+    window.removeEventListener('focus', onFocus)
+  }
+}
+
 export function initChat(
   set: SetState,
   get: () => ChatState,
@@ -74,7 +110,10 @@ export function initChat(
         const isSessionLoadBoundary =
           ev.type === 'session_load_started' ||
           ev.type === 'session_load_finished'
-        if (!isTurnEnd && !isClientRequest && !isSessionLoadBoundary) {
+        // 状态栏分支：加载窗口里也要立刻吃 git_head_changed，fade-in
+        // 时不能还挂着上一次 HEAD（回放缓冲没有时间戳，本就该放行）。
+        const isGitHead = ev.type === 'git_head_changed'
+        if (!isTurnEnd && !isClientRequest && !isSessionLoadBoundary && !isGitHead) {
           // 方案 A 窗口期缓冲：切 busy 会话时，快照拉取期间到达的
           // 本会话 live 内容事件（chunk/thought/user_chunk/…）不再
           // 直接丢弃——loadHistory 重建后按统一 epoch-ms 边界与稳定
@@ -86,7 +125,9 @@ export function initChat(
           }
           return
         }
-        if (evSid && evSid !== s.sessionId) return
+        // git_head_changed 走下方 isGlobalEvent：信封 sid 可能是
+        // active-session 错标，payload.sessionId 才是权威归属。
+        if (!isGitHead && evSid && evSid !== s.sessionId) return
         // Fall through: deliver this session's own turn-terminal /
         // client_request / session-load boundary event.
       }
@@ -272,10 +313,12 @@ export function initChat(
     if (typeof window !== 'undefined') {
       window.addEventListener('storage', onStorage)
     }
+    const unsubGitInfo = watchGitInfo(get)
     return () => {
       if (typeof window !== 'undefined') {
         window.removeEventListener('storage', onStorage)
       }
+      unsubGitInfo()
       clearTimeout(pinsSyncTimer)
       clearTimeout(uiPrefetchTimer)
       unsub()

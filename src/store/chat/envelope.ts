@@ -10,6 +10,8 @@ export {
   type RawEnvelope,
   envelopeTimestamp,
   envelopeAgentTimestampMs,
+  envelopeReplayStreamKey,
+  envelopeStreamStartMs,
   eventAgentTimestampMs,
   stripContextWrappers,
   extractCronPromptBody,

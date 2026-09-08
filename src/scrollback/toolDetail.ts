@@ -634,12 +634,15 @@ function extractBash(raw: unknown): {
     }
     return null
   }
-  // Detect bash-like shape
+  // Detect bash-like shape. Live `!` completions send `output` as a JSON
+  // byte array; `output_for_prompt` is the UTF-8 fallback.
   const output =
     bytesToText(body.output) ??
     bytesToText(body.stdout) ??
     bodyStr(body.output) ??
-    bodyStr(body.stdout)
+    bodyStr(body.stdout) ??
+    bodyStr(body.output_for_prompt) ??
+    bodyStr(body.outputForPrompt)
   const exitCode =
     typeof body.exit_code === 'number'
       ? body.exit_code

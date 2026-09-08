@@ -19,6 +19,7 @@ import { appendEntry } from '../entries'
 import { flushLiveStream, sealThought } from '../stream'
 import { nid } from '../ids'
 import { applyFollowUps, applyMcpInitProgress, SILENT_EXT_NOTIFICATIONS } from '../followUps'
+import { applyGitHeadChanged } from './extSession'
 import { wireTaskId } from '../util'
 import {
   parseScheduledTask,
@@ -245,6 +246,17 @@ export function handleExtMiscEvent(
         // the same way — never rendered as a status line.
         if (ev.method === 'x.ai/mcp/init_progress') {
           applyMcpInitProgress(set, ev.params)
+          break
+        }
+        // x.ai/git_head_changed — 旧 host 未打成 typed `git_head_changed`
+        // 时走 generic 兜底；消费与 typed 入口同一套会话归属。
+        if (ev.method === 'x.ai/git_head_changed') {
+          applyGitHeadChanged(
+            set,
+            get,
+            ev.params as Record<string, unknown> | undefined,
+            (ev as { sessionId?: string }).sessionId,
+          )
           break
         }
         // x.ai/queue/changed — agent's authoritative queue snapshot.

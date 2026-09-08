@@ -113,6 +113,23 @@ describe('handleConnEvent — ready 的本地真相守卫', () => {
   })
 })
 
+describe('handleConnEvent — live_gap 写入滚动区 warn', () => {
+  it('大洞 → session_event warning', () => {
+    const { set, get, state } = makeStore({ sessionId: 's1', entries: [] })
+    handleConnEvent(set, get, {
+      type: 'live_gap',
+      hostId: 'h',
+      fromSeq: 101,
+      toSeq: 132,
+    })
+    const row = state().entries[0]
+    expect(row?.kind).toBe('session_event')
+    expect(row && row.kind === 'session_event' && row.warning).toBe(true)
+    expect(row && row.kind === 'session_event' && row.text).toContain('32 条')
+    expect(row && row.kind === 'session_event' && row.text).toContain('刷新')
+  })
+})
+
 describe('handleConnEvent — hub hello 用注册表快照选 host', () => {
   const hello = (
     over: Partial<Extract<AcpEvent, { type: 'hello' }>> = {},
@@ -153,13 +170,15 @@ describe('handleConnEvent — hello 触发的历史回放带任务探活', () =>
       sessionId: undefined,
       cwd: undefined,
       loadHistory,
-      replayRunningTasks: vi.fn(() => probeP),
+      prefetchRunningTasks: vi.fn(() => probeP),
       startTopTaskPolling: vi.fn(),
       clearCompletedNotice: vi.fn(),
       topTasks: [],
+      detachedTasks: [],
+      detachedHintKey: null,
     })
     handleConnEvent(set, get, hostHello({ sessionId: 's1', cwd: '/w' }))
-    expect(get().replayRunningTasks).toHaveBeenCalledWith('s1', '/w')
+    expect(get().prefetchRunningTasks).toHaveBeenCalledWith('s1', '/w')
     expect(loadHistory).toHaveBeenCalledWith('s1', '/w', {
       awaitBeforeReplay: probeP,
     })
@@ -172,12 +191,12 @@ describe('handleConnEvent — hello 触发的历史回放带任务探活', () =>
       sessionId: 's1',
       cwd: '/w',
       loadHistory,
-      replayRunningTasks: vi.fn(),
+      prefetchRunningTasks: vi.fn(),
       startTopTaskPolling: vi.fn(),
       clearCompletedNotice: vi.fn(),
     })
     handleConnEvent(set, get, hostHello({ sessionId: 's1', cwd: '/w' }))
-    expect(get().replayRunningTasks).not.toHaveBeenCalled()
+    expect(get().prefetchRunningTasks).not.toHaveBeenCalled()
     expect(loadHistory).not.toHaveBeenCalled()
   })
 })

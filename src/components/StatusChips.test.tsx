@@ -3,7 +3,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import type { ScrollEntry, ToolCall } from '../api/types'
 import { useChatStore } from '../store/chat'
 import { fillAllLiteTurns } from '../store/chat/historyFill'
-import { LiteFillChip, RunningTasksBar } from './StatusChips'
+import { LiteFillChip, McpChip, RunningTasksBar } from './StatusChips'
 import { WorkspaceBar } from './TopBar'
 import { SPINNER_FRAMES } from '../theme/glyphs'
 
@@ -181,4 +181,31 @@ describe('RunningTasksBar — 子代理展示', () => {
     expect(screen.getByText('(grok-4(high))')).toBeInTheDocument()
   })
 })
+
+describe('McpChip', () => {
+  it('无 MCP 服务器时返回 null', () => {
+    useChatStore.setState({ mcpServers: [] })
+    const { container } = render(<McpChip onOpen={vi.fn()} />)
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it('渲染 inline-flex 单行排版，包含 Blocks 图标与已连接计数', () => {
+    const onOpen = vi.fn()
+    useChatStore.setState({
+      mcpServers: [
+        { name: 's1', status: 'ready' },
+        { name: 's2', status: 'failed' },
+      ],
+    })
+    render(<McpChip onOpen={onOpen} />)
+    const btn = screen.getByTitle(/MCP 服务器 1\/2 已连接/)
+    expect(btn).toBeInTheDocument()
+    expect(btn.className).toContain('inline-flex')
+    expect(btn.className).toContain('items-center')
+    expect(btn.textContent).toContain('MCP (1/2)')
+    fireEvent.click(btn)
+    expect(onOpen).toHaveBeenCalledTimes(1)
+  })
+})
+
 

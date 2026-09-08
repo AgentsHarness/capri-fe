@@ -343,7 +343,7 @@ export function LiteFillChip() {
   if (jump) {
     return (
       <span
-        className="shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-gray-dim"
+        className="inline-flex shrink-0 items-center whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-gray-dim"
         title={`正在跳转到目标轮次 · 已加载到第 ${jump.current}/${jump.total} 轮`}
         aria-label={`跳转中：第 ${jump.current}/${jump.total} 轮`}
       >
@@ -367,7 +367,7 @@ export function LiteFillChip() {
       onClick={() => {
         void fillAllLiteTurns()
       }}
-      className={`shrink-0 cursor-pointer whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums hover:bg-gn-bg-highlight ${ failed > 0 ? 'text-gn-warning' : 'text-gn-gray-dim' }`}
+      className={`inline-flex shrink-0 items-center cursor-pointer whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums hover:bg-gn-bg-highlight ${ failed > 0 ? 'text-gn-warning' : 'text-gn-gray-dim' }`}
       title={
         active
           ? `正在补全精简回放裁掉的工具正文 · 还有 ${count} 行`
@@ -740,7 +740,7 @@ export function RunningChip({
       onClick={onToggle}
       aria-expanded={open}
       aria-controls="running-tasks-bar"
-      className={`shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-accent-running hover:bg-gn-bg-highlight ${ open ? 'bg-gn-bg-highlight' : '' }`}
+      className={`inline-flex shrink-0 items-center whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-accent-running hover:bg-gn-bg-highlight ${ open ? 'bg-gn-bg-highlight' : '' }`}
       title={
         open
           ? '隐藏运行中的任务列表'
@@ -752,6 +752,99 @@ export function RunningChip({
       </span>
       {count}
     </button>
+  )
+}
+
+/**
+ * Detached-process hint. Background commands the host's liveness probe
+ * still sees but the agent's registry does NOT know — left behind by a
+ * previous grok process, or held by another client (an open TUI on the same
+ * session). They are deliberately not task rows: this UI must not offer
+ * kill for processes this agent cannot reach. The hint opens once per
+ * distinct set and stays dismissed for that set; only a change in the set
+ * brings it back. Clicking a row still opens its log (the host rebuilds it
+ * from disk), so nothing is hidden — only the false affordance is.
+ */
+export function DetachedChip() {
+  const tasks = useChatStore((s) => s.detachedTasks)
+  const dismiss = useChatStore((s) => s.dismissDetachedHint)
+  const openTaskViewer = useChatStore((s) => s.openTaskViewer)
+  const sessionId = useChatStore((s) => s.sessionId)
+  const cwd = useChatStore((s) => s.cwd)
+  const [open, setOpen] = useState(false)
+  const anchorRef = useRef<HTMLDivElement>(null)
+  if (tasks.length === 0) return null
+
+  const label = (t: (typeof tasks)[number]) =>
+    t.monitorDescription || t.description || t.command || `Task ${t.taskId.slice(0, 8)}`
+
+  return (
+    <div className="relative shrink-0" ref={anchorRef}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="inline-flex shrink-0 items-center cursor-pointer whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-warning hover:bg-gn-bg-highlight"
+        title={`发现 ${tasks.length} 个仍在运行、但不属于当前 Grok 进程的后台命令（此处无法终止）· 点击查看`}
+        aria-label={`游离后台进程：${tasks.length} 个`}
+      >
+        <span className="mr-1 inline-block" aria-hidden>
+          {Glyphs.diamondDotted}
+        </span>
+        {tasks.length}
+      </button>
+      <ChipDropdown
+        open={open}
+        onClose={() => setOpen(false)}
+        label="游离后台进程"
+        anchorRef={anchorRef}
+      >
+        <div className="px-2 py-1 text-[11px] text-gn-muted">
+          这些命令由其他 Grok 进程持有（上一代 agent 或本会话的 TUI），当前会话无法终止它们。
+        </div>
+        {tasks.map((t) => (
+          <div
+            key={t.taskId}
+            className="flex min-h-[24px] cursor-pointer items-center gap-1.5 px-2 py-0.5 text-[12px] leading-none hover:bg-gn-bg-highlight"
+            title="点击查看日志"
+            onClick={() => {
+              openTaskViewer(t.taskId, {
+                title: label(t),
+                command: t.command,
+                outputFile: t.outputFile,
+                sessionId,
+                cwd,
+              })
+            }}
+          >
+            <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-gn-fg">
+              {label(t)}
+            </span>
+            {t.pid ? (
+              <span className="shrink-0 font-mono text-[10px] text-gn-gutter">
+                pid {t.pid}
+              </span>
+            ) : null}
+          </div>
+        ))}
+        <div className="flex items-center justify-between gap-2 px-2 py-1">
+          <span className="min-w-0 truncate font-mono text-[10px] text-gn-gutter">
+            要停止它们：在持有它的 Grok 会话里终止，或在宿主机上 kill 上面的 pid
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              dismiss()
+              setOpen(false)
+            }}
+            className="shrink-0 rounded px-1.5 py-0.5 font-mono text-[11px] text-gn-muted hover:bg-gn-bg-highlight"
+            title="隐藏提示（后台命令出现变化时会再次提示）"
+          >
+            知道了
+          </button>
+        </div>
+      </ChipDropdown>
+    </div>
   )
 }
 
@@ -803,13 +896,9 @@ export function RunningTasksBar({
           <>
             {topTasks.map((t) => (
               <div
-                key={`restored-${t.taskId}`}
+                key={t.taskId}
                 className="group flex min-h-[25px] cursor-pointer items-center gap-1.5 py-0 text-[12px] leading-none hover:bg-gn-bg-highlight"
-                title={
-                  t.restored
-                    ? '恢复的运行中任务（宿主探活确认仍在运行；由 TUI 进程持有，无法在此 kill）· 点击查看日志'
-                    : '点击查看日志'
-                }
+                title="点击查看日志"
                 onClick={() => {
                   openTaskViewer(t.taskId, {
                     title: t.title,
@@ -831,11 +920,6 @@ export function RunningTasksBar({
                 <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-gn-fg">
                   {t.title}
                 </span>
-                {t.restored && (
-                  <span className="shrink-0 rounded border border-gn-gutter/60 px-0.5 font-mono text-[9px] leading-[13px] text-gn-gutter">
-                    恢复
-                  </span>
-                )}
                 {t.command && t.command !== t.title && (
                   <span
                     className="hidden max-w-[28vw] truncate font-mono text-[10px] text-gn-muted sm:inline"
@@ -844,6 +928,11 @@ export function RunningTasksBar({
                     {t.command}
                   </span>
                 )}
+                <InlineAction
+                  label="kill"
+                  title="x.ai/task/kill"
+                  onRun={() => void killTask(t.taskId)}
+                />
               </div>
             ))}
             {running.map((e) => (
@@ -992,11 +1081,11 @@ export function McpChip({ onOpen }: { onOpen: () => void }) {
     <button
       type="button"
       onClick={onOpen}
-      className="shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-gray-dim hover:bg-gn-bg-highlight hover:text-gn-muted"
+      className="inline-flex shrink-0 items-center whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-gray-dim hover:bg-gn-bg-highlight hover:text-gn-muted"
       title={`MCP 服务器 ${connected}/${total} 已连接 · 点击打开 MCP 面板`}
     >
       <Blocks size={11} className="mr-1 shrink-0" aria-hidden />
-      MCP ({connected}/{total})
+      <span>MCP ({connected}/{total})</span>
     </button>
   )
 }
@@ -1016,7 +1105,7 @@ export function QueueBadge() {
       type="button"
       onClick={() => setQueuePanelOpen(!open)}
       aria-expanded={open}
-      className={`shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-fg2 hover:bg-gn-bg-highlight ${ open ? 'bg-gn-bg-highlight' : '' }`}
+      className={`inline-flex shrink-0 items-center whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-fg2 hover:bg-gn-bg-highlight ${ open ? 'bg-gn-bg-highlight' : '' }`}
       title={open ? '收起排队消息' : `展开排队消息 · ${queue.length} 条`}
     >
       +{queue.length}

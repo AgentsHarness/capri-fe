@@ -112,7 +112,7 @@ FE 已经完成了 TUI 绝大部分**核心交互与渲染**的移植，复刻�
 | 本地 slash 命令集 | 69（见附录 A） | 34（见附录 B） | 🟡 |
 | prompt 历史（`↑` 空输入） | ✅ | ✅ localStorage 上限 50 条 | ✅ |
 | `/history` 会话内 fuzzy 搜索 | ✅ | ❌ | ❌ |
-| shell 模式（`!`） | ✅ 直接执行 | ✅ 经 `/api/terminal` piped 执行，`$ cmd` + ANSI + `exit N` | ✅ |
+| shell 模式（`!`） | ✅ 直接执行 | ✅ 发 prompt 带块 `_meta.bash_command`，host 绕开模型执行；`$ cmd` 用户行 + Execute 工具行（`(user)` 标记），随会话历史回放 | ✅ |
 | `#` remember 模式 | ✅ | ❌（仅 `/remember` 命令） | 🟡 |
 | 多行 `/multiline`（Enter/Shift+Enter 语义反转） | ✅ | ✅ | ✅ |
 | 模型选择器 | ✅ `Ctrl+M` 或 `/model` | 🟡 底边框按钮菜单 + effort 档位 + 设为默认模型，**无 Ctrl+M** | 🟡 |

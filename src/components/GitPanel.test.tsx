@@ -461,15 +461,6 @@ describe('GitPanel — 移动端多Tab与高级特性', () => {
     )
   })
 
-  it('AI 生成 Commit 信息', async () => {
-    render(<GitPanel open onClose={() => {}} />)
-    await screen.findByText('a.ts')
-    const aiBtn = screen.getByRole('button', { name: /AI 描述/ })
-    fireEvent.click(aiBtn)
-    const input = screen.getByPlaceholderText('提交信息（Enter 提交）') as HTMLInputElement
-    expect(input.value).toMatch(/^feat: update a\.ts/)
-  })
-
   it('Hunk 块级暂存', async () => {
     transport.gitDiffs.mockResolvedValue({
       files: [

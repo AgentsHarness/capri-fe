@@ -18,6 +18,7 @@ import { SessionListHeader } from './SessionListHeader'
 import { SessionSearchBox } from './SessionSearchBox'
 import {
   ContextChip,
+  DetachedChip,
   GoalChip,
   LiteFillChip,
   McpChip,
@@ -212,6 +213,8 @@ export function WorkspaceBar({
             open={tasksOpen}
             onToggle={() => setTasksBarOpen(!tasksOpen)}
           />
+          {/* 游离后台进程（本 agent 无法终止的那些）——只提示，不进任务列表 */}
+          <DetachedChip />
           <GoalChip goalState={goalState} contextUsed={usage?.used} />
           {onOpenMcp && <McpChip onOpen={onOpenMcp} />}
           {/* 精简回放的正文补全进度（只在有 lite 行欠着正文时出现）。 */}

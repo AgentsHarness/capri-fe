@@ -579,40 +579,24 @@ export function Composer() {
   }
 
   /**
-   * TUI `!` mode: run the command DIRECTLY in a piped terminal and render
-   * `$ cmd` + the raw output locally — NOT sent to the agent as a prompt
-   * (the TUI executes the shell command itself and streams its result).
-   * Exits shell mode back to plain input.
+   * TUI `!` mode: send the command to the host as a direct-bash prompt
+   * (text block carries `_meta.bash_command`, TUI 同款 wire). The host runs
+   * it outside the model loop and echoes back a `$ cmd` user row plus an
+   * Execute tool call — so the command AND its output live in the session
+   * transcript and survive a reload. Exits shell mode back to plain input.
    */
   const submitShell = async (cmd: string) => {
+    if (!cmd.trim()) return
     setText('')
     setShellMode(false)
     setChips([])
-    const st = useChatStore.getState()
-    try {
-      const { terminalId } = await transport.terminalCreate({
-        command: cmd,
-        cwd: st.cwd || undefined,
+    // 忙时（含上一回合未收口）走 send() 的权威队列分支，与 TUI 的
+    // bash 排队语义一致；blocks 原样入队，出队收养时仍认得是 shell 行。
+    await useChatStore
+      .getState()
+      .send(cmd, [{ type: 'text', text: cmd, _meta: { bash_command: cmd } }], {
+        fromShell: true,
       })
-      // Block until the process exits so we can show the final output.
-      await transport.terminalWaitForExit(terminalId)
-      const out = await transport.terminalOutput(terminalId)
-      // `$ cmd` row, then the raw output below it (rendered with ANSI color
-      // via the shared <Ansi> component — not stripped).
-      st.appendLocalEntry({ kind: 'user', text: cmd, isShell: true })
-      const output = out.output ?? ''
-      if (output.trim()) st.appendLocalEntry({ kind: 'session_event', text: output, ansi: true })
-      const code = out.exitStatus?.exitCode
-      if (code != null && code !== 0) {
-        st.appendLocalEntry({ kind: 'session_event', text: `exit ${code}` })
-      }
-      await transport.terminalRelease(terminalId).catch(() => {})
-    } catch (e) {
-      st.appendLocalEntry({
-        kind: 'error',
-        text: `命令执行失败: ${e instanceof Error ? e.message : String(e)}`,
-      })
-    }
     // Record history only when the host accepted the command — shell
     // submissions are tagged so recalling them re-enters shell mode.
     if (useChatStore.getState().conn !== 'error') pushHistory(cmd, true)

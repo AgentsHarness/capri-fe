@@ -233,6 +233,9 @@ export function handleUserStreamEvent(
               isInterjection:
                 (ev.type === 'user_message' ? ev.isInterjection : classified.isInterjection) ||
                 undefined,
+              // TUI `!` 直连 shell 回放行：host 带块 `_meta.bash_command`
+              // （live 侧的乐观行由 send(fromShell) 打标），渲染成 `$ cmd`。
+              isShell: ev.type === 'user_message' && ev.isShell ? true : undefined,
               ts,
               expanded: false,
               // 回放聚合用户行携带首条 chunk 的 msgSeq（live 事件无）。

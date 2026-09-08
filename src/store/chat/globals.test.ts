@@ -10,6 +10,8 @@ import {
   clearContinueSessionTimer,
   clearPeerSessionLoad,
   dropLiveCoveredBySnapshot,
+  liveReplayStreamKey,
+  liveStreamPrefixMissingFromHistory,
 } from './globals'
 import type { ChatState } from './types'
 import { replayEventKeys } from './envelopeParse'
@@ -86,10 +88,16 @@ describe('historyWindowBuffer', () => {
     bufferHistoryWindowEvent({ type: 'chunk', text: 'a' } as never)
     runtime.historySnapTail = 123
     runtime.historySnapEventKeys.set('k', 1)
+    runtime.historySnapStreamKeys.add('chunk:1')
+    runtime.historyLoadStartedAt = 99
+    runtime.historyLiveJoinCheck = true
     clearHistoryWindowBuffer()
     expect(runtime.historyWindowBuffer).toHaveLength(0)
     expect(runtime.historySnapTail).toBeUndefined()
     expect(runtime.historySnapEventKeys.size).toBe(0)
+    expect(runtime.historySnapStreamKeys.size).toBe(0)
+    expect(runtime.historyLoadStartedAt).toBeUndefined()
+    expect(runtime.historyLiveJoinCheck).toBe(false)
   })
 })
 
@@ -157,6 +165,92 @@ describe('dropLiveCoveredBySnapshot', () => {
     }
     expect(dropLiveCoveredBySnapshot(ev)).toBe(true)
     expect(dropLiveCoveredBySnapshot(ev)).toBe(false)
+  })
+})
+
+describe('liveStreamPrefixMissingFromHistory', () => {
+  beforeEach(() => clearHistoryWindowBuffer())
+
+  it('无 sessionId 的回放事件不判缺口', () => {
+    runtime.historyLoadStartedAt = 2000
+    expect(
+      liveStreamPrefixMissingFromHistory({
+        type: 'chunk',
+        text: 'x',
+        streamStartMs: 1000,
+      } as never),
+    ).toBe(false)
+  })
+
+  it('快照已有同一路流 → 历史含前缀，不判缺口', () => {
+    runtime.historyLoadStartedAt = 2000
+    runtime.historySnapStreamKeys.add('chunk:1000')
+    expect(
+      liveStreamPrefixMissingFromHistory({
+        type: 'chunk',
+        text: '后半',
+        sessionId: 's1',
+        streamStartMs: 1000,
+      } as never),
+    ).toBe(false)
+  })
+
+  it('流在本次回放开始之前开工且快照没有这一路 → 缺口', () => {
+    runtime.historyLoadStartedAt = 2000
+    expect(
+      liveStreamPrefixMissingFromHistory({
+        type: 'chunk',
+        text: '后半',
+        sessionId: 's1',
+        streamStartMs: 1000,
+      } as never),
+    ).toBe(true)
+    expect(
+      liveStreamPrefixMissingFromHistory({
+        type: 'thought',
+        text: '后半',
+        sessionId: 's1',
+        streamStartMs: 1000,
+      } as never),
+    ).toBe(true)
+  })
+
+  it('thought 与 assistant 按 kind 分路：快照有 thought 不挡住 assistant 缺口', () => {
+    runtime.historyLoadStartedAt = 2000
+    runtime.historySnapStreamKeys.add('thought:1000')
+    expect(
+      liveStreamPrefixMissingFromHistory({
+        type: 'chunk',
+        text: '后半',
+        sessionId: 's1',
+        streamStartMs: 1000,
+      } as never),
+    ).toBe(true)
+  })
+
+  it('流在本次回放开始之后才开工 → 能从头接到，不判缺口', () => {
+    runtime.historyLoadStartedAt = 2000
+    expect(
+      liveStreamPrefixMissingFromHistory({
+        type: 'chunk',
+        text: '首包',
+        sessionId: 's1',
+        streamStartMs: 2500,
+      } as never),
+    ).toBe(false)
+  })
+
+  it('liveReplayStreamKey 只认 chunk/thought 的有限 streamStartMs', () => {
+    expect(liveReplayStreamKey({ type: 'chunk', streamStartMs: 1 } as never)).toBe(
+      'chunk:1',
+    )
+    expect(
+      liveReplayStreamKey({ type: 'thought', streamStartMs: 2 } as never),
+    ).toBe('thought:2')
+    expect(liveReplayStreamKey({ type: 'done' } as never)).toBeUndefined()
+    expect(
+      liveReplayStreamKey({ type: 'chunk', streamStartMs: Number.NaN } as never),
+    ).toBeUndefined()
   })
 })
 

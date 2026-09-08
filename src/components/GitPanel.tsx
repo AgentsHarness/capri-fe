@@ -19,7 +19,6 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
-  Sparkles,
   Trash2,
   UploadCloud,
   X,
@@ -1151,25 +1150,6 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
   }
 
   // ── AI commit message recommendation ──────────────────────────────
-  const onGenerateCommitMsg = () => {
-    const targets = stagedRows.length > 0 ? stagedRows : rows
-    if (targets.length === 0) return
-    const paths = targets.map((t) => t.path)
-    let prefix = 'feat'
-    if (paths.some((p) => /fix|bug|issue|patch|err/i.test(p))) {
-      prefix = 'fix'
-    } else if (paths.some((p) => /test|spec/i.test(p))) {
-      prefix = 'test'
-    } else if (paths.every((p) => /docs?|readme|\.md/i.test(p))) {
-      prefix = 'docs'
-    } else if (paths.every((p) => /style|css|less|scss/i.test(p))) {
-      prefix = 'style'
-    }
-    const sample = paths.slice(0, 2).map((p) => p.split('/').pop()).join(', ')
-    const countExtra = paths.length > 2 ? ` and ${paths.length - 2} more` : ''
-    setCommitMsg(`${prefix}: update ${sample}${countExtra}`)
-  }
-
   // ── Stage/Unstage All ──────────────────────────────────────────────
   const onStageAll = () => {
     const un = unstagedRows.map((r) => r.path)
@@ -1543,7 +1523,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                 <div className="flex min-h-0 flex-1 flex-col sm:flex-row">
                   {/* File list sidebar — hidden on mobile while a diff is open */}
                   <div
-                    className={`flex min-h-0 shrink-0 flex-col border-gn-prompt-border bg-gn-bg-base/40 sm:border-r ${
+                    className={`flex min-h-0 flex-col border-gn-prompt-border bg-gn-bg-base/40 sm:shrink-0 sm:border-r ${
                       selectedPath ? 'hidden sm:flex sm:w-[320px] lg:w-[360px]' : 'flex w-full sm:w-[320px] lg:w-[360px]'
                     }`}
                   >
@@ -1823,7 +1803,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
 
                     <div className="flex min-h-0 flex-1 flex-col overflow-hidden sm:flex-row">
                       <div
-                    className={`min-w-0 flex-col border-gn-prompt-border/60 sm:border-r ${
+                    className={`min-h-0 min-w-0 flex-col border-gn-prompt-border/60 sm:border-r ${
                       selectedCommit ? 'hidden sm:flex sm:flex-1' : 'flex flex-1'
                     }`}
                   >
@@ -1925,8 +1905,8 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                   </div>
 
                   {selectedCommit ? (
-                    <div className="flex min-h-0 w-full shrink-0 flex-col overflow-hidden bg-gn-bg-dark/60 sm:w-[320px] md:w-[360px]">
-                      <div className="flex shrink-0 items-center gap-2 border-b border-gn-prompt-border bg-gn-bg-base px-3 py-2 sm:hidden">
+                    <div className="min-h-0 w-full flex-1 overflow-y-auto bg-gn-bg-dark/60 sm:flex sm:w-[320px] sm:flex-none sm:flex-col sm:overflow-hidden md:w-[360px]">
+                      <div className="sticky top-0 z-[1] flex shrink-0 items-center gap-2 border-b border-gn-prompt-border bg-gn-bg-base px-3 py-2 sm:hidden">
                         <button
                           type="button"
                           onClick={() => setSelectedCommitHash(undefined)}
@@ -1978,11 +1958,11 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                         </div>
                       </div>
 
-                      <div className="flex min-h-0 flex-1 flex-col">
+                      <div className="flex min-h-0 flex-col sm:flex-1">
                         <div className="flex shrink-0 items-center justify-between border-b border-gn-prompt-border/30 bg-gn-bg-base/50 px-3 py-1.5 text-[10.5px] uppercase tracking-wider text-gn-gutter select-none">
                           <span>改动文件 {commitDiff?.files ? `· ${commitDiff.files.length}` : ''}</span>
                         </div>
-                        <div className="gn-no-scrollbar flex-1 space-y-1 overflow-y-auto p-2">
+                        <div className="gn-no-scrollbar space-y-1 p-2 sm:flex-1 sm:overflow-y-auto">
                           {commitDiff?.loading ? (
                             <div className="py-4 text-center text-[11px] text-gn-muted">分析改动中…</div>
                           ) : commitDiff?.error ? (
@@ -2174,7 +2154,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                         value={newBranchName}
                         onChange={(e) => setNewBranchName(e.target.value)}
                         placeholder="新分支名称"
-                        className="h-8 min-w-0 flex-1 rounded border border-gn-prompt-border bg-gn-bg-dark px-2 text-[11.5px] text-gn-fg outline-none focus:border-gn-green/60 sm:h-7"
+                        className="h-8 w-full min-w-0 rounded border border-gn-prompt-border bg-gn-bg-dark px-2 text-[11.5px] text-gn-fg outline-none focus:border-gn-green/60 sm:h-7 sm:w-auto sm:flex-1"
                       />
                       <div className="flex items-center gap-1.5">
                         <label className="flex shrink-0 cursor-pointer select-none items-center gap-1 text-[11px] text-gn-muted">
@@ -2208,7 +2188,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                       </div>
                     </div>
 
-                    <div className="gn-no-scrollbar mt-2.5 min-h-[140px] max-h-[360px] flex-1 space-y-0.5 overflow-y-auto">
+                    <div className="gn-no-scrollbar mt-2.5 min-h-[140px] max-h-[360px] flex-1 space-y-0.5 overflow-y-auto sm:max-h-none">
                       {branchesLoading && branches.length === 0 && (
                         <div className="py-4 text-center text-[11px] text-gn-muted">加载中…</div>
                       )}
@@ -2292,7 +2272,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                       </span>
                     </div>
 
-                    <div className="gn-no-scrollbar mt-2.5 min-h-[140px] max-h-[360px] flex-1 space-y-1 overflow-y-auto">
+                    <div className="gn-no-scrollbar mt-2.5 min-h-[140px] max-h-[360px] flex-1 space-y-1 overflow-y-auto sm:max-h-none">
                       {stashLoading ? (
                         <div className="py-4 text-center text-[11px] text-gn-muted">加载中…</div>
                       ) : stashes.length === 0 ? (
@@ -2392,17 +2372,6 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                   placeholder="提交信息（Enter 提交）"
                   className="min-h-8 min-w-0 flex-1 rounded border border-gn-prompt-border bg-gn-bg-dark px-2.5 text-[12px] text-gn-fg outline-none placeholder:text-gn-gray focus:border-gn-green/60 sm:min-h-8"
                 />
-                <button
-                  type="button"
-                  onClick={onGenerateCommitMsg}
-                  disabled={rows.length === 0 || busy}
-                  className="flex h-8 shrink-0 items-center gap-1 rounded border border-gn-prompt-border bg-gn-bg-highlight/60 px-2.5 text-[11.5px] text-gn-cyan hover:bg-gn-bg-highlight disabled:opacity-40 sm:h-auto sm:py-1"
-                  title="根据当前改动自动生成规范的提交信息"
-                  aria-label="AI 描述"
-                >
-                  <Sparkles size={12} />
-                  <span>AI 描述</span>
-                </button>
               </div>
 
               <div className="flex flex-wrap items-center gap-2">

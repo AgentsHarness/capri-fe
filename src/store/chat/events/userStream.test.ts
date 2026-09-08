@@ -143,4 +143,24 @@ describe('userStream — user_message 回放 / 注入', () => {
       ts: 12345,
     })
   })
+
+  it('user_message 带 isShell（TUI `!` 直连 bash 回放）→ 用户行标 isShell', () => {
+    const { set, get, state } = makeStore({ sessionId: 's1' })
+    handleUserStreamEvent(set, get, {
+      type: 'user_message',
+      text: 'git status',
+      isShell: true,
+      ts: 12345,
+    })
+    const users = state().entries.filter((e) => e.kind === 'user')
+    expect(users).toHaveLength(1)
+    expect(users[0]).toMatchObject({ kind: 'user', text: 'git status', isShell: true })
+  })
+
+  it('普通 user_message 不带 isShell', () => {
+    const { set, get, state } = makeStore({ sessionId: 's1' })
+    handleUserStreamEvent(set, get, { type: 'user_message', text: '普通提问', ts: 1 })
+    expect(state().entries[0]).toMatchObject({ kind: 'user', text: '普通提问' })
+    expect((state().entries[0] as { isShell?: boolean }).isShell).toBeUndefined()
+  })
 })

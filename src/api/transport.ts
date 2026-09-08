@@ -79,6 +79,9 @@ export type McpListServer = {
   /** Agent `sourceLabel` — display overlay for `source` (e.g. "plugin: foo"). */
   sourceLabel?: string
   url?: string
+  /** Agent-side HTTP transport type marker ("http" | "sse") for `[mcp_servers.*]` `type`. */
+  type?: string
+  headers?: Record<string, string>
   status?: string
   /** Session flags explaining WHY a server has no tools (agent wire
    *  `session.authRequired` / `session.setupRequired`; the agent omits

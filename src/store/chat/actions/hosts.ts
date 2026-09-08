@@ -174,6 +174,10 @@ export function hostActions(set: SetState, get: () => ChatState) {
       subagentViews: {},
       bgTaskIndex: {},
       topTasks: [],
+      // 换 host 即换 agent 进程，游离进程提示必须重新判定。
+      detachedTasks: [],
+      detachedHintKey: null,
+      runningProbeTaskIds: [],
       scheduledTasks: [],
       gitInfo: undefined,
       sessionStats: undefined,

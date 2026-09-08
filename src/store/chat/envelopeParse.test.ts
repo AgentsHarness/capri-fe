@@ -4,6 +4,8 @@ import {
   classifyUserPrompt,
   envelopeEventId,
   envelopeMsgSeq,
+  envelopeReplayStreamKey,
+  envelopeStreamStartMs,
   envelopeTimestamp,
   envelopeToEvent,
   envelopeToEvents,
@@ -25,6 +27,39 @@ function env(method: string, update: Record<string, unknown> | undefined, extra:
   if (update !== undefined) e.params = { update }
   return e
 }
+
+describe('envelopeReplayStreamKey', () => {
+  const withMeta = (
+    sessionUpdate: string,
+    streamStartMs: number,
+  ) => ({
+    method: 'session/update',
+    params: {
+      update: { sessionUpdate },
+      _meta: { streamStartMs },
+    },
+  })
+
+  it('agent 文本流按 kind + streamStartMs 分路', () => {
+    expect(envelopeReplayStreamKey(withMeta('agent_message_chunk', 10))).toBe(
+      'chunk:10',
+    )
+    expect(envelopeReplayStreamKey(withMeta('agent_thought_chunk', 10))).toBe(
+      'thought:10',
+    )
+    expect(envelopeReplayStreamKey(withMeta('user_message_chunk', 10))).toBeUndefined()
+    expect(envelopeStreamStartMs(withMeta('agent_message_chunk', 10))).toBe(10)
+  })
+
+  it('无 streamStartMs → undefined', () => {
+    expect(
+      envelopeReplayStreamKey({
+        method: 'session/update',
+        params: { update: { sessionUpdate: 'agent_message_chunk' } },
+      }),
+    ).toBeUndefined()
+  })
+})
 
 describe('envelopeTimestamp', () => {
   it('epoch 秒 / 毫秒 / RFC3339 字符串', () => {
@@ -294,6 +329,43 @@ describe('envelopeToEvents', () => {
       }),
     )
     expect(hostTurn).toEqual([])
+  })
+
+  it('user_message_chunk：块 _meta.bash_command → isShell（TUI `!` 回放）', () => {
+    const bash = envelopeToEvents(
+      env('session/update', {
+        sessionUpdate: 'user_message_chunk',
+        content: { type: 'text', text: 'git status', _meta: { bash_command: 'git status' } },
+      }),
+    )
+    expect(bash[0]).toMatchObject({ type: 'user_message', text: 'git status', isShell: true })
+
+    // 正文数组形态（多块 chunk）也认
+    const arr = envelopeToEvents(
+      env('session/update', {
+        sessionUpdate: 'user_message_chunk',
+        content: [{ type: 'text', text: 'ls', _meta: { bash_command: 'ls' } }],
+      }),
+    )
+    expect(arr[0]).toMatchObject({ isShell: true })
+
+    const plain = envelopeToEvents(
+      env('session/update', {
+        sessionUpdate: 'user_message_chunk',
+        content: { type: 'text', text: '普通提问' },
+      }),
+    )
+    expect(plain[0]).toMatchObject({ type: 'user_message', text: '普通提问' })
+    expect((plain[0] as { isShell?: boolean }).isShell).toBeUndefined()
+  })
+
+  it('bash 标记不进回放去重键（live user_chunk 不带它，进了就对不上）', () => {
+    const snapshot = env('session/update', {
+      sessionUpdate: 'user_message_chunk',
+      content: { type: 'text', text: 'ls -la', _meta: { bash_command: 'ls -la' } },
+    })
+    const live = { type: 'user_chunk', text: 'ls -la' } as unknown as AcpEvent
+    expect(replayEnvelopeKeys(snapshot)).toEqual(replayEventKeys(live))
   })
 
   it('tool_call / plan / usage_update → 事件', () => {

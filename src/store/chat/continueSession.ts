@@ -115,10 +115,10 @@ export async function continueSession(
           return await transport.loadSession(sessionId, cwd, { noReplay: true })
         }
       })()
-      // 探活必须先于历史回放的应用（replayUpdates 跳过仍在跑任务的
+      // 运行中任务必须先于历史回放落地（replayUpdates 跳过仍在跑任务的
       // started 行）：作为 awaitBeforeReplay 传给 loadHistory，与快照的
-      // 网络往返重叠，回放应用仍严格等探活完成。
-      const tasksP = get().replayRunningTasks(sessionId, cwd)
+      // 网络往返重叠，回放应用仍严格等它完成。
+      const tasksP = get().prefetchRunningTasks(sessionId, cwd)
       historyP = get().loadHistory(sessionId, cwd, { awaitBeforeReplay: tasksP })
 
       const loaded = await resumeP

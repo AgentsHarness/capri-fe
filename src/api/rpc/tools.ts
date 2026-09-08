@@ -136,9 +136,13 @@ export const toolsRpc = {
 
   async mcpAdd(this: TransportCore, server: {
     name: string
-    command: string
+    command?: string
     args?: string[]
     env?: Record<string, string>
+    url?: string
+    /** HTTP transport marker ("http" | "sse"); persisted as `[mcp_servers.*]` `type`. */
+    type?: string
+    headers?: Record<string, string>
   }): Promise<Record<string, unknown>> {
     const res = await this.fetch(this.url('/api/mcp-add'), {
       method: 'POST',
@@ -212,7 +216,11 @@ export const toolsRpc = {
     return unwrapExtResult(await xaiCall(this, '/api/mcp/call', body))
   },
 
-  async mcpReadResource(this: TransportCore, opts: { server: string; uri: string }): Promise<unknown> {
+  async mcpReadResource(this: TransportCore, opts: {
+    server: string
+    uri: string
+    sessionId?: string
+  }): Promise<unknown> {
     return unwrapExtResult(await xaiCall(this, '/api/mcp/read-resource', opts))
   },
 

@@ -15,6 +15,20 @@ function makeStore(initial: Partial<ChatState> = {}) {
   return { set: set as unknown as SetState, get, state: () => state }
 }
 
+describe('handleExtMiscEvent — git_head_changed 兜底', () => {
+  it('旧 host 的 ext_notification x.ai/git_head_changed 写入状态栏分支', () => {
+    const { set, get, state } = makeStore({ sessionId: 's1' })
+    const handled = handleExtMiscEvent(set, get, {
+      type: 'ext_notification',
+      method: 'x.ai/git_head_changed',
+      sessionId: 's1',
+      params: { sessionId: 's1', branch: 'feat/ext' },
+    } as AcpEvent)
+    expect(handled).toBe(true)
+    expect(state().gitInfo?.branch).toBe('feat/ext')
+  })
+})
+
 describe('handleExtMiscEvent — session_interjection', () => {
   it('实时收到 session_interjection 广播时，生成带 isInterjection: true 的 user 行', () => {
     const { set, get, state } = makeStore({ sessionId: 's1' })

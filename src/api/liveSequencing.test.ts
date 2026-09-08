@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { EventSequencer, type SequencedEvent } from './liveSequencing'
+import { EventSequencer, LIVE_INTERRUPT_GAP, type SequencedEvent } from './liveSequencing'
 
 const GEN = 1
 
@@ -76,9 +76,9 @@ describe('EventSequencer', () => {
     const { seq, emitted, pull } = makeSeq()
     seq.seedFromLive('h')
     seq.reset()
-    seq.accept(ev(114020), GEN)
+    // 小洞仍走补拉（大 seq 会当直播中断直接放行，测不出标记被清）
+    seq.accept(ev(2), GEN)
     await flush()
-    // 标记已失效 → 回到默认策略（水位 0 视为流起点，补拉 after=0）
     expect(emitted).toEqual([])
     expect(pull).toHaveBeenCalledWith('h', 0, expect.any(AbortSignal))
   })
@@ -169,10 +169,68 @@ describe('EventSequencer', () => {
 
   it('pending 超上限：推水位放出已有事件（认赔不憋死）', () => {
     const { seq, emitted } = makeSeq()
-    // 缺 seq 1，灌入 2..2002（2001 条 > 上限 2000）
-    for (let s = 2; s <= 2002; s++) seq.accept(ev(s), GEN)
-    expect(emitted.map((e) => e.seq)).toEqual(
-      Array.from({ length: 2001 }, (_, i) => i + 2),
+    // 缺 seq 1，灌入 2..130（129 条 > 上限 128）
+    for (let s = 2; s <= 130; s++) seq.accept(ev(s), GEN)
+    expect(emitted[0]).toMatchObject({ type: 'live_gap', fromSeq: 1, toSeq: 1 })
+    expect(emitted.filter((e) => e.type !== 'live_gap').map((e) => e.seq)).toEqual(
+      Array.from({ length: 129 }, (_, i) => i + 2),
     )
+  })
+
+  it('直播中断（大洞）：先放出正在到来的连续段，不补拉已压掉的前驱', async () => {
+    const { seq, emitted, pull } = makeSeq()
+    seq.resetHost('h', 100)
+    const start = 100 + LIVE_INTERRUPT_GAP + 1
+    seq.accept(ev(start), GEN)
+    await flush()
+    expect(emitted[0]).toMatchObject({
+      type: 'live_gap',
+      hostId: 'h',
+      fromSeq: 101,
+      toSeq: start - 1,
+    })
+    expect(emitted.map((e) => e.seq).filter((s) => s != null)).toEqual([start])
+    expect(pull).not.toHaveBeenCalled()
+    expect(seq.watermark('h')).toBe(start)
+  })
+
+  it('直播中断后后续序号连续放出，洞里的旧事件不再插入 live', async () => {
+    const { seq, emitted } = makeSeq()
+    seq.resetHost('h', 100)
+    const start = 100 + LIVE_INTERRUPT_GAP + 1
+    seq.accept(ev(start), GEN)
+    seq.accept(ev(start + 1), GEN)
+    seq.accept(ev(start + 2), GEN)
+    expect(emitted.filter((e) => e.type !== 'live_gap').map((e) => e.seq)).toEqual([
+      start,
+      start + 1,
+      start + 2,
+    ])
+    seq.accept(ev(101), GEN)
+    expect(emitted.filter((e) => e.type !== 'live_gap').map((e) => e.seq)).toEqual([
+      start,
+      start + 1,
+      start + 2,
+    ])
+  })
+
+  it('小洞仍补拉，不提前放行', async () => {
+    const { seq, emitted, pull } = makeSeq(async () => [ev(101)])
+    seq.resetHost('h', 100)
+    seq.accept(ev(102), GEN)
+    await flush()
+    expect(pull).toHaveBeenCalledWith('h', 100, expect.any(AbortSignal))
+    expect(emitted.map((e) => e.seq)).toEqual([101, 102])
+  })
+
+  it('补拉未带回前驱且洞仍小：继续等，不误跳', async () => {
+    const { seq, emitted, pull } = makeSeq(async () => [ev(105)])
+    seq.resetHost('h', 100)
+    seq.accept(ev(102), GEN)
+    await flush()
+    expect(pull).toHaveBeenCalledWith('h', 100, expect.any(AbortSignal))
+    expect(emitted).toEqual([])
+    seq.accept(ev(101), GEN)
+    expect(emitted.map((e) => e.seq)).toEqual([101, 102])
   })
 })

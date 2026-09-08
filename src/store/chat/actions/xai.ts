@@ -3,7 +3,7 @@ import type { ScrollEntry } from '../../../api/types'
 import type { ChatState, SetState } from '../types'
 import { nid } from '../ids'
 import { appendEntry } from '../entries'
-import { scheduledTaskDeletedText } from '../tasks'
+import { scheduledTaskDeletedText, settleUntrackedTask } from '../tasks'
 import { INITIAL_TURNS } from '../history'
 import { noteHistoryProjection } from '../historyFill'
 import { loadHistoryWithTaskProbe } from '../loadHistory'
@@ -332,8 +332,31 @@ export function xaiActions(set: SetState, get: () => ChatState) {
 
   killTask: async (taskId) => {
     try {
-      await transport.killTask(taskId, get().sessionId)
-      set({ statusText: '正在终止后台任务…' })
+      // 结果必须读 outcome：agent 把 not_found 包在成功响应里返回，
+      // 只看 HTTP ok 会把"这个进程里没有这条任务"演成"正在终止"。
+      const outcome = await transport.killTask(taskId, get().sessionId)
+      if (outcome === 'killed') {
+        // task_completed 紧随其后，由它把行结算掉；statusText 只在回合
+        // 运行时可见，所以这里同时给一条 toast。
+        set({ statusText: '正在终止后台任务…' })
+        pushToast('已请求终止后台任务', { type: 'success' })
+        return
+      }
+      if (outcome === 'already_exited') {
+        // No task_completed will ever arrive for a task that exited while
+        // this UI wasn't tracking it — settle the row here.
+        settleUntrackedTask(get, set, taskId)
+        pushToast('该任务已退出', { type: 'info' })
+        return
+      }
+      if (outcome === 'not_found') {
+        // 本 agent 进程的注册表里没有这条任务（上一代进程残留，或由别的
+        // 客户端持有）：这里杀不掉它，行就地摘除，别再挂个假的"运行中"。
+        settleUntrackedTask(get, set, taskId)
+        pushToast('该任务不属于当前 Grok 进程，无法在此终止', { type: 'warning' })
+        return
+      }
+      pushToast('已发送终止请求（未收到结果确认）', { type: 'info' })
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       set({

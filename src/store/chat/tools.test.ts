@@ -6,7 +6,9 @@ import {
   bashOutputText,
   bashRawOutput,
   clearSuppressedTools,
+  decodeBashBytes,
   extractTarget,
+  isBashModeTool,
   isBgExecuteTool,
   isBgPlumbingTool,
   isExecuteToolFunctionName,
@@ -16,6 +18,7 @@ import {
   isTaskSpawnTool,
   isTodoTool,
   isWorkflowTool,
+  mergeToolCall,
   shouldSuppressToolFromScrollback,
   suppressedToolIds,
   toolCallIdOf,
@@ -191,6 +194,71 @@ describe('bashRawOutput / bashOutputText / isOrphanBashStreamUpdate / absorbBash
     expect(
       isOrphanBashStreamUpdate(tc({ rawOutput: { type: 'Bash', truncated: true } })),
     ).toBe(true)
+    expect(
+      isOrphanBashStreamUpdate(
+        tc({
+          toolCallId: 'bash-mode-abc',
+          rawOutput: { type: 'Bash', output: '... (16 lines)\nfile', truncated: true },
+        }),
+      ),
+    ).toBe(false)
+    expect(
+      isOrphanBashStreamUpdate(
+        tc({
+          _meta: { bash_mode: true },
+          rawOutput: { type: 'Bash', truncated: true },
+        }),
+      ),
+    ).toBe(false)
+  })
+
+  it('isBashModeTool：_meta.bash_mode 或 bash-mode- 前缀 id', () => {
+    expect(isBashModeTool(tc({ _meta: { bash_mode: true } }))).toBe(true)
+    expect(isBashModeTool(tc({ toolCallId: 'bash-mode-uuid' }))).toBe(true)
+    expect(isBashModeTool(tc({ toolCallId: 'call_1' }))).toBe(false)
+  })
+
+  it('decodeBashBytes：字符串与 JSON 字节数组', () => {
+    expect(decodeBashBytes('hello')).toBe('hello')
+    expect(decodeBashBytes([108, 115, 10])).toBe('ls\n')
+    expect(decodeBashBytes('[]')).toBeUndefined()
+    expect(decodeBashBytes([])).toBeUndefined()
+  })
+
+  it('mergeToolCall：截断摘要不覆盖更长的流式 stdout', () => {
+    const full = 'L01\nL02\nL03\nL04\nL05\nL06\nL07\nL08\nL09\nL10\nL11\nL12\n'
+    const tail = '... (12 lines)\nL03\nL04\nL05\nL06\nL07\nL08\nL09\nL10\nL11\nL12'
+    const merged = mergeToolCall(
+      tc({
+        toolCallId: 'bash-mode-1',
+        kind: 'execute',
+        _meta: { bash_mode: true },
+        rawInput: { command: 'seq', is_background: false },
+        rawOutput: { type: 'Bash', output: [...full].map((c) => c.charCodeAt(0)), truncated: false },
+      }),
+      tc({
+        toolCallId: 'bash-mode-1',
+        status: 'completed',
+        rawOutput: {
+          type: 'Bash',
+          output: [...tail].map((c) => c.charCodeAt(0)),
+          output_for_prompt: tail,
+          truncated: true,
+        },
+      }),
+    )
+    expect(isBashModeTool(merged)).toBe(true)
+    expect(merged.status).toBe('completed')
+    expect(decodeBashBytes((merged.rawOutput as { output: unknown }).output)).toBe(full)
+    expect((merged.rawOutput as { truncated?: boolean }).truncated).toBe(false)
+  })
+
+  it('mergeToolCall：output_delta 追加到已有 stdout', () => {
+    const merged = mergeToolCall(
+      tc({ rawOutput: { type: 'Bash', output: 'ab' } }),
+      tc({ rawOutput: { type: 'Bash', output_delta: [99], truncated: true } }),
+    )
+    expect((merged.rawOutput as { output: string }).output).toBe('abc')
   })
 
   it('absorbBashOutputIntoBgTask：按命令精确/模糊匹配', () => {

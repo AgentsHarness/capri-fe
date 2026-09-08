@@ -1,6 +1,6 @@
 import type { ContentBlock } from '../../api/types'
 import { transport, AgentTurnError } from '../../api/client'
-import { qid, userRowText, usePromptQueue } from '../promptQueue'
+import { qid, isBashBlocks, userRowText, usePromptQueue } from '../promptQueue'
 import type { ChatState, SetState } from './types'
 import { nid } from './ids'
 import {
@@ -107,6 +107,7 @@ export async function sendPrompt(
     const promptId = opts?.promptId ?? qid()
     // Shell-mode submissions (Composer `!` mode → prompt path) mark the
     // user row so the scrollback renders it with the TUI `$ ` prefix.
+    // 块里带 `bash_command` 也算（调用方没传 fromShell 时不至于掉标）。
     const userEntry = {
       id: userId,
       kind: 'user' as const,
@@ -114,7 +115,7 @@ export async function sendPrompt(
       // 用户行才不是一条空白；wire 上发的仍是真 blocks，标记不外传。
       text: userRowText(t, blocks),
       ts: Date.now(),
-      ...(opts?.fromShell ? { isShell: true } : {}),
+      ...(opts?.fromShell || isBashBlocks(blocks) ? { isShell: true } : {}),
     }
     // 降级行手动重发沿用原 promptId：先移除当初忙时渲染的乐观排队行
     // （行 id = promptId），否则重发后 transcript 出现两条同文用户行。

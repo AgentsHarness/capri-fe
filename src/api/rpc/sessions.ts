@@ -315,7 +315,15 @@ export const sessionsRpc = {
   async sessionRunningTasks(this: TransportCore, 
     sessionId: string,
     cwd: string,
-  ): Promise<{ events?: import('../types').TaskTimelineEvent[] }> {
+  ): Promise<{
+    events?: import('../types').TaskTimelineEvent[]
+    /**
+     * Still-running tasks the agent's registry does not know (host-diffed
+     * against x.ai/task/list) — hint material only, never a task row.
+     * Raw host TaskEvent shape; `parseDetachedTask` normalizes it.
+     */
+    detached?: Array<Record<string, unknown>>
+  }> {
     const res = await this.fetch(this.url('/api/session-running-tasks'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

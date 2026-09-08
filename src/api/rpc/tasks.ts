@@ -17,7 +17,17 @@ export const tasksRpc = {
     return data
   },
 
-  async killTask(this: TransportCore, taskId: string, sessionId?: string) {
+  /**
+   * Kill one background task (x.ai/task/kill). The agent answers
+   * `{result: {result: {taskId, outcome}}}` through the ExtMethodResult
+   * envelope, and `outcome` is the only truthful verdict: not_found is
+   * delivered inside a successful response, so callers MUST branch on it.
+   */
+  async killTask(
+    this: TransportCore,
+    taskId: string,
+    sessionId?: string,
+  ): Promise<'killed' | 'already_exited' | 'not_found' | 'unknown'> {
     const res = await this.fetch(this.url('/api/task-kill'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -28,10 +38,19 @@ export const tasksRpc = {
     })
     const data = await readRpcJson(res)
     assertRpcOk(res, data, 'task kill failed')
-    return data
+    return parseKillOutcome(data)
   },
 
-  async listTasks(this: TransportCore): Promise<
+  /**
+   * The agent's live task registry (x.ai/task/list). Pass `sessionId` to ask
+   * for THAT session's registry: without it the host answers for whichever
+   * session is active, which would paint another session's tasks on this
+   * view (the top task strip is per-session).
+   */
+  async listTasks(
+    this: TransportCore,
+    sessionId?: string,
+  ): Promise<
     Array<{
       taskId: string
       command?: string
@@ -40,12 +59,17 @@ export const tasksRpc = {
       completed?: boolean
       description?: string
       truncated?: boolean
+      running?: boolean
+      failed?: boolean
+      isBackgrounded?: boolean
+      sessionId?: string
+      exitCode?: number
     }>
   > {
     const res = await this.fetch(this.url('/api/task-list'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
+      body: JSON.stringify(sessionId ? { sessionId } : {}),
     })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'task list failed')
@@ -89,6 +113,28 @@ export const tasksRpc = {
   },
 }
 
+/**
+ * Pull `outcome` out of an x.ai/task/kill reply. The agent answers through
+ * the ExtMethodResult envelope and the host may have unwrapped any number
+ * of its layers, so walk `result` links looking for the verdict.
+ * 'unknown' = the reply parsed but carried no outcome (older/foreign host).
+ */
+export function parseKillOutcome(
+  data: unknown,
+): 'killed' | 'already_exited' | 'not_found' | 'unknown' {
+  let node: unknown = data
+  for (let depth = 0; depth < 4 && node && typeof node === 'object'; depth++) {
+    const rec = node as Record<string, unknown>
+    if (typeof rec.outcome === 'string') {
+      const o = rec.outcome
+      if (o === 'killed' || o === 'already_exited' || o === 'not_found') return o
+      return 'unknown'
+    }
+    node = rec.result
+  }
+  return 'unknown'
+}
+
 function parseTaskSnap(
     t: Record<string, unknown>,
     fallbackId = '',
@@ -102,8 +148,59 @@ function parseTaskSnap(
     truncated?: boolean
     running?: boolean
     failed?: boolean
+    isBackgrounded?: boolean
+    sessionId?: string
+    exitCode?: number
   } {
     const id = t.task_id ?? t.taskId ?? fallbackId
+    const isBackgrounded =
+      typeof t.is_backgrounded === 'boolean'
+        ? t.is_backgrounded
+        : typeof t.isBackgrounded === 'boolean'
+          ? t.isBackgrounded
+          : undefined
+    const sessionId =
+      typeof t.owner_session_id === 'string' && t.owner_session_id
+        ? t.owner_session_id
+        : typeof t.ownerSessionId === 'string' && t.ownerSessionId
+          ? t.ownerSessionId
+          : typeof t.session_id === 'string' && t.session_id
+            ? t.session_id
+            : typeof t.sessionId === 'string' && t.sessionId
+              ? t.sessionId
+              : undefined
+    const exitCode =
+      typeof t.exit_code === 'number'
+        ? t.exit_code
+        : typeof t.exitCode === 'number'
+          ? t.exitCode
+          : undefined
+    const rawCompleted = typeof t.completed === 'boolean' ? t.completed : undefined
+    const completed =
+      rawCompleted === true ||
+      exitCode !== undefined ||
+      t.end_time != null ||
+      t.endTime != null ||
+      (typeof t.signal === 'string' && t.signal.length > 0) ||
+      t.status === 'completed' ||
+      t.status === 'failed' ||
+      t.running === false
+    const running =
+      t.running === true
+        ? true
+        : completed
+          ? false
+          : isBackgrounded === false
+            ? false
+            : rawCompleted === false
+              ? true
+              : undefined
+    const failed =
+      t.failed === true ||
+      t.explicitly_killed === true ||
+      t.explicitlyKilled === true ||
+      (exitCode !== undefined && exitCode !== 0) ||
+      (typeof t.signal === 'string' && t.signal.length > 0)
     return {
       taskId: id == null || id === '' ? '' : String(id),
       command:
@@ -116,14 +213,16 @@ function parseTaskSnap(
         (typeof t.output_file === 'string' && t.output_file) ||
         (typeof t.outputFile === 'string' ? t.outputFile : undefined) ||
         undefined,
-      completed: typeof t.completed === 'boolean' ? t.completed : undefined,
+      completed,
       description:
         typeof t.description === 'string' && t.description.trim()
           ? t.description.trim()
           : undefined,
       truncated: typeof t.truncated === 'boolean' ? t.truncated : undefined,
-      // Host reconstruction (TaskLog) fields — camelCase on the wire.
-      running: typeof t.running === 'boolean' ? t.running : undefined,
-      failed: typeof t.failed === 'boolean' ? t.failed : undefined,
+      running,
+      failed,
+      isBackgrounded,
+      sessionId,
+      exitCode,
     }
   }

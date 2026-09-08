@@ -20,6 +20,7 @@ import {
 import { tailAlreadyTurnEnded } from '../turnLifecycle'
 import { loadHistoryWithTaskProbe } from '../loadHistory'
 import { applySessionModelState } from '../model'
+import { appendEntry } from '../entries'
 
 /**
  * 本地真相守卫（spurious ready / host 状态丢失防线）：hub 重连竞态、
@@ -380,6 +381,19 @@ export function handleConnEvent(
             at: Date.now(),
           })
         }
+        break
+      }
+      case 'live_gap': {
+        const n = ev.toSeq - ev.fromSeq + 1
+        if (n < 1) break
+        appendEntry(set, {
+          kind: 'session_event',
+          text:
+            n === 1
+              ? '直播中断，中间 1 条事件未显示。刷新可从历史补全。'
+              : `直播中断，中间 ${n} 条事件未显示。刷新可从历史补全。`,
+          warning: true,
+        })
         break
       }
     default:

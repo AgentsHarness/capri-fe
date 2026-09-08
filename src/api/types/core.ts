@@ -1,5 +1,15 @@
 export type ContentBlock =
-  | { type: 'text'; text: string }
+  | {
+      type: 'text'
+      text: string
+      /**
+       * Block-level `_meta` on the wire (TUI 同款键名，host 原样透传）。
+       * `bash_command` = 直连 shell 命令（host 绕开模型直接执行），回放
+       * 时 user chunk 靠它认回 `$` 行；`displayText` / `displayAsCron`
+       * 是 cron / skill 的可见文案覆盖。
+       */
+      _meta?: Record<string, unknown>
+    }
   | { type: 'image'; data: string; mimeType: string }
   | { type: string; [k: string]: unknown }
 
@@ -70,5 +80,7 @@ export type Toast = {
   id: string
   text: string
   type?: ToastType
+  /** Auto-dismiss window in ms. Absent → ToastStack default (3s). */
+  durationMs?: number
 }
 

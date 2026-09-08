@@ -32,6 +32,24 @@ describe('ToastStack', () => {
     vi.useRealTimers()
   })
 
+  it('自定义 durationMs 到期才消失，进度条动画时长跟着走', () => {
+    vi.useFakeTimers()
+    useToastStore.setState({ toasts: [] })
+    pushToast('long toast', { id: 't-long', durationMs: 6000 })
+    const { container } = render(<ToastStack />)
+    const bar = container.querySelector('.gn-toast-progress') as HTMLElement
+    expect(bar.style.animationDuration).toBe('6000ms')
+    act(() => {
+      vi.advanceTimersByTime(5000)
+    })
+    expect(container.textContent).toContain('long toast')
+    act(() => {
+      vi.advanceTimersByTime(1100)
+    })
+    expect(container.textContent).not.toContain('long toast')
+    vi.useRealTimers()
+  })
+
   it('pushToast 限定栈容量（最多 4 条）', () => {
     useToastStore.setState({ toasts: [] })
     for (let i = 0; i < 6; i++) pushToast(`toast ${i}`, `tid${i}`)

@@ -99,4 +99,98 @@ describe('tool_call_update 带 id 走 toolIndex', () => {
     expect(tool()).toMatchObject({ status: 'pending' })
     expect(tool()?.raw).not.toMatchObject({ status: 'completed' })
   })
+
+  it('带 truncated: true 的直接执行命令更新不会被误判为孤儿并删除', () => {
+    const { state, feed, tool } = makeStore()
+    feed({
+      type: 'tool_call',
+      toolCall: {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'bash-mode-1',
+        title: 'Execute `ls`',
+        kind: 'execute',
+        status: 'in_progress',
+        rawInput: { command: 'ls', description: 'ls', is_background: false },
+        _meta: { bash_mode: true },
+      },
+    } as AcpEvent)
+    expect(state.entries.filter((e) => e.kind === 'tool')).toHaveLength(1)
+
+    feed({
+      type: 'tool_call_update',
+      toolCallUpdate: {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'bash-mode-1',
+        status: 'completed',
+        rawOutput: {
+          type: 'Bash',
+          command: 'ls',
+          output: '... (16 lines)\nfile1\nfile2',
+          truncated: true,
+          exit_code: 0,
+        },
+      },
+    } as AcpEvent)
+    expect(state.entries.filter((e) => e.kind === 'tool')).toHaveLength(1)
+    expect(tool()).toMatchObject({
+      status: 'completed',
+      title: 'ls',
+      expanded: true,
+      displayMode: 'expanded',
+    })
+    expect(tool()?.raw?.rawOutput).toMatchObject({
+      output: '... (16 lines)\nfile1\nfile2',
+      truncated: true,
+    })
+  })
+
+  it('! 命令：终端全量 stdout 之后的截断摘要不覆盖全文', () => {
+    const { feed, tool } = makeStore()
+    const full = 'L01\nL02\nL03\nL04\nL05\nL06\nL07\nL08\nL09\nL10\nL11\nL12\n'
+    const tail = '... (12 lines)\nL03\nL04\nL05\nL06\nL07\nL08\nL09\nL10\nL11\nL12'
+    feed({
+      type: 'tool_call',
+      toolCall: {
+        toolCallId: 'bash-mode-2',
+        title: 'Execute `seq`',
+        kind: 'execute',
+        status: 'in_progress',
+        rawInput: { command: 'seq', is_background: false },
+        _meta: { bash_mode: true },
+      },
+    } as AcpEvent)
+    feed({
+      type: 'tool_call_update',
+      toolCallUpdate: {
+        toolCallId: 'bash-mode-2',
+        status: 'completed',
+        rawOutput: {
+          type: 'Bash',
+          command: 'seq',
+          output: [...full].map((c) => c.charCodeAt(0)),
+          truncated: false,
+          exit_code: 0,
+        },
+      },
+    } as AcpEvent)
+    feed({
+      type: 'tool_call_update',
+      toolCallUpdate: {
+        toolCallId: 'bash-mode-2',
+        status: 'completed',
+        rawOutput: {
+          type: 'Bash',
+          command: 'seq',
+          output: [...tail].map((c) => c.charCodeAt(0)),
+          output_for_prompt: tail,
+          truncated: true,
+          exit_code: 0,
+        },
+      },
+    } as AcpEvent)
+    expect(tool()).toMatchObject({ status: 'completed', displayMode: 'expanded' })
+    const ro = tool()?.raw?.rawOutput as { output?: unknown; truncated?: boolean }
+    expect(new TextDecoder().decode(Uint8Array.from(ro.output as number[]))).toBe(full)
+    expect(ro.truncated).toBe(false)
+  })
 })

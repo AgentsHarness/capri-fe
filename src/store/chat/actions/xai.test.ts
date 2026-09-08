@@ -52,9 +52,11 @@ function makeState(patch: Partial<ChatState> = {}): ChatState {
     historyTurnIdx: 0,
     loadHistory: vi.fn().mockResolvedValue(undefined),
     // 重载走 loadHistoryWithTaskProbe：需要探活与（有才开的）轮询
-    replayRunningTasks: vi.fn().mockResolvedValue(undefined),
+    prefetchRunningTasks: vi.fn().mockResolvedValue(undefined),
     startTopTaskPolling: vi.fn(),
     topTasks: [],
+    detachedTasks: [],
+    detachedHintKey: null,
     continueSession: vi.fn().mockResolvedValue(undefined),
     refreshSessions: vi.fn().mockResolvedValue(undefined),
     refreshWorkspaces: vi.fn().mockResolvedValue(undefined),

@@ -69,10 +69,17 @@ export function liveTaskActions(set: SetState, get: () => ChatState) {
     }
   },
 
-  syncLiveTasks: async () => {
+  /**
+   * Fold the agent's live task registry into the view. `sessionId` names the
+   * session whose registry to read — the resume path is racing session/load,
+   * and an unscoped query answers for whichever session is active, which
+   * would put another session's tasks in this strip.
+   */
+  syncLiveTasks: async (sessionId) => {
     const scope = captureAsyncScope(get)
     try {
-      const tasks = await transport.listTasks()
+      const targetSessionId = sessionId ?? get().sessionId
+      const tasks = await transport.listTasks(targetSessionId)
       if (!isAsyncScopeCurrent(get, scope)) return
       // Empty list is not authoritative (parse race / session still
       // focusing). Never use absence to settle running rows — that caused
@@ -85,24 +92,38 @@ export function liveTaskActions(set: SetState, get: () => ChatState) {
       let topTasks = s.topTasks
       let changed = false
 
-      // Upsert only: keep live scrollback rows fresh; route RESTORED
-      // running tasks to the TOP STRIP — the strip is the single place
-      // for the running state (replay skips started rows, so no
-      // scrollback row exists for them). Do NOT complete tasks merely
-      // because they are missing from this response — wait for
-      // task_completed SSE.
-      for (const snap of tasks) {
+      // Filter tasks for this session when session attribution is present.
+      const sessionTasks = tasks.filter(
+        (t) => !t.sessionId || !targetSessionId || t.sessionId === targetSessionId,
+      )
+
+      // Upsert only: keep live scrollback rows fresh; route registry-known
+      // running tasks with no scrollback row to the TOP STRIP — the strip is
+      // the single place for the running state (replay skips started rows, so
+      // no scrollback row exists for them). The registry is the strip's ONLY
+      // source: a task listed here is one this agent process can kill. Do NOT
+      // complete tasks merely because they are missing from this response —
+      // wait for task_completed SSE.
+      for (const snap of sessionTasks) {
         const existingId = bgTaskIndex[snap.taskId]
         const title =
           snap.description ||
           snap.command ||
           `Task ${snap.taskId.slice(0, 8)}`
-        // A top-strip (restored) task the agent's registry knows: it
-        // STAYS in the strip while running — no strip→scrollback move
-        // (the running state only lives at the top). Completed entries
+
+        // Genuine running background task: must be a background task (not foreground command)
+        // and must not have completed or failed.
+        // Foreground commands run in milliseconds and finish on their own —
+        // they must NEVER be placed into the top task strip.
+        const isRunningBg =
+          !snap.completed && snap.running !== false && snap.isBackgrounded !== false
+
+        // A top-strip task the agent's registry knows: it STAYS in the strip
+        // while running — no strip→scrollback move (the running state only
+        // lives at the top). Completed entries or tasks no longer running
         // just drop from the strip; the completion settles the rows.
         if (topTasks.some((t) => t.taskId === snap.taskId)) {
-          if (snap.completed === true) {
+          if (!isRunningBg) {
             topTasks = topTasks.filter((t) => t.taskId !== snap.taskId)
             changed = true
           }
@@ -110,17 +131,16 @@ export function liveTaskActions(set: SetState, get: () => ChatState) {
         }
         if (!existingId) {
           // History never saw task_backgrounded (page boundary / dropped
-          // SSE during historyLoading). A still-running task goes to the
+          // SSE during historyLoading). A still-running background task goes to the
           // TOP STRIP, not an invented scrollback row; fully completed
-          // ghosts are skipped (the list may retain finished tasks).
-          if (snap.completed) continue
+          // ghosts and foreground commands are skipped.
+          if (!isRunningBg) continue
           topTasks = [
             ...topTasks,
             {
               taskId: snap.taskId,
               title,
               command: snap.command,
-              restored: true,
               outputFile: snap.outputFile,
             },
           ]
@@ -133,12 +153,12 @@ export function liveTaskActions(set: SetState, get: () => ChatState) {
             snap.output != null && snap.output.length >= (e.output?.length ?? 0)
               ? snap.output
               : e.output
-          if (snap.completed === true && e.running) {
+          if ((snap.completed === true || snap.running === false) && e.running) {
             changed = true
             return {
               ...e,
               title: e.title || title,
-              status: 'completed' as const,
+              status: snap.failed ? ('failed' as const) : ('completed' as const),
               running: false,
               finishedAt: e.finishedAt ?? Date.now(),
               output: nextOut,

@@ -26,8 +26,8 @@ const delay = <T>(ms: number, value: T) => wait(ms).then(() => value)
 /**
  * 状态栏 git 分支在"回放老对话"后消失的回归。
  *
- * 分支只有两个来源：agent 的 git_head_changed（只在 HEAD 真的变了才发，
- * 空闲的老会话永远不会发）与 refreshGitInfo 轮询。continueSession 在
+ * 分支来源：agent 的 git_head_changed（HEAD 真变了才发）与 refreshGitInfo
+ * （会话切换补拉 + 可见时 TTL 探盘，对齐 TUI cwd_git_info_lazy）。continueSession 在
  * resume 返回后立即 fire refreshGitInfo（不 await），而 loadHistory 的
  * 快照复位里也清 gitInfo——host 实测 git-info ~25ms、它前面的
  * session-running-tasks ~24ms，两者同量级，轮询结果常常先落地、随后被
@@ -106,5 +106,24 @@ describe('会话切换后恢复状态栏 git 分支', () => {
     await wait(700)
 
     expect(useChatStore.getState().gitInfo?.branch).toBe('main')
+  })
+
+  it('探盘在飞时 git_head_changed 先到，旧探盘结果不得盖掉新分支', async () => {
+    let release: ((v: { branch: string }) => void) | undefined
+    vi.mocked(transport.gitInfo).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = (v) => resolve(v as never)
+        }),
+    )
+    const pulling = useChatStore.getState().refreshGitInfo()
+    useChatStore.getState().handleEvent({
+      type: 'git_head_changed',
+      params: { sessionId: SID, branch: 'new-from-event' },
+    } as never)
+    expect(useChatStore.getState().gitInfo?.branch).toBe('new-from-event')
+    release?.({ branch: 'stale-from-probe' })
+    await pulling
+    expect(useChatStore.getState().gitInfo?.branch).toBe('new-from-event')
   })
 })
