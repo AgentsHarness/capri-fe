@@ -16,12 +16,12 @@ import { toolCallIdOf } from './tools'
 // host 的 lite 投影是首屏时间线：工具信封按 toolCallId 合成、thought 正文
 // 占位、params._meta 收到回放真用的键。条数可以少于 full，msgSeq 与
 // _meta.lite.msgSeqEnd 给出补全闭区间。「补全」不是把一页重新回放进视图
-// （那会闪空滚动区、还会抢改 live 指针），而只是把工具 rawOutput/content
-// 和 thought 文本填回已经渲染好的行。
+// （那会闪空滚动区、还会抢改 live 指针），而只是把工具 rawOutput/content、
+// 被白名单裁掉的 rawInput 参数和 thought 文本填回已经渲染好的行。
 //
 // 三条纪律：
 // - 幂等：同一区间补两次结果一致（正文来自同一份全量信封）；
-// - 零结构变化：不增删条目、不改顺序、正文之外的字段一律不动；
+// - 零结构变化：不增删条目、不改顺序，只动 raw 的正文/参数与补全态；
 // - 切会话作废：结果回来后先过 scope / sessionSwitchGen 校验，整包丢弃。
 
 /**
@@ -224,6 +224,9 @@ export type ToolBody = {
   rawOutput?: unknown
   hasContent: boolean
   content?: unknown
+  /** rawInput：lite 只留行头白名单键，full 页里才是完整参数。 */
+  hasRawInput: boolean
+  rawInput?: unknown
 }
 
 /**
@@ -317,13 +320,17 @@ function mergeInto(body: ToolBody, up: ToolCall): void {
     body.content = up.content
     body.hasContent = true
   }
+  if ('rawInput' in up) {
+    body.rawInput = up.rawInput
+    body.hasRawInput = true
+  }
 }
 
 /** 有 toolCallId 的调用：按 id 合并正文。 */
 function mergeToolBody(out: Map<string, ToolBody>, key: string, up: ToolCall): void {
   let body = out.get(key)
   if (!body) {
-    body = { hasRawOutput: false, hasContent: false }
+    body = { hasRawOutput: false, hasContent: false, hasRawInput: false }
     out.set(key, body)
   }
   mergeInto(body, up)
@@ -334,13 +341,16 @@ function mergeToolBody(out: Map<string, ToolBody>, key: string, up: ToolCall): v
  * toolDetail 的假空态判定都看这个标记）。
  */
 export function clearLiteMark(raw: ToolCall): ToolCall {
-  const meta = raw._meta
-  if (!meta || typeof meta !== 'object' || Array.isArray(meta) || !('lite' in (meta as object))) {
-    return raw
-  }
-  const cleared = { ...(meta as Record<string, unknown>) }
+  if (!hasLiteMark(raw)) return raw
+  const cleared = { ...(raw._meta as Record<string, unknown>) }
   delete cleared.lite
   return { ...raw, _meta: cleared }
+}
+
+/** 带 host `_meta.lite` 标记 = 这份 raw 来自 lite 投影（正文 / 参数可能被裁）。 */
+function hasLiteMark(raw: ToolCall): boolean {
+  const meta = raw._meta
+  return !!meta && typeof meta === 'object' && !Array.isArray(meta) && 'lite' in (meta as object)
 }
 
 /**
@@ -465,6 +475,16 @@ function fillRaw(raw: ToolCall | undefined, body: ToolBody): ToolCall {
   }
   if (body.hasRawOutput && !owned('rawOutput')) next.rawOutput = body.rawOutput
   if (body.hasContent && !owned('content')) next.content = body.content
+  // rawInput 同样要回填：lite 只留行头白名单键，其余参数（search 的
+  // output_mode / -i / multiline、use_tool 的 tool_input、generic 参数）
+  // 只有 full 页里才有。只补带 lite 标记的 raw——没标记说明这份 rawInput
+  // 是 live 写的，历史快照可能更旧。白名单键两边同值，所以按 full 打底、
+  // 当前值覆盖：缺的键补齐，live 新增的键不被抹掉。
+  if (body.hasRawInput && isPlainObj(body.rawInput) && hasLiteMark(next)) {
+    const merged: Record<string, unknown> = { ...body.rawInput }
+    if (isPlainObj(next.rawInput)) Object.assign(merged, next.rawInput)
+    next.rawInput = merged
+  }
   return clearLiteMark(next)
 }
 
