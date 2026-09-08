@@ -4,6 +4,7 @@ import { transport } from '../api/client'
 import {
   applyQueueChanged,
   imageMarkerLabels,
+  isBashBlocks,
   queueRowText,
   queuedImages,
   userRowText,
@@ -274,6 +275,29 @@ describe('applyQueueChanged（权威快照广播）', () => {
     const ids = usePromptQueue.getState().queue.map((q) => q.id)
     expect(ids).toContain('d1')
     expect(ids).toContain('other')
+  })
+
+  it('权威正文覆盖本地 text 块时保住块 _meta（direct-bash 出队不掉标）', () => {
+    usePromptQueue.setState({
+      queue: [
+        row('p1', 'ls -la', {
+          optimistic: true,
+          blocks: [{ type: 'text', text: 'ls -la', _meta: { bash_command: 'ls -la' } }],
+        }),
+      ],
+      sessionId: 's1',
+    })
+    applyQueueChanged({ entries: [{ id: 'p1', text: 'ls -la', version: 2 }] }, 's1')
+    const q = usePromptQueue.getState().queue
+    expect(q[0]?.blocks[0]).toMatchObject({ type: 'text', text: 'ls -la', _meta: { bash_command: 'ls -la' } })
+    expect(isBashBlocks(q[0]?.blocks)).toBe(true)
+  })
+
+  it('非 bash 行不会被误标，收养行按 blocks 认定', () => {
+    expect(isBashBlocks([{ type: 'text', text: '普通提问' }])).toBe(false)
+    expect(isBashBlocks([{ type: 'text', text: '', _meta: { bash_command: 'x' } }])).toBe(true)
+    expect(isBashBlocks([{ type: 'text', text: 'y', _meta: { bash_command: '' } }])).toBe(false)
+    expect(isBashBlocks(undefined)).toBe(false)
   })
 
   it('非活跃会话的广播走 stash：更新目标会话镜像、不动活跃队列、不返回收养', () => {

@@ -204,3 +204,45 @@ describe('Composer 切换会话中发送不吞内容', () => {
     })
   })
 })
+
+describe('Composer shell 模式（`!`）走 host 直连 bash 回合', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useChatStore.setState({
+      sessionId: 'test-sess-1',
+      cwd: '/test/cwd',
+      conn: 'ready',
+      historyLoading: false,
+      newSessionPending: false,
+      entries: [],
+      pending: [],
+      turnStartedAt: undefined,
+      currentPromptId: undefined,
+    })
+    usePromptQueue.setState({ queue: [], sending: false })
+  })
+
+  it('Enter 提交命令：prompt 带块 _meta.bash_command，用户行标 isShell', async () => {
+    render(<Composer />)
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement
+
+    // `!` 进 shell 模式（前缀不进缓冲），再输入命令本体
+    fireEvent.change(textarea, { target: { value: '!' } })
+    expect(textarea.value).toBe('')
+    fireEvent.change(textarea, { target: { value: 'git status' } })
+    fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter' })
+
+    await waitFor(() => expect(transport.prompt).toHaveBeenCalled())
+    const [blocks] = vi.mocked(transport.prompt).mock.calls[0]
+    expect(blocks).toEqual([
+      { type: 'text', text: 'git status', _meta: { bash_command: 'git status' } },
+    ])
+    const userRow = useChatStore
+      .getState()
+      .entries.find((e) => e.kind === 'user')
+    expect(userRow).toMatchObject({ kind: 'user', text: 'git status', isShell: true })
+    // 命令输出由 host 的 Execute 工具行承载，本地不再塞临时行
+    expect(useChatStore.getState().entries.filter((e) => e.kind === 'session_event')).toHaveLength(0)
+    expect(textarea.value).toBe('')
+  })
+})

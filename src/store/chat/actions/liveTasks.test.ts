@@ -5,6 +5,7 @@ import type { ChatState, SetState } from '../types'
 vi.mock('../../../api/client', () => ({
   transport: {
     taskOutput: vi.fn().mockResolvedValue({ taskId: 't1', output: 'new log' }),
+    listTasks: vi.fn().mockResolvedValue([]),
   },
 }))
 
@@ -32,7 +33,7 @@ function bind(initial: ChatState) {
     current = { ...current, ...(typeof partial === 'function' ? partial(current) : partial) }
   }
   return {
-    actions: liveTaskActions(set, () => current) as Pick<ChatState, 'refreshTaskOutput'>,
+    actions: liveTaskActions(set, () => current) as Pick<ChatState, 'refreshTaskOutput' | 'syncLiveTasks'>,
     snapshot: () => current,
     patch: (p: Partial<ChatState>) => {
       current = { ...current, ...p }
@@ -100,5 +101,46 @@ describe('refreshTaskOutput', () => {
     )
     await h.actions.refreshTaskOutput('t1', 's1', '/w')
     expect(h.snapshot().viewerTask).toMatchObject({ output: 'fresh log line' })
+  })
+})
+
+describe('syncLiveTasks', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('前台命令与已结束任务绝不进入 topTasks；仅真实在跑的后台任务进入', async () => {
+    ;(transport.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { taskId: 'fg-1', command: 'ls', completed: true, isBackgrounded: false, running: false },
+      { taskId: 'fg-run', command: 'ls', completed: false, isBackgrounded: false, running: false },
+      { taskId: 'bg-done', command: 'sleep 1', completed: true, isBackgrounded: true, running: false },
+      { taskId: 'bg-run', command: 'npm run dev', completed: false, isBackgrounded: true, running: true },
+    ])
+    const h = bind(makeState({ topTasks: [] }))
+    await h.actions.syncLiveTasks()
+    expect(h.snapshot().topTasks.map((t) => t.taskId)).toEqual(['bg-run'])
+  })
+
+  it('后台任务完成后从 topTasks 自动摘除', async () => {
+    const h = bind(
+      makeState({
+        topTasks: [{ taskId: 'bg-1', title: 'npm run dev', command: 'npm run dev' }],
+      }),
+    )
+    ;(transport.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { taskId: 'bg-1', command: 'npm run dev', completed: true, isBackgrounded: true, running: false },
+    ])
+    await h.actions.syncLiveTasks()
+    expect(h.snapshot().topTasks).toEqual([])
+  })
+
+  it('过滤非当前会话的后台任务', async () => {
+    ;(transport.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { taskId: 'bg-other', command: 'npm run dev', completed: false, isBackgrounded: true, running: true, sessionId: 'other-session' },
+      { taskId: 'bg-mine', command: 'npm run dev', completed: false, isBackgrounded: true, running: true, sessionId: 's1' },
+    ])
+    const h = bind(makeState({ sessionId: 's1', topTasks: [] }))
+    await h.actions.syncLiveTasks('s1')
+    expect(h.snapshot().topTasks.map((t) => t.taskId)).toEqual(['bg-mine'])
   })
 })

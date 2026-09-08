@@ -33,6 +33,7 @@ import {
 import { entryTimestamp } from './entries'
 import {
   envelopeAgentTimestampMs,
+  envelopeReplayStreamKey,
   envelopeTimestamp,
   eventAgentTimestampMs,
   replayEnvelopeKeys,
@@ -109,6 +110,12 @@ export async function loadHistory(
     // （newSession / resetToEmpty / switchHost）——连 entries 清空都不该
     // 发生，直接收口标志返回。
     if (staleLoad()) return
+    // Join-gap detection is per load: disarm until this snapshot's
+    // turnOpen is known. Load start is the subscribe wall clock for
+    // streamStartMs (agent epoch ms) comparisons.
+    runtime.historyLiveJoinCheck = false
+    runtime.historyLoadStartedAt = Date.now()
+    runtime.historySnapStreamKeys.clear()
     set({
       historyOpen: false,
       historyLoading: true,
@@ -148,12 +155,13 @@ export async function loadHistory(
       subagentChildIndex: {},
       subagentViews: {},
       bgTaskIndex: {},
-      // NOTE: topTasks is NOT reset here — continueSession probes the
-      // still-running set BEFORE loadHistory, and replayUpdates needs it
-      // populated to skip "Task started" rows of running tasks (those
-      // live in the top strip only). applyTopTaskProbe replaces the
-      // strip contents wholesale (alive filter + additions), so stale
-      // entries from a previous session cannot linger.
+      // NOTE: topTasks is NOT reset here — continueSession pulls the still
+      // running set from the agent's registry BEFORE loadHistory, and
+      // replayUpdates needs it populated to skip "Task started" rows of
+      // running tasks (those live in the top strip only). The registry is
+      // the strip's only source, so a task from another grok process never
+      // lands here; it shows up as the detached hint instead
+      // (applyDetachedProbe).
       // NOTE: gitInfo is NOT reset here. continueSession (and the hello
       // handler) fires refreshGitInfo in parallel with this load, so the
       // branch usually arrives BEFORE this reset runs — wiping it here
@@ -271,6 +279,7 @@ export async function loadHistory(
       // 边界因此覆盖整个快照；无 _meta 的旧日志回退粗粒度写盘戳。
       let snapTail: number | undefined
       runtime.historySnapEventKeys.clear()
+      runtime.historySnapStreamKeys.clear()
       for (const update of updates) {
         const keyTime =
           envelopeAgentTimestampMs(update) ??
@@ -285,6 +294,8 @@ export async function loadHistory(
             (runtime.historySnapEventKeys.get(eventKey) ?? 0) + 1,
           )
         }
+        const streamKey = envelopeReplayStreamKey(update)
+        if (streamKey) runtime.historySnapStreamKeys.add(streamKey)
       }
       // Newest page: rebuild from scratch. This page carries the
       // session's FINAL context usage (newest envelope) — the only
@@ -397,6 +408,10 @@ export async function loadHistory(
         clearHistoryWindowBuffer()
         return
       }
+      // In-flight tail: agent may still be aggregating the current
+      // complete block in memory (not yet on disk). Arm a one-shot so
+      // the first live chunk/thought can toast if that prefix is missing.
+      runtime.historyLiveJoinCheck = replayMeta.turnOpen
       replayHistoryWindowBuffer(get)
       // 会话级 recap 缓存回填：该会话最近一次摘要（display-only、不
       // 持久化）在跨会话期间到达时只进了 cache——这里在历史重建后
@@ -493,9 +508,11 @@ export async function loadHistory(
  * 时间线里会出现一行永远等不到完成行的假进行中。
  *
  * 用于不经过 continueSession 的全量重建入口（hello 首屏回锚、hub resync
- * 重建、多 tab peer 重建、rewind 对齐后重载）：这些路径以前完全不探活，
- * 顶部任务条因此是空的、也没有轮询去收口。轮询只在探活确实查到在跑任务
- * 时才开：空闲会话挂一个 10s 定时器，一页开着就是每小时 360 次没用的请求。
+ * 重建、多 tab peer 重建、rewind 对齐后重载）：这些路径以前完全不刷新运行中
+ * 任务，顶部任务条因此是空的、也没有轮询去收口。轮询只在确实有东西要盯时
+ * 才开——本会话在跑的任务（topTasks）或需要继续更新的游离进程提示
+ * （detachedTasks）：空闲会话挂一个 10s 定时器，一页开着就是每小时 360 次
+ * 没用的请求。
  *
  * 返回快照重建的 promise（调用方要接后续动作，如 peer 重建后补拉 pending）。
  */
@@ -504,14 +521,16 @@ export function loadHistoryWithTaskProbe(
   sessionId: string,
   cwd: string,
 ): Promise<void> {
-  const tasksP = get().replayRunningTasks(sessionId, cwd)
+  const tasksP = get().prefetchRunningTasks(sessionId, cwd)
   const historyP = get().loadHistory(sessionId, cwd, { awaitBeforeReplay: tasksP })
-  // replayRunningTasks 内部吞掉所有失败，这里不会 reject。
+  // prefetchRunningTasks 内部吞掉所有失败，这里不会 reject。
   void tasksP.then(() => {
     const s = get()
-    // 探活期间会话被切走 / 复位：不开这条会话的轮询。
+    // 刷新期间会话被切走 / 复位：不开这条会话的轮询。
     if (s.sessionId !== sessionId || s.cwd !== cwd) return
-    if (s.topTasks.length > 0) s.startTopTaskPolling(sessionId, cwd)
+    if (s.topTasks.length > 0 || s.detachedTasks.length > 0) {
+      s.startTopTaskPolling(sessionId, cwd)
+    }
   })
   return historyP
 }

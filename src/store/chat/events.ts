@@ -1,6 +1,14 @@
 import type { AcpEvent } from '../../api/types'
 import type { ChatState, SetState } from './types'
-import { dropLiveCoveredBySnapshot } from './globals'
+import {
+  dropLiveCoveredBySnapshot,
+  LIVE_STREAM_HISTORY_GAP_TOAST,
+  LIVE_STREAM_HISTORY_GAP_TOAST_ID,
+  LIVE_STREAM_HISTORY_GAP_TOAST_MS,
+  liveStreamPrefixMissingFromHistory,
+  runtime,
+} from './globals'
+import { pushToast } from '../toast'
 import { flushStreamBufBeforeEvent } from './stream'
 import { handleConnEvent } from './events/conn'
 import { handleUserStreamEvent } from './events/userStream'
@@ -9,6 +17,26 @@ import { handleTurnEndEvent } from './events/turnEnd'
 import { handleSessionCtrlEvent } from './events/sessionCtrl'
 import { handleSessionNotification } from './events/sessionNotif'
 import { handleExtEvent } from './events/ext'
+
+/**
+ * After replaying an in-flight session, the first live chunk/thought that
+ * is not already in the snapshot decides whether we joined mid-block.
+ * Agent persistence still holds the current complete block in memory, so
+ * history cannot supply the prefix that already went out on the live
+ * channel. Toast once: wait for the stream to end, then reopen.
+ */
+function maybeToastLiveStreamHistoryGap(ev: AcpEvent): void {
+  if (!runtime.historyLiveJoinCheck) return
+  if (ev.type !== 'chunk' && ev.type !== 'thought') return
+  if ((ev as { sessionId?: string }).sessionId == null) return
+  runtime.historyLiveJoinCheck = false
+  if (!liveStreamPrefixMissingFromHistory(ev)) return
+  pushToast(LIVE_STREAM_HISTORY_GAP_TOAST, {
+    id: LIVE_STREAM_HISTORY_GAP_TOAST_ID,
+    type: 'warning',
+    durationMs: LIVE_STREAM_HISTORY_GAP_TOAST_MS,
+  })
+}
 
 export function handleChatEvent(
   set: SetState,
@@ -25,6 +53,7 @@ export function handleChatEvent(
   // message is not appended a second time. Snapshot replay has no
   // sessionId and is unaffected.
   if (dropLiveCoveredBySnapshot(ev)) return
+  maybeToastLiveStreamHistoryGap(ev)
   const raw = ev as { update?: unknown }
   if (raw.update && typeof raw.update === 'object') {
     const u = raw.update as { sessionUpdate?: unknown }

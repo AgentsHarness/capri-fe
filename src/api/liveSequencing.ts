@@ -6,19 +6,27 @@ export type SequencedEvent = AcpEvent & { hostId?: string; seq?: number }
  * 每个 host 的乱序等待缓冲上限。超限即认赔（推进水位放出已有事件），
  * 防止一个补不回来的缺口把 live 通道永久憋死并无界占用内存。
  */
-const PENDING_SEQ_CAP = 2000
+const PENDING_SEQ_CAP = 128
+
+/**
+ * 小洞（包乱序 / 短闪断）才堵着 live 去补拉。超过这个长度视为直播中断：
+ * 环已经压掉前驱，先把正在到来的连续段放出去，缺的那段交给历史回放，
+ * 不再等一个补不回来的 101。
+ */
+export const LIVE_INTERRUPT_GAP = 32
 
 /**
  * Per-host ordered event delivery with gap recovery.
  *
  * hub 为每个 host 的事件标注单调 seq；本引擎维护每 host 的水位
  * （lastSeq = 已按序放出的最大 seq），乱序到达的事件先入 pendingSeq
- * 等待前驱，发现缺口时经 `pull` 回调向 hub 缓冲补拉（同 host 去重、
- * 并发只有一个在飞）。两道防线防止通道被永久憋死：
+ * 等待前驱。小洞经 `pull` 向 hub 缓冲补拉（同 host 去重、并发只有一个
+ * 在飞）；大洞（直播中断）先放出已到的连续段，不堵 live。
+ *
+ * 两道防线防止通道被永久憋死：
  * - gapPullEpoch：每次 stopGapPulls 前进，旧 epoch 的补拉响应整包作废
  *   （resync 刚退休的事件不允许再投递）；
- * - PENDING_SEQ_CAP：缺口补不回来时推水位放出已有事件（丢几条远好过
- *   全部出不来）。
+ * - PENDING_SEQ_CAP：小洞也补不回来时推水位放出已有事件。
  *
  * 生成守卫（isCurrentGen）由宿主 transport 注入：connect/disconnect
  * 换代后，旧代回调（onopen / 补拉 / 定时器）全部失效。
@@ -153,12 +161,13 @@ export class EventSequencer {
     // 最小待决序号之前，让 drainSequenced 立刻按序放出已有事件（丢几条
     // 事件远好过之后所有事件都出不来）。
     if (pending.size > PENDING_SEQ_CAP) {
-      let firstPending = Infinity
-      for (const k of pending.keys()) {
-        if (k < firstPending) firstPending = k
+      const firstPending = minPendingKey(pending)
+      if (firstPending !== undefined) {
+        this.emitLiveGap(host, last, firstPending)
+        this.lastSeq.set(host, firstPending - 1)
       }
-      if (Number.isFinite(firstPending)) this.lastSeq.set(host, firstPending - 1)
     }
+    this.releaseLiveInterrupt(host, gen)
     this.drainSequenced(host, gen)
     this.ensureGapPull(host, gen)
   }
@@ -207,12 +216,32 @@ export class EventSequencer {
         if (!this.isCurrentGen(gen) || epoch !== this.gapPullEpoch) return
         this.accept(ev, gen)
       }
-      // A response may contain a later event without the beginning of the
-      // requested range. Keep it buffered; a subsequent live event retries
-      // from the still-missing contiguous sequence.
+      // 补拉可能只带回更晚的事件（环已压掉 last+1）。再跑一遍大洞释放：
+      // 小洞继续等；大洞把已到的连续段放出去。
+      this.releaseLiveInterrupt(hostId, gen)
       this.drainSequenced(hostId, gen)
     } catch {
       /* offline; the next live event or hello re-triggers the pull */
+    }
+  }
+
+  /**
+   * 大洞 = 直播中断：先把 pending 里已到的连续段放出去（水位跳到段头
+   * 之前），缺的前驱不再堵 live。可能连续跳几次（pending 里有多段）。
+   * 小洞留给 ensureGapPull。
+   */
+  private releaseLiveInterrupt(host: string, gen: number): void {
+    if (!this.isCurrentGen(gen)) return
+    for (;;) {
+      const pending = this.pendingSeq.get(host)
+      if (!pending || pending.size === 0) return
+      const last = this.lastSeq.get(host) ?? 0
+      const first = minPendingKey(pending)
+      if (first === undefined || first <= last + 1) return
+      if (first - last <= LIVE_INTERRUPT_GAP) return
+      this.emitLiveGap(host, last, first)
+      this.lastSeq.set(host, first - 1)
+      this.drainSequenced(host, gen)
     }
   }
 
@@ -221,16 +250,19 @@ export class EventSequencer {
     const pending = this.pendingSeq.get(host)
     if (!pending || pending.size === 0) return
     const last = this.lastSeq.get(host) ?? 0
-    // O(n) 循环而不是 Math.min(...pending.keys())：pendingSeq 由缺口大小
-    // 决定，长时间缺前驱时条目可以很多，展开成实参会触碰引擎的实参上限
-    // 直接抛 RangeError。
-    let firstPending = Infinity
-    for (const k of pending.keys()) {
-      if (k < firstPending) firstPending = k
-    }
-    if (firstPending > last + 1) {
+    const firstPending = minPendingKey(pending)
+    if (firstPending === undefined) return
+    // 大洞已经在 releaseLiveInterrupt 放行；这里只补还堵着的小洞。
+    if (firstPending > last + 1 && firstPending - last <= LIVE_INTERRUPT_GAP) {
       void this.gapPull(host, last, gen)
     }
+  }
+
+  private emitLiveGap(host: string, last: number, first: number): void {
+    const fromSeq = last + 1
+    const toSeq = first - 1
+    if (toSeq < fromSeq) return
+    this.emit({ type: 'live_gap', hostId: host, fromSeq, toSeq })
   }
 
   private drainSequenced(host: string, gen: number): void {
@@ -247,4 +279,12 @@ export class EventSequencer {
     }
     if (pending.size === 0) this.pendingSeq.delete(host)
   }
+}
+
+function minPendingKey(pending: Map<number, SequencedEvent>): number | undefined {
+  let first: number | undefined
+  for (const k of pending.keys()) {
+    if (first === undefined || k < first) first = k
+  }
+  return first
 }

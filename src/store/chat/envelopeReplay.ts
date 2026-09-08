@@ -268,6 +268,7 @@ export function replayUpdates(
   let userBuf = ''
   let userIsCron = false
   let userIsInterjection = false
+  let userIsShell = false
   let userTs: number | undefined
   let turnStartTs: number | undefined
   /** Whether turnStartTs came from the authoritative _meta.turnStartMs. */
@@ -295,6 +296,7 @@ export function replayUpdates(
         text: userBuf,
         isCron: userIsCron || undefined,
         isInterjection: userIsInterjection || undefined,
+        isShell: userIsShell || undefined,
         ts: userTs,
         // 多 chunk 聚合的用户行取首条 chunk 的 msgSeq。
         ...(userMsgSeq != null ? { msgSeq: userMsgSeq } : {}),
@@ -302,6 +304,7 @@ export function replayUpdates(
       userBuf = ''
       userIsCron = false
       userIsInterjection = false
+      userIsShell = false
       userTs = undefined
       userMsgSeq = undefined
     }
@@ -362,8 +365,8 @@ export function replayUpdates(
     }
     // History replay shows stored task lifecycle events as display-only
     // informational lines (envelopeToEvent) — never captured into the
-    // task system. The live running set is established once at resume via
-    // the host's liveness probe (replayRunningTasks).
+    // task system. The live running set is the agent's own registry,
+    // prefilled before this replay runs (prefetchRunningTasks → syncLiveTasks).
     const seq = envelopeMsgSeq(env)
     const events = envelopeToEvents(env)
     if (events.length === 0) {
@@ -440,12 +443,16 @@ export function replayUpdates(
       }
     }
     // A STILL-RUNNING task's "started" row belongs ONLY in the top task
-    // strip (host liveness probe) — never as a dangling scrollback row
+    // strip (agent registry) — never as a dangling scrollback row
     // without its completion. Live rows are unaffected (this path is
     // history replay only; the live pipeline uses handleTaskBackgrounded).
     if (ev.type === 'task_lifecycle' && ev.kind === 'started') {
       const taskId = ev.taskId
-      if (taskId && getStore().topTasks.some((t) => t.taskId === taskId)) {
+      if (
+        taskId &&
+        (getStore().topTasks.some((t) => t.taskId === taskId) ||
+          getStore().runningProbeTaskIds.includes(taskId))
+      ) {
         continue
       }
     }
@@ -457,6 +464,7 @@ export function replayUpdates(
       userBuf += ev.text
       if (ev.isCron) userIsCron = true
       if (ev.isInterjection) userIsInterjection = true
+      if (ev.isShell) userIsShell = true
       if (ev.ts != null) userTs = ev.ts
       if (userMsgSeq == null && ev.msgSeq != null) userMsgSeq = ev.msgSeq
       continue

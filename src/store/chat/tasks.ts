@@ -120,9 +120,9 @@ export function handleTaskBackgrounded(
 ): void {
   const id = wireTaskId(fields.task_id, fields.taskId)
   if (!id) return
-  // A LIVE task_backgrounded for a top-strip (restored) task: it is now
-  // a genuine live scrollback row — drop it from the top strip and
-  // create the entry below.
+  // A LIVE task_backgrounded for a task already in the top strip (it came
+  // from the registry sync): it is now a genuine live scrollback row — drop
+  // the strip row and create the entry below.
   if (get().topTasks.some((t) => t.taskId === id)) {
     set({ topTasks: get().topTasks.filter((t) => t.taskId !== id) })
   }
@@ -173,6 +173,39 @@ export function handleTaskBackgrounded(
   }))
 }
 
+/**
+ * Settle a task the agent could not kill (`x.ai/task/kill` → not_found /
+ * already_exited, or it exited while we were not tracking it). No
+ * task_completed will ever arrive for it, so finish the row here: the top
+ * strip drops it and the scrollback row loses its running state. Mirrors
+ * the TUI's NotFound branch (turn.rs handle_bg_task_killed), which likewise
+ * removes the stale pane row instead of leaving a "running" accent that no
+ * longer corresponds to anything this process can control.
+ */
+export function settleUntrackedTask(
+  get: () => ChatState,
+  set: SetState,
+  taskId: string,
+): void {
+  if (!taskId) return
+  const s = get()
+  const entryId = s.bgTaskIndex[taskId]
+  const patch: Partial<ChatState> = {
+    topTasks: s.topTasks.filter((t) => t.taskId !== taskId),
+  }
+  if (entryId) {
+    patch.entries = s.entries.map((e) =>
+      e.id === entryId && e.kind === 'bg_task' && e.running
+        ? { ...e, running: false, status: 'completed' as const, finishedAt: Date.now() }
+        : e,
+    )
+    const idx = { ...s.bgTaskIndex }
+    delete idx[taskId]
+    patch.bgTaskIndex = idx
+  }
+  set(patch)
+}
+
 /** task_completed — settle a bg_task entry (finish flash). */
 export function handleTaskCompleted(
   get: () => ChatState,
@@ -183,7 +216,7 @@ export function handleTaskCompleted(
   const snap = (fields.task_snapshot as Record<string, unknown> | undefined) ?? {}
   const id = wireTaskId(snap.task_id, snap.taskId, fields.task_id, fields.taskId)
   if (!id) return
-  // A live completion for a top-strip (restored) task: it is over —
+  // A live completion for a top-strip task: it is over —
   // remove it from the strip (the orphan row below records the event).
   if (get().topTasks.some((t) => t.taskId === id)) {
     set({ topTasks: get().topTasks.filter((t) => t.taskId !== id) })

@@ -26,6 +26,13 @@ describe('toast store', () => {
     ])
   })
 
+  it('支持指定 durationMs', () => {
+    pushToast('长一点', { id: 'long-1', type: 'warning', durationMs: 6000 })
+    expect(useToastStore.getState().toasts).toEqual([
+      { id: 'long-1', text: '长一点', type: 'warning', durationMs: 6000 },
+    ])
+  })
+
   it('支持通过第三个参数指定 type', () => {
     pushToast('操作成功', 'suc-1', 'success')
     expect(useToastStore.getState().toasts).toEqual([

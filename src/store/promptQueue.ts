@@ -155,6 +155,23 @@ export function imageBlocksOf(blocks: ContentBlock[]): ContentBlock[] {
   return blocks.filter((b) => b.type === 'image')
 }
 
+/**
+ * 这组 blocks 是不是 direct-bash prompt（TUI `!` 同款 wire：首块 `_meta.
+ * bash_command`，host 据此绕开模型直接执行）。队列出队收养用户行按它判
+ * `$` 前缀。
+ */
+export function isBashBlocks(blocks?: ContentBlock[]): boolean {
+  const first = blocks?.[0] as { _meta?: Record<string, unknown> } | undefined
+  const cmd = first?._meta?.bash_command
+  return typeof cmd === 'string' && cmd !== ''
+}
+
+/** 重建 text 块时保住原块的 `_meta`（bash 标记 / displayText 等）。 */
+export function textBlockWithMeta(prev: ContentBlock | undefined, text: string): ContentBlock {
+  const meta = (prev as { _meta?: Record<string, unknown> } | undefined)?._meta
+  return meta ? { type: 'text', text, _meta: meta } : { type: 'text', text }
+}
+
 /** 图片块的稳定身份（mime + data），用于比对附图有没有被改过。 */
 function imageKeys(blocks: ContentBlock[]): string[] {
   return imageBlocksOf(blocks).map(
@@ -609,7 +626,10 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
     // 落地，此刻换图的 remove/prompt 到达顺序没有保证。草稿丢弃，只留正文。
     const dropImageEdit = imagesChanged && row.optimistic
     const images = dropImageEdit ? oldImages : editImages
-    const blocks: ContentBlock[] = [{ type: 'text', text }, ...images]
+    const blocks: ContentBlock[] = [
+      textBlockWithMeta(row.blocks[0], text),
+      ...images,
+    ]
     set({ editIndex: null, editDraft: '', editImages: [] })
     if (dropImageEdit) pushToast('这条还在发送中，等它进入队列后再改附图')
 
@@ -850,8 +870,13 @@ export function applyQueueChanged(
               // 无权威的正文（纯图片行）时保留本地正文，且不动 blocks——
               // 本地那份才带真图。
               text: text || existing.text,
+              // 权威正文换掉本地 text 块时保留它的 `_meta`（direct-bash 的
+              // `bash_command` 标记）——否则出队重发就变成普通 prompt。
               blocks: text
-                ? [{ type: 'text', text }, ...existing.blocks.slice(1)]
+                ? [
+                    textBlockWithMeta(existing.blocks[0], text),
+                    ...existing.blocks.slice(1),
+                  ]
                 : existing.blocks,
               // 广播确认：乐观/降级行拿到权威 version，归 agent-owned。
               optimistic: false,

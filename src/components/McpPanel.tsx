@@ -44,6 +44,7 @@ export function McpPanel({
   const mcpAdd = useChatStore((s) => s.mcpAdd)
   const mcpRemove = useChatStore((s) => s.mcpRemove)
   const mcpAuthTrigger = useChatStore((s) => s.mcpAuthTrigger)
+  const sessionId = useChatStore((s) => s.sessionId)
   const panelRef = useRef<HTMLDivElement>(null)
 
   // ── 管理 section state ──────────────────────────────────────────────
@@ -63,7 +64,9 @@ export function McpPanel({
 
   // ── 添加服务器表单 ──
   const [addOpen, setAddOpen] = useState(false)
-  const [form, setForm] = useState({ name: '', command: '', args: '', env: '' })
+  /** stdio: command/args/env；http: url/type/headers（agent `McpServerTransportConfig::StreamableHttp`）。 */
+  const [addTransport, setAddTransport] = useState<'stdio' | 'http'>('stdio')
+  const [form, setForm] = useState({ name: '', command: '', args: '', env: '', url: '', type: 'http', headers: '' })
   const [formError, setFormError] = useState<string>()
   const [adding, setAdding] = useState(false)
 
@@ -271,9 +274,44 @@ export function McpPanel({
 
   const submitAdd = async () => {
     const name = form.name.trim()
+    if (!name) {
+      setFormError('name 为必填项')
+      return
+    }
+    if (addTransport === 'http') {
+      const url = form.url.trim()
+      if (!/^https?:\/\//i.test(url)) {
+        setFormError('url 必填且需以 http:// 或 https:// 开头')
+        return
+      }
+      const headers = parseHeadersInput(form.headers)
+      if (typeof headers === 'string') {
+        setFormError(headers)
+        return
+      }
+      setFormError(undefined)
+      setAdding(true)
+      try {
+        await mcpAdd({
+          name,
+          url,
+          ...(form.type.trim() && form.type.trim() !== 'http' ? { type: form.type.trim() } : {}),
+          ...(headers && Object.keys(headers).length > 0 ? { headers } : {}),
+        })
+        useChatStore.setState({ statusText: `已添加 MCP 服务器 ${name}` })
+        setAddOpen(false)
+        setForm({ name: '', command: '', args: '', env: '', url: '', type: 'http', headers: '' })
+        void refreshList()
+      } catch (e) {
+        setFormError(`添加失败: ${e instanceof Error ? e.message : String(e)}`)
+      } finally {
+        setAdding(false)
+      }
+      return
+    }
     const command = form.command.trim()
-    if (!name || !command) {
-      setFormError('name 和 command 为必填项')
+    if (!command) {
+      setFormError('command 为必填项')
       return
     }
     const args = parseArgsInput(form.args)
@@ -292,7 +330,7 @@ export function McpPanel({
       await mcpAdd({ name, command, args, env })
       useChatStore.setState({ statusText: `已添加 MCP 服务器 ${name}` })
       setAddOpen(false)
-      setForm({ name: '', command: '', args: '', env: '' })
+      setForm({ name: '', command: '', args: '', env: '', url: '', type: 'http', headers: '' })
       void refreshList()
     } catch (e) {
       setFormError(`添加失败: ${e instanceof Error ? e.message : String(e)}`)
@@ -322,7 +360,14 @@ export function McpPanel({
     setCallResult(undefined)
     setCalling(true)
     try {
-      const result = await transport.mcpCall({ server, tool, ...(args !== undefined ? { args } : {}) })
+      const url = rows.find((r) => r.name === server)?.url
+      const result = await transport.mcpCall({
+        server,
+        tool,
+        ...(sessionId ? { sessionId } : {}),
+        ...(url ? { serverUrl: url } : {}),
+        ...(args !== undefined ? { args } : {}),
+      })
       setCallResult(formatResult(result))
       useChatStore.setState({ statusText: `已调用 MCP 工具 ${server}__${tool}` })
     } catch (e) {
@@ -343,7 +388,11 @@ export function McpPanel({
     setReadResult(undefined)
     setReading(true)
     try {
-      const result = await transport.mcpReadResource({ server, uri })
+      const result = await transport.mcpReadResource({
+        server,
+        uri,
+        ...(sessionId ? { sessionId } : {}),
+      })
       setReadResult(formatResult(result))
       useChatStore.setState({ statusText: `已读取 MCP 资源 ${uri}` })
     } catch (e) {
@@ -898,7 +947,32 @@ export function McpPanel({
           {/* ── 展开: 添加服务器面板 ── */}
           {addOpen && (
             <div className="mt-1 max-h-[50vh] overflow-y-auto rounded-lg border border-gn-prompt-border/70 bg-gn-bg-base p-3 space-y-2.5">
-              <div className="text-[11.5px] font-bold text-gn-fg">添加 MCP 服务器</div>
+              <div className="flex items-center justify-between">
+                <div className="text-[11.5px] font-bold text-gn-fg">添加 MCP 服务器</div>
+                <div className="flex items-center gap-0.5 rounded border border-gn-prompt-border/70 bg-gn-bg-dark p-0.5" role="tablist" aria-label="transport">
+                  {(['stdio', 'http'] as const).map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      role="tab"
+                      aria-selected={addTransport === t}
+                      onClick={() => setAddTransport(t)}
+                      className={`rounded px-2.5 py-0.5 font-mono text-[10.5px] font-medium transition-colors ${
+                        addTransport === t
+                          ? 'bg-gn-bg-highlight text-gn-fg'
+                          : 'text-gn-muted hover:text-gn-fg'
+                      }`}
+                      title={
+                        t === 'stdio'
+                          ? '本地进程：command / args / env'
+                          : 'Streamable HTTP / SSE：url / headers'
+                      }
+                    >
+                      {t}
+                    </button>
+                  ))}
+                </div>
+              </div>
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 <label className="block">
                   <span className="text-[10px] uppercase tracking-wider text-gn-gutter">name *</span>
@@ -910,37 +984,79 @@ export function McpPanel({
                     className="mt-0.5 box-border h-7 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 font-mono text-[11.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
                   />
                 </label>
-                <label className="block">
-                  <span className="text-[10px] uppercase tracking-wider text-gn-gutter">command *</span>
-                  <input
-                    type="text"
-                    value={form.command}
-                    onChange={(e) => setForm({ ...form, command: e.target.value })}
-                    placeholder="npx"
-                    className="mt-0.5 box-border h-7 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 font-mono text-[11.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
-                  />
-                </label>
+                {addTransport === 'stdio' ? (
+                  <label className="block">
+                    <span className="text-[10px] uppercase tracking-wider text-gn-gutter">command *</span>
+                    <input
+                      type="text"
+                      value={form.command}
+                      onChange={(e) => setForm({ ...form, command: e.target.value })}
+                      placeholder="npx"
+                      className="mt-0.5 box-border h-7 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 font-mono text-[11.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
+                    />
+                  </label>
+                ) : (
+                  <label className="block">
+                    <span className="text-[10px] uppercase tracking-wider text-gn-gutter">type</span>
+                    <select
+                      value={form.type}
+                      onChange={(e) => setForm({ ...form, type: e.target.value })}
+                      className="mt-0.5 box-border h-7 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 font-mono text-[11.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
+                      title="SSE 会走旧式 HTTP+SSE 传输；默认 streamable http"
+                    >
+                      <option value="http">http</option>
+                      <option value="sse">sse</option>
+                    </select>
+                  </label>
+                )}
               </div>
-              <label className="block">
-                <span className="text-[10px] uppercase tracking-wider text-gn-gutter">args</span>
-                <input
-                  type="text"
-                  value={form.args}
-                  onChange={(e) => setForm({ ...form, args: e.target.value })}
-                  placeholder='空格分隔，或 JSON 数组，如 ["-y","pkg"]'
-                  className="mt-0.5 box-border h-7 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 font-mono text-[11.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
-                />
-              </label>
-              <label className="block">
-                <span className="text-[10px] uppercase tracking-wider text-gn-gutter">env</span>
-                <textarea
-                  value={form.env}
-                  onChange={(e) => setForm({ ...form, env: e.target.value })}
-                  placeholder={"每行 KEY=value"}
-                  rows={2}
-                  className="mt-0.5 w-full resize-y rounded border border-gn-prompt-border bg-gn-bg-dark px-2.5 py-1 font-mono text-[11.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
-                />
-              </label>
+              {addTransport === 'stdio' ? (
+                <>
+                  <label className="block">
+                    <span className="text-[10px] uppercase tracking-wider text-gn-gutter">args</span>
+                    <input
+                      type="text"
+                      value={form.args}
+                      onChange={(e) => setForm({ ...form, args: e.target.value })}
+                      placeholder='空格分隔，或 JSON 数组，如 ["-y","pkg"]'
+                      className="mt-0.5 box-border h-7 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 font-mono text-[11.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-[10px] uppercase tracking-wider text-gn-gutter">env</span>
+                    <textarea
+                      value={form.env}
+                      onChange={(e) => setForm({ ...form, env: e.target.value })}
+                      placeholder={"每行 KEY=value"}
+                      rows={2}
+                      className="mt-0.5 w-full resize-y rounded border border-gn-prompt-border bg-gn-bg-dark px-2.5 py-1 font-mono text-[11.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
+                    />
+                  </label>
+                </>
+              ) : (
+                <>
+                  <label className="block">
+                    <span className="text-[10px] uppercase tracking-wider text-gn-gutter">url *</span>
+                    <input
+                      type="text"
+                      value={form.url}
+                      onChange={(e) => setForm({ ...form, url: e.target.value })}
+                      placeholder="https://mcp.example.com/api/mcp"
+                      className="mt-0.5 box-border h-7 w-full rounded border border-gn-prompt-border bg-gn-bg-dark px-2 font-mono text-[11.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-[10px] uppercase tracking-wider text-gn-gutter">headers</span>
+                    <textarea
+                      value={form.headers}
+                      onChange={(e) => setForm({ ...form, headers: e.target.value })}
+                      placeholder={'每行 Name: value，如\nAuthorization: Bearer sk-…'}
+                      rows={2}
+                      className="mt-0.5 w-full resize-y rounded border border-gn-prompt-border bg-gn-bg-dark px-2.5 py-1 font-mono text-[11.5px] text-gn-fg outline-none focus:border-gn-prompt-border-active"
+                    />
+                  </label>
+                </>
+              )}
               {formError ? (
                 <div className="rounded border border-gn-diff-del-bg px-2 py-1 text-[11px] text-gn-red">
                   {formError}
@@ -1201,6 +1317,8 @@ type McpRow = McpServerInfo & {
   args?: string[]
   env?: Record<string, string>
   url?: string
+  type?: string
+  headers?: Record<string, string>
   enabled?: boolean
   displayName?: string
   sourceLabel?: string
@@ -1318,6 +1436,26 @@ function parseEnvInput(raw: string): Record<string, string> | string {
     env[l.slice(0, eq).trim()] = l.slice(eq + 1).trim()
   }
   return env
+}
+
+/**
+ * headers input: one `Name: value` per line. Returns the map, undefined for
+ * empty input, or an error string for a malformed line.
+ */
+function parseHeadersInput(raw: string): Record<string, string> | undefined | string {
+  const t = raw.trim()
+  if (!t) return undefined
+  const headers: Record<string, string> = {}
+  for (const line of t.split('\n')) {
+    const l = line.trim()
+    if (!l) continue
+    const colon = l.indexOf(':')
+    if (colon <= 0) return `请求头行格式错误: ${l}（应为 Name: value）`
+    const key = l.slice(0, colon).trim()
+    if (!key) return `请求头行格式错误: ${l}（Name 不能为空）`
+    headers[key] = l.slice(colon + 1).trim()
+  }
+  return headers
 }
 
 /** MCP call/read result → display text（JSON 缩进；超长截断）。 */

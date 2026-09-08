@@ -61,6 +61,7 @@ describe('initChat 多会话与双 FE 全局模式同步', () => {
       permissionMode: 'always-approve',
       handleEvent: vi.fn(),
       stopTopTaskPolling: vi.fn(),
+      refreshGitInfo: vi.fn(),
     }
     set = vi.fn((patch) => {
       const next = typeof patch === 'function' ? patch(state as ChatState) : patch
@@ -213,6 +214,38 @@ describe('initChat 多会话与双 FE 全局模式同步', () => {
     )
     expect(state.planMode).toBe(false)
 
+    cleanup()
+  })
+
+  it('git_head_changed 即使携带非当前会话 sessionId 也放行（payload 里才是权威 sid）', () => {
+    const cleanup = initChat(set, get, api)
+    const ev = {
+      type: 'git_head_changed',
+      sessionId: 'sess-other',
+      params: { sessionId: 'sess-current', branch: 'feat' },
+    }
+    eventHandler!(ev)
+    expect(state.handleEvent).toHaveBeenCalledWith(ev)
+    cleanup()
+  })
+
+  it('historyLoading 窗口仍放行 git_head_changed（fade-in 前就要换分支）', () => {
+    state.historyLoading = true
+    const cleanup = initChat(set, get, api)
+    const ev = {
+      type: 'git_head_changed',
+      sessionId: 'sess-current',
+      params: { sessionId: 'sess-current', branch: 'feat' },
+    }
+    eventHandler!(ev)
+    expect(state.handleEvent).toHaveBeenCalledWith(ev)
+    cleanup()
+  })
+
+  it('窗口重新聚焦时补拉 gitInfo（外部切分支、通知丢失的兜底）', () => {
+    const cleanup = initChat(set, get, api)
+    window.dispatchEvent(new Event('focus'))
+    expect(state.refreshGitInfo).toHaveBeenCalled()
     cleanup()
   })
 })

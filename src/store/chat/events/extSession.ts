@@ -1,10 +1,50 @@
 import type { AcpEvent } from '../../../api/types'
 import type { ChatState, McpServerInfo, SetState } from '../types'
+import { runtime } from '../globals'
 import { applyModeFlags } from '../modeFlags'
 import { extractSessionUpdate } from '../entries'
 import { applyMcpInitProgress } from '../followUps'
 import { handleTaskBackgrounded, handleTaskCompleted } from '../tasks'
 import { wireTaskId } from '../util'
+
+function strField(v: unknown): string | undefined {
+  return typeof v === 'string' && v ? v : undefined
+}
+
+/**
+ * Apply `x.ai/git_head_changed` to the status-bar gitInfo.
+ * TUI `handle_git_head_changed` routes by payload session id; a
+ * notification for another session (or a subagent) must not paint
+ * this view. Envelope sessionId is the host withSid tag — payload
+ * sessionId wins when both are present (active-session fallback can
+ * mis-tag the envelope).
+ */
+export function applyGitHeadChanged(
+  set: SetState,
+  get: () => ChatState,
+  params: Record<string, unknown> | undefined,
+  envelopeSessionId?: string,
+): void {
+  const p = params ?? {}
+  const sid =
+    strField(p.sessionId) || strField(p.session_id) || envelopeSessionId || undefined
+  if (sid && sid !== get().sessionId) return
+  const raw = p.branch
+  const branch = raw == null ? undefined : String(raw)
+  runtime.gitInfoEpoch += 1
+  const prev = get().gitInfo
+  const isWorktree = !!(p.isWorktree ?? p.is_worktree)
+  const mainRepoRaw = p.mainRepo ?? p.main_repo
+  const mainRepo = mainRepoRaw == null ? undefined : String(mainRepoRaw)
+  const downgrade = prev?.isWorktree === true && !isWorktree && !mainRepo
+  set({
+    gitInfo: {
+      branch: branch === '' ? '(detached)' : branch,
+      isWorktree: downgrade ? true : isWorktree,
+      mainRepo: downgrade ? (prev.mainRepo ?? undefined) : mainRepo,
+    },
+  })
+}
 
 export function handleExtSessionEvent(
   set: SetState,
@@ -44,15 +84,12 @@ export function handleExtSessionEvent(
         break
       }
       case 'git_head_changed': {
-        const p = ev.params ?? {}
-        const branch = p.branch == null ? undefined : String(p.branch)
-        set({
-          gitInfo: {
-            branch: branch === '' ? '(detached)' : branch,
-            isWorktree: !!p.isWorktree,
-            mainRepo: p.mainRepo == null ? undefined : String(p.mainRepo),
-          },
-        })
+        applyGitHeadChanged(
+          set,
+          get,
+          (ev.params ?? {}) as Record<string, unknown>,
+          (ev as { sessionId?: string }).sessionId,
+        )
         break
       }
       case 'yolo_mode_changed':

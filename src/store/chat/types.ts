@@ -2,6 +2,7 @@ import type {
   AcpEvent,
   AgentCommand,
   ContentBlock,
+  DetachedTask,
   FollowUp,
   HostInfo,
   ModelOption,
@@ -456,13 +457,29 @@ export interface ChatAgentExtState {
   /** task_id → entry id (task_backgrounded / task_completed). */
   bgTaskIndex: Record<string, string>
   /**
-   * Restored running tasks (host liveness probe at session resume) —
-   * rendered ONLY in the top task strip; deliberately NOT scrollback
-   * entries. Maintained by live events (completion / new backgrounded)
-   * AND a periodic probe (startTopTaskPolling) so TUI-owned tasks, which
-   * emit no events to this host, also converge (drop dead / pick up new).
+   * Running tasks of THIS session's agent (x.ai/task/list) — rendered ONLY
+   * in the top task strip; deliberately NOT scrollback entries. Kept fresh
+   * by live events (completion / new backgrounded) and by the periodic
+   * syncLiveTasks poll. Every row here is killable, which is exactly why the
+   * registry — not the host's liveness probe — is the only source.
    */
   topTasks: TopTask[]
+  /**
+   * Still-running background commands the agent's registry does NOT know
+   * (previous grok process, or another client such as an open TUI). Shown
+   * as a one-off status-bar hint with their pid — never as a task row,
+   * since this UI cannot kill them.
+   */
+  detachedTasks: DetachedTask[]
+  /** Signature of the detached set the hint was last accounted for with. */
+  detachedHintKey: string | null
+  /**
+   * Task ids the host's open-fd probe currently sees alive (raw probe data,
+   * unaffected by the hint's dismissed state). The history replay skips a
+   * dangling "Task started" row for any id here or in topTasks — the strip
+   * (or the hint) represents that task instead.
+   */
+  runningProbeTaskIds: string[]
   /**
    * Sessions that finished a turn while the user was elsewhere
    * (sessionId → completion epoch ms). Drives the sidebar ✓ badge and
@@ -539,12 +556,16 @@ export interface ChatMcpState {
   mcpToggle: (name: string, enabled: boolean) => Promise<void>
   /** POST /api/mcp-toggle-tool — enable/disable one tool of a server. */
   mcpToggleTool: (serverName: string, toolName: string, enabled: boolean) => Promise<void>
-  /** POST /api/mcp-add — add a stdio server. */
+  /** POST /api/mcp-add — add a stdio (command/args/env) or HTTP (url/type/headers) server. */
   mcpAdd: (server: {
     name: string
-    command: string
+    command?: string
     args?: string[]
     env?: Record<string, string>
+    url?: string
+    /** HTTP transport marker ("http" | "sse"); persisted as `[mcp_servers.*]` `type`. */
+    type?: string
+    headers?: Record<string, string>
   }) => Promise<void>
   /** POST /api/mcp-remove — remove a server. */
   mcpRemove: (name: string) => Promise<void>
@@ -787,14 +808,15 @@ export interface ChatActions {
   send: (
     text: string,
     blocks?: ContentBlock[],
+    /** `fromShell`：本次是 `!` 的 direct-bash 提交，用户行按 `$` 前缀渲染。 */
     opts?: { fromShell?: boolean; promptId?: string },
   ) => Promise<void>
   cancel: () => Promise<void>
   handleEvent: (ev: AcpEvent) => void
   /**
-   * Append a LOCAL-ONLY scrollback entry (shell mode output, etc.) —
-   * rendered like a normal row but never sent to the agent. Kind is
-   * limited to the entry kinds the scrollback renders as plain text.
+   * Append a LOCAL-ONLY scrollback entry (slash-command output, model-switch
+   * markers, etc.) — rendered like a normal row but never sent to the agent.
+   * Kind is limited to the entry kinds the scrollback renders as plain text.
    */
   appendLocalEntry: (entry: {
     kind: 'user' | 'session_event' | 'error'
@@ -873,7 +895,7 @@ export interface ChatActions {
    * TUI restores the live registry on session/load; history-only replay
    * can miss still-running tasks (page boundary / SSE drop during load).
    */
-  syncLiveTasks: () => Promise<void>
+  syncLiveTasks: (sessionId?: string) => Promise<void>
   /** x.ai/sessions/changed — refresh the history list. retry: 启动窗口容错（agent 预热 boot 超时）重试次数。 */
   refreshSessions: (retry?: number) => Promise<void>
   /**
@@ -951,23 +973,21 @@ export interface ChatActions {
    */
   jumpToPrompt: (seq: number) => Promise<string | null>
   /**
-   * Replay the session's STILL-RUNNING tasks (host liveness probe of
-   * updates.jsonl) into the top task strip (topTasks). Deliberately NO
-   * scrollback entries — restored tasks only live in the top strip and
-   * maintain state via live events. History page replays IGNORE task
-   * lifecycle events (see envelopeToEvent), so this is the single
-   * source of restored running tasks.
+   * Prefill the running-task view BEFORE the history replay: the top strip
+   * from the agent's live registry (syncLiveTasks) and the detached hint
+   * from the host's updates.jsonl + lsof probe. replayUpdates skips the
+   * "Task started" row of any task the strip already shows, so the registry
+   * must land first.
    */
-  replayRunningTasks: (sessionId: string, cwd: string) => Promise<void>
-  /**
-   * One-shot probe refresh of the top strip (drop dead / add new) —
-   * used by the periodic poller (TUI-owned tasks emit no events here).
-   */
-  refreshTopTasks: (sessionId: string, cwd: string) => Promise<void>
-  /** Start the periodic top-strip liveness poll (one per active session). */
+  prefetchRunningTasks: (sessionId: string, cwd: string) => Promise<void>
+  /** Periodic refresh of the strip (registry) and the detached hint. */
+  refreshRunningTasks: (sessionId: string, cwd: string) => Promise<void>
+  /** Start the periodic running-task poll (one per active session). */
   startTopTaskPolling: (sessionId: string, cwd: string) => void
-  /** Stop the periodic top-strip liveness poll. */
+  /** Stop the periodic running-task poll. */
   stopTopTaskPolling: () => void
+  /** Hide the detached-process hint until that set changes again. */
+  dismissDetachedHint: () => void
   /** Switch the active session to a historical one and load its tail. */
   continueSession: (sessionId: string, cwd: string) => Promise<void>
   /** Memory system — /flush: ask the host to persist session knowledge. */

@@ -85,6 +85,9 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
   subagentViews: {},
   bgTaskIndex: {},
   topTasks: [],
+  detachedTasks: [],
+  detachedHintKey: null,
+  runningProbeTaskIds: [],
   completedNotices: {},
   mcpServers: [],
   mcpVersion: 0,
@@ -289,9 +292,9 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
   send: (text, blocks, opts) => sendPrompt(set, get, text, blocks, opts),
 
   /**
-   * Append a LOCAL-ONLY scrollback entry (shell mode output, etc.) —
-   * rendered like a normal row but never sent to the agent. Kind is
-   * limited to the entry kinds the scrollback renders as plain text.
+   * Append a LOCAL-ONLY scrollback entry (slash-command output, model-switch
+   * markers, etc.) — rendered like a normal row but never sent to the agent.
+   * Kind is limited to the entry kinds the scrollback renders as plain text.
    */
   appendLocalEntry: (entry) => {
     appendEntry(set, entry as EntryWithoutId)

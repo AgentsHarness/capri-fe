@@ -324,9 +324,13 @@ export function sessionActions(set: SetState, get: () => ChatState) {
     const s = get()
     if (!s.sessionId || !s.cwd) return
     const scope = captureAsyncScope(get, s.sessionId, s.cwd)
+    const epoch = runtime.gitInfoEpoch
     try {
       const info = await transport.gitInfo(s.sessionId, s.cwd)
       if (!isAsyncScopeCurrent(get, scope)) return
+      // 探盘在飞时 git_head_changed 已写入新分支：丢掉这份过期响应，
+      // 否则外部 checkout 会先亮再被旧结果打回。
+      if (runtime.gitInfoEpoch !== epoch) return
       // 降级保护：git_head_changed 事件携带 agent 的三路 worktree 检测
       // 结果（linked / standalone grok clone / worktree DB），host 轮询
       // 探测（rev-parse + marker 兜底）仍可能漏判（如纯 DB label 记录、

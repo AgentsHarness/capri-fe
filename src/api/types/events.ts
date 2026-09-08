@@ -133,8 +133,10 @@ export type AcpEvent =
   /**
    * Aggregated user message (history replay or live user_chunk).
    * `isCron` matches TUI UserPromptBlock::cron (scheduled /loop fire).
+   * `isShell` = 该轮的块 `_meta.bash_command` 在（TUI `!` 直连 shell），
+   * 回放时渲染成 `$ cmd`。
    */
-  | { type: 'user_message'; text: string; ts?: number; isCron?: boolean; isInterjection?: boolean; msgSeq?: number; sessionId?: string }
+  | { type: 'user_message'; text: string; ts?: number; isCron?: boolean; isInterjection?: boolean; isShell?: boolean; msgSeq?: number; sessionId?: string }
   | {
       type: 'thought'
       text: string
@@ -397,6 +399,11 @@ export type AcpEvent =
    * 见 localTransport.handleResyncFrame / store/chat/resync.ts）。
    */
   | { type: 'resync'; fromSeq: number }
+  /**
+   * FE 本地：直播序号大洞被跳过（host/hub 环已压掉前驱）。无 seq，
+   * 不进排序器。fromSeq..toSeq 是没显示的闭区间。
+   */
+  | { type: 'live_gap'; hostId?: string; fromSeq: number; toSeq: number }
   /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
   | { type: 'models_update'; sessionId?: string; params?: Record<string, unknown> }
   | { type: 'announcements_update'; params?: Record<string, unknown> }

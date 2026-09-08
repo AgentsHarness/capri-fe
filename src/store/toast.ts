@@ -11,6 +11,7 @@ const MAX_TOASTS = 4
 export type ToastOptions = {
   id?: string
   type?: ToastType
+  durationMs?: number
 }
 
 /** 智能推断 toast 类型（若未显式指定）。 */
@@ -50,6 +51,7 @@ export const useToastStore = create<ToastState>((set, get) => ({
   pushToast: (text, idOrOptions, explicitType) => {
     let id: string | undefined
     let type: ToastType | undefined
+    let durationMs: number | undefined
 
     if (typeof idOrOptions === 'string') {
       id = idOrOptions
@@ -57,6 +59,7 @@ export const useToastStore = create<ToastState>((set, get) => ({
     } else if (idOrOptions && typeof idOrOptions === 'object') {
       id = idOrOptions.id
       type = idOrOptions.type ?? explicitType
+      durationMs = idOrOptions.durationMs
     }
 
     const toastId =
@@ -66,6 +69,9 @@ export const useToastStore = create<ToastState>((set, get) => ({
       id: toastId,
       text,
       ...(type ? { type } : {}),
+      ...(durationMs != null && Number.isFinite(durationMs) && durationMs > 0
+        ? { durationMs }
+        : {}),
     }
 
     set({ toasts: [...get().toasts, item].slice(-MAX_TOASTS) })

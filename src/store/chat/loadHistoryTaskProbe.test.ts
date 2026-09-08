@@ -8,6 +8,8 @@ vi.mock('../../api/client', () => ({
   transport: {
     loadSessionHistory: vi.fn(),
     sessionRunningTasks: vi.fn().mockResolvedValue({ events: [] }),
+    // 顶栏的唯一来源：agent 的活动注册表（syncLiveTasks）
+    listTasks: vi.fn().mockResolvedValue([]),
     queueStatus: vi.fn().mockResolvedValue({ queue: [] }),
     onEvent: vi.fn(() => () => {}),
     getConnectionMode: vi.fn(() => 'local'),
@@ -50,11 +52,14 @@ beforeEach(() => {
     entries: [],
     pending: [],
     topTasks: [],
+    detachedTasks: [],
+    detachedHintKey: null,
     historyLoading: false,
     historyLoadError: undefined,
   })
   vi.mocked(transport.loadSessionHistory).mockResolvedValue(snapshot() as never)
   vi.mocked(transport.sessionRunningTasks).mockResolvedValue({ events: [] } as never)
+  vi.mocked(transport.listTasks).mockResolvedValue([] as never)
 })
 
 afterEach(() => {
@@ -97,17 +102,34 @@ describe('loadHistoryWithTaskProbe', () => {
     expect(useChatStore.getState().historyLoading).toBe(false)
   })
 
-  it('探活查到在跑任务 → 填顶部任务条并开轮询', async () => {
-    vi.mocked(transport.sessionRunningTasks).mockResolvedValue({
-      events: [
-        { kind: 'task_backgrounded', taskId: 't9', description: '跑集成测试', command: 'npm t' },
-      ],
-    } as never)
+  it('注册表里有在跑任务 → 填顶部任务条并开轮询', async () => {
+    vi.mocked(transport.listTasks).mockResolvedValue([
+      { taskId: 't9', command: 'npm t', description: '跑集成测试' },
+    ] as never)
     const startTopTaskPolling = vi.fn()
     useChatStore.setState({ startTopTaskPolling } as never)
 
     await loadHistoryWithTaskProbe(get, SID, CWD)
     expect(useChatStore.getState().topTasks.map((t) => t.taskId)).toEqual(['t9'])
+    expect(startTopTaskPolling).toHaveBeenCalledWith(SID, CWD)
+  })
+
+  it('宿主探活发现的游离进程只进提示，不进任务条', async () => {
+    // 顶栏必须只装 agent 自己认得的任务：游离进程杀不掉，画成任务行就是
+    // 给了一个假的可控 affordance。
+    vi.mocked(transport.sessionRunningTasks).mockResolvedValue({
+      events: [{ kind: 'task_backgrounded', taskId: 'd1', command: 'npm run dev' }],
+      detached: [{ taskId: 'd1', command: 'npm run dev', pid: 4242 }],
+    } as never)
+    const startTopTaskPolling = vi.fn()
+    useChatStore.setState({ startTopTaskPolling } as never)
+
+    await loadHistoryWithTaskProbe(get, SID, CWD)
+    const s = useChatStore.getState()
+    expect(s.topTasks).toEqual([])
+    expect(s.detachedTasks.map((t) => t.taskId)).toEqual(['d1'])
+    expect(s.detachedTasks[0].pid).toBe(4242)
+    // 提示本身也要有人刷新，否则它永远停在第一次探活的结果
     expect(startTopTaskPolling).toHaveBeenCalledWith(SID, CWD)
   })
 

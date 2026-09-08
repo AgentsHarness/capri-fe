@@ -60,10 +60,11 @@ export function ToastStack() {
     for (const t of toasts) {
       alive.add(t.id)
       if (timers.current.has(t.id)) continue
+      const ttl = t.durationMs ?? TOAST_TTL_MS
       const timer = window.setTimeout(() => {
         timers.current.delete(t.id)
         dismissToast(t.id)
-      }, TOAST_TTL_MS)
+      }, ttl)
       timers.current.set(t.id, timer)
     }
     // Drop timers for toasts already dismissed manually (✕).
@@ -121,6 +122,7 @@ export function ToastStack() {
             </button>
             <div
               className={`gn-toast-progress absolute bottom-0 left-0 right-0 h-[1.5px] ${cfg.progressClass}`}
+              style={{ animationDuration: `${t.durationMs ?? TOAST_TTL_MS}ms` }}
             />
           </div>
         )

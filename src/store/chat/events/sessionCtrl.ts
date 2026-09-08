@@ -21,7 +21,8 @@ export function handleSessionCtrlEvent(
         // SAME look as live bg_task rows — but the entry is NOT captured
         // into the task system: no bgTaskIndex entry, never running, no
         // kill button, no ⠋N / running-bar membership. The live running
-        // set comes from the host probe at resume (replayRunningTasks).
+        // set is the agent's registry, prefilled at resume
+        // (prefetchRunningTasks → syncLiveTasks).
         appendEntry(set, {
           kind: 'bg_task',
           title: ev.title,

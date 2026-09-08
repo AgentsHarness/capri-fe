@@ -10,7 +10,9 @@ import {
   absorbBashOutputIntoBgTask,
   absorbTaskOutputIntoBgTask,
   extractTarget,
+  isBashModeTool,
   isOrphanBashStreamUpdate,
+  mergeToolCall,
   shouldSuppressToolFromScrollback,
   suppressedToolIds,
   toolCallIdOf,
@@ -87,7 +89,7 @@ export function handleToolEvent(
               get().handleEvent({ type: 'tool_call_update', toolCallUpdate: tc } as AcpEvent)
               break
             }
-            const merged: ToolCall = { ...(plug.raw || {}), ...tc }
+            const merged: ToolCall = mergeToolCall(plug.raw || {}, tc)
             const status = (tc.status as string) || plug.status
             const kindName = toolKindName(merged, plug.kindName)
             const running = status === 'pending' || status === 'in_progress'
@@ -159,6 +161,7 @@ export function handleToolEvent(
           }
         }
 
+        const isBash = isBashModeTool(tc)
         const entry: ScrollEntry = {
           id,
           kind: 'tool',
@@ -169,7 +172,9 @@ export function handleToolEvent(
           kindName,
           detail: tc.title as string | undefined,
           // collapsed_edit_blocks=false (default): edit diffs expanded.
-          expanded: isEditToolKind(kindName) && !collapsedEditBlocks(),
+          // TUI bash_mode: direct bash execute block expands so command output is immediately visible.
+          expanded: isBash || (isEditToolKind(kindName) && !collapsedEditBlocks()),
+          displayMode: isBash ? 'expanded' : undefined,
           raw: tc,
           // Activity start for the turn status line's phase timer (TUI
           // tracker started_at); replay/completed snapshots omit it.
@@ -224,12 +229,9 @@ export function handleToolEvent(
           const existing = get().entries.find((e) => e.id === entryId)
           const merged: ToolCall =
             existing?.kind === 'tool'
-              ? { ...(existing.raw || {}), ...tc }
+              ? mergeToolCall(existing.raw || {}, tc)
               : tc
-          if (
-            shouldSuppressToolFromScrollback(merged) ||
-            isOrphanBashStreamUpdate(merged)
-          ) {
+          if (shouldSuppressToolFromScrollback(merged)) {
             suppressedToolIds.add(toolCallId)
             const { [toolCallId]: _drop, ...toolIndex } = get().toolIndex
             set({
@@ -280,7 +282,7 @@ export function handleToolEvent(
               -1
             if (mergedIdx >= 0) {
               const mergedRaws = [...(e.mergedRaws ?? [])]
-              mergedRaws[mergedIdx] = { ...mergedRaws[mergedIdx], ...tc }
+              mergedRaws[mergedIdx] = mergeToolCall(mergedRaws[mergedIdx], tc)
               const status = (tc.status as string) || e.status
               const kindName = toolKindName(tc, e.kindName)
               const running = status === 'pending' || status === 'in_progress'
@@ -299,7 +301,7 @@ export function handleToolEvent(
                 }),
               }
             }
-            const merged: ToolCall = { ...(e.raw || {}), ...tc }
+            const merged: ToolCall = mergeToolCall(e.raw || {}, tc)
             const status = (merged.status as string) || e.status
             const kindName = toolKindName(merged, e.kindName)
             const running = status === 'pending' || status === 'in_progress'
@@ -313,6 +315,7 @@ export function handleToolEvent(
             // current fold (user gesture).
             const becameEdit =
               isEditToolKind(kindName) && !isEditToolKind(e.kindName)
+            const isBash = isBashModeTool(merged)
             return {
               ...e,
               status,
@@ -322,9 +325,11 @@ export function handleToolEvent(
               raw: merged,
               finishedAt,
               ...liteAfterLiveBody(e, merged),
-              ...(becameEdit
-                ? { expanded: !collapsedEditBlocks() }
-                : {}),
+              ...(isBash
+                ? { expanded: true, displayMode: 'expanded' as const }
+                : becameEdit
+                  ? { expanded: !collapsedEditBlocks() }
+                  : {}),
             }
           }),
         })

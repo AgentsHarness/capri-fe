@@ -110,6 +110,20 @@ describe('replayUpdates', () => {
     expect(res.turnOpen).toBe(true)
   })
 
+  it('direct-bash 的 user chunk（块 _meta.bash_command）聚合后仍带 isShell', () => {
+    const handled: unknown[] = []
+    const getStore = () =>
+      ({ handleEvent: (ev: unknown) => handled.push(ev), appendLocalEntry: () => {}, topTasks: [] }) as unknown as ChatState
+    const res = replayUpdates(getStore as never, [
+      env('user_message_chunk', {
+        content: { type: 'text', text: 'ls -la', _meta: { bash_command: 'ls -la' } },
+      }),
+      env('agent_message_chunk', { content: 'ok' }),
+    ])
+    expect(handled[0]).toMatchObject({ type: 'user_message', text: 'ls -la', isShell: true })
+    expect(res.turnOpen).toBe(true)
+  })
+
   it('turn_completed 后无新 user → turnOpen false', () => {
     const handled: unknown[] = []
     const getStore = () =>
@@ -302,13 +316,29 @@ describe('replayUpdates — 在跑任务的 started 行', () => {
     command: 'npm run test:e2e',
   })
 
-  it('探活已报告该任务在跑（topTasks 命中）→ 回放不画这行', () => {
+  it('顶栏已显示该任务（注册表命中）→ 回放不画这行', () => {
     const handled: unknown[] = []
     const getStore = () =>
       ({
         handleEvent: (ev: unknown) => handled.push(ev),
         appendLocalEntry: () => {},
         topTasks: [{ taskId: 't1', title: '跑集成测试' }],
+        runningProbeTaskIds: [],
+      }) as unknown as ChatState
+    replayUpdates(getStore as never, [started])
+    expect(handled).toHaveLength(0)
+  })
+
+  // 注册表读取可能早于 session/load 落地（顶栏还是空的）。此时探活存活集
+  // 仍要挡住这条没有终态可等的悬空行——否则它先画出来、10s 后又冒一条顶栏行。
+  it('探活报告该任务在跑（顶栏还没填上）→ 回放同样不画这行', () => {
+    const handled: unknown[] = []
+    const getStore = () =>
+      ({
+        handleEvent: (ev: unknown) => handled.push(ev),
+        appendLocalEntry: () => {},
+        topTasks: [],
+        runningProbeTaskIds: ['t1'],
       }) as unknown as ChatState
     replayUpdates(getStore as never, [started])
     expect(handled).toHaveLength(0)
@@ -321,6 +351,7 @@ describe('replayUpdates — 在跑任务的 started 行', () => {
         handleEvent: (ev: unknown) => handled.push(ev),
         appendLocalEntry: () => {},
         topTasks: [{ taskId: 'other', title: '别的任务' }],
+        runningProbeTaskIds: [],
       }) as unknown as ChatState
     replayUpdates(getStore as never, [started])
     expect(handled).toEqual([

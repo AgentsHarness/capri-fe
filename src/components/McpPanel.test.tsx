@@ -391,11 +391,76 @@ describe('McpPanel — 管理操作', () => {
 })
 
 describe('McpPanel — 添加服务器表单', () => {
-  it('必填校验：name/command 缺失', async () => {
+  it('必填校验：stdio 模式 name/command 缺失', async () => {
     renderPanel()
     fireEvent.click(screen.getByRole('button', { name: '添加服务器' }))
     fireEvent.click(screen.getByRole('button', { name: '添加' }))
-    expect(await screen.findByText('name 和 command 为必填项')).not.toBeNull()
+    expect(await screen.findByText('name 为必填项')).not.toBeNull()
+  })
+
+  it('http 模式：url + headers + type=sse 提交', async () => {
+    renderPanel()
+    fireEvent.click(screen.getByRole('button', { name: '添加服务器' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'http' }))
+    const inputs = screen.getAllByRole('textbox')
+    fireEvent.change(inputs[0], { target: { value: 'yqlx' } })
+    fireEvent.change(inputs[1], { target: { value: 'https://mcp.ntrun.com/api/mcp' } })
+    fireEvent.change(screen.getByPlaceholderText(/Authorization: Bearer/), {
+      target: { value: 'Authorization: Bearer sk-abc' },
+    })
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'sse' } })
+    fireEvent.click(screen.getByRole('button', { name: '添加' }))
+    await waitFor(() =>
+      expect(mcpAdd).toHaveBeenCalledWith({
+        name: 'yqlx',
+        url: 'https://mcp.ntrun.com/api/mcp',
+        type: 'sse',
+        headers: { Authorization: 'Bearer sk-abc' },
+      }),
+    )
+    await waitFor(() =>
+      expect(h.setStateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ statusText: '已添加 MCP 服务器 yqlx' }),
+      ),
+    )
+  })
+
+  it('http 模式：默认 http 类型省略 type 字段；空 headers 省略', async () => {
+    renderPanel()
+    fireEvent.click(screen.getByRole('button', { name: '添加服务器' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'http' }))
+    const inputs = screen.getAllByRole('textbox')
+    fireEvent.change(inputs[0], { target: { value: 'api' } })
+    fireEvent.change(inputs[1], { target: { value: 'https://mcp.example.com/mcp' } })
+    fireEvent.click(screen.getByRole('button', { name: '添加' }))
+    await waitFor(() => expect(mcpAdd).toHaveBeenCalledWith({ name: 'api', url: 'https://mcp.example.com/mcp' }))
+  })
+
+  it('http 模式：url 非 http(s) → formError', async () => {
+    renderPanel()
+    fireEvent.click(screen.getByRole('button', { name: '添加服务器' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'http' }))
+    const inputs = screen.getAllByRole('textbox')
+    fireEvent.change(inputs[0], { target: { value: 'api' } })
+    fireEvent.change(inputs[1], { target: { value: 'ftp://bad.example.com' } })
+    fireEvent.click(screen.getByRole('button', { name: '添加' }))
+    expect(await screen.findByText(/url 必填且需以 http/)).not.toBeNull()
+    expect(mcpAdd).not.toHaveBeenCalled()
+  })
+
+  it('http 模式：headers 格式错误 → formError', async () => {
+    renderPanel()
+    fireEvent.click(screen.getByRole('button', { name: '添加服务器' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'http' }))
+    const inputs = screen.getAllByRole('textbox')
+    fireEvent.change(inputs[0], { target: { value: 'api' } })
+    fireEvent.change(inputs[1], { target: { value: 'https://mcp.example.com/mcp' } })
+    fireEvent.change(screen.getByPlaceholderText(/Authorization: Bearer/), {
+      target: { value: 'NoColonHere' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '添加' }))
+    expect(await screen.findByText(/请求头行格式错误/)).not.toBeNull()
+    expect(mcpAdd).not.toHaveBeenCalled()
   })
 
   it('args 空格分割 / JSON 数组 / env 解析后提交', async () => {
@@ -464,9 +529,12 @@ describe('McpPanel — 调用工具 / 读取资源', () => {
 
   it('调用工具成功 → transport.mcpCall + 结果预览', async () => {
     setStore({
+      sessionId: 'sess-1',
       mcpServers: [{ name: 'fs', status: 'ready' }],
     })
-    mcpList.mockResolvedValue([{ name: 'fs', enabled: true, tools } as McpListServer])
+    mcpList.mockResolvedValue([
+      { name: 'fs', enabled: true, tools, url: 'https://mcp.example.com/mcp' } as McpListServer,
+    ])
     const args = await openCallForm()
     fireEvent.change(args, { target: { value: '{"path":"/tmp/x"}' } })
     fireEvent.click(screen.getByRole('button', { name: /^调用$/ }))
@@ -474,6 +542,8 @@ describe('McpPanel — 调用工具 / 读取资源', () => {
       expect(h.transport.mcpCall).toHaveBeenCalledWith({
         server: 'fs',
         tool: 'read',
+        sessionId: 'sess-1',
+        serverUrl: 'https://mcp.example.com/mcp',
         args: { path: '/tmp/x' },
       }),
     )
@@ -502,7 +572,7 @@ describe('McpPanel — 调用工具 / 读取资源', () => {
   })
 
   it('读取资源成功/校验', async () => {
-    setStore({ mcpServers: [{ name: 'fs', status: 'ready' }] })
+    setStore({ sessionId: 'sess-1', mcpServers: [{ name: 'fs', status: 'ready' }] })
     mcpList.mockResolvedValue([{ name: 'fs', enabled: true } as McpListServer])
     renderPanel()
     fireEvent.click(screen.getByRole('button', { name: '读取资源' }))
@@ -516,6 +586,7 @@ describe('McpPanel — 调用工具 / 读取资源', () => {
       expect(h.transport.mcpReadResource).toHaveBeenCalledWith({
         server: 'fs',
         uri: 'file:///a',
+        sessionId: 'sess-1',
       }),
     )
     expect(await screen.findByText('file body')).not.toBeNull()

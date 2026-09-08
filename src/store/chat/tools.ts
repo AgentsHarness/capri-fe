@@ -132,6 +132,19 @@ export function isBgExecuteTool(tc: ToolCall): boolean {
   return bg === true
 }
 
+/** Agent stamps direct-bash (`!`) execute calls with this id prefix. */
+export const BASH_MODE_TOOL_ID_PREFIX = 'bash-mode-'
+
+/** TUI bash_mode: direct-bash execute block (Composer `!` shell mode). */
+export function isBashModeTool(tc: ToolCall): boolean {
+  const meta = (tc._meta ?? (tc as { meta?: unknown }).meta) as
+    | { bash_mode?: unknown }
+    | undefined
+  if (meta?.bash_mode === true) return true
+  const id = toolCallIdOf(tc)
+  return !!id && id.startsWith(BASH_MODE_TOOL_ID_PREFIX)
+}
+
 /** TUI is_task_tool — subagent spawn (SubagentBlock owns the row). */
 export function isTaskSpawnTool(tc: ToolCall): boolean {
   const title = toolTitle(tc)
@@ -290,15 +303,33 @@ export function isOrphanBashStreamUpdate(tc: ToolCall): boolean {
   if (!bash) return false
   // Full tool_call with is_background is handled by isBgExecuteTool.
   if (isBgExecuteTool(tc)) return true
+  // Composer `!` completions reuse the orphan-looking shape (no title/kind,
+  // often truncated:true) but belong on the execute row, not a bg_task.
+  if (isBashModeTool(tc)) return false
   const title = toolTitle(tc)
   const kind = tc.kind
   // Typical orphan shape: no title, no kind, status in_progress, Bash body.
   if (!title && (kind == null || kind === '' || String(kind).toLowerCase() === 'other')) {
     return true
   }
-  // Truncated long-running stream (background servers).
-  if (bash.truncated === true || bash.truncated === 'True') return true
   return false
+}
+
+/** Decode Bash `output` / `output_delta` (UTF-8 string or JSON byte array). */
+export function decodeBashBytes(v: unknown): string | undefined {
+  if (typeof v === 'string') return v && v !== '[]' ? v : undefined
+  if (Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === 'number')) {
+    try {
+      return new TextDecoder().decode(Uint8Array.from(v as number[]))
+    } catch {
+      return undefined
+    }
+  }
+  return undefined
+}
+
+function bashFieldTruncated(v: unknown): boolean {
+  return v === true || v === 'True' || v === 'true'
 }
 
 /** Pull human-readable stdout from a Bash rawOutput object. */
@@ -309,10 +340,105 @@ export function bashOutputText(bash: Record<string, unknown>): string | undefine
   if (typeof bash.outputForPrompt === 'string' && bash.outputForPrompt) {
     return bash.outputForPrompt
   }
-  if (typeof bash.output === 'string' && bash.output && bash.output !== '[]') {
-    return bash.output
+  return decodeBashBytes(bash.output) ?? decodeBashBytes(bash.stdout)
+}
+
+/**
+ * Merge a live/replay tool_call_update onto the existing call.
+ *
+ * Same field-precedence as TUI `merge_tool_call_update`, plus bash stdout:
+ * - `output_delta` appends (empty delta = reset);
+ * - a later `truncated` summary must not clobber a longer streamed buffer
+ *   (`!` bash_mode: terminal sends the full buffer, then agent restates the
+ *   last 10 lines with `... (N lines)`).
+ */
+export function mergeToolCall(base: ToolCall, update: ToolCall): ToolCall {
+  const merged: ToolCall = { ...base, ...update }
+  const baseMeta = base._meta
+  const updateMeta = update._meta
+  if (
+    baseMeta &&
+    typeof baseMeta === 'object' &&
+    !Array.isArray(baseMeta) &&
+    updateMeta &&
+    typeof updateMeta === 'object' &&
+    !Array.isArray(updateMeta)
+  ) {
+    merged._meta = { ...baseMeta, ...updateMeta }
+  } else if (baseMeta && updateMeta == null) {
+    merged._meta = baseMeta
   }
-  return undefined
+  if (base.rawInput && update.rawInput == null) {
+    merged.rawInput = base.rawInput
+  }
+  if ('rawOutput' in update || 'raw_output' in update) {
+    merged.rawOutput = mergeBashRawOutput(toolRawOutput(base), toolRawOutput(update))
+  }
+  return merged
+}
+
+function mergeBashRawOutput(prev: unknown, next: unknown): unknown {
+  if (next == null) return prev
+  if (prev == null) return next
+  const prevBash = bashShape(prev)
+  const nextBash = bashShape(next)
+  if (!prevBash || !nextBash) return next
+
+  const delta = nextBash.output_delta ?? nextBash.outputDelta
+  if (delta != null) {
+    const prevText = decodeBashBytes(prevBash.output) ?? decodeBashBytes(prevBash.stdout) ?? ''
+    if (Array.isArray(delta) && delta.length === 0) {
+      return { ...prevBash, ...nextBash, output: '', output_delta: undefined }
+    }
+    const deltaText = decodeBashBytes(delta) ?? ''
+    const combined = prevText + deltaText
+    return {
+      ...prevBash,
+      ...nextBash,
+      output: combined,
+      output_delta: undefined,
+      truncated: false,
+    }
+  }
+
+  const prevText =
+    decodeBashBytes(prevBash.output) ?? decodeBashBytes(prevBash.stdout) ?? ''
+  const nextText = decodeBashBytes(nextBash.output) ?? ''
+  const nextTrunc = bashFieldTruncated(nextBash.truncated)
+  const prevTrunc = bashFieldTruncated(prevBash.truncated)
+  const nextIsTailSummary = /^\.\.\. \(\d+ lines\)\n/.test(nextText)
+  const prevIsTailSummary = /^\.\.\. \(\d+ lines\)\n/.test(prevText)
+  // Agent bash_mode restates the last 10 lines after the terminal already
+  // sent the full buffer. The summary can be *longer* than short commands
+  // (it prefixes `... (N lines)`), so compare truncation/shape, not length.
+  if (
+    prevText &&
+    ((nextTrunc && !prevTrunc) || (nextIsTailSummary && !prevIsTailSummary))
+  ) {
+    return {
+      ...nextBash,
+      output: prevBash.output,
+      output_for_prompt:
+        typeof prevBash.output_for_prompt === 'string'
+          ? prevBash.output_for_prompt
+          : nextBash.output_for_prompt,
+      truncated: false,
+      total_bytes: prevBash.total_bytes ?? prevText.length,
+    }
+  }
+  return next
+}
+
+function bashShape(ro: unknown): Record<string, unknown> | null {
+  if (!ro || typeof ro !== 'object' || Array.isArray(ro)) return null
+  const obj = ro as Record<string, unknown>
+  const t = obj.type
+  if (t === 'Bash' || t === 'bash') return obj
+  const nested = obj.Bash ?? obj.bash
+  if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+    return nested as Record<string, unknown>
+  }
+  return null
 }
 
 /**
