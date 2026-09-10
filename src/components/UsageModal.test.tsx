@@ -153,6 +153,86 @@ describe('UsageModal', () => {
     expect(Math.abs(fromArg - expected)).toBeLessThan(60)
   })
 
+  it('自定窗口 → 默认最近 30 天，可改起止日期后查询', async () => {
+    billingMock.mockResolvedValue({})
+    usageMock.mockResolvedValue({ total: { totalTokens: 2 } })
+    render(<UsageModal />)
+    await screen.findByText('2')
+
+    fireEvent.click(screen.getByRole('button', { name: '自定' }))
+    await waitFor(() => expect(usageMock).toHaveBeenCalledTimes(2))
+    // 默认区间：结束日 = 今天，起始日 ≈ 30 天前。
+    const first = usageMock.mock.calls[1][0] as { from?: number; to?: number }
+    const now = Date.now()
+    expect(Math.abs((first.to as number) - Math.floor(now / 1000))).toBeLessThan(86400)
+    expect(Math.abs((first.from as number) - Math.floor((now - 30 * 86400_000) / 1000))).toBeLessThan(86400)
+
+    // 改起始日再查询 → from 落在该日零点，to 覆盖结束日全天。
+    fireEvent.change(screen.getByLabelText('起始日期'), { target: { value: '2026-08-01' } })
+    fireEvent.change(screen.getByLabelText('结束日期'), { target: { value: '2026-08-07' } })
+    fireEvent.click(screen.getByRole('button', { name: '查询' }))
+    await waitFor(() => expect(usageMock).toHaveBeenCalledTimes(3))
+    const custom = usageMock.mock.calls[2][0] as { from: number; to: number }
+    expect(custom.from).toBe(Math.floor(new Date('2026-08-01T00:00:00').getTime() / 1000))
+    // 结束日含全天：+86400-1 秒。
+    expect(custom.to).toBe(Math.floor(new Date('2026-08-07T00:00:00').getTime() / 1000) + 86399)
+  })
+
+  it('自定窗口下点刷新 → 仍按当前区间重拉，不退化成全量', async () => {
+    billingMock.mockResolvedValue({})
+    usageMock.mockResolvedValue({ total: { totalTokens: 3 } })
+    render(<UsageModal />)
+    await screen.findByText('3')
+    fireEvent.click(screen.getByRole('button', { name: '自定' }))
+    await waitFor(() => expect(usageMock).toHaveBeenCalledTimes(2))
+
+    fireEvent.click(screen.getByRole('button', { name: '刷新' }))
+    await waitFor(() => expect(usageMock).toHaveBeenCalledTimes(3))
+    const refreshed = usageMock.mock.calls[2][0] as { from?: number; to?: number }
+    expect(refreshed.from).toBeDefined()
+    expect(refreshed.to).toBeDefined()
+    expect(refreshed.from).toBe(usageMock.mock.calls[1][0]?.from)
+  })
+
+  it('覆盖区间 → 如实标注数据实际来源时间', async () => {
+    billingMock.mockResolvedValue({})
+    // 覆盖起点落在 30 天前 → 视为清理边界，提示旧数据已被删除。
+    const nowSec = Math.floor(Date.now() / 1000)
+    const coverageFrom = nowSec - 30 * 86400
+    usageMock.mockResolvedValue({
+      total: { totalTokens: 5 },
+      coverageFrom,
+      coverageTo: nowSec,
+    })
+    render(<UsageModal />)
+    await screen.findByText('5')
+    const day = (sec: number) => {
+      const d = new Date(sec * 1000)
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    }
+    const line = await screen.findByText(new RegExp(day(coverageFrom)))
+    expect(line.textContent).toContain(day(nowSec))
+    expect(line.textContent).toContain('30 天清理')
+  })
+
+  it('覆盖区间 → 数据本来就短时不谎称被清理', async () => {
+    billingMock.mockResolvedValue({})
+    const nowSec = Math.floor(Date.now() / 1000)
+    usageMock.mockResolvedValue({
+      total: { totalTokens: 6 },
+      coverageFrom: nowSec - 3 * 86400,
+      coverageTo: nowSec,
+    })
+    render(<UsageModal />)
+    await screen.findByText('6')
+    const day = (sec: number) => {
+      const d = new Date(sec * 1000)
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    }
+    const line = await screen.findByText(new RegExp(day(nowSec - 3 * 86400)))
+    expect(line.textContent).not.toContain('30 天清理')
+  })
+
   it('刷新按钮 → 同时重拉 billing + usage', async () => {
     billingMock.mockResolvedValue({})
     usageMock.mockResolvedValue({ total: { totalTokens: 7 } })
