@@ -69,6 +69,13 @@ export type TokenUsageStat = {
 export type UsageReportData = {
   from?: number
   to?: number
+  /**
+   * 本次聚合实际覆盖到的数据区间（unix 秒）——统计到的回合里最早/最晚的
+   * 事件时刻。与 from/to 不同：窗口是「要的范围」，覆盖是「数据实际到哪」。
+   * 旧宿主不返回该字段。
+   */
+  coverageFrom?: number
+  coverageTo?: number
   /** 覆盖的会话数（有窗口内事件的 updates.jsonl 文件数）。 */
   sessions?: number
   total?: TokenUsageStat

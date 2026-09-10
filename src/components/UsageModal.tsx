@@ -28,6 +28,8 @@ export function UsageModal() {
 
   // ── usage-report 聚合 ─────────────────────────────────────────────
   const [windowKey, setWindowKey] = useState<WindowKey>('all')
+  const [customFrom, setCustomFrom] = useState('')
+  const [customTo, setCustomTo] = useState('')
   const [usage, setUsage] = useState<UsageReportData>()
   const [usageLoading, setUsageLoading] = useState(false)
   const [usageError, setUsageError] = useState<string>()
@@ -45,13 +47,18 @@ export function UsageModal() {
     }
   }, [])
 
-  const fetchUsage = useCallback(async (win: WindowKey) => {
+  const fetchUsage = useCallback(async (win: WindowKey, custom?: CustomRange) => {
     const seq = ++reqSeq.current
     setUsageLoading(true)
     setUsageError(undefined)
     try {
-      const opts: { from?: number } = {}
-      if (win !== 'all') opts.from = Math.floor(Date.now() / 1000) - WINDOW_SECONDS[win]
+      const opts: { from?: number; to?: number } = {}
+      if (win === 'custom') {
+        if (custom?.from) opts.from = custom.from
+        if (custom?.to) opts.to = custom.to
+      } else if (win !== 'all') {
+        opts.from = Math.floor(Date.now() / 1000) - WINDOW_SECONDS[win]
+      }
       const r = await transport.usageReport(opts)
       if (seq === reqSeq.current) setUsage(r)
     } catch (e) {
@@ -88,8 +95,27 @@ export function UsageModal() {
 
   const switchWindow = (key: WindowKey) => {
     setWindowKey(key)
+    if (key === 'custom') {
+      const now = Date.now()
+      const from = customFrom || toDateInput(now - 30 * 24 * 3600 * 1000)
+      const to = customTo || toDateInput(now)
+      setCustomFrom(from)
+      setCustomTo(to)
+      void fetchUsage(key, { from: dateInputToSec(from), to: endOfDaySec(to) })
+      return
+    }
     void fetchUsage(key)
   }
+
+  // refetchCurrent 按当前窗口重拉：自定窗口要带上输入框里的区间，否则刷新/
+  // 重试会退化成「全量」，与界面上显示的窗口不一致。
+  const refetchCurrent = useCallback(() => {
+    if (windowKey === 'custom') {
+      void fetchUsage('custom', { from: dateInputToSec(customFrom), to: endOfDaySec(customTo) })
+      return
+    }
+    void fetchUsage(windowKey)
+  }, [windowKey, customFrom, customTo, fetchUsage])
 
   if (!open) return null
 
@@ -122,7 +148,7 @@ export function UsageModal() {
             type="button"
             onClick={() => {
               void fetchBilling()
-              void fetchUsage(windowKey)
+              refetchCurrent()
             }}
             disabled={billingLoading || usageLoading}
             className="ml-auto rounded px-2 py-0.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
@@ -168,7 +194,7 @@ export function UsageModal() {
             hint={`rewind 分支照常计入`}
           >
             {/* 时间窗口 segmented control */}
-            <div className="flex items-center gap-1 px-4 pt-3">
+            <div className="flex flex-wrap items-center gap-1 px-4 pt-3">
               <span className="mr-1 text-[10px] uppercase tracking-wider text-gn-gutter">窗口</span>
               {WINDOWS.map((w) => (
                 <button
@@ -186,6 +212,52 @@ export function UsageModal() {
               </span>
             </div>
 
+            {/* 自定义区间：任意起止日期（宿主按事件时刻过滤，不受会话清理期限影响） */}
+            {windowKey === 'custom' && (
+              <div className="flex flex-wrap items-center gap-2 px-4 pt-2">
+                <input
+                  type="date"
+                  value={customFrom}
+                  max={customTo || undefined}
+                  disabled={usageLoading}
+                  onChange={(e) => setCustomFrom(e.target.value)}
+                  className="rounded border border-gn-prompt-border bg-gn-bg px-1.5 py-0.5 text-[11px] text-gn-fg disabled:opacity-50"
+                  aria-label="起始日期"
+                />
+                <span className="text-[11px] text-gn-muted">~</span>
+                <input
+                  type="date"
+                  value={customTo}
+                  min={customFrom || undefined}
+                  disabled={usageLoading}
+                  onChange={(e) => setCustomTo(e.target.value)}
+                  className="rounded border border-gn-prompt-border bg-gn-bg px-1.5 py-0.5 text-[11px] text-gn-fg disabled:opacity-50"
+                  aria-label="结束日期"
+                />
+                <button
+                  type="button"
+                  disabled={usageLoading || !customFrom}
+                  onClick={() => void fetchUsage('custom', { from: dateInputToSec(customFrom), to: endOfDaySec(customTo) })}
+                  className="rounded px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
+                >
+                  查询
+                </button>
+              </div>
+            )}
+
+            {/* 覆盖区间：窗口是「要的范围」，覆盖是「数据实际到哪」。台账之前的
+                版本里两者都会被 agent 的 30 天会话清理截断，"全部"因此名不副实，
+                这里如实标注让数字可被正确解读。 */}
+            {usage && usage.coverageFrom ? (
+              <div className="px-4 pt-1.5 text-[10px] text-gn-gutter">
+                数据覆盖 {fmtDay(usage.coverageFrom)}
+                {usage.coverageTo ? ` ~ ${fmtDay(usage.coverageTo)}` : ''}
+                {isCleanupBoundary(usage.coverageFrom)
+                  ? '（更早的会话文件已被 agent 的 30 天清理删除）'
+                  : ''}
+              </div>
+            ) : null}
+
             {usageLoading && !usage ? (
               <div className="px-4 py-6 text-center text-[12px] text-gn-muted">加载中…</div>
             ) : usageError ? (
@@ -193,7 +265,7 @@ export function UsageModal() {
                 <div className="text-[12px] text-gn-red">{usageError}</div>
                 <button
                   type="button"
-                  onClick={() => void fetchUsage(windowKey)}
+                  onClick={refetchCurrent}
                   className="mt-2 rounded px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
                 >
                   重试
@@ -266,7 +338,7 @@ export function UsageModal() {
   )
 }
 
-const WINDOW_SECONDS: Record<Exclude<WindowKey, 'all'>, number> = {
+const WINDOW_SECONDS: Record<Exclude<WindowKey, 'all' | 'custom'>, number> = {
   '24h': 24 * 3600,
   '7d': 7 * 24 * 3600,
   '30d': 30 * 24 * 3600,
@@ -277,9 +349,50 @@ const WINDOWS = [
   { key: '24h', label: '24h' },
   { key: '7d', label: '7天' },
   { key: '30d', label: '30天' },
+  { key: 'custom', label: '自定' },
 ] as const
 
 type WindowKey = (typeof WINDOWS)[number]['key']
+
+/** 自定义区间（unix 秒；缺省端由宿主按「无下限 / 当前时刻」处理）。 */
+type CustomRange = { from?: number; to?: number }
+
+/** Date → `<input type="date">` 要的 YYYY-MM-DD（本地时区）。 */
+function toDateInput(ms: number): string {
+  const d = new Date(ms)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
+/** YYYY-MM-DD（本地零点）→ unix 秒；空串/非法 → undefined。 */
+function dateInputToSec(v: string): number | undefined {
+  if (!v) return undefined
+  const ms = new Date(`${v}T00:00:00`).getTime()
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined
+}
+
+/** YYYY-MM-DD 的当天末尾（本地 23:59:59）→ unix 秒，让区间含结束日全天。 */
+function endOfDaySec(v: string): number | undefined {
+  const start = dateInputToSec(v)
+  return start == null ? undefined : start + 86400 - 1
+}
+
+/** unix 秒 → "YYYY-MM-DD"（覆盖区间标注用）。 */
+function fmtDay(sec: number): string {
+  return toDateInput(sec * 1000)
+}
+
+/**
+ * 最早的用量数据是否正好卡在 agent 的 30 天清理边界上（29~31 天前）。
+ *
+ * 这是「旧数据被清理过」的可观测特征：数据起点落在清理期限附近，而不是
+ * 恰好等于用户开始使用的日期。命中才提示清理，避免在数据本来就只这么长
+ * 的情况下编造「已被删除」——那种说法无法从响应里证实。
+ */
+function isCleanupBoundary(coverageFromSec: number): boolean {
+  const ageDays = (Date.now() / 1000 - coverageFromSec) / 86400
+  return ageDays >= 29 && ageDays <= 31
+}
 
 /** 区块容器：标题行 + 内容。 */
 function Section({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
