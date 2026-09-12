@@ -3,7 +3,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import type { ScrollEntry, ToolCall } from '../api/types'
 import { useChatStore } from '../store/chat'
 import { fillAllLiteTurns } from '../store/chat/historyFill'
-import { LiteFillChip, McpChip, RunningTasksBar } from './StatusChips'
+import { ContextChip, LiteFillChip, McpChip, RunningTasksBar, SessionCostChip } from './StatusChips'
 import { WorkspaceBar } from './TopBar'
 import { SPINNER_FRAMES } from '../theme/glyphs'
 
@@ -188,7 +188,6 @@ describe('McpChip', () => {
     const { container } = render(<McpChip onOpen={vi.fn()} />)
     expect(container).toBeEmptyDOMElement()
   })
-
   it('渲染 inline-flex 单行纯文本排版与已连接计数', () => {
     const onOpen = vi.fn()
     useChatStore.setState({
@@ -205,6 +204,40 @@ describe('McpChip', () => {
     expect(btn.textContent).toBe('MCP(1/2)')
     fireEvent.click(btn)
     expect(onOpen).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('ContextChip', () => {
+  it('agent 自报百分比优先于 used/size 推算（size 可能是模型目录猜测值）', () => {
+    render(<ContextChip used={100} size={1000} agentPct={42} thresholdPct={85} />)
+    const chip = screen.getByTitle(/上下文 42% \(100 \/ 1.0K\) · 自动压缩阈值 85%/)
+    expect(chip.textContent).toBe('100/1.0K')
+  })
+
+  it('无自报百分比时按 used/size 推算', () => {
+    render(<ContextChip used={500} size={1000} />)
+    expect(screen.getByTitle(/上下文 50% \(500 \/ 1.0K\)/)).toBeInTheDocument()
+  })
+})
+
+describe('SessionCostChip', () => {
+  it('无快照 / 费用低于 $0.005 → 不渲染（TUI status-line cost 阈值）', () => {
+    useChatStore.setState({ sessionStatus: undefined })
+    const { container } = render(<SessionCostChip />)
+    expect(container).toBeEmptyDOMElement()
+
+    useChatStore.setState({ sessionStatus: { totalCostUsd: 0.001 } })
+    const low = render(<SessionCostChip />)
+    expect(low.container).toBeEmptyDOMElement()
+  })
+
+  it('渲染四位小数费用，tooltip 带 attach 起的墙钟', () => {
+    useChatStore.setState({
+      sessionStatus: { totalCostUsd: 0.1234, totalDurationMs: 83_000 },
+    })
+    render(<SessionCostChip />)
+    const chip = screen.getByTitle(/会话费用 \$0\.1234 · 已运行 1m/)
+    expect(chip.textContent).toBe('$0.1234')
   })
 })
 

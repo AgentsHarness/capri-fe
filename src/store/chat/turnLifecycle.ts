@@ -24,6 +24,29 @@ import { isBashBlocks, userRowText } from '../promptQueue'
 
 /** Selectable row ids in display order (entries + synthetic group headers). */
 export type StreamBufKind = 'thought' | 'assistant'
+
+/**
+ * 回合终态戳记（幂等盖章）。done / prompt_complete / turn_completed /
+ * cancelled 多载体都会收口同一回合，后到者不得抹掉先到者盖下的回合/流
+ * 身份——`rejectClosedTurnAgentOutput` 靠它放行下一个自动唤醒轮（kill
+ * 通知、子代理完成注入；触发提示是隐藏 system-reminder，不清这道守卫）。
+ * 没有新身份可用时保留旧值，最后写入的 endMs 只是时间参考。
+ */
+export function completedTurnStamp(
+  prev: ChatState['lastCompletedTurn'],
+  turnStartMs: number | undefined,
+  streamStartMs: number | undefined,
+  endMs: number | undefined,
+): ChatState['lastCompletedTurn'] {
+  return {
+    ...(prev?.turnStartMs != null ? { turnStartMs: prev.turnStartMs } : {}),
+    ...(prev?.streamStartMs != null ? { streamStartMs: prev.streamStartMs } : {}),
+    ...(turnStartMs != null ? { turnStartMs } : {}),
+    ...(streamStartMs != null ? { streamStartMs } : {}),
+    ...(endMs != null ? { endMs } : {}),
+  }
+}
+
 export function finalizeTurn(
   set: SetState,
   get: () => ChatState,
@@ -99,14 +122,19 @@ export function finalizeTurn(
       awaitingNext: true,
       openAssistantId: undefined,
       openThoughtId: undefined,
+      runningHook: null,
       currentStreamStartMs: undefined,
-      lastCompletedTurn: {
-        ...(turnStart != null ? { turnStartMs: turnStart } : {}),
-        ...(s.currentStreamStartMs != null
-          ? { streamStartMs: s.currentStreamStartMs }
-          : {}),
-        endMs: Date.now(),
-      },
+      // 幂等收尾：三个终态载体都会收口同一回合，第二次进来时锚点
+      // （turnStartedAt / currentStreamStartMs）已被第一次清空——照常
+      // 重写会抹掉已盖的 turnStartMs/streamStartMs，随后
+      // rejectClosedTurnAgentOutput 会把下一个自动唤醒轮的 thought/正文
+      // 当成"上一回合的迟到输出"整轮丢掉（只剩工具行和标记）。
+      lastCompletedTurn: completedTurnStamp(
+        s.lastCompletedTurn,
+        turnStart,
+        s.currentStreamStartMs,
+        Date.now(),
+      ),
       turnStartedAt: undefined,
       currentPromptId: undefined,
       // Turn end: the host resolved every outstanding permission request

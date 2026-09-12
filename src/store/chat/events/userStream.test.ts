@@ -33,6 +33,36 @@ const rendered = (s: ChatState, e: ScrollEntry): string =>
   ('text' in e ? e.text : '') +
   (s.liveStream?.entryId === e.id ? s.liveStream.text : '')
 
+describe('userStream — runningHook 释放', () => {
+  const hookState = {
+    eventName: 'pre_tool_use',
+    toolName: 'bash',
+    count: 1,
+  }
+
+  it('首个回答 chunk 解除 hook 等待态', () => {
+    const { set, get, state } = makeStore({ sessionId: 's1', runningHook: hookState })
+    handleUserStreamEvent(set, get, chunk('hi'))
+    expect(state().runningHook).toBeNull()
+  })
+
+  it('首个思考 chunk 同样解除', () => {
+    const { set, get, state } = makeStore({ sessionId: 's1', runningHook: hookState })
+    handleUserStreamEvent(set, get, thought('hmm'))
+    expect(state().runningHook).toBeNull()
+  })
+
+  it('外来会话的输出不解除本会话等待态', () => {
+    const { set, get, state } = makeStore({ sessionId: 's1', runningHook: hookState })
+    handleUserStreamEvent(set, get, {
+      type: 'chunk',
+      text: 'other',
+      sessionId: 'other',
+    } as AcpEvent)
+    expect(state().runningHook).toEqual(hookState)
+  })
+})
+
 describe('userStream — 同流 thinking → answer 切换', () => {
   it('回答首包视觉收口思考：streaming=false、elapsed 冻结、指针保留', () => {
     const { set, get, state } = makeStore({ sessionId: 's1' })
@@ -162,5 +192,64 @@ describe('userStream — user_message 回放 / 注入', () => {
     handleUserStreamEvent(set, get, { type: 'user_message', text: '普通提问', ts: 1 })
     expect(state().entries[0]).toMatchObject({ kind: 'user', text: '普通提问' })
     expect((state().entries[0] as { isShell?: boolean }).isShell).toBeUndefined()
+  })
+})
+
+/**
+ * 已收口回合的输出守卫：自动唤醒轮（kill 通知 / 子代理完成注入）的触发
+ * 提示是隐藏 system-reminder，按设计不清 lastCompletedTurn，只能靠流/回合
+ * 身份比对放行。放行失败时 thought/chunk 整轮被丢、只剩工具行与回合标记
+ * （直播看不到、重放又正常）。
+ */
+describe('userStream — 已收口回合守卫（自动唤醒轮直播）', () => {
+  const closed = (lastCompletedTurn: Record<string, unknown>) => ({
+    sessionId: 's1',
+    conn: 'ready' as const,
+    awaitingNext: true,
+    liveStream: null,
+    lastCompletedTurn,
+  })
+
+  it('同一已收口流的迟到输出仍丢弃', () => {
+    const { set, get, state } = makeStore(closed({ turnStartMs: 500, streamStartMs: 1000, endMs: 2000 }))
+    handleUserStreamEvent(set, get, chunk('迟到正文', 1000))
+    expect(assistantOf(state())).toBeUndefined()
+    expect(state().liveStream).toBeNull()
+  })
+
+  it('唤醒轮（流起点不同）放行：思考与正文都渲染，并退掉旧守卫', () => {
+    const { set, get, state } = makeStore(closed({ turnStartMs: 500, streamStartMs: 1000, endMs: 2000 }))
+    handleUserStreamEvent(set, get, thought('唤醒思考', 3000))
+    handleUserStreamEvent(set, get, chunk('唤醒正文', 3000))
+    expect(rendered(state(), thoughtOf(state())!)).toContain('唤醒思考')
+    const a = assistantOf(state())
+    expect(a).toBeDefined()
+    expect(rendered(state(), a!)).toBe('唤醒正文')
+    expect(state().lastCompletedTurn).toBeUndefined()
+  })
+
+  it('戳记只剩回合身份（streamStartMs 被重复收尾抹掉）→ 用 turnStartMs 判新回合放行', () => {
+    const { set, get, state } = makeStore(closed({ turnStartMs: 500, endMs: 2000 }))
+    handleUserStreamEvent(set, get, {
+      type: 'thought',
+      text: '唤醒思考',
+      streamStartMs: 3000,
+      turnStartMs: 600,
+    } as AcpEvent)
+    handleUserStreamEvent(set, get, {
+      type: 'chunk',
+      text: '唤醒正文',
+      streamStartMs: 3000,
+      turnStartMs: 600,
+    } as AcpEvent)
+    const a = assistantOf(state())
+    expect(a).toBeDefined()
+    expect(rendered(state(), a!)).toBe('唤醒正文')
+  })
+
+  it('身份不可比（无流也无回合戳）时保守丢弃', () => {
+    const { set, get, state } = makeStore(closed({ endMs: 2000 }))
+    handleUserStreamEvent(set, get, chunk('迟到正文', 3000))
+    expect(assistantOf(state())).toBeUndefined()
   })
 })

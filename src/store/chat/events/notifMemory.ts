@@ -1,6 +1,7 @@
 import type { ChatState, SetState } from '../types'
 import type { WireEvent } from './wire'
 import { appendEntry } from '../entries'
+import { applyModelIdentity, applySessionTitle } from '../sessionIdentity'
 export function handleNotifMemory(
   set: SetState,
   get: () => ChatState,
@@ -237,20 +238,17 @@ export function handleNotifMemory(
             break
           }
           // ── session title ────────────────────────────────────────────
-          case 'session_summary_generated': {
-            const title =
-              typeof fields.session_summary === 'string'
-                ? fields.session_summary.trim()
-                : ''
-            if (title) set({ sessionTitle: title })
+          case 'session_summary_generated':
+            // 标题写入收敛到唯一入口（sessionIdentity.ts，与 session_info /
+            // session_info_update 共用同一套覆盖规则）。
+            applySessionTitle(set, get, fields.session_summary)
             break
-          }
           // ── model switches (TUI ModelUnavailable block / remote switch) ─
           case 'model_auto_switched': {
             const prev = String(fields.previous_model_id ?? '')
             const next = String(fields.new_model_id ?? '')
             const reason = String(fields.reason ?? '')
-            set({ modelName: next || undefined })
+            applyModelIdentity(set, get, { name: next })
             appendEntry(set, {
               kind: 'session_event',
               text: `模型 ${prev} 不可用，已切换为 ${next}${reason ? `（${reason}）` : ''}`,

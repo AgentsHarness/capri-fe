@@ -851,6 +851,54 @@ function SubagentView({
           prompt={entry.title && entry.title !== entry.subagentId ? entry.title : ''}
         />
       )}
+
+      {/* 底部简易 composer：仅输入框无其他组件，向子代理发送消息 */}
+      <SubagentComposer
+        agentAddress={entry.subagentId || entry.childSessionId || ''}
+        disabled={!entry.running}
+      />
+    </div>
+  )
+}
+
+function SubagentComposer({
+  agentAddress,
+  disabled,
+}: {
+  agentAddress: string
+  disabled?: boolean
+}) {
+  const [text, setText] = useState('')
+  const [sending, setSending] = useState(false)
+  const sendSubagentMessage = useChatStore((s) => s.sendSubagentMessage)
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      const trimmed = text.trim()
+      if (!trimmed || sending || !agentAddress) return
+      setSending(true)
+      sendSubagentMessage(agentAddress, trimmed)
+        .then(() => {
+          setText('')
+        })
+        .finally(() => {
+          setSending(false)
+        })
+    }
+  }
+
+  return (
+    <div className="shrink-0 border-t border-gn-border bg-gn-bg-primary px-3 py-2 sm:px-4">
+      <input
+        type="text"
+        className="w-full rounded border border-gn-border bg-gn-bg-input px-3 py-1.5 font-mono text-[13px] text-gn-text placeholder:text-gn-gutter focus:border-gn-blue focus:outline-none disabled:opacity-50"
+        placeholder={disabled ? '子代理已结束' : '向子代理发送消息… (Enter 发送)'}
+        value={text}
+        disabled={disabled || sending || !agentAddress}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={handleKeyDown}
+      />
     </div>
   )
 }

@@ -13,13 +13,14 @@ import { handleSubagentEvent } from '../subagent'
 import {
   handleTaskBackgrounded,
   handleTaskCompleted,
+  handleBackgroundTasks,
 } from '../tasks'
 import { wireTaskId } from '../util'
 
 export function handleNotifCore(
   set: SetState,
   get: () => ChatState,
-  ev: WireEvent,
+  _ev: WireEvent,
   tag: string,
   fields: Record<string, unknown>,
 ): boolean {
@@ -41,14 +42,17 @@ export function handleNotifCore(
             applyModeFlags(set, fields)
             break
           case 'current_mode_update': {
-            // 多会话广播守卫：非当前会话的 plan 状态快照不应用。
-            if (ev.sessionId && ev.sessionId !== get().sessionId) break
+            // 多会话归属已由分发层统一处理（events/sessionNotif.ts）。
             const flags = sessionModesPatch(get, fields)
             if (flags) set(flags)
             break
           }
           case 'task_backgrounded':
             handleTaskBackgrounded(get, set, fields)
+            break
+          case 'background_tasks':
+            // 多会话归属已由分发层统一处理（events/sessionNotif.ts）。
+            handleBackgroundTasks(get, set, fields)
             break
           case 'task_completed':
             handleTaskCompleted(get, set, fields)

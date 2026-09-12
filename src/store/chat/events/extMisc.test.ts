@@ -150,63 +150,6 @@ describe('handleExtMiscEvent — models_update', () => {
   })
 })
 
-describe('handleExtMiscEvent — scheduled_task_deleted 跨会话同步', () => {
-  it('其他会话删除定时任务：本会话任务列表能成功移除该任务，且不污染本会话滚动区提示行', () => {
-    const task = {
-      taskId: 'task-123',
-      prompt: 'do something',
-      interval: '1h',
-      status: 'active' as const,
-    }
-    const { set, get, state } = makeStore({
-      sessionId: 's1',
-      scheduledTasks: [task],
-      entries: [],
-    })
-
-    const ev: AcpEvent = {
-      type: 'scheduled_task_deleted',
-      sessionId: 'other-session',
-      taskId: 'task-123',
-      reason: 'deleted',
-    } as AcpEvent
-
-    handleExtMiscEvent(set, get, ev)
-
-    // 全局 scheduledTasks 必须被移除
-    expect(state().scheduledTasks).toEqual([])
-    // entries 不能插入非本会话的 session_event 提示行
-    expect(state().entries).toHaveLength(0)
-  })
-
-  it('当前会话删除定时任务：本会话任务列表移除，且生成可见的提示行', () => {
-    const task = {
-      taskId: 'task-123',
-      prompt: 'do something',
-      interval: '1h',
-      status: 'active' as const,
-    }
-    const { set, get, state } = makeStore({
-      sessionId: 's1',
-      scheduledTasks: [task],
-      entries: [],
-    })
-
-    const ev: AcpEvent = {
-      type: 'scheduled_task_deleted',
-      sessionId: 's1',
-      taskId: 'task-123',
-      reason: 'deleted',
-    } as AcpEvent
-
-    handleExtMiscEvent(set, get, ev)
-
-    expect(state().scheduledTasks).toEqual([])
-    expect(state().entries).toHaveLength(1)
-    expect(state().entries[0].kind).toBe('session_event')
-  })
-})
-
 describe('handleExtMiscEvent — model 与 session_rewound 跨会话同步', () => {
   it('非当前会话的 model 事件：更新侧边栏 workspaces 缓存中对应会话的 currentModelId', () => {
     const ws = [

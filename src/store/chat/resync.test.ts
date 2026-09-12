@@ -5,10 +5,11 @@ import type { ChatState } from './types'
 describe('handleResyncRebuild', () => {
   it('重建中（historyLoading）→ 忽略', () => {
     const loadHistory = vi.fn()
-    handleResyncRebuild(
+    const started = handleResyncRebuild(
       (() => ({ historyLoading: true, historyLoadingMore: false, sessionId: 's', cwd: '/w', loadHistory })) as unknown as () => ChatState,
     )
     expect(loadHistory).not.toHaveBeenCalled()
+    expect(started).toBe(false)
   })
 
   it('翻页中（historyLoadingMore）→ 忽略', () => {
@@ -21,13 +22,15 @@ describe('handleResyncRebuild', () => {
 
   it('无活动会话 / 无 cwd → 忽略', () => {
     const loadHistory = vi.fn()
-    handleResyncRebuild(
+    const a = handleResyncRebuild(
       (() => ({ historyLoading: false, historyLoadingMore: false, sessionId: undefined, cwd: undefined, loadHistory })) as unknown as () => ChatState,
     )
+    expect(a).toBe(false)
     expect(loadHistory).not.toHaveBeenCalled()
-    handleResyncRebuild(
+    const b = handleResyncRebuild(
       (() => ({ historyLoading: false, historyLoadingMore: false, sessionId: 's', cwd: undefined, loadHistory })) as unknown as () => ChatState,
     )
+    expect(b).toBe(false)
     expect(loadHistory).not.toHaveBeenCalled()
   })
 
@@ -48,7 +51,8 @@ describe('handleResyncRebuild', () => {
       detachedTasks: [],
       detachedHintKey: null,
     } as unknown as ChatState
-    handleResyncRebuild(() => state)
+    const started = handleResyncRebuild(() => state)
+    expect(started).toBe(true)
     expect(prefetchRunningTasks).toHaveBeenCalledWith('s1', '/w')
     expect(loadHistory).toHaveBeenCalledWith('s1', '/w', {
       awaitBeforeReplay: probeP,

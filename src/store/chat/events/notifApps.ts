@@ -2,6 +2,7 @@ import type { ChatState, SetState } from '../types'
 import type { WireEvent } from './wire'
 import { formatTurnDuration } from '../format'
 import {
+  busyPlausibleForView,
   tailAlreadyTurnEnded,
   wireElapsedMs,
 } from '../turn'
@@ -17,6 +18,45 @@ import {
   upsertScheduledTask,
 } from '../tasks'
 import { wireTaskId } from '../util'
+import { isForeignSession } from './wire'
+import { applyModelIdentity } from '../sessionIdentity'
+import type { SessionStatusSnapshot } from '../types'
+
+/** 非负有限数，其余（含负值 / NaN / 字符串）视为缺失。 */
+function nonNegNum(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined
+}
+
+function asObj(v: unknown): Record<string, unknown> | undefined {
+  return v && typeof v === 'object' && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : undefined
+}
+
+/**
+ * `session_status` 载荷解析：shell `StatusLineContext`（snake_case，
+ * xai-grok-status-line/src/context.rs）→ 展示子集。Grok 不能取值的字段
+ * 是 None 而不是 0，所以缺失一律 undefined，由消费端做回退。
+ */
+export function parseSessionStatus(fields: Record<string, unknown>): SessionStatusSnapshot | null {
+  const cw = asObj(fields.context_window)
+  const cost = asObj(fields.cost)
+  const contextTokens = nonNegNum(cw?.context_tokens)
+  const contextWindowSize = nonNegNum(cw?.context_window_size)
+  const usedPercent = nonNegNum(cw?.used_percentage)
+  const autoCompactThresholdPercent = nonNegNum(cw?.auto_compact_threshold_percent)
+  const totalCostUsd = nonNegNum(cost?.total_cost_usd)
+  const totalDurationMs = nonNegNum(cost?.total_duration_ms)
+  const snap: SessionStatusSnapshot = {
+    ...(contextTokens != null ? { contextTokens } : {}),
+    ...(contextWindowSize != null ? { contextWindowSize } : {}),
+    ...(usedPercent != null ? { usedPercent } : {}),
+    ...(autoCompactThresholdPercent != null ? { autoCompactThresholdPercent } : {}),
+    ...(totalCostUsd != null ? { totalCostUsd } : {}),
+    ...(totalDurationMs != null ? { totalDurationMs } : {}),
+  }
+  return Object.keys(snap).length > 0 ? snap : null
+}
 
 export function handleNotifApps(
   set: SetState,
@@ -27,14 +67,7 @@ export function handleNotifApps(
 ): boolean {
   switch (tag) {
           case 'model_changed': {
-            // 多会话广播：非当前会话的 model_changed 忽略（事件可能在
-            // 顶层或 params 携带 sessionId；`model` 事件同款守卫）。
-            const notifSid =
-              (ev as { sessionId?: string }).sessionId ??
-              (typeof ev.params?.sessionId === 'string'
-                ? ev.params.sessionId
-                : undefined)
-            if (notifSid && notifSid !== get().sessionId) break
+            // 多会话归属已由分发层统一处理（events/sessionNotif.ts）。
             // 会话切换中忽略：agent 的 session/load 会把持久化的模型 id
             // 映射到当前 catalog 键（如 deepseek-v4-flash →
             // deepseek-v4-flash-go）并广播新模型的默认 effort（如 low），
@@ -62,17 +95,11 @@ export function handleNotifApps(
             // Wire effort only for the new model's label: if the
             // broadcast omits it, the parens are dropped rather than
             // recycling the previous model's effort into the new one.
-            // The state update below also skips when the wire omits it
-            // (leaving reasoningEffort untouched — same as the old
-            // no-op fallback).
             const wireEffort =
               typeof effortRaw === 'string' && effortRaw.trim()
                 ? effortRaw.trim()
                 : undefined
-            set({
-              modelName: name,
-              ...(wireEffort ? { reasoningEffort: wireEffort } : {}),
-            })
+            const changed = applyModelIdentity(set, get, { name, effort: wireEffort })
             // A model_changed broadcast marks a switch point: print the
             // "模型已从 xx(effort) 切换到 xx(effort)" line. The echo of
             // our own optimistic setModel usually arrives after modelName
@@ -81,7 +108,7 @@ export function handleNotifApps(
             // setModel line already recorded it). The host never persists
             // model_changed, so replay shows switches via the
             // user_message_chunk modelId diff in replayUpdates instead.
-            if (prevName && prevName !== name) {
+            if (changed && prevName) {
               appendEntry(set, {
                 kind: 'session_event',
                 text: `模型已从 ${modelLabel(prevName, prevEffort)} 切换到 ${modelLabel(name, wireEffort)}`,
@@ -328,28 +355,20 @@ export function handleNotifApps(
           // rendered later as UserPromptBlock::cron from the inject's
           // UserMessageChunk. No session_event rows for create/fire;
           // delete 除外——每个删除原因都要有可见反馈（见下）。
-          // The same updates can ALSO arrive as standalone SSE events
-          // (scheduled_task_created/deleted/fired) — both paths land in
-          // the shared upsert/remove helpers keyed by taskId, so a task
-          // delivered twice is never duplicated.
+          // 两种载体（x.ai carrier 的 sessionUpdate 标签 / 宿主归一过的
+          // standalone SSE 事件）都由归一入口收敛到同一 fields 形状，
+          // 这里只注册一次。
           case 'scheduled_task_created':
             upsertScheduledTask(set, parseScheduledTask(fields))
             break
           case 'scheduled_task_deleted': {
-            // 多会话广播守卫（同 model_changed）：别的会话的删除事件
-            // 不得动本会话任务列表 / 滚动区。
-            const notifSid =
-              (ev as { sessionId?: string }).sessionId ??
-              (typeof ev.params?.sessionId === 'string'
-                ? ev.params.sessionId
-                : undefined)
-            if (notifSid && notifSid !== get().sessionId) break
             const inner = fields.task as Record<string, unknown> | undefined
             const id = wireTaskId(fields.task_id, fields.taskId, inner?.taskId)
             if (id) removeScheduledTask(set, id)
-            // 原因回退链：update 顶层 → params → task 内（宿主归一化
+            // 原因回退链：载荷顶层 → rawParams → task 内（宿主归一化
             // update.reason → params.reason → task.reason 同款）。
-            const reason = scheduledTaskDeleteReason(fields.reason, ev.params, inner)
+            const raw = fields.rawParams as Record<string, unknown> | undefined
+            const reason = scheduledTaskDeleteReason(fields.reason, raw, inner)
             appendEntry(set, {
               kind: 'session_event',
               text: scheduledTaskDeletedText(reason),
@@ -361,15 +380,52 @@ export function handleNotifApps(
             if (id) updateScheduledTaskFire(set, id, fields.next_fire_at ?? fields.nextFireAt)
             break
           }
+          // ── status line snapshot (shell StatusLineContext) ───────────
+          // 会话级状态行快照：send-only、不持久化，所以不做回放特判。
+          // 归属优先信载荷自带的 session_id（agent 写的真值），再看宿主
+          // 的 withSid 标记——快照被错标会把别的会话的 token/费用画到
+          // 本会话状态行上。
+          case 'session_status': {
+            const payloadSid =
+              typeof fields.session_id === 'string' ? fields.session_id : undefined
+            const current = get().sessionId
+            if (payloadSid) {
+              if (payloadSid !== current) break
+            } else if (isForeignSession(ev, current)) break
+            const snap = parseSessionStatus(fields as Record<string, unknown>)
+            if (!snap) break
+            set((s) => ({
+              sessionStatus: { ...s.sessionStatus, ...snap },
+              // 上下文用量现场校正：`usage` 事件只在 `_meta.totalTokens`
+              // 变化时到达（空闲会话一条都没有），且老 host 可能没有
+              // size —— 快照补齐窗口大小与已用量，值缺失时不覆盖现值。
+              ...(snap.contextTokens != null || snap.contextWindowSize != null
+                ? {
+                    usage: {
+                      used: snap.contextTokens ?? s.usage?.used,
+                      size: snap.contextWindowSize ?? s.usage?.size,
+                    },
+                  }
+                : {}),
+            }))
+            break
+          }
           // ── misc ─────────────────────────────────────────────────────
           // follow-ups (turn-end suggestion chips; TUI follow_ups.rs):
           // live 走 typed `follow_ups` 事件 / ext_notification 兜底，回放
           // 走 x.ai carrier 的 session_notification 通道——切走期间回合
           // 结束的广播被丢弃，切回时若不重放，chips 永远不出现。
           case 'follow_ups':
-          case 'followups':
+          case 'followups': {
+            // 同 busy 防线：follow_ups 由 host 在回合结束时广播，sid 可能错标
+            // 或缺省（见 host sessionIdFrom 注释）——别的会话的回合结束建议
+            // 不能出现在本会话输入框上方（点选还会把跟进消息发进本会话）。
+            // 只有当前视图确实在跑/刚在跑回合（turnIsLive / 发送在飞 /
+            // roster 显示 busy）才接受；回放的 chips 无 sid，不受影响。
+            if (!busyPlausibleForView(get())) break
             applyFollowUps(get, set, fields)
             break
+          }
           case 'diff_review': {
             const content = Array.isArray(fields.content) ? fields.content : []
             // Notification path (no requestId → no receipt): cache the
@@ -421,14 +477,6 @@ export function handleNotifApps(
             }
             break
           }
-          // tool_call_delta_chunk: streamed args are superseded by the
-          // final tool_call update — nothing to render.
-          case 'tool_call_delta_chunk':
-          case 'pending_interaction':
-          case 'interaction_resolved':
-          case 'relay_sync_status':
-          case 'response_completed':
-            break
     default:
       return false
   }

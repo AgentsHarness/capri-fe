@@ -17,6 +17,8 @@ import { handleTurnEndEvent } from './events/turnEnd'
 import { handleSessionCtrlEvent } from './events/sessionCtrl'
 import { handleSessionNotification } from './events/sessionNotif'
 import { handleExtEvent } from './events/ext'
+import { normalizeSessionEvent } from './events/normalize'
+import { TYPED_CARRIER_TAGS } from './events/kinds'
 
 /**
  * After replaying an in-flight session, the first live chunk/thought that
@@ -54,16 +56,17 @@ export function handleChatEvent(
   // sessionId and is unaffected.
   if (dropLiveCoveredBySnapshot(ev)) return
   maybeToastLiveStreamHistoryGap(ev)
-  const raw = ev as { update?: unknown }
+  const raw = ev as { update?: unknown; sessionId?: unknown; msgSeq?: unknown }
   if (raw.update && typeof raw.update === 'object') {
     const u = raw.update as { sessionUpdate?: unknown }
     if (typeof u.sessionUpdate === 'string' && ev.type !== 'turn_completed') {
-      ev = {
-        type: 'session_notification',
-        method: 'session/update',
-        params: u,
-      } as AcpEvent
+      ev = normalizeSessionEvent(ev)
     }
+  }
+  // x.ai 独立通道 / 宿主归一形状的 kind 事件：同样收敛到唯一入口（见
+  // events/normalize.ts）。其余 typed 事件在下方各自更早的链路上处理。
+  if (TYPED_CARRIER_TAGS.has(String(ev.type))) {
+    ev = normalizeSessionEvent(ev)
   }
   // 归一化之后再判：流式缓冲的「同类不 flush」必须按**真正会被派发的**
   // 事件形状决定。若在改写之前判，一个 type:'chunk' 但带 envelope

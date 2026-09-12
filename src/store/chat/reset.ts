@@ -110,6 +110,12 @@ export function resetSessionState(set: (partial: Partial<ChatState>) => void): v
     // usage_update/turn_completed arrives (loadHistory already resets
     // this; newSession was the only path that missed it).
     usage: undefined,
+    // session_status 快照同样按会话：新会话首帧前不得沿用旧会话的费用/
+    // 窗口（该 kind 不持久化，回放不会重新注入）。
+    sessionStatus: undefined,
+    // 瞬态阻塞态（hook 等待）跟着会话走：不重新生成，只能由新会话的
+    // hook_run_started 重新点亮。
+    runningHook: null,
     turnStartedAt: undefined,
     currentPromptId: undefined,
     genRate: undefined,

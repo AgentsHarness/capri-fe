@@ -23,6 +23,34 @@ function makeStore(seed: Partial<ChatState> = {}) {
 }
 
 describe('handleNotifHooks', () => {
+  it('hook_run_started 设置 runningHook，hook_execution 清空 runningHook', () => {
+    const { set, get } = makeStore()
+    const ok = handleNotifHooks(
+      set,
+      get,
+      { type: 'session_notification', sessionId: 's1' } as never,
+      'hook_run_started',
+      { event_name: 'pre_tool_use', tool_name: 'bash', count: 2, prompt_id: 'p1' },
+    )
+    expect(ok).toBe(true)
+    expect(get().runningHook).toEqual({
+      eventName: 'pre_tool_use',
+      toolName: 'bash',
+      count: 2,
+      promptId: 'p1',
+    })
+
+    // hook_execution 结束 Hook 运行态
+    handleNotifHooks(
+      set,
+      get,
+      { type: 'session_notification', sessionId: 's1' } as never,
+      'hook_execution',
+      { event_name: 'pre_tool_use', runs: [] },
+    )
+    expect(get().runningHook).toBeNull()
+  })
+
   it('hook_annotation → 普通 session_event 行（TUI 非 warning banner）', () => {
     const { set, get } = makeStore()
     const ok = handleNotifHooks(
@@ -123,20 +151,8 @@ describe('handleNotifHooks', () => {
     })
   })
 
-  it('别的会话的 hook_execution 忽略', () => {
-    const { set, get } = makeStore()
-    handleNotifHooks(
-      set,
-      get,
-      { type: 'session_notification', sessionId: 'other' } as never,
-      'hook_execution',
-      {
-        event_name: 'session_start',
-        runs: [{ name: 'boot', status: 'success' }],
-      },
-    )
-    expect(get().entries).toEqual([])
-  })
+  // 跨会话过滤已上移到分发层（events/sessionNotif.ts + attribution.ts），
+  // 对应用例见 sessionDispatch.test.ts。
 })
 
 describe('appendTurnMarker', () => {

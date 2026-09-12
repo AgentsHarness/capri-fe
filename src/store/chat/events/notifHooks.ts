@@ -28,6 +28,15 @@ export function handleNotifHooks(
   fields: Record<string, unknown>,
 ): boolean {
   switch (tag) {
+    case 'hook_run_started': {
+      // 多会话归属已由分发层统一处理（events/sessionNotif.ts）。
+      const eventName = typeof fields.event_name === 'string' ? fields.event_name : 'hook'
+      const toolName = typeof fields.tool_name === 'string' ? fields.tool_name : undefined
+      const count = typeof fields.count === 'number' ? fields.count : 1
+      const promptId = typeof fields.prompt_id === 'string' ? fields.prompt_id : undefined
+      set({ runningHook: { eventName, toolName, count, promptId } })
+      return true
+    }
     // A hook's own prose line (e.g. "⚠ `run_terminal_command` blocked by hook
     // `global/probe:pre_tool_use[0].hooks[0]`: …"). The TUI pushes it as a
     // SessionEvent::HookAnnotation row — the agent's sentence verbatim, NOT
@@ -41,8 +50,8 @@ export function handleNotifHooks(
       return true
     }
     case 'hook_execution': {
-      // 多会话广播（host withSid 约定）：别的会话的 hook 批次不进本视图。
-      if (ev.sessionId && ev.sessionId !== get().sessionId) return true
+      // 多会话归属已由分发层统一处理（events/sessionNotif.ts）。
+      set({ runningHook: null })
       const batch = parseHookExecution(fields)
       // Empty / all-skipped batches render nothing: the agent's sender drops
       // them, but history stored by an older shell can still carry them.

@@ -337,10 +337,36 @@ export interface ChatTurnState {
   recapCache: Record<string, { text: string; at: number }>
   usage?: { used?: number; size?: number }
   /**
+   * `session_status` 快照（shell StatusLineContext 的展示子集，由
+   * snake_case 原始载荷解析）。send-only、不持久化：只有 live 广播携带，
+   * 不参与回放，也不作为上下文用量的唯一来源——它是 `usage` 事件的校正
+   * 与补齐（空闲会话 / 刚打开页面时没有任何 usage 事件到达）。
+   */
+  sessionStatus?: SessionStatusSnapshot
+  /**
    * 当前会话的聚合统计（POST /api/session-stats 响应；composer 状态条
    * 数据源）。会话切换/回合终态后刷新；无会话或失败为 undefined。
    */
   sessionStats?: import('../../api/types').SessionStats
+}
+
+/**
+ * `session_status` 展示子集（shell StatusLineContext → 前端消费的字段）。
+ * 字段名按前端习惯驼峰化，来源见括号内的 wire 路径。
+ */
+export interface SessionStatusSnapshot {
+  /** context_window.context_tokens */
+  contextTokens?: number
+  /** context_window.context_window_size */
+  contextWindowSize?: number
+  /** context_window.used_percentage（0-100） */
+  usedPercent?: number
+  /** context_window.auto_compact_threshold_percent（0-100） */
+  autoCompactThresholdPercent?: number
+  /** cost.total_cost_usd */
+  totalCostUsd?: number
+  /** cost.total_duration_ms（进程 attach 起算的墙钟） */
+  totalDurationMs?: number
 }
 
 /** 权限与模式：待审批请求、yolo/auto/plan 模式、取消回合面板与偏好。 */
@@ -506,6 +532,13 @@ export interface ChatAgentExtState {
    * while a turn is in flight.
    */
   followUps?: FollowUp[]
+  /** Currently executing hook batch from hook_run_started (TUI spinner parity). */
+  runningHook?: {
+    eventName: string
+    toolName?: string
+    count: number
+    promptId?: string
+  } | null
   /**
    * Newest-wins key of the shown chips (TUI FollowUps.response_id): a
    * delivery with the same id as the current one is an idempotent
@@ -884,6 +917,8 @@ export interface ChatActions {
   renameSession: (title: string) => Promise<void>
   /** x.ai/subagent/cancel. */
   cancelSubagent: (subagentId: string) => Promise<void>
+  /** x.ai/subagent/message — queue or steer literal text to an owned child subagent. */
+  sendSubagentMessage: (agentAddress: string, text: string, opts?: { queue?: boolean }) => Promise<void>
   /**
    * x.ai/task/kill — kill a background task. `notifyAgent: false` asks the
    * agent to do it silently (kill source `teardown`): it will not be woken
