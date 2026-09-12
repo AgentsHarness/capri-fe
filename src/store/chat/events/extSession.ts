@@ -1,11 +1,8 @@
 import type { AcpEvent } from '../../../api/types'
 import type { ChatState, McpServerInfo, SetState } from '../types'
 import { runtime } from '../globals'
-import { applyModeFlags } from '../modeFlags'
-import { extractSessionUpdate } from '../entries'
 import { applyMcpInitProgress } from '../followUps'
-import { handleTaskBackgrounded, handleTaskCompleted } from '../tasks'
-import { wireTaskId } from '../util'
+import { isForeignSession } from './wire'
 
 function strField(v: unknown): string | undefined {
   return typeof v === 'string' && v ? v : undefined
@@ -52,37 +49,9 @@ export function handleExtSessionEvent(
   ev: AcpEvent,
 ): boolean {
   switch (ev.type) {
-      case 'task_backgrounded':
-        handleTaskBackgrounded(get, set, extractSessionUpdate(ev.params).fields)
-        break
-      case 'task_completed':
-        handleTaskCompleted(get, set, extractSessionUpdate(ev.params).fields)
-        break
-      case 'monitor_event': {
-        const { fields } = extractSessionUpdate(ev.params)
-        const taskId = wireTaskId(fields.task_id, fields.taskId)
-        const entryId = taskId ? get().bgTaskIndex[taskId] : undefined
-        // event_text is raw stdout (TUI appends to BgTaskState.stdout).
-        const text =
-          (typeof fields.event_text === 'string' && fields.event_text) ||
-          (typeof fields.eventText === 'string' && fields.eventText) ||
-          ''
-        if (entryId && text) {
-          set({
-            entries: get().entries.map((e) =>
-              e.id === entryId && e.kind === 'bg_task'
-                ? {
-                    ...e,
-                    output: (e.output ?? '') + text,
-                    // Keep a short tail on the row detail for glanceability.
-                    detail: text.trim().split('\n').filter(Boolean).slice(-1)[0] || e.detail,
-                  }
-                : e,
-            ),
-          })
-        }
-        break
-      }
+      // task_backgrounded / task_completed / monitor_event / background_tasks /
+      // yolo_mode_changed 已由归一入口（events/normalize.ts）转交到
+      // events/sessionNotif.ts 的唯一分发点——本文件不再重复注册。
       case 'git_head_changed': {
         applyGitHeadChanged(
           set,
@@ -92,20 +61,9 @@ export function handleExtSessionEvent(
         )
         break
       }
-      case 'yolo_mode_changed':
-        // 客户端级全局广播（agent 对发送客户端的所有会话生效）：无条件
-        // 应用，所有会话的显示同步（订阅器落全局记录）。sessionId 标记
-        // （host withSid 约定）不代表会话级变更，不做过滤。
-        // The agent sends snake_case ({yolo_mode, auto_mode, permission_mode});
-        // accept both spellings (camelCase first for host-normalized paths).
-        // applyModeFlags keeps planMode armed underneath permission
-        // broadcasts; a named permissionMode (ask/auto/always-approve)
-        // is authoritative for the yolo/auto flags when those keys are
-        // absent, so a lone permission_mode:ask cannot leave the
-        // composer stuck on always-approve.
-        applyModeFlags(set, (ev.params ?? {}) as Record<string, unknown>)
-        break
       case 'mcp_server_status': {
+        // 会话级：MCP 服务列表随会话切换清空，别的会话的状态不能画进来。
+        if (isForeignSession(ev as never, get().sessionId)) break
         const p = ev.params ?? {}
         const name = p.name ? String(p.name) : ''
         if (!name) break
@@ -145,6 +103,9 @@ export function handleExtSessionEvent(
         // connected, sessionId} — acp_session_impl/mcp.rs). The TUI
         // status-bar chip is `MCP (connected/total)`; the startup seed
         // total==0 renders "Starting session…". No scrollback row.
+        // 会话级（params.sessionId 是 agent 自报的会话）：别的会话的初始化
+        // 进度不能改写本会话的 MCP 芯片。
+        if (isForeignSession(ev as never, get().sessionId)) break
         applyMcpInitProgress(set, ev.params)
         break
       }

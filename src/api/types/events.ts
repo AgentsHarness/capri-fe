@@ -351,6 +351,9 @@ export type AcpEvent =
     }
   | { type: 'task_backgrounded'; params?: Record<string, unknown> }
   | { type: 'task_completed'; params?: Record<string, unknown> }
+  | { type: 'background_tasks'; tasks?: unknown[]; truncated?: boolean; sessionId?: string; update?: Record<string, unknown> }
+  | { type: 'hook_run_started'; update?: Record<string, unknown>; sessionId?: string }
+  | { type: 'session_status'; update?: Record<string, unknown>; sessionId?: string }
   | { type: 'monitor_event'; params?: Record<string, unknown> }
   | {
       type: 'git_head_changed'

@@ -40,13 +40,23 @@ function rejectClosedTurnAgentOutput(
   // A different stamped stream can only be a new server-side turn. Let it
   // through and retire the old guard; an unmarked event is ambiguous and is
   // dropped until the next user event explicitly opens a turn.
-  if (
-    incoming != null &&
-    completed.streamStartMs != null &&
-    incoming !== completed.streamStartMs
-  ) {
-    set({ lastCompletedTurn: undefined })
-    return false
+  if (incoming != null && completed.streamStartMs != null) {
+    if (incoming !== completed.streamStartMs) {
+      set({ lastCompletedTurn: undefined })
+      return false
+    }
+    return true
+  }
+  // 流身份不完整（旧快照被重复收尾抹平过 / 上一个回合没有流式正文，
+  // 如纯工具轮）：退到回合身份比对。turnStartMs 不同 = 新回合——自动唤醒
+  // 轮（kill 通知、子代理完成注入）正是这种情况，不能整轮丢掉。
+  const incomingTurn = finiteStreamStart(ev.turnStartMs)
+  if (incomingTurn != null && completed.turnStartMs != null) {
+    if (incomingTurn !== completed.turnStartMs) {
+      set({ lastCompletedTurn: undefined })
+      return false
+    }
+    return true
   }
   // A terminal event leaves the view idle until the next user prompt. Agent
   // chunks that arrive in that gap are late delivery from the closed turn;
@@ -82,11 +92,32 @@ function prepareAgentStream(
   const sealed = sealAssistantStream({ ...before, ...withThoughtSealed })
   set({ ...sealed, currentStreamStartMs: incoming })
 }
+/**
+ * TUI `HookRunStarted` 的释放腿：shell 侧承诺「匹配的 HookExecution 或
+ * 后续回合输出」结束等待态（extensions/notification.rs）。空批次 /
+ * all-skipped 批次可能没有 hook_execution，首个 agent 输出就是兜底释放点。
+ */
+function releaseRunningHook(
+  set: SetState,
+  get: () => ChatState,
+  ev: AcpEvent,
+): void {
+  if (!get().runningHook) return
+  // 多会话广播：别的会话的输出不能解除本会话的等待态。
+  const sid = (ev as { sessionId?: string }).sessionId
+  if (sid && sid !== get().sessionId) return
+  set({ runningHook: null })
+}
+
 export function handleUserStreamEvent(
   set: SetState,
   get: () => ChatState,
   ev: AcpEvent,
 ): boolean {
+  // 首个输出（思考 / 正文 / 图片）到达即解除 hook 等待态（见上）。
+  if (ev.type === 'chunk' || ev.type === 'thought' || ev.type === 'image') {
+    releaseRunningHook(set, get, ev)
+  }
   switch (ev.type) {
       case 'user_message':
       case 'user_chunk': {

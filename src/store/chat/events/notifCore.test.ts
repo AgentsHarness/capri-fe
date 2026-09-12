@@ -33,8 +33,7 @@ describe('handleNotifCore — current_mode_update', () => {
     expect(state().planMode).toBe(true)
   })
 
-  it('currentModeId=default → 当前会话退出 plan', () => {
-    const { set, get, state } = makeStore({
+  it('currentModeId=default → 当前会话退出 plan', () => {    const { set, get, state } = makeStore({
       planMode: true,
       permissionMode: 'plan',
     })
@@ -49,15 +48,6 @@ describe('handleNotifCore — current_mode_update', () => {
     expect(state().permissionMode).toBeUndefined()
   })
 
-  it('非当前会话的 current_mode_update 不改本会话', () => {
-    const { set, get, state } = makeStore({ planMode: false })
-    handleNotifCore(
-      set,
-      get,
-      { type: 'session_notification', sessionId: 'other' } as WireEvent,
-      'current_mode_update',
-      { sessionUpdate: 'current_mode_update', currentModeId: 'plan' },
-    )
-    expect(state().planMode).toBe(false)
-  })
+  // 跨会话过滤已上移到分发层（events/sessionNotif.ts + attribution.ts），
+  // 对应用例见 sessionDispatch.test.ts。
 })

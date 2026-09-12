@@ -17,7 +17,19 @@ const MAX_ACTIVITY_SUBJECT_CHARS = 40
  */
 export function currentActivity(
   entries: ScrollEntry[],
+  runningHook?: { eventName: string; toolName?: string; count: number } | null,
 ): { label: string; color: string; startedAt?: number } | null {
+  // 0) Blocked on an awaited hook batch (TUI HookRunStarted).
+  if (runningHook) {
+    const hookLabel = runningHook.toolName
+      ? `Running ${runningHook.eventName} (${runningHook.toolName})…`
+      : `Running ${runningHook.eventName} hook${runningHook.count > 1 ? `s (${runningHook.count})` : ''}…`
+    return {
+      label: hookLabel,
+      color: Accents.warning,
+    }
+  }
+
   // 1) Blocked on a foreground subagent (TUI tracker registers these when
   //    the task tool is NOT backgrounded). Only reachable while the agent
   //    itself is idle — thinking/tool/reply branches take precedence later.

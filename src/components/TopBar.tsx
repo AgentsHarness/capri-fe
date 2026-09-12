@@ -23,6 +23,7 @@ import {
   LiteFillChip,
   McpChip,
   QueueBadge,
+  SessionCostChip,
   RunningChip,
   RunningTasksBar,
   TodoChip,
@@ -107,6 +108,7 @@ export function WorkspaceBar({
   const cwd = useChatStore((s) => s.cwd)
   const homeDir = useChatStore((s) => s.homeDir)
   const usage = useChatStore((s) => s.usage)
+  const sessionStatus = useChatStore((s) => s.sessionStatus)
   const goalState = useChatStore((s) => s.goalState)
   const todos = useChatStore((s) => s.todos)
   const entries = useChatStore((s) => s.entries)
@@ -225,9 +227,13 @@ export function WorkspaceBar({
               (models.find((m) => m.name === modelName)?.contextWindow ??
                 models[0]?.contextWindow)
             }
+            agentPct={sessionStatus?.usedPercent}
+            thresholdPct={sessionStatus?.autoCompactThresholdPercent}
           />
           <QueueBadge />
           <TodoChip todos={todos} goalState={goalState} />
+          {/* 会话费用（TUI status.push 末尾的 credits 位）。 */}
+          <SessionCostChip />
         </div>
       </div>
       {/* Sticky task rows under the bar (not a floating popup).

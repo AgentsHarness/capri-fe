@@ -39,6 +39,13 @@ vi.mock('../globals', () => ({
   clearPeerSessionLoad: vi.fn(),
 }))
 
+// 只替换探活/重建入口，保留 loadHistory 模块的其余导出（sessionLoad 等
+// 也 import 它）。
+vi.mock('../loadHistory', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../loadHistory')>()),
+  loadHistoryWithTaskProbe: vi.fn(),
+}))
+
 vi.mock('../../settings', () => ({
   onUiSettingsReady: vi.fn(),
   onUiSettingsChange: vi.fn(() => () => {}),
@@ -129,6 +136,43 @@ describe('initChat 多会话与双 FE 全局模式同步', () => {
       sessionId: 'agent',
       params: { sessionId: 'agent', searchId: 'sr-1', matches: [], done: true },
     }
+    eventHandler!(ev)
+
+    expect(state.handleEvent).toHaveBeenCalledWith(ev)
+
+    cleanup()
+  })
+
+  it('live_gap（补拉认赔）→ 走历史重建，不落回滚动区警告', async () => {
+    const { loadHistoryWithTaskProbe } = await import('../loadHistory')
+    state.sessionId = 'sess-current'
+    state.cwd = '/w'
+    state.historyLoading = false
+    state.historyLoadingMore = false
+    state.handleEvent = vi.fn()
+    const cleanup = initChat(set, get, api)
+
+    eventHandler!({ type: 'live_gap', hostId: 'h1', fromSeq: 101, toSeq: 132 })
+
+    expect(loadHistoryWithTaskProbe).toHaveBeenCalledWith(
+      expect.anything(),
+      'sess-current',
+      '/w',
+    )
+    expect(state.handleEvent).not.toHaveBeenCalled()
+
+    cleanup()
+  })
+
+  it('live_gap 无活动会话（无法重建）→ 保留滚动区警告', () => {
+    state.sessionId = undefined
+    state.cwd = undefined
+    state.historyLoading = false
+    state.historyLoadingMore = false
+    state.handleEvent = vi.fn()
+    const cleanup = initChat(set, get, api)
+
+    const ev = { type: 'live_gap', hostId: 'h1', fromSeq: 101, toSeq: 132 }
     eventHandler!(ev)
 
     expect(state.handleEvent).toHaveBeenCalledWith(ev)

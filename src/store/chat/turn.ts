@@ -16,6 +16,7 @@ export {
 } from './turnStatus'
 export {
   type StreamBufKind,
+  completedTurnStamp,
   finalizeTurn,
   adoptTurn,
   SUBAGENT_SETTLE_GRACE_MS,

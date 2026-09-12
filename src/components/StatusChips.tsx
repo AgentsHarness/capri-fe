@@ -33,16 +33,24 @@ import type { TodoItem } from '../store/chat'
 export function ContextChip({
   used,
   size,
+  agentPct,
+  thresholdPct,
 }: {
   used?: number
   size?: number
+  /** agent 自报的已用百分比（session_status.context_window.used_percentage）。
+   *  有则以它为准：size 可能来自模型目录（猜测值），百分比是 agent 口径。 */
+  agentPct?: number
+  /** agent 的自动压缩阈值（session_status.context_window.auto_compact_threshold_percent）。 */
+  thresholdPct?: number
 }) {
   const [hovered, setHovered] = useState(false)
   const openContext = useChatStore((s) => s.openContext)
   if (used == null || size == null || size <= 0) return null
   // TUI usage_percentage: clamped to 100 (used can transiently exceed the
-  // window before auto-compact; the TUI never renders >100%).
-  const pct = Math.min(100, (used / size) * 100)
+  // window before auto-compact; the TUI never renders >100%). agent 自报值
+  // 优先，缺失才按 used/size 推算。
+  const pct = Math.min(100, agentPct != null && agentPct >= 0 ? agentPct : (used / size) * 100)
   // TUI default_breakpoints gradient (fg→accent_user→warning→error).
   const color = contextUrgencyColor(pct)
   // TUI context_bar: the default "used / total" string drives the hover
@@ -62,7 +70,9 @@ export function ContextChip({
       onClick={openContext}
       className={`shrink-0 cursor-pointer whitespace-nowrap rounded px-0 py-0.5 text-left font-mono text-[12px] leading-none tabular-nums hover:bg-gn-bg-highlight`}
       style={{ color }}
-      title={`上下文 ${Math.round(pct)}% (${fmtTok(used)} / ${fmtTok(size)}) · 点击查看 /context 明细`}
+      title={`上下文 ${Math.round(pct)}% (${fmtTok(used)} / ${fmtTok(size)})${
+        thresholdPct != null ? ` · 自动压缩阈值 ${Math.round(thresholdPct)}%` : ''
+      } · 点击查看 /context 明细`}
       aria-label={`上下文 ${Math.round(pct)}% · 打开 /context 明细`}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -81,6 +91,29 @@ export function ContextChip({
         defaultStr
       )}
     </button>
+  )
+}
+
+/**
+ * Session cost chip — TUI status-line `cost` item: session cost from the
+ * live `session_status` snapshot, hidden below $0.005 so it never shows a
+ * misleading `$0.00`. The tooltip carries the attach-to-now wall clock
+ * (`cost.total_duration_ms`); 该快照 send-only、不持久化，刷新后由下一次
+ * 广播补回。
+ */
+export function SessionCostChip() {
+  const status = useChatStore((s) => s.sessionStatus)
+  const usd = status?.totalCostUsd
+  if (usd == null || usd < 0.005) return null
+  const durMs = status?.totalDurationMs
+  const dur = durMs != null && durMs > 0 ? fmtElapsedCompact(durMs) : null
+  return (
+    <span
+      className="inline-flex shrink-0 items-center whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-gray-dim"
+      title={`会话费用 $${usd.toFixed(4)}${dur ? ` · 已运行 ${dur}` : ''}`}
+    >
+      ${usd.toFixed(4)}
+    </span>
   )
 }
 

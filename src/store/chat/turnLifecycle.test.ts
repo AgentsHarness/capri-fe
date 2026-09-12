@@ -79,3 +79,23 @@ describe('finalizeTurn hook stash 出清', () => {
     })
   })
 })
+
+describe('finalizeTurn 幂等（多载体重复收尾）', () => {
+  it('第二次收尾不抹掉已盖的 turnStartMs / streamStartMs', () => {
+    const { get, set } = makeStore({
+      conn: 'busy',
+      awaitingNext: false,
+      turnStartedAt: 500,
+      currentPromptId: 'p1',
+      currentStreamStartMs: 1000,
+      entries: [{ id: 'u1', kind: 'user', text: 'hi' }],
+    })
+    // 第一次收口（turn_completed / prompt_complete / done 三载体的任意一个）
+    finalizeTurn(set, get, 'end_turn')
+    expect(get().lastCompletedTurn).toMatchObject({ turnStartMs: 500, streamStartMs: 1000 })
+    // 第二次：锚点已被第一次清空，若照常重写会只剩 {endMs}，
+    // 让 rejectClosedTurnAgentOutput 丢掉下一个自动唤醒轮的直播。
+    finalizeTurn(set, get, 'end_turn')
+    expect(get().lastCompletedTurn).toMatchObject({ turnStartMs: 500, streamStartMs: 1000 })
+  })
+})

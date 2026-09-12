@@ -31,6 +31,8 @@ import {
   applySubagentViewEvent,
 } from '../subagent'
 import { handleResyncRebuild } from '../resync'
+import { dropsForeignEvent } from '../events/attribution'
+import { notifSessionId, type WireEvent } from '../events/wire'
 
 /** TUI `CWD_GIT_REFRESH_TTL`：状态栏读路径的懒探盘间隔。git_head_changed
  *  只在 HEAD 真的变了才发；外部 `git checkout` 若通知丢失/错标，FE 没有
@@ -82,6 +84,19 @@ export function initChat(
       if (ev.type === 'resync') {
         handleResyncRebuild(get)
         return
+      }
+      // 直播缺口（live_gap）：序号器已经认赔放行（大洞 / pending 上限），
+      // 逐洞补拉不再指望得上——本机直连模式下 host 根本没有 /api/events
+      // 补拉端点，hub 环里的洞也可能是 host 侧丢帧（hub 从未收到）而永远
+      // 补不出来。唯一权威的恢复是重建：从 host 持久化历史重放最新一轮
+      // （一次一页，成本低）。重建窗口的 live 事件由既有缓冲去重返放，
+      // 不会重复渲染。无活动会话（没有可重建的视图）时按普通事件处理，
+      // 保留滚动区那句警告。
+      if (ev.type === 'live_gap') {
+        // 重建在飞：这次重建已覆盖该洞，别再落进窗口缓冲——重放出来只会
+        // 在刚重建好的时间线末尾多一行误导性的“刷新可从历史补全”。
+        if (s.historyLoading || s.historyLoadingMore) return
+        if (handleResyncRebuild(get)) return
       }
       // While switching to a historical session (historyLoading), the agent
       // re-streams the whole conversation as part of session/load (recap).
@@ -148,43 +163,24 @@ export function initChat(
       ) {
         clearSubagentSettleTimer()
       }
-      // 全局广播事件族：模式变更（yolo_mode_changed / modes_update）、会话列表（sessions_changed）、
-      // 宿主变更（hosts_changed）、偏好变更（prefs_changed）、MCP 工具/服务变更、
-      // 调度任务生命周期（created/deleted/fired）、会话回退通知（session_rewound）等属于
-      // 跨会话或全局关注的事件，即使宿主或中间层附带了 sessionId 也不得按
-      // 单会话过滤规则在顶层拦截丢弃。
-      const isGlobalEvent =
-        ev.type === 'yolo_mode_changed' ||
-        ev.type === 'modes_update' ||
-        ev.type === 'sessions_changed' ||
-        ev.type === 'hosts_changed' ||
-        ev.type === 'prefs_changed' ||
-        ev.type === 'mcp_tools_changed' ||
-        ev.type === 'mcp_servers_updated' ||
-        ev.type === 'scheduled_task_created' ||
-        ev.type === 'scheduled_task_deleted' ||
-        ev.type === 'scheduled_task_fired' ||
-        ev.type === 'session_rewound' ||
-        ev.type === 'git_head_changed' ||
-        ev.type === 'permissions_reset' ||
-        // 检索引擎状态流：host 用 agent 自报的 sessionId（模糊搜索是字面量
-        // "agent"，非会话 UUID）打标签，按会话过滤必然全量丢弃。消费方
-        // （@ 选择器）自己用 searchId 认权威，见 events/extMisc.ts。
-        ev.type === 'search_fuzzy_status'
+      // 会话归属由 events/attribution.ts 统一判定（与事件分发层共用同一
+      // 策略）：全局广播（GLOBAL_EVENT_TYPES：模式/会话列表/宿主/队列回退/
+      // git 等）与「处理器要主动处理外来会话」的 kind 放行，其余外来会话
+      // 事件在这里丢弃。此前本层维护的是另一份 ev.type 白名单，与 handler
+      // 层的守卫对同一类事件（如 scheduled_task_*）给出相反结论。
       if (
-        !isGlobalEvent &&
-        evSid != null &&
-        evSid !== s.sessionId &&
         ev.type !== 'hello' &&
-        ev.type !== 'ready'
+        ev.type !== 'ready' &&
+        dropsForeignEvent(ev, s.sessionId)
       ) {
         // 子代理会话事件流：宿主按 withSid 广播所有会话的 session/update
         // 事件，子代理（child_session_id）的 chunk/thought/tool_call/… 也
         // 在内。命中 subagentChildIndex 的会话喂给该子代理的迷你 scrollback
         // 视图处理器（不进主 handleEvent，避免污染宿主 scrollback）——TUI
         // 按 sessionId 路由进 subagent_views 的等价实现。
-        if (s.subagentChildIndex[evSid] != null) {
-          applySubagentViewEvent(set, evSid, ev)
+        const foreignSid = notifSessionId(ev as WireEvent)
+        if (foreignSid != null && s.subagentChildIndex[foreignSid] != null) {
+          applySubagentViewEvent(set, foreignSid, ev)
           if (TURN_TERMINAL_TYPES.has(ev.type)) {
             // 主回合终态被归属到已知子代理 sid → 武装延迟收口（父回合
             // 自己的 done 可能永远不会来）。
@@ -198,12 +194,12 @@ export function initChat(
           // 非活跃普通会话的队列广播（切走期间 agent 已 pop 队首开跑）：
           // 喂给该会话的 stash——切回时镜像才是权威的，被收养的行绝不
           // 能仍显示 queued（收养渲染只发生在活跃会话，这里仅更新镜像）。
-          applyQueueChanged(ev.params, evSid)
+          applyQueueChanged(ev.params, foreignSid ?? undefined)
         } else if (
           ev.type === 'ext_notification' &&
           (ev as { method?: string }).method === 'x.ai/queue/changed'
         ) {
-          applyQueueChanged(ev.params, evSid)
+          applyQueueChanged(ev.params, foreignSid ?? undefined)
         }
         return
       }

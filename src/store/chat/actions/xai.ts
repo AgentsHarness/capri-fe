@@ -4,7 +4,11 @@ import type { ScrollEntry } from '../../../api/types'
 import type { ChatState, SetState, McpServerInfo } from '../types'
 import { nid } from '../ids'
 import { appendEntry } from '../entries'
-import { scheduledTaskDeletedText, settleUntrackedTask } from '../tasks'
+import {
+  scheduledTaskDeletedText,
+  settleUntrackedTask,
+  TASK_KILL_STATUS_TEXT,
+} from '../tasks'
 import { INITIAL_TURNS } from '../history'
 import { noteHistoryProjection } from '../historyFill'
 import { loadHistoryWithTaskProbe } from '../loadHistory'
@@ -331,6 +335,20 @@ export function xaiActions(set: SetState, get: () => ChatState) {
     }
   },
 
+  sendSubagentMessage: async (agentAddress, text, opts) => {
+    try {
+      await transport.sendSubagentMessage(agentAddress, text, {
+        queue: opts?.queue,
+        sessionId: get().sessionId,
+      })
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      set({
+        entries: [...get().entries, { id: nid(), kind: 'error', text: `向子代理发送消息失败: ${msg}` }],
+      })
+    }
+  },
+
   killTask: async (taskId, opts) => {
     // notifyAgent 决定 wire 上的 source：false → teardown（agent 收尾时不再
     // 为这条任务唤醒模型）；其余一律 clientUi，与 agent 自己的缺省一致。
@@ -342,7 +360,7 @@ export function xaiActions(set: SetState, get: () => ChatState) {
       if (outcome === 'killed') {
         // task_completed 紧随其后，由它把行结算掉；statusText 只在回合
         // 运行时可见，所以这里同时给一条 toast。
-        set({ statusText: '正在终止后台任务…' })
+        set({ statusText: TASK_KILL_STATUS_TEXT })
         pushToast(
           source === 'teardown'
             ? '已请求静默终止后台任务（不通知 agent）'

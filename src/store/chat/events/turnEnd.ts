@@ -12,6 +12,7 @@ import {
 import {
   adoptLiveTurnStart,
   cancellationContextText,
+  completedTurnStamp,
   eventPromptId,
   finalizeTurn,
   promptIdMismatch,
@@ -175,13 +176,12 @@ export function handleTurnEndEvent(
         const flushed = flushLiveStream(get())
         const sealed = sealThought(flushed)
         const settled = settleTurnEntries(sealed.entries)
-        const lastCompletedTurn = {
-          ...(ev.turnStartedAt != null ? { turnStartMs: ev.turnStartedAt } : {}),
-          ...(get().currentStreamStartMs != null
-            ? { streamStartMs: get().currentStreamStartMs }
-            : {}),
-          ...(ev.endMs != null ? { endMs: ev.endMs } : {}),
-        }
+        const lastCompletedTurn = completedTurnStamp(
+          get().lastCompletedTurn,
+          ev.turnStartedAt,
+          get().currentStreamStartMs,
+          ev.endMs,
+        )
         if (tailAlreadyTurnEnded(settled)) {
           set({
             ...sealed,
@@ -276,13 +276,12 @@ export function handleTurnEndEvent(
             openAssistantId: undefined,
             openThoughtId: undefined,
             currentStreamStartMs: undefined,
-            lastCompletedTurn: {
-              ...(turnStart != null ? { turnStartMs: turnStart } : {}),
-              ...(turnStreamStart != null
-                ? { streamStartMs: turnStreamStart }
-                : {}),
-              endMs: Date.now(),
-            },
+            lastCompletedTurn: completedTurnStamp(
+              s.lastCompletedTurn,
+              turnStart,
+              turnStreamStart,
+              Date.now(),
+            ),
             turnStartedAt: undefined,
             currentPromptId: undefined,
             xaiRequests: [], // host answered every pending x.ai request already

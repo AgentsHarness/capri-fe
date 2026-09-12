@@ -1,6 +1,7 @@
 import { transport } from '../../../api/client'
 import type { ChatState, SetState } from '../types'
 import { captureAsyncScope, isAsyncScopeCurrent } from '../globals'
+import { topTaskFrom } from '../tasks'
 
 export function liveTaskActions(set: SetState, get: () => ChatState) {
   return {
@@ -135,16 +136,21 @@ export function liveTaskActions(set: SetState, get: () => ChatState) {
           // TOP STRIP, not an invented scrollback row; fully completed
           // ghosts and foreground commands are skipped.
           if (!isRunningBg) continue
-          topTasks = [
-            ...topTasks,
-            {
-              taskId: snap.taskId,
-              title,
-              command: snap.command,
-              outputFile: snap.outputFile,
-            },
-          ]
-          changed = true
+          // 与 background_tasks 快照共用同一套字段推导（tasks.ts），
+          // 两个写者不会给同一任务换标题 / 丢 outputFile。
+          const row = topTaskFrom({
+            taskId: snap.taskId,
+            description: snap.description,
+            command: snap.command,
+            outputFile: snap.outputFile,
+            // 注册表快照无 kind 字段：monitor 只能按遗留前缀识别
+            // （与 handleTaskBackgrounded 同款判定）。
+            isMonitor: snap.command?.startsWith('[monitor] ') ? true : undefined,
+          })
+          if (row) {
+            topTasks = [...topTasks, row]
+            changed = true
+          }
           continue
         }
         entries = entries.map((e) => {

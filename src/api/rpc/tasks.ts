@@ -27,6 +27,27 @@ export const tasksRpc = {
     return data
   },
 
+  async sendSubagentMessage(
+    this: TransportCore,
+    agentAddress: string,
+    text: string,
+    opts: { queue?: boolean; sessionId?: string } = {}
+  ) {
+    const res = await this.fetch(this.url('/api/subagent/message'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        agentAddress,
+        text,
+        queue: opts.queue ?? false,
+        ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
+      }),
+    })
+    const data = await readRpcJson(res)
+    assertRpcOk(res, data, 'subagent message failed')
+    return data
+  },
+
   /**
    * Kill one background task (x.ai/task/kill). The agent answers
    * `{result: {result: {taskId, outcome}}}` through the ExtMethodResult

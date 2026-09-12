@@ -165,6 +165,7 @@ export function Composer() {
   const turnStartedAt = useChatStore((s) => s.turnStartedAt)
   const openThoughtId = useChatStore((s) => s.openThoughtId)
   const openAssistantId = useChatStore((s) => s.openAssistantId)
+  const runningHook = useChatStore((s) => s.runningHook)
   const models = useChatStore((s) => s.models)
 
   const taRef = useRef<HTMLTextAreaElement>(null)
@@ -769,7 +770,7 @@ export function Composer() {
   // (bg-task waits, no-activity "Waiting for response…" windows) anchor
   // at the moment the phase became current — so a mid-turn wait counts
   // from when the last entry ended, not from the turn start.
-  const activity = useMemo(() => currentActivity(entries), [entries])
+  const activity = useMemo(() => currentActivity(entries, runningHook), [entries, runningHook])
   // 本地真相兜底（spurious ready / host 状态丢失）：传输侧宣称空闲
   // （conn ready）但本地仍有活动流或未终止的回合计时——hub 重连竞态 /
   // 多会话错标 / host 丢态都可能触发。状态行按本地活动显示真实状态，

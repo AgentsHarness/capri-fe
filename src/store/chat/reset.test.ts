@@ -53,6 +53,10 @@ describe('resetSessionState', () => {
     expect(partial.scheduledTasks).toEqual([])
     expect(partial.usage).toBeUndefined()
     expect(partial.sessionStats).toBeUndefined()
+    // 会话级瞬态：hook 等待态与状态行快照都跟着会话走（快照 send-only，
+    // 回放不会重新注入；等待态只能由新会话的 hook_run_started 重新点亮）。
+    expect(partial.runningHook).toBeNull()
+    expect(partial.sessionStatus).toBeUndefined()
   })
 
   it('撤销在飞的子代理收口兜底与瞬断看门狗', () => {

@@ -20,16 +20,8 @@ import { flushLiveStream, sealThought } from '../stream'
 import { nid } from '../ids'
 import { applyFollowUps, applyMcpInitProgress, SILENT_EXT_NOTIFICATIONS } from '../followUps'
 import { applyGitHeadChanged } from './extSession'
-import { wireTaskId } from '../util'
-import {
-  parseScheduledTask,
-  removeScheduledTask,
-  scheduledTaskDeleteReason,
-  scheduledTaskDeletedText,
-  updateScheduledTaskFire,
-  upsertScheduledTask,
-} from '../tasks'
 import { truncateEntriesTo, waitRewindAligned } from '../actions/xai'
+import { applyModelIdentity, applySessionTitle } from '../sessionIdentity'
 import { loadHistoryWithTaskProbe } from '../loadHistory'
 
 /**
@@ -102,35 +94,9 @@ export function handleExtMiscEvent(
         if (name) set({ modelName: name })
         break
       }
-      case 'scheduled_task_created':
-        // Standalone SSE carrier (host may ALSO wrap the same update in a
-        // session_notification tag — both paths upsert by taskId).
-        upsertScheduledTask(set, parseScheduledTask(ev))
-        break
-      case 'scheduled_task_deleted': {
-        const p = (ev.params ?? {}) as Record<string, unknown>
-        const id = wireTaskId(ev.taskId, p.taskId, p.task_id)
-        if (id) removeScheduledTask(set, id)
-        // 多会话广播（host withSid 约定）：非当前会话的删除事件不污染本会话滚动区提示行
-        if (!ev.sessionId || ev.sessionId === get().sessionId) {
-          const rawParams = (ev.rawParams ?? {}) as Record<string, unknown>
-          const reason = scheduledTaskDeleteReason(ev.reason, p, rawParams)
-          appendEntry(set, {
-            kind: 'session_event',
-            text: scheduledTaskDeletedText(reason),
-          })
-        }
-        break
-      }
-      case 'scheduled_task_fired': {
-        const p = (ev.params ?? {}) as Record<string, unknown>
-        const id = wireTaskId(ev.taskId, p.taskId, p.task_id)
-        // TUI only updates the tasks pane (next_fire_at) — no scrollback
-        // row. The turn itself surfaces as a cron UserPromptBlock via
-        // user_chunk.
-        if (id) updateScheduledTaskFire(set, id, ev.nextFireAt ?? p.nextFireAt ?? p.next_fire_at)
-        break
-      }
+      // scheduled_task_created / _deleted / _fired 与 follow_ups 已由归一入口
+      // （events/normalize.ts）转交到 events/sessionNotif.ts 的唯一分发点
+      // （notifApps），本文件不再重复注册。
       case 'scheduled_task_inject_prompt':
         // TUI enqueues the cron prompt (driver-only); scrollback comes from
         // the resulting UserMessageChunk, classified as is_cron. FE is not
@@ -205,25 +171,6 @@ export function handleExtMiscEvent(
         ) {
           appendEntry(set, { kind: 'session_event', text: cancelDetail })
         }
-        break
-      }
-      case 'follow_ups': {
-        // 多会话广播（host withSid 约定）：非当前会话的跟进建议忽略。
-        if (ev.sessionId && ev.sessionId !== get().sessionId) break
-        // 同 busy 防线：follow_ups 由 host 在回合结束时广播，sid 可能错标
-        // 或缺省（见模块头 sessionIdFrom 注释）——别的会话的回合结束建议
-        // 不能出现在本会话输入框上方（点选还会把跟进消息发进本会话）。
-        // 只有当前视图确实在跑/刚在跑回合（turnIsLive / 发送在飞 /
-        // roster 显示 busy）才接受；回放的 chips 走 session_notification
-        // 通道（无 sid），不受影响。
-        if (!busyPlausibleForView(get())) break
-        // Typed carrier for x.ai/follow_ups (host bridge.go broadcasts it
-        // as {type:'follow_ups', params}) — turn-end suggestion chips (TUI
-        // follow_ups.rs): parsed into store state for the Composer's chip
-        // row; NO scrollback line (the TUI renders them as a transient row
-        // above the prompt). Newest-wins by response_id. Older hosts fall
-        // back to the ext_notification arm below (same consumer).
-        applyFollowUps(get, set, ev.params)
         break
       }
       case 'ext_notification': {
@@ -367,13 +314,10 @@ export function handleExtMiscEvent(
         // 多会话广播（host withSid 约定）：非当前会话的会话信息忽略
         // （别的会话的 session_info_update 不能改写本会话的标题）。
         if (ev.sessionId && ev.sessionId !== get().sessionId) break
-        // titleIsManual=true：本会话标题是手动改名的——自动标题（本
-        // 事件的 title）不得覆盖；false / 缺省保持原有覆盖行为
-        // （/rename --auto 的结果照样应用）。
-        if (ev.titleIsManual === true) break
-        if (ev.title != null && String(ev.title).trim()) {
-          set({ sessionTitle: String(ev.title).trim() })
-        }
+        // 标题写入收敛到唯一入口（sessionIdentity.ts，与
+        // session_summary_generated 共用同一套覆盖规则）：titleIsManual
+        // 的事件不改写本端标题。
+        applySessionTitle(set, get, ev.title, { isManual: ev.titleIsManual === true })
         break
       case 'model': {
         const sid = ev.sessionId
@@ -388,15 +332,9 @@ export function handleExtMiscEvent(
               ev.reasoningEffort && String(ev.reasoningEffort).trim()
                 ? String(ev.reasoningEffort).trim()
                 : undefined
-            const modelChanged = name != null && name !== get().modelName
-            set({
-              modelName: name,
-              ...(effort
-                ? { reasoningEffort: effort }
-                : modelChanged
-                  ? { reasoningEffort: undefined }
-                  : {}),
-            })
+            // 模型身份写入收敛到唯一入口（sessionIdentity.ts）：档位缺失
+            // 且模型变了 → 清旧档位；模型没变 → 不动档位。
+            applyModelIdentity(set, get, { name, effort })
           }
         }
         // 跨会话同步：更新侧边栏 workspaces 缓存中该会话的 currentModelId，另一端即时响应
