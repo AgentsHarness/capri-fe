@@ -27,7 +27,7 @@ import {
   RunningTasksBar,
   TodoChip,
 } from './StatusChips'
-import { filterRunningEntries, shortCwd } from '../format'
+import { baseCwd, filterRunningEntries, shortCwd } from '../format'
 import type { HostInfo } from '../api/types'
 import { transport } from '../api/client'
 import { hostState, hostStateLabel, type HostState } from '../lib/hostState'
@@ -144,15 +144,15 @@ export function WorkspaceBar({
   return (
     <div ref={topRef} className="sticky top-0 z-30 shrink-0 bg-gn-bg-base">
       {/* Content column matches scrollback/composer (mx-auto max-w-[960px]).
-          Mobile: the row wraps — left (branch/cwd) stays on the first line,
-          the chip cluster is one unit that wraps to a right-aligned second
-          line instead of overflowing/clipping past the viewport edge.
+          Mobile: single row (h-[37px], nowrap) with base cwd and compact chips;
+          overflow chips scroll horizontally with no-scrollbar instead of
+          wrapping to a second line.
           会话切换加载中（historyLoading）只有栏内内容淡出：栏本身保持
           常驻可见，高度不变（min-h 仍在布局里），wsBarH 连续测量，
           钉住的用户提示头始终与栏底齐平。 */}
       <div
-        className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} flex min-h-[37px] sm:h-[37px] min-w-0 flex-wrap items-center gap-x-2 gap-y-1 py-1 sm:py-0 text-[13px] select-none transition-opacity duration-300 ${
- fadeHidden ? 'pointer-events-none opacity-0' : 'opacity-100'
+        className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} flex h-[37px] min-w-0 flex-nowrap items-center gap-x-2 py-0 text-[13px] select-none transition-opacity duration-300 ${
+          fadeHidden ? 'pointer-events-none opacity-0' : 'opacity-100'
         }`}
         aria-hidden={fadeHidden || undefined}
         inert={fadeHidden || undefined}
@@ -163,7 +163,7 @@ export function WorkspaceBar({
             the `wt` badge. */}
         {gitInfo?.branch ? (
           <span
-            className="flex min-w-0 max-w-[18vw] items-center gap-1 truncate font-mono text-[13px] leading-none text-gn-cyan sm:max-w-[24vw]"
+            className="flex min-w-0 max-w-[28vw] shrink-0 sm:shrink items-center gap-1 truncate font-mono text-[13px] leading-none text-gn-cyan sm:max-w-[24vw]"
             title={
               gitInfo.isWorktree
                 ? `${gitInfo.branch} · worktree${gitInfo.mainRepo ? ` of ${gitInfo.mainRepo}` : ''}`
@@ -184,13 +184,14 @@ export function WorkspaceBar({
             repo when present. */}
         {cwd ? (
           <span
-            className="flex min-w-0 max-w-[30vw] items-center truncate font-mono text-[13px] leading-none text-gn-gray-dim sm:max-w-[52vw]"
+            className="flex min-w-0 max-w-[32vw] shrink items-center truncate font-mono text-[13px] leading-none text-gn-gray-dim sm:max-w-[52vw]"
             title={cwd}
           >
-            {shortCwd(cwd, homeDir)}
+            <span className="truncate sm:hidden">{baseCwd(cwd)}</span>
+            <span className="hidden truncate sm:inline">{shortCwd(cwd, homeDir)}</span>
             {gitInfo?.isWorktree && gitInfo.mainRepo ? (
               <span
-                className="min-w-0 max-w-[10vw] truncate sm:max-w-[16vw]"
+                className="hidden min-w-0 max-w-[10vw] truncate sm:inline sm:max-w-[16vw]"
                 title={gitInfo.mainRepo}
               >
                 {' '}
@@ -200,11 +201,9 @@ export function WorkspaceBar({
           </span>
         ) : null}
 
-        {/* Chip cluster — right-aligned; wraps as a unit onto a second
-            line on narrow screens (never clips past the viewport edge).
-            max-w-full caps the cluster at the row width so its chips wrap
-            internally instead of stretching the page (flex min-content). */}
-        <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
+        {/* Chip cluster — right-aligned; wraps horizontally with no-scrollbar
+            on narrow screens instead of wrapping to a second line. */}
+        <div className="ml-auto flex min-w-0 max-w-[75vw] sm:max-w-none shrink-0 flex-nowrap items-center gap-1.5 sm:gap-2 overflow-x-auto overflow-y-hidden py-0.5 gn-no-scrollbar touch-pan-x">
           {/* ⠋N toggles sticky task list · goal · ⠋ MCP · context · queue · todo · credits
               (TUI status.push order: bg_tasks → goal → mcp → context → queue → badge → credits) */}
           <RunningChip

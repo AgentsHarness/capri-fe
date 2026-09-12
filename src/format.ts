@@ -38,6 +38,18 @@ export function shortCwd(cwd: string, homeDir?: string): string {
 }
 
 /**
+ * Extract the base directory name from a workspace path for compact
+ * mobile display (e.g. `/Volumes/SD10/` → `SD10`, `~/work/acp-fe` → `acp-fe`).
+ */
+export function baseCwd(cwd: string): string {
+  if (!cwd) return ''
+  const trimmed = cwd.replace(/[/\\]+$/, '')
+  if (!trimmed) return cwd
+  const lastSlash = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'))
+  return lastSlash >= 0 ? trimmed.slice(lastSlash + 1) : trimmed
+}
+
+/**
  * Format elapsed milliseconds compactly like the TUI status bar:
  * `5s`, `3m`, `2h` (xai-grok-pager agent_status::format_elapsed_compact).
  */

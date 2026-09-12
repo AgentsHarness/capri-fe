@@ -61,7 +61,7 @@ export function sessionGroupKey(
 }
 
 /**
- * frozen 排序形态的状态优先级（见 historyOrder / historyView.orderMode）：
+ * 钉住排序形态的状态优先级（见 historyOrder.ts）：
  * 只有「待处理」（权限/提问挂起，用户被卡住）仍浮到组内最前，运行中、
  * ✓ 完成提醒、后台任务一律不参与排序——让列表逐帧乱跳的正是这几档。
  */

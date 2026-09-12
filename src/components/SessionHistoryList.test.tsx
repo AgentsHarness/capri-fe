@@ -99,7 +99,7 @@ describe('行首状态列', () => {
   it('空闲行不画菱形，置顶徽标占掉这一格', () => {
     render(<SessionHistoryList />)
     const plain = row('空闲会话')
-    expect(plain.querySelector('svg')).toBeNull()
+    expect(leading(plain)?.querySelector('svg')).toBeNull()
     expect(leading(plain)?.textContent).toBe('')
 
     const pinned = row('置顶空闲会话')
@@ -119,6 +119,15 @@ describe('行首状态列', () => {
   it('待处理行行首是实心菱形', () => {
     render(<SessionHistoryList />)
     expect(leading(row('待处理会话'))?.querySelector('svg')).not.toBeNull()
+  })
+
+  it('完成待查看行行首是对勾图标', () => {
+    useChatStore.setState({ completedNotices: { idle: Date.now() } } as never)
+    render(<SessionHistoryList />)
+    const completedRow = row('空闲会话')
+    const badge = leading(completedRow)
+    expect(badge?.getAttribute('aria-label')).toBe('已完成待查看')
+    expect(badge?.querySelector('svg')).not.toBeNull()
   })
 })
 
@@ -164,8 +173,34 @@ describe('当前标记字号', () => {
   })
 })
 
+describe('分组折叠与展开交互', () => {
+  it('点击组头折叠组内行，再次点击展开组内行', () => {
+    render(<SessionHistoryList />)
+    const head = screen.getByText('x').closest('button')!
+    expect(screen.getByText('空闲会话')).toBeInTheDocument()
+
+    // 点击折叠
+    act(() => {
+      head.click()
+    })
+    expect(screen.queryByText('空闲会话')).toBeNull()
+
+    // 再次点击展开
+    act(() => {
+      head.click()
+    })
+    expect(screen.getByText('空闲会话')).toBeInTheDocument()
+  })
+
+  it('各组带 data-gkey 属性', () => {
+    const { container } = render(<SessionHistoryList />)
+    const group = container.querySelector('[data-gkey="/x"]')
+    expect(group).not.toBeNull()
+  })
+})
+
 /**
- * 钉住顺序（orderMode='frozen'，默认）：host 每推一次活动/状态都不该
+ * 钉住顺序（固定默认）：host 每推一次活动/状态都不该
  * 让行或整组挪位，否则用户正在看的目录会被顶到最上面。
  */
 describe('钉住顺序', () => {
@@ -209,7 +244,7 @@ describe('钉住顺序', () => {
 
   beforeEach(() => {
     useHistoryOrder.setState({ anchors: {}, collapse: {}, pendingReanchor: false, hostScope: '' })
-    useHistoryView.setState({ mode: 'workspace', orderMode: 'frozen' })
+    useHistoryView.setState({ mode: 'workspace' })
     fixture(OLD_ISO, NEW_ISO, 'idle')
   })
 
@@ -217,19 +252,11 @@ describe('钉住顺序', () => {
     const { container } = render(<SessionHistoryList />)
     expect(order(container)).toEqual(['sb', 'sa'])
     // /a 的会话变成最新活动且正在跑 —— 钉住形态下既不升组内、也不将
-    // /a 顶到最前（active 形态会）。
+    // /a 顶到最前。
     act(() => fixture(new Date(Date.now() + 60_000).toISOString(), OLD_ISO, 'active'))
     expect(order(container)).toEqual(['sb', 'sa'])
     // 不浮上来 ≠ 看不见：组头带在跑数量，折叠/超出名额也不丢信号。
     expect(screen.getByLabelText('1 个会话在运行')).not.toBeNull()
-  })
-
-  it('跟随活跃形态下同样的变化会重排', () => {
-    useHistoryView.setState({ mode: 'workspace', orderMode: 'active' })
-    const { container } = render(<SessionHistoryList />)
-    expect(order(container)).toEqual(['sb', 'sa'])
-    act(() => fixture(new Date(Date.now() + 60_000).toISOString(), OLD_ISO, 'active'))
-    expect(order(container)).toEqual(['sa', 'sb'])
   })
 
   it('显式刷新（requestReanchor）后按最新活动重排一次', () => {

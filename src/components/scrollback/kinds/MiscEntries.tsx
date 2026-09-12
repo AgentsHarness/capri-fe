@@ -26,13 +26,19 @@ export function ImageEntry({
   e: Extract<ScrollEntry, { kind: 'image' }>
   chrome: EntryChrome
 }) {
-  const { shell, openViewer, onOpenImage } = chrome
+  const { shell, openViewer, onOpenImage, galleryItem } = chrome
   // Standalone image entry (no open assistant / user row to attach to):
   // uniform thumbnail (h-24) — consecutive image rows are wrapped by
   // Scrollback in one bottom-aligned gallery. Hover/selected frame is the
   // entry's SelectionBox (scrollback-column width, constant) — no
   // thumbnail-level outline. Click opens the group lightbox via
   // onOpenImage (‹ › navigation), or the block viewer as fallback (mini).
+  //
+  // 画廊行（galleryItem）：缩略图铺满条目盒、cover 裁切。百分比上限在
+  // 这里不可用——条目本身是 shrink-to-fit 的 flex item，max-w-[45%] 会
+  // 按条目自己的内容宽度解析，把缩略图压到不足半宽、上下留白、行间还
+  // 拉出大小不等的空洞。其它位置（迷你 scrollback）父级宽度确定，保持
+  // 按比例的缩略图。
   return (
     <EntryShell {...shell}>
       <img
@@ -46,7 +52,9 @@ export function ImageEntry({
           else openViewer(e.id)
         }}
         title="点击放大查看"
-        className="h-24 max-w-[45%] cursor-zoom-in rounded border border-gn-prompt-border object-contain"
+        className={`h-24 cursor-zoom-in rounded border border-gn-prompt-border ${
+          galleryItem ? 'w-full object-cover' : 'max-w-[45%] object-contain'
+        }`}
       />
     </EntryShell>
   )

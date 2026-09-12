@@ -51,6 +51,12 @@ export type EntryViewProps = {
   /** 关闭本行的 hover/选中框（图片画廊组：框由组容器统一绘制）。 */
   noFrame?: boolean
   /**
+   * 本行是主 scrollback 画廊组的一员：缩略图按条目盒宽度铺满并裁切
+   * （cover），而不是按内容比例缩小留白。缺省（迷你 scrollback 等）
+   * 保持原比例缩略图。
+   */
+  galleryItem?: boolean
+  /**
    * 主 scrollback 的合并流式滚动固定：流式思考期间挂到思考 body 元素上，
    * 由父组件统一固定（每帧一次布局读写）；迷你 scrollback 不传 → 条目
    * 自己固定。恒为稳定引用（useRef 对象），memo 比较只做引用相等。
@@ -102,6 +108,9 @@ export type EntryChrome = {
    * scrollback）退回 openViewer。
    */
   onOpenImage?: (entryId: string) => void
+  /** 本行参与主 scrollback 的连续图片画廊：ImageEntry 铺满条目盒并裁切
+   *  （见 EntryViewProps.galleryItem）。 */
+  galleryItem?: boolean
   /** 迷你 scrollback（子代理弹窗）：消息操作行隐藏会话级动作（fork）。 */
   inMini: boolean
   /** 会话工作目录（historyCwd ?? cwd）——工具行路径按 surface 打印时用作

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  baseCwd,
   filterRunningEntries,
   fmtBytes,
   fmtElapsedCompact,
@@ -56,6 +57,22 @@ describe('shortCwd', () => {
 
   it('homeDir 为根 / 时不折叠', () => {
     expect(shortCwd('/x', '/')).toBe('/x')
+  })
+})
+
+describe('baseCwd', () => {
+  it('提取末级目录名，自动剔除末尾斜杠', () => {
+    expect(baseCwd('/Volumes/SD10/')).toBe('SD10')
+    expect(baseCwd('/Volumes/SD10')).toBe('SD10')
+    expect(baseCwd('/home/u/repos/acp-fe')).toBe('acp-fe')
+    expect(baseCwd('C:\\Users\\admin\\project\\')).toBe('project')
+  })
+
+  it('单层根目录、波浪号或空路径原样安全返回', () => {
+    expect(baseCwd('/')).toBe('/')
+    expect(baseCwd('~')).toBe('~')
+    expect(baseCwd('')).toBe('')
+    expect(baseCwd('acp-fe')).toBe('acp-fe')
   })
 })
 

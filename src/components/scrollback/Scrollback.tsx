@@ -477,10 +477,12 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
           // picker instead.
           <EmptyStatePicker />
         )}
-        {/* 连续独立 image 行聚合为一个画廊组：等高 flex 行（items-end）、
-            点击任意一张打开组级 lightbox（‹ › / ← → 组内切换）。组内每张
-            图仍是独立 EntryView（各自 accent/选中/查看器），聚合只做横向
-            对齐与预览共享，不改间距语义（image 本就不参与 dense 打包）。 */}
+        {/* 连续独立 image 行聚合为一个画廊组：单行等高 flex 行（items-end、
+            nowrap）、点击任意一张打开组级 lightbox（‹ › / ← → 组内切换）。
+            组内每张图仍是独立 EntryView（各自 accent/选中/查看器），聚合只做
+            横向对齐与预览共享。nowrap + 组内 min-w-0：整行放不下时等比收缩
+            铺满内容列（行高恒为 h-24，永不换行、不撑高），缩略图 cover 裁切
+            而非压缩留白。image 本就不参与 dense 打包。 */}
         {(() => {
           const items: Array<
             | { kind: 'row'; row: DisplayRow; i: number }
@@ -574,7 +576,7 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
             return (
               <Fragment key={item.key}>
                 <div
-                  className="relative flex flex-wrap items-end gap-1.5"
+                  className="relative flex flex-nowrap items-end gap-1.5"
                   onMouseEnter={() => setImgHoverKey(item.key)}
                   onMouseLeave={() =>
                     setImgHoverKey((k) => (k === item.key ? null : k))
@@ -608,21 +610,26 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
                       i < displayRows.length - 1 &&
                       isDensePackableRow(displayRows[i + 1])
                     return (
-                      <EntryView
-                        key={displayRowKey(row)}
-                        e={row.entry}
-                        selected={
-                          row.entry.id === selectedId && focusMode === 'scrollback'
-                        }
-                        pendingFreeze={pendingFreeze}
-                        now={now}
-                        inGroup={spanContaining(spans, row.index) != null}
-                        dense={dense}
-                        densePrev={densePrev}
-                        denseNext={denseNext}
-                        onOpenImage={item.onOpenImage}
-                        noFrame
-                      />
+                      // min-w-0：flex item 默认不能小于内容宽，缩略图就会
+                      // 顶出内容列而不是收缩（内容列里的 1fr 列自身带
+                      // min-w-0，收缩后缩略图铺满该列）。
+                      <div key={displayRowKey(row)} className="min-w-0">
+                        <EntryView
+                          e={row.entry}
+                          selected={
+                            row.entry.id === selectedId && focusMode === 'scrollback'
+                          }
+                          pendingFreeze={pendingFreeze}
+                          now={now}
+                          inGroup={spanContaining(spans, row.index) != null}
+                          dense={dense}
+                          densePrev={densePrev}
+                          denseNext={denseNext}
+                          onOpenImage={item.onOpenImage}
+                          noFrame
+                          galleryItem
+                        />
+                      </div>
                     )
                   })}
                 </div>

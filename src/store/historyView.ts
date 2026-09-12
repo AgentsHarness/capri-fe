@@ -7,20 +7,15 @@ import { KEY } from '../lib/keys'
  * - workspace — 按工作区（cwd）分组，当前默认形态
  * - marked    — 分类视图：思考中（非空闲会话）+ 置顶 / 待办标记
  *
- * 排序形态 `orderMode` 与视图形态正交，同属这一份本地偏好：
- * - frozen（默认）— 列表顺序锚定在「首次见到该会话」或「显式刷新」那一刻
- *   的活动时间，后台会话继续跑也不重排（锚点见 historyOrder.ts）
- * - active — 历史行为：按实时状态优先级 + 活动时间每次刷新都重排
+ * 排序形态已固定为默认的「钉住顺序」（见 historyOrder.ts），不再提供切换选项。
  */
 
 const VIEW_KEY = KEY.historyView
 
 export type HistoryListMode = 'workspace' | 'marked'
-export type HistoryOrderMode = 'frozen' | 'active'
 
 export type HistoryViewPrefs = {
   mode: HistoryListMode
-  orderMode: HistoryOrderMode
 }
 
 function load(): HistoryViewPrefs {
@@ -32,11 +27,7 @@ function load(): HistoryViewPrefs {
     parsed && typeof parsed === 'object' && parsed.mode === 'marked'
       ? 'marked'
       : 'workspace'
-  const orderMode: HistoryOrderMode =
-    parsed && typeof parsed === 'object' && parsed.orderMode === 'active'
-      ? 'active'
-      : 'frozen'
-  return { mode, orderMode }
+  return { mode }
 }
 
 function persist(prefs: HistoryViewPrefs): void {
@@ -46,7 +37,6 @@ function persist(prefs: HistoryViewPrefs): void {
 export const useHistoryView = create<
   HistoryViewPrefs & {
     setMode: (mode: HistoryListMode) => void
-    setOrderMode: (orderMode: HistoryOrderMode) => void
   }
 >(() => {
   const initial = load()
@@ -57,25 +47,16 @@ export const useHistoryView = create<
       persist(next)
       useHistoryView.setState({ mode })
     },
-    setOrderMode: (orderMode) => {
-      const next = { ...load(), orderMode }
-      persist(next)
-      useHistoryView.setState({ orderMode })
-    },
   }
 })
 
-// 多 Tab 本地同步：监听 storage 事件让视图模式（workspace / marked）与
-// 排序形态（frozen / active）即时同步
+// 多 Tab 本地同步：监听 storage 事件让视图模式（workspace / marked）即时同步
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (e) => {
     if (e.key === VIEW_KEY && e.newValue) {
-      const { mode, orderMode } = load()
+      const { mode } = load()
       if (mode !== useHistoryView.getState().mode) {
         useHistoryView.setState({ mode })
-      }
-      if (orderMode !== useHistoryView.getState().orderMode) {
-        useHistoryView.setState({ orderMode })
       }
     }
   })
