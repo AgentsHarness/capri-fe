@@ -207,6 +207,17 @@ export function ensureToolsetSettings(): Promise<ToolsetSection> {
   return loadSettings().then((p) => applyToolsetPayload(p, url) ?? cachedToolset ?? {})
 }
 
+/**
+ * Re-read the `toolset` section with a fresh GET (same endpoint-deduped
+ * request as ensureToolsetSettings, but never served from the cache). A
+ * config.toml edited outside the FE must not leave a countdown armed on a
+ * stale budget. Resolves null when the fetch fails (cache left as-is).
+ */
+export function refreshToolsetSettings(): Promise<ToolsetSection | null> {
+  const url = settingsUrl()
+  return loadSettings().then((p) => applyToolsetPayload(p, url))
+}
+
 /** Sync accessor — `undefined` until ensureToolsetSettings resolves. */
 export function toolsetSettings(): ToolsetSection | undefined {
   return cachedToolset

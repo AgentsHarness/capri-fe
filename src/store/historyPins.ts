@@ -604,6 +604,9 @@ export function sortWorkspacesWithPins<T extends WorkspaceGroup>(
  * 按状态优先级 → 最新活动降序（状态优先级见 historyGroups.sessionSortRank：
  * 待处理 → 完成对勾 → 运行中+后台任务 → 运行中 → 后台任务运行中 → 空闲）。
  * 已完成的待办不升位（徽标保留完成痕迹，排序回到正常优先级）。
+ *
+ * `rank` 可换成 frozen 形态的窄优先级（historyGroups.frozenSortRank：只认
+ * 待处理），用于「顺序钉住、不随每次刷新重排」的列表形态。
  */
 export function sortSessionsWithPins<T extends SessionInfo>(
   sessions: T[],
@@ -611,13 +614,14 @@ export function sortSessionsWithPins<T extends SessionInfo>(
   completedNotices: Record<string, number> | null,
   cmp: (a: T, b: T) => number,
   todos: Record<string, TodoStatus> = {},
+  rank: (s: T, notices: Record<string, number> | null) => number = sessionSortRank,
 ): T[] {
   const byPriority = (a: T, b: T): number => {
     const ta = todos[a.sessionId] === 'todo' ? 0 : 1
     const tb = todos[b.sessionId] === 'todo' ? 0 : 1
     if (ta !== tb) return ta - tb
-    const ra = sessionSortRank(a, completedNotices)
-    const rb = sessionSortRank(b, completedNotices)
+    const ra = rank(a, completedNotices)
+    const rb = rank(b, completedNotices)
     if (ra !== rb) return ra - rb
     return cmp(a, b)
   }

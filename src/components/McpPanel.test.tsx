@@ -291,6 +291,62 @@ describe('McpPanel — 管理操作', () => {
     expect(container.textContent).toContain('工具 (4)')
   })
 
+  /**
+   * wire `reason` 是状态转移原因码（每条事件都带，成功也带：首次握手完成 =
+   * `initialized`），不是错误文本 —— 健康行不得报红，异常行才出诊断框。
+   */
+  it('ready + reason=initialized → 不渲染红色原因框，原因码退到指示灯 tooltip', async () => {
+    setStore({
+      mcpServers: [{ name: 'fs', status: 'ready', source: 'local', reason: 'initialized' }],
+    })
+    const { container } = renderPanel()
+    await screen.findAllByText('fs')
+    expect(container.textContent).not.toContain('原因:')
+    const dot = container.querySelector('span[title]') as HTMLElement
+    expect(dot.getAttribute('title')).toBe('ready · initialized')
+    expect(dot.className).toContain('bg-gn-green')
+  })
+
+  it('unavailable + handshake_failed → 红色原因框 + detail 原文', async () => {
+    setStore({
+      mcpServers: [
+        {
+          name: 'linear',
+          status: 'unavailable',
+          reason: 'handshake_failed',
+          detail: 'cli-chat-proxy returned 502',
+        },
+      ],
+    })
+    const { container } = renderPanel()
+    await screen.findAllByText('linear')
+    expect(screen.getByText('原因:')).toBeInTheDocument()
+    expect(container.textContent).toContain('handshake_failed')
+    expect(container.textContent).toContain('cli-chat-proxy returned 502')
+    const dot = container.querySelector('span[title]') as HTMLElement
+    expect(dot.className).toContain('bg-gn-red')
+  })
+
+  it('needs_auth → 橙色原因框（不是红色错误）', async () => {
+    setStore({
+      mcpServers: [{ name: 'github', status: 'needs_auth', reason: 'auth_expired' }],
+    })
+    renderPanel()
+    await screen.findAllByText('github')
+    const diag = screen.getByText('原因:').parentElement as HTMLElement
+    expect(diag.className).toContain('text-gn-orange')
+    expect(diag.className).not.toContain('text-gn-red')
+  })
+
+  it('initializing + config_added → 不报红', async () => {
+    setStore({
+      mcpServers: [{ name: 'fs', status: 'initializing', reason: 'config_added' }],
+    })
+    const { container } = renderPanel()
+    await screen.findAllByText('fs')
+    expect(container.textContent).not.toContain('原因:')
+  })
+
   it('无工具信息降级文案', async () => {
     mcpList.mockResolvedValue([{ name: 'fs', enabled: true }] as McpListServer[])
     const { container } = renderPanel()
@@ -316,6 +372,8 @@ describe('McpPanel — 管理操作', () => {
     setStore({ mcpServers: [{ name: 'fs', status: 'ready' }] })
     mcpList.mockResolvedValue([{ name: 'fs', enabled: true, tools } as McpListServer])
     renderPanel()
+    // 工具区默认收起，先展开
+    fireEvent.click(await screen.findByRole('button', { name: /展开/ }))
     // 按 title 定位（「禁用」这个文案在服务器级按钮上同名）
     const disableRead = await screen.findByTitle('禁用工具 read（/api/mcp/toggle-tool）')
     // 已启用的 read：按钮文案「禁用」→ 必须传 false（曾经的 bug 是传当前
@@ -335,6 +393,51 @@ describe('McpPanel — 管理操作', () => {
         expect.objectContaining({ statusText: '已启用工具 write（fs）' }),
       ),
     )
+  })
+
+  it('工具列表默认收起，展开/收起按钮切换工具行', async () => {
+    setStore({ mcpServers: [{ name: 'fs', status: 'ready' }] })
+    mcpList.mockResolvedValue([{ name: 'fs', enabled: true, tools } as McpListServer])
+    const { container } = renderPanel()
+    await screen.findAllByText('工具 (2)')
+    // 收起：不渲染工具行，只有展开入口
+    expect(
+      screen.queryByTitle('禁用工具 read（/api/mcp/toggle-tool）'),
+    ).toBeNull()
+    expect(screen.getByRole('button', { name: /展开 \(2\)/ })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /展开 \(2\)/ }))
+    expect(
+      await screen.findByTitle('禁用工具 read（/api/mcp/toggle-tool）'),
+    ).toBeInTheDocument()
+    expect(container.textContent).toContain('读文件')
+
+    fireEvent.click(screen.getByRole('button', { name: '收起' }))
+    expect(
+      screen.queryByTitle('禁用工具 read（/api/mcp/toggle-tool）'),
+    ).toBeNull()
+  })
+
+  it('搜索命中工具名 → 该行工具列表自动展开', async () => {
+    setStore({
+      mcpServers: [
+        { name: 'fs', status: 'ready' },
+        { name: 'two', status: 'ready' },
+        { name: 'three', status: 'ready' },
+      ],
+    })
+    mcpList.mockResolvedValue([
+      { name: 'fs', enabled: true, tools },
+      { name: 'two', enabled: true },
+      { name: 'three', enabled: true },
+    ] as McpListServer[])
+    renderPanel()
+    const input = await screen.findByPlaceholderText(/搜索 MCP 服务器/)
+    fireEvent.change(input, { target: { value: 'read' } })
+    // 未点过展开：工具名命中即展开，能直接看到命中的工具行
+    expect(
+      await screen.findByTitle('禁用工具 read（/api/mcp/toggle-tool）'),
+    ).toBeInTheDocument()
   })
 
   it('删除服务器：confirm 取消不调用；确认后调用 mcpRemove', async () => {

@@ -5,6 +5,7 @@
 
 import type { ToolCall, ToolHookData } from '../api/types'
 import { Fragment, useState } from 'react'
+import { Check, Circle, X } from 'lucide-react'
 import {
   EXEC_FIRST,
   EXEC_LAST,
@@ -743,34 +744,106 @@ function UseToolBody({
 // ── ask user ─────────────────────────────────────────────────────────
 
 /**
- * TUI other.rs AskUserQuestion 问答渲染：`N. question`（primary）+ 编号对齐的
- * `→ answer`（accent_user）；未作答显示 dim 的 `(no answer)`。
+ * AskUserQuestion 问答结构化渲染：
+ * - 编号题干 `N. question`（+ 可选 `[多选]` 标记）
+ * - 候选选项列表（若有），高亮已被用户选中的选项
+ * - 用户最终选择（`→ answer`）与用户自定义输入备注（`用户输入：notes`）
+ * - 取消状态显示 `(已取消 / 用户放弃回答)`，未作答显示 `(no answer)`
  */
 function AskUserQaBody({ pairs }: { pairs: AskUserQaPair[] }) {
   return (
-    <div className="space-y-0.5 py-0.5">
+    <div className="space-y-2 py-0.5">
       {pairs.map((p, i) => {
-        // 答案行箭头与问题文本左对齐（编号 "N. " 宽度 + 1 列）。
         const indent = `${String(i + 1).length + 2}ch`
+        const hasOptions = p.options && p.options.length > 0
+        const selectedAnswers = p.answer
+          ? p.answer.split(',').map((s) => s.trim())
+          : []
+
         return (
-          <div key={i} className="px-2 font-mono text-[12px] leading-[1.4]">
-            <div className="flex min-w-0">
+          <div key={i} className="px-2 space-y-1.5 font-mono text-[12px] leading-[1.4]">
+            {/* 题干行 */}
+            <div className="flex min-w-0 items-start">
               <span className="shrink-0 whitespace-pre text-gn-muted">{`${i + 1}. `}</span>
-              <span className="min-w-0 flex-1 whitespace-pre-wrap break-words text-gn-fg">
+              <span className="min-w-0 flex-1 whitespace-pre-wrap break-words text-gn-fg font-medium">
                 {p.question}
               </span>
+              {p.multiSelect ? (
+                <span className="ml-2 shrink-0 rounded bg-gn-bg-highlight px-1.5 py-0.5 text-[10px] text-gn-muted font-normal">
+                  多选
+                </span>
+              ) : null}
             </div>
-            {p.answer ? (
+
+            {/* 候选选项列表 */}
+            {hasOptions ? (
+              <div className="space-y-0.5" style={{ paddingLeft: indent }}>
+                {p.options!.map((opt, optIdx) => {
+                  const isSelected =
+                    !p.cancelled &&
+                    (selectedAnswers.includes(opt.label) ||
+                      (selectedAnswers.length === 0 && p.answer === opt.label))
+
+                  return (
+                    <div
+                      key={optIdx}
+                      className={`flex items-start gap-1.5 rounded px-1.5 py-0.5 text-[11.5px] ${
+                        isSelected
+                          ? 'bg-gn-accent-user/10 text-gn-fg'
+                          : 'text-gn-muted hover:bg-gn-bg-highlight/40'
+                      }`}
+                    >
+                      <div className="mt-0.5 shrink-0">
+                        {isSelected ? (
+                          <Check className="h-3.5 w-3.5 text-gn-accent-user" />
+                        ) : (
+                          <Circle className="h-3 w-3 text-gn-gray-dim" />
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <span className={isSelected ? 'font-semibold text-gn-accent-user' : ''}>
+                          {opt.label}
+                        </span>
+                        {opt.description ? (
+                          <p className="text-[10.5px] text-gn-muted/80 leading-normal">
+                            {opt.description}
+                          </p>
+                        ) : null}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            ) : null}
+
+            {/* 用户回答与输入呈现 */}
+            {p.cancelled ? (
               <div
-                className="flex min-w-0"
-                style={{ color: 'var(--color-gn-accent-user)' }}
+                className="flex items-center gap-1.5 text-[11.5px] text-gn-gray-dim"
+                style={{ paddingLeft: indent }}
               >
-                <span className="shrink-0 whitespace-pre" style={{ width: indent }}>
-                  {'→ '}
-                </span>
-                <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">
-                  {p.answer}
-                </span>
+                <X className="h-3.5 w-3.5 text-gn-red/70" />
+                <span>(已取消 / 用户放弃回答)</span>
+              </div>
+            ) : p.answer ? (
+              <div className="space-y-1" style={{ paddingLeft: indent }}>
+                <div
+                  className="flex min-w-0"
+                  style={{ color: 'var(--color-gn-accent-user)' }}
+                >
+                  <span className="shrink-0 font-bold whitespace-pre">{'→ '}</span>
+                  <span className="min-w-0 flex-1 whitespace-pre-wrap break-words font-semibold">
+                    {p.answer}
+                  </span>
+                </div>
+                {p.notes ? (
+                  <div className="flex items-start gap-1.5 rounded bg-gn-bg-highlight/50 px-2 py-1 text-[11.5px] text-gn-fg">
+                    <span className="shrink-0 font-medium text-gn-muted">用户输入：</span>
+                    <span className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono">
+                      {p.notes}
+                    </span>
+                  </div>
+                ) : null}
               </div>
             ) : (
               <div className="whitespace-pre text-gn-gray-dim" style={{ paddingLeft: indent }}>

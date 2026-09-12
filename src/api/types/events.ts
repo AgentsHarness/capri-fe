@@ -268,6 +268,12 @@ export type AcpEvent =
       params?: Record<string, unknown>
       /** Host withSid 约定：广播带 sessionId（多会话过滤用）。 */
       sessionId?: string
+      /**
+       * 统一计时起点（host 收到 agent 请求的 unix ms）。广播与
+       * pendingRequests snapshot 共享此时间戳，供所有标签页和设备
+       * 对齐倒计时起点。
+       */
+      receivedAt?: number
     }
   /**
    * Host: a pending client_request was settled (answered / cancelled /
@@ -575,6 +581,11 @@ export type PendingReq = {
    * hosts — FE also peeks params.sessionId / session_id as fallback.
    */
   sessionId?: string
+  /**
+   * 统一计时起点（host 收到 agent 请求的 unix ms）。所有标签页和设备
+   * 共享同一个倒计时基准；缺省时回退为前端自身探测的 arrivalOf。
+   */
+  receivedAt?: number
 }
 
 /**

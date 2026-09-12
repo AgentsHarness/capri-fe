@@ -386,6 +386,86 @@ describe('ToolDetail — list_dir / fetch / web_search / use_tool / generic', ()
     expect(c2.textContent).toContain('(no answer)')
   })
 
+  it('ask_user：包含 rawInput.questions 时结构化展示题目与候选选项，不输出裸 JSON', () => {
+    const rawInput = {
+      variant: 'AskUserQuestion',
+      questions: [
+        {
+          question: '你想如何进行验证？',
+          options: [
+            { label: '查看倒计时卡片', description: '观察显示是否准确' },
+            { label: '提出新的需求', description: '继续调整逻辑' },
+          ],
+        },
+      ],
+    }
+    const output =
+      'User has answered your questions: "你想如何进行验证？"="查看倒计时卡片". You can now continue with the user\'s answers in mind.'
+
+    const { container } = renderDetail(
+      { title: 'ask_user_question', rawInput, content: output },
+      'ask_user',
+    )
+    // 结构化渲染了题目与选项
+    expect(container.textContent).toContain('1. 你想如何进行验证？')
+    expect(container.textContent).toContain('查看倒计时卡片')
+    expect(container.textContent).toContain('观察显示是否准确')
+    expect(container.textContent).toContain('提出新的需求')
+    expect(container.textContent).toContain('继续调整逻辑')
+    expect(container.textContent).toContain('→ 查看倒计时卡片')
+
+    // 绝对不作为裸 JSON 输出在 inputArgs 里
+    expect(container.textContent).not.toContain('questions:')
+    expect(container.textContent).not.toContain('"options"')
+  })
+
+  it('ask_user：用户选择 Other 并填写 user notes 时，醒目展示用户输入内容', () => {
+    const rawInput = {
+      questions: [
+        {
+          question: '你想如何进行验证？',
+          options: [
+            { label: 'Option A' },
+            { label: 'Other' },
+          ],
+        },
+      ],
+    }
+    const output =
+      'User has answered your questions: "你想如何进行验证？"="Other" user notes: 先帮我部署一下最新的fe到服务器吧. You can now continue with the user\'s answers in mind.'
+
+    const { container } = renderDetail(
+      { title: 'ask_user_question', rawInput, content: output },
+      'ask_user',
+    )
+    expect(container.textContent).toContain('1. 你想如何进行验证？')
+    expect(container.textContent).toContain('→ Other')
+    expect(container.textContent).toContain('用户输入：')
+    expect(container.textContent).toContain('先帮我部署一下最新的fe到服务器吧')
+  })
+
+  it('ask_user：取消或超时时展示已取消状态，不打印裸 JSON', () => {
+    const rawInput = {
+      questions: [
+        {
+          question: '是否需要现在更新并重启本机 host？',
+          options: [{ label: '立即更新' }, { label: '暂不更新' }],
+        },
+      ],
+    }
+    const output = 'User declined to answer the questions.'
+
+    const { container } = renderDetail(
+      { title: 'ask_user_question', rawInput, content: output },
+      'ask_user',
+    )
+    expect(container.textContent).toContain('1. 是否需要现在更新并重启本机 host？')
+    expect(container.textContent).toContain('立即更新')
+    expect(container.textContent).toContain('暂不更新')
+    expect(container.textContent).toContain('(已取消 / 用户放弃回答)')
+    expect(container.textContent).not.toContain('questions:')
+  })
+
   it('generic：inputArgs + (no output) 兜底', () => {
     const { container } = renderDetail({ title: 'MyTool', rawInput: { a: '1' } }, 'custom')
     expect(container.textContent).toContain('a:')

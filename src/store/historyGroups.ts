@@ -61,6 +61,15 @@ export function sessionGroupKey(
 }
 
 /**
+ * frozen 排序形态的状态优先级（见 historyOrder / historyView.orderMode）：
+ * 只有「待处理」（权限/提问挂起，用户被卡住）仍浮到组内最前，运行中、
+ * ✓ 完成提醒、后台任务一律不参与排序——让列表逐帧乱跳的正是这几档。
+ */
+export function frozenSortRank(s: SessionInfo): number {
+  return s.status?.state === 'awaiting' || s.status?.awaitingInput === true ? 0 : 1
+}
+
+/**
  * TUI repo_name_from_cwd — 路径最后两个 Normal 组件以 '-' 连接；
  * 只有一个组件时取本身。空字符串 → 'unknown'，根 '/' → '/'。
  * 例：/home/user/fw/1 → "fw-1"，/home/user/xai → "user-xai"，

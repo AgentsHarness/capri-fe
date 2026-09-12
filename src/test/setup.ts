@@ -9,4 +9,5 @@ afterEach(() => {
   // storage.ts 的 KV 缓存直连 jsdom localStorage，逐测试清空以防
   // historyPins / theme 等持久化键跨测试串味。
   window.localStorage.clear()
+  window.sessionStorage.clear()
 })

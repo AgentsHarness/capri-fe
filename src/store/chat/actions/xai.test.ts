@@ -24,6 +24,12 @@ vi.mock('../../../api/client', () => ({
       .fn()
       .mockResolvedValue({ sessionId: 'wt-1', worktreePath: '/wt', effectiveCwd: '/wt/x' }),
     sessionDelete: vi.fn().mockResolvedValue({}),
+    mcpList: vi.fn().mockResolvedValue({ servers: [] }),
+    mcpToggle: vi.fn().mockResolvedValue({}),
+    mcpToggleTool: vi.fn().mockResolvedValue({}),
+    mcpAdd: vi.fn().mockResolvedValue({}),
+    mcpRemove: vi.fn().mockResolvedValue({}),
+    mcpAuthTrigger: vi.fn().mockResolvedValue({}),
     btw: vi.fn().mockResolvedValue({ answer: '**答案**' }),
     memoryRewrite: vi.fn().mockResolvedValue({
       ok: true,
@@ -72,7 +78,7 @@ function bind(state: ChatState) {
   }
   return xaiActions(set, () => state) as Pick<
     ChatState,
-    'forkSession' | 'deleteSession' | 'askBtw' | 'rememberNote' | 'rewindExecute'
+    'forkSession' | 'deleteSession' | 'askBtw' | 'rememberNote' | 'rewindExecute' | 'syncMcpServers'
   >
 }
 
@@ -490,3 +496,73 @@ describe('xaiActions.rewindExecute', () => {
     expect(current.entries.map((e) => e.id)).toEqual(['nx'])
   })
 })
+
+describe('syncMcpServers', () => {
+  beforeEach(() => {
+    vi.mocked(transport.mcpList).mockReset()
+  })
+
+  it('拉取 /api/mcp/list 并沉淀为规范的 mcpServers 结构，保留已有的诊断信息', async () => {
+    ;(transport.mcpList as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      servers: [
+        {
+          name: 'linear',
+          displayName: 'Linear Issue Tracker',
+          status: 'ready',
+          enabled: true,
+          command: 'npx',
+          args: ['-y', '@modelcontextprotocol/server-linear'],
+          tools: [{ name: 'create_issue', displayName: 'Create Issue' }],
+          toolCount: 1,
+        },
+        {
+          name: 'github',
+          status: 'unavailable',
+          enabled: false,
+        },
+      ],
+    })
+
+    const state = makeState({
+      mcpServers: [{ name: 'linear', reason: 'initialized', detail: undefined }],
+      mcpVersion: 0,
+    })
+    const actions = bind(state) as Pick<ChatState, 'syncMcpServers'>
+
+    await actions.syncMcpServers()
+    expect(transport.mcpList).toHaveBeenCalled()
+    expect(state.mcpServers.length).toBe(2)
+    const linear = state.mcpServers.find((s) => s.name === 'linear')
+    expect(linear?.displayName).toBe('Linear Issue Tracker')
+    expect(linear?.status).toBe('ready')
+    expect(linear?.reason).toBe('initialized')
+    expect(linear?.toolCount).toBe(1)
+    expect(state.mcpVersion).toBe(0) // 必须不自增 mcpVersion，防止触发面板监听死循环
+  })
+
+  it('支持传入 prefetched 列表，直接应用而不重复调用 transport.mcpList', async () => {
+    const state = makeState({ mcpServers: [], mcpVersion: 0 })
+    const actions = bind(state) as Pick<ChatState, 'syncMcpServers'>
+
+    await actions.syncMcpServers([
+      { name: 'direct-server', status: 'ready', enabled: true },
+    ])
+    expect(transport.mcpList).not.toHaveBeenCalled()
+    expect(state.mcpServers.length).toBe(1)
+    expect(state.mcpServers[0].name).toBe('direct-server')
+  })
+
+  it('网络异常时不崩溃，吞下错误并保持原有 mcpServers 不变', async () => {
+    ;(transport.mcpList as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('network error'))
+    const state = makeState({
+      mcpServers: [{ name: 'existing', status: 'ready' }],
+      mcpVersion: 1,
+    })
+    const actions = bind(state) as Pick<ChatState, 'syncMcpServers'>
+
+    await actions.syncMcpServers()
+    expect(state.mcpServers.length).toBe(1)
+    expect(state.mcpServers[0].name).toBe('existing')
+  })
+})
+

@@ -2,9 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, Circle, CircleDot, Diamond, Timer, X } from 'lucide-react'
 import { useChatStore } from '../store/chat'
-import type { AskQuestion } from '../api/types'
+import type { AskQuestion, PendingReq } from '../api/types'
 import { Markdown } from './Markdown'
-import { ensureToolsetSettings, toolsetSettings } from '../store/settings'
+import {
+  ensureToolsetSettings,
+  onToolsetSettingsChange,
+  refreshToolsetSettings,
+  toolsetSettings,
+} from '../store/settings'
 
 /**
  * x.ai/ask_user_question card — web counterpart of the TUI question view
@@ -37,8 +42,14 @@ import { ensureToolsetSettings, toolsetSettings } from '../store/settings'
  *   auto-answers on timeout.
  * - Without a wire deadline the card derives its deadline from
  *   `[toolset.ask_user_question]` (defaults enabled / 1800s — the agent's
- *   own RESPONSE_TIMEOUT default): arrival time + timeout_secs, ticking
- *   once per second. Same zero behavior: label switches to 「已超时」 and
+ *   own RESPONSE_TIMEOUT default): the request's arrival anchor +
+ *   timeout_secs, ticking once per second. The cache is cold on the first
+ *   render (and can go stale after a hand edit of config.toml), so every new
+ *   request re-reads the section and the deadline re-resolves when it lands.
+ * - The anchor is keyed per ask tool call (sessionStorage-backed): a
+ *   reconnect replays the same pending request into `xaiRequests`, and a
+ *   fresh arrival there would silently re-arm the full budget the agent has
+ *   already partly spent. Same zero behavior: label switches to 「已超时」 and
  *   the agent's own timeout closes the request.
  */
 const ANCHOR_ID = 'capri-xai-question-anchor'
@@ -47,25 +58,91 @@ const ANCHOR_ID = 'capri-xai-question-anchor'
 const DEFAULT_ASK_TIMEOUT_SECS = 1800
 
 /**
+ * Arrival anchors: anchor key → first-seen unix ms. sessionStorage keeps them
+ * across a reload in the same tab; the in-process Map is the hot path (and
+ * the only source when storage is unavailable). Anchors older than the TTL
+ * are dropped on every write.
+ */
+const ARRIVALS_KEY = 'capri-ask-question-arrivals'
+const ARRIVALS_TTL_MS = 24 * 60 * 60 * 1000
+const arrivals = new Map<string, number>()
+let arrivalsHydrated = false
+
+/**
+ * Anchor key for a request: the wire `toolCallId` (unique per ask tool call)
+ * when the host/agent ships one, else the host's request id. The host
+ * restarts its `acp_cr_N` counter with the process, so requestId alone can be
+ * re-used by a later question and would drag along a stale anchor.
+ */
+function arrivalKey(req: PendingReq): string {
+  const tc = req.params?.toolCallId
+  return typeof tc === 'string' && tc ? `tc:${tc}` : `id:${req.requestId}`
+}
+
+function hydrateArrivals(): void {
+  if (arrivalsHydrated) return
+  arrivalsHydrated = true
+  try {
+    const raw = window.sessionStorage.getItem(ARRIVALS_KEY)
+    const parsed: unknown = raw ? JSON.parse(raw) : null
+    if (parsed && typeof parsed === 'object') {
+      for (const [id, t] of Object.entries(parsed as Record<string, unknown>)) {
+        if (typeof t === 'number' && Number.isFinite(t)) arrivals.set(id, t)
+      }
+    }
+  } catch {
+    // 读不到就当没有锚点：本标签页内重新计时。
+  }
+}
+
+/** First-seen time of a request — recorded once, then stable. */
+function arrivalOf(key: string): number {
+  hydrateArrivals()
+  const hit = arrivals.get(key)
+  if (hit != null) return hit
+  const now = Date.now()
+  arrivals.set(key, now)
+  for (const [id, t] of arrivals) {
+    if (now - t > ARRIVALS_TTL_MS) arrivals.delete(id)
+  }
+  try {
+    window.sessionStorage.setItem(ARRIVALS_KEY, JSON.stringify(Object.fromEntries(arrivals)))
+  } catch {
+    // 写失败只影响刷新后的锚点，进程内 Map 仍然有效。
+  }
+  return now
+}
+
+/**
  * Resolve the card's deadline. Priority:
  *  1. wire `deadlineAt` (unix ms — future agent extension; today's ACP
  *     AskUserQuestionExtRequest has no deadline field). Past values are
  *     kept (not treated as absent) so a card that opened near the wire
  *     deadline still shows 「已超时」 instead of silently switching to the
  *     config-derived budget.
- *  2. Config budget: arrival (Date.now()) + [toolset.ask_user_question]
+ *  2. Config budget: timing origin + [toolset.ask_user_question]
  *     timeout_secs × 1000 (default enabled / 1800s — the agent's own
  *     RESPONSE_TIMEOUT). timeout_enabled=false → no deadline (never
  *     expires, no countdown rendered).
+ *     - Timing origin: host-authoritative `req.receivedAt` (unix ms stamped
+ *       when the host took the request off the agent pipe, shared across all
+ *       tabs and devices via broadcast and snapshot). Falls back to tab-local
+ *       `arrivalOf(arrivalKey(req))` when running against an older host.
  */
-function resolveDeadlineMs(params: Record<string, unknown> | undefined): number | undefined {
-  const v = params?.deadlineAt
+function resolveDeadlineMs(req: PendingReq | undefined): number | undefined {
+  const v = req?.params?.deadlineAt
   if (typeof v === 'number' && Number.isFinite(v)) return v
+  if (!req) return undefined
   const aq = toolsetSettings()?.ask_user_question
   if (aq?.timeout_enabled === false) return undefined
   const secs = aq?.timeout_secs
   const secsOk = typeof secs === 'number' && Number.isInteger(secs) && secs > 0
-  return Date.now() + (secsOk ? secs : DEFAULT_ASK_TIMEOUT_SECS) * 1000
+  const budgetMs = (secsOk ? secs : DEFAULT_ASK_TIMEOUT_SECS) * 1000
+  const origin =
+    typeof req.receivedAt === 'number' && Number.isFinite(req.receivedAt) && req.receivedAt > 0
+      ? req.receivedAt
+      : arrivalOf(arrivalKey(req))
+  return origin + budgetMs
 }
 
 /** Remaining-time label: h:mm:ss ≥ 1h, else mm:ss. */
@@ -101,25 +178,30 @@ export function QuestionModal() {
   const inputRef = useRef<HTMLInputElement>(null)
 
   // Toolset config for the countdown ([toolset.ask_user_question] —
-  // host-safe subset). Fire-and-forget: the countdown starts once the
-  // cached section resolves; a failed fetch falls back to the agent's
-  // default budget (enabled / 1800s).
+  // host-safe subset). ensure = 冷缓存时补一次 GET；refresh = 每条新提问都
+  // 重读真值（config.toml 可能在页面加载后被手改）。两者都是 fire-and-forget，
+  // 拉取失败时保持现状，deadline 回落到 agent 默认预算（enabled / 1800s）。
+  const requestId = req?.requestId
   useEffect(() => {
+    if (!requestId) return
     void ensureToolsetSettings()
-  }, [])
+    void refreshToolsetSettings()
+  }, [requestId])
 
-  // Deadline, remembered per request: the wire `deadlineAt` when present,
-  // else arrival-time + configured timeout_secs (agent default 1800s),
-  // captured once on arrival so the countdown never re-arms on re-renders.
+  // Deadline, per request: the wire `deadlineAt` when present, else the
+  // arrival anchor + configured timeout_secs (agent default 1800s).
   // timeout_enabled=false → no deadline at all (never expires).
   const [deadlineMs, setDeadlineMs] = useState<number | undefined>(() =>
-    resolveDeadlineMs(req?.params),
+    resolveDeadlineMs(req),
   )
   useEffect(() => {
-    setDeadlineMs(resolveDeadlineMs(req?.params))
+    setDeadlineMs(resolveDeadlineMs(req))
     // 新请求行（requestId 变化）→ 重新评估 deadline；同请求 params 更新
-    // 只在 wire deadline 变化时生效（resolveDeadlineMs 结果稳定）。
+    // 只在 wire deadline 变化时生效（锚点稳定，结果不随重渲染漂移）。
   }, [req])
+  // 配置迟到（冷缓存）或刷新回来 → 用同一锚点重算：只会把倒计时收敛到真值，
+  // 不会重新计时（锚点按 toolCallId/requestId 固定）。
+  useEffect(() => onToolsetSettingsChange(() => setDeadlineMs(resolveDeadlineMs(req))), [req])
 
   // Live remaining time (ticks once per second while a deadline exists).
   const [now, setNow] = useState(() => Date.now())

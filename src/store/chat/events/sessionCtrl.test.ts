@@ -99,6 +99,22 @@ describe('client_request 会话归属', () => {
     )
     expect(state.respondXai).toHaveBeenCalledWith('r9', undefined, expect.stringContaining('前端不支持方法'))
   })
+
+  it('透传 host 下发的 receivedAt 时间戳', () => {
+    const state = makeState()
+    const { set, get } = bind(state)
+    handleSessionCtrlEvent(set, get, {
+      type: 'client_request',
+      requestId: 'r-recv',
+      method: 'x.ai/ask_user_question',
+      params: { sessionId: 's1' },
+      receivedAt: 1_700_000_000_123,
+    } as unknown as AcpEvent)
+    expect(state.xaiRequests[0]).toMatchObject({
+      requestId: 'r-recv',
+      receivedAt: 1_700_000_000_123,
+    })
+  })
 })
 
 describe('client_request_resolved 退出 plan', () => {

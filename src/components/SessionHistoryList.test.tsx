@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { render, screen, cleanup, act } from '@testing-library/react'
 import { useChatStore } from '../store/chat'
 import { usePins } from '../store/historyPins'
 import { useHistoryView } from '../store/historyView'
+import { useHistoryOrder } from '../store/historyOrder'
 import { SessionHistoryList } from './SessionHistoryList'
 
 /**
@@ -160,5 +161,130 @@ describe('当前标记字号', () => {
     render(<SessionHistoryList />)
     const chip = screen.getByText('当前')
     expect(chip.className).toContain('text-[11px]')
+  })
+})
+
+/**
+ * 钉住顺序（orderMode='frozen'，默认）：host 每推一次活动/状态都不该
+ * 让行或整组挪位，否则用户正在看的目录会被顶到最上面。
+ */
+describe('钉住顺序', () => {
+  const OLD_ISO = new Date(Date.now() - 40_000).toISOString()
+  const NEW_ISO = new Date(Date.now() - 10_000).toISOString()
+
+  /** /a 的会话较旧、/b 的会话较新；flip 时把 /a 换成最新且在跑。 */
+  function fixture(aUpdated: string, bUpdated: string, aState: 'idle' | 'active') {
+    useChatStore.setState({
+      sessionId: undefined,
+      cwd: '/a',
+      workspaceLoading: false,
+      historyLoading: false,
+      completedNotices: {},
+      selectedHostId: undefined,
+      workspaces: [
+        {
+          cwd: '/a',
+          label: '/a',
+          sessions: [{ sessionId: 'sa', cwd: '/a', title: '甲会话', updatedAt: aUpdated }],
+        },
+        {
+          cwd: '/b',
+          label: '/b',
+          sessions: [{ sessionId: 'sb', cwd: '/b', title: '乙会话', updatedAt: bUpdated }],
+        },
+      ],
+      sessions: [
+        { sessionId: 'sa', cwd: '/a', updatedAt: aUpdated, status: { state: aState } },
+        { sessionId: 'sb', cwd: '/b', updatedAt: bUpdated, status: { state: 'idle' } },
+      ],
+    } as never)
+  }
+
+  function order(container: HTMLElement): string[] {
+    return [...container.querySelectorAll('[data-hkey]')].flatMap((el) => {
+      const key = el.getAttribute('data-hkey')
+      return key ? [key] : []
+    })
+  }
+
+  beforeEach(() => {
+    useHistoryOrder.setState({ anchors: {}, collapse: {}, pendingReanchor: false, hostScope: '' })
+    useHistoryView.setState({ mode: 'workspace', orderMode: 'frozen' })
+    fixture(OLD_ISO, NEW_ISO, 'idle')
+  })
+
+  it('活动与状态同时反转：行序与组序都不动', () => {
+    const { container } = render(<SessionHistoryList />)
+    expect(order(container)).toEqual(['sb', 'sa'])
+    // /a 的会话变成最新活动且正在跑 —— 钉住形态下既不升组内、也不将
+    // /a 顶到最前（active 形态会）。
+    act(() => fixture(new Date(Date.now() + 60_000).toISOString(), OLD_ISO, 'active'))
+    expect(order(container)).toEqual(['sb', 'sa'])
+    // 不浮上来 ≠ 看不见：组头带在跑数量，折叠/超出名额也不丢信号。
+    expect(screen.getByLabelText('1 个会话在运行')).not.toBeNull()
+  })
+
+  it('跟随活跃形态下同样的变化会重排', () => {
+    useHistoryView.setState({ mode: 'workspace', orderMode: 'active' })
+    const { container } = render(<SessionHistoryList />)
+    expect(order(container)).toEqual(['sb', 'sa'])
+    act(() => fixture(new Date(Date.now() + 60_000).toISOString(), OLD_ISO, 'active'))
+    expect(order(container)).toEqual(['sa', 'sb'])
+  })
+
+  it('显式刷新（requestReanchor）后按最新活动重排一次', () => {
+    const { container } = render(<SessionHistoryList />)
+    expect(order(container)).toEqual(['sb', 'sa'])
+    const later = new Date(Date.now() + 60_000).toISOString()
+    act(() => fixture(later, OLD_ISO, 'idle'))
+    expect(order(container)).toEqual(['sb', 'sa'])
+    useHistoryOrder.getState().requestReanchor()
+    act(() =>
+      useHistoryOrder.getState().seed(
+        [
+          { sessionId: 'sa', ms: Date.parse(later) },
+          { sessionId: 'sb', ms: Date.parse(OLD_ISO) },
+        ],
+        'local',
+      ),
+    )
+    expect(order(container)).toEqual(['sa', 'sb'])
+  })
+
+  it('待处理会话仍然浮到组内最前（钉住形态唯一的实时例外）', () => {
+    useChatStore.setState({
+      workspaces: [
+        {
+          cwd: '/a',
+          label: '/a',
+          sessions: [
+            { sessionId: 'sa', cwd: '/a', title: '甲会话', updatedAt: NEW_ISO },
+            { sessionId: 'sc', cwd: '/a', title: '丙会话', updatedAt: OLD_ISO },
+          ],
+        },
+      ],
+      sessions: [
+        { sessionId: 'sa', cwd: '/a', updatedAt: NEW_ISO, status: { state: 'idle' } },
+        { sessionId: 'sc', cwd: '/a', updatedAt: OLD_ISO, status: { state: 'idle' } },
+      ],
+    } as never)
+    const { container } = render(<SessionHistoryList />)
+    // 钉住：按锚定的活动时间，sa（较新）在前
+    expect(order(container)).toEqual(['sa', 'sc'])
+    // sc 转为待处理 → 升到自己组最前
+    act(() =>
+      useChatStore.setState({
+        sessions: [
+          { sessionId: 'sa', cwd: '/a', updatedAt: NEW_ISO, status: { state: 'idle' } },
+          {
+            sessionId: 'sc',
+            cwd: '/a',
+            updatedAt: OLD_ISO,
+            status: { state: 'awaiting', busy: true, awaitingInput: true },
+          },
+        ],
+      } as never),
+    )
+    expect(order(container)).toEqual(['sc', 'sa'])
   })
 })

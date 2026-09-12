@@ -435,12 +435,26 @@ export function sessionActions(set: SetState, get: () => ChatState) {
       if (usePins.getState().fePrefs.autoTodoNewSession) {
         usePins.getState().setTodoStatus(sid, 'todo')
       }
+      // 空状态选的模型在这里落地：host 的 set-model 要求带 sessionId（无
+      // sid 直接 400），空状态下只能先记进 pendingModel，锚定后才有对象
+      // 可切。新会话刚建好、没有回合在跑，此刻切换安全；失败只提示（
+      // setModel 内部滚一行），不阻塞建会话本身。
+      const pendingModel = get().pendingModel
+      if (pendingModel) {
+        set({ pendingModel: undefined })
+        await get().setModel(
+          pendingModel.modelId,
+          pendingModel.reasoningEffort,
+          pendingModel.asDefault ? { asDefault: true } : undefined,
+        )
+      }
       // 状态栏 git 分支不会自己回来：resetSessionState 清掉了 gitInfo，
       // 而 host 为新会话广播的 ready 在 POST 响应之前发出（先 Broadcast
       // 再写响应），到达时本端尚未锚定 sid、被 ready 守卫当"非当前会话"
       // 丢弃——之后 done 不触发、空闲会话不发 git_head_changed、hello 只
       // 在重连时来，分支就一直缺失。与 continueSession 锚定后补拉同款。
       void get().refreshGitInfo()
+      void get().syncMcpServers()
       return sid
     }
     return undefined

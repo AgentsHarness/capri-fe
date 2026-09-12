@@ -1,13 +1,47 @@
 export type ConnState = 'connecting' | 'ready' | 'busy' | 'error' | 'offline'
 export type FocusMode = 'prompt' | 'scrollback'
 
-/** One MCP server row for the MCP panel (x.ai/mcp/server_status). */
+/** One MCP tool row (mcps_modal.rs McpToolDetail — camelCase wire). */
+export type McpToolInfo = {
+  name: string
+  displayName?: string
+  description?: string
+  enabled?: boolean
+}
+
+/**
+ * One MCP server row for the MCP panel (x.ai/mcp/server_status).
+ * Field semantics are the shell's `McpServerStatusPayload`: `status` is the
+ * state (see `mcpTone`), `reason` is the transition code behind it, `detail`
+ * the optional error text.
+ * When synchronized via `syncMcpServers`, it also carries full configuration
+ * and tools from the session catalog.
+ */
 export type McpServerInfo = {
   name: string
+  displayName?: string
   source?: string
+  sourceLabel?: string
+  /** `ready` / `initializing` / `unavailable` / `needs_auth`（小写序列化）。 */
   status?: string
+  /**
+   * 状态变化原因码，成功转移同样有值（`initialized` / `config_changed` /
+   * `restart_succeeded` / `config_added`）—— 不是错误文本，判色看 `status`。
+   */
   reason?: string
+  /** 仅失败事件下发的人类可读错误原文（handshake_failed / restart_failed）。 */
   detail?: string
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
+  url?: string
+  type?: string
+  headers?: Record<string, string>
+  enabled?: boolean
+  authRequired?: boolean
+  setupRequired?: boolean
+  toolCount?: number
+  tools?: McpToolInfo[]
 }
 
 /**

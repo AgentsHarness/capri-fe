@@ -95,6 +95,8 @@ export function CustomModelsPanel() {
       await transport.upsertCustomModel(cfg)
       if (defaultCleared) {
         try {
+          // 不带 sessionId：这是纯配置写入（把默认模型重指到新 id）。
+          // 改模型列表不该改任何会话当前的模型，host 侧缺 sid 时只落盘。
           await transport.setDefaultModel(cfg.id, cfg.reasoning_effort)
         } catch {
           // 忽略默认模型重设失败，模型配置本身已保存成功

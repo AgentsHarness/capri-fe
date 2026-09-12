@@ -11,6 +11,7 @@ vi.mock('../../api/client', () => ({
     queueStatus: vi.fn().mockResolvedValue({ queue: [] }),
     sessionResume: vi.fn(),
     loadSession: vi.fn(),
+    mcpList: vi.fn().mockResolvedValue({ servers: [] }),
     sessionStats: vi.fn(),
     sessionRunningTasks: vi.fn(),
     gitInfo: vi.fn(),
@@ -169,5 +170,29 @@ describe('continueSession 并行切会话', () => {
     // 快照在并行中已回放成功，失败收口必须把它清掉，统一显示加载失败。
     expect(useChatStore.getState().historyLoadError).toBeTruthy()
     expect(useChatStore.getState().entries).toEqual([])
+  })
+
+  it('会话切换成功：触发 syncMcpServers 并更新 mcpServers 权威列表', async () => {
+    vi.mocked(transport.sessionResume).mockResolvedValue({} as never)
+    vi.mocked(transport.sessionRunningTasks).mockResolvedValue({ events: [] } as never)
+    vi.mocked(transport.loadSessionHistory).mockResolvedValue(simplePage() as never)
+    vi.mocked(transport.sessionStats).mockResolvedValue({} as never)
+    vi.mocked(transport.gitInfo).mockResolvedValue({} as never)
+    vi.mocked(transport.status).mockResolvedValue({} as never)
+    vi.mocked(transport.mcpList).mockResolvedValue({
+      servers: [
+        { name: 'server-a', status: 'ready', enabled: true },
+        { name: 'server-b', status: 'unavailable', enabled: false },
+      ],
+    })
+
+    await useChatStore.getState().continueSession(SID, CWD)
+    expect(transport.mcpList).toHaveBeenCalled()
+    const servers = useChatStore.getState().mcpServers
+    expect(servers.length).toBe(2)
+    expect(servers[0].name).toBe('server-a')
+    expect(servers[0].status).toBe('ready')
+    expect(servers[1].name).toBe('server-b')
+    expect(servers[1].status).toBe('unavailable')
   })
 })

@@ -51,6 +51,7 @@ export function handleSessionCtrlEvent(
           method,
           params: ev.params,
           ...(evSid ? { sessionId: evSid } : {}),
+          ...(typeof ev.receivedAt === 'number' ? { receivedAt: ev.receivedAt } : {}),
         }
         // 带明确会话归属的请求只属于那个会话。顶层 sid 已由 initChat 过滤，
         // 这里补的是「host 只把 sid 放在 params 里」的那种形状（见

@@ -146,6 +146,8 @@ export async function continueSession(
       void get().refreshGitInfo()
       // 会话切换：拉取新会话的聚合统计（composer 状态条）。
       void get().refreshSessionStats()
+      // 会话切换：对齐 TUI，拉取当前活跃会话的权威 MCP 服务器列表与连接状态
+      void get().syncMcpServers()
       // Probe the still-running set BEFORE history replay: replayUpdates
       // skips the "Task started" row of any task that is still running
       // (that state lives in the top task strip only — see replayUpdates).

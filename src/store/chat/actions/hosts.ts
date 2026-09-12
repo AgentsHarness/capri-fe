@@ -126,6 +126,9 @@ export function hostActions(set: SetState, get: () => ChatState) {
       // 自己选过的目录（没有则 undefined → 宿主默认），绝不沿用别的
       // host 的路径。
       emptyCwd: (get().emptyCwdByHost ?? {})[hostId] ?? undefined,
+      // 模型 id 只对产生它的那台 host 有意义：空状态下选的模型（等新会话
+      // 下发）不能带到另一台 host 的目录里。
+      pendingModel: undefined,
       homeDir: undefined,
       entries: [],
       liveStream: null,
@@ -346,31 +349,45 @@ export function hostActions(set: SetState, get: () => ChatState) {
     }
   },
 
-  setModel: async (modelId, reasoningEffort) => {
-    // 会话未锚定（空状态 / 切换窗口期）时拒绝切换：请求不带 sessionId
-    // 会被 host 落到它自身的 active 会话（可能不是当前视图），切换因此
-    // 失去会话隔离。提示先开始/恢复会话。
+  setModel: async (
+    modelId: string,
+    reasoningEffort?: string,
+    opts?: { asDefault?: boolean },
+  ) => {
+    // Optimistic: agent broadcasts model_changed on success, but the
+    // request itself is the authority for local state (TUI does the same).
+    const m = get().models.find((x) => x.modelId === modelId)
+    const def =
+      m?.reasoningEfforts?.find((r) => r.default) ??
+      m?.reasoningEfforts?.[0]
+    // Prefer the wire value (canonical level) for the caption suffix.
+    const effort =
+      reasoningEffort ??
+      def?.value ??
+      def?.id ??
+      m?.reasoningEffort
+    const name = m?.name || modelId
+    // 空状态（尚未建会话 / 切换窗口期）：host 的 set-model 必须带
+    // sessionId（无 sid 直接 400，不会有发错会话的风险），此刻下发不了。
+    // 记下选择并乐观更新 caption，newSession 锚定后按它补发——新对话里
+    // 先选模型再发第一条消息即可生效，不必先建会话。
     if (!get().sessionId) {
-      pushToast('请先开始或恢复一个会话，再切换模型')
+      set({
+        modelName: name,
+        reasoningEffort: effort,
+        pendingModel: {
+          modelId,
+          ...(effort ? { reasoningEffort: effort } : {}),
+          ...(opts?.asDefault ? { asDefault: true } : {}),
+        },
+      })
+      pushToast(`${modelLabel(name, effort)} 将在新对话生效`, { type: 'info' })
       return
     }
     const prevName = get().modelName
     const prevEffort = get().reasoningEffort
     try {
       await transport.setModel(modelId, reasoningEffort, get().sessionId)
-      // Optimistic: agent broadcasts model_changed on success, but the
-      // request itself is the authority for local state (TUI does the same).
-      const m = get().models.find((x) => x.modelId === modelId)
-      const def =
-        m?.reasoningEfforts?.find((r) => r.default) ??
-        m?.reasoningEfforts?.[0]
-      // Prefer the wire value (canonical level) for the caption suffix.
-      const effort =
-        reasoningEffort ??
-        def?.value ??
-        def?.id ??
-        m?.reasoningEffort
-      const name = m?.name || modelId
       set({
         modelName: name,
         reasoningEffort: effort,
@@ -394,6 +411,20 @@ export function hostActions(set: SetState, get: () => ChatState) {
         text: `切换模型失败: ${msg}`,
         warning: true,
       })
+    }
+    // 「设为默认」勾选：写在切换之后（TUI /model 的偏好副作用）。host 的
+    // set-default-model 同样要求 sessionId（它内部先切会话再落盘），所以
+    // 只有锚定后才有这一步。
+    if (opts?.asDefault) {
+      const sid = get().sessionId
+      if (sid) {
+        try {
+          await transport.setDefaultModel(modelId, reasoningEffort, sid)
+          pushToast('已设为默认模型')
+        } catch (e) {
+          pushToast(`设为默认失败: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
     }
   },
   } satisfies Partial<ChatState>
