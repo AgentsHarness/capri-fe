@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Blocks, Repeat } from 'lucide-react'
+import { Repeat } from 'lucide-react'
 import { Glyphs, SPINNER_FRAMES } from '../theme/glyphs'
 import {
   fillAllLiteTurns,
@@ -984,7 +984,7 @@ function isMcpConnected(status?: string): boolean {
 }
 
 /**
- * `⠋ MCP (N/M)` chip — TUI mcp_status_line (gray_dim, after the goal
+ * `MCP(N/M)` chip — TUI mcp_status_line (gray_dim, after the goal
  * chip): connected/total server counts from the x.ai/mcp/server_status
  * stream (store mcpServers). Hidden until the stream reports servers;
  * click opens the MCP panel.
@@ -1001,8 +1001,8 @@ export function McpChip({ onOpen }: { onOpen: () => void }) {
       className="inline-flex shrink-0 items-center whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-gray-dim hover:bg-gn-bg-highlight hover:text-gn-muted"
       title={`MCP 服务器 ${connected}/${total} 已连接 · 点击打开 MCP 面板`}
     >
-      <Blocks size={11} className="mr-1 shrink-0" aria-hidden />
-      <span>MCP ({connected}/{total})</span>
+      <span className="hidden sm:inline">MCP</span>
+      <span>({connected}/{total})</span>
     </button>
   )
 }

@@ -48,6 +48,7 @@ function entryViewEqual(prev: EntryViewProps, next: EntryViewProps): boolean {
     prev.streamBodyRef === next.streamBodyRef &&
     prev.onOpenImage === next.onOpenImage &&
     prev.noFrame === next.noFrame &&
+    prev.galleryItem === next.galleryItem &&
     (prev.now === next.now ||
       (!entryFlashActive(prev.e, prev.now) && !entryFlashActive(next.e, next.now)))
   )
@@ -67,6 +68,7 @@ export const EntryView = memo(function EntryView({
   streamBodyRef,
   onOpenImage,
   noFrame = false,
+  galleryItem = false,
 }: EntryViewProps) {
   // 迷你 scrollback 折叠覆盖：patch 合并进渲染条目（不写回 store）。
   const e = patch ? ({ ...eProp, ...patch } as ScrollEntry) : eProp
@@ -184,6 +186,7 @@ export const EntryView = memo(function EntryView({
     inMini: actions != null,
     cwd: sessionCwd,
     onOpenImage,
+    galleryItem,
   }
 
   if (e.kind === 'user') return <UserEntry e={e} chrome={chrome} />

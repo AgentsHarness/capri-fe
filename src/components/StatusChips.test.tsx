@@ -189,7 +189,7 @@ describe('McpChip', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
-  it('渲染 inline-flex 单行排版，包含 Blocks 图标与已连接计数', () => {
+  it('渲染 inline-flex 单行纯文本排版与已连接计数', () => {
     const onOpen = vi.fn()
     useChatStore.setState({
       mcpServers: [
@@ -202,7 +202,7 @@ describe('McpChip', () => {
     expect(btn).toBeInTheDocument()
     expect(btn.className).toContain('inline-flex')
     expect(btn.className).toContain('items-center')
-    expect(btn.textContent).toContain('MCP (1/2)')
+    expect(btn.textContent).toBe('MCP(1/2)')
     fireEvent.click(btn)
     expect(onOpen).toHaveBeenCalledTimes(1)
   })

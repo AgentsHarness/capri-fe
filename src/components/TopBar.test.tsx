@@ -100,6 +100,21 @@ describe('WorkspaceBar', () => {
     expect(container.textContent).toContain('/tmp/x')
   })
 
+  it('单行不换行布局与芯片横向滑轨容器', () => {
+    resetChat({ cwd: '/Volumes/SD10/' })
+    const { container } = render(<WorkspaceBar />)
+    const bar = container.querySelector('.h-\\[37px\\]')
+    expect(bar).not.toBeNull()
+    expect(bar?.className).toContain('flex-nowrap')
+    const chipCluster = bar?.querySelector('.overflow-x-auto')
+    expect(chipCluster).not.toBeNull()
+    expect(chipCluster?.className).toContain('flex-nowrap')
+    expect(chipCluster?.className).toContain('gn-no-scrollbar')
+    // 包含移动端精简目录名 SD10 与完整路径 /Volumes/SD10/
+    expect(container.textContent).toContain('SD10')
+    expect(container.textContent).toContain('/Volumes/SD10/')
+  })
+
   it('fadeHidden：内容 aria-hidden + inert，栏仍在', () => {
     resetChat({ cwd: '/tmp/x' })
     const { container, rerender } = render(<WorkspaceBar fadeHidden />)
