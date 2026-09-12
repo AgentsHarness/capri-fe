@@ -4,6 +4,7 @@ import { useChatStore } from '../store/chat'
 import { SPINNER_FRAMES } from '../theme/glyphs'
 import { useSessionSpinner } from '../hooks/sessionState'
 import { useHistoryView, type HistoryListMode } from '../store/historyView'
+import { useHistoryOrder } from '../store/historyOrder'
 
 /**
  * 会话列表头部：「会话」标题 + 展示形态切换 + 刷新按钮。
@@ -65,6 +66,9 @@ export function SessionListHeader({
 
   const doRefresh = () => {
     userRefreshRef.current = true
+    // 显式刷新是钉住顺序唯一的整体重排时机：先请求重锚，再拉数据，
+    // 列表落地时按本次活跃度重写排序锚（见 store/historyOrder）。
+    useHistoryOrder.getState().requestReanchor()
     // refreshWorkspaces 同步置 workspaceLoading=true，effect 随即把按钮
     // 切到转圈；这里不直接 setState，避免在已加载中点击时闪烁。
     void refreshSessions()

@@ -9,6 +9,7 @@ import {
 import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS } from '../theme/layout'
 import { contextUrgencyColor } from '../theme/contextColor'
 import { useChatStore } from '../store/chat'
+import { mcpTone } from '../store/chat/mcpStatus'
 import { usePromptQueue } from '../store/promptQueue'
 import type { ScrollEntry, TopTask } from '../api/types'
 import { useSessionSpinner } from '../hooks/sessionState'
@@ -974,14 +975,12 @@ function formatScheduledFire(v: string): string {
 // ── MCP / queue / credits chips (TUI status-bar items) ───────────────
 
 /**
- * Wire statuses that count as "connected" for the MCP chip — the agent
- * serializes McpServerStatus lowercase (`ready`); a couple of defensive
- * aliases keep the count honest against older spellings.
+ * Wire statuses that count as "connected" for the MCP chip — shared
+ * classification with the MCP panel (`mcpTone`, which already covers the
+ * defensive `connected` / `running` / `ok` aliases for older shells).
  */
 function isMcpConnected(status?: string): boolean {
-  if (!status) return false
-  const s = status.toLowerCase()
-  return s === 'ready' || s === 'connected' || s === 'running' || s === 'ok'
+  return mcpTone(status) === 'ok'
 }
 
 /**

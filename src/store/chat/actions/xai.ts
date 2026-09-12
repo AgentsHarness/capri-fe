@@ -1,7 +1,7 @@
-import { transport } from '../../../api/client'
+import { transport, type McpListServer } from '../../../api/client'
 import type { TaskKillSource } from '../../../api/rpc/tasks'
 import type { ScrollEntry } from '../../../api/types'
-import type { ChatState, SetState } from '../types'
+import type { ChatState, SetState, McpServerInfo } from '../types'
 import { nid } from '../ids'
 import { appendEntry } from '../entries'
 import { scheduledTaskDeletedText, settleUntrackedTask } from '../tasks'
@@ -542,6 +542,40 @@ export function xaiActions(set: SetState, get: () => ChatState) {
 
   // ── MCP management (TUI /mcps — host endpoints may be unsupported;
   //    every method rethrows so the McpPanel renders the failure inline) ──
+  syncMcpServers: async (prefetched?: McpListServer[]) => {
+    if (!prefetched && typeof transport.mcpList !== 'function') return
+    try {
+      const servers = prefetched ?? (await transport.mcpList()).servers ?? []
+      const existingMap = new Map(get().mcpServers.map((s) => [s.name, s]))
+      const rows: McpServerInfo[] = servers.map((s) => {
+        const existing = existingMap.get(s.name)
+        return {
+          name: s.name,
+          displayName: s.displayName ?? existing?.displayName,
+          source: s.source ?? existing?.source,
+          sourceLabel: s.sourceLabel ?? existing?.sourceLabel,
+          status: s.status ?? existing?.status,
+          reason: existing?.reason,
+          detail: existing?.detail,
+          command: s.command ?? existing?.command,
+          args: s.args ?? existing?.args,
+          env: s.env ?? existing?.env,
+          url: s.url ?? existing?.url,
+          type: s.type ?? existing?.type,
+          headers: s.headers ?? existing?.headers,
+          enabled: s.enabled ?? existing?.enabled,
+          authRequired: s.authRequired ?? existing?.authRequired,
+          setupRequired: s.setupRequired ?? existing?.setupRequired,
+          toolCount: s.toolCount ?? s.tools?.length ?? existing?.toolCount,
+          tools: s.tools ?? existing?.tools,
+        }
+      })
+      set({ mcpServers: rows })
+    } catch (e) {
+      console.warn('[syncMcpServers] failed to sync mcp servers:', e)
+    }
+  },
+
   mcpList: async () => {
     const r = await transport.mcpList()
     return r.servers
@@ -549,18 +583,22 @@ export function xaiActions(set: SetState, get: () => ChatState) {
 
   mcpToggle: async (name, enabled) => {
     await transport.mcpToggle(name, enabled)
+    void get().syncMcpServers()
   },
 
   mcpToggleTool: async (serverName, toolName, enabled) => {
     await transport.mcpToggleTool(serverName, toolName, enabled)
+    void get().syncMcpServers()
   },
 
   mcpAdd: async (server) => {
     await transport.mcpAdd(server)
+    void get().syncMcpServers()
   },
 
   mcpRemove: async (name) => {
     await transport.mcpRemove(name)
+    void get().syncMcpServers()
   },
 
   mcpAuthTrigger: async (name) => {

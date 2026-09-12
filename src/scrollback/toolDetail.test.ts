@@ -598,15 +598,15 @@ describe('extractToolDetail — ask_user（AskUserQuestion 问答输出）', () 
     ])
   })
 
-  it('Path A：注解后缀剥离（selected preview / user notes）；空 body → 空', () => {
+  it('Path A：注解解析（selected preview / user notes 提取到字段）；空 body → 空', () => {
     expect(
       parseAskUserQaPairs(
         'User has answered your questions: "Theme?"="Dark selected preview: #000 background". You can now continue with the user\'s answers in mind.',
       ),
-    ).toEqual([{ question: 'Theme?', answer: 'Dark' }])
+    ).toEqual([{ question: 'Theme?', answer: 'Dark', preview: '#000 background' }])
     expect(
       parseAskUserQaPairs('User has answered your questions: "Q"="A user notes: likes it"'),
-    ).toEqual([{ question: 'Q', answer: 'A' }])
+    ).toEqual([{ question: 'Q', answer: 'A', notes: 'likes it' }])
     expect(parseAskUserQaPairs('User has answered your questions: ')).toEqual([])
   })
 

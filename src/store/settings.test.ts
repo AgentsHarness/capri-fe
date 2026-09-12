@@ -174,4 +174,32 @@ describe('settings 请求去重', () => {
     expect(await b).toEqual({ page_flip_on_send: true })
     expect(settingsMock).toHaveBeenCalledTimes(1)
   })
+
+  it('refreshToolsetSettings 绕过缓存重读，并把 toolset 变更广播出去', async () => {
+    const mod = await freshSettings()
+    settingsMock.mockResolvedValue({ toolset: { ask_user_question: { timeout_secs: 60 } } })
+    expect(await mod.ensureToolsetSettings()).toEqual({
+      ask_user_question: { timeout_secs: 60 },
+    })
+    const cb = vi.fn()
+    const off = mod.onToolsetSettingsChange(cb)
+    // 缓存已热，ensure 不再问；refresh 必问。
+    settingsMock.mockResolvedValue({ toolset: { ask_user_question: { timeout_secs: 1800 } } })
+    expect(await mod.refreshToolsetSettings()).toEqual({
+      ask_user_question: { timeout_secs: 1800 },
+    })
+    expect(settingsMock).toHaveBeenCalledTimes(2)
+    expect(cb).toHaveBeenCalledTimes(1)
+    expect(mod.toolsetSettings()).toEqual({ ask_user_question: { timeout_secs: 1800 } })
+    off()
+  })
+
+  it('refreshToolsetSettings 拉取失败 → 保持旧缓存并回 null', async () => {
+    const mod = await freshSettings()
+    settingsMock.mockResolvedValue({ toolset: { ask_user_question: { timeout_secs: 60 } } })
+    await mod.ensureToolsetSettings()
+    settingsMock.mockRejectedValue(new Error('boom'))
+    expect(await mod.refreshToolsetSettings()).toBeNull()
+    expect(mod.toolsetSettings()).toEqual({ ask_user_question: { timeout_secs: 60 } })
+  })
 })

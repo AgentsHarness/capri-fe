@@ -15,6 +15,7 @@ vi.mock('../../../api/client', () => ({
     connect: vi.fn(),
     disconnect: vi.fn(),
     setModel: vi.fn().mockResolvedValue({ ok: true }),
+    setDefaultModel: vi.fn().mockResolvedValue({ ok: true }),
     // switchHost 路径
     setHost: vi.fn(),
     status: vi.fn().mockResolvedValue({ ready: true }),
@@ -201,7 +202,7 @@ describe('首次自动选 host：本机近路 vs 记忆选择', () => {
   })
 })
 
-describe('setModel 会话隔离守卫', () => {
+describe('setModel 空状态（无会话）与已锚定两条路径', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
@@ -213,13 +214,36 @@ describe('setModel 会话隔离守卫', () => {
     return hostActions(set, () => state)
   }
 
-  it('会话未锚定（空状态）→ 不发请求，提示先开始会话', async () => {
-    const state = makeState({ sessionId: undefined, entries: [] })
+  const CATALOG = [
+    {
+      modelId: 'grok-4',
+      name: 'Grok 4',
+      reasoningEfforts: [{ id: 'high', label: 'high', value: 'high', default: true }],
+    },
+  ]
+
+  it('空状态 → 不发请求，记为待生效并乐观更新 caption', async () => {
+    const state = makeState({ sessionId: undefined, entries: [], models: CATALOG })
     await bindWith(state).setModel('grok-4', undefined)
     expect(transport.setModel).not.toHaveBeenCalled()
-    expect(pushToast).toHaveBeenCalledWith('请先开始或恢复一个会话，再切换模型')
-    expect(state.modelName).toBeUndefined()
+    expect(pushToast).toHaveBeenCalledWith('Grok 4(high) 将在新对话生效', { type: 'info' })
+    expect(state.modelName).toBe('Grok 4')
+    expect(state.reasoningEffort).toBe('high')
+    expect(state.pendingModel).toEqual({ modelId: 'grok-4', reasoningEffort: 'high' })
+    // 会话还没建，不往空时间线里塞切换记录。
     expect(state.entries).toHaveLength(0)
+  })
+
+  it('空状态 + 设为默认 → 勾选一并记进待生效（锚定后落盘）', async () => {
+    const state = makeState({ sessionId: undefined, entries: [], models: CATALOG })
+    await bindWith(state).setModel('grok-4', 'low', { asDefault: true })
+    expect(transport.setModel).not.toHaveBeenCalled()
+    expect(transport.setDefaultModel).not.toHaveBeenCalled()
+    expect(state.pendingModel).toEqual({
+      modelId: 'grok-4',
+      reasoningEffort: 'low',
+      asDefault: true,
+    })
   })
 
   it('已锚定 → 请求携带当前 sessionId，成功按默认 effort 更新 caption', async () => {
@@ -228,13 +252,7 @@ describe('setModel 会话隔离守卫', () => {
       modelName: 'grok-3',
       reasoningEffort: 'low',
       entries: [],
-      models: [
-        {
-          modelId: 'grok-4',
-          name: 'Grok 4',
-          reasoningEfforts: [{ id: 'high', label: 'high', value: 'high', default: true }],
-        },
-      ],
+      models: CATALOG,
     })
     await bindWith(state).setModel('grok-4', undefined)
     expect(transport.setModel).toHaveBeenCalledWith('grok-4', undefined, 'sess-1')
@@ -242,6 +260,21 @@ describe('setModel 会话隔离守卫', () => {
     expect(state.reasoningEffort).toBe('high')
     expect(state.entries).toHaveLength(1)
     expect(state.entries[0].kind).toBe('session_event')
+    expect(state.pendingModel).toBeUndefined()
+  })
+
+  it('已锚定 + 设为默认 → 落盘 config.toml 默认，失败只提示', async () => {
+    const state = makeState({ sessionId: 'sess-1', entries: [], models: CATALOG })
+    await bindWith(state).setModel('grok-4', 'low', { asDefault: true })
+    expect(transport.setDefaultModel).toHaveBeenCalledWith('grok-4', 'low', 'sess-1')
+    expect(pushToast).toHaveBeenCalledWith('已设为默认模型')
+
+    vi.clearAllMocks()
+    ;(transport.setDefaultModel as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('boom'),
+    )
+    await bindWith(state).setModel('grok-4', 'low', { asDefault: true })
+    expect(pushToast).toHaveBeenCalledWith('设为默认失败: boom')
   })
 })
 

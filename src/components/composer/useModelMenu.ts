@@ -1,7 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import { useChatStore } from '../../store/chat'
-import { pushToast } from '../../store/toast'
-import { transport } from '../../api/client'
 
 /**
  * /model 模型菜单（composer 底部 caption 的模型槽）：开关、「设为默认」
@@ -87,22 +85,11 @@ export function useModelMenu() {
 
   const switchModel = (modelId: string, reasoningEffort?: string) => {
     setModelOpen(false)
-    void setModel(modelId, reasoningEffort)
-    // 「设为默认」勾选时：写入 config.toml 的 [models] default（+effort），
+    // 「设为默认」勾选时一并写入 config.toml 的 [models] default（+effort），
     // 与切换动作一起生效（agent 热加载，TUI /model <name> <effort> 语义）。
-    // 会话未锚定时拒绝：host 侧 set-model 无 sessionId 会回退 active 会话，
-    // 「设为默认」的双动作（先切当前会话）就失去了会话隔离。
-    if (setAsDefault) {
-      const sid = useChatStore.getState().sessionId
-      if (!sid) {
-        pushToast('请先开始或恢复一个会话，再设置默认模型')
-        return
-      }
-      void transport
-        .setDefaultModel(modelId, reasoningEffort, sid)
-        .then(() => pushToast(`已设为默认模型`))
-        .catch((e) => pushToast(`设为默认失败: ${e instanceof Error ? e.message : String(e)}`))
-    }
+    // 空状态（未锚定会话）下 setModel 只记选择、会话锚定后补发，绝不把
+    // 切换打到别的会话上（host 侧无 sessionId 直接 400）。
+    void setModel(modelId, reasoningEffort, setAsDefault ? { asDefault: true } : undefined)
   }
 
   /** Match current caption effort against a menu row (id or wire value). */

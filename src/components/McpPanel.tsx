@@ -17,6 +17,7 @@ import {
   X,
 } from 'lucide-react'
 import { useChatStore, type McpServerInfo } from '../store/chat'
+import { mcpTone } from '../store/chat/mcpStatus'
 import { transport, type McpListServer, type McpToolInfo } from '../api/client'
 
 /**
@@ -39,6 +40,7 @@ export function McpPanel({
   /** Bumped by mcp_tools_changed / mcp_servers_updated (no payload data). */
   const mcpVersion = useChatStore((s) => s.mcpVersion)
   const mcpList = useChatStore((s) => s.mcpList)
+  const syncMcpServers = useChatStore((s) => s.syncMcpServers)
   const mcpToggle = useChatStore((s) => s.mcpToggle)
   const mcpToggleTool = useChatStore((s) => s.mcpToggleTool)
   const mcpAdd = useChatStore((s) => s.mcpAdd)
@@ -60,6 +62,7 @@ export function McpPanel({
 
   // ── 交互/折叠状态 ──
   const [searchQuery, setSearchQuery] = useState('')
+  /** 只记用户显式点过的行；未记录的服务器默认收起（搜索命中工具名时例外）。 */
   const [collapsedTools, setCollapsedTools] = useState<Record<string, boolean>>({})
 
   // ── 添加服务器表单 ──
@@ -91,7 +94,10 @@ export function McpPanel({
     setListError(undefined)
     try {
       const servers = await mcpList()
-      if (seq === reqSeq.current) setList(servers)
+      if (seq === reqSeq.current) {
+        setList(servers)
+        void syncMcpServers(servers)
+      }
     } catch (e) {
       if (seq === reqSeq.current) {
         setListError(e instanceof Error ? e.message : String(e))
@@ -99,7 +105,7 @@ export function McpPanel({
     } finally {
       if (seq === reqSeq.current) setListLoading(false)
     }
-  }, [mcpList])
+  }, [mcpList, syncMcpServers])
 
   useEffect(() => {
     if (!open) return
@@ -182,27 +188,18 @@ export function McpPanel({
     let totalTools = 0
     for (const r of rows) {
       const st = rowStatus(r)
-      if (st === 'ready' || st === 'connected') connected++
+      if (mcpTone(st) === 'ok') connected++
       totalTools += toolCountOf(r) ?? 0
     }
     return { connected, totalTools }
   }, [rows])
 
-  // 搜索过滤
+  // 搜索过滤（小写关键词，空串 = 不过滤）
+  const query = searchQuery.trim().toLowerCase()
   const filteredRows = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase()
-    if (!q) return rows
-    return rows.filter((r) => {
-      if (r.name.toLowerCase().includes(q)) return true
-      if (r.displayName?.toLowerCase().includes(q)) return true
-      if (r.command?.toLowerCase().includes(q)) return true
-      if (r.url?.toLowerCase().includes(q)) return true
-      if (r.tools?.some((t) => t.name.toLowerCase().includes(q) || t.displayName?.toLowerCase().includes(q))) {
-        return true
-      }
-      return false
-    })
-  }, [rows, searchQuery])
+    if (!query) return rows
+    return rows.filter((r) => rowMatchesQuery(r, query))
+  }, [rows, query])
 
   const runAction = async (
     name: string,
@@ -563,9 +560,18 @@ export function McpPanel({
               const isBusy = (a: 'toggle' | 'remove' | 'auth') => busyThis && busy.action === a
               const enabled = s.enabled !== false
               const status = rowStatus(s)
+              const tone = mcpTone(status)
+              // 诊断框只跟档位走：健康行的 `reason` 是成功原因码
+              // （initialized / config_changed / restart_succeeded），不是错误。
+              const diagTone: 'error' | 'auth' | 'none' =
+                tone === 'error' || tone === 'auth' ? tone : 'none'
               const source = rowSource(s)
               const toolCount = toolCountOf(s)
-              const isToolsCollapsed = collapsedTools[s.name] ?? false
+              // 工具列表默认收起；搜索命中工具名相当于点名要看它，自动展开该
+              // 行（用户手动展开/收起过该行后以手动结果为准）。
+              const toolQueryHit =
+                query.length > 0 && (s.tools?.some((t) => toolMatchesQuery(t, query)) ?? false)
+              const isToolsCollapsed = collapsedTools[s.name] ?? !toolQueryHit
 
               return (
                 <div
@@ -583,7 +589,11 @@ export function McpPanel({
                       <div className="flex flex-wrap items-center gap-1.5">
                         <span
                           className={`h-2 w-2 shrink-0 rounded-full ${statusDot(status)}`}
-                          title={status ?? 'unknown'}
+                          title={
+                            s.reason
+                              ? `${status ?? 'unknown'} · ${s.reason}`
+                              : (status ?? 'unknown')
+                          }
                         />
                         <span className="font-mono text-[13px] font-semibold text-gn-fg tracking-tight">
                           {s.name}
@@ -647,9 +657,15 @@ export function McpPanel({
                         ) : null}
                       </div>
 
-                      {/* 错误与原因诊断 */}
-                      {s.reason ? (
-                        <div className="mt-1.5 rounded border border-gn-diff-del-bg/50 bg-gn-diff-del-bg/20 px-2 py-1 text-[11px] text-gn-red">
+                      {/* 诊断：只有异常态才报红（reason 是转移原因码，成功也带） */}
+                      {diagTone !== 'none' && s.reason ? (
+                        <div
+                          className={`mt-1.5 rounded border px-2 py-1 text-[11px] ${
+                            diagTone === 'error'
+                              ? 'border-gn-diff-del-bg/50 bg-gn-diff-del-bg/20 text-gn-red'
+                              : 'border-gn-orange/40 bg-gn-orange/10 text-gn-orange'
+                          }`}
+                        >
                           <span className="font-semibold">原因:</span> {s.reason}
                         </div>
                       ) : null}
@@ -1348,6 +1364,25 @@ function toolCountOf(row: McpRow): number | undefined {
   return row.tools ? row.tools.length : row.toolCount
 }
 
+/** 工具名 / 展示名命中搜索词（`query` 已小写）。 */
+function toolMatchesQuery(tool: McpToolInfo, query: string): boolean {
+  return (
+    tool.name.toLowerCase().includes(query) ||
+    (tool.displayName?.toLowerCase().includes(query) ?? false)
+  )
+}
+
+/** 行的搜索命中：服务器字段或任一工具名。 */
+function rowMatchesQuery(row: McpRow, query: string): boolean {
+  return (
+    row.name.toLowerCase().includes(query) ||
+    (row.displayName?.toLowerCase().includes(query) ?? false) ||
+    (row.command?.toLowerCase().includes(query) ?? false) ||
+    (row.url?.toLowerCase().includes(query) ?? false) ||
+    (row.tools?.some((t) => toolMatchesQuery(t, query)) ?? false)
+  )
+}
+
 /** 需要认证 / 需要配置 badges — why a server shows no tools. */
 function McpFlags({ row }: { row: McpRow }) {
   return (
@@ -1373,21 +1408,15 @@ function McpFlags({ row }: { row: McpRow }) {
 }
 
 function statusDot(status?: string): string {
-  if (!status) return 'bg-gn-gutter'
-  switch (status) {
-    case 'ready':
-    case 'connected':
-      return 'bg-gn-green shadow-[0_0_6px_rgba(158,206,106,.5)]'
-    case 'initializing':
-      return 'bg-gn-yellow animate-pulse'
-    case 'needs_auth':
-      return 'bg-gn-orange'
-    case 'setup_required':
-    case 'setuprequired':
-      return 'bg-gn-yellow'
-    default:
-      return 'bg-gn-red'
-  }
+  const tone = mcpTone(status)
+  if (tone === 'ok') return 'bg-gn-green shadow-[0_0_6px_rgba(158,206,106,.5)]'
+  if (tone === 'auth') return 'bg-gn-orange'
+  if (tone === 'error') return 'bg-gn-red'
+  if (tone === 'unknown') return 'bg-gn-gutter'
+  // pending：握手中闪烁，待配置常亮。
+  return status === 'setup_required' || status === 'setuprequired'
+    ? 'bg-gn-yellow'
+    : 'bg-gn-yellow animate-pulse'
 }
 
 function actionLabel(action: 'toggle' | 'remove' | 'auth'): string {

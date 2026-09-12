@@ -32,6 +32,10 @@ export const KEY = {
   workspaceMode: 'capri-fe.workspaceMode',
   /** 历史侧边栏视图模式。 */
   historyView: 'capri-fe.historyView',
+  /** 会话列表的粘性排序锚（sessionId → epoch ms），见 store/historyOrder.ts。 */
+  historyOrder: 'capri-fe.historyOrder',
+  /** 用户手动折叠/展开过的会话列表分组（组 key → 是否收起）。 */
+  historyGroupCollapse: 'capri-fe.historyGroupCollapse',
   /** /multiline 输入模式。 */
   multiline: 'capri-fe.multiline',
   /** 取消一轮时是否连带停掉子代理。 */

@@ -21,6 +21,7 @@ vi.mock('../api/client', () => ({
     getConnectionMode: vi.fn(() => 'local'),
     lastLiveEventAt: vi.fn(() => undefined),
     extensions: vi.fn(async () => ({ skills: [] })),
+    queueInterject: vi.fn(async () => {}),
   },
 }))
 
@@ -246,3 +247,62 @@ describe('Composer shell 模式（`!`）走 host 直连 bash 回合', () => {
     expect(textarea.value).toBe('')
   })
 })
+
+describe('Composer 立即发送拦截确认', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useChatStore.setState({
+      sessionId: 'test-sess-1',
+      cwd: '/test/cwd',
+      conn: 'ready',
+      historyLoading: false,
+      newSessionPending: false,
+      entries: [],
+      pending: [],
+      xaiRequests: [],
+    })
+    usePromptQueue.setState({
+      queue: [],
+      sending: false,
+    })
+  })
+
+  it('存在 xaiRequests 时立即发送先弹窗拦截，确认后才真正调 queueInterject', async () => {
+    useChatStore.setState({
+      xaiRequests: [
+        {
+          requestId: 'r-ask',
+          method: 'x.ai/ask_user_question',
+          params: {},
+        },
+      ],
+    })
+    usePromptQueue.setState({
+      queue: [
+        {
+          id: 'q1',
+          text: '插队消息',
+          blocks: [],
+          version: 1,
+          ts: Date.now(),
+        },
+      ],
+    })
+
+    render(<Composer />)
+    const sendNowBtn = screen.getByTitle('立即发送这条')
+    fireEvent.click(sendNowBtn)
+
+    // 弹出确认弹窗，transport.queueInterject 尚未被调用
+    expect(screen.getByRole('dialog', { name: '立即发送确认' })).not.toBeNull()
+    expect(transport.queueInterject).not.toHaveBeenCalled()
+
+    // 点击仍要立即发送
+    fireEvent.click(screen.getByRole('button', { name: '仍要立即发送' }))
+    expect(transport.queueInterject).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'q1' }),
+      'test-sess-1',
+    )
+  })
+})
+

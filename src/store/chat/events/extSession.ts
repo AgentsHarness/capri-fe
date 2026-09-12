@@ -110,12 +110,26 @@ export function handleExtSessionEvent(
         const name = p.name ? String(p.name) : ''
         if (!name) break
         const existing = get().mcpServers.find((s) => s.name === name)
+        const status = p.status ? String(p.status) : existing?.status
+        // `reason` 每条事件都带（成功转移也有：首次握手完成 = initialized），
+        // `detail` 只在失败事件里出现。带 status 的事件是完整快照，缺失的
+        // detail 视为「本轮无诊断」清掉，否则恢复健康后旧的握手错误会一直挂着。
+        const fullSnapshot = p.status != null
         const row: McpServerInfo = {
+          ...existing,
           name,
           source: existing?.source ?? (p.source ? String(p.source) : undefined),
-          status: p.status ? String(p.status) : existing?.status,
-          reason: p.reason ? String(p.reason) : existing?.reason,
-          detail: p.detail ? String(p.detail) : existing?.detail,
+          status,
+          reason: p.reason
+            ? String(p.reason)
+            : fullSnapshot
+              ? undefined
+              : existing?.reason,
+          detail: p.detail
+            ? String(p.detail)
+            : fullSnapshot
+              ? undefined
+              : existing?.detail,
         }
         set({
           mcpServers: [
@@ -137,6 +151,7 @@ export function handleExtSessionEvent(
       case 'mcp_tools_changed':
       case 'mcp_servers_updated':
         set({ mcpVersion: get().mcpVersion + 1 })
+        void get().syncMcpServers()
         break
       case 'sessions_changed':
         void get().refreshSessions()

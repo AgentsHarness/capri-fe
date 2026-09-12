@@ -35,8 +35,21 @@ export type SearchFile = {
 
 export type KvPair = { key: string; value: string }
 
-/** AskUserQuestion 的一组问答（answer 为空串表示用户未作答）。 */
-export type AskUserQaPair = { question: string; answer: string }
+export type AskUserOption = {
+  label: string
+  description?: string
+}
+
+/** AskUserQuestion 的一组问答（包含题干、选项列表、用户选择、用户自定义输入等）。 */
+export type AskUserQaPair = {
+  question: string
+  answer?: string
+  notes?: string
+  preview?: string
+  options?: AskUserOption[]
+  multiSelect?: boolean
+  cancelled?: boolean
+}
 
 /** One tool surfaced by `search_tool` (TUI DiscoveredTool). */
 export type DiscoveredTool = {
@@ -1145,6 +1158,14 @@ function maybePretty(s: string): string {
   }
 }
 
+function isAskUserMeta(meta: unknown): boolean {
+  if (!meta || typeof meta !== 'object') return false
+  const m = meta as Record<string, any>
+  const toolObj = m['x.ai/tool']
+  if (!toolObj || typeof toolObj !== 'object') return false
+  return String(toolObj.name || '').toLowerCase() === 'ask_user_question'
+}
+
 // ── ask user (AskUserQuestion) ───────────────────────────────────────
 
 /**
@@ -1180,14 +1201,36 @@ export function parseAskUserQaPairs(output: string): AskUserQaPair[] {
       // 答案直到下一个 `", "`（下一对）或串尾
       const sep = remaining.indexOf(', "')
       const answerEnd = sep < 0 ? remaining.length : sep
-      let answerText = remaining.slice(0, answerEnd)
+      let rawEntry = remaining.slice(0, answerEnd)
+
+      // 解析 label 与 optional notes / preview
+      let notes: string | undefined
+      let preview: string | undefined
+
+      const notesIdx = rawEntry.indexOf(' user notes:')
+      if (notesIdx >= 0) {
+        notes = rawEntry.slice(notesIdx + ' user notes:'.length).trim()
+        if (notes.endsWith('"')) notes = notes.slice(0, -1).trim()
+        if (notes.startsWith('"')) notes = notes.slice(1).trim()
+        rawEntry = rawEntry.slice(0, notesIdx)
+      }
+      const previewIdx = rawEntry.indexOf(' selected preview:')
+      if (previewIdx >= 0) {
+        preview = rawEntry.slice(previewIdx + ' selected preview:'.length).trim()
+        if (preview.endsWith('"')) preview = preview.slice(0, -1).trim()
+        if (preview.startsWith('"')) preview = preview.slice(1).trim()
+        rawEntry = rawEntry.slice(0, previewIdx)
+      }
+      let answerText = rawEntry.trim()
       if (answerText.endsWith('"')) answerText = answerText.slice(0, -1)
-      // 去掉注解后缀（选中预览 / 用户备注），只留标签本身
-      const preview = answerText.indexOf(' selected preview:')
-      if (preview >= 0) answerText = answerText.slice(0, preview)
-      const notes = answerText.indexOf(' user notes:')
-      if (notes >= 0) answerText = answerText.slice(0, notes)
-      pairs.push({ question, answer: answerText })
+      if (answerText.startsWith('"')) answerText = answerText.slice(1)
+
+      pairs.push({
+        question,
+        answer: answerText,
+        ...(notes ? { notes } : {}),
+        ...(preview ? { preview } : {}),
+      })
       remaining = remaining.slice(answerEnd)
       if (remaining.startsWith(', ')) remaining = remaining.slice(2)
     }
@@ -1527,20 +1570,75 @@ export function extractToolDetail(tc: ToolCall, kindName?: string): ToolDetail {
     (typeof raw === 'string' ? raw : raw != null ? safeJson(raw) : undefined)
   const name = title || kind
   const colon = name.indexOf(': ')
-  // AskUserQuestion 结构化问答输出（按输出文本识别，不依赖工具名；
+
+  // AskUserQuestion 结构化问答输出（按输出文本、工具名、title 或 rawInput.questions 识别；
   // TUI other.rs 对所有 Other 块的 output 都先试 parse_ask_user_qa_pairs）。
-  // 命中时不产出 output，正文改由 GenericBody 渲染编号问答行。
+  // 命中时不把 questions 当裸 JSON 打印，正文改由 GenericBody 渲染结构化问答卡片。
   const qaPairs = output ? parseAskUserQaPairs(output) : []
-  if (qaPairs.length > 0) {
-    return {
-      kind: 'generic',
-      name,
-      summary: title,
-      label: colon > 0 ? name.slice(0, colon) : undefined,
-      content: colon > 0 ? name.slice(colon + 2) : undefined,
-      error: isFail ? contentText(tc) || 'Failed' : undefined,
-      inputArgs: flattenArgs(ri, new Set(['variant'])),
-      qaPairs,
+  const isAskUser =
+    qaPairs.length > 0 ||
+    kind === 'ask_user' ||
+    name.toLowerCase() === 'ask_user_question' ||
+    name.toLowerCase().startsWith('ask:') ||
+    isAskUserMeta(tc._meta) ||
+    Boolean(ri && (ri.variant === 'AskUserQuestion' || Array.isArray(ri.questions)))
+
+  if (isAskUser) {
+    const rawQuestions = Array.isArray(ri?.questions) ? ri.questions : []
+    const inputQuestions: AskUserQaPair[] = []
+    for (const qItem of rawQuestions) {
+      if (!isObj(qItem)) continue
+      const qText = asStr(qItem.question) || ''
+      const rawOptions = Array.isArray(qItem.options) ? qItem.options : []
+      const options: AskUserOption[] = []
+      for (const opt of rawOptions) {
+        if (typeof opt === 'string') {
+          options.push({ label: opt })
+        } else if (isObj(opt)) {
+          options.push({
+            label: asStr(opt.label) || '',
+            description: asStr(opt.description) || undefined,
+          })
+        }
+      }
+      const multiSelect = Boolean(qItem.multi_select ?? qItem.multiSelect)
+      inputQuestions.push({
+        question: qText,
+        options: options.length > 0 ? options : undefined,
+        multiSelect: multiSelect ? true : undefined,
+      })
+    }
+
+    const isCancelled =
+      typeof output === 'string' && output.startsWith('User declined to answer')
+    let finalPairs: AskUserQaPair[] = []
+    if (inputQuestions.length > 0) {
+      finalPairs = inputQuestions.map((iq, idx) => {
+        const matched = qaPairs.find((p) => p.question === iq.question) || qaPairs[idx]
+        return {
+          ...iq,
+          answer: matched?.answer,
+          notes: matched?.notes,
+          preview: matched?.preview,
+          cancelled: isCancelled || undefined,
+        }
+      })
+    } else if (qaPairs.length > 0) {
+      finalPairs = qaPairs
+    }
+
+    if (finalPairs.length > 0) {
+      return {
+        kind: 'generic',
+        name,
+        summary: title,
+        label: colon > 0 ? name.slice(0, colon) : undefined,
+        content: colon > 0 ? name.slice(colon + 2) : undefined,
+        error: isFail ? contentText(tc) || 'Failed' : undefined,
+        // 排除 questions 字段，避免在详情中展开巨幅未经格式化的原始 JSON
+        inputArgs: flattenArgs(ri, new Set(['variant', 'questions'])),
+        qaPairs: finalPairs,
+      }
     }
   }
   return {

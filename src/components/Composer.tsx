@@ -70,6 +70,7 @@ import { ModeMenu } from './composer/ModeMenu'
 import { PromptHistoryMenu } from './composer/PromptHistoryMenu'
 import { QueueStrip } from './composer/QueueStrip'
 import { QueueEditModal } from './composer/QueueEditModal'
+import { InterjectConfirmModal } from './composer/InterjectConfirmModal'
 import { useQueueNav } from './composer/useQueueNav'
 import { useSlashMenu } from './composer/useSlashMenu'
 import { useAtPicker } from './composer/useAtPicker'
@@ -88,6 +89,8 @@ export function Composer() {
   // TUI paste chips: stashed multi-line content behind `[Pasted: N lines]`
   // labels in the textarea (PromptWidget::handle_paste).
   const [chips, setChips] = useState<PasteChip[]>([])
+  // 立即发送确认拦截（若有未决提问或权限审批，需弹窗确认才抢占）
+  const [interjectTarget, setInterjectTarget] = useState<{ id?: string } | null>(null)
   // Pending caret position to restore after a programmatic text edit —
   // state (not a ref) so the restore effect runs on the post-edit render.
   const [pendingCaret, setPendingCaret] = useState<number | null>(null)
@@ -468,7 +471,7 @@ export function Composer() {
    * 否则整回合（send 在回合完成时才 resolve）期间 onSubmit 的 sending
    * 守卫会把 Enter 静默吞掉。
    */
-  const sendQueuedItem = async (id?: string) => {
+  const sendQueuedItem = async (id?: string, skipConfirm = false) => {
     const st = useChatStore.getState()
     if (st.sessionId && st.historyLoading) {
       pushToast('正在切换会话，请稍候再发送')
@@ -476,6 +479,15 @@ export function Composer() {
     }
     const q = usePromptQueue.getState()
     if (q.sending) return
+
+    if (!skipConfirm) {
+      const hasPendingReqs = st.xaiRequests.length > 0 || st.pending.length > 0
+      if (hasPendingReqs) {
+        setInterjectTarget({ id })
+        return
+      }
+    }
+
     // Stale-queue guard: the queue is tagged with the session it was
     // queued in. If that session is no longer active (a sessionId change
     // path missed the tracking subscription, or the host switched
@@ -1368,6 +1380,18 @@ export function Composer() {
         />
         {/* 排队消息正文的编辑弹窗（store 的 editIndex 打开它）。 */}
         <QueueEditModal />
+        {/* 立即发送确认拦截弹窗（有未决提问或权限时二次确认） */}
+        <InterjectConfirmModal
+          open={interjectTarget != null}
+          onClose={() => setInterjectTarget(null)}
+          onConfirm={() => {
+            const target = interjectTarget
+            setInterjectTarget(null)
+            if (target) void sendQueuedItem(target.id, true)
+          }}
+          hasQuestions={useChatStore.getState().xaiRequests.length > 0}
+          hasPermissions={useChatStore.getState().pending.length > 0}
+        />
         {escHintRow}
         {/* ── TUI follow-up suggestion chips (x.ai/follow_ups, follow_ups.rs) ──
           Turn-end suggestions rendered as a transient row between the

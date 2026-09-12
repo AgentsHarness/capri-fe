@@ -4,6 +4,7 @@ import { ChevronRight, Circle, CircleCheck, CircleOff, Pencil, Pin, Plus, Trash2
 import { useChatStore } from '../store/chat'
 import type { SessionInfo, WorkspaceSummary } from '../api/types'
 import {
+  frozenSortRank,
   groupWorkspaces,
   repoNameFromCwd,
   sanitizeTitle,
@@ -20,6 +21,14 @@ import {
   usePins,
 } from '../store/historyPins'
 import { useHistoryView } from '../store/historyView'
+import {
+  activityMs,
+  rowOrderMs,
+  sortGroupsByOrderMs,
+  useHistoryOrder,
+  type OrderSeed,
+} from '../store/historyOrder'
+import { useScrollAnchor } from '../hooks/useScrollAnchor'
 
 /** 组内默认显示的普通会话行数（置顶/待办不占名额，超出折叠为"加载更多"）。 */
 const WORKSPACE_ROWS_LIMIT = 4
@@ -79,6 +88,19 @@ function byUpdatedDesc(a: WorkspaceSummary, b: WorkspaceSummary): number {
   return b.updatedAt.localeCompare(a.updatedAt)
 }
 
+/**
+ * frozen 形态的组内比较器：比「排序锚」而不是本次响应的 updatedAt。
+ * 无锚的首次出现退回活动时间（新会话照旧排最前），之后钉住不动；
+ * 时间缺失（0）垫底，同分按 id，保证顺序可复现。
+ */
+function byAnchoredDesc(anchors: Record<string, number>) {
+  return (a: WorkspaceSummary, b: WorkspaceSummary): number => {
+    const d = rowOrderMs(anchors, b) - rowOrderMs(anchors, a)
+    if (d !== 0) return d
+    return a.sessionId.localeCompare(b.sessionId)
+  }
+}
+
 /** live SessionInfo → 摘要行（workspace-list 缺该会话时的兜底）。 */
 function liveToRow(s: SessionInfo, fallbackCwd = ''): MergedRow {
   const ctx = s as SessionInfo & { contextUsed?: number; contextSize?: number }
@@ -131,6 +153,21 @@ export function SessionHistoryList() {
   const setTodoStatus = usePins((s) => s.setTodoStatus)
   // 展示形态：工作区分组 vs 分类视图（见 historyView.ts）。
   const listMode = useHistoryView((s) => s.mode)
+  // 排序形态：frozen（默认，顺序钉住）/ active（跟随实时状态与活动）。
+  const orderMode = useHistoryView((s) => s.orderMode)
+  const setOrderMode = useHistoryView((s) => s.setOrderMode)
+  const frozen = orderMode === 'frozen'
+  const anchors = useHistoryOrder((s) => s.anchors)
+  const collapsePrefs = useHistoryOrder((s) => s.collapse)
+  const seedOrder = useHistoryOrder((s) => s.seed)
+  const setCollapsePref = useHistoryOrder((s) => s.setCollapse)
+  // 锚点只在同一台 host 内有意义：换 host 即整表重锚（见 historyOrder）。
+  const selectedHostId = useChatStore((s) => s.selectedHostId)
+  const hostScope = selectedHostId ?? 'local'
+  /** 列表根节点（其可滚动祖先是侧栏 / 移动端下拉的滚动容器）。 */
+  const listRootRef = useRef<HTMLDivElement>(null)
+  /** 组「默认是否收起」的钉住表：本次挂载内算一次就不再随时间翻转。 */
+  const collapseDefaultRef = useRef(new Map<string, boolean>())
 
   /**
    * 把 live 状态 merge 到摘要行上（workspace-list + sessions 双源）。
@@ -154,6 +191,14 @@ export function SessionHistoryList() {
     }
   }, [sessions])
 
+  /** 组内最终比较器：frozen 比排序锚，active 沿用 updatedAt 降序。 */
+  const byOrderKey = useMemo(
+    () => (frozen ? byAnchoredDesc(anchors) : byUpdatedDesc),
+    [frozen, anchors],
+  )
+  /** 参与排序的状态档位：frozen 只认「待处理」，active 用全档优先级。 */
+  const statusRank = frozen ? frozenSortRank : undefined
+
   /**
    * 工作区形态：按 sessionId 把 live 状态覆盖到 workspace 摘要行上；
    * 当前会话的 cwd 不在列表里时用 sessions 补一组；最后按
@@ -164,13 +209,15 @@ export function SessionHistoryList() {
       ...g,
       // 组内排序：置顶的会话永远最前，随后是待办（未完成），其余按
       // 状态优先级（待处理 → 对勾 → 运行中+后台 → 运行中 → 后台运行 →
-      // 空闲），同状态再按 updatedAt 降序。
+      // 空闲），同状态再按 updatedAt 降序。frozen 形态下状态优先级只剩
+      // 「待处理」，时间换成钉住的排序锚。
       sessions: sortSessionsWithPins(
         g.sessions.map(toRow),
         pinnedSessions,
         completedNotices,
-        byUpdatedDesc,
+        byOrderKey,
         todos,
+        statusRank,
       ),
     }))
     // 兜底：当前会话的 cwd 不在 workspace-list 里时，用 live sessions
@@ -194,15 +241,31 @@ export function SessionHistoryList() {
             rows,
             pinnedSessions,
             completedNotices,
-            byUpdatedDesc,
+            byOrderKey,
             todos,
+            statusRank,
           ),
         })
       }
     }
-    // 置顶的工作目录永远在最前（内部仍按 groupWorkspaces 活跃度排序）。
-    return sortWorkspacesWithPins(groupWorkspaces(merged), pinnedWorkspaces)
-  }, [workspaces, sessions, cwd, pinnedWorkspaces, pinnedSessions, completedNotices, todos, toRow])
+    // 置顶的工作目录永远在最前；其余 frozen 按钉住的排序锚、active 按
+    // 组内最新活动降序。
+    const ordered = frozen ? sortGroupsByOrderMs(merged, anchors) : groupWorkspaces(merged)
+    return sortWorkspacesWithPins(ordered, pinnedWorkspaces)
+  }, [
+    workspaces,
+    sessions,
+    cwd,
+    pinnedWorkspaces,
+    pinnedSessions,
+    completedNotices,
+    todos,
+    toRow,
+    byOrderKey,
+    statusRank,
+    frozen,
+    anchors,
+  ])
 
   /**
    * 标记形态：扁平索引全部已知会话（workspace 摘要 ∪ live roster）。
@@ -249,7 +312,14 @@ export function SessionHistoryList() {
     }
 
     const sortMarked = (rows: MergedRow[]) =>
-      sortSessionsWithPins(rows, pinnedSessions, completedNotices, byUpdatedDesc, todos)
+      sortSessionsWithPins(
+        rows,
+        pinnedSessions,
+        completedNotices,
+        byOrderKey,
+        todos,
+        statusRank,
+      )
 
     const sections: ListSection[] = []
     if (running.length > 0) {
@@ -277,7 +347,17 @@ export function SessionHistoryList() {
       })
     }
     return sections
-  }, [workspaces, sessions, pinnedSessions, todos, completedNotices, toRow, sessionId])
+  }, [
+    workspaces,
+    sessions,
+    pinnedSessions,
+    todos,
+    completedNotices,
+    toRow,
+    sessionId,
+    byOrderKey,
+    statusRank,
+  ])
 
   /** 当前形态下的分区列表（统一渲染入口）。 */
   const sections = useMemo((): ListSection[] => {
@@ -295,42 +375,59 @@ export function SessionHistoryList() {
    * 默认收起判定：
    * - workspace：组内 max updatedAt 超过 6 小时 → 收起
    * - marked：各分区默认展开（标记本就少，一屏能看完）
+   *
+   * 每个组只在**首次见到**时算一次并钉住：否则页面开着跨过 6 小时线，
+   * 组会在用户眼皮底下自己收起/展开，把下面的内容整体挪位。
    */
   const defaultCollapsed = useMemo(() => {
     const map = new Map<string, boolean>()
-    if (listMode === 'marked') {
-      for (const s of sections) map.set(s.key, false)
-      return map
-    }
+    const frozenDefaults = collapseDefaultRef.current
     const now = Date.now()
-    for (const g of sections) {
-      let latest = 0
-      for (const s of g.sessions) {
-        if (!s.updatedAt) continue
-        const t = Date.parse(s.updatedAt)
-        if (Number.isFinite(t) && t > latest) latest = t
+    for (const s of sections) {
+      const held = frozenDefaults.get(s.key)
+      if (held != null) {
+        map.set(s.key, held)
+        continue
       }
-      // 无时间戳视为不活跃 → 默认收起。
-      map.set(g.key, now - latest > WORKSPACE_ACTIVE_WINDOW_MS)
+      let value = false
+      if (listMode !== 'marked') {
+        let latest = 0
+        for (const row of s.sessions) {
+          const t = activityMs(row)
+          if (t > latest) latest = t
+        }
+        // 无时间戳视为不活跃 → 默认收起。
+        value = now - latest > WORKSPACE_ACTIVE_WINDOW_MS
+      }
+      frozenDefaults.set(s.key, value)
+      map.set(s.key, value)
     }
     return map
   }, [sections, listMode])
 
   /**
-   * 手动折叠状态：Map<sectionKey, 是否收起>，只记录用户明确操作过的组；
-   * 未操作过的组始终回退到 defaultCollapsed。
+   * 折叠偏好：用户明确点过的组写进 localStorage（跨会话、跨桌面/移动
+   * 两端共享），没点过的回退到上面钉住的 defaultCollapsed。
    */
-  const [collapsed, setCollapsed] = useState<ReadonlyMap<string, boolean> | null>(null)
   const isGroupCollapsed = (key: string) =>
-    collapsed?.get(key) ?? defaultCollapsed.get(key) ?? false
-  const toggleGroup = (key: string) => {
-    setCollapsed((prev) => {
-      const cur = prev?.get(key) ?? defaultCollapsed.get(key) ?? false
-      const next = new Map(prev ?? [])
-      next.set(key, !cur)
-      return next
-    })
-  }
+    collapsePrefs[key] ?? defaultCollapsed.get(key) ?? false
+  const toggleGroup = (key: string) => setCollapsePref(key, !isGroupCollapsed(key))
+
+  /**
+   * frozen 形态：列表落地时把没见过的会话钉一个排序锚（只补新锚，
+   * 已锚定的不动）。数据本身（sessions / workspaces）每次刷新都是新数组，
+   * 顺序却不因此改变——显式刷新与换 host 才会整表重锚。
+   */
+  useEffect(() => {
+    if (!frozen) return
+    const rows: OrderSeed[] = []
+    for (const section of sections) {
+      for (const row of section.sessions) {
+        rows.push({ sessionId: row.sessionId, ms: activityMs(row) })
+      }
+    }
+    seedOrder(rows, hostScope)
+  }, [frozen, sections, hostScope, seedOrder])
 
   /**
    * 组内默认展开的行数：置顶 / 待办（未完成）会话不占普通名额——
@@ -375,6 +472,25 @@ export function SessionHistoryList() {
       return next
     })
   }
+
+  /**
+   * 渲染形态指纹：组顺序 / 各组行数 / 折叠态 / 展开名额。只有它变了才
+   * 做一次滚动补偿（见 useScrollAnchor）——状态图标每帧翻动不该触发测量。
+   */
+  const layoutFingerprint = useMemo(() => {
+    const parts = [listMode, frozen ? 'f' : 'a']
+    for (const g of sections) {
+      parts.push(
+        `${g.key}#${g.sessions.length}#${isGroupCollapsed(g.key) ? 'c' : 'e'}#${Math.min(
+          visibleCount.get(g.key) ?? defaultShownCount(g),
+          g.sessions.length,
+        )}`,
+      )
+    }
+    return parts.join('|')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sections, listMode, frozen, visibleCount, collapsePrefs, pinnedSessions, todos])
+  useScrollAnchor(listRootRef, layoutFingerprint)
 
   // ── inline rename (TUI Ctrl+R RenameDraft) ─────────────────────────
   // The wire rename API (POST /api/session-rename) only targets the
@@ -433,7 +549,6 @@ export function SessionHistoryList() {
   // during streaming output (scrollTop writes as content grows), and that
   // must not close the menu — the scroll container is an ancestor of the
   // list root, inner scrollables are descendants; anything else is ignored.
-  const listRootRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!menu) return
     const onKey = (e: KeyboardEvent) => {
@@ -507,6 +622,11 @@ export function SessionHistoryList() {
         const shown = visibleCount.get(g.key) ?? defaultShown
         const rows = g.sessions.slice(0, shown)
         const isWorkspace = g.kind === 'workspace'
+        // 钉住形态下在跑的会话不会自己浮上来，组头带一个在跑数量：既保住
+        // 「哪个目录在干活」一眼可见，也不因状态翻转挪动任何一行。
+        const busyCount = isWorkspace
+          ? g.sessions.filter((s) => sessionGroupKey(s, sessionId) !== 'idle').length
+          : 0
         const sectionAccent =
           g.kind === 'running'
             ? 'text-gn-cyan'
@@ -558,6 +678,16 @@ export function SessionHistoryList() {
                       待办）本身就是分类，行内也各有状态与标记图标。 */}
                   <span className="min-w-0 truncate">{g.label}</span>
                 </span>
+                {busyCount > 0 && (
+                  <span
+                    className="inline-flex shrink-0 items-center gap-1 text-[10px] tabular-nums text-gn-cyan"
+                    title={`${busyCount} 个会话有进行中的回合 / 后台任务`}
+                    aria-label={`${busyCount} 个会话在运行`}
+                  >
+                    <SessionStateIcon state="active" pending={false} />
+                    {busyCount}
+                  </span>
+                )}
                 <span className="shrink-0 text-[10px] tabular-nums text-gn-gutter">
                   {g.sessions.length}
                 </span>
@@ -629,6 +759,7 @@ export function SessionHistoryList() {
                   return (
                     <div
                       key={s.sessionId}
+                      data-hkey={s.sessionId}
                       role="button"
                       tabIndex={0}
                       aria-disabled={historyLoading}
@@ -800,10 +931,10 @@ export function SessionHistoryList() {
           </div>
         )
       })}
-      {/* 底部展示模式条（两行）：第一行「已加载最近/全部 N 条会话」
+      {/* 底部展示模式条（三行）：第一行「已加载最近/全部 N 条会话」
           （真实条数）；第二行「加载更多」+「切换全量 / 切换最近」tab
-          （当前模式高亮）。切换偏好持久化到 localStorage。仅 workspace
-          形态且有数据时显示。 */}
+          （当前模式高亮）；第三行排序形态「钉住顺序 / 跟随活跃」。
+          切换偏好持久化到 localStorage。仅 workspace 形态且有数据时显示。 */}
       {listMode === 'workspace' && sections.length > 0 && (
         <div className="py-1.5">
           <div className="flex items-center justify-center">
@@ -812,6 +943,25 @@ export function SessionHistoryList() {
                 ? `已加载最近 ${sections.reduce((n, g) => n + g.sessions.length, 0)} 条会话`
                 : `已加载全部 ${sections.reduce((n, g) => n + g.sessions.length, 0)} 条会话`}
             </span>
+          </div>
+          {/* 排序形态：钉住 = 顺序在首次见到/显式刷新时定一次，后台会话
+              继续跑也不重排；跟随活跃 = 每次刷新按实时状态与活动时间重排
+              （旧行为）。 */}
+          <div className="mt-1 flex items-center gap-1" role="group" aria-label="会话列表排序形态">
+            <OrderTab
+              active={frozen}
+              onClick={() => setOrderMode('frozen')}
+              title="顺序钉住：只在刷新列表时重排一次，后台会话跑起来不会把目录顶到最上面"
+            >
+              钉住顺序
+            </OrderTab>
+            <OrderTab
+              active={!frozen}
+              onClick={() => setOrderMode('active')}
+              title="跟随活跃：每次拉到新数据都按状态优先级 + 最新活动重排"
+            >
+              跟随活跃
+            </OrderTab>
           </div>
           <div className="mt-1 flex gap-1">
             <button
@@ -1129,6 +1279,31 @@ function MenuItem({
       onClick={onClick}
       title={disabled ? disabledTitle : undefined}
       className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] ${ disabled ? 'cursor-not-allowed text-gn-gutter opacity-50' : danger ? 'text-gn-red hover:bg-gn-diff-del-bg' : 'text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg' }`}
+    >
+      {children}
+    </button>
+  )
+}
+
+/** 底部排序形态切换（与「切换全量 / 切换最近」同一视觉语汇）。 */
+function OrderTab({
+  active,
+  onClick,
+  title,
+  children,
+}: {
+  active: boolean
+  onClick: () => void
+  title: string
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      aria-pressed={active}
+      className={`flex flex-1 cursor-pointer items-center justify-center px-1 py-0.5 text-[10.5px] ${ active ? 'bg-gn-bg-highlight text-gn-cyan' : 'text-gn-muted hover:text-gn-fg' }`}
     >
       {children}
     </button>

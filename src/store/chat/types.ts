@@ -527,6 +527,12 @@ export interface ChatAgentExtState {
   modelName?: string
   /** Reasoning effort suffix, e.g. "high". */
   reasoningEffort?: string
+  /**
+   * 空状态（无活动会话）选定的模型：host 的 /api/set-model 要求带
+   * sessionId（无 sid 直接 400），此刻只能先记下选择，等 newSession
+   * 锚定后由 newSession 补发；锚定即清空。caption 同期乐观更新为它。
+   */
+  pendingModel?: { modelId: string; reasoningEffort?: string; asDefault?: boolean }
   /** Memory files from memory_files (TUI memory modal). */
   memoryFiles?: { name: string; path?: string; size?: number; updatedAt?: unknown; source?: string }[]
   /** Todo counts from plan updates (TUI status-bar todo badge). */
@@ -550,6 +556,13 @@ export interface ChatMcpState {
   mcpInit?: McpInitProgress
   // ── MCP management (TUI /mcps modal; host endpoints may be unsupported —
   //    every method rethrows so the panel renders the failure inline) ──
+  /**
+   * GET /api/mcp/list 并更新当前会话的 mcpServers 全量权威快照。
+   * 支持传入已拉取的 prefetched 列表以避免重复发起网络请求。
+   * 对齐 TUI：在会话恢复（continueSession）、新会话（newSession）、
+   * 以及收到 mcp_tools_changed / mcp_servers_updated 通知时主动拉取校准。
+   */
+  syncMcpServers: (prefetched?: McpListServer[]) => Promise<void>
   /** GET /api/mcp/list — configured servers (host reads config.toml). */
   mcpList: () => Promise<McpListServer[]>
   /** POST /api/mcp-toggle — enable/disable a server. */
@@ -953,8 +966,14 @@ export interface ChatActions {
   fetchPairingCode: () => Promise<{ code: string; expiresAt?: string; ttl?: number }>
   /** 轮换配对码（旧码立即失效）→ 新码。 */
   rotatePairingCode: () => Promise<{ code: string; expiresAt?: string }>
-  /** session/setModel — switch the session's model (grok /model). */
-  setModel: (modelId: string, reasoningEffort?: string) => Promise<void>
+  /** session/setModel — switch the session's model (grok /model).
+   *  opts.asDefault：同时写入 config.toml 默认（菜单「设为默认」勾选；
+   *  空状态下随 pendingModel 记下，会话锚定后一起补发）。 */
+  setModel: (
+    modelId: string,
+    reasoningEffort?: string,
+    opts?: { asDefault?: boolean },
+  ) => Promise<void>
   /** History picker: fetch session list and open the overlay. */
   openHistory: () => Promise<void>
   closeHistory: () => void

@@ -62,7 +62,7 @@ describe('toast store', () => {
   it('inferToastType 智能推断文本对应类型', () => {
     expect(inferToastType('修改 Host 失败: 连接超时')).toBe('error')
     expect(inferToastType('复制失败，请手动选择复制')).toBe('error')
-    expect(inferToastType('请先开始或恢复一个会话，再切换模型')).toBe('warning')
+    expect(inferToastType('请先 fork，再在新会话中发送该内容')).toBe('warning')
     expect(inferToastType('正在切换会话，请稍候再发送')).toBe('warning')
     expect(inferToastType('🔔 需要审批：bash')).toBe('info')
     expect(inferToastType('配对码已复制')).toBe('success')

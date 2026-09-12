@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { useChatStore } from '../store/chat'
 import { applyToolsetSettings, ensureToolsetSettings } from '../store/settings'
+import type { PendingReq } from '../api/types'
 import { QuestionModal } from './QuestionModal'
 
 const transportMock = vi.hoisted(() => ({
@@ -15,29 +16,41 @@ const dismissXaiMock = vi.fn(async () => {})
 
 const ANCHOR_ID = 'capri-xai-question-anchor'
 
-/** 一张单题卡片（requestId r1）。卡片 portal 到 Composer 的 anchor。 */
-function renderCard(params: Record<string, unknown>) {
+/** 一张单题卡片。卡片 portal 到 Composer 的 anchor。requestId 逐用例唯一：
+ *  倒计时锚点按 requestId 记在模块级 Map 里，同 id 会跨用例复用。 */
+function askRow(
+  requestId: string,
+  params: Record<string, unknown>,
+  extra?: Partial<PendingReq>,
+) {
+  return {
+    requestId,
+    method: 'x.ai/ask_user_question',
+    params: {
+      questions: [
+        {
+          question: 'Q?',
+          options: [{ label: 'A', description: 'opt A' }],
+        },
+      ],
+      ...params,
+    },
+    ...extra,
+  }
+}
+
+function renderCard(
+  params: Record<string, unknown>,
+  requestId = 'r1',
+  extra?: Partial<PendingReq>,
+) {
   if (!document.getElementById(ANCHOR_ID)) {
     const anchor = document.createElement('div')
     anchor.id = ANCHOR_ID
     document.body.appendChild(anchor)
   }
   useChatStore.setState({
-    xaiRequests: [
-      {
-        requestId: 'r1',
-        method: 'x.ai/ask_user_question',
-        params: {
-          questions: [
-            {
-              question: 'Q?',
-              options: [{ label: 'A', description: 'opt A' }],
-            },
-          ],
-          ...params,
-        },
-      },
-    ],
+    xaiRequests: [askRow(requestId, params, extra)],
     respondXai: respondXaiMock,
     dismissXai: dismissXaiMock,
   })
@@ -60,7 +73,7 @@ describe('QuestionModal timeout 呈现', () => {
         toolset: { ask_user_question: { timeout_enabled: true, timeout_secs: 45 } },
       })
       await ensureToolsetSettings()
-      renderCard({})
+      renderCard({}, 'r-tick')
       const status = () => screen.getByRole('status')
       // deadline = 请求到达 + 45s，先显示满值。
       expect(status().textContent).toContain('提问倒计时 0:45')
@@ -78,7 +91,7 @@ describe('QuestionModal timeout 呈现', () => {
       toolset: { ask_user_question: { timeout_enabled: false, timeout_secs: 45 } },
     })
     await ensureToolsetSettings()
-    renderCard({})
+    renderCard({}, 'r-disabled')
     await waitFor(() => expect(screen.getByRole('dialog')).not.toBeNull())
     expect(screen.queryByText(/自动放弃/)).toBeNull()
     expect(screen.queryByText(/倒计时|超时/)).toBeNull()
@@ -87,9 +100,134 @@ describe('QuestionModal timeout 呈现', () => {
   it('wire 无 deadline + 未配置 → 按 agent 默认 1800 秒倒计时', async () => {
     transportMock.settings.mockResolvedValue({})
     await ensureToolsetSettings()
-    renderCard({})
+    renderCard({}, 'r-default')
     // 1800s = 30:00。
     expect(screen.getByRole('status').textContent).toContain('提问倒计时 30:00')
+  })
+
+  it('冷缓存 → 先按默认预算，配置落地后收敛到真值（同一锚点，不重新计时）', async () => {
+    vi.useFakeTimers()
+    try {
+      transportMock.settings.mockResolvedValue({
+        toolset: { ask_user_question: { timeout_secs: 45 } },
+      })
+      // 不预先 await ensureToolsetSettings()：卡片到达时 toolset 缓存是空的。
+      renderCard({}, 'r-cold')
+      const status = () => screen.getByRole('status')
+      expect(status().textContent).toContain('提问倒计时 30:00')
+      // GET 回来后必须改用真值，否则用户以为还有 30 分钟。
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(status().textContent).toContain('提问倒计时 0:45')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('重连快照重放同一请求 → 倒计时从原锚点继续，不回到满值', async () => {
+    vi.useFakeTimers()
+    try {
+      transportMock.settings.mockResolvedValue({
+        toolset: { ask_user_question: { timeout_enabled: true, timeout_secs: 45 } },
+      })
+      applyToolsetSettings({ ask_user_question: { timeout_enabled: true, timeout_secs: 45 } })
+      renderCard({}, 'r-replay')
+      act(() => {
+        vi.advanceTimersByTime(20_000)
+      })
+      expect(screen.getByRole('status').textContent).toContain('提问倒计时 0:25')
+      // hello 把同一条 pending 请求换成新对象塞回 xaiRequests（req 换引用）。
+      act(() => {
+        useChatStore.setState({ xaiRequests: [askRow('r-replay', {})] })
+      })
+      expect(screen.getByRole('status').textContent).toContain('提问倒计时 0:25')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('host 重启后 requestId 重号 → 按 toolCallId 分别锚定，不串用旧锚点', async () => {
+    vi.useFakeTimers()
+    try {
+      transportMock.settings.mockResolvedValue({
+        toolset: { ask_user_question: { timeout_enabled: true, timeout_secs: 45 } },
+      })
+      applyToolsetSettings({ ask_user_question: { timeout_enabled: true, timeout_secs: 45 } })
+      const first = renderCard({ toolCallId: 'tc-1' }, 'acp_cr_1')
+      act(() => {
+        vi.advanceTimersByTime(20_000)
+      })
+      expect(screen.getByRole('status').textContent).toContain('提问倒计时 0:25')
+      first.unmount()
+      // host 的 acp_cr_N 计数器随进程重启归零：requestId 相同、toolCallId 不同。
+      renderCard({ toolCallId: 'tc-2' }, 'acp_cr_1')
+      expect(screen.getByRole('status').textContent).toContain('提问倒计时 0:45')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('host 携带 receivedAt → 所有标签页/设备共享统一起点（20s 后打开的标签页直接显示剩余 25s）', async () => {
+    vi.useFakeTimers()
+    try {
+      const t0 = 1_700_000_000_000
+      vi.setSystemTime(t0 + 20_000) // 20 秒后当前标签页才初次渲染
+      transportMock.settings.mockResolvedValue({
+        toolset: { ask_user_question: { timeout_enabled: true, timeout_secs: 45 } },
+      })
+      applyToolsetSettings({ ask_user_question: { timeout_enabled: true, timeout_secs: 45 } })
+
+      // host 在 t0 收到 agent 请求并打上 receivedAt
+      renderCard({}, 'r-host-origin', { receivedAt: t0 })
+      const status = () => screen.getByRole('status')
+      // 45s - 20s = 25s，倒计时直接显示 0:25，而不是重新从 0:45 满值倒计
+      expect(status().textContent).toContain('提问倒计时 0:25')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('多标签页共享相同 receivedAt 时，即使各标签页 sessionStorage 隔离，倒计时也完全对齐', async () => {
+    vi.useFakeTimers()
+    try {
+      const t0 = 1_700_000_000_000
+      vi.setSystemTime(t0)
+      transportMock.settings.mockResolvedValue({
+        toolset: { ask_user_question: { timeout_enabled: true, timeout_secs: 60 } },
+      })
+      applyToolsetSettings({ ask_user_question: { timeout_enabled: true, timeout_secs: 60 } })
+
+      // 标签页 A 实时收到请求
+      const tabA = renderCard({}, 'r-multi-tab', { receivedAt: t0 })
+      expect(screen.getByRole('status').textContent).toContain('提问倒计时 1:00')
+
+      // 15 秒后，另一个设备或新标签页 B 打开（无 tab A 的本地缓存）
+      act(() => {
+        vi.advanceTimersByTime(15_000)
+      })
+      tabA.unmount()
+      window.sessionStorage.clear()
+
+      // 标签页 B 通过快照拿到同一个 receivedAt
+      renderCard({}, 'r-multi-tab', { receivedAt: t0 })
+      expect(screen.getByRole('status').textContent).toContain('提问倒计时 0:45')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('每条新提问重读一次配置（config.toml 手改后倒计时跟得上）', async () => {
+    transportMock.settings.mockResolvedValue({
+      toolset: { ask_user_question: { timeout_secs: 30 } },
+    })
+    const first = renderCard({}, 'r-refetch-a')
+    // 冷缓存：ensure 与 refresh 共享同一条在途 GET。
+    await waitFor(() => expect(transportMock.settings).toHaveBeenCalledTimes(1))
+    first.unmount()
+    renderCard({}, 'r-refetch-b')
+    // 缓存已热，ensure 不再问，refresh 必问。
+    await waitFor(() => expect(transportMock.settings).toHaveBeenCalledTimes(2))
   })
 
   it('wire 带 deadlineAt（未来扩展）→ 真实倒计时，到点等待 agent 收尾', async () => {
@@ -98,7 +236,7 @@ describe('QuestionModal timeout 呈现', () => {
       vi.setSystemTime(1_700_000_000_000)
       transportMock.settings.mockResolvedValue({})
       await ensureToolsetSettings()
-      renderCard({ deadlineAt: 1_700_000_000_000 + 120_000 })
+      renderCard({ deadlineAt: 1_700_000_000_000 + 120_000 }, 'r-wire')
       const status = () => screen.getByRole('status')
       expect(status().textContent).toContain('提问倒计时 2:00')
       // 推进过 deadline：倒计时归零，等待 agent 收尾（FE 不自动应答）
@@ -117,7 +255,7 @@ describe('QuestionModal timeout 呈现', () => {
       toolset: { ask_user_question: { timeout_enabled: true, timeout_secs: 45 } },
     })
     await ensureToolsetSettings()
-    renderCard({ deadlineAt: 1000 }) // 早已过期
+    renderCard({ deadlineAt: 1000 }, 'r-wire-expired') // 早已过期
     await waitFor(() =>
       expect(screen.getByText('提问已超时，等待 agent 收尾…')).not.toBeNull(),
     )
