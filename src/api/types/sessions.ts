@@ -315,11 +315,15 @@ export type SessionStats = {
   llmDurationMs: number
   /** 工具调用总耗时（ms，completed result − call 的 agentTimestampMs）。 */
   toolDurationMs?: number
-  /** 首 token 平均延迟（ms，本回合第一条流的 streamStartMs − 用户发出）。 */
+  /**
+   * 首 token 平均延迟（ms，本回合第一条流的 streamStartMs − 用户发出）。
+   * 首条流的起点可由空串 chunk 或 tool_call 提供，不要求可见文本。
+   */
   firstTokenAvgMs?: number
   /**
-   * 吞吐（tok/s = outputTokens / Σ(末包 − streamStart) × 1000）。
-   * 无生成窗口时回退 llmDurationMs。
+   * 吞吐（tok/s = outputTokens / Σ(末个生成侧事件 − streamStart) × 1000）。
+   * 生成侧事件含空串 chunk 与 tool_call；只有 tool_call_update（工具执行）
+   * 不进分母。无生成窗口时回退 llmDurationMs。
    */
   tokensPerSec?: number
   /** 缓存命中率 0–1（cachedReadTokens / inputTokens）。 */
