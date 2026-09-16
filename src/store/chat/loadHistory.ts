@@ -9,6 +9,7 @@ import {
   isAsyncScopeCurrent,
   runtime,
 } from './globals'
+import { partitionPendingRequests } from './pending'
 import { restorePlanMode } from './modeFlags'
 import { formatTurnDuration } from './format'
 import { clearSuppressedTools } from './tools'
@@ -144,8 +145,10 @@ export async function loadHistory(
       openThoughtId: undefined,
       pendingOptimisticUserId: undefined,
       toolIndex: {},
-      pending: [],
-      xaiRequests: [],
+      // Live approvals come from hello/status, not replayed history.
+      ...partitionPendingRequests([...get().pending, ...get().xaiRequests], sessionId, {
+        includeUntagged: true,
+      }),
       diffReview: undefined,
       diffReviewOpen: false,
       memoryFiles: undefined,

@@ -51,8 +51,8 @@ Agent 在 Host 那台机器上自己读文件、跑命令。浏览器只负责�
 cd ../capri-host && go run ./cmd/capri-host
 
 # 终端 2 — 前端
-npm install
-npm run dev
+pnpm install
+pnpm run dev
 ```
 
 打开 <http://localhost:5173>。开发服务器会把 `/api`、`/events` 代理到 `http://localhost:8765`。
@@ -60,7 +60,7 @@ npm run dev
 连上 Hub、同时看好几台机器：
 
 ```bash
-VITE_PROXY_TARGET=http://<hub>:8787 npm run dev
+VITE_PROXY_TARGET=http://<hub>:8787 pnpm run dev
 ```
 
 若 Hub 设置了 `FE_TOKEN`，页面会弹出密钥框。密钥只存在你这台浏览器里，**不要**写进 `VITE_*` 或打进静态包。

@@ -53,7 +53,13 @@ import {
   spanContaining,
 } from '../scrollback/verbGroup'
 import { useFePrefs } from '../store/historyPins'
-import { COLUMN_PAD_X_CLASS, CONTENT_COLUMN_CLASS } from '../theme/layout'
+import { useJunctionDissolve } from './scrollback/useJunctionDissolve'
+import { useScrollbarGutter } from '../hooks/useScrollbarGutter'
+import {
+  COLUMN_PAD_X_CLASS,
+  COMPOSER_BODY_PAD_LEFT_PX,
+  CONTENT_COLUMN_CLASS,
+} from '../theme/layout'
 
 /** Poll interval for live bg_task stdout while the viewer is open. */
 const BG_TASK_POLL_MS = 1500
@@ -861,6 +867,13 @@ function SubagentView({
   )
 }
 
+/**
+ * 弹窗底部 composer：与主页面 prompt 同一套 chrome——圆角 1px 边框
+ * （未聚焦 prompt-border、聚焦 prompt-border-active）、❯ 落在与时间线
+ * 相同的图标轨（CONTENT_COLUMN + COMPOSER_BODY_PAD_LEFT）、失焦正文
+ * 整体减光 0.72（主 prompt 的 blend_area 同款）。子代理已结束时整块
+ * 再减一档亮度表示不可用，边框不另换色。
+ */
 function SubagentComposer({
   agentAddress,
   disabled,
@@ -870,6 +883,11 @@ function SubagentComposer({
 }) {
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
+  const [focused, setFocused] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+  // 与主 composer 同法：右留出滚动条槽宽度，输入框列才与上方时间线对齐
+  // （时间线滚动容器用 scrollbar-gutter: stable 预留了同样的槽）。
+  const gutterPx = useScrollbarGutter()
   const sendSubagentMessage = useChatStore((s) => s.sendSubagentMessage)
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -888,17 +906,56 @@ function SubagentComposer({
     }
   }
 
+  const borderColor = focused
+    ? 'var(--color-gn-prompt-border-active)'
+    : 'var(--color-gn-prompt-border)'
+  const prefixColor = focused
+    ? 'var(--color-gn-accent-user)'
+    : 'var(--color-gn-gray-dim)'
+
   return (
-    <div className="shrink-0 border-t border-gn-border bg-gn-bg-primary px-3 py-2 sm:px-4">
-      <input
-        type="text"
-        className="w-full rounded border border-gn-border bg-gn-bg-input px-3 py-1.5 font-mono text-[13px] text-gn-text placeholder:text-gn-gutter focus:border-gn-blue focus:outline-none disabled:opacity-50"
-        placeholder={disabled ? '子代理已结束' : '向子代理发送消息… (Enter 发送)'}
-        value={text}
-        disabled={disabled || sending || !agentAddress}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={handleKeyDown}
-      />
+    <div
+      className={`safe-pb shrink-0 bg-gn-bg-base pt-1 touch-pan-x overscroll-none ${
+ disabled ? 'opacity-60' : ''
+      }`}
+      style={gutterPx ? { paddingRight: `${gutterPx}px` } : undefined}
+    >
+      <div className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS}`}>
+        <div
+          className="relative rounded-[6px] border pt-[4px] pb-[4px] font-ui transition-colors"
+          style={{ borderColor }}
+          onMouseDown={(e) => {
+            if ((e.target as HTMLElement).closest('button')) return
+            inputRef.current?.focus()
+          }}
+        >
+          <div
+            className="flex min-w-0 items-start gap-1.5 py-1 pr-3"
+            style={{
+              paddingLeft: COMPOSER_BODY_PAD_LEFT_PX - 1,
+              // 失焦减光 0.72（主 prompt 的 blend_area 同款）；禁用态由
+              // 外层整块减光承担，避免两层叠加过暗。
+              opacity: disabled || focused ? 1 : 0.72,
+            }}
+          >
+            <span className="mt-[2px] shrink-0">
+              <IconGlyph glyph={Glyphs.promptArrow} color={prefixColor} />
+            </span>
+            <input
+              ref={inputRef}
+              type="text"
+              className="gn-no-scrollbar min-h-[20px] min-w-0 flex-1 bg-transparent font-ui text-[13.5px] leading-[1.55] text-gn-fg outline-none placeholder:text-gn-gray disabled:cursor-default"
+              placeholder={disabled ? '子代理已结束' : '向子代理发送消息… (Enter 发送)'}
+              value={text}
+              disabled={disabled || sending || !agentAddress}
+              onChange={(e) => setText(e.target.value)}
+              onFocus={() => setFocused(true)}
+              onBlur={() => setFocused(false)}
+              onKeyDown={handleKeyDown}
+            />
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
@@ -1192,8 +1249,14 @@ function SubagentTimeline({
     [prompt],
   )
 
+  const timelineContentRef = useRef<HTMLDivElement>(null)
+  const junctionDissolveRef = useRef<HTMLDivElement>(null)
+  // 时间线底缘与 composer 的交界：主 scrollback 同一套溶解带（下方还有
+  // 内容时把尾行化进底色，贴底则抬升）。
+  useJunctionDissolve(scrollRef, timelineContentRef, junctionDissolveRef)
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="relative flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-center gap-2 px-3 pt-3 text-[10px] uppercase tracking-wider text-gn-gutter sm:px-4">
         <span>activity</span>
         {running && (
@@ -1211,101 +1274,116 @@ function SubagentTimeline({
         ref={scrollRef}
         onScroll={onScroll}
         className="gn-scroll min-h-0 flex-1 overflow-y-auto pb-2"
+        // 预留滚动条槽（主 scrollback 同款）：底部 composer 按同一宽度留白，
+        // 两列才不会在滚动条出现时错开。
+        style={{ scrollbarGutter: 'stable' }}
       >
-        {renderItems.length === 0 ? (
-          <div className="space-y-1.5 px-3 sm:px-4">
-            {promptEntry && (
-              <EntryView
-                e={promptEntry}
-                selected={promptEntry.id === selectedId}
-                pendingFreeze={false}
-                now={now}
-                actions={actions}
-              />
-            )}
-            <div className="text-[11px] text-gn-muted">
-              {running
-                ? '等待子代理活动上报…（数据来自宿主转发的子代理会话事件流）'
-                : '（未捕获到子代理会话活动 — 无活动时间线）'}
+        {/* 常驻包装层：溶解带要观察内容高度变化，空态⇄时间线切换时
+            观察目标不能换元素（否则 ResizeObserver 盯的是旧节点）。 */}
+        <div ref={timelineContentRef}>
+          {renderItems.length === 0 ? (
+            <div className="space-y-1.5 px-3 sm:px-4">
+              {promptEntry && (
+                <EntryView
+                  e={promptEntry}
+                  selected={promptEntry.id === selectedId}
+                  pendingFreeze={false}
+                  now={now}
+                  actions={actions}
+                />
+              )}
+              <div className="text-[11px] text-gn-muted">
+                {running
+                  ? '等待子代理活动上报…（数据来自宿主转发的子代理会话事件流）'
+                  : '（未捕获到子代理会话活动 — 无活动时间线）'}
+              </div>
             </div>
-          </div>
-        ) : (
-          <div className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} py-1`}>
-            {/* TUI sticky prompt header（主 scrollback sticky.rs 同款）：与
-                rows 同父级才能获得整列高度作为 sticky 滚动范围。零高度
-                sticky 壳 + absolute 条：吸附不改文档流，避免抖动。 */}
-            <div
-              className="pointer-events-none sticky top-0 z-10 h-0 overflow-visible"
-              aria-hidden={pinnedUser?.kind !== 'user'}
-            >
-              {pinnedUser?.kind === 'user' && (
-                <div
-                  ref={(el) => {
-                    stickyBandElRef.current = el
-                    if (el && lastPushYRef.current) {
-                      el.style.transform = `translateY(${lastPushYRef.current}px)`
-                    }
-                  }}
-                  className="pointer-events-auto absolute inset-x-0 top-0 border-b border-gn-prompt-border/40 font-ui text-[12.5px] leading-[1.35] text-gn-fg select-none"
-                  style={{ backgroundColor: 'var(--color-gn-bg-highlight)' }}
-                >
-                  <div className="flex items-start gap-1.5 px-2.5 py-[7px]">
-                    <span
-                      className="mt-[1.5px] shrink-0"
-                      style={{ color: 'var(--color-gn-accent-user)' }}
-                      aria-hidden
-                    >
-                      {Glyphs.promptArrow}
-                    </span>
-                    <div className="min-w-0 flex-1 whitespace-pre-wrap break-words">
-                      {collapseUserText(pinnedUser.text, USER_COLLAPSED_MAX_LINES).text}
+          ) : (
+            <div className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} py-1`}>
+              {/* TUI sticky prompt header（主 scrollback sticky.rs 同款）：与
+                  rows 同父级才能获得整列高度作为 sticky 滚动范围。零高度
+                  sticky 壳 + absolute 条：吸附不改文档流，避免抖动。 */}
+              <div
+                className="pointer-events-none sticky top-0 z-10 h-0 overflow-visible"
+                aria-hidden={pinnedUser?.kind !== 'user'}
+              >
+                {pinnedUser?.kind === 'user' && (
+                  <div
+                    ref={(el) => {
+                      stickyBandElRef.current = el
+                      if (el && lastPushYRef.current) {
+                        el.style.transform = `translateY(${lastPushYRef.current}px)`
+                      }
+                    }}
+                    className="pointer-events-auto absolute inset-x-0 top-0 border-b border-gn-prompt-border/40 font-ui text-[12.5px] leading-[1.35] text-gn-fg select-none"
+                    style={{ backgroundColor: 'var(--color-gn-bg-highlight)' }}
+                  >
+                    <div className="flex items-start gap-1.5 px-2.5 py-[7px]">
+                      <span
+                        className="mt-[1.5px] shrink-0"
+                        style={{ color: 'var(--color-gn-accent-user)' }}
+                        aria-hidden
+                      >
+                        {Glyphs.promptArrow}
+                      </span>
+                      <div className="min-w-0 flex-1 whitespace-pre-wrap break-words">
+                        {collapseUserText(pinnedUser.text, USER_COLLAPSED_MAX_LINES).text}
+                      </div>
                     </div>
                   </div>
-                </div>
-              )}
-            </div>
-            {rows.map((row, i) => {
-              const dense = isDensePackableRow(row)
-              const densePrev = i > 0 && isDensePackableRow(rows[i - 1])
-              const denseNext =
-                i < rows.length - 1 && isDensePackableRow(rows[i + 1])
-              if (row.type === 'group_header') {
+                )}
+              </div>
+              {rows.map((row, i) => {
+                const dense = isDensePackableRow(row)
+                const densePrev = i > 0 && isDensePackableRow(rows[i - 1])
+                const denseNext =
+                  i < rows.length - 1 && isDensePackableRow(rows[i + 1])
+                if (row.type === 'group_header') {
+                  return (
+                    <GroupHeaderView
+                      key={displayRowKey(row)}
+                      row={row}
+                      selected={row.id === selectedId}
+                      pendingFreeze={false}
+                      now={now}
+                      onToggle={() => toggleGroupExpansion(row.span.anchorId)}
+                      dense={dense}
+                      densePrev={densePrev}
+                      denseNext={denseNext}
+                      selectRow={setSelectedId}
+                    />
+                  )
+                }
+                const e = row.entry
                 return (
-                  <GroupHeaderView
+                  <EntryView
                     key={displayRowKey(row)}
-                    row={row}
-                    selected={row.id === selectedId}
+                    e={e}
+                    selected={e.id === selectedId}
                     pendingFreeze={false}
                     now={now}
-                    onToggle={() => toggleGroupExpansion(row.span.anchorId)}
+                    inGroup={spanContaining(spans, row.index) != null}
                     dense={dense}
                     densePrev={densePrev}
                     denseNext={denseNext}
-                    selectRow={setSelectedId}
+                    actions={actions}
+                    patch={foldPatch(e)}
+                    streamBodyRef={miniStreamBodyRef}
                   />
                 )
-              }
-              const e = row.entry
-              return (
-                <EntryView
-                  key={displayRowKey(row)}
-                  e={e}
-                  selected={e.id === selectedId}
-                  pendingFreeze={false}
-                  now={now}
-                  inGroup={spanContaining(spans, row.index) != null}
-                  dense={dense}
-                  densePrev={densePrev}
-                  denseNext={denseNext}
-                  actions={actions}
-                  patch={foldPatch(e)}
-                  streamBodyRef={miniStreamBodyRef}
-                />
-              )
-            })}
-          </div>
-        )}
+              })}
+            </div>
+          )}
+        </div>
       </div>
+      {/* 时间线 ⇄ composer 交界溶解带（主 scrollback 同款）：视口底缘的
+          尾行不再被硬切，化进底色。武装条件与滚动条槽宽度由
+          useJunctionDissolve 写在元素上。 */}
+      <div
+        ref={junctionDissolveRef}
+        aria-hidden
+        className="gn-junction-dissolve pointer-events-none absolute inset-x-0 bottom-0 z-[2] h-7"
+      />
       {viewerEntry ? (
         <BlockBodyDialog entry={viewerEntry} onClose={() => setViewerId(null)} />
       ) : null}

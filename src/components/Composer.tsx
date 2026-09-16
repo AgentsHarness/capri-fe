@@ -33,7 +33,7 @@ import {
   IMAGE_THUMB_CLASS,
 } from '../theme/layout'
 import { IconGlyph } from './IconGlyph'
-import { ArrowDown, ArrowDownToLine, X } from 'lucide-react'
+import { ArrowDown, ArrowDownToLine, ImagePlus, X } from 'lucide-react'
 import { fmtTok } from '../format'
 import { SlashMenu } from './SlashMenu'
 import { FilePickerMenu } from './FilePickerMenu'
@@ -75,6 +75,7 @@ import { useQueueNav } from './composer/useQueueNav'
 import { useSlashMenu } from './composer/useSlashMenu'
 import { useAtPicker } from './composer/useAtPicker'
 import { useTouchUi } from '../hooks/useTouchUi'
+import { useScrollbarGutter } from '../hooks/useScrollbarGutter'
 
 /** ── Composer frame ───────────────────────────────────────────────────
  * Rounded border box (container border + radius) — no font glyphs, no
@@ -229,28 +230,15 @@ export function Composer() {
   // ── Scrollbar gutter alignment ────────────────────────────────────
   // The scrollback box reserves its scrollbar gutter via
   // scrollbar-gutter: stable so its centered column never jumps when the
-  // scrollbar appears. The composer must reserve the SAME width on its
-  // right side or its prompt column sits ~5px off the transcript column.
-  // scrollbar-gutter only takes effect on scroll containers, and the
-  // composer wrapper must NOT be one — overflow-y:auto there clipped the
-  // floating slash menu / queue panel / portaled question card (their
-  // tops extend far above the wrapper's padding box). So measure the
-  // gutter with a hidden probe and reserve it as padding-right instead.
-  const [gutterPx, setGutterPx] = useState(0)
-  useEffect(() => {
-    const measure = () => {
-      const probe = document.createElement('div')
-      probe.style.cssText =
-        'position:fixed;visibility:hidden;top:0;left:0;width:100px;height:50px;overflow-y:auto;scrollbar-gutter:stable'
-      document.body.appendChild(probe)
-      const w = probe.clientWidth
-      probe.remove()
-      setGutterPx(100 - w)
-    }
-    measure()
-    window.addEventListener('resize', measure)
-    return () => window.removeEventListener('resize', measure)
-  }, [])
+  // scrollbar appears. The composer below must reserve the SAME width on
+  // its right side or its prompt column sits ~5px off the transcript
+  // column. scrollbar-gutter only takes effect on scroll containers and
+  // the composer wrapper must NOT be one — overflow-y:auto there clipped
+  // the floating slash menu / queue panel / portaled question card (their
+  // tops extend far above the wrapper's padding box). So the gutter width
+  // is measured with a hidden probe instead (see useScrollbarGutter) and
+  // reserved as padding-right.
+  const gutterPx = useScrollbarGutter()
 
   // ── TUI rewind prompt stash (views/rewind.rs StashedPrompt) ──
   // While the /rewind picker is open the draft is parked in the store
@@ -289,6 +277,8 @@ export function Composer() {
   const composerChromeRef = useRef<HTMLDivElement>(null)
   /** Counter for clipboard images without a filename (TUI `[Image #N]`). */
   const unnamedImgRef = useRef(0)
+  /** 触控端的选图入口（移动端剪贴板基本不带图片数据，粘贴不是可行路径）。 */
+  const imgPickRef = useRef<HTMLInputElement>(null)
 
   // ── TUI slash command menu (`/` prefix) — composer/useSlashMenu.ts ──
   const {
@@ -1600,13 +1590,17 @@ export function Composer() {
                     if (busy && text.trim()) {
                       e.preventDefault()
                       const st = useChatStore.getState()
-                      if (st.sessionId && st.historyLoading) {
+                      if (!st.sessionId) {
+                        pushToast('没有活跃会话，无法插话')
+                        return
+                      }
+                      if (st.historyLoading) {
                         pushToast('正在切换会话，请稍候再发送')
                         return
                       }
                       const { expandedText } = buildBlocks(text, chips)
                       void transport
-                        .interject({ text: expandedText })
+                        .interject({ text: expandedText, sessionId: st.sessionId })
                         .catch(() => {
                           pushToast('插话发送失败')
                         })
@@ -2131,7 +2125,45 @@ export function Composer() {
                   原文发送
                 </span>
               )}
+              {/* 触控端选图入口：移动端系统剪贴板基本不携带图片数据
+                  （粘贴拿不到 file），手机相册/相机只能靠文件选择器进入。
+                  桌面端不渲染——那里粘贴与拖拽都直接可用。 */}
+              {isTouch && (
+                <button
+                  type="button"
+                  onClick={() => imgPickRef.current?.click()}
+                  className="mt-[1px] flex h-6 w-6 shrink-0 items-center justify-center rounded text-gn-gray transition-colors hover:bg-gn-bg-highlight hover:text-gn-cyan"
+                  aria-label="选择图片"
+                  title="从相册或相机选择图片"
+                >
+                  <ImagePlus size={16} aria-hidden />
+                </button>
+              )}
             </div>
+
+          {/* 选图入口的文件输入：同 QueueEditModal 的读文件路径
+              （fileToDataUrl → insertImageChips）。清空 value 让同一张图
+              可以被重复选择。 */}
+          {isTouch && (
+            <input
+              ref={imgPickRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="sr-only"
+              tabIndex={-1}
+              aria-hidden
+              onChange={(e) => {
+                // accept 只是选择器的过滤建议（部分系统选择器会放行任意
+                // 文件），这里再按 MIME 收一道。
+                const files = Array.from(e.target.files ?? []).filter((f) =>
+                  f.type.startsWith('image/'),
+                )
+                e.target.value = ''
+                if (files.length > 0) void insertImageChips(files)
+              }}
+            />
+          )}
 
           {/* Model + flags on the bottom border (断线), right-aligned.
               Model menu & Mode menu use position:fixed (viewport-pinned) so they are not
