@@ -11,7 +11,7 @@ export const assistRpc = {
     return unwrapExtResult(await xaiCall(this, '/api/btw', body))
   },
 
-  async interject(this: TransportCore, opts: { text: string }): Promise<unknown> {
+  async interject(this: TransportCore, opts: { text: string; sessionId: string }): Promise<unknown> {
     return unwrapExtResult(await xaiCall(this, '/api/interject', opts))
   },
 

@@ -2,6 +2,7 @@
   "name": "capri-fe",
   "private": true,
   "version": "0.4.1",
+  "packageManager": "pnpm@11.22.0",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -26,11 +26,15 @@ describe('BlockViewer Subagent Composer', () => {
     })
   })
 
-  it('运行中的子代理在弹窗底部展示简易 composer（仅输入框）', () => {
+  it('运行中的子代理在弹窗底部展示与主页面同款 chrome 的 composer', () => {
     render(<BlockViewer />)
     const input = screen.getByPlaceholderText('向子代理发送消息… (Enter 发送)')
     expect(input).toBeInTheDocument()
     expect(input).not.toBeDisabled()
+    // 圆角 1px 边框的 prompt chrome（非裸输入框）。
+    const chrome = input.closest('.rounded-\\[6px\\]')
+    expect(chrome).not.toBeNull()
+    expect(chrome).toHaveClass('border')
   })
 
   it('按 Enter 发送消息并调用 sendSubagentMessage', async () => {

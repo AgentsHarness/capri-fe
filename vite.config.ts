@@ -37,7 +37,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       // Local mode: forward API/SSE to capri-host.
-      // Hub mode: VITE_PROXY_TARGET=http://localhost:8787 npm run dev
+      // Hub mode: VITE_PROXY_TARGET=http://localhost:8787 pnpm run dev
       '/api': { target: process.env.VITE_PROXY_TARGET || 'http://localhost:8765', changeOrigin: true },
       // Hub live stream (WebSocket). Local host has no /ws/fe — FE falls back to SSE.
       '/ws/fe': {

@@ -22,6 +22,7 @@ vi.mock('../api/client', () => ({
     lastLiveEventAt: vi.fn(() => undefined),
     extensions: vi.fn(async () => ({ skills: [] })),
     queueInterject: vi.fn(async () => {}),
+    interject: vi.fn(async () => {}),
   },
 }))
 
@@ -37,6 +38,40 @@ beforeAll(() => {
 afterAll(() => {
   // @ts-expect-error cleanup mock
   delete Element.prototype.scrollIntoView
+})
+
+describe('Composer 插话会话隔离', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useChatStore.setState({
+      sessionId: 'session-A', cwd: '/test/cwd', conn: 'busy',
+      historyLoading: false, newSessionPending: false, entries: [], pending: [],
+    })
+    usePromptQueue.setState({ queue: [], sending: false })
+  })
+
+  it('Ctrl+L 使用当前标签页会话，切换后使用新会话', () => {
+    render(<Composer />)
+    const input = screen.getByRole('textbox')
+    for (const sessionId of ['session-A', 'session-B']) {
+      act(() => useChatStore.setState({ sessionId }))
+      fireEvent.change(input, { target: { value: `only ${sessionId}` } })
+      fireEvent.keyDown(input, { key: 'l', ctrlKey: true })
+      expect(transport.interject).toHaveBeenLastCalledWith({ text: `only ${sessionId}`, sessionId })
+      expect(input).toHaveValue('')
+    }
+  })
+
+  it.each(['missing', 'loading'])('%s 时不发送也不清空草稿', (state) => {
+    useChatStore.setState(state === 'missing' ? { sessionId: '' } : { historyLoading: true })
+    render(<Composer />)
+    const input = screen.getByRole('textbox')
+    fireEvent.change(input, { target: { value: '保留草稿' } })
+    fireEvent.keyDown(input, { key: 'l', ctrlKey: true })
+    expect(transport.interject).not.toHaveBeenCalled()
+    expect(input).toHaveValue('保留草稿')
+    expect(pushToast).toHaveBeenCalled()
+  })
 })
 
 describe('Composer 切换会话中发送不吞内容', () => {
@@ -180,6 +215,46 @@ describe('Composer 切换会话中发送不吞内容', () => {
       await waitFor(() => {
         expect(blurSpy).toHaveBeenCalled()
       })
+    })
+
+    it('触控设备下：渲染选图入口，选中的图片成为缩略图', async () => {
+      window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+        matches: query.includes('coarse'),
+        media: query,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      }))
+
+      const { container } = render(<Composer />)
+      const picker = container.querySelector(
+        'input[type=file]',
+      ) as HTMLInputElement
+      expect(picker).not.toBeNull()
+      expect(picker.accept).toBe('image/*')
+
+      const file = new File([new Uint8Array([1, 2, 3])], 'album.png', {
+        type: 'image/png',
+      })
+      fireEvent.change(picker, { target: { files: [file] } })
+
+      await waitFor(() =>
+        expect(container.querySelector('img')?.getAttribute('alt')).toBe(
+          'album.png',
+        ),
+      )
+    })
+
+    it('桌面设备下：不渲染选图入口（粘贴与拖拽已可用）', () => {
+      window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+        matches: false,
+        media: query,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      }))
+
+      const { container } = render(<Composer />)
+      expect(container.querySelector('input[type=file]')).toBeNull()
+      expect(screen.queryByLabelText('选择图片')).toBeNull()
     })
 
     it('桌面设备下：初次挂载不偷抢焦点，focusMode 切回 prompt 时响应聚焦', async () => {
