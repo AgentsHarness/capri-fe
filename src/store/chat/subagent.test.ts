@@ -160,6 +160,73 @@ describe('handleSubagentEvent — subagent_spawned 带 effort', () => {
     expect(subEntry.model).toBe('grok-4')
     expect(subEntry.reasoningEffort).toBe('medium')
   })
+
+  it('注册表先补出的行：回放到 spawn 时补全 meta，不重复建行', () => {
+    // 注册表（x.ai/subagent/list_running）只有派发时刻与进度字段，没有
+    // persona / role / 模型——回放到同 id 的 spawn 时必须补进去，而不是
+    // 因为"已建行"直接丢弃（那行会永远缺 meta）。
+    const restored = {
+      id: 'restored-1',
+      kind: 'subagent',
+      title: 'Code Reviewer',
+      status: 'started',
+      running: true,
+      subagentId: 'sub-9',
+      startedAt: 1_700_000_000_000,
+      turns: 3,
+    } as Extract<ScrollEntry, { kind: 'subagent' }>
+    const state: Partial<ChatState> = {
+      entries: [restored],
+      subagentIndex: { 'sub-9': 'restored-1' },
+      subagentChildIndex: {},
+      subagentViews: {},
+      pendingSubagentFinishes: {},
+      modelName: 'Grok 4',
+      reasoningEffort: 'high',
+    }
+    const ctxSet = vi.fn((partial: unknown) => {
+      const patch =
+        typeof partial === 'function'
+          ? (partial as (s: ChatState) => Partial<ChatState>)(state as unknown as ChatState)
+          : (partial as Partial<ChatState>)
+      Object.assign(state, patch)
+    })
+
+    handleSubagentEvent(
+      (() => state) as unknown as () => ChatState,
+      ctxSet as unknown as SetState,
+      'subagent_spawned',
+      {
+        subagent_id: 'sub-9',
+        description: 'Code Reviewer',
+        child_session_id: 'child-9',
+        model: 'grok-4',
+        reasoning_effort: 'medium',
+        persona: 'strict',
+        role: 'critic',
+        subagent_type: 'code-reviewer',
+      },
+    )
+
+    const subs = state.entries?.filter((e) => e.kind === 'subagent') ?? []
+    // 不重复建行。
+    expect(subs).toHaveLength(1)
+    expect(subs[0]).toMatchObject({
+      id: 'restored-1',
+      // 注册表给的派发时刻与进度保留。
+      startedAt: 1_700_000_000_000,
+      turns: 3,
+      // spawn 补上的元信息。
+      model: 'grok-4',
+      reasoningEffort: 'medium',
+      persona: 'strict',
+      role: 'critic',
+      subagentType: 'code-reviewer',
+    })
+    // 注册表补行时缺的 child_session_id 这次补上索引与视图占位。
+    expect(state.subagentChildIndex).toEqual({ 'child-9': 'restored-1' })
+    expect(state.subagentViews?.['child-9']).toEqual({ items: [], fetchState: 'idle' })
+  })
 })
 
 // 延迟 import 避免循环引用（聚合文件无循环，仅为让上方入口测试生效）

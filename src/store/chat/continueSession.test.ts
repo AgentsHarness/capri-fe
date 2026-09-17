@@ -14,6 +14,9 @@ vi.mock('../../api/client', () => ({
     mcpList: vi.fn().mockResolvedValue({ servers: [] }),
     sessionStats: vi.fn(),
     sessionRunningTasks: vi.fn(),
+    // 在跑子代理注册表（continueSession 的 defer 拉取 + 宽限窗口复拉）。
+    subagentListRunning: vi.fn().mockResolvedValue({ subagents: [] }),
+    listTasks: vi.fn().mockResolvedValue([]),
     gitInfo: vi.fn(),
     status: vi.fn(),
     rewindExecute: vi.fn(),
@@ -194,5 +197,108 @@ describe('continueSession 并行切会话', () => {
     expect(servers[0].status).toBe('ready')
     expect(servers[1].name).toBe('server-b')
     expect(servers[1].status).toBe('unavailable')
+  })
+})
+
+// ── 运行态是会话级：切会话绝不能让上一条会话的 Task / 子代理留在顶部 ──
+// syncLiveTasks 对空注册表直接返回（空表不权威，不能据缺失结算），所以只靠
+// 下一次轮询收敛不了——切到没有任务的会话时旧行会永久留着（用户报的
+// "Task 串对话了"）。
+describe('continueSession 清掉上一条会话的运行态', () => {
+  beforeEach(() => {
+    vi.mocked(transport.sessionResume).mockResolvedValue({} as never)
+    vi.mocked(transport.sessionRunningTasks).mockResolvedValue({ events: [] } as never)
+    vi.mocked(transport.loadSessionHistory).mockResolvedValue(simplePage() as never)
+    vi.mocked(transport.sessionStats).mockResolvedValue({} as never)
+    vi.mocked(transport.gitInfo).mockResolvedValue({} as never)
+    vi.mocked(transport.status).mockResolvedValue({} as never)
+    // 目标会话没有任何在跑的子代理。
+    vi.mocked(transport.subagentListRunning).mockResolvedValue({ subagents: [] } as never)
+  })
+
+  it('上一条会话的 topTasks / detached / scheduledTasks 不跨会话', async () => {
+    useChatStore.setState({
+      topTasks: [{ taskId: 'old-task', title: '上一条会话的任务' }],
+      detachedTasks: [{ taskId: 'old-detached' }],
+      detachedHintKey: 'old-detached',
+      runningProbeTaskIds: ['old-detached'],
+      scheduledTasks: [{ taskId: 'old-sched', prompt: 'loop', interval: '2h' }],
+    })
+
+    await useChatStore.getState().continueSession(SID, CWD)
+
+    const s = useChatStore.getState()
+    expect(s.topTasks).toEqual([])
+    expect(s.detachedTasks).toEqual([])
+    // 旧 key 必须消失：新会话的探活落地后是"空集"签名（'' / null 都对，
+    // 关键是不能再是上一条会话那个 key，否则同一集合永远不再提示）。
+    expect(s.detachedHintKey).not.toBe('old-detached')
+    expect(s.runningProbeTaskIds).toEqual([])
+    expect(s.scheduledTasks).toEqual([])
+  })
+
+  it('上一条会话的子代理索引不跨会话（否则回放里同 id 的 spawn 会被跳过建行）', async () => {
+    useChatStore.setState({
+      subagentIndex: { 'sa-old': 'e-old' },
+      subagentChildIndex: { 'child-old': 'e-old' },
+      subagentViews: { 'child-old': { items: [], fetchState: 'loaded' } },
+      pendingSubagentFinishes: {
+        'sa-old': { status: 'completed' as const },
+      },
+    })
+
+    await useChatStore.getState().continueSession(SID, CWD)
+
+    const s = useChatStore.getState()
+    expect(s.subagentIndex).toEqual({})
+    expect(s.subagentChildIndex).toEqual({})
+    expect(s.subagentViews).toEqual({})
+    expect(s.pendingSubagentFinishes).toEqual({})
+  })
+
+  it('本会话注册表里的在跑子代理在回放收口后补回顶部', async () => {
+    vi.mocked(transport.subagentListRunning).mockResolvedValue({
+      subagents: [
+        {
+          subagentId: 'sa-live',
+          childSessionId: 'child-live',
+          parentSessionId: SID,
+          description: '还没跑完的子代理',
+          startedAtEpochMs: 1_700_000_000_000,
+        },
+      ],
+    } as never)
+
+    await useChatStore.getState().continueSession(SID, CWD)
+
+    const s = useChatStore.getState()
+    const restored = s.entries.filter((e) => e.kind === 'subagent')
+    expect(restored).toHaveLength(1)
+    expect(restored[0]).toMatchObject({
+      kind: 'subagent',
+      running: true,
+      subagentId: 'sa-live',
+      childSessionId: 'child-live',
+      title: '还没跑完的子代理',
+      // 注册表的真实派发时刻，不是回放/拉取时刻。
+      startedAt: 1_700_000_000_000,
+    })
+    expect(s.subagentIndex['sa-live']).toBe(restored[0].id)
+    expect(s.subagentChildIndex['child-live']).toBe(restored[0].id)
+  })
+
+  it('只有子代理在跑（没有任何 Task）也要开轮询收口', async () => {
+    vi.mocked(transport.subagentListRunning).mockResolvedValue({
+      subagents: [{ subagentId: 'sa-live', parentSessionId: SID }],
+    } as never)
+    const startTopTaskPolling = vi.fn()
+    useChatStore.setState({ startTopTaskPolling } as never)
+
+    await useChatStore.getState().continueSession(SID, CWD)
+    // 收口在宽限窗口的 microtask 链上，等到它落地。
+    await tick()
+    await tick()
+
+    expect(startTopTaskPolling).toHaveBeenCalled()
   })
 })

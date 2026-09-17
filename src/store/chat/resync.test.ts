@@ -47,6 +47,10 @@ describe('handleResyncRebuild', () => {
       loadHistory,
       prefetchRunningTasks,
       startTopTaskPolling,
+      // 在跑子代理注册表（回放收口后折进视图）——这条链路只要求它被调用。
+      syncLiveSubagents: vi.fn(() => Promise.resolve([])),
+      applyRunningSubagents: vi.fn(),
+      entries: [],
       topTasks: [{ taskId: 't1' }],
       detachedTasks: [],
       detachedHintKey: null,
@@ -69,6 +73,9 @@ describe('handleResyncRebuild', () => {
         loadHistory: vi.fn(),
         prefetchRunningTasks: vi.fn(() => Promise.resolve()),
         startTopTaskPolling: vi.fn(),
+        syncLiveSubagents: vi.fn(() => Promise.resolve([])),
+        applyRunningSubagents: vi.fn(),
+        entries: [],
         topTasks,
         detachedTasks,
         detachedHintKey: null,
@@ -105,6 +112,9 @@ describe('handleResyncRebuild', () => {
       loadHistory: vi.fn(),
       prefetchRunningTasks: vi.fn(() => new Promise<void>((r) => (settle = r))),
       startTopTaskPolling: vi.fn(),
+      syncLiveSubagents: vi.fn(() => Promise.resolve([])),
+      applyRunningSubagents: vi.fn(),
+      entries: [],
       topTasks: [{ taskId: 't1' }],
     } as unknown as ChatState
     handleResyncRebuild(() => state)

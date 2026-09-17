@@ -60,6 +60,8 @@ function makeState(patch: Partial<ChatState> = {}): ChatState {
     // 重载走 loadHistoryWithTaskProbe：需要探活与（有才开的）轮询
     prefetchRunningTasks: vi.fn().mockResolvedValue(undefined),
     startTopTaskPolling: vi.fn(),
+    syncLiveSubagents: vi.fn().mockResolvedValue([]),
+    applyRunningSubagents: vi.fn(),
     topTasks: [],
     detachedTasks: [],
     detachedHintKey: null,

@@ -40,6 +40,9 @@ export function livePollActions(set: SetState, get: () => ChatState) {
     const scope = captureAsyncScope(get, sessionId, cwd)
     await get().syncLiveTasks(sessionId)
     if (!isAsyncScopeCurrent(get, scope)) return
+    // 轮询路径不在回放窗口内，拉到即折进（会话重建链路走 defer，见
+    // loadHistoryWithTaskProbe / continueSession）。
+    await get().syncLiveSubagents(sessionId)
     try {
       const r = await transport.sessionRunningTasks(sessionId, cwd)
       if (!isAsyncScopeCurrent(get, scope)) return

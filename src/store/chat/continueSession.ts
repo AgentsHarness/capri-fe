@@ -61,6 +61,18 @@ export async function continueSession(
       // 状态栏分支属会话态：换会话即清，旧会话的 ⎇ 不能挂在新会话视图上
       // （下方 refreshGitInfo 回来后由本会话的 git-info 重新填充）。
       gitInfo: undefined,
+      // 运行态是**会话级**状态，必须在换锚点这一刻清掉：syncLiveTasks 对空
+      // 注册表直接返回（见其注释：空表不权威，不能据缺失结算），所以只靠
+      // 下一次轮询收敛不了——切到一条没有任务的会话时，上一条会话的顶栏行
+      // 会永久留着（"Task 串对话了"）。
+      // 清空是安全的：紧随其后的 prefetchRunningTasks 会把**本**会话的注册表
+      // 重新填进来，且它在回放之前落地（replayUpdates 靠它跳过悬空的
+      // started 行）。子代理/任务的索引与视图由紧随的 loadHistory 随条目
+      // 重建一并清空，不在这里重复。
+      topTasks: [],
+      detachedTasks: [],
+      detachedHintKey: null,
+      runningProbeTaskIds: [],
     })
     // load 响应 models 的应用 + effort 兜底（立即应用与宽限窗口重放共用）：
     // agent 的 session/load 会把会话持久化的模型 id 映射到当前 catalog 键
@@ -119,6 +131,9 @@ export async function continueSession(
       // started 行）：作为 awaitBeforeReplay 传给 loadHistory，与快照的
       // 网络往返重叠，回放应用仍严格等它完成。
       const tasksP = get().prefetchRunningTasks(sessionId, cwd)
+      // 在跑子代理注册表只能取数（defer）：回放会整体替换 entries，
+      // 提前写的行会被覆盖——回放收口后再 apply（见下方 await historyP 之后）。
+      const subsP = get().syncLiveSubagents(sessionId, 'defer')
       historyP = get().loadHistory(sessionId, cwd, { awaitBeforeReplay: tasksP })
 
       const loaded = await resumeP
@@ -160,6 +175,11 @@ export async function continueSession(
       // 无需按会话恢复；plan 按会话从副本补充（权威是 replay 的
       // current_mode_update）。
       set({ ...restorePlanMode(sessionId) })
+      // 回放已收口：这时才把在跑子代理折进视图（defer 的原因见上方 subsP
+      // 的注释）。注册表行是「当前仍在跑」的权威，也是顶部条目的唯一来源。
+      const subs = await subsP
+      if (myGen !== runtime.sessionSwitchGen || !isAsyncScopeCurrent(get, scope)) return
+      get().applyRunningSubagents(subs)
       get().startTopTaskPolling(sessionId, cwd)
       // Rehydrate pending permission / ask_user_question cards for THIS
       // session. Live client_request SSE while another session was active
@@ -226,6 +246,11 @@ export async function continueSession(
         // history page + the historyLoading SSE drop can miss a still-
         // running task. Align bg_task rows with x.ai/task/list.
         void get().syncLiveTasks()
+        // 子代理同理，且这里必须再拉一次（不能只靠提交流程里那次 defer）：
+        // 那次请求与 session/load 并发发出，会话在 agent 侧可能还没 resident
+        // / 注册表还没就绪，会返回空表。宽限窗口结束时会话已加载完，这一次
+        // 拿到的是权威结果（折进视图是幂等的：已有行只合并进度）。
+        void get().syncLiveSubagents(sessionId)
         // 方案 A：grace window 期间（快照后 500ms）缓冲的 live 内容
         // 事件在此回放——loadHistory 已回放过快照重建前的事件，这里
         // 补上窗口尾巴（resume 无重放，缓冲里只有真实 live 事件）。
