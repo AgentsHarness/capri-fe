@@ -25,6 +25,7 @@ import type {
   PendingStopHooks,
   PendingToolHook,
 } from './hookAttach'
+import type { RunningSubagentRow } from './subagentRegistry'
 
 import type {
   ConnState,
@@ -949,6 +950,24 @@ export interface ChatActions {
    * can miss still-running tasks (page boundary / SSE drop during load).
    */
   syncLiveTasks: (sessionId?: string) => Promise<void>
+  /**
+   * Align running subagents with the agent's live registry
+   * (x.ai/subagent/list_running). `subagent_spawned` only builds a row
+   * when its own turn is replayed, and the first page replays the newest
+   * turn only — a subagent spawned in an older turn is otherwise missing
+   * from the top strip after a switch/refresh. Returns the rows belonging
+   * to THIS session ([] on failure), which the poll gate consumes.
+   *
+   * `mode: 'defer'` fetches without applying: loadHistory replaces the
+   * entry list wholesale, so the session-rebuild path applies the result
+   * after the replay instead (applyRunningSubagents).
+   */
+  syncLiveSubagents: (
+    sessionId?: string,
+    mode?: 'apply' | 'defer',
+  ) => Promise<RunningSubagentRow[]>
+  /** Fold an already-fetched registry result into the view (defer path). */
+  applyRunningSubagents: (rows: RunningSubagentRow[]) => void
   /** x.ai/sessions/changed — refresh the history list. retry: 启动窗口容错（agent 预热 boot 超时）重试次数。 */
   refreshSessions: (retry?: number) => Promise<void>
   /**

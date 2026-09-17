@@ -514,9 +514,9 @@ export async function loadHistory(
  * 用于不经过 continueSession 的全量重建入口（hello 首屏回锚、hub resync
  * 重建、多 tab peer 重建、rewind 对齐后重载）：这些路径以前完全不刷新运行中
  * 任务，顶部任务条因此是空的、也没有轮询去收口。轮询只在确实有东西要盯时
- * 才开——本会话在跑的任务（topTasks）或需要继续更新的游离进程提示
- * （detachedTasks）：空闲会话挂一个 10s 定时器，一页开着就是每小时 360 次
- * 没用的请求。
+ * 才开——本会话在跑的任务（topTasks）、游离进程提示（detachedTasks）或
+ * 回放/注册表补出来的在跑子代理（entries 里的 running subagent）：空闲
+ * 会话挂一个 10s 定时器，一页开着就是每小时 360 次没用的请求。
  *
  * 返回快照重建的 promise（调用方要接后续动作，如 peer 重建后补拉 pending）。
  */
@@ -526,6 +526,10 @@ export function loadHistoryWithTaskProbe(
   cwd: string,
 ): Promise<void> {
   const tasksP = get().prefetchRunningTasks(sessionId, cwd)
+  // 在跑子代理注册表：与探活并行发出，但**不能在回放前落地**——loadHistory
+  // 会先用 entries:[] 清空、再用回放结果整体替换，提前写的行会被覆盖。
+  // 这里只取数（defer），回放收口后补一次 apply。
+  const subsP = get().syncLiveSubagents(sessionId, 'defer')
   const historyP = get().loadHistory(sessionId, cwd, { awaitBeforeReplay: tasksP })
   // prefetchRunningTasks 内部吞掉所有失败，这里不会 reject。
   void tasksP.then(() => {
@@ -536,5 +540,32 @@ export function loadHistoryWithTaskProbe(
       s.startTopTaskPolling(sessionId, cwd)
     }
   })
+  // 回放收口后把注册表补回来，再补一次轮询门控：**只有子代理在跑**的会话
+  // 走不到上面那道门（topTasks / detached 都是空的），不补这一次就永远
+  // 没有轮询去收口子代理（finish 事件丢了就再也收敛不了）。
+  // startTopTaskPolling 幂等（内部先 stop），重复开不会有第二个定时器。
+  void Promise.all([historyP, subsP]).then(([, rows]) => {
+    const s = get()
+    if (s.sessionId !== sessionId || s.cwd !== cwd) return
+    s.applyRunningSubagents(rows)
+    if (hasLiveRunningWork(get())) {
+      s.startTopTaskPolling(sessionId, cwd)
+    }
+  })
   return historyP
+}
+
+/**
+ * 是否还有值得继续轮询的活：本会话在跑的后台任务、游离进程提示，或
+ * 回放/注册表补出来的在跑子代理 / 工作流条目。轮询是这两类运行态的
+ * 唯一收口来源（子代理 finish 与 task_completed 都可能丢），所以只要有
+ * 一类非空就要继续盯。
+ */
+export function hasLiveRunningWork(s: Pick<ChatState, 'topTasks' | 'detachedTasks' | 'entries'>): boolean {
+  if (s.topTasks.length > 0 || s.detachedTasks.length > 0) return true
+  return s.entries.some(
+    (e) =>
+      (e.kind === 'subagent' || e.kind === 'bg_task' || e.kind === 'workflow') &&
+      e.running === true,
+  )
 }

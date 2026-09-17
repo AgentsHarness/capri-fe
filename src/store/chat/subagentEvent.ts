@@ -1,4 +1,4 @@
-import type { SubagentStatus } from '../../api/types'
+import type { ScrollEntry, SubagentStatus } from '../../api/types'
 import type { ChatState, SetState } from './types'
 import { nid } from './ids'
 import { nonBlankStr } from './util'
@@ -112,6 +112,38 @@ export function resolveSubagentModelAndEffort(
   return { model: resolvedModel, reasoningEffort }
 }
 
+/**
+ * spawn 载荷里的展示元信息（模型 / effort / persona / role / 子代理类型）。
+ * 新建行与「注册表补行后回放到 spawn」的补全路径共用，取值口径只有这一处。
+ */
+function extractSpawnMeta(
+  fields: Record<string, unknown>,
+  state: {
+    modelName?: string
+    reasoningEffort?: string
+    models?: import('../../api/types').ModelOption[]
+  },
+): {
+  title?: string
+  meta: Partial<Extract<ScrollEntry, { kind: 'subagent' }>>
+} {
+  const title = nonBlankStr(fields.description) ?? nonBlankStr(fields.subagent_type)
+  const { model, reasoningEffort } = resolveSubagentModelAndEffort(fields, state)
+  const persona = nonBlankStr(fields.persona)
+  const role = nonBlankStr(fields.role)
+  const subagentType = nonBlankStr(fields.subagent_type)
+  return {
+    ...(title ? { title } : {}),
+    meta: {
+      ...(model ? { model } : {}),
+      ...(reasoningEffort ? { reasoningEffort } : {}),
+      ...(persona ? { persona } : {}),
+      ...(role ? { role } : {}),
+      ...(subagentType ? { subagentType } : {}),
+    },
+  }
+}
+
 /** subagent_spawned / subagent_finished (session_notification carrier). */
 export function handleSubagentEvent(
   get: () => ChatState,
@@ -124,7 +156,38 @@ export function handleSubagentEvent(
   const entryId = get().subagentIndex[id]
 
   if (tag === 'subagent_spawned') {
-    if (entryId) return // already tracked
+    // 已有行可能是两种来源：(1) 本会话 live/回放已建过（幂等，直接返回），
+    // (2) 注册表（x.ai/subagent/list_running）先补出来的行——它只有注册表
+    // 字段，回放到这里的 spawn 才是 persona / role / 模型元信息的来源，
+    // 必须补进去而不是丢弃（否则注册表补出的行永远缺 meta）。
+    if (entryId) {
+      const spawned = extractSpawnMeta(fields, get())
+      const childSid = nonBlankStr(fields.child_session_id)
+      set((s) => {
+        const cur = s.entries.find((e) => e.id === entryId)
+        if (!cur || cur.kind !== 'subagent') return {}
+        const merged = {
+          ...cur,
+          ...(spawned.title ? { title: cur.title || spawned.title } : {}),
+          ...spawned.meta,
+        }
+        const patch: Partial<ChatState> = {
+          entries: s.entries.map((e) => (e.id === entryId ? merged : e)),
+        }
+        // 注册表补行时若缺 child_session_id，spawn 这次补上索引与视图占位。
+        if (childSid && !s.subagentChildIndex[childSid]) {
+          patch.subagentChildIndex = { ...s.subagentChildIndex, [childSid]: entryId }
+          if (!s.subagentViews[childSid]) {
+            patch.subagentViews = {
+              ...s.subagentViews,
+              [childSid]: { items: [], fetchState: 'idle' },
+            }
+          }
+        }
+        return patch
+      })
+      return
+    }
     const title =
       (typeof fields.description === 'string' && fields.description) ||
       (typeof fields.subagent_type === 'string' && fields.subagent_type) ||

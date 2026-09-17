@@ -172,6 +172,8 @@ describe('handleConnEvent — hello 触发的历史回放带任务探活', () =>
       loadHistory,
       prefetchRunningTasks: vi.fn(() => probeP),
       startTopTaskPolling: vi.fn(),
+      syncLiveSubagents: vi.fn(() => Promise.resolve([])),
+      applyRunningSubagents: vi.fn(),
       clearCompletedNotice: vi.fn(),
       topTasks: [],
       detachedTasks: [],
@@ -193,6 +195,8 @@ describe('handleConnEvent — hello 触发的历史回放带任务探活', () =>
       loadHistory,
       prefetchRunningTasks: vi.fn(),
       startTopTaskPolling: vi.fn(),
+      syncLiveSubagents: vi.fn(() => Promise.resolve([])),
+      applyRunningSubagents: vi.fn(),
       clearCompletedNotice: vi.fn(),
     })
     handleConnEvent(set, get, hostHello({ sessionId: 's1', cwd: '/w' }))

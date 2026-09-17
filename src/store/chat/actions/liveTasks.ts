@@ -2,6 +2,7 @@ import { transport } from '../../../api/client'
 import type { ChatState, SetState } from '../types'
 import { captureAsyncScope, isAsyncScopeCurrent } from '../globals'
 import { topTaskFrom } from '../tasks'
+import { foldRunningSubagents, parseRunningSubagents } from '../subagentRegistry'
 
 export function liveTaskActions(set: SetState, get: () => ChatState) {
   return {
@@ -194,6 +195,60 @@ export function liveTaskActions(set: SetState, get: () => ChatState) {
     } catch {
       // Offline / no session — leave history-only view.
     }
+  },
+
+  /**
+   * 把 agent 的「在跑子代理」注册表（x.ai/subagent/list_running）折进视图。
+   *
+   * 与 syncLiveTasks 同源的缺口：`subagent_spawned` 只在它自己那一轮被回放
+   * 到时才建行，而首屏只回放最后 1 轮——在更早轮次派出、现在还在跑的子代理
+   * 切换会话后就从顶部消失了（TUI 不会：它 session/load 后按注册表重建面板）。
+   *
+   * 只做「补行」不做「收口」：收口由 subagent_finished 负责（与 bg_task 的
+   * task_completed 同款）。注册表为空同样不据缺失结算——一次解析异常 /
+   * 会话未聚焦都会给空表，用它收口会把真在跑的行误判成完成。
+   *
+   * `mode` 决定结果何时落地：
+   *  - 'apply'（默认，live 轮询 / 普通刷新）：拉到即折进当前视图；
+   *  - 'defer'（会话重建链路）：只取数不落地，交给回放收口后由
+   *    applyRunningSubagents 折进——loadHistory 会整体替换 entries，
+   *    提前落地会被回放覆盖掉。
+   *
+   * 返回本会话的注册表行（未按会话过滤前为空则空数组），供轮询门控与
+   * defer 调用方使用；失败返回空数组。
+   */
+  syncLiveSubagents: async (sessionId, mode) => {
+    const scope = captureAsyncScope(get)
+    try {
+      const targetSessionId = sessionId ?? get().sessionId
+      if (!targetSessionId) return []
+      const raw = await transport.subagentListRunning({ sessionId: targetSessionId })
+      if (!isAsyncScopeCurrent(get, scope)) return []
+      const all = parseRunningSubagents(raw)
+      // 归属过滤：agent 按 parent_session_id 过滤，但旧 agent / 直连可能
+      // 不过滤——带归属且不是本会话的行一律丢弃（同 syncLiveTasks）。
+      const rows = all.filter(
+        (r) =>
+          !r.parentSessionId ||
+          !targetSessionId ||
+          r.parentSessionId === targetSessionId,
+      )
+      if (rows.length > 0 && mode !== 'defer') {
+        const patch = foldRunningSubagents(get, rows, Date.now())
+        if (patch) set(patch)
+      }
+      return rows
+    } catch {
+      // 离线 / 旧 host 无该端点 — 保持回放结果。
+      return []
+    }
+  },
+
+  /** 把已取到的注册表结果折进视图（defer 模式的收口点；见 syncLiveSubagents）。 */
+  applyRunningSubagents: (rows) => {
+    if (rows.length === 0) return
+    const patch = foldRunningSubagents(get, rows, Date.now())
+    if (patch) set(patch)
   },
   } satisfies Partial<ChatState>
 }
