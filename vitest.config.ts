@@ -19,6 +19,14 @@ export default defineConfig({
       include: ['src/**/*.{ts,tsx}'],
       exclude: ['src/main.tsx', 'src/**/*.d.ts', 'src/test/**'],
       reporter: ['text', 'html', 'lcov'],
+      // 以分支覆盖为准的棘轮：行覆盖只证明代码被执行过，分支才区分条件。
+      // 历史上两者曾相差 10 个百分点（行 73% / 分支 63%），大量用例只
+      // 走了 happy path。门槛钉在当前实测值下方一点点，只允许往上走。
+      // 提升覆盖率时请同步抬高这两个数字。
+      thresholds: {
+        lines: 73,
+        branches: 63,
+      },
     },
   },
 })

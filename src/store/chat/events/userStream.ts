@@ -465,6 +465,33 @@ export function handleUserStreamEvent(
         ) {
           const id = nid()
           openThoughtId = id
+          // 同一条流里「回答正文先落、尾段思考后到」（agent 把最后一段推理
+          // 排在回答之后）：思考块插到该回答之前，与 TUI 表头在上、回答在
+          // 下的观感一致；否则同源倒序——回答在上、它的推理在下。
+          // 判定读已落库的 entry.text：上面 flushLiveStream 已把在途正文
+          // 并入条目（流式期间正文只住在 liveStream）。
+          const answerIdx = preserveAssistant
+            ? entries.findIndex((e) => e.id === base.openAssistantId)
+            : -1
+          const answerEntry = answerIdx >= 0 ? entries[answerIdx] : undefined
+          const answerStarted =
+            answerEntry?.kind === 'assistant' && answerEntry.text.trim() !== ''
+          const thoughtEntry = {
+            id,
+            kind: 'thought' as const,
+            text: '',
+            displayMode: 'expanded' as const,
+            streaming: true,
+            startedAt: Date.now(),
+            // Replay carries the server-reported original duration
+            // (agentTimestampMs - streamStartMs); live chunks have none
+            // and seal against the local timer instead.
+            ...(ev.elapsedMs != null ? { elapsedMs: ev.elapsedMs } : {}),
+            ...(ev.liteOmitted ? { liteOmitted: ev.liteOmitted } : {}),
+            // 回放页按 msgSeq 排序会把它排回回答之后（到达序），组装尾部
+            // 依此字段再搬一次，见 historyPage.applyThoughtHoist。
+            ...(answerStarted ? { hoistBeforeAnswerId: base.openAssistantId! } : {}),
+          }
           set({
             ...base,
             conn: 'busy',
@@ -474,22 +501,13 @@ export function handleUserStreamEvent(
             // Preserve openAssistantId for assistant → thought → assistant
             // interleaving within one generation stream.
             openAssistantId: preserveAssistant ? base.openAssistantId : undefined,
-            entries: [
-              ...entries,
-              {
-                id,
-                kind: 'thought',
-                text: '',
-                displayMode: 'expanded',
-                streaming: true,
-                startedAt: Date.now(),
-                // Replay carries the server-reported original duration
-                // (agentTimestampMs - streamStartMs); live chunks have none
-                // and seal against the local timer instead.
-                ...(ev.elapsedMs != null ? { elapsedMs: ev.elapsedMs } : {}),
-                ...(ev.liteOmitted ? { liteOmitted: ev.liteOmitted } : {}),
-              },
-            ],
+            entries: answerStarted
+              ? [
+                  ...entries.slice(0, answerIdx),
+                  thoughtEntry,
+                  ...entries.slice(answerIdx),
+                ]
+              : [...entries, thoughtEntry],
             // Seed liveStream with the first chunk; later deltas append via
             // rAF and sealThought moves the complete text into the entry.
             liveStream: {

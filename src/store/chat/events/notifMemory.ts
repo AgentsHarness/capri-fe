@@ -2,6 +2,7 @@ import type { ChatState, SetState } from '../types'
 import type { WireEvent } from './wire'
 import { appendEntry } from '../entries'
 import { applyModelIdentity, applySessionTitle } from '../sessionIdentity'
+import { baseName, normalizeMemoryListing } from '../../../lib/memory'
 export function handleNotifMemory(
   set: SetState,
   get: () => ChatState,
@@ -110,43 +111,19 @@ export function handleNotifMemory(
             break
           }
           case 'memory_files': {
-            const files = Array.isArray(fields.files) ? fields.files : []
-            // Wire shape is TUI MemoryFileInfo {path, source, size_bytes,
-            // modified_epoch_secs} — normalize to the modal's display
-            // fields (name = path basename) and keep `source` so the
-            // memory modal can group Global / Workspace / Sessions.
-            const normalized = files
-              .filter((f): f is Record<string, unknown> => !!f && typeof f === 'object')
-              .map((f) => {
-                const path = typeof f.path === 'string' ? f.path : ''
-                const name =
-                  typeof f.name === 'string' && f.name
-                    ? f.name
-                    : path.split(/[\\/]/).filter(Boolean).pop() ?? path
-                const size =
-                  typeof f.size === 'number'
-                    ? f.size
-                    : typeof f.size_bytes === 'number'
-                      ? f.size_bytes
-                      : undefined
-                return {
-                  name,
-                  ...(path ? { path } : {}),
-                  ...(size !== undefined ? { size } : {}),
-                  ...(f.updatedAt !== undefined
-                    ? { updatedAt: f.updatedAt }
-                    : f.modified_epoch_secs !== undefined
-                      ? { updatedAt: f.modified_epoch_secs }
-                      : {}),
-                  ...(typeof f.source === 'string' && f.source ? { source: f.source } : {}),
-                }
-              })
-              .filter((f) => f.name)
-            set({ memoryFiles: normalized })
-            const names = normalized.map((f) => f.name).join(', ')
+            // Same field set as x.ai/memory/list, so one normalizer serves both
+            // (the modal's listing, its grouping and the flags that gate the
+            // toggle). The event is the agent's own broadcast after a flush,
+            // capture or dream — it keeps an open modal current.
+            const listing = normalizeMemoryListing(fields)
+            set({
+              memoryListing: listing,
+              ...(listing.files.length ? { memoryStatus: 'ready' as const, memoryError: undefined } : {}),
+            })
+            const names = listing.files.map((f) => baseName(f.path)).join(', ')
             appendEntry(set, {
               kind: 'session_event',
-              text: `记忆文件 ${normalized.length} 个${names ? `（${names.slice(0, 80)}）` : ''}`,
+              text: `记忆文件 ${listing.files.length} 个${names ? `（${names.slice(0, 80)}）` : ''}`,
             })
             break
           }

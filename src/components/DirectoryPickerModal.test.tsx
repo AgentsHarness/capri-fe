@@ -136,6 +136,99 @@ describe('DirectoryPickerModal', () => {
     expect(await screen.findByText('retry-ok')).toBeInTheDocument()
   })
 
+  it('ok=false 且带 error → 直接用 error 文案', async () => {
+    shellMock.mockResolvedValue({ ok: false, error: '权限不足' })
+    renderModal('/root/secret')
+    expect(await screen.findByText('权限不足')).toBeInTheDocument()
+  })
+
+  it('ok=false 且无 error → 回落到「无法列出目录」', async () => {
+    shellMock.mockResolvedValue({ ok: false })
+    renderModal('/home/u')
+    expect(await screen.findByText('无法列出目录')).toBeInTheDocument()
+  })
+
+  it('exitCode≠0 且有 stderr → 用 stderr 文案', async () => {
+    shellMock.mockResolvedValue({
+      ok: true,
+      exitCode: 1,
+      stdout: '',
+      stderr: 'No such file or directory\n',
+    })
+    renderModal('/nope')
+    expect(await screen.findByText('No such file or directory')).toBeInTheDocument()
+  })
+
+  it('exitCode≠0 且 stderr 为空 → 回落到「无法读取目录：<路径>」', async () => {
+    shellMock.mockResolvedValue({ ok: true, exitCode: 2, stdout: '', stderr: '   ' })
+    renderModal('/nope')
+    expect(await screen.findByText('无法读取目录：/nope')).toBeInTheDocument()
+  })
+
+  it('失败后子目录列表被清空（不留上一次的残留）', async () => {
+    shellMock.mockResolvedValueOnce(okResult('./kept'))
+    renderModal('/home/u')
+    await screen.findByText('kept')
+    // 手改进一个不存在的路径 → 报错，旧列表必须消失
+    shellMock.mockResolvedValueOnce({ ok: true, exitCode: 1, stdout: '', stderr: 'boom' })
+    const input = screen.getByPlaceholderText('路径或 ~（回车跳转）')
+    fireEvent.change(input, { target: { value: '/gone' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(await screen.findByText('boom')).toBeInTheDocument()
+    expect(screen.queryByText('kept')).toBeNull()
+  })
+
+  it('echo $PWD 失败（ok=false）→ 起始目录回落到 /', async () => {
+    shellMock.mockResolvedValueOnce({ ok: false })
+    shellMock.mockResolvedValueOnce(okResult('./from-root'))
+    renderModal()
+    expect(await screen.findByText('from-root')).toBeInTheDocument()
+    expect(shellMock.mock.calls[1][1]).toBe('/')
+  })
+
+  it('echo $PWD 成功但 stdout 为空 → 同样回落到 /', async () => {
+    shellMock.mockResolvedValueOnce({ ok: true, exitCode: 0, stdout: '   ' })
+    shellMock.mockResolvedValueOnce(okResult('./from-root'))
+    renderModal()
+    await screen.findByText('from-root')
+    expect(shellMock.mock.calls[1][1]).toBe('/')
+  })
+
+  it('echo $PWD 本身抛错 → 显示该错误', async () => {
+    shellMock.mockRejectedValueOnce(new Error('shell unavailable'))
+    renderModal()
+    expect(await screen.findByText('shell unavailable')).toBeInTheDocument()
+  })
+
+  it('非 Error 抛出物转成字符串展示', async () => {
+    shellMock.mockRejectedValueOnce('plain failure')
+    renderModal('/home/u')
+    expect(await screen.findByText('plain failure')).toBeInTheDocument()
+  })
+
+  it('打开时 initial 为纯空白 → 走 echo $PWD 分支', async () => {
+    shellMock.mockResolvedValueOnce(okResult('/detected'))
+    shellMock.mockResolvedValueOnce(okResult('./sub'))
+    renderModal('   ')
+    await screen.findByText('sub')
+    expect(shellMock.mock.calls[0][0]).toContain('$PWD')
+  })
+
+  it('文件项（不以 ./ 开头）也被列成条目', async () => {
+    shellMock.mockResolvedValue(okResult('bare-entry\n./prefixed'))
+    renderModal('/home/u')
+    expect(await screen.findByText('bare-entry')).toBeInTheDocument()
+    expect(screen.getByText('prefixed')).toBeInTheDocument()
+  })
+
+  it('根目录下进入子目录仍能拼出 // 之外的合法路径不重复父级', async () => {
+    shellMock.mockResolvedValue(okResult('./a'))
+    renderModal('/')
+    await screen.findByText('a')
+    fireEvent.click(screen.getByText('a'))
+    expect(shellMock).toHaveBeenLastCalledWith('find . -maxdepth 1 -type d', '/a')
+  })
+
   it('无子目录 → 空提示', async () => {
     shellMock.mockResolvedValue(okResult('.'))
     renderModal('/home/u')

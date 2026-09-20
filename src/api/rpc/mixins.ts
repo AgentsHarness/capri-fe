@@ -9,6 +9,7 @@ import { searchRpc } from './search'
 import { goalRpc } from './goal'
 import { modesRpc } from './modes'
 import { assistRpc } from './assist'
+import { memoryRpc } from './memory'
 import { usageRpc } from './usage'
 
 export const rpcMixins = {
@@ -23,6 +24,7 @@ export const rpcMixins = {
   ...goalRpc,
   ...modesRpc,
   ...assistRpc,
+  ...memoryRpc,
   ...usageRpc,
 }
 

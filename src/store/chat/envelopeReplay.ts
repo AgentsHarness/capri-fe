@@ -247,6 +247,12 @@ export function replayUpdates(
     if (ev.type !== 'thought') return
     const entryId = getStore().openThoughtId
     if (!entryId) return
+    // 首条信封序号：思考块可能被插到本轮回答之前（同流「正文先落、尾段
+    // 思考后到」的落位修正，见 userStream.ts），那时 stampNewEntries 的
+    // 尾部扫描扫不到它——漏盖章会让整页的 msgSeq 排序与分页归并静默退化
+    // （sortEntriesByMsgSeq 任一条目缺序号即完全不排）。这里按「产生它的
+    // 第一条信封」补上，先到者胜。
+    if (seq != null && !entryMsgSeq.has(entryId)) entryMsgSeq.set(entryId, seq)
     if (seq != null) entryMsgSeqEnd.set(entryId, seq)
     if (ev.msgSeqEnd != null) {
       const cur = entryMsgSeqEnd.get(entryId) ?? -1
@@ -262,7 +268,11 @@ export function replayUpdates(
       const entry = es[i]!
       if (seenIds.has(entry.id)) break
       seenIds.add(entry.id)
-      if (seq != null && entry.msgSeq == null) entryMsgSeq.set(entry.id, seq)
+      // 「产生它的第一条信封」为准：插到中部的思考已由 stampThoughtLite
+      // 盖过序号，尾部扫描不得用更晚的信封改写它。
+      if (seq != null && entry.msgSeq == null && !entryMsgSeq.has(entry.id)) {
+        entryMsgSeq.set(entry.id, seq)
+      }
     }
   }
   let userBuf = ''

@@ -93,6 +93,30 @@ describe('parseRunningSubagent', () => {
     expect(parseRunningSubagent({ description: 'no id' })).toBeNull()
     expect(parseRunningSubagent({ subagentId: '   ' })).toBeNull()
   })
+
+  it('非有限数字当作缺失（NaN / Infinity 不落进 UI 数值）', () => {
+    const row = parseRunningSubagent({
+      subagentId: 'sa-1',
+      turnCount: Number.NaN,
+      toolCallCount: Number.POSITIVE_INFINITY,
+      durationMs: 12000,
+    })
+    expect(row).toMatchObject({ durationMs: 12000 })
+    expect(row!.turns).toBeUndefined()
+    expect(row!.toolCalls).toBeUndefined()
+  })
+
+  it('toolsUsed 滤掉非字符串与空串，不滤成 undefined 之外的形状', () => {
+    const row = parseRunningSubagent({
+      subagentId: 'sa-1',
+      toolsUsed: ['read_file', '', 7, null, 'grep'],
+    })
+    expect(row!.toolsUsed).toEqual(['read_file', 'grep'])
+  })
+
+  it('两种 toolsUsed 拼写都不在时保持 undefined（不写空数组）', () => {
+    expect(parseRunningSubagent({ subagentId: 'sa-1' })!.toolsUsed).toBeUndefined()
+  })
 })
 
 describe('parseRunningSubagents', () => {
@@ -188,6 +212,88 @@ describe('foldRunningSubagents', () => {
     })
     // 已有行不重复建索引
     expect(patch!.subagentIndex).toEqual({ 'sa-1': 'e1' })
+  })
+
+  it('已结束的行保留收口文案，不被运行中摘要覆盖', () => {
+    const existing = {
+      id: 'e1',
+      kind: 'subagent',
+      title: 'Reviewer',
+      status: 'completed',
+      running: false,
+      subagentId: 'sa-1',
+      detail: '用时 12.0s',
+      durationMs: 12000,
+    } as never
+    const state = makeState({
+      entries: [existing],
+      subagentIndex: { 'sa-1': 'e1' },
+    })
+    const patch = foldRunningSubagents(
+      () => state,
+      [{ subagentId: 'sa-1', turns: 4, toolCalls: 9, contextUsagePct: 33, errorCount: 1 }],
+      5000,
+    )
+    // 数值字段照常合，但 detail 不许被 turns=/tools= 摘要顶掉
+    expect(patch!.entries[0]).toMatchObject({
+      detail: '用时 12.0s',
+      turns: 4,
+      toolCalls: 9,
+      errorCount: 1,
+    })
+  })
+
+  it('注册表缺值的字段不覆盖已有值（null 守卫）', () => {
+    const existing = {
+      id: 'e1',
+      kind: 'subagent',
+      title: 'Reviewer',
+      status: 'started',
+      running: true,
+      subagentId: 'sa-1',
+      turns: 7,
+      toolCalls: 11,
+      tokensUsed: 999,
+    } as never
+    const state = makeState({
+      entries: [existing],
+      subagentIndex: { 'sa-1': 'e1' },
+    })
+    const patch = foldRunningSubagents(() => state, [{ subagentId: 'sa-1' }], 5000)
+    // row 什么都没有 → 已有值原样保留，不该被 undefined 抹掉
+    expect(patch!.entries[0]).toMatchObject({
+      turns: 7,
+      toolCalls: 11,
+      tokensUsed: 999,
+    })
+  })
+
+  it('注册表没带 toolsUsed 时不抹掉已有工具列表', () => {
+    const existing = {
+      id: 'e1',
+      kind: 'subagent',
+      title: 'Reviewer',
+      status: 'started',
+      running: true,
+      subagentId: 'sa-1',
+      toolsUsed: ['read_file', 'grep'],
+      contextUsagePct: 42,
+      errorCount: 1,
+    } as never
+    const state = makeState({
+      entries: [existing],
+      subagentIndex: { 'sa-1': 'e1' },
+    })
+    const patch = foldRunningSubagents(
+      () => state,
+      [{ subagentId: 'sa-1', turns: 2 }],
+      5000,
+    )
+    expect(patch!.entries[0]).toMatchObject({
+      toolsUsed: ['read_file', 'grep'],
+      contextUsagePct: 42,
+      errorCount: 1,
+    })
   })
 
   it('空注册表不据缺失收口（返回 null，什么都不改）', () => {

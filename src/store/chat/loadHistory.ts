@@ -21,6 +21,7 @@ import {
   INITIAL_TURNS,
   applyEntryLiteStats,
   applyEntryMsgSeq,
+  applyThoughtHoist,
   findMsgSeqGap,
   historyHasMorePage,
   replayUpdates,
@@ -151,7 +152,10 @@ export async function loadHistory(
       }),
       diffReview: undefined,
       diffReviewOpen: false,
-      memoryFiles: undefined,
+      memoryListing: undefined,
+    memoryStatus: undefined,
+    memoryError: undefined,
+    memoryNotice: undefined,
       memoryOpen: false,
       subagentIndex: {},
       pendingSubagentFinishes: {},
@@ -338,9 +342,11 @@ export async function loadHistory(
       // /btw 回放记录：host 初始页按窗口附带（btw_history.jsonl），按锚点
       // 缝进时间线；本页窗口之外的锚点随更早页加载（loadMoreHistory）。
       const entries = spliceBtwEntries(
-        replayMeta.turnOpen
-          ? sortedEntries
-          : settleTurnEntries(sortedEntries),
+        applyThoughtHoist(
+          replayMeta.turnOpen
+            ? sortedEntries
+            : settleTurnEntries(sortedEntries),
+        ),
         r.btw ?? [],
       )
       // 按轮次模式：还有更早轮次 ⟺ 游标 > 0；按条数兜底：loadedStart > 0。

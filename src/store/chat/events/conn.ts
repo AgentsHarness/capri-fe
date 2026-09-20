@@ -19,8 +19,23 @@ import {
 } from '../turn'
 import { tailAlreadyTurnEnded } from '../turnLifecycle'
 import { loadHistoryWithTaskProbe } from '../loadHistory'
-import { applySessionModelState } from '../model'
+import { applySessionModelState, parseConfigOptions } from '../model'
 import { appendEntry } from '../entries'
+
+/**
+ * Project ACP configOptions onto the chat state's caption fields.
+ *
+ * The array is authoritative for the *selection* (model id + effort), which
+ * the modelState fallback can only guess from each model's default. Empty when
+ * the array carries neither selector, so spreading it is always safe.
+ */
+function configOptionsPatch(opts: unknown): Partial<ChatState> {
+  const patch = parseConfigOptions(opts)
+  const out: Partial<ChatState> = {}
+  if (patch.modelName) out.modelName = patch.modelName
+  if (patch.reasoningEffort) out.reasoningEffort = patch.reasoningEffort
+  return out
+}
 
 /**
  * 本地真相守卫（spurious ready / host 状态丢失防线）：hub 重连竞态、
@@ -129,6 +144,11 @@ export function handleConnEvent(
             })
         const { saved: permSaved } = consumeAgentInstance(ev.agentStartedAt)
         const permSnap = permissionModeFromSnapshot(ev.permissionMode)
+        // ACP configOptions (host Status snapshot) carry the authoritative
+        // current model + reasoning effort for the anchored session; the
+        // modelState fallback above can only offer each model's *default*
+        // effort. Applied after modelSnap so the explicit selection wins.
+        const configSnap = configOptionsPatch(ev.configOptions)
         // 本地真相守卫：reconnect/hello 竞态下 host 宣告的 ready 不可信
         // （见 turnLiveLocally）——回合仍在本地活跃时保持 busy 与本端
         // 流式文案，不写 "就绪"（真实终态由 turn_end 路径收口）。
@@ -150,6 +170,7 @@ export function handleConnEvent(
           xaiRequests: pendingSnap.xaiRequests,
           modes: ev.modes,
           ...modelSnap,
+          ...configSnap,
           // 徽标只信 agent 回声：hello 非 ask 是权威；ask 仅在本 agent
           // 实例已经成功 setMode 过时保留那次写入。config.toml 不预涂。
           ...resolveDisplayModeFlags(permSaved, permSnap, {
@@ -288,6 +309,9 @@ export function handleConnEvent(
         // session/load restores a different session model.
         const s = get()
         const modelSnap = applySessionModelState(ev.models, ev.agentInfo)
+        // Same as hello: configOptions carry the session's actual selection,
+        // which the modelState fallback can only approximate with defaults.
+        const configSnap = configOptionsPatch(ev.configOptions)
         // 本地真相守卫：回合仍在本地活跃（流式指针，或计时器在且时间线
         // 尾部无回合终止标记）时，ready 不翻转 conn、不清计时器、不写
         // 空闲文案——hub 重连竞态 / 多会话错标 / host 丢态的 spurious
@@ -310,6 +334,7 @@ export function handleConnEvent(
           // 系统恢复（busy/ready/新回合）：清空分层横幅。
           layerErrors: {},
           ...modelSnap,
+          ...configSnap,
           // 权限徽标不从 localStorage 回灌——只信 hello / yolo_mode_changed。
           // plan 是会话态，从 per-session 副本补充。
           ...restorePlanMode(ev.sessionId),

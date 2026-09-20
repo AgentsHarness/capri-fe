@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { flushStreamBuf } from '../stream'
 import { handleUserStreamEvent } from './userStream'
+import { handleToolEvent } from './tools'
 import type { AcpEvent, ScrollEntry } from '../../../api/types'
 import type { ChatState, SetState } from '../types'
 
@@ -152,6 +153,75 @@ describe('userStream — 同流 thinking → answer 切换', () => {
     expect(s.openAssistantId).toBe(assistantOf(s)?.id)
     flushStreamBuf(set, get)
     expect(rendered(state(), assistantOf(state())!)).toBe('ABC')
+  })
+})
+
+describe('userStream — 同流「正文先落、尾段思考后到」的落位', () => {
+  /** 复刻实盘：思考 → 工具 → 回答 → 尾段思考（同一 streamStartMs）。 */
+  const makeTurn = () => {
+    const { set, get, state } = makeStore({
+      sessionId: 's1',
+      toolIndex: {},
+      bgTaskIndex: {},
+    })
+    const dispatch = (ev: AcpEvent) => {
+      flushStreamBuf(set, get)
+      handleUserStreamEvent(set, get, ev)
+    }
+    // 工具调用收口思考与回答，并清掉两个指针（tools.ts 的真实行为）。
+    const toolCall = () =>
+      handleToolEvent(set, get, {
+        type: 'tool_call',
+        toolCall: {
+          sessionUpdate: 'tool_call',
+          toolCallId: 'c1',
+          title: 'run_terminal_command',
+          status: 'completed',
+        },
+      } as unknown as AcpEvent)
+    /** 只留思考/回答行：工具行不参与本组顺序断言。 */
+    const textRows = () =>
+      state().entries.filter((e) => e.kind === 'thought' || e.kind === 'assistant')
+    return { set, get, state, dispatch, toolCall, textRows }
+  }
+
+  it('尾段思考插到回答之前，不改其余顺序', () => {
+    const { state, dispatch, toolCall, textRows } = makeTurn()
+    dispatch(thought('先想'))
+    dispatch(chunk('第一段回答'))
+    toolCall()
+    dispatch(chunk('最终回答'))
+    dispatch(thought('尾段推理'))
+
+    // 到达序是 [思考, 回答, 回答, 思考]；尾段思考要落到它所属的回答之前，
+    // 否则同源倒序——回答在上、它的推理在下。
+    const rows = textRows()
+    expect(rows.map((e) => e.kind)).toEqual([
+      'thought',
+      'assistant',
+      'thought',
+      'assistant',
+    ])
+    const hoisted = rows[2]!
+    expect(rendered(state(), hoisted)).toBe('尾段推理')
+    expect(
+      (hoisted as { hoistBeforeAnswerId?: string }).hoistBeforeAnswerId,
+    ).toBe(rows[3]!.id)
+  })
+
+  it('回答尚未落正文时追加在末尾，不编造插入点', () => {
+    const { dispatch, toolCall, textRows } = makeTurn()
+    dispatch(thought('先想'))
+    dispatch(chunk('第一段回答'))
+    toolCall()
+    dispatch(thought('尾段推理'))
+
+    // 此刻没有正文可挂：思考只能追加，且不带搬移标记
+    const rows = textRows()
+    expect(rows.map((e) => e.kind)).toEqual(['thought', 'assistant', 'thought'])
+    expect(
+      (rows[2] as { hoistBeforeAnswerId?: string }).hoistBeforeAnswerId,
+    ).toBeUndefined()
   })
 })
 

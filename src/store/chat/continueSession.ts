@@ -15,7 +15,7 @@ import {
   restorePlanMode,
   sessionModesPatch,
 } from './modeFlags'
-import { applySessionModelState } from './model'
+import { applySessionModelState, parseConfigOptions } from './model'
 export async function continueSession(
   set: SetState,
   get: () => ChatState,
@@ -140,10 +140,16 @@ export async function continueSession(
       // The user may have switched host / opened another session while we
       // were loading — never write this session's data into that view.
       if (myGen !== runtime.sessionSwitchGen || !isAsyncScopeCurrent(get, scope)) return
-      if (loaded.models != null || loaded.modes != null) {
+      if (loaded.models != null || loaded.modes != null || loaded.configOptions != null) {
         const modelSnap = applyLoadedModels(loaded.models)
+        // configOptions 是本次 load/resume 的权威选择（模型 + 档位）；models
+        // 的 effort 只是各模型默认档。逐字段覆盖，避免数组没带某个 selector
+        // 时把 modelSnap 已算好的值抹掉。
+        const cfg = parseConfigOptions(loaded.configOptions)
         set({
           ...modelSnap,
+          ...(cfg.modelName ? { modelName: cfg.modelName } : {}),
+          ...(cfg.reasoningEffort ? { reasoningEffort: cfg.reasoningEffort } : {}),
           ...(loaded.modes != null ? { modes: loaded.modes } : {}),
           // Same extraction as hello/ready: the load response's `modes`
           // (SessionModeState, currentModeId + availableModes) restores
@@ -199,9 +205,14 @@ export async function continueSession(
         // (EventSource reconnect) or the load's own ready may have raced
         // in with process-global models while historyLoading; the HTTP
         // response is the authority for the restored session.
-        if (loaded.models != null) {
+        if (loaded.models != null || loaded.configOptions != null) {
           const modelSnap = applyLoadedModels(loaded.models)
-          set({ ...modelSnap })
+          const cfg = parseConfigOptions(loaded.configOptions)
+          set({
+            ...modelSnap,
+            ...(cfg.modelName ? { modelName: cfg.modelName } : {}),
+            ...(cfg.reasoningEffort ? { reasoningEffort: cfg.reasoningEffort } : {}),
+          })
         }
         // Focusing an in-flight session: busy SSE was likely dropped while
         // historyLoading; restore spinner from the HTTP busy flag.

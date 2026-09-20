@@ -14,7 +14,7 @@ import {
   cancellationContextText,
   tailHasCancellationDetail,
 } from '../turn'
-import { applySessionModelState } from '../model'
+import { applySessionModelState, parseConfigOptions } from '../model'
 import { appendEntry } from '../entries'
 import { flushLiveStream, sealThought } from '../stream'
 import { nid } from '../ids'
@@ -395,51 +395,34 @@ export function handleExtMiscEvent(
         break
       case 'config_options_update': {
         if (ev.sessionId && ev.sessionId !== get().sessionId) break
-        // Best-effort: ACP config options may carry current model id/name
-        // and reasoning_effort (composer 模型槽括号档位).
-        const opts = ev.configOptions as
-          | Array<{
-              id?: string
-              type?: string
-              category?: string
-              currentValue?: unknown
-              options?: Array<{ value?: string; name?: string }>
-            }>
-          | { model?: string; modelId?: string; modelName?: string; reasoningEffort?: string }
-          | undefined
+        // ACP config options carry the current model id/name and
+        // reasoning_effort (composer 模型槽括号档位). Shape parsing lives in
+        // model.ts parseConfigOptions — shared with the session/new|load|resume
+        // response path so both spellings of the array stay in one place.
+        const opts = ev.configOptions
         if (!opts) break
         if (Array.isArray(opts)) {
-          const modelOpt = opts.find(
-            (o) =>
-              o?.id === 'model' ||
-              o?.type === 'model' ||
-              o?.category === 'model' ||
-              String(o?.id || '').toLowerCase().includes('model'),
-          )
-          const effortOpt = opts.find(
-            (o) =>
-              o?.id === 'reasoning_effort' ||
-              o?.id === 'thought_level' ||
-              o?.category === 'thought_level',
-          )
-          const patch: Partial<ChatState> = {}
-          if (modelOpt?.currentValue != null) {
-            const cv = String(modelOpt.currentValue)
-            const named = modelOpt.options?.find((x) => x.value === cv)?.name
-            patch.modelName = (named && String(named)) || cv
+          const patch = parseConfigOptions(opts)
+          const next: Partial<ChatState> = {}
+          if (patch.modelName) next.modelName = patch.modelName
+          if (patch.reasoningEffort) next.reasoningEffort = patch.reasoningEffort
+          if (Object.keys(next).length > 0) set(next)
+        } else if (typeof opts === 'object') {
+          // Older rails send a flat object instead of the ACP array.
+          const flat = opts as {
+            model?: unknown
+            modelId?: unknown
+            modelName?: unknown
+            reasoningEffort?: unknown
           }
-          if (effortOpt?.currentValue != null && String(effortOpt.currentValue).trim()) {
-            patch.reasoningEffort = String(effortOpt.currentValue).trim()
-          }
-          if (Object.keys(patch).length > 0) set(patch)
-        } else {
           const name =
-            (opts.modelName && String(opts.modelName)) ||
-            (opts.modelId && String(opts.modelId)) ||
-            (opts.model && String(opts.model))
+            (typeof flat.modelName === 'string' && flat.modelName.trim()) ||
+            (typeof flat.modelId === 'string' && flat.modelId.trim()) ||
+            (typeof flat.model === 'string' && flat.model.trim()) ||
+            undefined
           const effort =
-            typeof opts.reasoningEffort === 'string' && opts.reasoningEffort.trim()
-              ? opts.reasoningEffort.trim()
+            typeof flat.reasoningEffort === 'string' && flat.reasoningEffort.trim()
+              ? flat.reasoningEffort.trim()
               : undefined
           if (name || effort) {
             set({

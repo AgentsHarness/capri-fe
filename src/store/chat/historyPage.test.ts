@@ -4,6 +4,7 @@ import {
   INITIAL_TURN_LIMIT,
   MAX_PAGE_DOUBLE_STEPS,
   adaptivePageSize,
+  applyThoughtHoist,
   countUserMessages,
   findMsgSeqGap,
   historyHasMorePage,
@@ -13,6 +14,47 @@ import {
   sortEntriesByMsgSeq,
 } from './historyPage'
 import type { ScrollEntry } from '../../api/types'
+
+const thought = (id: string, msgSeq: number, hoistBeforeAnswerId?: string) => ({
+  id,
+  kind: 'thought',
+  text: id,
+  msgSeq,
+  ...(hoistBeforeAnswerId ? { hoistBeforeAnswerId } : {}),
+}) as unknown as ScrollEntry
+
+const answer = (id: string, msgSeq: number) =>
+  ({ id, kind: 'assistant', text: id, msgSeq }) as unknown as ScrollEntry
+
+describe('applyThoughtHoist', () => {
+  it('把尾段思考搬到它所属的回答之前（逆转 msgSeq 到达序）', () => {
+    const a = answer('a1', 2)
+    const t = thought('t2', 3, 'a1')
+    // 到达序：回答(2) → 思考(3)；期望渲染序：思考 → 回答
+    const out = applyThoughtHoist([answer('a0', 1), a, t])
+    expect(out.map((e) => e.id)).toEqual(['a0', 't2', 'a1'])
+  })
+
+  it('无标记时原样返回同一引用', () => {
+    const input = [answer('a1', 1), thought('t1', 2)]
+    expect(applyThoughtHoist(input)).toBe(input)
+  })
+
+  it('目标回答不在本页（分页边界）时保持原位，不丢条目', () => {
+    const t = thought('t2', 2, 'missing')
+    const out = applyThoughtHoist([answer('a1', 1), t])
+    expect(out.map((e) => e.id)).toEqual(['a1', 't2'])
+  })
+
+  it('同一回答挂多个思考时保持它们之间的相对次序', () => {
+    const out = applyThoughtHoist([
+      answer('a1', 3),
+      thought('t2', 4, 'a1'),
+      thought('t3', 5, 'a1'),
+    ])
+    expect(out.map((e) => e.id)).toEqual(['t2', 't3', 'a1'])
+  })
+})
 
 describe('adaptivePageSize', () => {
   it('起步 100，每次续翻翻倍，封顶 1600', () => {

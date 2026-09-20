@@ -9,6 +9,7 @@ import {
   adaptivePageSize,
   applyEntryLiteStats,
   applyEntryMsgSeq,
+  applyThoughtHoist,
   countUserMessages,
   mergeEntriesByMsgSeq,
   previousTurnWindow,
@@ -283,10 +284,12 @@ export async function loadMoreHistory(
       // 拼接行为（旧页整段在前，不归并）。/btw 回放记录随本页窗口附带，
       // 按锚点缝进合并结果（稳定 id 去重，重入页不重复）。
       const merged = spliceBtwEntries(
-        mergeEntriesByMsgSeq(newEntries, oldEntries) ?? [
-          ...newEntries,
-          ...oldEntries,
-        ],
+        applyThoughtHoist(
+          mergeEntriesByMsgSeq(newEntries, oldEntries) ?? [
+            ...newEntries,
+            ...oldEntries,
+          ],
+        ),
         r.btw ?? [],
       )
       // 回放后 openAssistantId/liveStream 常被「本页半截 assistant」填上，

@@ -1149,19 +1149,16 @@ export const slashCommands: SlashCommand[] = [
   {
     name: 'memory',
     aliases: ['mem'],
-    description: '浏览/管理记忆（on|off 开关记忆）',
-    argHint: '[on|off]',
-    suggestArgs: () => onOffItems('开启记忆', '关闭记忆'),
+    description: '浏览/管理记忆（弹窗内可开关记忆、删除笔记）',
+    // TUI 1.0.35: /memory takes no arguments — toggling moved into the modal
+    // (`t`), and the shell's own `memory` builtin now only opens the browser.
     run: (args) => {
-      const a = args.trim().toLowerCase()
-      if (a === 'on' || a === 'off') {
-        // 走 session 内置 slash 通道：human prompt 以 / 开头时由 agent
-        // 侧解析为 BuiltinAction::MemoryToggle（与 TUI 键入 /memory on
-        // 同路径），无需 ext 端点。
-        sendPrompt(`/memory ${a}`)
+      if (args.trim()) {
+        err(
+          '/memory 不带参数：打开后用 t 开关记忆、/ 搜索、x 删除。',
+        )
         return
       }
-      // No args → browse modal (cached memory_files list, read-only).
       useChatStore.getState().openMemory()
     },
   },
@@ -1173,12 +1170,7 @@ export const slashCommands: SlashCommand[] = [
   {
     name: 'dream',
     description: '执行记忆整合（consolidation）',
-    run: () => {
-      // 走 session 内置 /dream slash 命令（BuiltinAction::Dream →
-      // run_dream_slash_command）。memory ext 只暴露 flush/rewrite，没有
-      // consolidation 端点——发字面命令与 TUI 键入 /dream 同路径。
-      sendPrompt('/dream')
-    },
+    run: () => void useChatStore.getState().memoryDream(),
   },
   {
     name: 'remember',
