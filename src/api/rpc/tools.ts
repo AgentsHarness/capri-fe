@@ -518,7 +518,18 @@ export const toolsRpc = {
     return data
   },
 
-  async setModel(this: TransportCore, modelId: string, reasoningEffort?: string, sessionId?: string) {
+  /**
+   * POST /api/set-model. Resolves with a `warning` when the switch only
+   * half-applied — the model changed but the reasoning effort was refused by
+   * the agent. Still a success (the session is on the new model), so callers
+   * must surface the text rather than treat it as a failure.
+   */
+  async setModel(
+    this: TransportCore,
+    modelId: string,
+    reasoningEffort?: string,
+    sessionId?: string,
+  ): Promise<{ warning?: string }> {
     const res = await this.fetch(this.url('/api/set-model'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -530,7 +541,7 @@ export const toolsRpc = {
     })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'set model failed')
-    return data
+    return typeof data.warning === 'string' && data.warning ? { warning: data.warning } : {}
   },
 
   async setDefaultModel(this: TransportCore, modelId: string, reasoningEffort?: string, sessionId?: string) {

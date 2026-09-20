@@ -237,6 +237,63 @@ export function extractModelsFromAgentInfo(info: unknown): ModelOption[] {
   return out
 }
 
+/**
+ * The model + reasoning-effort a session should display, read from ACP
+ * `configOptions` (the `config_option_update` / config_options_update payload,
+ * and the same array on session/new|load|resume responses).
+ *
+ * This is the one place that knows the configOptions shape. Entries are
+ * `{id, name, category, type, currentValue, options:[{value,name}]}`; the
+ * selectors are addressed by id (`model` / `reasoning_effort`) with
+ * `category` as the fallback spelling. Returns undefined fields when the
+ * array does not carry that selector, so callers can apply it unconditionally
+ * without clobbering a caption the array does not speak to.
+ */
+export function parseConfigOptions(opts: unknown): {
+  modelId?: string
+  modelName?: string
+  reasoningEffort?: string
+} {
+  if (!Array.isArray(opts)) return {}
+  const list = opts.filter(
+    (o): o is Record<string, unknown> => o != null && typeof o === 'object' && !Array.isArray(o),
+  )
+  const find = (ids: string[], categories: string[]) =>
+    list.find((o) => {
+      const id = typeof o.id === 'string' ? o.id.toLowerCase() : ''
+      const cat = typeof o.category === 'string' ? o.category.toLowerCase() : ''
+      const type = typeof o.type === 'string' ? o.type.toLowerCase() : ''
+      return (
+        ids.includes(id) || categories.includes(cat) || categories.includes(type)
+      )
+    })
+  // Last-resort fallback for a catalog that spells the id differently
+  // (e.g. `model_selector`): substring, but only when no exact hit exists.
+  const modelOpt =
+    find(['model'], ['model']) ??
+    list.find((o) => typeof o.id === 'string' && o.id.toLowerCase().includes('model'))
+  const effortOpt = find(['reasoning_effort'], ['thought_level'])
+
+  const out: { modelId?: string; modelName?: string; reasoningEffort?: string } = {}
+  if (modelOpt && modelOpt.currentValue != null) {
+    const cv = String(modelOpt.currentValue).trim()
+    if (cv) {
+      out.modelId = cv
+      const options = Array.isArray(modelOpt.options) ? modelOpt.options : []
+      const named = options.find(
+        (x) => x != null && typeof x === 'object' && (x as Record<string, unknown>).value === cv,
+      ) as Record<string, unknown> | undefined
+      const label = named && typeof named.name === 'string' ? named.name.trim() : ''
+      out.modelName = label || cv
+    }
+  }
+  if (effortOpt && effortOpt.currentValue != null) {
+    const cv = String(effortOpt.currentValue).trim()
+    if (cv) out.reasoningEffort = cv
+  }
+  return out
+}
+
 /** Current reasoning effort from agentInfo._meta.modelState (if any). */
 export function extractEffortFromAgentInfo(info: unknown): string | undefined {
   if (!info || typeof info !== 'object') return undefined

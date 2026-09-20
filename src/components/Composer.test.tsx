@@ -4,6 +4,7 @@ import { Composer } from './Composer'
 import { useChatStore } from '../store/chat'
 import { usePromptQueue } from '../store/promptQueue'
 import { pushToast } from '../store/toast'
+import { applyUiSettings } from '../store/settings'
 import { transport } from '../api/client'
 
 vi.mock('../api/client', () => ({
@@ -378,6 +379,98 @@ describe('Composer 立即发送拦截确认', () => {
       expect.objectContaining({ id: 'q1' }),
       'test-sess-1',
     )
+  })
+})
+
+/**
+ * 队首去向徽标：点击切换 [ui].follow_up_behavior（steer ↔ queue）。
+ * 子组件 QueueStrip 只测了「点击会调 onToggleMode」，Composer 里这个
+ * 回调自身的 RPC 往返与失败提示此前没有覆盖。
+ */
+describe('Composer 队首模式切换（follow_up_behavior）', () => {
+  const promptRow = {
+    id: 'q1',
+    text: 'queued one',
+    blocks: [{ type: 'text', text: 'queued one' }],
+    ts: 1,
+    version: 1,
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useChatStore.setState({
+      sessionId: 'test-sess-1',
+      cwd: '/test/cwd',
+      conn: 'busy',
+      historyLoading: false,
+      newSessionPending: false,
+      entries: [],
+      pending: [],
+      xaiRequests: [],
+      queuePanelOpen: true,
+    })
+    usePromptQueue.setState({
+      queue: [promptRow],
+      sending: false,
+    } as never)
+  })
+
+  it('当前是 queue → 点击发送 steer，并用应答回写 ui 设置', async () => {
+    const updateSettings = vi.fn(async () => ({ ui: { follow_up_behavior: 'steer' } }))
+    ;(transport as unknown as Record<string, unknown>).updateSettings = updateSettings
+
+    render(<Composer />)
+    fireEvent.click(screen.getByRole('button', { name: '队列' }))
+
+    await waitFor(() => expect(updateSettings).toHaveBeenCalledWith({
+      follow_up_behavior: 'steer',
+    }))
+  })
+
+  it('当前是 steer → 点击切回 queue', async () => {
+    const updateSettings = vi.fn(async () => ({ ui: { follow_up_behavior: 'queue' } }))
+    ;(transport as unknown as Record<string, unknown>).updateSettings = updateSettings
+    applyUiSettings({ follow_up_behavior: 'steer' })
+
+    render(<Composer />)
+    fireEvent.click(screen.getByRole('button', { name: '引导' }))
+
+    await waitFor(() => expect(updateSettings).toHaveBeenCalledWith({
+      follow_up_behavior: 'queue',
+    }))
+  })
+
+  it('updateSettings 失败 → 弹 toast 且不抛错', async () => {
+    const updateSettings = vi.fn(async () => {
+      throw new Error('settings rpc failed')
+    })
+    ;(transport as unknown as Record<string, unknown>).updateSettings = updateSettings
+
+    render(<Composer />)
+    fireEvent.click(screen.getByRole('button', { name: '队列' }))
+
+    await waitFor(() => expect(pushToast).toHaveBeenCalledWith('settings rpc failed'))
+  })
+
+  it('非 Error 抛出物转成字符串提示', async () => {
+    const updateSettings = vi.fn(async () => {
+      throw 'plain boom'
+    })
+    ;(transport as unknown as Record<string, unknown>).updateSettings = updateSettings
+
+    render(<Composer />)
+    fireEvent.click(screen.getByRole('button', { name: '队列' }))
+
+    await waitFor(() => expect(pushToast).toHaveBeenCalledWith('plain boom'))
+  })
+
+  it('应答缺 ui 字段时不抛错', async () => {
+    const updateSettings = vi.fn(async () => ({}))
+    ;(transport as unknown as Record<string, unknown>).updateSettings = updateSettings
+
+    render(<Composer />)
+    fireEvent.click(screen.getByRole('button', { name: '队列' }))
+    await waitFor(() => expect(updateSettings).toHaveBeenCalled())
   })
 })
 

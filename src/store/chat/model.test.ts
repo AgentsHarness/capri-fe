@@ -9,6 +9,7 @@ import {
   modelDisplayName,
   modelLabel,
   normalizeEffortOption,
+  parseConfigOptions,
 } from './model'
 
 describe('modelDisplayName / modelLabel', () => {
@@ -156,5 +157,63 @@ describe('applySessionModelState', () => {
 
   it('都没有 → 空 partial', () => {
     expect(applySessionModelState(null, {})).toEqual({})
+  })
+})
+
+describe('parseConfigOptions — ACP configOptions 的模型/档位投影', () => {
+  it('按 id 取 model / reasoning_effort，模型名取 options 里的 label', () => {
+    const out = parseConfigOptions([
+      {
+        id: 'model',
+        category: 'model',
+        type: 'select',
+        currentValue: 'grok-4',
+        options: [
+          { value: 'grok-3', name: 'Grok 3' },
+          { value: 'grok-4', name: 'Grok 4' },
+        ],
+      },
+      {
+        id: 'reasoning_effort',
+        category: 'thought_level',
+        type: 'select',
+        currentValue: 'high',
+        options: [{ value: 'high', name: 'High' }],
+      },
+    ])
+    expect(out).toEqual({ modelId: 'grok-4', modelName: 'Grok 4', reasoningEffort: 'high' })
+  })
+
+  it('id 缺失时退回 category / type 的写法', () => {
+    const out = parseConfigOptions([
+      { type: 'model', currentValue: 'm1' },
+      { category: 'thought_level', currentValue: 'low' },
+    ])
+    expect(out.modelId).toBe('m1')
+    expect(out.modelName).toBe('m1')
+    expect(out.reasoningEffort).toBe('low')
+  })
+
+  it('数组没带某个 selector → 该字段缺省（调用方不会误清空）', () => {
+    const out = parseConfigOptions([{ id: 'reasoning_effort', currentValue: 'high' }])
+    expect(out.modelId).toBeUndefined()
+    expect(out.modelName).toBeUndefined()
+    expect(out.reasoningEffort).toBe('high')
+  })
+
+  it('非数组 / 空数组 / 脏元素 → 空结果，不抛错', () => {
+    expect(parseConfigOptions(undefined)).toEqual({})
+    expect(parseConfigOptions({ model: 'x' })).toEqual({})
+    expect(parseConfigOptions([])).toEqual({})
+    expect(parseConfigOptions([null, 'x', 3])).toEqual({})
+  })
+
+  it('currentValue 为空白 → 该字段缺省', () => {
+    const out = parseConfigOptions([
+      { id: 'model', currentValue: '   ' },
+      { id: 'reasoning_effort', currentValue: '' },
+    ])
+    expect(out.modelId).toBeUndefined()
+    expect(out.reasoningEffort).toBeUndefined()
   })
 })

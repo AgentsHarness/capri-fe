@@ -276,6 +276,51 @@ describe('setModel 空状态（无会话）与已锚定两条路径', () => {
     await bindWith(state).setModel('grok-4', 'low', { asDefault: true })
     expect(pushToast).toHaveBeenCalledWith('设为默认失败: boom')
   })
+
+  // host 的半成功：模型切了、档位被 agent 拒。必须弹 toast 并把 caption
+  // 回滚到切换前的档位——不能留下一个 agent 没采用的档位。
+  it('host 返回 warning（档位未生效）→ 弹 toast 并回滚档位，模型仍切', async () => {
+    const state = makeState({
+      sessionId: 'sess-1',
+      modelName: 'Grok 3',
+      reasoningEffort: 'low',
+      entries: [],
+      models: CATALOG,
+    })
+    ;(transport.setModel as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      warning: '模型已切换，但推理档位 high 未生效：unknown reasoning_effort value',
+    })
+    await bindWith(state).setModel('grok-4', 'high')
+    expect(pushToast).toHaveBeenCalledWith(
+      '模型已切换，但推理档位 high 未生效：unknown reasoning_effort value',
+      { type: 'warning' },
+    )
+    expect(state.modelName).toBe('Grok 4')
+    expect(state.reasoningEffort).toBe('low')
+    // 时间线里也留一行，滚动历史里能看到
+    expect(
+      state.entries.some(
+        (e) => e.kind === 'session_event' && e.text.includes('未生效'),
+      ),
+    ).toBe(true)
+  })
+
+  it('host 无 warning → 档位按请求档位写入（成功路径无噪音）', async () => {
+    const state = makeState({
+      sessionId: 'sess-1',
+      modelName: 'Grok 3',
+      reasoningEffort: 'low',
+      entries: [],
+      models: CATALOG,
+    })
+    ;(transport.setModel as ReturnType<typeof vi.fn>).mockResolvedValueOnce({})
+    await bindWith(state).setModel('grok-4', 'high')
+    expect(state.reasoningEffort).toBe('high')
+    expect(pushToast).not.toHaveBeenCalledWith(
+      expect.stringContaining('未生效'),
+      expect.anything(),
+    )
+  })
 })
 
 // ── switchHost：只依赖 hostId 的请求不等 status ────────────────────────

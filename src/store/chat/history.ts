@@ -10,6 +10,7 @@ export {
   remapTurnIdx,
   countUserMessages,
   sortEntriesByMsgSeq,
+  applyThoughtHoist,
   mergeEntriesByMsgSeq,
   findMsgSeqGap,
 } from './historyPage'

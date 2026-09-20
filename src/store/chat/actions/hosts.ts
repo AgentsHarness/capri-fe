@@ -148,7 +148,10 @@ export function hostActions(set: SetState, get: () => ChatState) {
       xaiRequests: [],
       diffReview: undefined,
       diffReviewOpen: false,
-      memoryFiles: undefined,
+      memoryListing: undefined,
+      memoryStatus: undefined,
+      memoryError: undefined,
+      memoryNotice: undefined,
       memoryOpen: false,
       pendingOptimisticUserId: undefined,
       modes: undefined,
@@ -387,10 +390,18 @@ export function hostActions(set: SetState, get: () => ChatState) {
     const prevName = get().modelName
     const prevEffort = get().reasoningEffort
     try {
-      await transport.setModel(modelId, reasoningEffort, get().sessionId)
+      // 档位被 agent 拒绝（模型已切换）：caption 不能留在那个 agent 根本没
+      // 采用的档位上，回滚成切换前会话实际生效的档位，并把 host 的话弹成
+      // toast——静默成功会让用户以为档位生效了。
+      const warning = (await transport.setModel(modelId, reasoningEffort, get().sessionId))
+        ?.warning
+      // 回滚后的档位就是 caption 与时间线应显示的值：失败时是旧档位，成功
+      // 时是本次请求的档位（未指定档位则为 undefined，由后续 models_update
+      // 补上新模型的默认档）。
+      const shownEffort = warning ? prevEffort : effort
       set({
         modelName: name,
-        reasoningEffort: effort,
+        reasoningEffort: shownEffort,
       })
       // Model switch feedback goes to the scrollback (session_event),
       // like the TUI's `Switched to <model>` pager toast. The host's
@@ -400,10 +411,14 @@ export function hostActions(set: SetState, get: () => ChatState) {
         kind: 'session_event',
         text:
           prevName && prevName !== name
-            ? `模型已从 ${modelLabel(prevName, prevEffort)} 切换到 ${modelLabel(name, effort)}`
-            : `模型已切换到 ${modelLabel(name, effort)}`,
+            ? `模型已从 ${modelLabel(prevName, prevEffort)} 切换到 ${modelLabel(name, shownEffort)}`
+            : `模型已切换到 ${modelLabel(name, shownEffort)}`,
         warning: true,
       })
+      if (warning) {
+        pushToast(warning, { type: 'warning' })
+        appendEntry(set, { kind: 'session_event', text: warning, warning: true })
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       appendEntry(set, {

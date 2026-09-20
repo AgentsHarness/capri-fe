@@ -99,6 +99,13 @@ export type ScrollEntry =
       msgSeqEnd?: number
       liteOmitted?: number
       liteState?: 'loading' | 'error' | 'filled'
+      /**
+       * 同一条生成流里「回答正文先落、思考后到」（agent 把尾段推理排在回答
+       * 之后）时，记录该思考应排在前面那条回答的 id。回放页按 msgSeq 排序
+       * 会把顺序改回到达序（思考掉到回答下面），组装后再按本字段搬一次
+       * （见 historyPage.applyThoughtHoist）。
+       */
+      hoistBeforeAnswerId?: string
     }
   | {
       id: string

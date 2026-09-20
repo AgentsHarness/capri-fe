@@ -22,6 +22,7 @@ import { appendEntry, type EntryWithoutId } from './entries'
 import { initChat } from './actions/init'
 import { goalActions } from './actions/goal'
 import { hostActions } from './actions/hosts'
+import { memoryActions } from './actions/memory'
 import { noticeActions } from './actions/notices'
 import { livePollActions } from './actions/livePoll'
 import { cancelActions } from './actions/cancel'
@@ -188,8 +189,7 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
   openDiffReview: () => set({ diffReviewOpen: true }),
   closeDiffReview: () => set({ diffReviewOpen: false }),
   memoryOpen: false,
-  openMemory: () => set({ memoryOpen: true }),
-  closeMemory: () => set({ memoryOpen: false }),
+  ...memoryActions(set, get),
   extensionsOpen: false,
   extensionsTab: 'hooks',
   openExtensions: (tab) => set({ extensionsOpen: true, extensionsTab: tab }),

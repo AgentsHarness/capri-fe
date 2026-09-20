@@ -21,6 +21,7 @@ import type {
   WorkspaceGroup,
 } from '../../api/types'
 import type { McpListServer } from '../../api/client'
+import type { MemoryListing } from '../../lib/memory'
 import type {
   PendingStopHooks,
   PendingToolHook,
@@ -567,8 +568,18 @@ export interface ChatAgentExtState {
    * 锚定后由 newSession 补发；锚定即清空。caption 同期乐观更新为它。
    */
   pendingModel?: { modelId: string; reasoningEffort?: string; asDefault?: boolean }
-  /** Memory files from memory_files (TUI memory modal). */
-  memoryFiles?: { name: string; path?: string; size?: number; updatedAt?: unknown; source?: string }[]
+  /**
+   * /memory modal listing: from x.ai/memory/list on open, kept fresh by the
+   * memory_files notification and by toggle/delete replies (TUI
+   * MemoryModalState::apply_listing).
+   */
+  memoryListing?: MemoryListing
+  /** Listing load state — 'loading' only with nothing painted yet. */
+  memoryStatus?: 'idle' | 'loading' | 'ready' | 'error'
+  /** Listing load failure (no active session, host down). */
+  memoryError?: string
+  /** Last toggle/delete feedback shown inside the modal. */
+  memoryNotice?: { text: string; error: boolean }
   /** Todo counts from plan updates (TUI status-bar todo badge). */
   todoCounts?: TodoCounts
   /** Todo items from plan updates (clickable badge panel). */
@@ -785,8 +796,20 @@ export interface ChatUiState {
   setQueuePanelOpen: (open: boolean | ((v: boolean) => boolean)) => void
   /** Memory modal visibility (TUI /memory). */
   memoryOpen: boolean
+  /** Opens the modal and reloads the listing (x.ai/memory/list). */
   openMemory: () => void
   closeMemory: () => void
+  /** Reload the listing behind the modal. */
+  refreshMemory: () => Promise<void>
+  /** Turn memory on/off for the session (TUI `t` in the modal). */
+  memoryToggle: (enabled: boolean) => Promise<void>
+  /** Run memory consolidation now (TUI /dream). */
+  memoryDream: () => Promise<void>
+  /** Delete one note; the hash is the BLAKE3 of the previewed bytes. */
+  forgetMemoryNote: (
+    path: string,
+    expectedContentHash: string,
+  ) => Promise<{ ok: boolean; message: string }>
   /** Diff review payloads from diff_review (TUI diff-review modal). */
   diffReview?: unknown[]
   /** Diff review modal visibility — notification path only (the request

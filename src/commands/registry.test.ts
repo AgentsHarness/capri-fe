@@ -91,6 +91,7 @@ interface FakeChat {
   goalSet: ReturnType<typeof vi.fn>
   openMemory: ReturnType<typeof vi.fn>
   memoryFlush: ReturnType<typeof vi.fn>
+  memoryDream: ReturnType<typeof vi.fn>
   rememberNote: ReturnType<typeof vi.fn>
   workflowRuns: Record<
     string,
@@ -152,6 +153,7 @@ beforeEach(() => {
     goalSet: vi.fn(),
     openMemory: vi.fn(),
     memoryFlush: vi.fn(),
+    memoryDream: vi.fn(),
     rememberNote: vi.fn(),
     workflowRuns: {},
     workflowControl: vi.fn(),
@@ -919,12 +921,14 @@ describe('parseBudgetTokens', () => {
 })
 
 describe('slash command runs — /memory /remember /dream', () => {
-  it('on/off 走 session 内置 slash；无参打开浏览', () => {
+  it('/memory 不带参数（TUI 1.0.35）：打开弹窗；带参数报错且不发提示词', () => {
     run('memory', 'on')
-    expect(fake.send).toHaveBeenCalledWith('/memory on')
-    fake.send.mockClear()
-    run('memory', 'off')
-    expect(fake.send).toHaveBeenCalledWith('/memory off')
+    expect(fake.appendLocalEntry).toHaveBeenCalledWith({
+      kind: 'error',
+      text: expect.stringContaining('/memory 不带参数'),
+    })
+    expect(fake.send).not.toHaveBeenCalled()
+    expect(fake.openMemory).not.toHaveBeenCalled()
     run('memory')
     expect(fake.openMemory).toHaveBeenCalled()
   })
@@ -937,9 +941,10 @@ describe('slash command runs — /memory /remember /dream', () => {
     expect(fake.send).not.toHaveBeenCalled()
   })
 
-  it('/dream 走 session 内置 slash 命令', () => {
+  it('/dream 走 x.ai/memory/dream 端点（不再发提示词）', () => {
     run('dream')
-    expect(fake.send).toHaveBeenCalledWith('/dream')
+    expect(fake.memoryDream).toHaveBeenCalled()
+    expect(fake.send).not.toHaveBeenCalled()
   })
 })
 
@@ -1066,9 +1071,16 @@ describe('filterSlashArgs（二级候选的过滤）', () => {
   })
 
   it('空参数查询 → 按 builder 顺序全列', () => {
-    const rows = filterSlashArgs('/memory ')
+    // /memory 在 TUI 1.0.35 起不收参数（开关移到弹窗内），因此用仍带
+    // 封闭候选集的 /multiline 验证「空查询全列 + score 0」。
+    const rows = filterSlashArgs('/multiline ')
     expect(rows.map((r) => r.arg.insertText)).toEqual(['on', 'off'])
     expect(rows.every((r) => r.score === 0)).toBe(true)
+  })
+
+  it('/memory 不再提供 on|off 二级候选（参数即报错）', () => {
+    expect(filterSlashArgs('/memory ')).toEqual([])
+    expect(filterSlashArgs('/mem o')).toEqual([])
   })
 
   it('前缀命中排在包含命中之前', () => {

@@ -131,6 +131,37 @@ export function sortEntriesByMsgSeq<T extends ScrollEntry>(entries: T[]): T[] {
 }
 
 /**
+ * 把标了 `hoistBeforeAnswerId` 的思考块搬到那条回答之前。
+ *
+ * 同一生成流里 agent 可能先发完回答、再补最后一段推理，到达序即「回答
+ * 在上、推理在下」。live 侧插入时就放在前面（events/userStream.ts），但
+ * 回放按 msgSeq 升序重排 = 回到到达序，所以组装尾部再按标记搬一次，刷新
+ * 后顺序与直播一致。无标记时原样返回同一引用。
+ */
+export function applyThoughtHoist<T extends ScrollEntry>(entries: T[]): T[] {
+  if (!entries.some((e) => e.kind === 'thought' && e.hoistBeforeAnswerId)) {
+    return entries
+  }
+  const out = [...entries]
+  for (;;) {
+    let moved = false
+    for (let i = 0; i < out.length; i++) {
+      const e = out[i]!
+      if (e.kind !== 'thought' || !e.hoistBeforeAnswerId) continue
+      // 目标回答已不在本页（分页边界）或思考已在它之前 → 无需搬动。
+      const target = out.findIndex((x) => x.id === e.hoistBeforeAnswerId)
+      if (target === -1 || target > i) continue
+      out.splice(i, 1)
+      out.splice(target, 0, e)
+      moved = true
+      break
+    }
+    if (!moved) break
+  }
+  return out
+}
+
+/**
  * 旧页（older，前插）与已加载区（newer）按 msgSeq 归并：两侧各自有序
  * （页内按回放序），两指针稳定归并，等值取前页。任一侧有条目缺 msgSeq
  * → 返回 null，调用方回退现有拼接行为（旧页整段在前）。
