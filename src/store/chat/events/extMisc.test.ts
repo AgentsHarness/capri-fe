@@ -30,6 +30,38 @@ describe('handleExtMiscEvent — git_head_changed 兜底', () => {
   })
 })
 
+describe('handleExtMiscEvent — ext_notification 渲染边界', () => {
+  it('未知 x.ai/* 通知落到灰色状态行', () => {
+    const { set, get, state } = makeStore({ sessionId: 's1' })
+    handleExtMiscEvent(set, get, {
+      type: 'ext_notification',
+      method: 'x.ai/some_future_notification',
+      sessionId: 's1',
+      params: {},
+    } as AcpEvent)
+    expect(state().entries).toHaveLength(1)
+    expect(state().entries[0]).toMatchObject({
+      kind: 'status',
+      text: '扩展通知: x.ai/some_future_notification',
+    })
+  })
+
+  // 每建一个新会话约 15 条，且会话 id 铸造前的阶段 sessionId 显式为
+  // null（grok session_setup.rs）——渲染出来既刷屏又无法归属会话。
+  it('x.ai/session/setup 静默：不写任何条目', () => {
+    const { set, get, state } = makeStore({ sessionId: 's1' })
+    for (const phase of ['auth', 'resolveWorkspace']) {
+      handleExtMiscEvent(set, get, {
+        type: 'ext_notification',
+        method: 'x.ai/session/setup',
+        params: { method: 'session/new', phase, sessionId: null },
+      } as AcpEvent)
+    }
+    expect(state().entries).toHaveLength(0)
+    expect(set).not.toHaveBeenCalled()
+  })
+})
+
 describe('handleExtMiscEvent — session_interjection', () => {
   it('实时收到 session_interjection 广播时，生成带 isInterjection: true 的 user 行', () => {
     const { set, get, state } = makeStore({ sessionId: 's1' })
