@@ -434,6 +434,16 @@ describe('SettingsModal', () => {
     expect(transport.updateSettings).toHaveBeenCalledTimes(1)
   })
 
+  it('右上角版本号徽标接的是构建期注入的 __APP_VERSION__', async () => {
+    openModal()
+    render(<SettingsModal />)
+    await waitFor(() => expect(screen.getByRole('dialog')).not.toBeNull())
+    // vitest.config 把 __APP_VERSION__ 注入为 'test'，这条断言钉住徽标读的
+    // 是这个构建期常量——换成运行期数据源（如 host 上报）就会红。vite 侧
+    // 的取值口径（APP_VERSION ?? package.json）由构建产物校验覆盖。
+    expect(screen.getByText('vtest')).toBeInTheDocument()
+  })
+
   it('移动端分类做成 tab：满宽等分短文案，避免横向滑动', async () => {
     openModal()
     const { container } = render(<SettingsModal />)

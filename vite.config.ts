@@ -1,6 +1,24 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import pkg from './package.json' with { type: 'json' }
+
+/**
+ * Build-stamped version for the settings modal's badge (`v<version>`).
+ *
+ * APP_VERSION wins when it holds a value; otherwise package.json's version is
+ * the fallback, so the badge always shows the version being shipped — in dev
+ * too, where it reads package.json.
+ *
+ * Both guards are deliberate: the old `process.env.APP_VERSION || 'dev'`
+ * treated a *set-but-empty* APP_VERSION (exported as `APP_VERSION=` by the
+ * retired deploy script) as absent and fell through to "dev", which is how
+ * every published build shipped a "vdev" badge. An empty or whitespace value
+ * now means "not configured", and a leading "v" is dropped because the badge
+ * adds its own.
+ */
+const appVersionEnv = (process.env.APP_VERSION ?? '').trim().replace(/^v/, '')
+const appVersion = appVersionEnv || pkg.version
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -29,8 +47,8 @@ export default defineConfig({
     },
   },
   define: {
-    // Build-stamped version (set by scripts/deploy-fe-hub.sh; 'dev' otherwise).
-    __APP_VERSION__: JSON.stringify(process.env.APP_VERSION || 'dev'),
+    // Build-stamped version; see appVersion above.
+    __APP_VERSION__: JSON.stringify(appVersion),
   },
   server: {
     host: true,
