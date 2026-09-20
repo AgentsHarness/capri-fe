@@ -45,6 +45,14 @@ export const SILENT_EXT_NOTIFICATIONS = new Set([
   'x.ai/search/content/status',
   // Config reload notice (TUI settings modal; FE has no config editor).
   'x.ai/config_changed',
+  // session/new step progress (~15 phases per create, grok
+  // session_setup.rs). The TUI keeps them panel-local: it routes each one
+  // to the in-flight agent and surfaces the last only if the create
+  // *fails* (as the stuck step's copy + telemetry). FE reanchors on the
+  // create's own response, so every phase is noise — and most cannot be
+  // attributed at all: phases before the id is minted carry an explicit
+  // null sessionId.
+  'x.ai/session/setup',
   // NOTE: x.ai/mcp/init_progress is intentionally NOT here — it is
   // consumed into mcpInit state (McpPanel init progress), both as the
   // typed `mcp_init_progress` event and via the ext_notification
