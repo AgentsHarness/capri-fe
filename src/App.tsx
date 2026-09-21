@@ -32,6 +32,7 @@ import { ContentSearchModal } from './components/ContentSearchModal'
 import { WorkflowPanel } from './components/WorkflowPanel'
 import { HostKeyModal } from './components/HostKeyModal'
 import { ToastStack } from './components/ToastStack'
+import { HostSettingsPage } from './components/HostSettingsPage'
 import { registerMcpPanelOpener } from './commands/registry'
 import { useScrollbackKeys } from './hooks/useScrollbackKeys'
 
@@ -75,6 +76,14 @@ export default function App() {
   const [submitting, setSubmitting] = useState(false)
   /** 纯 local 门禁的机器名（来自免鉴权的 /api/hosts，别在文案里甩裸 hostId）。 */
   const [localHostName, setLocalHostName] = useState<string>()
+
+  const [currentPath, setCurrentPath] = useState(() => window.location.pathname)
+
+  useEffect(() => {
+    const handlePopState = () => setCurrentPath(window.location.pathname)
+    window.addEventListener('popstate', handlePopState)
+    return () => window.removeEventListener('popstate', handlePopState)
+  }, [])
 
   useEffect(() => initTheme(), [initTheme])
 
@@ -203,6 +212,10 @@ export default function App() {
         onSubmit={handleTokenSubmit}
       />
     )
+  }
+
+  if (currentPath === '/settings') {
+    return <HostSettingsPage />
   }
 
   return (
