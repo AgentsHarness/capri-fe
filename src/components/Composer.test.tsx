@@ -474,3 +474,32 @@ describe('Composer 队首模式切换（follow_up_behavior）', () => {
   })
 })
 
+describe('Composer prompt stash caption', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useChatStore.setState({
+      sessionId: 'session-A',
+      cwd: '/test/cwd',
+      conn: 'ready',
+      historyLoading: false,
+      newSessionPending: false,
+      entries: [],
+      pending: [],
+    })
+    usePromptQueue.setState({ queue: [], sending: false })
+  })
+
+  it('Ctrl+S 把 Stashed 断在 composer 右上角边框上', () => {
+    render(<Composer />)
+    const input = screen.getByRole('textbox')
+    fireEvent.change(input, { target: { value: 'draft to park' } })
+    fireEvent.keyDown(input, { key: 's', ctrlKey: true })
+    const caption = screen.getByTestId('prompt-stash')
+    expect(caption.textContent).toBe('Stashed')
+    expect(caption.className).toContain('absolute')
+    expect(caption.className).toContain('right-2')
+    expect(caption.className).toContain('-top-[6px]')
+    expect(input).toHaveValue('')
+  })
+})
+

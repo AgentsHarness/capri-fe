@@ -48,7 +48,9 @@ export function CustomModelsPanel() {
   const [models, setModels] = useState<CustomModelConfig[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()
-  const [editing, setEditing] = useState<CustomModelConfig | null>(null)
+  // asNew：从既有模型「复制」出来的新建表单——id 已预填但目标配置节尚不存在，
+  // 保存时不能按重命名处理（会误删源条目）。
+  const [editing, setEditing] = useState<{ cfg: CustomModelConfig; asNew?: boolean } | null>(null)
   const [saving, setSaving] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [quickAddOpen, setQuickAddOpen] = useState(false)
@@ -82,6 +84,14 @@ export function CustomModelsPanel() {
   useEffect(() => {
     void refresh()
   }, [refresh])
+
+  /** 复制为新条目：沿用全部配置字段，id 追加 -copy 后缀（被占用则 -copy2、-copy3…）。 */
+  const copyOf = (m: CustomModelConfig): CustomModelConfig => {
+    const taken = new Set(models.map((x) => x.id))
+    let id = `${m.id}-copy`
+    for (let n = 2; taken.has(id); n += 1) id = `${m.id}-copy${n}`
+    return { ...m, id }
+  }
 
   const save = async (cfg: CustomModelConfig, oldId?: string) => {
     setSaving(true)
@@ -142,7 +152,7 @@ export function CustomModelsPanel() {
         <div className="flex shrink-0 items-center gap-1.5">
           <button
             type="button"
-            onClick={() => setEditing({ id: '' })}
+            onClick={() => setEditing({ cfg: { id: '' } })}
             className="flex items-center gap-1 rounded px-2 py-1 text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg focus:outline-none sm:py-px"
           >
             <Plus className="h-3 w-3 text-gn-gutter" />
@@ -162,7 +172,8 @@ export function CustomModelsPanel() {
 
       {editing ? (
         <ModelForm
-          initial={editing}
+          initial={editing.cfg}
+          asNew={editing.asNew}
           saving={saving}
           models={models}
           onCancel={() => setEditing(null)}
@@ -264,10 +275,18 @@ export function CustomModelsPanel() {
                           <>
                             <button
                               type="button"
-                              onClick={() => setEditing({ ...m })}
+                              onClick={() => setEditing({ cfg: { ...m } })}
                               className="rounded border border-gn-prompt-border/50 px-1.5 py-0.5 text-[10.5px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg focus:outline-none"
                             >
                               编辑
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEditing({ cfg: copyOf(m), asNew: true })}
+                              className="rounded border border-gn-prompt-border/50 px-1.5 py-0.5 text-[10.5px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg focus:outline-none"
+                              title="以此模型为模板新建（配置原样预填，保存为新的 [model.*] 节）"
+                            >
+                              复制
                             </button>
                             <button
                               type="button"
@@ -304,26 +323,49 @@ export function CustomModelsPanel() {
 
 // ── 表单 ───────────────────────────────────────────────────────────────
 
+/** reasoning_efforts 里只保留第一个 default（shell 的 derive_reasoning_effort_fields
+ * 只认第一个 default 档），配置里多标时归一到第一个，保证表单展示与保存写回一致。 */
+function singleDefaultEfforts(
+  value: CustomModelConfig['reasoning_efforts'],
+): CustomModelConfig['reasoning_efforts'] {
+  let seen = false
+  return value?.map((r) => {
+    if (typeof r === 'string') return r
+    if (r.default && !seen) {
+      seen = true
+      return r
+    }
+    const { default: _extra, ...rest } = r
+    return rest
+  })
+}
+
 function ModelForm({
   initial,
+  asNew,
   saving,
   models,
   onCancel,
   onSave,
 }: {
   initial: CustomModelConfig
+  /** 复制出来的新建表单：initial.id 只是预填草稿，尚无对应配置节。 */
+  asNew?: boolean
   saving: boolean
   models: CustomModelConfig[]
   onCancel: () => void
   onSave: (cfg: CustomModelConfig, oldId?: string) => void
 }) {
-  const [d, setD] = useState<CustomModelConfig>(initial)
+  const [d, setD] = useState<CustomModelConfig>(() => ({
+    ...initial,
+    reasoning_efforts: singleDefaultEfforts(initial.reasoning_efforts),
+  }))
   // 高级区默认收起；编辑已含高级字段的模型时自动展开，避免"看不见已配置项"。
   const [advancedOpen, setAdvancedOpen] = useState(() =>
     ADVANCED_KEYS.some((k) => isSet(initial[k])),
   )
   const advancedCount = ADVANCED_KEYS.filter((k) => isSet(d[k])).length
-  const isNew = !initial.id
+  const isNew = asNew || !initial.id
   const trimmedId = d.id.trim()
   const trimmedModel = d.model?.trim() ?? ''
   const trimmedBaseUrl = d.base_url?.trim() ?? ''
@@ -617,7 +659,7 @@ function ModelForm({
         <button
           type="button"
           disabled={saving || blocked || !trimmedId || !trimmedModel || !trimmedBaseUrl}
-          onClick={() => void onSave({ ...d, id: trimmedId }, initial.id || undefined)}
+          onClick={() => void onSave({ ...d, id: trimmedId }, asNew ? undefined : (initial.id || undefined))}
           className="rounded bg-gn-bg-highlight px-3 py-1 text-[12px] font-medium text-gn-fg hover:bg-gn-bg-hover disabled:cursor-not-allowed disabled:opacity-40"
         >
           {saving ? '保存中…' : isNew ? '新增' : '保存修改'}
@@ -639,7 +681,7 @@ function ModelForm({
           </span>
         ) : (
           <span className="text-[10.5px] text-gn-gutter">
-            {initial.id && initial.id !== trimmedId
+            {!asNew && initial.id && initial.id !== trimmedId
               ? `保存=重命名 [model.${initial.id}] → [model.${trimmedId || '…'}]`
               : `保存=整节替换 \`[model.${trimmedId || '…'}]\``}
           </span>
@@ -857,7 +899,8 @@ function EffortListEditor({
               type="checkbox"
               checked={r.default}
               onChange={(e) => {
-                const next = [...rows]
+                // 「默认」互斥：勾上某一档即取消其他档的默认标记（shell 只认第一个 default 档）
+                const next = rows.map((x) => ({ ...x, default: e.target.checked ? false : x.default }))
                 next[i] = { ...r, default: e.target.checked }
                 update(next)
               }}

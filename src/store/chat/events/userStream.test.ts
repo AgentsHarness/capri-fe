@@ -39,6 +39,7 @@ describe('userStream — runningHook 释放', () => {
     eventName: 'pre_tool_use',
     toolName: 'bash',
     count: 1,
+    startedAt: Date.now(),
   }
 
   it('首个回答 chunk 解除 hook 等待态', () => {
@@ -61,6 +62,61 @@ describe('userStream — runningHook 释放', () => {
       sessionId: 'other',
     } as AcpEvent)
     expect(state().runningHook).toEqual(hookState)
+  })
+
+  it('开闸前就已排队的正文不解除 —— 时间戳不晚于批次开始（TUI chunk_predates_hook_batch）', () => {
+    const gated = { ...hookState, startedAt: 5_000, startedAtMs: 1_000 }
+    // 闸门打开那一刻 shell 缓冲里已有的正文（stamp <= 批次开始）不是
+    // 「回合继续」的证据。
+    const before = makeStore({ sessionId: 's1', runningHook: gated })
+    handleUserStreamEvent(before.set, before.get, {
+      type: 'chunk',
+      text: 'straggler',
+      agentTimestampMs: 1_000,
+    } as AcpEvent)
+    expect(before.state().runningHook).toEqual(gated)
+
+    const earlier = makeStore({ sessionId: 's1', runningHook: gated })
+    handleUserStreamEvent(earlier.set, earlier.get, {
+      type: 'thought',
+      text: 'trailing',
+      agentTimestampMs: 998,
+    } as AcpEvent)
+    expect(earlier.state().runningHook).toEqual(gated)
+
+    // 批次开始之后产生的正文才是「shell 已经走过闸门」，释放它。
+    const after = makeStore({ sessionId: 's1', runningHook: gated })
+    handleUserStreamEvent(after.set, after.get, {
+      type: 'chunk',
+      text: 'after',
+      agentTimestampMs: 1_001,
+    } as AcpEvent)
+    expect(after.state().runningHook).toBeNull()
+  })
+
+  it('缺任一侧时间戳时退回立即释放（旧 shell / 旧 host）', () => {
+    // 批次没带 agent 时间戳。
+    const noBatchStamp = makeStore({
+      sessionId: 's1',
+      runningHook: { ...hookState, startedAt: 5_000 },
+    })
+    handleUserStreamEvent(noBatchStamp.set, noBatchStamp.get, {
+      type: 'chunk',
+      text: 'x',
+      agentTimestampMs: 1,
+    } as AcpEvent)
+    expect(noBatchStamp.state().runningHook).toBeNull()
+
+    // 正文没带 agent 时间戳。
+    const noChunkStamp = makeStore({
+      sessionId: 's1',
+      runningHook: { ...hookState, startedAt: 5_000, startedAtMs: 1_000 },
+    })
+    handleUserStreamEvent(noChunkStamp.set, noChunkStamp.get, {
+      type: 'chunk',
+      text: 'y',
+    } as AcpEvent)
+    expect(noChunkStamp.state().runningHook).toBeNull()
   })
 })
 

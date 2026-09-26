@@ -13,7 +13,6 @@ import {
   adoptLiveTurnStart,
   cancellationContextText,
   completedTurnStamp,
-  eventPromptId,
   finalizeTurn,
   promptIdMismatch,
   settleTurnEntries,
@@ -138,7 +137,6 @@ export function handleTurnEndEvent(
                   text,
                   ...(warning ? { warning } : {}),
                 },
-                eventPromptId((ev as { meta?: unknown }).meta ?? upd),
               )
             }
           }
@@ -214,7 +212,6 @@ export function handleTurnEndEvent(
         const appendCancelDetail =
           cancelDetail != null &&
           !tailHasCancellationDetail(settled, cancelDetail)
-        const endingPromptId = eventPromptId(ev.meta ?? (ev as { update?: unknown }).update)
         set({
           ...sealed,
           openAssistantId: undefined,
@@ -227,18 +224,12 @@ export function handleTurnEndEvent(
           entries: settled,
         })
         // 标记行（连同挂起的 stop 批次）落在收口之后，取消细节再跟在标记后。
-        appendTurnMarker(
-          set,
-          get,
-          {
-            id: nid(),
-            kind: 'session_event',
-            text,
-            ...(warning ? { warning } : {}),
-            ...(endingPromptId ? { promptId: endingPromptId } : {}),
-          },
-          endingPromptId,
-        )
+        appendTurnMarker(set, get, {
+          id: nid(),
+          kind: 'session_event',
+          text,
+          ...(warning ? { warning } : {}),
+        })
         if (appendCancelDetail) {
           appendEntry(set, { kind: 'session_event', text: cancelDetail as string })
         }

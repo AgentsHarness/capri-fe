@@ -1,8 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { CustomModelsPanel } from './CustomModelsPanel'
+import type { CustomModelConfig } from '../api/types'
 
-const sampleModels = [
+const sampleModels: CustomModelConfig[] = [
   {
     id: 'ds-chat',
     model: 'deepseek-chat',
@@ -221,5 +222,151 @@ describe('CustomModelsPanel', () => {
         }),
       )
     })
+  })
+
+  it('copies a model into a prefilled new-entry form and saves without deleting the source', async () => {
+    render(<CustomModelsPanel />)
+
+    await waitFor(() => {
+      expect(screen.getByText('DeepSeek Chat')).toBeDefined()
+    })
+
+    const row = screen.getByText('DeepSeek Chat').closest('div[class*="justify-between"]') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: '复制' }))
+
+    // 表单以「新建」语义打开：id 预填 -copy 后缀，按钮是「新增」而非「保存修改」
+    expect(screen.getByDisplayValue('ds-chat-copy')).toBeDefined()
+    expect(screen.getByDisplayValue('https://api.deepseek.com/v1')).toBeDefined()
+    expect(screen.getByRole('button', { name: '新增' })).toBeDefined()
+
+    // 路由 slug 原样保留 → 与源条目冲突，保存被拦住，提示改 slug
+    expect(screen.getByText(/已被其他条目使用，不能重复配置/)).toBeDefined()
+    const saveBtn = screen.getByRole('button', { name: '新增' }) as HTMLButtonElement
+    expect(saveBtn.disabled).toBe(true)
+
+    fireEvent.change(screen.getByDisplayValue('deepseek-chat'), { target: { value: 'deepseek-chat-v2' } })
+    expect(saveBtn.disabled).toBe(false)
+    fireEvent.click(saveBtn)
+
+    await waitFor(() => {
+      // 复制保存走新增路径：不删除源条目
+      expect(transportMock.deleteCustomModel).not.toHaveBeenCalled()
+      // 整份配置原样带入，只有 id 和改过的 slug 变化
+      expect(transportMock.upsertCustomModel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'ds-chat-copy',
+          model: 'deepseek-chat-v2',
+          base_url: 'https://api.deepseek.com/v1',
+          name: 'DeepSeek Chat',
+          context_window: 128000,
+          supports_reasoning_effort: true,
+        }),
+      )
+    })
+  })
+
+  it('deduplicates the copy id when -copy is already taken', async () => {
+    vi.mocked(transportMock.listCustomModels).mockResolvedValue([
+      ...sampleModels,
+      {
+        id: 'ds-chat-copy',
+        model: 'deepseek-reasoner',
+        base_url: 'https://api.deepseek.com/v1',
+        name: 'DeepSeek Chat Copy',
+        api_backend: 'responses' as const,
+      },
+    ])
+    render(<CustomModelsPanel />)
+
+    await waitFor(() => {
+      expect(screen.getByText('DeepSeek Chat Copy')).toBeDefined()
+    })
+
+    const row = screen.getByText('DeepSeek Chat').closest('div[class*="justify-between"]') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: '复制' }))
+
+    expect(screen.getByDisplayValue('ds-chat-copy2')).toBeDefined()
+  })
+
+  it('keeps at most one default effort checked in the efforts editor', async () => {
+    // 编辑一个配置了多个档位的模型
+    vi.mocked(transportMock.listCustomModels).mockResolvedValue([
+      {
+        id: 'efforts-model',
+        model: 'efforts-model',
+        base_url: 'https://api.example.com/v1',
+        name: 'Efforts Model',
+        reasoning_efforts: [
+          { value: 'low' },
+          { value: 'high', default: true },
+          { value: 'max' },
+        ],
+      },
+    ])
+    render(<CustomModelsPanel />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Efforts Model')).toBeDefined()
+    })
+
+    const row = screen.getByText('Efforts Model').closest('div[class*="justify-between"]') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: '编辑' }))
+
+    // 三行的默认勾选状态：high 选中，low/max 未选中
+    const checkboxes = screen
+      .getAllByRole('checkbox')
+      .filter((c) => (c.closest('label')?.textContent ?? '').includes('默认'))
+    expect(checkboxes.map((c) => (c as HTMLInputElement).checked)).toEqual([false, true, false])
+
+    // 勾选 low 的默认 → high 自动取消，仍然只有一个默认
+    fireEvent.click(checkboxes[0])
+    const after = screen
+      .getAllByRole('checkbox')
+      .filter((c) => (c.closest('label')?.textContent ?? '').includes('默认'))
+    expect(after.map((c) => (c as HTMLInputElement).checked)).toEqual([true, false, false])
+
+    // 保存后写回的配置只有一个 default 档
+    fireEvent.click(screen.getByRole('button', { name: '保存修改' }))
+    await waitFor(() => {
+      expect(transportMock.upsertCustomModel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'efforts-model',
+          reasoning_efforts: [
+            { value: 'low', default: true },
+            { value: 'high' },
+            { value: 'max' },
+          ],
+        }),
+      )
+    })
+  })
+
+  it('normalizes multiple default efforts to the first when opening an existing config', async () => {
+    // 配置里多标 default（shell 只认第一个）→ 打开编辑表单时归一展示
+    vi.mocked(transportMock.listCustomModels).mockResolvedValue([
+      {
+        id: 'multi-default',
+        model: 'multi-default',
+        base_url: 'https://api.example.com/v1',
+        name: 'Multi Default',
+        reasoning_efforts: [
+          { value: 'low', default: true },
+          { value: 'high', default: true },
+        ],
+      },
+    ])
+    render(<CustomModelsPanel />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Multi Default')).toBeDefined()
+    })
+
+    const row = screen.getByText('Multi Default').closest('div[class*="justify-between"]') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: '编辑' }))
+
+    const checkboxes = screen
+      .getAllByRole('checkbox')
+      .filter((c) => (c.closest('label')?.textContent ?? '').includes('默认'))
+    expect(checkboxes.map((c) => (c as HTMLInputElement).checked)).toEqual([true, false])
   })
 })

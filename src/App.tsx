@@ -14,9 +14,11 @@ import { ApprovalStrip } from './components/ApprovalStrip'
 import { PlanApproval } from './components/PlanApproval'
 import { CancelPanel } from './components/CancelPanel'
 import { QuestionModal } from './components/QuestionModal'
+import { McpElicitCard } from './components/McpElicitCard'
 import { FolderTrustCard } from './components/FolderTrustCard'
 import { DiffReviewModal } from './components/DiffReviewModal'
 import { MemoryModal } from './components/MemoryModal'
+import { AgentsModal } from './components/AgentsModal'
 import { McpPanel } from './components/McpPanel'
 import { ExtensionsModal } from './components/ExtensionsModal'
 import { SettingsModal } from './components/SettingsModal'
@@ -271,6 +273,7 @@ function AppShell({ onLogout }: { onLogout: () => void }) {
           <ApprovalStrip />
           <PlanApproval />
           <CancelPanel />
+          <McpElicitCard />
           <Composer />
           {/* 会话统计条：独立组件，位于 composer 下方（host 聚合数据，
               仅展示；空会话时零高度不占布局）。 */}
@@ -282,6 +285,7 @@ function AppShell({ onLogout }: { onLogout: () => void }) {
       <FolderTrustCard />
       <DiffReviewModal />
       <MemoryModal />
+      <AgentsModal />
       <McpPanel open={mcpOpen} onClose={() => setMcpOpen(false)} />
       <ExtensionsModal />
       <SettingsModal />

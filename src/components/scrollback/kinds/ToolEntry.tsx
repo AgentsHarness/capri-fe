@@ -1,6 +1,5 @@
 import type { ScrollEntry } from '../../../api/types'
 import { toolHeaderExtra } from '../../../scrollback/toolHeaderExtra'
-import { toolHooksHaveContent } from '../../../scrollback/hookRuns'
 import { toolDisplayMode } from '../../../scrollback/entryState'
 import { Accents } from '../../../theme/accents'
 import { toolHeader } from '../../../theme/glyphs'
@@ -10,7 +9,6 @@ import { LiteToolFill } from '../LiteToolFill'
 import { toolEntryLitePending } from '../../../store/chat/historyFill'
 import { HeaderWithView } from '../ViewButton'
 import type { EntryChrome } from '../chrome'
-import { ToolHookDetail, ToolHookSuffix } from './HookRuns'
 
 export function ToolEntry({
   e,
@@ -67,12 +65,6 @@ export function ToolEntry({
   const target = bare ? '' : (headerExtra?.target ?? e.title)
   const head = bare ? '' : headerExtra?.head
   const suffix = headerExtra?.suffix
-  // Folded: the hook counts ride the end of the header line (TUI appends the
-  // same spans to the first collapsed line). Expanded: they show as detail
-  // under the body instead, so the two forms are mutually exclusive.
-  const hooks = e.hooks
-  const hookSuffix = !showBody && toolHooksHaveContent(hooks) ? hooks : null
-
   return (
     <EntryShell {...shell}>
       <HeaderWithView
@@ -144,7 +136,6 @@ export function ToolEntry({
             ) : null}
           </>
         )}
-        {hookSuffix ? <ToolHookSuffix data={hookSuffix} /> : null}
       </HeaderWithView>
       {/* Inline expand = TUI Truncated preview; TUI Expanded = 全量正文
           （full=true，仅视口预算截断）。full body via Enter / 查看。 */}
@@ -163,15 +154,7 @@ export function ToolEntry({
           kindName={e.kindName}
           full={mode === 'expanded'}
           mergedRaws={e.mergedRaws}
-          hooks={hooks}
         />
-      ) : showBody && !e.raw && hooks ? (
-        // A row whose only content is its hook runs still folds (TUI
-        // is_foldable counts hook detail), so the expand has to render them
-        // even with no tool payload on the row.
-        <div className="mt-1 min-w-0 font-ui text-[12.5px] leading-[1.45]">
-          <ToolHookDetail data={hooks} />
-        </div>
       ) : null}
     </EntryShell>
   )

@@ -574,25 +574,15 @@ describe('verbGroupLabel / truncationLabel', () => {
     })
   })
 
-  it('成员带 hook runs → 组头聚合 labeled 计数；hook failed 也标 failed', () => {
-    const entries = [
-      tool({
-        kindName: 'read',
-        hooks: {
-          pre: [{ name: 'h', status: { type: 'failed', error: 'x' } }],
-        },
-      }),
-      tool({
-        kindName: 'read',
-        hooks: { post: [{ name: 'h2', status: { type: 'success' } }] },
-      }),
-    ]
+  it('组头的 failed 只看成员本身 —— hook 运行结果不再进标签', () => {
+    // 1.0.41 起 hook 计数后缀整体消失（成功静默、失败独立成行），
+    // 组头不再聚合 [hooks: N] 计数，也不因 hook 失败变红。
+    const entries = [tool({ kindName: 'read' }), tool({ kindName: 'read' })]
     const span = scanGroups(entries, new Set())[0]
     expect(verbGroupLabel(entries, span)).toEqual({
       text: 'Read 2 files',
       running: false,
-      failed: true,
-      hookCounts: { success: 1, blocked: 0, failed: 1 },
+      failed: false,
     })
   })
 

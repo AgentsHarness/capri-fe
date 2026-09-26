@@ -44,8 +44,6 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
   registerHistoryFillStore(set, get)
   return {
     entries: [],
-  pendingToolHooks: [],
-  pendingStopHooks: undefined,
   liveStream: null,
   currentStreamStartMs: undefined,
   lastCompletedTurn: undefined,

@@ -22,7 +22,6 @@ import { subagentMeta } from '../format'
 import { LiteToolFill } from './scrollback/LiteToolFill'
 import { toolEntryLitePending } from '../store/chat/historyFill'
 import { ToolDetail } from './ToolDetail'
-import { HookGroupsDetail } from './scrollback/kinds/HookRuns'
 import { Markdown } from './Markdown'
 import { Ansi } from './Ansi'
 import { Glyphs, SPINNER_FRAMES, toolHeader } from '../theme/glyphs'
@@ -519,7 +518,6 @@ function ViewerBody({
         kindName={entry.kindName}
         full
         mergedRaws={entry.mergedRaws}
-        hooks={entry.hooks}
         className="mt-0"
       />
     )
@@ -585,18 +583,12 @@ function ViewerBody({
       </div>
     )
   }
-  if (entry.kind === 'lifecycle') {
-    return <HookGroupsDetail groups={[{ event: entry.event, runs: entry.runs }]} />
-  }
   if (entry.kind === 'session_event') {
     return (
       <div className="space-y-2">
         <div className="whitespace-pre-wrap break-words text-[13.5px] leading-relaxed text-gn-fg font-ui">
           {entry.text}
         </div>
-        {entry.stopHooks?.length ? (
-          <HookGroupsDetail groups={entry.stopHooks} />
-        ) : null}
       </div>
     )
   }
@@ -1214,8 +1206,6 @@ function SubagentTimeline({
         if (next) void useChatStore.getState().fillToolEntryDetail(id)
       },
       toggleUser: (id) =>
-        setFolds((m) => new Map(m).set(id, !(m.get(id) ?? false))),
-      toggleLifecycle: (id) =>
         setFolds((m) => new Map(m).set(id, !(m.get(id) ?? false))),
       toggleSessionEvent: (id) =>
         setFolds((m) => new Map(m).set(id, !(m.get(id) ?? false))),

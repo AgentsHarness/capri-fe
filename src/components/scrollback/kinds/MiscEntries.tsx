@@ -3,11 +3,7 @@ import { CornerDownLeft, TriangleAlert } from 'lucide-react'
 import type { ScrollEntry } from '../../../api/types'
 import { planTodos, useChatStore } from '../../../store/chat'
 import { entryExpanded } from '../../../scrollback/entryState'
-import {
-  countHookRuns,
-  hookGroupsHaveContent,
-  splitHookAnnotation,
-} from '../../../scrollback/hookRuns'
+import { splitHookAnnotation } from '../../../scrollback/hookRuns'
 import { Accents } from '../../../theme/accents'
 import { Glyphs } from '../../../theme/glyphs'
 import { Ansi } from '../../Ansi'
@@ -17,7 +13,6 @@ import { TodoMark } from '../../todoMark'
 import { Bullet, EntryShell, RowIcon } from '../EntryShell'
 import { ViewButton } from '../ViewButton'
 import type { EntryChrome } from '../chrome'
-import { HookCountSuffix, HookGroupsDetail, StopHookSummary } from './HookRuns'
 
 export function ImageEntry({
   e,
@@ -220,18 +215,6 @@ export function SessionEventEntry({
 }) {
   const { shell, bullet } = chrome
   const expanded = entryExpanded(e)
-  const stopGroups = e.stopHooks
-  const showStop = hookGroupsHaveContent(stopGroups)
-  // TUI append_stop_hooks: summary is always on the marker; per-hook
-  // detail only when expanded. Right-align via ml-auto — same line when
-  // there is room, own line when the marker wraps (flex-wrap).
-  const stopSummary = showStop ? (
-    <span className="ml-auto shrink-0">
-      <StopHookSummary groups={stopGroups!} />
-    </span>
-  ) : null
-  const stopDetail =
-    showStop && expanded ? <HookGroupsDetail groups={stopGroups!} /> : null
   // Recap events are two-part (TUI session_event recap_output): bold
   // "Recap" header + muted summary body, foldable via `open` (←/→).
   // Default expanded: the full summary renders with line breaks
@@ -274,10 +257,17 @@ export function SessionEventEntry({
       </EntryShell>
     )
   }
+  // A hook's verdict or a failed run takes the tool rows' bullet (TUI
+  // SessionEvent::HookOutcome has_bullet), so the line reads as part of the
+  // tool call above it. Anything older than the 1.0.41 UI still leads with a
+  // ⚠/↩ glyph, which SessionEventText turns into the same icon column — never
+  // two marks on one row.
+  const outcome = e.hookOutcome === true
+  const leading = splitHookAnnotation(e.text).lead
   return (
     <EntryShell {...shell}>
       <div className="flex w-full min-w-0 flex-wrap items-baseline gap-x-2 py-[2px] text-[13px] leading-[1.35]">
-        {e.streaming && (
+        {(e.streaming || (outcome && !leading)) && (
           <Bullet color={bullet.color} animated={bullet.animated} />
         )}
         {(e as { ansi?: boolean }).ansi ? (
@@ -288,46 +278,7 @@ export function SessionEventEntry({
         ) : (
           <SessionEventText text={e.text} warning={e.warning} />
         )}
-        {stopSummary}
       </div>
-      {stopDetail}
-    </EntryShell>
-  )
-}
-
-/**
- * TUI LifecycleEventBlock: one bold event-name line, foldable, default
- * collapsed, no accent. Collapsed suffix is the compact `[hooks: N]`;
- * expanded detail omits the section header (the row already is the event).
- */
-export function LifecycleEntry({
-  e,
-  chrome,
-}: {
-  e: Extract<ScrollEntry, { kind: 'lifecycle' }>
-  chrome: EntryChrome
-}) {
-  const { shell, bullet, caret, bulletGlyph, rowBtn } = chrome
-  const expanded = entryExpanded(e)
-  return (
-    <EntryShell {...shell}>
-      <div className={rowBtn}>
-        <Bullet
-          color={bullet.color}
-          animated={bullet.animated && !caret}
-          glyph={bulletGlyph}
-        />
-        <span
-          className="min-w-0 truncate font-bold"
-          style={{ color: expanded ? 'var(--color-gn-fg)' : Accents.gray }}
-        >
-          {e.event}
-        </span>
-        {!expanded ? <HookCountSuffix counts={countHookRuns(e.runs)} /> : null}
-      </div>
-      {expanded ? (
-        <HookGroupsDetail groups={[{ event: e.event, runs: e.runs }]} />
-      ) : null}
     </EntryShell>
   )
 }

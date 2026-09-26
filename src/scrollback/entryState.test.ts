@@ -116,34 +116,10 @@ describe('entryExpanded / entryFoldable / entryAtMinFold', () => {
     expect(entryFoldable(tool())).toBe(false)
     expect(entryFoldable(tool({ kind: 'execute' }))).toBe(false)
     expect(entryFoldable(tool({ kind: 'execute', content: 'out' }))).toBe(true)
-    expect(
-      entryFoldable(
-        tool(undefined, {
-          hooks: { pre: [{ name: 'h', status: { type: 'success', elapsedMs: 1 } }] },
-        }),
-      ),
-    ).toBe(true)
   })
 
-  it('lifecycle 默收可折；session_event 有 stopHooks 也可折', () => {
-    const life: ScrollEntry = {
-      id: 'l',
-      kind: 'lifecycle',
-      event: 'session_start',
-      runs: [{ name: 'h', status: { type: 'success', elapsedMs: 1 } }],
-    }
-    expect(entryFoldable(life)).toBe(true)
-    expect(entryExpanded(life)).toBe(false)
-    expect(entryAtMinFold(life)).toBe(true)
-    expect(entryExpanded({ ...life, expanded: true })).toBe(true)
-
-    const marker: ScrollEntry = {
-      id: 'm',
-      kind: 'session_event',
-      text: 'Worked for 1.0s',
-      stopHooks: [{ event: 'stop', runs: [{ name: 'h', status: { type: 'success' } }] }],
-    }
-    expect(entryFoldable(marker)).toBe(true)
+  it('session_event 只有 recap 正文可折', () => {
+    // Hook 运行批不再挂到回合标记上（成功即静默），标记行因此不可折。
     expect(entryFoldable({ id: 's', kind: 'session_event', text: 'Worked for 1.0s' })).toBe(false)
     expect(entryFoldable({ id: 'r', kind: 'session_event', text: 'sum', recap: true })).toBe(true)
   })
@@ -186,13 +162,10 @@ describe('entryFlashActive', () => {
 })
 
 describe('isHeaderStyleBlock', () => {
-  it('tool / thought / group_header / lifecycle 为头部样式块', () => {
+  it('tool / thought / group_header 为头部样式块', () => {
     expect(isHeaderStyleBlock({ id: 't', kind: 'tool', title: 't', verb: 'v' })).toBe(true)
     expect(isHeaderStyleBlock({ id: 'th', kind: 'thought', text: 'x' })).toBe(true)
     expect(isHeaderStyleBlock({ id: 'g', kind: 'group_header', count: 1 })).toBe(true)
-    expect(
-      isHeaderStyleBlock({ id: 'l', kind: 'lifecycle', event: 'session_start', runs: [] }),
-    ).toBe(true)
     expect(isHeaderStyleBlock({ id: 'u', kind: 'user', text: 'x' })).toBe(false)
   })
 })

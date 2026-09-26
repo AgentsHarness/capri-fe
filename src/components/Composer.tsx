@@ -59,7 +59,7 @@ import {
   HISTORY_MAX,
   type HistoryItem,
 } from './composer/promptHistory'
-import { currentActivity } from './composer/activity'
+import { currentActivity, HOOK_REVEAL_DELAY_MS } from './composer/activity'
 import { useEscLadder } from './composer/useEscLadder'
 // 跨焦点 Esc 阶梯：scrollback 侧首个 idle Esc 的臂定时间戳（useScrollbackKeys）
 import { clearEscArm, escArmTimestamp } from '../hooks/useScrollbackKeys'
@@ -74,14 +74,22 @@ import { InterjectConfirmModal } from './composer/InterjectConfirmModal'
 import { useQueueNav } from './composer/useQueueNav'
 import { useSlashMenu } from './composer/useSlashMenu'
 import { useAtPicker } from './composer/useAtPicker'
+import {
+  autoRestoreAfterSend,
+  isStashChord,
+  isUndoKey,
+  parkDraft,
+  takeUndoArm,
+  type PromptStashSlot,
+} from './composer/promptStash'
 import { useTouchUi } from '../hooks/useTouchUi'
 import { useScrollbarGutter } from '../hooks/useScrollbarGutter'
 
 /** ── Composer frame ───────────────────────────────────────────────────
  * Rounded border box (container border + radius) — no font glyphs, no
- * corner elements. The session title floats on the top border and the
- * model · flags caption on the bottom border, each masking the line
- * behind them with the base background ("断线").
+ * corner elements. A stashed draft breaks the top border on the right
+ * ("Stashed", TUI prompt_caption); the model · flags caption breaks the
+ * bottom border the same way. Both mask the line with the base background.
  */
 export function Composer() {
   const isTouch = useTouchUi()
@@ -267,6 +275,29 @@ export function Composer() {
     setQueueFocus,
   } = queueNav
 
+  // ── TUI prompt stash (Ctrl+S / Alt+S, prompt_stash.rs) ──
+  const stashRef = useRef<PromptStashSlot | null>(null)
+  const [stashOn, setStashOn] = useState(false)
+  const noteStash = (slot: PromptStashSlot | null) => {
+    stashRef.current = slot
+    setStashOn(slot != null)
+  }
+  /** A sent draft is gone. A chord stash then comes back into the empty composer. */
+  const consumeDraftForSend = () => {
+    const back = autoRestoreAfterSend(stashRef.current, queueEditIndex != null)
+    if (back) {
+      noteStash(null)
+      setText(back.text)
+      setChips(back.chips)
+      setShellMode(back.shellMode)
+      setPendingCaret(back.text.length)
+      pushToast('已取回暂存的草稿')
+      return
+    }
+    setText('')
+    setChips([])
+  }
+
   // ── TUI Esc ladder (prompt.rs try_handle_esc_policy, idle side) —
   // composer/useEscLadder.ts ──
   const { escArmAtRef, escHint, disarmEsc, armEsc } = useEscLadder()
@@ -383,8 +414,7 @@ export function Composer() {
     // 直接放行会让 send 的无会话分支再触发一次建会话，丢失右键 cwd。
     if (newSessionPending) {
       const { expandedText, blocks } = buildBlocks(literalSlashPayload(text), chips)
-      setText('')
-      setChips([])
+      consumeDraftForSend()
       pendingSendsRef.current.push({ text: expandedText, blocks })
       if (isTouch) {
         taRef.current?.blur()
@@ -396,8 +426,7 @@ export function Composer() {
     // 原文发送写法（`\/…` / 行首空白 + `/…`）的前缀是 composer 语法，
     // 发给 agent 前去掉；未命中的 `/…` 行到这里已是纯文本，原样保留。
     const { expandedText, blocks } = buildBlocks(literalSlashPayload(text), chips)
-    setText('')
-    setChips([])
+    consumeDraftForSend()
     await send(expandedText, blocks)
     // Record history only when the host accepted the prompt (send
     // swallows transport errors into conn: 'error'). History keeps the
@@ -590,9 +619,8 @@ export function Composer() {
    */
   const submitShell = async (cmd: string) => {
     if (!cmd.trim()) return
-    setText('')
     setShellMode(false)
-    setChips([])
+    consumeDraftForSend()
     // 忙时（含上一回合未收口）走 send() 的权威队列分支，与 TUI 的
     // bash 排队语义一致；blocks 原样入队，出队收养时仍认得是 shell 行。
     await useChatStore
@@ -651,8 +679,7 @@ export function Composer() {
       const { expandedText, blocks } = buildBlocks(literalSlashPayload(text), chips)
       // 队列行的正文就是真正文（纯图片 prompt 为空串）——图片由 blocks
       // 说话：队列条按每张图渲染一个可点的 `[image]` 标记（QueueStrip）。
-      setText('')
-      setChips([])
+      consumeDraftForSend()
       void useChatStore.getState().send(expandedText, blocks)
       if (isTouch) {
         taRef.current?.blur()
@@ -760,7 +787,24 @@ export function Composer() {
   // (bg-task waits, no-activity "Waiting for response…" windows) anchor
   // at the moment the phase became current — so a mid-turn wait counts
   // from when the last entry ended, not from the turn start.
-  const activity = useMemo(() => currentActivity(entries, runningHook), [entries, runningHook])
+  //
+  // A freshly armed hook batch is deliberately invisible until it outlives
+  // HOOK_REVEAL_DELAY, so a fast hook never flashes a "Running … hook" phase.
+  // `hookTick` only forces the re-render that lands on that deadline; the
+  // rule itself lives in currentActivity.
+  const [hookTick, setHookTick] = useState(0)
+  useEffect(() => {
+    if (!runningHook) return
+    const wait = runningHook.startedAt + HOOK_REVEAL_DELAY_MS - Date.now()
+    if (wait <= 0) return
+    const t = window.setTimeout(() => setHookTick((v) => v + 1), wait)
+    return () => window.clearTimeout(t)
+  }, [runningHook])
+  const activity = useMemo(
+    () => currentActivity(entries, runningHook, Date.now()),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [entries, runningHook, hookTick],
+  )
   // 本地真相兜底（spurious ready / host 状态丢失）：传输侧宣称空闲
   // （conn ready）但本地仍有活动流或未终止的回合计时——hub 重连竞态 /
   // 多会话错标 / host 丢态都可能触发。状态行按本地活动显示真实状态，
@@ -1480,6 +1524,17 @@ export function Composer() {
               (paste/drop lands here directly; X removes the image).
               pt clears the chrome's 4px top padding plus the remove button's
               -top-1.5 overflow so neither rides the border. */}
+          {stashOn && (
+            // TUI top-border caption: "Stashed" sits in the rule, right-aligned,
+            // and the base fill blanks the border on either side of the word.
+            <div
+              className="pointer-events-none absolute -top-[6px] right-2 max-w-[75%] truncate px-1 text-[11px] leading-none"
+              style={{ background: 'var(--color-gn-bg-base)', color: captionColor }}
+              data-testid="prompt-stash"
+            >
+              Stashed
+            </div>
+          )}
           {imageChips.length > 0 && (
             <div className="flex flex-wrap items-start gap-2 px-3 pt-2.5 pb-1">
               {imageChips.map((c) => (
@@ -1577,6 +1632,58 @@ export function Composer() {
                   // browsers): keyCode 229 lingers on some Chromium builds
                   // after composition ends and would swallow plain Enter.
                   if (e.nativeEvent.isComposing) return
+                  // TUI prompt stash. The undo arm is consumed by the next
+                  // key, whether or not that key is the pop.
+                  {
+                    const armed = takeUndoArm(stashRef.current)
+                    if (armed.slot !== stashRef.current) noteStash(armed.slot)
+                    if (isStashChord(e)) {
+                      e.preventDefault()
+                      if (queueEditIndex != null) {
+                        pushToast('正在编辑排队消息，先完成或取消再暂存')
+                        return
+                      }
+                      if (text.length > 0 || chips.length > 0) {
+                        const parked = parkDraft({ text, chips, shellMode }, 'chord')
+                        if (parked) {
+                          noteStash(parked)
+                          setText('')
+                          setChips([])
+                          setShellMode(false)
+                          pushToast('草稿已暂存。再按 Ctrl+S 或 Alt+S 取回')
+                        }
+                        return
+                      }
+                      const slot = stashRef.current
+                      if (!slot) return
+                      noteStash(null)
+                      setText(slot.text)
+                      setChips(slot.chips)
+                      setShellMode(slot.shellMode)
+                      setPendingCaret(slot.text.length)
+                      pushToast('已取回暂存的草稿')
+                      return
+                    }
+                    if (
+                      armed.armed &&
+                      isUndoKey(e) &&
+                      text.length === 0 &&
+                      chips.length === 0 &&
+                      queueEditIndex == null
+                    ) {
+                      const slot = stashRef.current
+                      if (slot) {
+                        e.preventDefault()
+                        noteStash(null)
+                        setText(slot.text)
+                        setChips(slot.chips)
+                        setShellMode(slot.shellMode)
+                        setPendingCaret(slot.text.length)
+                        pushToast('已取回暂存的草稿')
+                        return
+                      }
+                    }
+                  }
                   // Any non-Esc key disarms the idle Esc ladder.
                   if (e.key !== 'Escape') disarmEsc()
                   // TUI Ctrl+L (VS Code family mid-turn interject key):
@@ -1604,8 +1711,7 @@ export function Composer() {
                         .catch(() => {
                           pushToast('插话发送失败')
                         })
-                      setText('')
-                      setChips([])
+                      consumeDraftForSend()
                       useChatStore.setState({
                         statusText: '插话已发送，将在安全间隙注入当前回合',
                       })
@@ -2024,6 +2130,11 @@ export function Composer() {
                       e.preventDefault()
                       e.stopPropagation()
                       if (hasDraft) {
+                        const parked = parkDraft({ text, chips, shellMode }, 'cleared')
+                        if (parked) {
+                          noteStash(parked)
+                          pushToast('草稿已暂存。再按 Ctrl+S，或紧接着按 Ctrl+Z 取回')
+                        }
                         setText('')
                         setChips([])
                         setHistOpen(false)

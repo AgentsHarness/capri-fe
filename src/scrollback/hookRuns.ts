@@ -1,60 +1,35 @@
 /**
- * Hook runs — TUI `scrollback/blocks/tool/hook.rs` port (parse + counts +
- * suffix text).
+ * Hook runs — TUI `app/acp_handler/session_notification.rs` (parse + the one
+ * line a failed run gets).
  *
- * Hook runs are displayed as part of tool call blocks rather than as
- * standalone scrollback entries: the tool header comes first, then
- * pre_tool_use, then post_tool_use. Turn-end batches (`stop` family) fold
- * into the turn-terminal marker line, and every other lifecycle event gets a
- * `lifecycle` row of its own.
+ * Since the 1.0.41 "Hooks UI" change, hook runs are no longer drawn as rows of
+ * their own. A run that succeeded leaves no trace; a run that failed gets one
+ * `HookOutcome` line; a run the agent denied is already annotated by the shell
+ * (`HookAnnotation` with `kind: "tool_outcome"`). Nothing attaches to tool
+ * rows, turn markers, or lifecycle rows.
  *
  * Wire (persisted + live, `extensions/notification.rs`):
  *   {"sessionUpdate":"hook_execution","event_name":"post_tool_use",
  *    "tool_name":"list_dir","prompt_id":"…","runs":[
  *      {"name":"global/probe:post_tool_use[0].hooks[0]",
- *       "status":{"status":"success","elapsed_ms":6}}]}
+ *       "status":{"status":"failed","error":"…","blocked":false}}]}
  * The run `status` is a tagged enum. Shells in the wild were observed in
  * three spellings — `{"status":{"status":"success",…}}` (nested internal tag,
  * live 1.0.13), `{"status":"success","elapsed_ms":6}` (fields hoisted onto the
  * run) and `{"Success":{"elapsed_ms":6}}` (external tag) — and both
  * `elapsed_ms` and `elapsedMs` occur, so all of them parse.
  */
-import type {
-  HookCounts,
-  HookGroup,
-  HookRun,
-  HookRunStatus,
-  HookSuffixPart,
-  ToolHookData,
-} from '../api/types'
+import type { HookRun, HookRunStatus } from '../api/types'
 
-/** A parsed `hook_execution` batch — one scrollback attachment unit. */
+/** A parsed `hook_execution` batch — the unit a failure line is derived from. */
 export type HookExecutionBatch = {
-  /** Wire `event_name`, verbatim (what a lifecycle row shows as its header). */
+  /** Wire `event_name`, verbatim (names the failed run's line). */
   event: string
   /** Wire `tool_name` — the tool the batch gated (tool hooks only). */
   toolName?: string
-  /** Wire `prompt_id` — the turn the batch belongs to (gates marker merges). */
+  /** Wire `prompt_id` — the turn the batch belongs to (gates the spinner). */
   promptId?: string
   runs: HookRun[]
-}
-
-/** TUI `render_hooks_expanded` text budget: 120 columns × 3 lines. */
-export const HOOK_TEXT_MAX_COLS = 120
-export const HOOK_TEXT_MAX_LINES = 3
-
-/** Events that ride on a tool row (TUI `is_tool_hook`). */
-export function isToolHookEvent(event: string): boolean {
-  return event === 'pre_tool_use' || event === 'post_tool_use'
-}
-
-/**
- * TUI `HookEvent::is_turn_end` — the events that report a turn ending, at
- * most one of which fires per turn. Exhaustive on purpose: a fourth turn-end
- * event must be listed here to keep folding into the terminal marker.
- */
-export function isTurnEndHookEvent(event: string): boolean {
-  return event === 'stop' || event === 'stop_failure' || event === 'stop_cancelled'
 }
 
 function nonBlank(value: unknown): string | undefined {
@@ -98,7 +73,8 @@ function statusFields(carrier: Record<string, unknown>): {
 
 /**
  * TUI maps a `Failed` run carrying `blocked: true` onto the Blocked status —
- * a stop-gate decision is not an error. `Skipped` runs never count anywhere.
+ * a stop-gate decision is not an error, and the shell annotates it, so it
+ * never reaches the failure line.
  */
 function toHookRunStatus(raw: unknown): HookRunStatus {
   // Bare string (`"skipped"`) or a payload object, in any of the three
@@ -159,7 +135,7 @@ export function parseHookRuns(raw: unknown): HookRun[] {
 /**
  * Parse a `hook_execution` update payload. Returns null when the batch has
  * nothing to render — TUI's sender already drops empty and all-skipped
- * batches; re-checking here keeps replayed history from inventing rows.
+ * batches; re-checking here keeps replayed history from inventing lines.
  */
 export function parseHookExecution(fields: Record<string, unknown>): HookExecutionBatch | null {
   const event =
@@ -177,173 +153,111 @@ export function parseHookExecution(fields: Record<string, unknown>): HookExecuti
   }
 }
 
-// ── Counts (TUI HookRunCounts) ────────────────────────────────────────
+// ── The one line a failed run gets (TUI `failed_hook_line`) ───────────
 
-export function emptyHookCounts(): HookCounts {
-  return { success: 0, blocked: 0, failed: 0 }
+/**
+ * `HookProvenance::config_label` values that name a config tier rather than a
+ * hook. `xai-grok-config`'s `from_config_label` matches these exact labels,
+ * which is why `global/…` (a real name) stays named while `requirements/…`
+ * does not.
+ */
+const CONFIG_TIER_LABELS: ReadonlySet<string> = new Set([
+  'system_managed',
+  'managed',
+  'requirements/system',
+  'requirements/signed',
+  'requirements/user',
+  'user',
+])
+
+/**
+ * TUI `strip_spec_path` — `{source}:{event}[i].hooks[j]` becomes `{source}`;
+ * anything else is unchanged.
+ */
+export function stripSpecPath(qualified: string): string {
+  const sep = qualified.lastIndexOf(':')
+  if (sep <= 0) return qualified
+  return isSpecPath(qualified.slice(sep + 1)) ? qualified.slice(0, sep) : qualified
 }
 
-export function addHookCounts(a: HookCounts, b: HookCounts): HookCounts {
-  return { success: a.success + b.success, blocked: a.blocked + b.blocked, failed: a.failed + b.failed }
-}
-
-export function countHookRuns(runs: HookRun[] | undefined): HookCounts {
-  const counts = emptyHookCounts()
-  for (const run of runs ?? []) {
-    if (run.status.type === 'success') counts.success += 1
-    else if (run.status.type === 'blocked') counts.blocked += 1
-    else if (run.status.type === 'failed') counts.failed += 1
-  }
-  return counts
-}
-
-export function countHookGroups(groups: HookGroup[] | undefined): HookCounts {
-  let counts = emptyHookCounts()
-  for (const group of groups ?? []) counts = addHookCounts(counts, countHookRuns(group.runs))
-  return counts
-}
-
-/** TUI `HookRunCounts::total` — skipped runs are excluded everywhere. */
-export function hookCountsTotal(counts: HookCounts): number {
-  return counts.success + counts.blocked + counts.failed
-}
-
-/** Tool row hook data → the counts behind `[hooks: 2/1]`. */
-export function countToolHooks(data: ToolHookData | undefined): HookCounts {
-  if (!data) return emptyHookCounts()
-  return addHookCounts(countHookRuns(data.pre), countHookRuns(data.post))
-}
-
-/** Whether a tool row's hook data has anything a fold would reveal. */
-export function toolHooksHaveContent(data: ToolHookData | undefined): boolean {
-  return hookCountsTotal(countToolHooks(data)) > 0
-}
-
-export function hookGroupsHaveContent(groups: HookGroup[] | undefined): boolean {
-  return hookCountsTotal(countHookGroups(groups)) > 0
-}
-
-/** Aggregate counts over a group's members (TUI `HookRunCounts::add_data`). */
-export function groupHookCounts(
-  members: Array<{ hooks?: ToolHookData }>,
-): HookCounts {
-  let total = emptyHookCounts()
-  for (const m of members) total = addHookCounts(total, countToolHooks(m.hooks))
-  return total
-}
-
-// ── Suffix text (TUI render_hook_counts_inline_suffix) ───────────────
-
-export type HookCountShape =
-  /** Individual rows keep the completed/failed split: blocked completed
-   *  normally and stays in the green numerator. */
-  | 'compact'
-  /** Aggregate rows name every outcome because no member detail is visible. */
-  | 'labeled'
-
-export function hookSuffixParts(
-  counts: HookCounts,
-  shape: HookCountShape,
-): HookSuffixPart[] | null {
-  if (hookCountsTotal(counts) === 0) return null
-  const parts: HookSuffixPart[] = [{ text: '  [hooks: ', tone: 'muted' }]
-  if (shape === 'compact') {
-    const completed = counts.success + counts.blocked
-    if (completed > 0) parts.push({ text: String(completed), tone: 'success' })
-    if (completed > 0 && counts.failed > 0) parts.push({ text: '/', tone: 'muted' })
-    if (counts.failed > 0) parts.push({ text: String(counts.failed), tone: 'error' })
-  } else if (counts.blocked === 0 && counts.failed === 0) {
-    parts.push({ text: String(counts.success), tone: 'success' })
-  } else {
-    const segments: [number, string, HookSuffixPart['tone']][] = [
-      [counts.success, 'ok', 'success'],
-      [counts.blocked, 'blocked', 'blocked'],
-      [counts.failed, 'failed', 'error'],
-    ]
-    let first = true
-    for (const [count, label, tone] of segments) {
-      if (count === 0) continue
-      if (!first) parts.push({ text: ', ', tone: 'muted' })
-      first = false
-      parts.push({ text: `${count} ${label}`, tone })
-    }
-  }
-  parts.push({ text: ']', tone: 'muted' })
-  return parts
+/** TUI `is_spec_path` — the `{event}[{i}].hooks[{j}]` shape the parsers stamp. */
+function isSpecPath(tail: string): boolean {
+  const open = tail.indexOf('[')
+  if (open <= 0) return false
+  const event = tail.slice(0, open)
+  const rest = tail.slice(open + 1)
+  const hooksAt = rest.indexOf('].hooks[')
+  if (hooksAt < 0) return false
+  const eventIdx = rest.slice(0, hooksAt)
+  const hookIdx = rest.slice(hooksAt + '].hooks['.length)
+  if (!hookIdx.endsWith(']')) return false
+  const isIndex = (s: string) => s !== '' && /^[0-9]+$/.test(s)
+  return (
+    isIndex(eventIdx) &&
+    isIndex(hookIdx.slice(0, -1)) &&
+    /^[a-z_]+$/.test(event)
+  )
 }
 
 /**
- * Right-side summary for stop hooks merged onto a turn-terminal marker line:
- * `stop  [hooks: 2]` per group, groups joined by two spaces (TUI
- * `render_stop_hooks_summary`). Null when nothing ran.
+ * TUI `HookDisplayName::Named` — the user-facing name of a hook, or null when
+ * the source is a config tier. A tier's stamped spec path means nothing to the
+ * user, so its failure line names only the event (TUI `failed_hook_line`).
+ *
+ * The deny annotation needs the other form ("a managed policy hook" for a
+ * tier), but the shell renders that copy into the message before sending it,
+ * so the view only ever reads this one.
  */
-export function stopHookSummaryParts(groups: HookGroup[] | undefined): HookSuffixPart[] | null {
-  const spans: HookSuffixPart[] = []
-  for (const group of groups ?? []) {
-    const counts = hookSuffixParts(countHookRuns(group.runs), 'compact')
-    if (!counts) continue
-    if (spans.length) spans.push({ text: '  ', tone: 'muted' })
-    // TUI: bold muted event name, then the compact suffix which already
-    // starts with two spaces (`  [hooks: N]`).
-    spans.push({ text: group.event, tone: 'muted', bold: true })
-    spans.push(...counts)
-  }
-  return spans.length ? spans : null
-}
-
-/** Plain text of a suffix (tooltips, transcripts, tests). */
-export function hookSuffixText(parts: HookSuffixPart[] | null): string {
-  return parts?.map((p) => p.text).join('') ?? ''
-}
-
-// ── Expanded detail text helpers ──────────────────────────────────────
-
-/** TUI `truncate_str` — width-based cut at 120 columns with a trailing `…`. */
-export function truncateHookText(text: string, maxCols = HOOK_TEXT_MAX_COLS): string {
-  let width = 0
-  for (let i = 0; i < text.length; i++) {
-    const cp = text.codePointAt(i) ?? 0
-    const cw = cp > 0x1100 && (cp < 0x2000 || cp > 0x206f) ? 2 : 1
-    if (width + cw > maxCols) {
-      return `${text.slice(0, i)}…`
-    }
-    width += cw
-    if (cp > 0xffff) i++
-  }
-  return text
-}
-
-/** A run's error / blocked detail / output, clipped to the TUI 3-line budget. */
-export function hookTextLines(text: string): string[] {
-  return truncateHookText(text)
-    .split('\n')
-    .filter((_, i) => i < HOOK_TEXT_MAX_LINES)
+export function hookDisplayName(qualified: string): string | null {
+  const source = stripSpecPath(qualified)
+  return CONFIG_TIER_LABELS.has(source) ? null : source
 }
 
 /**
- * TUI strips the redundant `hook '<name>' ` prefix from an error line before
- * rendering it (the runner already names the hook on the line above).
+ * TUI `failed_hook_line` — the one scrollback line a failed run gets.
+ * Success gets none, and a deny is already annotated by the shell, so only a
+ * non-blocked `failed` maps to a line. `"ignored"` is literal: hook failures
+ * are fail-open, so the tool call or turn proceeds as if the hook had allowed.
  */
-export function cleanHookError(error: string, name: string): string {
-  return error.startsWith(`hook '${name}' `) ? error.slice(`hook '${name}' `.length) : error
+export function failedHookLine(event: string, run: HookRun): string | null {
+  if (run.status.type !== 'failed') return null
+  const name = hookDisplayName(run.name)
+  const subject = name ? `${event} hook (${name})` : `${event} hook`
+  const error = (run.status.error.split('\n')[0] ?? '').trim()
+  return error ? `${subject} failed, ignored: ${error}` : `${subject} failed, ignored`
 }
 
-/** ` (12ms)` — TUI's elapsed suffix; skipped runs have none. */
-export function hookElapsedLabel(elapsedMs: number | undefined): string {
-  return elapsedMs != null ? ` (${Math.round(elapsedMs)}ms)` : ''
+/** Every failed-run line of a batch, in wire order (the handler appends them). */
+export function failedHookLines(batch: HookExecutionBatch): string[] {
+  return batch.runs
+    .map((run) => failedHookLine(batch.event, run))
+    .filter((line): line is string => line != null)
 }
 
 // ── Hook annotation prose (TUI `SessionEvent::HookAnnotation`) ─────────
 
-/** Which lead mark the agent's own sentence opens with. */
+/**
+ * What a `HookAnnotation` is (wire `kind`), so the row can pick its bullet:
+ * a deny is the tool call's verdict and takes the tool-row bullet, a plain
+ * note renders as muted chrome with none.
+ */
+export type HookAnnotationKind = 'note' | 'tool_outcome'
+
+export function hookAnnotationKind(raw: unknown): HookAnnotationKind {
+  return typeof raw === 'string' && raw.toLowerCase() === 'tool_outcome'
+    ? 'tool_outcome'
+    : 'note'
+}
+
+/** Which lead mark a hook note opens with. */
 export type HookAnnotationLead = 'warning' | 'blocked' | null
 
 /**
- * The agent sends its hook annotations as one-line prose already carrying a
- * lead glyph — `⚠` (U+26A0) for deny / block / hold notices and `↩` (U+21A9)
- * for stop-gate continuations (xai-grok-shell `send_hook_annotation` call
- * sites). Split that glyph off so the view can draw a real icon instead of a
- * font-dependent character.
+ * Older shells prefix their annotations with a lead glyph — `⚠` (U+26A0) for
+ * deny / block / hold notices and `↩` (U+21A9) for stop-gate continuations.
+ * 1.0.41+ dropped the glyph for denies (the tool-row bullet carries the
+ * meaning), but replayed history still has it, so split it off and let the
+ * view draw a real icon instead of a font-dependent character.
  */
 export function splitHookAnnotation(text: string): {
   lead: HookAnnotationLead
