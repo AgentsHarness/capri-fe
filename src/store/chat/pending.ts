@@ -14,6 +14,7 @@ export const SUPPORTED_XAI_REQUESTS = new Set([
   'x.ai/exit_plan_mode',
   'x.ai/diff_review',
   'x.ai/folder_trust/request',
+  'x.ai/mcp/elicit',
 ])
 
 /** Owning session of a pending request (top-level wire, or params fallback). */

@@ -11,6 +11,7 @@ import { modesRpc } from './modes'
 import { assistRpc } from './assist'
 import { memoryRpc } from './memory'
 import { usageRpc } from './usage'
+import { agentsRpc } from './agents'
 
 export const rpcMixins = {
   ...sessionsRpc,
@@ -26,6 +27,7 @@ export const rpcMixins = {
   ...assistRpc,
   ...memoryRpc,
   ...usageRpc,
+  ...agentsRpc,
 }
 
 export type RpcApi = {

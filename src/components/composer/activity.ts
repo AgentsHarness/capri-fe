@@ -6,6 +6,19 @@ import type { ScrollEntry } from '../../api/types'
 const MAX_ACTIVITY_SUBJECT_CHARS = 40
 
 /**
+ * TUI `HOOK_REVEAL_DELAY` — how long a hook batch must run before its wait is
+ * worth showing. A fast hook finishes first and never appears at all.
+ */
+export const HOOK_REVEAL_DELAY_MS = 300
+
+/** TUI `WaitingReason::Hooks::label` — `Running 3 stop hooks…` / `Running pre_tool_use hook…`. */
+function hookWaitLabel(hook: { eventName: string; count: number }): string {
+  return hook.count > 1
+    ? `Running ${hook.count} ${hook.eventName} hooks…`
+    : `Running ${hook.eventName} hook…`
+}
+
+/**
  * Current activity of a busy turn — TUI turn_status.rs activity arm.
  * Priority mirrors the TUI tracker: blocking waits (WaitingReason) first,
  * then thinking, tools, streaming reply.
@@ -17,16 +30,23 @@ const MAX_ACTIVITY_SUBJECT_CHARS = 40
  */
 export function currentActivity(
   entries: ScrollEntry[],
-  runningHook?: { eventName: string; toolName?: string; count: number } | null,
+  runningHook?: {
+    eventName: string
+    toolName?: string
+    count: number
+    startedAt: number
+  } | null,
+  now = Date.now(),
 ): { label: string; color: string; startedAt?: number } | null {
-  // 0) Blocked on an awaited hook batch (TUI HookRunStarted).
-  if (runningHook) {
-    const hookLabel = runningHook.toolName
-      ? `Running ${runningHook.eventName} (${runningHook.toolName})…`
-      : `Running ${runningHook.eventName} hook${runningHook.count > 1 ? `s (${runningHook.count})` : ''}…`
+  // 0) Blocked on an awaited hook batch (TUI HookRunStarted). The phase only
+  //    reveals once the batch outlives HOOK_REVEAL_DELAY, so a fast hook never
+  //    flashes; its timer then anchors at the batch start, showing the whole
+  //    wait (TUI `HooksRunning::since`).
+  if (runningHook && now - runningHook.startedAt >= HOOK_REVEAL_DELAY_MS) {
     return {
-      label: hookLabel,
-      color: Accents.warning,
+      label: hookWaitLabel(runningHook),
+      color: Accents.gray,
+      startedAt: runningHook.startedAt,
     }
   }
 

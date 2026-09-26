@@ -102,10 +102,24 @@ function releaseRunningHook(
   get: () => ChatState,
   ev: AcpEvent,
 ): void {
-  if (!get().runningHook) return
+  const hook = get().runningHook
+  if (!hook) return
   // 多会话广播：别的会话的输出不能解除本会话的等待态。
   const sid = (ev as { sessionId?: string }).sessionId
   if (sid && sid !== get().sessionId) return
+  // 批次开闸那一刻就已经排在 shell 缓冲里的正文（时间戳不晚于批次开始，
+  // TUI `chunk_predates_hook_batch`）不是「回合继续」的证据：它先于闸门
+  // 产生，放行会把闸门状态在真正结束前抹掉。两边都带 agent 时间戳时
+  // 才可判定；缺一侧（旧 shell / 旧 host）退回原先的立即释放。
+  const stamped = (ev as { agentTimestampMs?: unknown }).agentTimestampMs
+  if (
+    hook.startedAtMs != null &&
+    typeof stamped === 'number' &&
+    Number.isFinite(stamped) &&
+    stamped <= hook.startedAtMs
+  ) {
+    return
+  }
   set({ runningHook: null })
 }
 

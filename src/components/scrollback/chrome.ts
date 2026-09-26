@@ -13,9 +13,7 @@ export type EntryViewActions = {
   toggleUser?: (id: string) => void
   /** btw 区块折叠切换（默认主 store toggleBtw）。 */
   toggleBtw?: (id: string) => void
-  /** Lifecycle hook 行折叠（默认主 store toggleLifecycle）。 */
-  toggleLifecycle?: (id: string) => void
-  /** 带 stop-hook 的回合标记折叠（默认主 store toggleSessionEvent）。 */
+  /** recap 段落折叠（默认主 store toggleSessionEvent）。 */
   toggleSessionEvent?: (id: string) => void
   /** 全文弹窗查看器（mini 点「查看」打开组件内局部 BlockBodyDialog——条目
    *  不在主 entries，主 viewer 查找不到；缺省主 store openViewer）。 */

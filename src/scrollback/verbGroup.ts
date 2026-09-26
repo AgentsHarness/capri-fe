@@ -16,11 +16,10 @@
  * from hiding) so opening it never shifts counts or slides rows.
  */
 
-import type { HookCounts, ScrollEntry, ToolHookData } from '../api/types'
+import type { ScrollEntry } from '../api/types'
 import { toolFamily } from '../theme/toolFamily'
 import { readPathOf, skillNameFromPath } from './toolDetail'
 import { thoughtDisplayMode } from './thoughtMode'
-import { groupHookCounts, hookCountsTotal } from './hookRuns'
 
 /** Eager verb-fold kinds (ToolCallBlock::verb_group_kind). */
 export type VerbGroupKind =
@@ -60,8 +59,6 @@ export type GroupLabel = {
   text: string
   running: boolean
   failed: boolean
-  /** Labeled `[hooks: 1 ok, 1 blocked]` suffix (TUI verb headers only). */
-  hookCounts?: HookCounts
 }
 
 export type DisplayRow =
@@ -403,7 +400,6 @@ export function verbGroupLabel(
   let running = false
   let failedCount = 0
   const order: VerbGroupKind[] = []
-  const hookMembers: Array<{ hooks?: ToolHookData }> = []
 
   for (let i = span.range.start; i < span.range.end; i++) {
     const e = entries[i]
@@ -418,7 +414,6 @@ export function verbGroupLabel(
     buckets.set(step.vg, (buckets.get(step.vg) || 0) + 1)
     if (isRunning(e)) running = true
     if (isFailed(e)) failedCount += 1
-    if (e.kind === 'tool') hookMembers.push(e)
   }
 
   const parts: string[] = []
@@ -428,13 +423,10 @@ export function verbGroupLabel(
   }
   let text = parts.join(', ')
   if (failedCount > 0) text += ` · ${failedCount} failed`
-  const hookCounts = groupHookCounts(hookMembers)
-  const hasHooks = hookCountsTotal(hookCounts) > 0
   return {
     text: text || 'Tools',
     running,
-    failed: failedCount > 0 || hookCounts.failed > 0,
-    ...(hasHooks ? { hookCounts } : {}),
+    failed: failedCount > 0,
   }
 }
 

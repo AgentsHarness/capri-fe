@@ -22,10 +22,6 @@ import type {
 } from '../../api/types'
 import type { McpListServer } from '../../api/client'
 import type { MemoryListing } from '../../lib/memory'
-import type {
-  PendingStopHooks,
-  PendingToolHook,
-} from './hookAttach'
 import type { RunningSubagentRow } from './subagentRegistry'
 
 import type {
@@ -137,20 +133,6 @@ export interface ChatConnState {
 export interface ChatTimelineState {
   entries: ScrollEntry[]
   toolIndex: Record<string, string> // toolCallId -> entry id
-  /**
-   * Tool-hook batches (`pre_tool_use` / `post_tool_use`) whose tool row has
-   * not been created yet. The wire announces the hook before the `tool_call`
-   * envelope, so the batch waits here and is claimed by the row that matches
-   * its `tool_name`. Cleared with the turn.
-   */
-  pendingToolHooks: PendingToolHook[]
-  /**
-   * Turn-end (`stop` family) batches held for the turn's terminal marker —
-   * they arrive while the turn is still open, so the marker line folds them in
-   * (`stop  [hooks: 2]`) instead of getting a row of their own. TUI
-   * `AgentView::pending_stop_hooks`.
-   */
-  pendingStopHooks?: PendingStopHooks
   // streaming pointers
   openAssistantId?: string
   openThoughtId?: string
@@ -534,12 +516,29 @@ export interface ChatAgentExtState {
    * while a turn is in flight.
    */
   followUps?: FollowUp[]
-  /** Currently executing hook batch from hook_run_started (TUI spinner parity). */
+  /**
+   * The hook batch the turn is currently blocked on, from `hook_run_started`
+   * (TUI tracker `hooks_running`). Shown as the status row's phase once the
+   * batch outlives `HOOK_REVEAL_DELAY`, so a fast hook never flashes.
+   */
   runningHook?: {
     eventName: string
     toolName?: string
     count: number
     promptId?: string
+    /**
+     * Local arrival time of the batch (epoch ms) — the reveal delay is
+     * measured from here, and the phase timer counts the batch's whole wait
+     * rather than starting at the reveal (TUI `HooksRunning::since`).
+     */
+    startedAt: number
+    /**
+     * Agent's clock at the batch start (wire `_meta.agentTimestampMs`). A
+     * model-text chunk stamped at or before it was already queued in the
+     * shell's buffer when the gate opened, so it must not end the phase
+     * (TUI `chunk_predates_hook_batch`).
+     */
+    startedAtMs?: number
   } | null
   /**
    * Newest-wins key of the shown chips (TUI FollowUps.response_id): a
@@ -859,9 +858,7 @@ export interface ChatUiState {
   toggleUser: (id: string) => void
   /** 折叠/展开 btw 侧问区块（←/→ / click；条目默认展开，见 askBtw）。 */
   toggleBtw: (id: string) => void
-  /** 折叠/展开 lifecycle hook 行（TUI LifecycleEventBlock，默认折叠）。 */
-  toggleLifecycle: (id: string) => void
-  /** 折叠/展开 session_event（recap 或带 stop-hook 的回合标记）。 */
+  /** 折叠/展开 session_event（recap 正文）。 */
   toggleSessionEvent: (id: string) => void
   /** → expand / ← collapse selected foldable block or group */
   setExpanded: (expanded: boolean) => void

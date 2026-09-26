@@ -25,8 +25,6 @@ import {
 import {
   busyPlausibleForView,
 } from '../turn'
-import { claimPendingToolHooks } from '../hookAttach'
-import { hookRoutingOf } from '../hookRouting'
 import { liteAfterLiveBody } from '../historyFill'
 
 export function handleToolEvent(
@@ -139,13 +137,6 @@ export function handleToolEvent(
               status,
               verb: toolVerb(kindName, running),
             }
-            // Same claim rule as a fresh row: a queued pre_tool_use batch for
-            // this file's edit belongs to the merged row.
-            const claimed = claimPendingToolHooks(
-              [...sealed.entries.slice(0, -1), mergedEntry],
-              mergedEntry,
-              hookRoutingOf(get()).pendingToolHooks,
-            )
             set({
               ...sealed,
               conn: 'busy',
@@ -154,8 +145,7 @@ export function handleToolEvent(
               openThoughtId: undefined,
               currentStreamStartMs: undefined,
               toolIndex,
-              entries: claimed.entries,
-              pendingToolHooks: claimed.pending,
+              entries: [...sealed.entries.slice(0, -1), mergedEntry],
             })
             break
           }
@@ -182,13 +172,6 @@ export function handleToolEvent(
         }
         const toolIndex = { ...get().toolIndex }
         if (toolCallId) toolIndex[toolCallId] = id
-        // A pre_tool_use batch is announced before this row existed — the row
-        // claims whatever the queue holds for its function name now.
-        const claimed = claimPendingToolHooks(
-          [...sealed.entries, entry],
-          entry,
-          hookRoutingOf(get()).pendingToolHooks,
-        )
         set({
           ...sealed,
           // 回合确实在跑（envelope 归属的 tool_call 可信）：busy 事件可能
@@ -202,8 +185,7 @@ export function handleToolEvent(
           openThoughtId: undefined,
           currentStreamStartMs: undefined,
           toolIndex,
-          entries: claimed.entries,
-          pendingToolHooks: claimed.pending,
+          entries: [...sealed.entries, entry],
         })
         break
       }

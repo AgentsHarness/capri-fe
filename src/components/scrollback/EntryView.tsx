@@ -3,7 +3,6 @@ import type { ScrollEntry } from '../../api/types'
 import { useChatStore } from '../../store/chat'
 import { accentOpts } from '../../scrollback/accentOpts'
 import { entryFlashActive, entryFoldable, expandableGlyph } from '../../scrollback/entryState'
-import { hookGroupsHaveContent } from '../../scrollback/hookRuns'
 import { mergeLiveText } from '../../scrollback/liveText'
 import { resolveBullet } from '../../theme/accents'
 import { DENSE_ROW_CLASS, HEADER_ROW_CLASS } from '../../theme/layout'
@@ -15,7 +14,6 @@ import {
   ErrorEntry,
   GroupHeaderEntry,
   ImageEntry,
-  LifecycleEntry,
   PlanEntry,
   SessionEventEntry,
   StatusEntry,
@@ -87,7 +85,6 @@ export const EntryView = memo(function EntryView({
   const storeToggleThought = useChatStore((s) => s.toggleThought)
   const storeToggleUser = useChatStore((s) => s.toggleUser)
   const storeToggleBtw = useChatStore((s) => s.toggleBtw)
-  const storeToggleLifecycle = useChatStore((s) => s.toggleLifecycle)
   const storeToggleSessionEvent = useChatStore((s) => s.toggleSessionEvent)
   const storeOpenViewer = useChatStore((s) => s.openViewer)
   const storeSelectEntry = useChatStore((s) => s.selectEntry)
@@ -101,7 +98,6 @@ export const EntryView = memo(function EntryView({
   const toggleThought = actions?.toggleThought ?? storeToggleThought
   const toggleUser = actions?.toggleUser ?? storeToggleUser
   const toggleBtw = actions?.toggleBtw ?? storeToggleBtw
-  const toggleLifecycle = actions?.toggleLifecycle ?? storeToggleLifecycle
   const toggleSessionEvent = actions?.toggleSessionEvent ?? storeToggleSessionEvent
   const openViewer = actions?.openViewer ?? storeOpenViewer
   const selectEntry = actions?.selectEntry ?? storeSelectEntry
@@ -119,11 +115,9 @@ export const EntryView = memo(function EntryView({
           ? () => toggleUser(e.id)
           : e.kind === 'btw'
             ? () => toggleBtw(e.id)
-            : e.kind === 'lifecycle'
-              ? () => toggleLifecycle(e.id)
-              : e.kind === 'session_event' && hookGroupsHaveContent(e.stopHooks)
-                ? () => toggleSessionEvent(e.id)
-                : undefined
+            : e.kind === 'session_event' && e.recap
+              ? () => toggleSessionEvent(e.id)
+              : undefined
   const [hovered, setHovered] = useState(false)
   const opts = accentOpts(e, selected, pendingFreeze, now, hovered)
   const bullet = resolveBullet(opts)
@@ -201,7 +195,6 @@ export const EntryView = memo(function EntryView({
   if (e.kind === 'workflow') return <WorkflowEntry e={e} chrome={chrome} />
   if (e.kind === 'bg_task') return <BgTaskEntry e={e} chrome={chrome} />
   if (e.kind === 'session_event') return <SessionEventEntry e={e} chrome={chrome} />
-  if (e.kind === 'lifecycle') return <LifecycleEntry e={e} chrome={chrome} />
   if (e.kind === 'credit_limit') return <CreditLimitEntry e={e} chrome={chrome} />
   if (e.kind === 'btw') return <BtwEntry e={e} chrome={chrome} />
   if (e.kind === 'group_header') return <GroupHeaderEntry e={e} chrome={chrome} />

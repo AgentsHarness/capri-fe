@@ -19,6 +19,7 @@ import { appendEntry } from '../entries'
 import { flushLiveStream, sealThought } from '../stream'
 import { nid } from '../ids'
 import { applyFollowUps, applyMcpInitProgress, SILENT_EXT_NOTIFICATIONS } from '../followUps'
+import { dismissUrlWait } from '../../../components/mcpElicitWait'
 import { applyGitHeadChanged } from './extSession'
 import { truncateEntriesTo, waitRewindAligned } from '../actions/xai'
 import { applyModelIdentity, applySessionTitle } from '../sessionIdentity'
@@ -193,6 +194,14 @@ export function handleExtMiscEvent(
         // the same way — never rendered as a status line.
         if (ev.method === 'x.ai/mcp/init_progress') {
           applyMcpInitProgress(set, ev.params)
+          break
+        }
+        // URL 征询在接受之后还留着等待卡，服务器完成时用这条通知关掉。
+        if (ev.method === 'x.ai/mcp/elicit_complete') {
+          const p = ev.params ?? {}
+          const id = typeof p.elicitationId === 'string' ? p.elicitationId : ''
+          const server = typeof p.serverName === 'string' ? p.serverName : undefined
+          if (id) dismissUrlWait(id, server)
           break
         }
         // x.ai/git_head_changed — 旧 host 未打成 typed `git_head_changed`

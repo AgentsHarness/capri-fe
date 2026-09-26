@@ -89,11 +89,4 @@ export type {
   SubagentViewState,
   WorkflowStatus,
 } from './types/scroll'
-export type {
-  HookCounts,
-  HookGroup,
-  HookRun,
-  HookRunStatus,
-  HookSuffixPart,
-  ToolHookData,
-} from './types/hooks'
+export type { HookRun, HookRunStatus } from './types/hooks'

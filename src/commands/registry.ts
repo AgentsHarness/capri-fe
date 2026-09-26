@@ -30,6 +30,7 @@ import {
 } from './imagine'
 import { slashRecencyScore } from './recency'
 import { cachedSkills } from './skills'
+import { openAgentsModal } from '../components/AgentsModal'
 import { cachedWorkflows } from './workflows'
 import { fmtBytes } from '../format'
 import { renderTranscript, safeExportFilename } from '../lib/exportTranscript'
@@ -1214,6 +1215,17 @@ export const slashCommands: SlashCommand[] = [
     name: 'marketplace',
     description: '打开扩展面板 — Marketplace',
     run: () => openExtensionsCmd('marketplace'),
+  },
+  {
+    name: 'agents',
+    aliases: ['config-agents'],
+    description: '查看 agent 定义，设置默认、启停（对新会话生效）',
+    run: () => openAgentsModal('agents'),
+  },
+  {
+    name: 'personas',
+    description: '创建、查看、删除人格',
+    run: () => openAgentsModal('personas'),
   },
   // ── 设置（TUI F2 / /settings）───────────────────────────────────────
   {

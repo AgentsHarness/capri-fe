@@ -194,10 +194,9 @@ export function handleNotifMemory(
             })
             break
           }
-          // ── hooks / plugins (TUI hook annotations on tool blocks) ────
-          // hook_annotation / hook_execution live in ./notifHooks — the
-          // structured batches attach to tool rows / lifecycle rows instead
-          // of becoming their own session-event line.
+          // ── hooks / plugins ─────────────────────────────────────────
+          // hook_run_started / hook_execution / hook_annotation live in
+          // ./notifHooks（成功静默、失败一行、deny 取工具行 bullet）。
           case 'hooks_changed':
           case 'plugins_changed':
             // No modal in the web UI; bump the version so future panels
