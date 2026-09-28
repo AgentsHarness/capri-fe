@@ -57,7 +57,7 @@ describe('LiteFillChip', () => {
     render(<LiteFillChip />)
     const btn = screen.getByRole('button', { name: /精简回放：1 行工具正文待补全/ })
     expect(btn.textContent).toContain('1')
-    expect(btn.textContent).toContain('◇')
+    expect(btn.querySelector('svg.lucide-diamond')).not.toBeNull()
   })
 
   it('全部补齐 → 不渲染', () => {
@@ -85,12 +85,13 @@ describe('LiteFillChip', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
-  it('补全在途 → 图标转 braille spinner', () => {
+  it('补全在途 → 图标转自转 loader', () => {
     useChatStore.setState({ entries: [liteRow()], historyProjected: 'lite', liteFillBusy: 1 })
     render(<LiteFillChip />)
     const btn = screen.getByRole('button', { name: /精简回放：1 行工具正文待补全/ })
-    const glyph = btn.querySelector('span')?.textContent ?? ''
-    expect(SPINNER_FRAMES).toContain(glyph)
+    const icon = btn.querySelector('svg.lucide-loader-circle')
+    expect(icon).not.toBeNull()
+    expect(icon?.classList.contains('animate-spin')).toBe(true)
   })
 
   it('有失败行 → 叉号 + 警告色，点击照样催发排队', () => {
@@ -100,7 +101,8 @@ describe('LiteFillChip', () => {
     })
     render(<LiteFillChip />)
     const btn = screen.getByRole('button', { name: /精简回放：1 行工具正文待补全/ })
-    expect(btn.textContent).toContain('✗')
+    expect(btn.querySelector('svg.lucide-x')).not.toBeNull()
+    expect(btn.className).toContain('text-gn-warning')
     fireEvent.click(btn)
     expect(vi.mocked(fillAllLiteTurns)).toHaveBeenCalledTimes(1)
   })

@@ -45,12 +45,29 @@ export function requireRpcObject(
   return data
 }
 
-export async function xaiCall(core: TransportCore, path: string, body: Record<string, unknown>): Promise<unknown> {
-    const res = await core.fetch(core.url(path), {
+/**
+ * x.ai 扩展方法调用：POST {path} → `{ok, result}`, 返回 `result`。
+ * `opts.timeoutMs = 0` 关掉传输层的硬超时（默认 30s）——时长由模型调用
+ * 决定的命令（memory flush / dream）用它对齐 TUI：pager 的那两个命令
+ * 一直等到 agent 回复，不设截止。
+ */
+export async function xaiCall(
+  core: TransportCore,
+  path: string,
+  body: Record<string, unknown>,
+  opts: { timeoutMs?: number } = {},
+): Promise<unknown> {
+    const init = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-    })
+    }
+    // 第三参只在显式给了 timeoutMs 时才传：默认调用的 wire 形状保持
+    // 两参（既有测试与调用方都按 (url, init) 断言）。
+    const res =
+      opts.timeoutMs != null
+        ? await core.fetch(core.url(path), init, { timeoutMs: opts.timeoutMs })
+        : await core.fetch(core.url(path), init)
     const data = await readRpcJson(res)
     assertRpcOk(res, data, path + ' failed')
     return isJsonObject(data) ? data.result : undefined

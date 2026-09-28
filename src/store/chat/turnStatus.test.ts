@@ -10,6 +10,7 @@ import {
   promptIdMismatch,
   selectableRowIds,
   tailHasCancellationDetail,
+  tailHasRetryBanner,
   turnEndMarkerText,
   turnIsLive,
   turnMarker,
@@ -173,6 +174,40 @@ describe('tailHasCancellationDetail', () => {
       tailHasCancellationDetail([{ id: 'o', kind: 'session_event', text: '其他事件' } as ScrollEntry], detail),
     ).toBe(false)
     expect(tailHasCancellationDetail([], detail)).toBe(false)
+  })
+})
+
+describe('tailHasRetryBanner（TUI scrollback_has_recent_error_banner 对应物）', () => {
+  const banner: ScrollEntry = {
+    id: 'b',
+    kind: 'session_event',
+    text: '推理失败（auth）: Unauthorized (401)',
+    warning: true,
+    retryBanner: true,
+  }
+
+  it('尾部就是横幅 → true', () => {
+    expect(tailHasRetryBanner([banner])).toBe(true)
+  })
+
+  it('越过 status / error 行仍命中，越过后面的收口标记则不算', () => {
+    expect(tailHasRetryBanner([banner, { id: 's', kind: 'status', text: 'x' } as ScrollEntry])).toBe(true)
+    expect(
+      tailHasRetryBanner([banner, { id: 'm', kind: 'session_event', text: 'Worked for 1.0s' } as ScrollEntry]),
+    ).toBe(false)
+  })
+
+  it('横幅之后有内容条目（下一回合的用户行）→ false', () => {
+    expect(
+      tailHasRetryBanner([banner, { id: 'u', kind: 'user', text: '下一条' } as ScrollEntry]),
+    ).toBe(false)
+  })
+
+  it('无横幅（含纯文本同名行也不认）→ false', () => {
+    expect(tailHasRetryBanner([])).toBe(false)
+    expect(
+      tailHasRetryBanner([{ id: 'x', kind: 'session_event', text: '推理失败: 旧格式无标志位' } as ScrollEntry]),
+    ).toBe(false)
   })
 })
 

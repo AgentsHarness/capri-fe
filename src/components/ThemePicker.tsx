@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { ChevronDown } from 'lucide-react'
 import { THEMES, useThemeStore } from '../store/theme'
 import type { ThemeId } from '../theme/tokens'
 import { chromeBtnClass } from '../theme/layout'
@@ -88,7 +89,7 @@ export function ThemePicker() {
       >
         <span className="hidden sm:inline truncate max-w-[7rem]">{currentLabel}</span>
         <span className="sm:hidden">theme</span>
-        <span className="text-gn-gutter">▾</span>
+        <ChevronDown size={12} strokeWidth={2} className="shrink-0 text-gn-gutter" aria-hidden />
       </button>
       {open && (
         <>

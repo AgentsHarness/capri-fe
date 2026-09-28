@@ -57,10 +57,16 @@ export const memoryRpc = {
     }
   },
 
-  /** POST /api/memory-dream → run consolidation now (TUI /dream). */
+  /**
+   * POST /api/memory-dream → run consolidation now (TUI /dream). Like
+   * /flush, consolidation is model work the pager waits on without a cap, so
+   * no transport deadline (`timeoutMs: 0`).
+   */
   async memoryDream(this: TransportCore, sessionId?: string) {
     return unwrapExtResult<Record<string, unknown>>(
-      await xaiCall(this, '/api/memory-dream', sessionId ? { sessionId } : {}),
+      await xaiCall(this, '/api/memory-dream', sessionId ? { sessionId } : {}, {
+        timeoutMs: 0,
+      }),
     )
   },
 

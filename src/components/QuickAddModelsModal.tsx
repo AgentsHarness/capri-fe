@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Boxes, Eye, EyeOff, LoaderCircle, RefreshCw, Search, X, Zap } from 'lucide-react'
+import { Boxes, Eye, EyeOff, Info, LoaderCircle, RefreshCw, Search, X, Zap } from 'lucide-react'
 import { transport } from '../api/client'
 import type { CustomModelConfig } from '../api/types'
 import { pushToast } from '../store/toast'
@@ -530,7 +530,8 @@ export function QuickAddModelsModal({
 
               {modelsDevLoading && (
                 <div className="text-[10px] text-gn-cyan flex items-center gap-1">
-                  <span>ℹ 正在从 models.dev 加载扩展元数据…</span>
+                  <Info size={11} strokeWidth={2} aria-hidden />
+                  <span>正在从 models.dev 加载扩展元数据…</span>
                 </div>
               )}
 

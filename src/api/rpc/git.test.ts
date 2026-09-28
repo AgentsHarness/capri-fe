@@ -6,6 +6,7 @@ function coreWithShell(stdout: string, status = 200): TransportCore & { fetch: R
   return {
     mode: 'local',
     url: (path) => `http://host.test${path}`,
+    urlForHost: () => null,
     apiBase: () => 'http://host.test',
     prefsOrigin: () => 'http://host.test',
     fetch: vi.fn().mockResolvedValue(

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import type { ScrollEntry } from '../../api/types'
 import { useChatStore } from '../chat'
 import { flushStreamBuf } from './stream'
+import { replayUpdates } from './envelopeReplay'
 
 /**
  * 终态多载体到达顺序审计。一个回合会被 done（session/prompt RPC 结果）、
@@ -129,4 +131,164 @@ describe('终态多载体到达顺序（取消 / 失败回合）', () => {
       expect(wakeTurnRenders()).toBe(true)
     })
   }
+})
+
+/**
+ * 采样终态失败时 agent 先发 retry_state 通知、再以 prompt 错误收口，两个
+ * 信号各带同一份 reason。TUI 只留重试横幅（terminal_marker：error +
+ * error_banner_present → None，rate_limit → None）；FE 曾把 "推理失败: …"
+ * 与 "Turn failed: …" 两行都画出来。
+ */
+describe('失败回合：重试横幅与 TurnFailed 标记只留一条', () => {
+  type FailureLine = Extract<ScrollEntry, { kind: 'session_event' }>
+  const isFailureLine = (e: ScrollEntry): e is FailureLine =>
+    e.kind === 'session_event' &&
+    (e.retryBanner === true || e.text.startsWith('Turn failed'))
+  const failures = () => useChatStore.getState().entries.filter(isFailureLine)
+
+  const retryState = (extra: Record<string, unknown>) =>
+    ({
+      type: 'retry_state',
+      sessionId: S,
+      update: { sessionUpdate: 'retry_state', ...extra },
+    }) as never
+
+  const failTurn = (stopReason: string, agentResult?: string) =>
+    ({
+      type: 'turn_completed',
+      sessionId: S,
+      stopReason,
+      meta: { promptId: 'p1' },
+      update: {
+        sessionUpdate: 'turn_completed',
+        prompt_id: 'p1',
+        stop_reason: stopReason,
+        ...(agentResult != null ? { agent_result: agentResult } : {}),
+      },
+    }) as never
+
+  it('retry_state failed 先到 → 只留横幅行（不再补 Turn failed）', () => {
+    reset()
+    const h = (ev: unknown) => useChatStore.getState().handleEvent(ev as never)
+    h(retryState({ type: 'failed', errorType: 'auth', message: 'Unauthorized (401)' }))
+    h(failTurn('error', 'Unauthorized (401)'))
+
+    const lines = failures()
+    expect(lines).toHaveLength(1)
+    expect(lines[0].retryBanner).toBe(true)
+  })
+
+  it('限流：exhausted 横幅 + rate_limit 收口 → 同样只留横幅', () => {
+    reset()
+    const h = (ev: unknown) => useChatStore.getState().handleEvent(ev as never)
+    h(retryState({ type: 'exhausted', attempts: 3, reason: 'API error (429)', isRateLimited: true }))
+    h(failTurn('rate_limit'))
+
+    const lines = failures()
+    expect(lines).toHaveLength(1)
+    expect(lines[0].retryBanner).toBe(true)
+  })
+
+  it('没有横幅（RPC 层失败 / 通知丢失）→ TurnFailed 标记照常出现', () => {
+    reset()
+    const h = (ev: unknown) => useChatStore.getState().handleEvent(ev as never)
+    h(failTurn('error', 'connection reset'))
+
+    const lines = failures()
+    expect(lines).toHaveLength(1)
+    expect(lines[0].retryBanner).toBeUndefined()
+  })
+
+  // 另外两条收口载体（谁先到谁画标记）：x.ai/session/prompt_complete 与
+  // generic session_notification 的 turn_completed。它们都要走同一抑制，
+  // 否则"横幅 + Turn failed"会因为到达顺序不同而复现。
+  it('prompt_complete 先到 → 同样只留横幅', () => {
+    reset()
+    const h = (ev: unknown) => useChatStore.getState().handleEvent(ev as never)
+    h(retryState({ type: 'failed', errorType: 'server', message: 'boom' }))
+    h({
+      type: 'prompt_complete',
+      sessionId: S,
+      params: { promptId: 'p1', stopReason: 'error', agentResult: 'boom' },
+    } as never)
+
+    const lines = failures()
+    expect(lines).toHaveLength(1)
+    expect(lines[0].retryBanner).toBe(true)
+  })
+
+  it('generic turn_completed（回放载体）先到 → 同样只留横幅', () => {
+    reset()
+    const h = (ev: unknown) => useChatStore.getState().handleEvent(ev as never)
+    h(retryState({ type: 'failed', errorType: 'server', message: 'boom' }))
+    h({
+      type: 'session_notification',
+      sessionId: S,
+      params: { sessionUpdate: 'turn_completed', stop_reason: 'error', agent_result: 'boom' },
+    } as never)
+
+    const lines = failures()
+    expect(lines).toHaveLength(1)
+    expect(lines[0].retryBanner).toBe(true)
+  })
+
+  it('retrying（非终态）不落行，也不抑制随后的失败标记', () => {
+    reset()
+    const h = (ev: unknown) => useChatStore.getState().handleEvent(ev as never)
+    h(retryState({ type: 'retrying', attempt: 1, maxRetries: 3, reason: 'overloaded' }))
+    expect(failures()).toHaveLength(0)
+
+    h(failTurn('error', 'overloaded'))
+    expect(failures()).toHaveLength(1)
+    expect(failures()[0].retryBanner).toBeUndefined()
+  })
+
+  it('横幅来自上一回合（隔了用户行）→ 新回合的失败标记仍要画', () => {
+    reset()
+    useChatStore.setState({
+      sessionId: S,
+      cwd: '/w',
+      conn: 'busy',
+      turnStartedAt: TURN_START,
+      currentPromptId: 'p1',
+      entries: [
+        { id: 'u0', kind: 'user', text: '第一条', ts: TURN_START - 1000 },
+        { id: 'b0', kind: 'session_event', text: '推理失败（server）: boom', warning: true, retryBanner: true },
+        { id: 'u1', kind: 'user', text: '第二条', ts: TURN_START },
+      ] as never,
+    } as never)
+    const h = (ev: unknown) => useChatStore.getState().handleEvent(ev as never)
+    h(failTurn('error', 'boom'))
+
+    const lines = failures()
+    expect(lines).toHaveLength(2)
+    expect(lines[1].retryBanner).toBeUndefined()
+  })
+
+  // 重开会话：日志里 retry_state 横幅先于收口信封落盘，回放同样不能补标记。
+  it('历史回放：横幅 + turn_completed(error) 只回放出一行', () => {
+    reset()
+    const envelope = (update: Record<string, unknown>, meta: Record<string, unknown>) => ({
+      method: 'session/update',
+      params: { update, _meta: meta },
+    })
+    replayUpdates(() => useChatStore.getState(), [
+      envelope(
+        { sessionUpdate: 'retry_state', type: 'failed', errorType: 'auth', message: 'Unauthorized (401)' },
+        { agentTimestampMs: TURN_START + 1000 },
+      ),
+      envelope(
+        {
+          sessionUpdate: 'turn_completed',
+          stop_reason: 'error',
+          agent_result: 'Unauthorized (401)',
+        },
+        { turnStartMs: TURN_START, agentTimestampMs: TURN_START + 2000 },
+      ),
+    ])
+
+    const lines = failures()
+    expect(lines).toHaveLength(1)
+    expect(lines[0].retryBanner).toBe(true)
+  })
 })

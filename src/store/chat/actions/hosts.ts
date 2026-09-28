@@ -17,7 +17,7 @@ import { refreshDefaultModeFlags } from '../modePersist'
 import { KEY } from '../../../lib/keys'
 
 export function hostActions(set: SetState, get: () => ChatState) {
-  // 注册表应用（含首次自动选 host）：set 列表 + 离线/删除横幅 + 挑选
+  // 注册表应用（含首次自动选 host）：set 列表 + 离线/删除提示 + 挑选
   // 默认 host。数据来源由调用方决定——refreshHosts 拉 GET /api/hosts；
   // hub 的 WS hello 已携带同一份快照（含 defaultHostId）时直接复用，
   // 打开页面省掉一次跨网往返（见 conn.ts hello 分支）。
@@ -27,7 +27,7 @@ export function hostActions(set: SetState, get: () => ChatState) {
   ) => {
     set({ hosts })
     const s = get()
-    // 选中 host 掉线/恢复：hub 层横幅提示（id 精确清除，不影响
+    // 选中 host 掉线/恢复：hub 层提示（id 精确清除，不影响
     // hub-ws 等其他 hub 层错误）。
     if (s.selectedHostId) {
       const sel = hosts.find((h) => h.hostId === s.selectedHostId)
@@ -44,7 +44,7 @@ export function hostActions(set: SetState, get: () => ChatState) {
       }
       if (sel) return
       // 当前 host 已被外部删除（另一标签页 unpair / hub 侧清理）：它不在
-      // 列表里，上面的离线横幅分支根本不会触发，不清掉选择就会一直顶着
+      // 列表里，上面的离线提示分支根本不会触发，不清掉选择就会一直顶着
       // 一个不存在的 host、要手动刷页才能恢复。落回下方重新挑选。
       removeKey(KEY.host)
       set({ selectedHostId: undefined })
@@ -156,7 +156,7 @@ export function hostActions(set: SetState, get: () => ChatState) {
       pendingOptimisticUserId: undefined,
       modes: undefined,
       agentCommands: [],
-      // 换 host 即换连接：清空分层横幅，新 host 的状态由 hello 快照
+      // 换 host 即换连接：清空分层错误栈，新 host 的状态由 hello 快照
       // 重新驱动。
       layerErrors: {},
       conn: 'connecting',

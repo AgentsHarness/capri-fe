@@ -1,62 +1,38 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { X } from 'lucide-react'
-import { runShellCommand } from '../api/shell'
+import {
+  ArrowUp,
+  Check,
+  CircleAlert,
+  Folder,
+  FolderOpen,
+  FolderPlus,
+  LoaderCircle,
+  RotateCcw,
+  X,
+} from 'lucide-react'
+import { createLocalDir, listLocalDirs, type LocalDirEntry } from '../api/localFs'
+import { isRootedLocalPath, joinLocalPath, parentOfLocalPath } from '../lib/localPaths'
 
 /**
  * 目录选择弹窗（空状态「选择工作目录」的落地）。
  *
- * 底层实现参考 `!` shell 模式：走 `/api/shell`（TUI shell-mode bridge），
- * 在宿主机上用 `find` 列出当前目录的直接子目录——同一套机制就是跑 `!`
- * shell 命令的那个通道。`find` 命令以 cwd=dir 运行，输出 `./name` 相对
- * 路径，这里在 JS 侧拼回绝对路径，避免命令里转义引号/特殊字符。
+ * 列目录走 host 本地端点 `POST /api/local/dirs`（host 侧 os.ReadDir，不经
+ * agent、也不经 `!` shell 通道）：返回的是宿主原生路径，Windows 上也接受
+ * MSYS 写法（`/d/aiwork` → `D:\aiwork`）。前端不做路径拼接与平台判断 ——
+ * 子项目直接用返回的 path，上级用字面路径交给 host 归一化（见 localPaths.ts）。
  *
- * 交互：↑ 上级 / 点目录进入 / 可手改路径后回车；「选择此目录」把当前
- * 目录回传给 store（setEmptyCwd），随后的首条消息用它创建会话。
+ * 「选择此目录」只认**已经被 host 成功列出**的目录：手改路径后直接点它会先
+ * 验一遍，路径不存在 / 不是目录就只报错、不回落到别的目录，避免把不存在的
+ * 路径写进 emptyCwd。当前目录下还能新建文件夹（host 侧 mkdir，建好直接进入）。
  */
 
 interface DirectoryPickerModalProps {
   open: boolean
-  /** 优先起始目录（当前 emptyCwd，可空 → 用宿主当前工作目录）。 */
+  /** 优先起始目录（当前 emptyCwd，可空 → 宿主主目录）。 */
   initial?: string
   onClose: () => void
-  /** 选中目录时回调（写入 emptyCwd）。 */
+  /** 选中目录时回调（写入 emptyCwd），参数是宿主归一化后的绝对路径。 */
   onPick: (dir: string) => void
-}
-
-function joinPath(base: string, name: string): string {
-  return base.endsWith('/') ? base + name : base + '/' + name
-}
-
-/** 上级目录；已在根或相对单段时返回 null（不可再上）。 */
-function parentDir(dir: string): string | null {
-  const t = dir.replace(/\/+$/, '')
-  if (!t || t === '/') return null
-  const idx = t.lastIndexOf('/')
-  if (idx <= 0) return '/'
-  return t.slice(0, idx)
-}
-
-interface DirEntry {
-  name: string
-  path: string
-}
-
-/** 列出一个目录的直接子目录（绝对路径）。exitCode!=0（目录不存在等）按错误处理。 */
-async function listDirs(dir: string): Promise<DirEntry[]> {
-  const res = await runShellCommand('find . -maxdepth 1 -type d', dir)
-  if (!res.ok) throw new Error(res.error || '无法列出目录')
-  if (res.exitCode != null && res.exitCode !== 0) {
-    throw new Error((res.stderr || '').trim() || `无法读取目录：${dir}`)
-  }
-  return (res.stdout ?? '')
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l && l !== '.')
-    .map((l) => {
-      const name = l.startsWith('./') ? l.slice(2) : l
-      return { name, path: joinPath(dir, name) }
-    })
-    .sort((a, b) => a.name.localeCompare(b.name))
 }
 
 export function DirectoryPickerModal({
@@ -65,104 +41,152 @@ export function DirectoryPickerModal({
   onClose,
   onPick,
 }: DirectoryPickerModalProps) {
+  /** host 确认过的当前目录（归一化后的宿主原生路径）；'' = 还没有可用的目录。 */
   const [dir, setDir] = useState('')
   const [draft, setDraft] = useState('')
-  const [dirs, setDirs] = useState<DirEntry[]>([])
+  const [home, setHome] = useState('')
+  const [dirs, setDirs] = useState<LocalDirEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>()
+  const [choosing, setChoosing] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [newName, setNewName] = useState('')
+  const [newBusy, setNewBusy] = useState(false)
+  const [newError, setNewError] = useState<string>()
   const inputRef = useRef<HTMLInputElement>(null)
+  const nameRef = useRef<HTMLInputElement>(null)
   const req = useRef(0)
 
-  const load = useCallback(async (d: string) => {
-    const id = ++req.current
-    setLoading(true)
-    setError(undefined)
-    try {
-      const list = await listDirs(d)
-      if (id !== req.current) return
-      setDirs(list)
-    } catch (e) {
-      if (id !== req.current) return
-      setError(e instanceof Error ? e.message : String(e))
-      setDirs([])
-    } finally {
-      if (id === req.current) setLoading(false)
-    }
+  const resetCreate = useCallback(() => {
+    setCreating(false)
+    setNewName('')
+    setNewError(undefined)
   }, [])
 
-  // 打开时初始化：优先 emptyCwd，否则用宿主当前工作目录（echo $PWD）。
+  /**
+   * 载入并确认一个目录。成功返回 host 归一化后的路径（同时更新输入框）；
+   * 失败把原因写进 error 并清掉「当前目录」——未确认的路径既不能选，也不能
+   * 在其下面新建文件夹。换目录时收起新建输入行（它属于上一个目录）。
+   */
+  const load = useCallback(
+    async (target: string): Promise<string | undefined> => {
+      const id = ++req.current
+      resetCreate()
+      setLoading(true)
+      setError(undefined)
+      const res = await listLocalDirs(target)
+      if (id !== req.current) return undefined
+      setLoading(false)
+      if (!res.ok) {
+        setDir('')
+        setDirs([])
+        setError(res.error)
+        setDraft(res.path ?? target)
+        return undefined
+      }
+      setDir(res.path)
+      setDraft(res.path)
+      setHome(res.home)
+      setDirs(res.dirs)
+      return res.path
+    },
+    [resetCreate],
+  )
+
+  // 打开时初始化：优先 emptyCwd，空则让宿主给主目录。
   useEffect(() => {
     if (!open) return
     req.current = 0
-    setError(undefined)
     setDirs([])
-    let cancelled = false
-    void (async () => {
-      setLoading(true)
-      try {
-        let start = initial?.trim() || ''
-        if (!start) {
-          const h = await runShellCommand('echo "$PWD"')
-          start = h.ok ? (h.stdout ?? '').trim() : ''
-        }
-        if (cancelled) return
-        setDir(start || '/')
-        setDraft(start || '/')
-        await load(start || '/')
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e))
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [open, initial, load])
+    setError(undefined)
+    resetCreate()
+    void load(initial?.trim() || '')
+  }, [open, initial, load, resetCreate])
 
   // 进入/切换目录后聚焦并选中路径输入框，方便直接改写。
   useEffect(() => {
     if (open) inputRef.current?.select()
   }, [open, dir])
 
-  // Esc 关闭。
+  // 新建文件夹输入行展开时聚焦；Esc 先收这一行，再谈关弹窗。
+  useEffect(() => {
+    if (creating) nameRef.current?.focus()
+  }, [creating])
+
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key !== 'Escape') return
+      if (creating) {
+        resetCreate()
+        return
+      }
+      onClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [open, onClose])
+  }, [open, onClose, creating, resetCreate])
 
   if (!open) return null
 
-  const goUp = () => {
-    const p = parentDir(dir)
-    if (p && p !== dir) {
-      setDir(p)
-      setDraft(p)
-      void load(p)
+  const raw = draft.trim()
+  const target = raw || dir
+  // 上级按钮针对「看得见的这条路径」：草稿带起点就按草稿爬，否则按已确认的
+  // 当前目录爬（相对草稿的上级不该被解释成主目录下的路径）。
+  const upTarget = parentOfLocalPath(raw && isRootedLocalPath(raw) ? raw : dir)
+  const knownInvalid = !!error && target !== dir
+  const canPick = !loading && !choosing && !!target && !knownInvalid
+
+  const submitDraft = () => {
+    if (!raw || raw === dir) return
+    void load(isRootedLocalPath(raw) ? raw : joinLocalPath(dir, raw))
+  }
+
+  const choose = async () => {
+    if (!canPick) return
+    setChoosing(true)
+    try {
+      let resolved: string | undefined = dir
+      if (target !== dir) {
+        resolved = await load(isRootedLocalPath(target) ? target : joinLocalPath(dir, target))
+      }
+      if (!resolved) return // 未确认：load 已把原因写进 error，弹窗不关
+      onPick(resolved)
+      onClose()
+    } finally {
+      setChoosing(false)
     }
   }
 
-  const enter = (p: string) => {
-    setDir(p)
-    setDraft(p)
-    void load(p)
+  const cancelCreate = () => {
+    resetCreate()
   }
 
-  const submitDraft = () => {
-    const p = draft.trim()
-    if (p && p !== dir) enter(p)
-  }
-
-  // 取当前生效目录：优先用户改过的路径，否则当前浏览目录。
-  const current = draft.trim() || dir || '/'
-
-  const choose = () => {
-    onPick(current)
-    onClose()
+  const submitCreate = async () => {
+    const name = newName.trim()
+    if (!dir || newBusy) return
+    if (!name) {
+      setNewError('请输入文件夹名称')
+      return
+    }
+    if (name === '.' || name === '..') {
+      setNewError(`文件夹名称无效：${name}`)
+      return
+    }
+    if (name.includes('/') || name.includes('\\')) {
+      setNewError('文件夹名称不能包含路径分隔符')
+      return
+    }
+    setNewBusy(true)
+    setNewError(undefined)
+    const res = await createLocalDir(dir, name)
+    setNewBusy(false)
+    if (!res.ok) {
+      setNewError(res.error)
+      return
+    }
+    cancelCreate()
+    await load(res.path) // 建好就直接进去，接着点「选择此目录」
   }
 
   return (
@@ -175,10 +199,7 @@ export function DirectoryPickerModal({
         if (e.target === e.currentTarget) onClose()
       }}
     >
-      <div
-        tabIndex={-1}
-        className="mt-8 w-full max-w-[480px] gn-modal-panel"
-      >
+      <div tabIndex={-1} className="mt-8 w-full max-w-[480px] gn-modal-panel">
         <header className="gn-modal-header">
           <span className="text-[13px] font-bold text-gn-fg">选择工作目录</span>
           <button
@@ -196,12 +217,15 @@ export function DirectoryPickerModal({
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={goUp}
-              disabled={!parentDir(dir)}
-              className="shrink-0 rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-40 disabled:hover:bg-transparent"
+              onClick={() => {
+                if (upTarget && !loading) void load(upTarget)
+              }}
+              disabled={!upTarget || loading}
+              className="inline-flex shrink-0 items-center gap-1 rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-40 disabled:hover:bg-transparent"
               title="上级目录"
             >
-              ↑ 上级
+              <ArrowUp size={12} aria-hidden />
+              上级
             </button>
             <input
               ref={inputRef}
@@ -217,34 +241,104 @@ export function DirectoryPickerModal({
               placeholder="路径或 ~（回车跳转）"
               className="min-w-0 flex-1 rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 font-mono text-[12px] text-gn-fg outline-none placeholder:text-gn-gutter/70 focus:border-gn-cyan/50"
             />
+            <button
+              type="button"
+              onClick={() => {
+                if (creating) cancelCreate()
+                else {
+                  setCreating(true)
+                  setNewName('')
+                  setNewError(undefined)
+                }
+              }}
+              disabled={!dir || loading}
+              className="inline-flex shrink-0 items-center gap-1 rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-40 disabled:hover:bg-transparent"
+              title="在当前目录新建文件夹"
+            >
+              <FolderPlus size={12} aria-hidden />
+              新建文件夹
+            </button>
           </div>
+
+          {creating && (
+            <div className="mt-2 flex items-center gap-2">
+              <input
+                ref={nameRef}
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.nativeEvent.isComposing) return
+                  if (e.key === 'Enter') void submitCreate()
+                }}
+                spellCheck={false}
+                placeholder="新文件夹名称"
+                className="min-w-0 flex-1 rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 font-mono text-[12px] text-gn-fg outline-none placeholder:text-gn-gutter/70 focus:border-gn-cyan/50"
+              />
+              <button
+                type="button"
+                onClick={() => void submitCreate()}
+                disabled={newBusy || !newName.trim()}
+                className="inline-flex shrink-0 items-center gap-1 rounded px-2 py-1 text-[11px] text-gn-cyan hover:bg-gn-bg-highlight disabled:opacity-40 disabled:hover:bg-transparent"
+                title="创建并进入新文件夹"
+              >
+                {newBusy ? (
+                  <LoaderCircle size={12} className="animate-spin" aria-hidden />
+                ) : (
+                  <Check size={12} aria-hidden />
+                )}
+                创建
+              </button>
+              <button
+                type="button"
+                onClick={cancelCreate}
+                className="shrink-0 rounded p-1 text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                aria-label="取消新建文件夹"
+                title="取消新建 (Esc)"
+              >
+                <X size={12} aria-hidden />
+              </button>
+            </div>
+          )}
+          {newError && <div className="mt-1.5 text-[11px] text-gn-red">{newError}</div>}
 
           <div className="mt-3 max-h-[280px] overflow-y-auto rounded border border-gn-prompt-border/60">
             {loading ? (
-              <div className="px-3 py-6 text-center text-[11px] text-gn-muted">读取目录…</div>
+              <div className="flex items-center justify-center gap-1.5 px-3 py-6 text-[11px] text-gn-muted">
+                <LoaderCircle size={12} className="animate-spin" aria-hidden />
+                读取目录…
+              </div>
             ) : error ? (
               <div className="px-3 py-6 text-center">
-                <div className="text-[11px] text-gn-red">{error}</div>
-                <button
-                  type="button"
-                  onClick={() => void load(dir)}
-                  className="mt-2 rounded px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-                >
-                  重试
-                </button>
+                <div className="inline-flex items-center gap-1.5 text-left text-[11px] text-gn-red">
+                  <CircleAlert size={12} className="shrink-0" aria-hidden />
+                  {error}
+                </div>
+                <div className="mt-2">
+                  <button
+                    type="button"
+                    onClick={() => void load(raw || dir)}
+                    className="inline-flex items-center gap-1 rounded px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                  >
+                    <RotateCcw size={11} aria-hidden />
+                    重试
+                  </button>
+                </div>
               </div>
             ) : dirs.length === 0 ? (
-              <div className="px-3 py-6 text-center text-[11px] text-gn-muted">此目录没有子目录</div>
+              <div className="flex items-center justify-center gap-1.5 px-3 py-6 text-[11px] text-gn-muted">
+                <FolderOpen size={12} aria-hidden />
+                此目录没有子目录
+              </div>
             ) : (
               dirs.map((d) => (
                 <button
                   key={d.path}
                   type="button"
-                  onClick={() => enter(d.path)}
+                  onClick={() => void load(d.path)}
                   className="flex w-full items-center gap-2 border-b border-gn-prompt-border/40 px-2.5 py-1.5 text-left last:border-b-0 hover:bg-gn-bg-highlight"
                   title={d.path}
                 >
-                  <span className="shrink-0 text-[11px] text-gn-cyan">▸</span>
+                  <Folder size={12} className="shrink-0 text-gn-cyan" aria-hidden />
                   <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-gn-fg">
                     {d.name}
                   </span>
@@ -256,9 +350,9 @@ export function DirectoryPickerModal({
           <div className="mt-3 flex items-center justify-between gap-3">
             <div
               className="min-w-0 truncate font-mono text-[10px] text-gn-gutter"
-              title={current}
+              title={target || home}
             >
-              当前：{current}
+              当前：{target || home || '—'}
             </div>
             <div className="flex shrink-0 gap-2">
               <button
@@ -270,8 +364,10 @@ export function DirectoryPickerModal({
               </button>
               <button
                 type="button"
-                onClick={choose}
-                className="rounded bg-gn-bg-highlight px-3 py-1 text-[11px] text-gn-cyan hover:bg-gn-bg-dark"
+                onClick={() => void choose()}
+                disabled={!canPick}
+                title={knownInvalid ? '路径不可用：先按回车确认或修正路径' : '把当前目录作为工作目录'}
+                className="rounded bg-gn-bg-highlight px-3 py-1 text-[11px] text-gn-cyan hover:bg-gn-bg-dark disabled:opacity-40"
               >
                 选择此目录
               </button>

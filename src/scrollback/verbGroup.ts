@@ -16,7 +16,7 @@
  * from hiding) so opening it never shifts counts or slides rows.
  */
 
-import type { ScrollEntry } from '../api/types'
+import type { ScrollEntry, ToolCall } from '../api/types'
 import { toolFamily } from '../theme/toolFamily'
 import { readPathOf, skillNameFromPath } from './toolDetail'
 import { thoughtDisplayMode } from './thoughtMode'
@@ -82,6 +82,12 @@ export const GROUP_MAX_VISIBLE = 10
 
 // ── Classification ─────────────────────────────────────────────────────
 
+/** Agent-stamped `_meta.memory_v2_activity` (TUI tracker.rs::is_memory_v2_activity). */
+function isMemoryActivity(tc: ToolCall | undefined): boolean {
+  const meta = (tc as { _meta?: Record<string, unknown> } | undefined)?._meta
+  return meta?.memory_v2_activity === true
+}
+
 /** Eager verb-group membership (excludes Execute/Edit/MCP/Other). */
 export function verbGroupKind(e: ScrollEntry): VerbGroupKind | null {
   if (e.kind === 'subagent') return 'subagent'
@@ -89,6 +95,10 @@ export function verbGroupKind(e: ScrollEntry): VerbGroupKind | null {
   const k = (e.kindName || '').toLowerCase().replace(/[\s-]+/g, '_')
   const fam = toolFamily(e.kindName)
 
+  // TUI ToolCallBlock::is_memory_activity: the agent stamps
+  // `_meta.memory_v2_activity` on read / list / search / edit calls that
+  // touch a memory scope, and those join the "Searched N memories" group.
+  if ((fam === 'never' || fam === 'edit') && isMemoryActivity(e.raw)) return 'memory'
   if (fam === 'execute' || fam === 'edit') return null
   if (k === 'skill') return 'skill'
   if (fam === 'never') {

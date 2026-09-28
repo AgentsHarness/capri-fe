@@ -25,11 +25,6 @@ export const Glyphs = {
   middleDot: '·',
   /** Tooltip for the CSS short-tick rail. */
   collapsedAccent: '❙',
-  /**
-   * Scheduled-task (/loop) prompt prefix — TUI UserPromptBlock::cron uses
-   * U+21BB (↻). Rendered as plain text (no SVG path) via IconGlyph fallback.
-   */
-  cronPrompt: '\u21BB',
 } as const
 
 /**

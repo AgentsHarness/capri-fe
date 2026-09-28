@@ -115,7 +115,7 @@ export const EntryView = memo(function EntryView({
           ? () => toggleUser(e.id)
           : e.kind === 'btw'
             ? () => toggleBtw(e.id)
-            : e.kind === 'session_event' && e.recap
+            : e.kind === 'session_event' && (e.recap || e.memoryCapture)
               ? () => toggleSessionEvent(e.id)
               : undefined
   const [hovered, setHovered] = useState(false)

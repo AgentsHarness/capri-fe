@@ -90,6 +90,12 @@ export type FetchOpts = {
    * 分流；同时它属于 probeInflight，任何 abort 风暴都不得打断它。
    */
   authProbe?: boolean
+  /**
+   * 强制走 hub 中继：URL 由 urlForHost 拼成（始终 hub base + ?host=），
+   * 钥匙固定用 hub 槽，401 归因给 hub。跨 host 读配置用——不能按「选中
+   * host 的近路」自动判定，否则可能把请求发到本机另一台上。
+   */
+  forceRelay?: boolean
 }
 
 /** detectMode 的结论。`mode: null` = 不可知（网络失败），调用方不得改状态。 */
@@ -1218,6 +1224,18 @@ export class LocalTransport {
   }
 
   /**
+   * 指向**指定** host 的 API URL（跨 host 读数据用，如「从其他 Host 导入
+   * 模型配置」）。始终走 hub base + ?host=，不做本机近路判定——调用方问的
+   * 是那台 host，不是当前选中的这台。非 hub 模式返回 null（没有第二台），
+   * 调用方据此禁用入口而不是发一条打错的请求。
+   */
+  urlForHost(hostId: string, path: string): string | null {
+    const id = hostId.trim()
+    if (this.mode !== 'hub' || !id) return null
+    return `${this.apiBase()}${path}?host=${encodeURIComponent(id)}`
+  }
+
+  /**
    * Mode-aware fetch：apiUrl 拼 URL + Authorization bearer + 超时 +
    * 在途请求跟踪（setHost/disconnect 时统一 abort）。所有 API 调用
    * 都应走这里而不是裸 fetch。
@@ -1347,9 +1365,15 @@ export class LocalTransport {
         : opts.auth === true
           ? this.probeKey()
           : null
-    const token = forced ?? (opts.auth === false ? null : this.tokenFor(input))
+    // forceRelay（跨 host 读别的 host）：一定是打 hub 的请求——出示 hub 槽
+    // 那把，也按 hub 拒绝归因（绝不因为目标那台而清掉本机的房间钥匙）。
+    const token = opts.forceRelay
+      ? (forced ?? (this.hubToken || null))
+      : (forced ?? (opts.auth === false ? null : this.tokenFor(input)))
     // 401 归因用的目标，在**发请求之前**定格：见 handleRejection 的注释。
-    const target = { local: this.isLocalRequest(input), hostId: this.routeOwner(input) }
+    const target = opts.forceRelay
+      ? { local: false, hostId: null }
+      : { local: this.isLocalRequest(input), hostId: this.routeOwner(input) }
     if (token) {
       if (!headers.has('Authorization')) headers.set('Authorization', `Bearer ${token}`)
     } else {

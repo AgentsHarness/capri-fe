@@ -54,9 +54,8 @@ function findGroupEl(root: HTMLElement | null, key: string): HTMLElement | null 
 /** 组内默认显示的普通会话行数（置顶/待办不占名额，超出折叠为"加载更多"）。 */
 const WORKSPACE_ROWS_LIMIT = 4
 
-/** 行操作菜单（右键 / ⋮）的估算尺寸，用于视口边界 clamp。 */
-const ROW_MENU_W = 176
-const ROW_MENU_H = 240
+/** 行/分组操作菜单的宽度：⋮ 按它左移对齐按钮右缘，菜单本身也按它渲染。 */
+const MENU_W = 176
 
 /** 点击"加载更多"每次追加的行数，循环直到组内会话全部显示；
  *  展开超过默认基准（WORKSPACE_ROWS_LIMIT + 置顶/待办数）后出现
@@ -605,27 +604,68 @@ export function SessionHistoryList() {
   //  - row   : 打开会话 / 重命名(仅当前) / 删除(非运行中，含当前会话 —
   //            删当前会话落到空状态)；删除走确认弹窗。
   //  - group : 右键工作区分组头 → "在此目录新建会话"。
+  /** 菜单锚点（视口坐标）：`y` 是向下开时菜单的上沿，`flipY` 是向上翻时
+   *  菜单的下沿——右键两者同取光标，⋮ 取按钮的下沿 / 上沿（含 4px 间距）。 */
+  type MenuAnchor = { x: number; y: number; flipY: number }
   type MenuState =
-    | { kind: 'row'; row: MergedRow; x: number; y: number }
-    | { kind: 'group'; cwd: string; x: number; y: number }
+    | ({ kind: 'row'; row: MergedRow } & MenuAnchor)
+    | ({ kind: 'group'; cwd: string } & MenuAnchor)
   const [menu, setMenu] = useState<MenuState | null>(null)
+  // 实测尺寸后的落位；null = 还没量到（先前按锚点渲染，布局副作用在绘制前
+  // 纠正，不会闪）。
+  const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
   const [deleteTarget, setDeleteTarget] = useState<MergedRow | null>(null)
-  const closeMenu = () => setMenu(null)
+  const closeMenu = () => {
+    setMenu(null)
+    setMenuPos(null)
+  }
+  /**
+   * 「标记」类操作统一入口（待办三态 / 置顶会话 / 置顶目录）：这些都是
+   * 排序主键，改完该行或该组在列表里换位，整张列表重排，组的默认展示
+   * 名额也跟着变（见 defaultShownCount）。这类操作由用户主动发起，视口
+   * 应原地不动：置 skip 让 useScrollAnchor 只重选锚点、不做 delta 补偿
+   * （滚动容器已关原生锚定，见 HistorySidebar / TopBar）。
+   */
+  const applyMark = (mutate: () => void) => {
+    skipAnchorRef.current = true
+    mutate()
+    closeMenu()
+  }
   const openMenu = (
     m: { kind: 'row'; row: MergedRow } | { kind: 'group'; cwd: string },
-    x: number,
-    y: number,
+    anchor: MenuAnchor,
   ) => {
-    const pos = {
-      x: Math.max(8, Math.min(x, window.innerWidth - ROW_MENU_W - 8)),
-      y: Math.max(8, Math.min(y, window.innerHeight - ROW_MENU_H - 8)),
-    }
+    setMenuPos(null)
     setMenu(
       m.kind === 'row'
-        ? { kind: 'row', row: m.row, ...pos }
-        : { kind: 'group', cwd: m.cwd, ...pos },
+        ? { kind: 'row', row: m.row, ...anchor }
+        : { kind: 'group', cwd: m.cwd, ...anchor },
     )
   }
+  // 落位按实测尺寸算：菜单高度随条目数在 ~64px（分组两项）到 ~190px（行菜单
+  // 六项 + 两条分隔线）之间变，"按行菜单起草"的固定估值夹取会把分组菜单顶到
+  // 离光标一百多像素的地方（右键视口底部的分组头时最明显）。
+  useLayoutEffect(() => {
+    if (!menu) return
+    const place = () => {
+      const el = menuRef.current
+      if (!el) return
+      const pad = 8
+      const r = el.getBoundingClientRect()
+      const vw = window.innerWidth
+      const vh = window.innerHeight
+      const x = Math.max(pad, Math.min(menu.x, vw - r.width - pad))
+      const yDown = menu.y
+      const yUp = menu.flipY - r.height
+      const y =
+        yDown + r.height <= vh - pad ? yDown : yUp >= pad ? yUp : Math.max(pad, vh - r.height - pad)
+      setMenuPos({ x, y })
+    }
+    place()
+    window.addEventListener('resize', place)
+    return () => window.removeEventListener('resize', place)
+  }, [menu])
   // Esc closes the menu; scrolling the list while the menu floats over a
   // row would strand it on the wrong row, so the list scrolling dismisses
   // it too. Scoped to the LIST only: the main scrollback auto-scrolls
@@ -734,7 +774,10 @@ export function SessionHistoryList() {
                   if (!isWorkspace || !g.cwd) return
                   e.preventDefault()
                   e.stopPropagation()
-                  openMenu({ kind: 'group', cwd: g.cwd }, e.clientX, e.clientY)
+                  openMenu(
+                    { kind: 'group', cwd: g.cwd },
+                    { x: e.clientX, y: e.clientY, flipY: e.clientY },
+                  )
                 }}
                 className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 px-3 py-1 text-left hover:bg-gn-bg-highlight"
                 title={isWorkspace ? g.cwd : g.label}
@@ -784,7 +827,10 @@ export function SessionHistoryList() {
                   onClick={(e) => {
                     e.stopPropagation()
                     const r = e.currentTarget.getBoundingClientRect()
-                    openMenu({ kind: 'group', cwd: g.cwd! }, r.right - ROW_MENU_W, r.bottom + 4)
+                    openMenu(
+                      { kind: 'group', cwd: g.cwd! },
+                      { x: r.right - MENU_W, y: r.bottom + 4, flipY: r.top - 4 },
+                    )
                   }}
                   className="mr-3 flex shrink-0 items-center justify-center rounded px-1.5 py-1 text-gn-muted hover:text-gn-fg lg:hidden"
                   title="更多操作"
@@ -854,7 +900,10 @@ export function SessionHistoryList() {
                       onContextMenu={(e) => {
                         e.preventDefault()
                         e.stopPropagation()
-                        openMenu({ kind: 'row', row: s }, e.clientX, e.clientY)
+                        openMenu(
+                          { kind: 'row', row: s },
+                          { x: e.clientX, y: e.clientY, flipY: e.clientY },
+                        )
                       }}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' || e.key === ' ') {
@@ -976,7 +1025,10 @@ export function SessionHistoryList() {
                         onClick={(e) => {
                           e.stopPropagation()
                           const r = e.currentTarget.getBoundingClientRect()
-                          openMenu({ kind: 'row', row: s }, r.right - ROW_MENU_W, r.bottom + 4)
+                          openMenu(
+                            { kind: 'row', row: s },
+                            { x: r.right - MENU_W, y: r.bottom + 4, flipY: r.top - 4 },
+                          )
                         }}
                         className="flex shrink-0 items-center justify-center rounded px-1 text-gn-muted hover:text-gn-fg lg:hidden"
                         title="更多操作"
@@ -1091,8 +1143,9 @@ export function SessionHistoryList() {
             }}
           >
             <div
-              className="absolute w-[176px] overflow-hidden gn-menu"
-              style={{ left: menu.x, top: menu.y }}
+              ref={menuRef}
+              className="absolute overflow-hidden gn-menu"
+              style={{ left: menuPos?.x ?? menu.x, top: menuPos?.y ?? menu.y, width: MENU_W }}
               onMouseDown={(e) => e.stopPropagation()}
               role="menu"
               aria-label="会话操作"
@@ -1126,10 +1179,7 @@ export function SessionHistoryList() {
                     重命名
                   </MenuItem>
                   <MenuItem
-                    onClick={() => {
-                      toggleSessionPin(menu.row.sessionId)
-                      closeMenu()
-                    }}
+                    onClick={() => applyMark(() => toggleSessionPin(menu.row.sessionId))}
                   >
                     <span aria-hidden className="inline-block w-4 shrink-0 text-center text-gn-yellow">
                       <Pin size={14} strokeWidth={2.5} />
@@ -1146,8 +1196,7 @@ export function SessionHistoryList() {
                         <>
                           <MenuItem
                             onClick={() => {
-                              setTodoStatus(menu.row.sessionId, 'completed')
-                              closeMenu()
+                              applyMark(() => setTodoStatus(menu.row.sessionId, 'completed'))
                             }}
                           >
                             <span aria-hidden className="inline-block w-4 shrink-0 text-center text-gn-green">
@@ -1157,8 +1206,7 @@ export function SessionHistoryList() {
                           </MenuItem>
                           <MenuItem
                             onClick={() => {
-                              setTodoStatus(menu.row.sessionId, null)
-                              closeMenu()
+                              applyMark(() => setTodoStatus(menu.row.sessionId, null))
                             }}
                           >
                             <span aria-hidden className="inline-block w-4 shrink-0 text-center">
@@ -1174,8 +1222,7 @@ export function SessionHistoryList() {
                         <>
                           <MenuItem
                             onClick={() => {
-                              setTodoStatus(menu.row.sessionId, 'todo')
-                              closeMenu()
+                              applyMark(() => setTodoStatus(menu.row.sessionId, 'todo'))
                             }}
                           >
                             <span aria-hidden className="inline-block w-4 shrink-0 text-center text-gn-yellow">
@@ -1185,8 +1232,7 @@ export function SessionHistoryList() {
                           </MenuItem>
                           <MenuItem
                             onClick={() => {
-                              setTodoStatus(menu.row.sessionId, null)
-                              closeMenu()
+                              applyMark(() => setTodoStatus(menu.row.sessionId, null))
                             }}
                           >
                             <span aria-hidden className="inline-block w-4 shrink-0 text-center">
@@ -1201,8 +1247,7 @@ export function SessionHistoryList() {
                       <>
                         <MenuItem
                           onClick={() => {
-                            setTodoStatus(menu.row.sessionId, 'todo')
-                            closeMenu()
+                            applyMark(() => setTodoStatus(menu.row.sessionId, 'todo'))
                           }}
                         >
                           <span aria-hidden className="inline-block w-4 shrink-0 text-center text-gn-yellow">
@@ -1212,8 +1257,7 @@ export function SessionHistoryList() {
                         </MenuItem>
                         <MenuItem
                           onClick={() => {
-                            setTodoStatus(menu.row.sessionId, 'completed')
-                            closeMenu()
+                            applyMark(() => setTodoStatus(menu.row.sessionId, 'completed'))
                           }}
                         >
                           <span aria-hidden className="inline-block w-4 shrink-0 text-center text-gn-green">
@@ -1246,10 +1290,7 @@ export function SessionHistoryList() {
               ) : (
                 <>
                   <MenuItem
-                    onClick={() => {
-                      toggleWorkspacePin(menu.cwd)
-                      closeMenu()
-                    }}
+                    onClick={() => applyMark(() => toggleWorkspacePin(menu.cwd))}
                   >
                     <span aria-hidden className="inline-block w-4 shrink-0 text-center text-gn-yellow">
                       <Pin size={14} strokeWidth={2.5} />

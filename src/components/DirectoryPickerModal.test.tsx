@@ -1,23 +1,36 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { runShellCommand } from '../api/shell'
+import { createLocalDir, listLocalDirs, type ListLocalDirsResult } from '../api/localFs'
 import { DirectoryPickerModal } from './DirectoryPickerModal'
 
-vi.mock('../api/shell', () => ({
-  runShellCommand: vi.fn(),
+vi.mock('../api/localFs', () => ({
+  listLocalDirs: vi.fn(),
+  createLocalDir: vi.fn(),
 }))
 
-const shellMock = vi.mocked(runShellCommand)
+const listMock = vi.mocked(listLocalDirs)
+const createMock = vi.mocked(createLocalDir)
 
 const onClose = vi.fn()
 const onPick = vi.fn()
 
-function okResult(stdout: string) {
-  return { ok: true as const, exitCode: 0, stdout }
+/** host 成功应答：path 是归一化后的宿主原生路径，dirs 是绝对路径的条目。 */
+function listed(path: string, dirs: Record<string, string> = {}, home = '/home/u') {
+  return {
+    ok: true as const,
+    path,
+    home,
+    dirs: Object.entries(dirs).map(([name, p]) => ({ name, path: p })),
+  }
+}
+
+function failed(error: string, path?: string) {
+  return { ok: false as const, error, ...(path ? { path } : {}) }
 }
 
 beforeEach(() => {
-  shellMock.mockReset()
+  listMock.mockReset()
+  createMock.mockReset()
   onClose.mockReset()
   onPick.mockReset()
 })
@@ -28,225 +41,293 @@ function renderModal(initial?: string) {
   )
 }
 
+function draftInput(): HTMLInputElement {
+  return screen.getByPlaceholderText('路径或 ~（回车跳转）') as HTMLInputElement
+}
+
 describe('DirectoryPickerModal', () => {
-  it('未打开 → 不渲染', () => {
+  it('未打开 → 不渲染、不发请求', () => {
     const { container } = render(
-      <DirectoryPickerModal open={false} onClose={onClose} onPick={onPick} />,
+      <DirectoryPickerModal open={false} initial="/home/u" onClose={onClose} onPick={onPick} />,
     )
     expect(container.firstChild).toBeNull()
+    expect(listMock).not.toHaveBeenCalled()
   })
 
-  it('打开 + initial → 列出直接子目录（./ 前缀剥离、. 过滤、排序）', async () => {
-    shellMock.mockResolvedValue(okResult('./zeta\n.\n./alpha\n./mid'))
-    renderModal('/home/u')
-    expect(await screen.findByText('alpha')).toBeInTheDocument()
-    const rows = screen.getAllByRole('button')
-    const names = rows
-      .map((r) => r.textContent)
-      .filter((t) => t !== undefined && t.includes('▸'))
-    expect(names).toEqual(['▸alpha', '▸mid', '▸zeta'])
-    expect(shellMock).toHaveBeenCalledWith('find . -maxdepth 1 -type d', '/home/u')
-  })
-
-  it('无 initial → 先 echo $PWD 再加载', async () => {
-    shellMock.mockResolvedValueOnce(okResult('/echoed'))
-    shellMock.mockResolvedValueOnce(okResult('./src'))
-    renderModal()
-    await screen.findByText('src')
-    expect(shellMock).toHaveBeenNthCalledWith(1, 'echo "$PWD"')
-    expect(shellMock).toHaveBeenNthCalledWith(2, 'find . -maxdepth 1 -type d', '/echoed')
-  })
-
-  it('点击目录进入子目录', async () => {
-    shellMock.mockResolvedValueOnce(okResult('./src'))
-    shellMock.mockResolvedValueOnce(okResult('./a\n./b'))
-    renderModal('/home/u')
-    fireEvent.click(await screen.findByText('src'))
-    await waitFor(() =>
-      expect(shellMock).toHaveBeenNthCalledWith(2, 'find . -maxdepth 1 -type d', '/home/u/src'),
+  it('打开 + initial → 用 host 返回的绝对路径列子目录（前端不拼路径）', async () => {
+    listMock.mockResolvedValue(
+      listed('/home/u', { src: '/home/u/src', docs: '/home/u/docs' }),
     )
-    expect(await screen.findByText('a')).toBeInTheDocument()
+    const { container } = renderModal('/home/u')
+
+    expect(await screen.findByRole('button', { name: 'src' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'docs' })).toBeInTheDocument()
+    expect(listMock).toHaveBeenCalledWith('/home/u')
+    expect(container.textContent).toContain('当前：/home/u')
   })
 
-  it('↑ 上级 → 返回父目录', async () => {
-    shellMock.mockResolvedValueOnce(okResult('./sub'))
-    shellMock.mockResolvedValueOnce(okResult('./x'))
+  it('无 initial → 请求空路径让 host 落主目录，并在「当前」里显示它', async () => {
+    listMock.mockResolvedValue(listed('/Users/ben', {}, '/Users/ben'))
+    const { container } = renderModal()
+
+    await waitFor(() => expect(listMock).toHaveBeenCalledWith(''))
+    await waitFor(() => expect(container.textContent).toContain('当前：/Users/ben'))
+    expect(draftInput().value).toBe('/Users/ben')
+  })
+
+  it('点目录行 → 用该行返回的 path 继续列（不拼接）', async () => {
+    listMock
+      .mockResolvedValueOnce(listed('/home/u', { src: '/home/u/src' }))
+      .mockResolvedValueOnce(listed('/home/u/src', { deep: '/home/u/src/deep' }))
     renderModal('/home/u')
-    await screen.findByText('sub')
-    fireEvent.click(screen.getByRole('button', { name: /上级/ }))
-    await waitFor(() =>
-      expect(shellMock).toHaveBeenNthCalledWith(2, 'find . -maxdepth 1 -type d', '/home'),
-    )
-    expect(await screen.findByText('x')).toBeInTheDocument()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'src' }))
+
+    await waitFor(() => expect(listMock).toHaveBeenNthCalledWith(2, '/home/u/src'))
+    expect(await screen.findByRole('button', { name: 'deep' })).toBeInTheDocument()
   })
 
-  it('根目录 → 上级按钮禁用', async () => {
-    shellMock.mockResolvedValue(okResult('./etc'))
+  it('上级 → 按输入框里的字面路径爬一级', async () => {
+    listMock
+      .mockResolvedValueOnce(listed('/home/u/src'))
+      .mockResolvedValueOnce(listed('/home/u', { docs: '/home/u/docs' }))
+    renderModal('/home/u/src')
+
+    fireEvent.click(await screen.findByRole('button', { name: '上级' }))
+
+    await waitFor(() => expect(listMock).toHaveBeenNthCalledWith(2, '/home/u'))
+    expect(await screen.findByRole('button', { name: 'docs' })).toBeInTheDocument()
+  })
+
+  it('根目录 → 上级禁用', async () => {
+    listMock.mockResolvedValue(listed('/'))
     renderModal('/')
-    await screen.findByText('etc')
-    expect(screen.getByRole('button', { name: /上级/ })).toBeDisabled()
+    expect(await screen.findByRole('button', { name: '上级' })).toBeDisabled()
   })
 
-  it('手改路径 + Enter → 跳转；相同路径不重复跳转；输入法组字 Enter 放行', async () => {
-    shellMock.mockResolvedValueOnce(okResult('./src'))
-    shellMock.mockResolvedValueOnce(okResult('./lib'))
+  it('Windows：/d/aiwork 打开后显示宿主归一化的 D:\\aiwork，上级按盘符爬', async () => {
+    listMock
+      .mockResolvedValueOnce(listed('D:\\aiwork', { src: 'D:\\aiwork\\src' }))
+      .mockResolvedValueOnce(listed('D:\\'))
+    const { container } = renderModal('/d/aiwork')
+
+    expect(await screen.findByRole('button', { name: 'src' })).toBeInTheDocument()
+    expect(listMock).toHaveBeenCalledWith('/d/aiwork')
+    expect(draftInput().value).toBe('D:\\aiwork')
+    expect(container.textContent).toContain('当前：D:\\aiwork')
+
+    fireEvent.click(screen.getByRole('button', { name: '上级' }))
+    // 上级按盘符取（D:\），请求原样发出去、由 host 归一化
+    await waitFor(() => expect(listMock).toHaveBeenNthCalledWith(2, 'D:\\'))
+  })
+
+  it('Windows：盘根 D:\\ 没有上级', async () => {
+    listMock.mockResolvedValue(listed('D:\\', { aiwork: 'D:\\aiwork' }))
+    renderModal('D:\\')
+
+    expect(await screen.findByRole('button', { name: 'aiwork' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '上级' })).toBeDisabled()
+  })
+
+  it('手改路径 + Enter → 先归一化：/d/work 请求出去、D:\\work 显示回来；同路径不重复请求', async () => {
+    listMock
+      .mockResolvedValueOnce(listed('/home/u'))
+      .mockResolvedValueOnce(listed('D:\\work'))
     renderModal('/home/u')
-    const input = (await screen.findByPlaceholderText('路径或 ~（回车跳转）')) as HTMLInputElement
-    fireEvent.change(input, { target: { value: '/home/u/lib' } })
+    const input = draftInput()
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(1))
+
+    fireEvent.change(input, { target: { value: '/d/work' } })
     fireEvent.keyDown(input, { key: 'Enter' })
-    await waitFor(() =>
-      expect(shellMock).toHaveBeenNthCalledWith(2, 'find . -maxdepth 1 -type d', '/home/u/lib'),
-    )
+
+    await waitFor(() => expect(listMock).toHaveBeenNthCalledWith(2, '/d/work'))
+    await waitFor(() => expect(input.value).toBe('D:\\work'))
 
     // 输入法组字中的 Enter → 不跳转（真实 KeyboardEvent 才能带 isComposing）
     const ime = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, isComposing: true })
     input.dispatchEvent(ime)
-    expect(shellMock).toHaveBeenCalledTimes(2)
+    expect(listMock).toHaveBeenCalledTimes(2)
 
     // 相同路径 → 不触发
-    fireEvent.change(input, { target: { value: '/home/u/lib' } })
     fireEvent.keyDown(input, { key: 'Enter' })
-    expect(shellMock).toHaveBeenCalledTimes(2)
+    expect(listMock).toHaveBeenCalledTimes(2)
   })
 
-  it('选择此目录 → onPick(当前路径) + onClose', async () => {
-    shellMock.mockResolvedValue(okResult('./src'))
+  it('相对路径 + Enter → 拼到当前目录上', async () => {
+    listMock.mockResolvedValueOnce(listed('/home/u')).mockResolvedValueOnce(listed('/home/u/src'))
     renderModal('/home/u')
-    await screen.findByText('src')
+    const input = draftInput()
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(1))
+
+    fireEvent.change(input, { target: { value: 'src' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    await waitFor(() => expect(listMock).toHaveBeenNthCalledWith(2, '/home/u/src'))
+  })
+
+  it('不存在的路径：报错、「选择此目录」禁用，点也不选（不能拿不存在的路径继续）', async () => {
+    listMock
+      .mockResolvedValue(failed('目录不存在：/nope', '/nope'))
+      .mockResolvedValueOnce(listed('/home/u', { src: '/home/u/src' }))
+    renderModal('/home/u')
+    const input = draftInput()
+    await screen.findByRole('button', { name: 'src' })
+
+    fireEvent.change(input, { target: { value: '/nope' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(await screen.findByText('目录不存在：/nope')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'src' })).toBeNull() // 旧列表清空
+    const pick = screen.getByRole('button', { name: '选择此目录' })
+    expect(pick).toBeDisabled()
+    fireEvent.click(pick)
+    expect(onPick).not.toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
+
+    // 重试按钮按当前草稿重发
+    fireEvent.click(screen.getByRole('button', { name: '重试' }))
+    await waitFor(() => expect(listMock).toHaveBeenNthCalledWith(3, '/nope'))
+  })
+
+  it('手改路径后直接点「选择此目录」→ 先验一遍，成功用归一化后的路径选中', async () => {
+    listMock.mockResolvedValueOnce(listed('/home/u')).mockResolvedValueOnce(listed('D:\\proj'))
+    renderModal('/home/u')
+    const input = draftInput()
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(1))
+
+    fireEvent.change(input, { target: { value: '/d/proj' } })
     fireEvent.click(screen.getByRole('button', { name: '选择此目录' }))
-    expect(onPick).toHaveBeenCalledWith('/home/u')
+
+    await waitFor(() => expect(onPick).toHaveBeenCalledWith('D:\\proj'))
+    expect(listMock).toHaveBeenNthCalledWith(2, '/d/proj')
     expect(onClose).toHaveBeenCalled()
   })
 
-  it('手改路径后选择 → 用 draft 值', async () => {
-    shellMock.mockResolvedValue(okResult('./src'))
+  it('手改路径后直接点选但路径不存在 → 不选、不关，只报错', async () => {
+    listMock
+      .mockResolvedValueOnce(listed('/home/u'))
+      .mockResolvedValueOnce(failed('目录不存在：/gone', '/gone'))
     renderModal('/home/u')
-    const input = await screen.findByPlaceholderText('路径或 ~（回车跳转）')
-    fireEvent.change(input, { target: { value: '/other' } })
-    fireEvent.click(screen.getByRole('button', { name: '选择此目录' }))
-    expect(onPick).toHaveBeenCalledWith('/other')
-  })
+    const input = draftInput()
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(1))
 
-  it('exitCode≠0 → 错误 + 重试', async () => {
-    shellMock.mockRejectedValueOnce(new Error('denied'))
-    shellMock.mockResolvedValueOnce(okResult('./retry-ok'))
-    renderModal('/home/u')
-    expect(await screen.findByText('denied')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '重试' }))
-    expect(await screen.findByText('retry-ok')).toBeInTheDocument()
-  })
-
-  it('ok=false 且带 error → 直接用 error 文案', async () => {
-    shellMock.mockResolvedValue({ ok: false, error: '权限不足' })
-    renderModal('/root/secret')
-    expect(await screen.findByText('权限不足')).toBeInTheDocument()
-  })
-
-  it('ok=false 且无 error → 回落到「无法列出目录」', async () => {
-    shellMock.mockResolvedValue({ ok: false })
-    renderModal('/home/u')
-    expect(await screen.findByText('无法列出目录')).toBeInTheDocument()
-  })
-
-  it('exitCode≠0 且有 stderr → 用 stderr 文案', async () => {
-    shellMock.mockResolvedValue({
-      ok: true,
-      exitCode: 1,
-      stdout: '',
-      stderr: 'No such file or directory\n',
-    })
-    renderModal('/nope')
-    expect(await screen.findByText('No such file or directory')).toBeInTheDocument()
-  })
-
-  it('exitCode≠0 且 stderr 为空 → 回落到「无法读取目录：<路径>」', async () => {
-    shellMock.mockResolvedValue({ ok: true, exitCode: 2, stdout: '', stderr: '   ' })
-    renderModal('/nope')
-    expect(await screen.findByText('无法读取目录：/nope')).toBeInTheDocument()
-  })
-
-  it('失败后子目录列表被清空（不留上一次的残留）', async () => {
-    shellMock.mockResolvedValueOnce(okResult('./kept'))
-    renderModal('/home/u')
-    await screen.findByText('kept')
-    // 手改进一个不存在的路径 → 报错，旧列表必须消失
-    shellMock.mockResolvedValueOnce({ ok: true, exitCode: 1, stdout: '', stderr: 'boom' })
-    const input = screen.getByPlaceholderText('路径或 ~（回车跳转）')
     fireEvent.change(input, { target: { value: '/gone' } })
-    fireEvent.keyDown(input, { key: 'Enter' })
-    expect(await screen.findByText('boom')).toBeInTheDocument()
-    expect(screen.queryByText('kept')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '选择此目录' }))
+
+    expect(await screen.findByText('目录不存在：/gone')).toBeInTheDocument()
+    expect(onPick).not.toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
   })
 
-  it('echo $PWD 失败（ok=false）→ 起始目录回落到 /', async () => {
-    shellMock.mockResolvedValueOnce({ ok: false })
-    shellMock.mockResolvedValueOnce(okResult('./from-root'))
-    renderModal()
-    expect(await screen.findByText('from-root')).toBeInTheDocument()
-    expect(shellMock.mock.calls[1][1]).toBe('/')
-  })
-
-  it('echo $PWD 成功但 stdout 为空 → 同样回落到 /', async () => {
-    shellMock.mockResolvedValueOnce({ ok: true, exitCode: 0, stdout: '   ' })
-    shellMock.mockResolvedValueOnce(okResult('./from-root'))
-    renderModal()
-    await screen.findByText('from-root')
-    expect(shellMock.mock.calls[1][1]).toBe('/')
-  })
-
-  it('echo $PWD 本身抛错 → 显示该错误', async () => {
-    shellMock.mockRejectedValueOnce(new Error('shell unavailable'))
-    renderModal()
-    expect(await screen.findByText('shell unavailable')).toBeInTheDocument()
-  })
-
-  it('非 Error 抛出物转成字符串展示', async () => {
-    shellMock.mockRejectedValueOnce('plain failure')
+  it('已确认的目录直接点选 → onPick(该目录) 且不额外发包', async () => {
+    listMock.mockResolvedValue(listed('/home/u', { src: '/home/u/src' }))
     renderModal('/home/u')
-    expect(await screen.findByText('plain failure')).toBeInTheDocument()
+    await screen.findByRole('button', { name: 'src' })
+
+    fireEvent.click(screen.getByRole('button', { name: '选择此目录' }))
+
+    expect(onPick).toHaveBeenCalledWith('/home/u')
+    expect(onClose).toHaveBeenCalled()
+    expect(listMock).toHaveBeenCalledTimes(1)
   })
 
-  it('打开时 initial 为纯空白 → 走 echo $PWD 分支', async () => {
-    shellMock.mockResolvedValueOnce(okResult('/detected'))
-    shellMock.mockResolvedValueOnce(okResult('./sub'))
-    renderModal('   ')
-    await screen.findByText('sub')
-    expect(shellMock.mock.calls[0][0]).toContain('$PWD')
+  it('新建文件夹：按当前目录建、建好直接进入新目录', async () => {
+    listMock
+      .mockResolvedValueOnce(listed('/home/u'))
+      .mockResolvedValueOnce(listed('/home/u/proj', {}, '/home/u'))
+    createMock.mockResolvedValue({ ok: true, path: '/home/u/proj' })
+    const { container } = renderModal('/home/u')
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(1))
+
+    fireEvent.click(screen.getByRole('button', { name: '新建文件夹' }))
+    const nameBox = screen.getByPlaceholderText('新文件夹名称')
+    fireEvent.change(nameBox, { target: { value: 'proj' } })
+    fireEvent.keyDown(nameBox, { key: 'Enter' })
+
+    await waitFor(() => expect(createMock).toHaveBeenCalledWith('/home/u', 'proj'))
+    await waitFor(() => expect(listMock).toHaveBeenNthCalledWith(2, '/home/u/proj'))
+    expect(container.textContent).toContain('当前：/home/u/proj')
+    expect(screen.queryByPlaceholderText('新文件夹名称')).toBeNull() // 建完收起
   })
 
-  it('文件项（不以 ./ 开头）也被列成条目', async () => {
-    shellMock.mockResolvedValue(okResult('bare-entry\n./prefixed'))
+  it('新建文件夹：名称带分隔符本地拦下（不发请求），host 报错原样显示', async () => {
+    listMock.mockResolvedValueOnce(listed('/home/u'))
+    createMock.mockResolvedValue({ ok: false, error: '同名目录或文件已存在：/home/u/proj' })
     renderModal('/home/u')
-    expect(await screen.findByText('bare-entry')).toBeInTheDocument()
-    expect(screen.getByText('prefixed')).toBeInTheDocument()
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(1))
+
+    fireEvent.click(screen.getByRole('button', { name: '新建文件夹' }))
+    const nameBox = screen.getByPlaceholderText('新文件夹名称')
+
+    fireEvent.change(nameBox, { target: { value: 'a/b' } })
+    fireEvent.keyDown(nameBox, { key: 'Enter' })
+    expect(await screen.findByText('文件夹名称不能包含路径分隔符')).toBeInTheDocument()
+    expect(createMock).not.toHaveBeenCalled()
+
+    fireEvent.change(nameBox, { target: { value: 'proj' } })
+    fireEvent.keyDown(nameBox, { key: 'Enter' })
+    expect(await screen.findByText(/已存在/)).toBeInTheDocument()
+    expect(createMock).toHaveBeenCalledWith('/home/u', 'proj')
+    // 失败不进新目录、输入行留着让用户改名
+    expect(screen.getByPlaceholderText('新文件夹名称')).toBeInTheDocument()
   })
 
-  it('根目录下进入子目录仍能拼出 // 之外的合法路径不重复父级', async () => {
-    shellMock.mockResolvedValue(okResult('./a'))
-    renderModal('/')
-    await screen.findByText('a')
-    fireEvent.click(screen.getByText('a'))
-    expect(shellMock).toHaveBeenLastCalledWith('find . -maxdepth 1 -type d', '/a')
+  it('目录未确认（初始加载失败）→ 不能在其下新建文件夹', async () => {
+    listMock.mockResolvedValue(failed('目录不存在：/home/gone', '/home/gone'))
+    renderModal('/home/gone')
+
+    expect(await screen.findByText('目录不存在：/home/gone')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '新建文件夹' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '选择此目录' })).toBeDisabled()
   })
 
-  it('无子目录 → 空提示', async () => {
-    shellMock.mockResolvedValue(okResult('.'))
+  it('新建输入行展开时 Esc 只收起这一行，不关弹窗', async () => {
+    listMock.mockResolvedValue(listed('/home/u', { src: '/home/u/src' }))
     renderModal('/home/u')
-    expect(await screen.findByText('此目录没有子目录')).toBeInTheDocument()
-  })
+    await screen.findByRole('button', { name: 'src' })
 
-  it('Esc / 背景点击 / esc 按钮 → onClose', async () => {
-    shellMock.mockResolvedValue(okResult('./src'))
-    renderModal('/home/u')
-    await screen.findByText('src')
+    fireEvent.click(screen.getByRole('button', { name: '新建文件夹' }))
+    expect(screen.getByPlaceholderText('新文件夹名称')).toBeInTheDocument()
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(onClose).not.toHaveBeenCalled()
+    expect(screen.queryByPlaceholderText('新文件夹名称')).toBeNull()
+
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('背景点击 / 取消 / 关闭按钮 → onClose', async () => {
+    listMock.mockResolvedValue(listed('/home/u', { src: '/home/u/src' }))
+    renderModal('/home/u')
+    await screen.findByRole('button', { name: 'src' })
 
     const dialog = screen.getByRole('dialog', { name: '选择工作目录' })
     fireEvent.mouseDown(dialog)
-    expect(onClose).toHaveBeenCalledTimes(2)
+    expect(onClose).toHaveBeenCalledTimes(1)
 
     fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    expect(onClose).toHaveBeenCalledTimes(2)
+
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }))
     expect(onClose).toHaveBeenCalledTimes(3)
+  })
+
+  it('空目录 / 读取中 各自的状态文案', async () => {
+    let resolveList: ((v: ListLocalDirsResult) => void) | undefined
+    listMock.mockImplementation(
+      () => new Promise<ListLocalDirsResult>((resolve) => { resolveList = resolve }),
+    )
+    renderModal('/home/u')
+    expect(await screen.findByText('读取目录…')).toBeInTheDocument()
+
+    resolveList?.(listed('/home/u'))
+    expect(await screen.findByText('此目录没有子目录')).toBeInTheDocument()
+  })
+
+  it('非 Error 抛出物也显示成人话', async () => {
+    listMock.mockResolvedValue(failed('宿主不支持目录浏览（/api/local/dirs 缺失）—— 需要升级 host'))
+    renderModal('/home/u')
+    expect(await screen.findByText(/需要升级 host/)).toBeInTheDocument()
   })
 })

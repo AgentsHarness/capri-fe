@@ -287,8 +287,8 @@ describe('TopBar', () => {
     expect(dots[0]?.className).toContain('animate-pulse')
   })
 
-  it('conn error → error 标签；layerErrors → ⚠ 异常', () => {
-    const { rerender } = render(<TopBar />)
+  it('conn error → error 标签；layerErrors → host 名保持不变 + 前置告警图标 + 顶栏内联消息', () => {
+    const { rerender, container } = render(<TopBar />)
     expect(screen.getByText('Localhost')).not.toBeNull()
     resetChat({
       mode: 'hub',
@@ -306,6 +306,8 @@ describe('TopBar', () => {
     })
     rerender(<TopBar />)
     expect(screen.getByText('error')).not.toBeNull()
+    // error 级：host 名照常显示、前置 lucide 告警图标；消息是顶栏内的一条
+    // 行内提示（在 header 里），不再另占整条横幅，配色为红。
     resetChat({
       mode: 'hub',
       conn: 'ready',
@@ -314,7 +316,40 @@ describe('TopBar', () => {
       layerErrors: { host: { level: 'error', message: 'host down', at: 1 } },
     })
     rerender(<TopBar />)
-    expect(screen.getByText('⚠ 异常')).not.toBeNull()
+    const errRow = screen.getByText('host down').closest('[role=alert]')
+    expect(errRow?.className).toContain('text-gn-red')
+    expect(errRow?.textContent).toContain('host')
+    expect(errRow?.closest('header')).not.toBeNull()
+    expect(screen.getByText('H')).not.toBeNull()
+    expect(container.querySelector('svg.lucide-triangle-alert')).not.toBeNull()
+    // warning 级：同一图标，配色换成黄色；host 名仍不变。
+    resetChat({
+      mode: 'hub',
+      conn: 'ready',
+      hostName: 'H',
+      hosts: [{ hostId: 'h1', hostName: 'H', online: true }],
+      layerErrors: { host: { level: 'warning', message: 'host slow', at: 2 } },
+    })
+    rerender(<TopBar />)
+    const warnRow = screen.getByText('host slow').closest('[role=alert]')
+    expect(warnRow?.className).toContain('text-gn-warning')
+    expect(container.querySelectorAll('svg.lucide-triangle-alert')).toHaveLength(1)
+    expect(screen.getByText('H')).not.toBeNull()
+  })
+
+  it('local 模式也有内联提示：host 名不变 + 徽标为 hub', () => {
+    resetChat({
+      mode: 'local',
+      conn: 'ready',
+      hostName: 'H',
+      layerErrors: { hub: { level: 'error', message: '与 hub 的连接已断开', at: 3 } },
+    })
+    const { container } = render(<TopBar />)
+    expect(screen.getByText('Localhost')).not.toBeNull()
+    const row = screen.getByText('与 hub 的连接已断开').closest('[role=alert]')
+    expect(row?.closest('header')).not.toBeNull()
+    expect(row?.textContent).toContain('hub')
+    expect(container.querySelector('svg.lucide-triangle-alert')).not.toBeNull()
   })
 
   it('host 下拉：右键当前 host 弹出操作菜单 → 打开修改名称弹窗', () => {

@@ -64,9 +64,9 @@ export type ForkSessionOpts = {
 }
 
 /**
- * 一条分层错误（hub / host 层横幅数据源）。
+ * 一条分层错误（hub / host 层顶栏提示数据源）。
  * - id：恢复事件精确清除用（如 hub-ws 重连成功只清该条）；缺省按层整体覆盖。
- * - action：横幅可执行的恢复动作（当前仅重启 agent）。
+ * - action：顶栏提示可执行的恢复动作（当前仅重启 agent）。
  */
 export type LayerErr = {
   id?: string
@@ -120,9 +120,9 @@ export interface ChatConnState {
   /**
    * 分层错误栈：hub（中继/配对/token/离线）与 host（进程/boot/通道）
    * 各最多一条，同层新错误覆盖旧的；agent 回合级错误不进这里（它是
-   * 会话时间线的一部分，由 scrollback 错误行承担）。横幅（ErrorBanner）
-   * 从两层中选一条展示；恢复事件（ready/busy/新回合/重连成功）按层
-   * 清除。error > warning，同级取 at 较新。
+   * 会话时间线的一部分，由 scrollback 错误行承担）。顶栏的 host 提示
+   * （LayerErrNotice）从两层中选一条展示；恢复事件（ready/busy/新回合/
+   * 重连成功）按层清除。error > warning，同级取 at 较新。
    */
   layerErrors: { hub?: LayerErr; host?: LayerErr }
   /** 写入/清除某一层的错误（undefined = 清除该层）。 */
@@ -311,6 +311,12 @@ export interface ChatTurnState {
    * 返回/失败/会话复位时清空。
    */
   recapPendingFor?: string
+  /**
+   * 手工记忆命令（/flush、/dream）在跑：状态行显示 TUI 同款命令 label
+   * 与计时（TUI `AgentState::CommandRunning` → `"{display_name()}…"`）。
+   * 记录发起会话的 id——只有该会话处于活动状态时才显示（切会话不残留）。
+   */
+  memoryCommandPending?: { sessionId: string; label: string; startedAt: number }
   /**
    * 按会话缓存最近一次 recap 摘要：recap 事件是 display-only、不进
    * 持久化历史，跨会话期间到达的摘要若直接进当前滚动区会污染视图、
@@ -915,7 +921,7 @@ export interface ChatActions {
   respondXai: (requestId: string, result?: Record<string, unknown>, error?: string) => Promise<void>
   /** Cancel a forwarded x.ai/* request (outcome:cancelled / error). */
   dismissXai: (requestId: string) => Promise<void>
-  /** Dismiss the top error/status banner (user acknowledged the message). */
+  /** 关闭顶栏的 hub/host 层错误提示（用户已确认该消息）。 */
   dismissNotice: () => void
   /** x.ai/recap — fire-and-forget "where was I" summary. */
   requestRecap: () => Promise<void>

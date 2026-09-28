@@ -68,7 +68,12 @@ export function useScrollAnchor(
   }
 
   useLayoutEffect(() => {
-    if (seenRef.current === version) return
+    if (seenRef.current === version) {
+      // 指纹没变 = 本次没有布局变化要跳过。标志留着会被下一次无关的
+      // 布局变化消费掉（那一次本该补偿却被跳过），就地清掉。
+      if (skipRef?.current) skipRef.current = false
+      return
+    }
     seenRef.current = version
     const scroller = scrollAncestor(rootRef.current)
     if (!scroller) return

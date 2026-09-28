@@ -1,7 +1,12 @@
 import { transport } from '../../../api/client'
 import type { ChatState, SetState } from '../types'
 import type { MemoryListing } from '../../../lib/memory'
-import { canEnableMemory, disabledReasonLabel } from '../../../lib/memory'
+import { canEnableMemory, disabledReasonLabel, memoryDreamOutcome } from '../../../lib/memory'
+import { formatTurnDuration } from '../format'
+import { appendEntry } from '../entries'
+
+/** Composer status while /dream runs (TUI AgentCommand::MemoryDream label). */
+const DREAM_STATUS = 'Consolidating memory…'
 
 /** Settings the modal reads without a round trip when a rail fails. */
 function sessionOf(get: () => ChatState): string | undefined {
@@ -81,22 +86,52 @@ export function memoryActions(set: SetState, get: () => ChatState) {
 
     /**
      * Run memory consolidation now (TUI /dream → x.ai/memory/dream). The
-     * agent's own `memory_dream_completed` notification reports the outcome in
-     * the scrollback; here only the dispatch failure is surfaced.
+     * start marker goes up before the request and the outcome line is built
+     * from the reply (MemoryDreamResponse.summary), like the pager renders
+     * its command RPC. The wire's memory_dream_* notifications also cover
+     * automatic Dream and render nothing.
      */
     memoryDream: async () => {
       const sessionId = sessionOf(get)
       if (!sessionId) {
-        set({ statusText: '记忆整合失败: 无活动会话' })
+        appendEntry(set, { kind: 'error', text: '记忆整合失败: 无活动会话' })
         return
       }
+      const prevStatus = get().statusText ?? ''
+      appendEntry(set, { kind: 'session_event', text: '正在整合记忆…' })
+      set({
+        statusText: DREAM_STATUS,
+        memoryCommandPending: {
+          sessionId,
+          label: DREAM_STATUS,
+          startedAt: Date.now(),
+        },
+      })
+      const startedAt = Date.now()
       try {
-        await transport.memoryDream(sessionId)
-        set({ statusText: '正在整合记忆…' })
+        const { summary, succeeded } = memoryDreamOutcome(
+          await transport.memoryDream(sessionId),
+        )
+        // 会话在命令期间被切走：结果行属于发起它的那个视图，放弃追加。
+        if (get().sessionId === sessionId) {
+          appendEntry(set, {
+            kind: 'session_event',
+            text: `${summary}（${formatTurnDuration(Date.now() - startedAt)}）· /memory 查看`,
+            warning: !succeeded,
+          })
+        }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
-        set({ statusText: `记忆整合失败: ${msg}` })
+        if (get().sessionId === sessionId) {
+          appendEntry(set, { kind: 'error', text: `记忆整合失败: ${msg}` })
+        }
       }
+      set((s) => ({
+        ...(s.statusText === DREAM_STATUS ? { statusText: prevStatus } : {}),
+        ...(s.memoryCommandPending?.sessionId === sessionId
+          ? { memoryCommandPending: undefined }
+          : {}),
+      }))
     },
 
     /**

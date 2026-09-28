@@ -1,10 +1,11 @@
+import { RotateCw } from 'lucide-react'
 import type { ScrollEntry } from '../../api/types'
 import {
   USER_COLLAPSED_MAX_LINES,
   collapseUserText,
 } from '../../scrollback/userText'
 import { Glyphs } from '../../theme/glyphs'
-import { IconGlyph } from '../IconGlyph'
+import { Bullet } from './EntryShell'
 import { UserSteerTime } from './PromptTime'
 
 export function StickyPrompt({
@@ -51,33 +52,18 @@ export function StickyPrompt({
             className="group relative flex w-full min-w-0 cursor-pointer items-start gap-1.5 px-2.5 py-[11px] text-left transition-colors hover:brightness-110"
             title="点击跳转到此消息开头"
           >
-            <span
-              className="mt-[1.5px] shrink-0"
-              style={{
-                color: pinnedUser.isShell
+            <Bullet
+              className="mt-[1.5px]"
+              glyph={pinnedUser.isShell ? '$' : Glyphs.promptArrow}
+              icon={pinnedUser.isCron ? <RotateCw size={13} strokeWidth={2} /> : undefined}
+              color={
+                pinnedUser.isShell
                   ? 'var(--color-gn-cyan)'
                   : pinnedUser.isInterjection
                     ? 'var(--color-gn-warning)'
-                    : 'var(--color-gn-accent-user)',
-              }}
-            >
-              <IconGlyph
-                glyph={
-                  pinnedUser.isShell
-                    ? '$'
-                    : pinnedUser.isCron
-                      ? Glyphs.cronPrompt
-                      : Glyphs.promptArrow
-                }
-                color={
-                  pinnedUser.isShell
-                    ? 'var(--color-gn-cyan)'
-                    : pinnedUser.isInterjection
-                      ? 'var(--color-gn-warning)'
-                      : 'var(--color-gn-accent-user)'
-                }
-              />
-            </span>
+                    : 'var(--color-gn-accent-user)'
+              }
+            />
             <div className="min-w-0 flex-1 whitespace-pre-wrap break-words">
               {/* store 回退：提示这条 prompt 在可见列表上方。 */}
               {pinnedStore ? `${Glyphs.ellipsis} ` : ''}

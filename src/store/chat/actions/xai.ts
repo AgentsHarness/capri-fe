@@ -10,11 +10,18 @@ import {
   TASK_KILL_STATUS_TEXT,
 } from '../tasks'
 import { INITIAL_TURNS } from '../history'
+import { formatTurnDuration } from '../format'
+import { memoryFlushOutcome } from '../../../lib/memory'
 import { noteHistoryProjection } from '../historyFill'
 import { loadHistoryWithTaskProbe } from '../loadHistory'
 import { usePins } from '../../historyPins'
 import { clearPlanMode } from '../modePersist'
 import { pushToast } from '../../toast'
+
+/** Composer status while /flush runs (TUI AgentCommand::MemoryFlush label). */
+const FLUSH_STATUS = 'Flushing memory…'
+/** Composer status while a /remember note is being rewritten (no TUI label). */
+const REWRITE_STATUS = '正在改写记忆笔记…'
 
 /**
  * 按 target 轮次本地截断当前滚动区（TUI dispatch_rewind_success 的
@@ -161,11 +168,11 @@ export function xaiActions(set: SetState, get: () => ChatState) {
 
   /**
    * Memory system — /flush (TUI /flush): persist the session's knowledge
-   * to memory right now. The host contract is POST /api/memory-flush
-   * `{ sessionId }` → `{ ok: true }` (parallel host work — a 404 here is
-   * surfaced as an error row, not a hang). Progress events
-   * (memory_flush_started / memory_flush_completed) arrive as
-   * session_notification tags and render their own scrollback lines.
+   * to memory right now. The start marker goes up before the request and the
+   * outcome line is built from the reply (the agent's MemoryFlushResponse),
+   * the same way the pager renders its command RPC. The wire's
+   * memory_flush_* notifications also cover background flushes and therefore
+   * render nothing (docs 13-memory.md "Memory Notifications").
    */
   memoryFlush: async () => {
     const st = get()
@@ -173,14 +180,36 @@ export function xaiActions(set: SetState, get: () => ChatState) {
       appendEntry(set, { kind: 'error', text: '记忆刷新失败: 无活动会话' })
       return
     }
+    const prevStatus = st.statusText ?? ''
+    const sid = st.sessionId
+    appendEntry(set, { kind: 'session_event', text: '正在刷新记忆…' })
+    set({
+      statusText: FLUSH_STATUS,
+      memoryCommandPending: { sessionId: sid, label: FLUSH_STATUS, startedAt: Date.now() },
+    })
+    const startedAt = Date.now()
     try {
-      await transport.memoryFlush(st.sessionId)
-      set({ statusText: '正在刷新记忆…' })
-      appendEntry(set, { kind: 'session_event', text: '等待记忆刷新完成…' })
+      const { summary, succeeded } = memoryFlushOutcome(await transport.memoryFlush(sid))
+      // 会话在命令期间被切走：结果行属于发起它的那个视图，放弃追加。
+      if (get().sessionId === sid) {
+        appendEntry(set, {
+          kind: 'session_event',
+          text: `${summary}（${formatTurnDuration(Date.now() - startedAt)}）· /memory 查看`,
+          warning: !succeeded,
+        })
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      appendEntry(set, { kind: 'error', text: `记忆刷新失败: ${msg}` })
+      if (get().sessionId === sid) {
+        appendEntry(set, { kind: 'error', text: `记忆刷新失败: ${msg}` })
+      }
     }
+    // Restore the idle status text unless something else took the slot while
+    // the command ran (a prompt sent meanwhile must keep its own status).
+    set((s) => ({
+      ...(s.statusText === FLUSH_STATUS ? { statusText: prevStatus } : {}),
+      ...(s.memoryCommandPending?.sessionId === sid ? { memoryCommandPending: undefined } : {}),
+    }))
   },
 
   /**
@@ -199,9 +228,17 @@ export function xaiActions(set: SetState, get: () => ChatState) {
       appendEntry(set, { kind: 'error', text: '记忆笔记失败: 无活动会话' })
       return
     }
+    const sid = st.sessionId
+    // 改写是模型调用、传输层没有截止（TUI 侧同样无截止），所以占住状态行
+    // 让等待可见。TUI 没有对应的命令 label：它的 /remember 先开审阅弹窗
+    // 显示原文，改写稿异步填入（rewrite_nonce）；web 没有那个弹窗，就用
+    // 状态行替代。
+    set({
+      memoryCommandPending: { sessionId: sid, label: REWRITE_STATUS, startedAt: Date.now() },
+    })
     try {
       const data: unknown = await transport.memoryRewrite(
-        st.sessionId,
+        sid,
         rawText,
         extractRememberContext(st),
       )
@@ -211,6 +248,7 @@ export function xaiActions(set: SetState, get: () => ChatState) {
           : undefined
       const text =
         typeof rewritten === 'string' && rewritten.trim() ? rewritten : rawText
+      if (get().sessionId !== sid) return
       appendEntry(
         set,
         text === rawText
@@ -222,7 +260,15 @@ export function xaiActions(set: SetState, get: () => ChatState) {
       )
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      appendEntry(set, { kind: 'error', text: `记忆笔记失败: ${msg}` })
+      if (get().sessionId === sid) {
+        appendEntry(set, { kind: 'error', text: `记忆笔记失败: ${msg}` })
+      }
+    } finally {
+      set((s) =>
+        s.memoryCommandPending?.sessionId === sid
+          ? { memoryCommandPending: undefined }
+          : {},
+      )
     }
   },
 

@@ -257,6 +257,55 @@ export function SessionEventEntry({
       </EntryShell>
     )
   }
+  // memory-v2 capture debug block (TUI MemoryCaptureBlock): bold title row,
+  // collapsed by default, expanded shows each observation's statement, body
+  // and file path under the "untrusted model-generated" header. The TUI links
+  // the committed path (OSC-8); the web has no file-open route, so the path
+  // renders as plain monospace text the user can copy.
+  if (e.memoryCapture) {
+    const block = e.memoryCapture
+    return (
+      <EntryShell {...shell}>
+        <div className="flex items-start gap-1.5 py-[2px] text-[13px] leading-[1.35]">
+          <Bullet color={bullet.color} animated={bullet.animated} />
+          <div className="min-w-0">
+            <div
+              className={`text-[12.5px] font-bold leading-[1.35] ${
+                expanded ? 'text-gn-fg' : 'text-gn-muted'
+              }`}
+            >
+              {e.text}
+            </div>
+            {expanded ? (
+              <div className="mt-1 space-y-1.5">
+                {block.observations.map((o, i) => (
+                  <div
+                    key={`${o.path}-${i}`}
+                    className="border-t border-gn-prompt-border/50 pt-1.5"
+                  >
+                    <div className="text-[11.5px] font-bold text-gn-muted">
+                      不可信模型生成观察 {i + 1}
+                    </div>
+                    <div className="mt-0.5 whitespace-pre-wrap break-words text-[12.5px] leading-[1.45] text-gn-fg">
+                      {o.statement}
+                    </div>
+                    {o.body ? (
+                      <div className="mt-0.5 whitespace-pre-wrap break-words text-[12.5px] leading-[1.45] text-gn-muted">
+                        {o.body}
+                      </div>
+                    ) : null}
+                    <div className="mt-0.5 font-mono text-[11.5px] text-gn-muted">
+                      {o.path}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </EntryShell>
+    )
+  }
   // A hook's verdict or a failed run takes the tool rows' bullet (TUI
   // SessionEvent::HookOutcome has_bullet), so the line reads as part of the
   // tool call above it. Anything older than the 1.0.41 UI still leads with a

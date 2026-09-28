@@ -1,5 +1,5 @@
 import { useRef } from 'react'
-import type { MouseEvent as ReactMouseEvent } from 'react'
+import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import type { ScrollEntry } from '../../api/types'
 import { AccentRail } from '../AccentRail'
@@ -9,7 +9,7 @@ import { accentOpts } from '../../scrollback/accentOpts'
 import { entryExpanded, isHeaderStyleBlock } from '../../scrollback/entryState'
 import { resolveAccent } from '../../theme/accents'
 import { Glyphs } from '../../theme/glyphs'
-import { ACCENT_GAP_PX, ACCENT_W_PX } from '../../theme/layout'
+import { ACCENT_GAP_PX, ACCENT_W_PX, ICON_COL_CLASS } from '../../theme/layout'
 import { HOVER_BG } from './constants'
 
 /**
@@ -151,13 +151,23 @@ export function Bullet({
   color,
   animated,
   glyph = Glyphs.diamondFilled,
+  icon,
   className = '',
 }: {
   color: string
   animated?: boolean
   glyph?: string
+  /** lucide 节点：给了就用它替掉 glyph，仍在同一图标列里（免字体依赖）。 */
+  icon?: ReactNode
   className?: string
 }) {
+  if (icon) {
+    return (
+      <span className={`${ICON_COL_CLASS} ${className}`} style={{ color }} aria-hidden>
+        {icon}
+      </span>
+    )
+  }
   return (
     <IconGlyph glyph={glyph} color={color} animated={animated} className={className} />
   )

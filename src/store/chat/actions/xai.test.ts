@@ -31,6 +31,7 @@ vi.mock('../../../api/client', () => ({
     mcpRemove: vi.fn().mockResolvedValue({}),
     mcpAuthTrigger: vi.fn().mockResolvedValue({}),
     btw: vi.fn().mockResolvedValue({ answer: '**答案**' }),
+    memoryFlush: vi.fn().mockResolvedValue({ flushed: true, disposition: 'flushed', through_turn: 12 }),
     memoryRewrite: vi.fn().mockResolvedValue({
       ok: true,
       result: { rewritten: '## 部署\n\n- eu-west 集群' },
@@ -80,7 +81,13 @@ function bind(state: ChatState) {
   }
   return xaiActions(set, () => state) as Pick<
     ChatState,
-    'forkSession' | 'deleteSession' | 'askBtw' | 'rememberNote' | 'rewindExecute' | 'syncMcpServers'
+    | 'forkSession'
+    | 'deleteSession'
+    | 'askBtw'
+    | 'rememberNote'
+    | 'rewindExecute'
+    | 'syncMcpServers'
+    | 'memoryFlush'
   >
 }
 
@@ -253,6 +260,95 @@ describe('xaiActions.askBtw', () => {
   })
 })
 
+describe('xaiActions.memoryFlush', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('开始行先落，结果行取 RPC 响应（回合号 + 耗时 + /memory 查看）', async () => {
+    const state = makeState()
+    await bind(state).memoryFlush()
+    expect(transport.memoryFlush).toHaveBeenCalledWith('s1')
+    expect(state.entries.map((e) => (e as { text?: string }).text)).toEqual([
+      '正在刷新记忆…',
+      expect.stringMatching(/^记忆已刷新至第 12 回合。\uff08\d+\.\d+s\uff09· \/memory 查看$/),
+    ])
+    // 命令结束把状态位还回空闲，不留下命令文案
+    expect(state.statusText).toBe('')
+  })
+
+  it('disposition=busy → 结果行是 warning，不宣称刷新成功', async () => {
+    ;(transport.memoryFlush as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      flushed: false,
+      disposition: 'busy',
+    })
+    const state = makeState()
+    await bind(state).memoryFlush()
+    expect(state.entries[1]).toMatchObject({
+      kind: 'session_event',
+      text: expect.stringContaining('已有一次记忆刷新在进行中。'),
+      warning: true,
+    })
+  })
+
+  it('请求失败 → 错误行（开始行保留，用户看得到命令确实跑过）', async () => {
+    ;(transport.memoryFlush as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('boom'),
+    )
+    const state = makeState()
+    await bind(state).memoryFlush()
+    expect(state.entries[0]).toMatchObject({ text: '正在刷新记忆…' })
+    expect(state.entries[1]).toMatchObject({
+      kind: 'error',
+      text: expect.stringContaining('记忆刷新失败: boom'),
+    })
+  })
+
+  it('无活动会话 → 错误行，不发请求', async () => {
+    const state = makeState({ sessionId: undefined })
+    await bind(state).memoryFlush()
+    expect(transport.memoryFlush).not.toHaveBeenCalled()
+    expect(state.entries).toHaveLength(1)
+    expect(state.entries[0]).toMatchObject({
+      kind: 'error',
+      text: expect.stringContaining('无活动会话'),
+    })
+  })
+
+  it('命令在飞时置状态行项（label + 计时），落定后清空', async () => {
+    let resolveFlush: ((v: unknown) => void) | undefined
+    ;(transport.memoryFlush as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise((res) => { resolveFlush = res }),
+    )
+    const state = makeState()
+    const p = bind(state).memoryFlush()
+    expect(state.memoryCommandPending).toMatchObject({
+      sessionId: 's1',
+      label: 'Flushing memory…',
+      startedAt: expect.any(Number),
+    })
+    resolveFlush!({ flushed: true, disposition: 'flushed', through_turn: 3 })
+    await p
+    expect(state.memoryCommandPending).toBeUndefined()
+    expect(state.statusText).toBe('')
+  })
+
+  it('命令期间用户切走会话 → 结果行不落到新视图', async () => {
+    let resolveFlush: ((v: unknown) => void) | undefined
+    ;(transport.memoryFlush as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise((res) => { resolveFlush = res }),
+    )
+    const state = makeState()
+    const p = bind(state).memoryFlush()
+    state.sessionId = 'other'
+    state.entries = []
+    resolveFlush!({ flushed: true, disposition: 'flushed', through_turn: 3 })
+    await p
+    expect(state.entries).toHaveLength(0)
+    expect(state.memoryCommandPending).toBeUndefined()
+  })
+})
+
 describe('xaiActions.rememberNote', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -325,6 +421,38 @@ describe('xaiActions.rememberNote', () => {
       kind: 'error',
       text: expect.stringContaining('rewrite failed'),
     })
+  })
+
+  it('改写期间占状态行（无截止的模型调用不能让等待无反馈），落定后清空', async () => {
+    let resolveRewrite: ((v: unknown) => void) | undefined
+    ;(transport.memoryRewrite as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise((res) => { resolveRewrite = res }),
+    )
+    const state = makeState()
+    const p = bind(state).rememberNote('部署用 eu-west')
+    expect(state.memoryCommandPending).toMatchObject({
+      sessionId: 's1',
+      label: '正在改写记忆笔记…',
+      startedAt: expect.any(Number),
+    })
+    resolveRewrite!({ ok: true, result: { rewritten: '## 部署' } })
+    await p
+    expect(state.memoryCommandPending).toBeUndefined()
+  })
+
+  it('改写期间用户切走会话 → 结果行不落到新视图，状态位也清掉', async () => {
+    let resolveRewrite: ((v: unknown) => void) | undefined
+    ;(transport.memoryRewrite as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise((res) => { resolveRewrite = res }),
+    )
+    const state = makeState()
+    const p = bind(state).rememberNote('x')
+    state.sessionId = 'other'
+    state.entries = []
+    resolveRewrite!({ ok: true, result: { rewritten: '## x' } })
+    await p
+    expect(state.entries).toHaveLength(0)
+    expect(state.memoryCommandPending).toBeUndefined()
   })
 })
 

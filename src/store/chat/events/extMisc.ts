@@ -9,8 +9,8 @@ import {
   busyPlausibleForView,
   finalizeTurn,
   promptIdMismatch,
-  tailAlreadyTurnEnded,
   turnEndMarkerText,
+  turnFailureMarkerSuppressed,
   cancellationContextText,
   tailHasCancellationDetail,
 } from '../turn'
@@ -145,22 +145,23 @@ export function handleExtMiscEvent(
         const railEndTs = s.turnStartedAt
         finalizeTurn(set, get, stopReason)
         if (
-          stopReason === 'error' ||
-          stopReason === 'rate_limit' ||
-          stopReason === 'cancelled'
+          (stopReason === 'error' ||
+            stopReason === 'rate_limit' ||
+            stopReason === 'cancelled') &&
+          // 失败回合若 retry 横幅已报过 reason，标记让位（TUI 抑制臂；
+          // cancelled 走 tailAlreadyTurnEnded 那一半，不受横幅影响）。
+          !turnFailureMarkerSuppressed(get().entries, stopReason)
         ) {
-          if (!tailAlreadyTurnEnded(get().entries)) {
-            const { text, warning } = turnEndMarkerText(
-              stopReason,
-              agentResult,
-              railEndTs != null ? Date.now() - railEndTs : undefined,
-            )
-            appendEntry(set, {
-              kind: 'session_event',
-              text,
-              ...(warning ? { warning } : {}),
-            })
-          }
+          const { text, warning } = turnEndMarkerText(
+            stopReason,
+            agentResult,
+            railEndTs != null ? Date.now() - railEndTs : undefined,
+          )
+          appendEntry(set, {
+            kind: 'session_event',
+            text,
+            ...(warning ? { warning } : {}),
+          })
         }
         // cancellationContext（1.0.9+ agent 顶层新增）：hook/tool 级取消
         // 原因，取消标记后补一行细节；旧 agent 无该键，静默跳过。

@@ -19,6 +19,8 @@ beforeEach(() => {
 type PrefsRpc = {
   getPrefs(): Promise<{ prefs: HubPrefsDoc; version?: number }>
   putPrefs(prefs: HubPrefsDoc, baseVersion?: number): Promise<{ version?: number }>
+  listCustomModels(): Promise<unknown[]>
+  listCustomModelsFromHost(hostId: string): Promise<unknown[]>
 }
 
 function makeTransport(): LocalTransport & PrefsRpc {
@@ -264,6 +266,167 @@ describe('getPrefs (same-origin)', () => {
     } finally {
       vi.unstubAllGlobals()
     }
+  })
+})
+
+describe('urlForHost（跨 host 读别的 host）', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('hub 模式 → hub base + 指定 host，不用选中 host', () => {
+    const t = makeTransport()
+    t.setConnectionMode('hub', 'https://hub.example')
+    t.setHost('mine')
+    expect(t.urlForHost('other', '/api/custom-models')).toBe(
+      'https://hub.example/api/custom-models?host=other',
+    )
+  })
+
+  it('源 host 恰是选中 host 且有本机近路时仍走 hub（不做近路判定）', async () => {
+    const t = makeTransport()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo) => {
+        const url = String(input)
+        // 仅本机端口探测应答（自报身份 = mine）。
+        if (/^http:\/\/127\.0\.0\.1:\d+\/api\/hosts$/.test(url)) {
+          return new Response(
+            JSON.stringify({
+              hosts: [{ hostId: 'mine', local: true }],
+              authRequired: false,
+            }),
+            { status: 200 },
+          )
+        }
+        return new Response('{}', { status: 200 })
+      }),
+    )
+    t.setConnectionMode('hub', 'https://hub.example')
+    await t.discoverLocalHost([{ hostId: 'mine', port: 8765 }])
+    // 近路可用时 setHost 会开本机 SSE（jsdom 没有 EventSource）。
+    vi.stubGlobal(
+      'EventSource',
+      class {
+        static readonly OPEN = 1
+        static readonly CLOSED = 2
+        readyState = 1
+        onopen: (() => void) | null = null
+        onmessage: ((m: MessageEvent) => void) | null = null
+        onerror: (() => void) | null = null
+        close() {}
+      },
+    )
+    t.setHost('mine')
+    // 选中 host 的近路已建立：普通请求直连 127.0.0.1，但问「另一台」时
+    // 仍然必须走 hub 的 ?host= 中继（否则会打到本机这台）。
+    expect(t.apiUrl('/api/custom-models')).toBe('http://127.0.0.1:8765/api/custom-models')
+    expect(t.urlForHost('other', '/api/custom-models')).toBe(
+      'https://hub.example/api/custom-models?host=other',
+    )
+  })
+
+  it('local 模式 / 空 hostId → null（没有第二台可问）', () => {
+    const t = makeTransport()
+    expect(t.urlForHost('other', '/api/custom-models')).toBeNull()
+    t.setConnectionMode('hub', 'https://hub.example')
+    expect(t.urlForHost('', '/api/custom-models')).toBeNull()
+    expect(t.urlForHost('   ', '/api/custom-models')).toBeNull()
+  })
+})
+
+describe('forceRelay（跨 host 请求的钥匙与 401 归因）', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    localStorage.clear()
+  })
+
+  /**
+   * 最容易搞错的一种部署：页面 origin 就是选中 host（内嵌前端 / 同源部署），
+   * 于是它有一条 port 0 的「页面 origin 近路」。此时跨 host 读的 URL 是相对
+   * 路径，如果按普通请求判定，`isLocalRequest` 会说「这是本机直达」，于是
+   * 不加 hub 钥匙（那台开放），401 也归因到那台 host 头上——把 hub 的拒绝
+   * 记成本机房间被拒。forceRelay 必须钉死「这就是打 hub」。
+   */
+  const HUB_URL = 'https://hub.example'
+
+  function pageOriginSetup() {
+    const t = makeTransport()
+    t.setConnectionMode('hub', '')
+    // 顺序有意：setAccessToken 按模式落槽，先设 hub 模式它才进 hub 槽。
+    t.setAccessToken('hub-key')
+    t.setLocalHostId('mine', false)
+    // 页面 origin 近路可用时 setHost 会开本机 SSE（jsdom 没有 EventSource）。
+    vi.stubGlobal(
+      'EventSource',
+      class {
+        static readonly OPEN = 1
+        readyState = 1
+        onopen: (() => void) | null = null
+        onmessage: ((m: MessageEvent) => void) | null = null
+        onerror: (() => void) | null = null
+        close() {}
+      },
+    )
+    t.setHost('mine')
+    return t
+  }
+
+  it('页面 origin 就是选中 host 时，跨 host 请求仍出示 hub 槽钥匙并打 hub 路径', async () => {
+    const t = pageOriginSetup()
+    expect(t.getLocalBase()).toBe('')
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
+      new Response(JSON.stringify({ ok: true, models: [] }), { status: 200 }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const models = await t.listCustomModelsFromHost('other')
+    expect(models).toEqual([])
+    // 路径与钥匙都在传输层定死：走 hub 的 ?host= 中继，出示 hub 槽那把
+    // （页面 origin 那条 port 0 近路绝不能被认领）。
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe('/api/custom-models?host=other')
+    expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get('Authorization')).toBe(
+      'Bearer hub-key',
+    )
+  })
+
+  it('跨 host 请求被 401 拒绝：只清 hub 槽，本机近路与那台房间钥匙都不动', async () => {
+    const t = pageOriginSetup()
+    t.setRouteChoice('mine', 'direct')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, _init?: RequestInit) => new Response('{}', { status: 401 })),
+    )
+    await expect(t.listCustomModelsFromHost('other')).rejects.toThrow()
+    expect(t.getLocalRoute('mine')).not.toBeNull()
+    expect(t.getRouteChoice('mine')).toBe('direct')
+    expect(t.getAccessToken()).toBe('')
+  })
+
+  it('不设 forceRelay 的普通请求仍按选中 host 的近路判定（回归保护）', async () => {
+    const t = pageOriginSetup()
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
+      new Response(JSON.stringify({ ok: true, models: [] }), { status: 200 }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    await t.listCustomModels()
+    // 本机那台不设 FE_TOKEN：近路请求不带任何钥匙（也不该把 hub 密钥漏出去）。
+    expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get('Authorization')).toBeNull()
+  })
+
+  it('hub 模式 + 显式 hubUrl：跨 host 请求打远端 hub 而不是选中 host 的近路', async () => {
+    const t = makeTransport()
+    t.setConnectionMode('hub', HUB_URL)
+    t.setAccessToken('hub-key')
+    t.setHost('mine')
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
+      new Response(JSON.stringify({ ok: true, models: [] }), { status: 200 }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    await t.listCustomModelsFromHost('other')
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(`${HUB_URL}/api/custom-models?host=other`)
+    expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get('Authorization')).toBe(
+      'Bearer hub-key',
+    )
   })
 })
 

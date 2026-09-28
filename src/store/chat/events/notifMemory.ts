@@ -2,7 +2,7 @@ import type { ChatState, SetState } from '../types'
 import type { WireEvent } from './wire'
 import { appendEntry } from '../entries'
 import { applyModelIdentity, applySessionTitle } from '../sessionIdentity'
-import { baseName, normalizeMemoryListing } from '../../../lib/memory'
+import { memoryCaptureEntry, normalizeMemoryListing } from '../../../lib/memory'
 export function handleNotifMemory(
   set: SetState,
   get: () => ChatState,
@@ -83,47 +83,36 @@ export function handleNotifMemory(
             })
             break
           // ── memory system (TUI memory modal + scrollback lines) ──────
-          case 'memory_flush_started':
-            appendEntry(set, { kind: 'session_event', text: '记忆刷新…' })
-            break
-          case 'memory_flush_completed': {
-            const r = String(fields.result ?? '')
-            appendEntry(set, {
-              kind: 'session_event',
-              text: `记忆刷新完成${r ? `: ${r.slice(0, 120)}` : ''}`,
-            })
-            break
-          }
-          case 'memory_dream_completed': {
-            const r = String(fields.result ?? '')
-            appendEntry(set, {
-              kind: 'session_event',
-              text: `记忆整合完成${r ? `: ${r.slice(0, 120)}` : ''}`,
-            })
-            break
-          }
-          case 'memory_session_saved': {
-            const p = String(fields.path ?? '')
-            appendEntry(set, {
-              kind: 'session_event',
-              text: `会话记忆已保存${p ? ` → ${p}` : ''}`,
-            })
+          // flush / dream outcome lines do NOT live here: the TUI renders
+          // them from the command RPC reply (pager
+          // app/dispatch/prompt.rs::handle_memory_command_complete) and
+          // ignores the same-named wire notifications, which also fire for
+          // background flushes and Dream. Those four tags are registered as
+          // NOOP_TAGS in ./kinds.
+          case 'memory_capture_activity': {
+            // memory-v2 capture lifecycle; the shell emits it only with
+            // memory_v2.capture_status_enabled (default off). A completed
+            // capture that carries observations renders as the foldable
+            // debug block instead of the plain line (TUI MemoryCaptureBlock).
+            const entry = memoryCaptureEntry(fields)
+            if (entry) {
+              appendEntry(set, {
+                kind: 'session_event',
+                text: entry.text,
+                ...(entry.memoryCapture ? { memoryCapture: entry.memoryCapture } : {}),
+              })
+            }
             break
           }
           case 'memory_files': {
             // Same field set as x.ai/memory/list, so one normalizer serves both
             // (the modal's listing, its grouping and the flags that gate the
-            // toggle). The event is the agent's own broadcast after a flush,
-            // capture or dream — it keeps an open modal current.
+            // toggle). The TUI opens/fills the /memory modal from this event
+            // and writes no scrollback line (session_notification.rs).
             const listing = normalizeMemoryListing(fields)
             set({
               memoryListing: listing,
               ...(listing.files.length ? { memoryStatus: 'ready' as const, memoryError: undefined } : {}),
-            })
-            const names = listing.files.map((f) => baseName(f.path)).join(', ')
-            appendEntry(set, {
-              kind: 'session_event',
-              text: `记忆文件 ${listing.files.length} 个${names ? `（${names.slice(0, 80)}）` : ''}`,
             })
             break
           }
@@ -133,6 +122,11 @@ export function handleNotifMemory(
             // exhausted has `attempts`/`reason`/`isRateLimited`, failed has
             // `errorType`/`message`. Rendering everything as "重试中…" hid
             // terminal failures entirely.
+            //
+            // 终态两条是 TUI 的失败横幅（RetryFailed / RequestFailed）：
+            // 同一次失败 agent 随后还会以 prompt 错误收口成 "Turn failed:
+            // <同一原因>"，置 retryBanner 让那行让位（见
+            // turnFailureMarkerSuppressed）。
             const f = fields as Record<string, unknown>
             const kind = typeof f.type === 'string' ? f.type : undefined
             const attempt = f.attempt ?? f.attempts
@@ -143,6 +137,7 @@ export function handleNotifMemory(
                 kind: 'session_event',
                 text: `推理失败${errType ? `（${errType}）` : ''}${msg ? `: ${msg}` : ''}`,
                 warning: true,
+                retryBanner: true,
               })
             } else if (kind === 'exhausted') {
               const reason = typeof f.reason === 'string' ? f.reason : ''
@@ -150,6 +145,7 @@ export function handleNotifMemory(
                 kind: 'session_event',
                 text: `重试已耗尽${attempt != null ? `（attempt ${String(attempt)}）` : ''}${reason ? `: ${reason}` : ''}${f.isRateLimited ? '（可能被限流）' : ''}`,
                 warning: true,
+                retryBanner: true,
               })
             } else {
               // TUI turn_status.rs: Retrying → "Retrying (attempt N)…".

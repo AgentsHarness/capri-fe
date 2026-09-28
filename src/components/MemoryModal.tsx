@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Check, ChevronLeft, Copy, FileText, RefreshCw, Search, Trash2, X } from 'lucide-react'
+import { Check, ChevronLeft, Copy, Diamond, FileText, RefreshCw, Search, Trash2, X } from 'lucide-react'
 import { transport } from '../api/client'
 import { useChatStore } from '../store/chat'
-import { Glyphs } from '../theme/glyphs'
 import type { MemoryFileInfo } from '../lib/memory'
 import {
   MEMORY_FORGET_MAX_FILE_BYTES,
@@ -178,8 +177,8 @@ export function MemoryModal() {
     }
   }, [selectedFile, preview?.hash, forgetMemoryNote])
 
-  // Keyboard parity with the TUI (t / x / arrows / Esc); the search field keeps
-  // the keys it needs while focused.
+  // Keyboard parity with the TUI (y / t / x / arrows / Esc); the search field
+  // keeps the keys it needs while focused.
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => {
@@ -219,6 +218,17 @@ export function MemoryModal() {
       if (e.key === 'x' && deletable) {
         e.preventDefault()
         setConfirming(selectedFile?.path)
+        return
+      }
+      // TUI memory modal `y`: copy the selected note's path.
+      if (e.key === 'y' && activePath) {
+        e.preventDefault()
+        void navigator.clipboard.writeText(activePath).then(() => {
+          useChatStore.setState({
+            memoryNotice: { text: `已复制路径：${activePath}`, error: false },
+          })
+        })
+        return
       }
     }
     window.addEventListener('keydown', onKey, true)
@@ -268,7 +278,7 @@ export function MemoryModal() {
       >
         <header className="gn-modal-header shrink-0">
           <span className="text-gn-magenta" aria-hidden>
-            {Glyphs.diamondFilled}
+            <Diamond size={13} strokeWidth={2} className="fill-current" />
           </span>
           <span className="text-[13px] font-bold text-gn-fg">记忆</span>
           {listing ? (

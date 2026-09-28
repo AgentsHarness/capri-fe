@@ -503,3 +503,39 @@ describe('Composer prompt stash caption', () => {
   })
 })
 
+describe('记忆命令状态行（TUI CommandRunning）', () => {
+  const pending = (sessionId: string, label = 'Flushing memory…') => ({
+    sessionId,
+    label,
+    startedAt: Date.now(),
+  })
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useChatStore.setState({
+      sessionId: 's1',
+      cwd: '/test/cwd',
+      conn: 'ready',
+      statusText: '',
+      historyLoading: false,
+      newSessionPending: false,
+      entries: [],
+      pending: [],
+      topTasks: [],
+    })
+  })
+
+  it('/flush 在飞 → 状态行出 label；命令结束（清空）后消失', () => {
+    useChatStore.setState({ memoryCommandPending: pending('s1') })
+    render(<Composer />)
+    expect(screen.getByText('Flushing memory…')).toBeInTheDocument()
+    act(() => useChatStore.setState({ memoryCommandPending: undefined }))
+    expect(screen.queryByText('Flushing memory…')).toBeNull()
+  })
+
+  it('命令属于别的会话 → 当前视图不显示它的状态行', () => {
+    useChatStore.setState({ memoryCommandPending: pending('other', 'Consolidating memory…') })
+    render(<Composer />)
+    expect(screen.queryByText('Consolidating memory…')).toBeNull()
+  })
+})

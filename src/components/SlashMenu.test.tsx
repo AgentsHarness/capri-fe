@@ -239,14 +239,14 @@ describe('SlashMenu', () => {
     expect(onLiteral).toHaveBeenCalled()
   })
 
-  it('命令行的 ▸ 只标在声明了参数候选的命令上', () => {
-    const { rerender } = render(
+  it('命令行只在声明了参数候选的命令上标 ChevronRight', () => {
+    const { container, rerender } = render(
       <SlashMenu input="/effort" selected={0} matches={[{ cmd: cmdEffort, score: 0 }]} onHover={noop} onPick={noop} />,
     )
-    expect(screen.getAllByText('▸')).toHaveLength(1)
+    expect(container.querySelectorAll('svg.lucide-chevron-right')).toHaveLength(1)
     rerender(
       <SlashMenu input="/co" selected={0} matches={[{ cmd: cmdA, score: 0 }]} onHover={noop} onPick={noop} />,
     )
-    expect(screen.queryByText('▸')).not.toBeInTheDocument()
+    expect(container.querySelectorAll('svg.lucide-chevron-right')).toHaveLength(0)
   })
 })

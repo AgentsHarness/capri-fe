@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, cleanup, act } from '@testing-library/react'
+import { render, screen, cleanup, act, fireEvent } from '@testing-library/react'
 import { useChatStore } from '../store/chat'
 import { usePins } from '../store/historyPins'
 import { useHistoryView } from '../store/historyView'
@@ -200,6 +200,91 @@ describe('分组折叠与展开交互', () => {
 })
 
 /**
+ * 操作菜单落位：锚点（光标 / ⋮ 按钮）只给方向，实际位置按菜单实测尺寸算。
+ * 旧实现用固定估值（H = 240）夹取，分组菜单只有两项高，右键靠近视口底部
+ * 时会被顶到离光标一两百像素的地方；行菜单带待办时又会掉出底边。
+ */
+describe('操作菜单落位', () => {
+  const PAD = 8
+  type Box = { left: number; top: number; width: number; height: number }
+
+  /** jsdom 里所有元素都是 0×0；菜单落位依赖实测尺寸，按角色给出真实盒子。 */
+  function stubRects(menuH: number, trigger?: Box) {
+    const rect = (b: Box): DOMRect =>
+      ({
+        x: b.left,
+        y: b.top,
+        left: b.left,
+        top: b.top,
+        width: b.width,
+        height: b.height,
+        right: b.left + b.width,
+        bottom: b.top + b.height,
+        toJSON: () => ({}),
+      }) as DOMRect
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.getAttribute('role') === 'menu') {
+        return rect({ left: 0, top: 0, width: 176, height: menuH })
+      }
+      if (trigger && this.getAttribute('aria-label') === '更多操作') return rect(trigger)
+      return rect({ left: 0, top: 0, width: 0, height: 0 })
+    })
+  }
+
+  const head = () => screen.getByText('x').closest('button')!
+  const menuTop = () => parseFloat(screen.getByRole('menu').style.top)
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('右键落在视口下半部：菜单贴光标，不被高估的高度顶上去', () => {
+    stubRects(64)
+    render(<SessionHistoryList />)
+    fireEvent.contextMenu(head(), { clientX: 40, clientY: 690 })
+    const menu = screen.getByRole('menu')
+    // 690 + 64 仍在视口内（768 - 8）→ 上沿就是光标
+    expect(menu.style.top).toBe('690px')
+    expect(menu.style.left).toBe('40px')
+  })
+
+  it('下方放不下：翻到光标上方，菜单底边贴光标', () => {
+    stubRects(64)
+    render(<SessionHistoryList />)
+    fireEvent.contextMenu(head(), { clientX: 40, clientY: 750 })
+    expect(menuTop()).toBe(686)
+  })
+
+  it('⋮ 按钮在视口底部：翻到按钮上方，不再叠在按钮上', () => {
+    stubRects(64, { left: 287, top: 700, width: 13, height: 20 })
+    render(<SessionHistoryList />)
+    fireEvent.click(screen.getAllByLabelText('更多操作')[0])
+    const menu = screen.getByRole('menu')
+    // 锚点 = 按钮下沿 720 + 4，其下放不下 → 底边贴按钮上沿 700 - 4
+    expect(menu.style.top).toBe('632px')
+    expect(menu.style.left).toBe('124px')
+  })
+
+  it('菜单比剩余空间都高：夹到上边距，不越出屏幕上沿', () => {
+    stubRects(900)
+    render(<SessionHistoryList />)
+    fireEvent.contextMenu(head(), { clientX: 40, clientY: 700 })
+    expect(menuTop()).toBe(PAD)
+  })
+
+  it('右键贴右缘：菜单整块移进视口，左缘不被裁掉', () => {
+    stubRects(64)
+    render(<SessionHistoryList />)
+    fireEvent.contextMenu(head(), { clientX: window.innerWidth - 24, clientY: 100 })
+    const left = parseFloat(screen.getByRole('menu').style.left)
+    expect(left).toBeGreaterThanOrEqual(PAD)
+    expect(left + 176).toBeLessThanOrEqual(window.innerWidth - PAD)
+  })
+})
+
+/**
  * 钉住顺序（固定默认）：host 每推一次活动/状态都不该
  * 让行或整组挪位，否则用户正在看的目录会被顶到最上面。
  */
@@ -313,5 +398,164 @@ describe('钉住顺序', () => {
       } as never),
     )
     expect(order(container)).toEqual(['sc', 'sa'])
+  })
+})
+
+describe('标记类操作不挪滚动位置', () => {
+  // 行布局桩：行 top = 行序 × 行高 − scrollTop（相对容器视口顶部）。
+  const ROW_H = 32
+  const rectAt = (top: number) =>
+    ({ top, bottom: top, left: 0, right: 0, x: 0, y: top, width: 0, height: 0 }) as unknown as DOMRect
+
+  // 'z1' 排在 s1..s6 之后（同锚时按 sessionId 升序），取消标记后它落回
+  // 末位、退出默认展示名额，锚点行的位移才会真的进 delta 计算。
+  const IDS = ['z1', 's1', 's2', 's3', 's4', 's5', 's6']
+
+  function seedRows() {
+    useChatStore.setState({
+      sessionId: undefined,
+      cwd: '/x',
+      historyLoading: false,
+      workspaceLoading: false,
+      completedNotices: {},
+      continueSession: vi.fn(),
+      renameSession: vi.fn(),
+      deleteSession: vi.fn(),
+      newSession: vi.fn(),
+      workspaceLoadMore: vi.fn(),
+      switchWorkspaceListMode: vi.fn(),
+      workspaces: [
+        {
+          cwd: '/x',
+          label: '/x',
+          sessions: IDS.map((id, i) => ({
+            sessionId: id,
+            cwd: '/x',
+            title: `会话${i}`,
+            updatedAt: T_OLD,
+          })),
+        },
+      ],
+      sessions: IDS.map((id) => ({ sessionId: id, cwd: '/x', status: { state: 'idle' } })),
+    } as never)
+  }
+
+  const origGBCR = Element.prototype.getBoundingClientRect
+  afterEach(() => {
+    Element.prototype.getBoundingClientRect = origGBCR
+  })
+
+  /**
+   * 标记状态要走 store 的写入 API 建立：entries 是真相源，直接改
+   * pinnedSessions / todos 投影会让随后的 toggleSessionPin 基于空 entries
+   * 反过来「置顶」（见 historyPins 的 write）。
+   */
+  function resetPrefs() {
+    usePins.setState({
+      entries: {},
+      pinnedWorkspaces: new Set<string>(),
+      pinnedSessions: new Set<string>(),
+      todos: {},
+    })
+  }
+
+  /** 渲染进一个已滚过一行的 overflow 容器（行偏移由桩给，jsdom 不做布局）。 */
+  function mountScrolledOneRow() {
+    const scroller = document.createElement('div')
+    scroller.style.overflowY = 'auto'
+    scroller.scrollTop = ROW_H
+    document.body.appendChild(scroller)
+
+    Element.prototype.getBoundingClientRect = function (this: Element) {
+      if (this === scroller) return rectAt(0)
+      if (this.hasAttribute('data-hkey')) {
+        const rows = Array.from(scroller.querySelectorAll<HTMLElement>('[data-hkey]'))
+        return rectAt(rows.indexOf(this as HTMLElement) * ROW_H - scroller.scrollTop)
+      }
+      return rectAt(0)
+    }
+
+    render(<SessionHistoryList />, { container: scroller })
+    return scroller
+  }
+
+  it('取消待办：重排后 scrollTop 原地不动', () => {
+    resetPrefs()
+    usePins.getState().setTodoStatus('z1', 'todo')
+    seedRows()
+    const scroller = mountScrolledOneRow()
+
+    // 待办行升到最前，视口已滚过它一行 → 视口第一行是它下面那一行
+    fireEvent.contextMenu(row('会话0'), { clientX: 8, clientY: 8 })
+    fireEvent.click(screen.getByText('取消待办'))
+
+    expect(scroller.scrollTop).toBe(ROW_H)
+    document.body.removeChild(scroller)
+  })
+
+  it('取消置顶：重排后 scrollTop 原地不动', () => {
+    resetPrefs()
+    usePins.getState().toggleSessionPin('z1')
+    seedRows()
+    const scroller = mountScrolledOneRow()
+
+    fireEvent.contextMenu(row('会话0'), { clientX: 8, clientY: 8 })
+    fireEvent.click(screen.getByText('取消置顶'))
+
+    expect(scroller.scrollTop).toBe(ROW_H)
+    document.body.removeChild(scroller)
+  })
+
+  it('取消置顶目录：组换位后 scrollTop 原地不动', () => {
+    resetPrefs()
+    usePins.getState().toggleWorkspacePin('/a')
+    // /b 的行活动更新：取消置顶后组序会换回来（/b 在前）
+    useChatStore.setState({
+      sessionId: undefined,
+      cwd: '/a',
+      historyLoading: false,
+      workspaceLoading: false,
+      completedNotices: {},
+      continueSession: vi.fn(),
+      renameSession: vi.fn(),
+      deleteSession: vi.fn(),
+      newSession: vi.fn(),
+      workspaceLoadMore: vi.fn(),
+      switchWorkspaceListMode: vi.fn(),
+      workspaces: [
+        {
+          cwd: '/a',
+          label: '/a',
+          sessions: [
+            { sessionId: 'a1', cwd: '/a', title: 'A一', updatedAt: T_OLD },
+            { sessionId: 'a2', cwd: '/a', title: 'A二', updatedAt: T_OLD },
+          ],
+        },
+        {
+          cwd: '/b',
+          label: '/b',
+          sessions: [
+            { sessionId: 'b1', cwd: '/b', title: 'B一', updatedAt: T_NEW },
+            { sessionId: 'b2', cwd: '/b', title: 'B二', updatedAt: T_NEW },
+          ],
+        },
+      ],
+      sessions: [
+        { sessionId: 'a1', cwd: '/a', status: { state: 'idle' } },
+        { sessionId: 'a2', cwd: '/a', status: { state: 'idle' } },
+        { sessionId: 'b1', cwd: '/b', status: { state: 'idle' } },
+        { sessionId: 'b2', cwd: '/b', status: { state: 'idle' } },
+      ],
+    } as never)
+
+    const scroller = mountScrolledOneRow()
+    const head = scroller.querySelector<HTMLElement>('[data-gkey="/a"] button')
+    if (!head) throw new Error('group header not found')
+
+    fireEvent.contextMenu(head, { clientX: 8, clientY: 8 })
+    fireEvent.click(screen.getByText('取消置顶'))
+
+    expect(scroller.scrollTop).toBe(ROW_H)
+    document.body.removeChild(scroller)
   })
 })

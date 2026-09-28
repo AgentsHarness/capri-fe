@@ -66,6 +66,7 @@ import { clearEscArm, escArmTimestamp } from '../hooks/useScrollbackKeys'
 import { useModelMenu } from './composer/useModelMenu'
 import { ModelMenu } from './composer/ModelMenu'
 import { useModeMenu } from './composer/useModeMenu'
+import { useFittedModeLabel } from './composer/useFittedModeLabel'
 import { ModeMenu } from './composer/ModeMenu'
 import { PromptHistoryMenu } from './composer/PromptHistoryMenu'
 import { QueueStrip } from './composer/QueueStrip'
@@ -159,6 +160,13 @@ export function Composer() {
   const recapPending = useChatStore(
     (s) => s.recapPendingFor != null && s.recapPendingFor === s.sessionId,
   )
+  /** 手工记忆命令（/flush、/dream）在跑：TUI CommandRunning 的命令状态行
+   *  （`Flushing memory…` + 计时），同样按发起会话过滤。 */
+  const memoryCommand = useChatStore((s) =>
+    s.memoryCommandPending && s.memoryCommandPending.sessionId === s.sessionId
+      ? s.memoryCommandPending
+      : undefined,
+  )
   const modeBanner = useChatStore((s) => s.modeBanner)
   const clearModeBanner = useChatStore((s) => s.clearModeBanner)
   const awaitingNext = useChatStore((s) => s.awaitingNext)
@@ -199,6 +207,7 @@ export function Composer() {
     modeRef,
     modeBtnRef,
     currentModeLabel,
+    currentModeShortLabel,
     inPlan,
   } = modeMenu
 
@@ -867,13 +876,14 @@ export function Composer() {
   // 旧会话的 busy/状态（避免加载期间显示误导性的活动标签）：见下方
   // 状态行渲染。statusVisible 只决定「加载结束后」该不该显示——加载
   // 期间内容就是回放臂，加载完毕立即切换真实状态。error/offline 不在
-  // 其中：host/hub 错误只进顶部横幅（ErrorBanner），composer 状态行
-  // 不参与，避免与横幅重复。
+  // 其中：host/hub 错误只进顶栏 host 提示（LayerErrNotice），composer 状态行
+  // 不参与，避免与它重复。
   const statusVisible =
     !historyLoading &&
     (busy ||
       conn === 'connecting' ||
       recapPending ||
+      memoryCommand != null ||
       newSessionPending ||
       idleCueVisible ||
       localLive)
@@ -1173,6 +1183,25 @@ export function Composer() {
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [statusText])
 
+  // 底栏（模型名 · token 数 · 模式 · 其它 flag）是 max-w-[75%] 的绝对
+  // 定位 flex：模型名一长、再叠上完整模式名 always-approve 就会顶出
+  // prompt 边框，所以按实测宽度在完整名与短名之间选（composer/
+  // useFittedModeLabel.ts）。探针只在行内量文本宽度，不参与布局。
+  const footerRowRef = useRef<HTMLDivElement | null>(null)
+  const modeFullProbeRef = useRef<HTMLSpanElement | null>(null)
+  const modeShortProbeRef = useRef<HTMLSpanElement | null>(null)
+  const footerContentKey = [modelLabel, tokensText ?? '', ...otherFlags.map((f) => f.text)].join(
+    '\u0001',
+  )
+  const modeLabel = useFittedModeLabel({
+    rowRef: footerRowRef,
+    fullProbeRef: modeFullProbeRef,
+    shortProbeRef: modeShortProbeRef,
+    full: currentModeLabel,
+    short: currentModeShortLabel,
+    contentKey: footerContentKey,
+  })
+
   // ── Inline queue strip：忙时 Enter 只入队，消息正文在 composer 上方。
   // 渲染归 composer/QueueStrip.tsx（状态归 useQueueNav）。
 
@@ -1327,6 +1356,17 @@ export function Composer() {
                       </span>
                     )}
                   </>
+                ) : memoryCommand ? (
+                  // TUI 命令状态行（turn_status.rs CommandRunning）：
+                  // `Flushing memory…` / `Consolidating memory…` + 计时。
+                  <>
+                    <span className="truncate text-gn-gray-dim">
+                      {memoryCommand.label}
+                    </span>
+                    <span className="shrink-0 tabular-nums text-gn-gray">
+                      {formatTurnDuration(Date.now() - memoryCommand.startedAt)}
+                    </span>
+                  </>
                 ) : recapPending ? (
                   // /recap 等待臂：请求已发出（fire-and-forget），等
                   // session_recap / session_recap_unavailable 返回后
@@ -1343,7 +1383,7 @@ export function Composer() {
                   </>
                 ) : (
                   // 空闲臂：静态 statusText（连接中 / 会话操作反馈）。
-                  // error/offline 不在此渲染（错误只进顶部横幅）——此
+                  // error/offline 不在此渲染（错误只进顶栏 host 提示）——此
                   // 分支可达时 conn 必为 connecting。
                   <span className="truncate text-gn-muted">
                     {statusText}
@@ -2280,12 +2320,31 @@ export function Composer() {
               Model menu & Mode menu use position:fixed (viewport-pinned) so they are not
               clipped by body overflow on mobile. */}
           <div
+            ref={footerRowRef}
             className="pointer-events-none absolute -bottom-[5px] right-2 flex max-w-[75%] items-center gap-0 text-[11px] leading-none"
             style={{
               background: 'var(--color-gn-bg-base)',
             }}
             title={[modelLabel, tokensText, currentModeLabel, ...otherFlags.map((f) => f.text)].filter(Boolean).join(' · ')}
           >
+            {/* 模式名宽度探针：量完整名/短名各自占多少 px（绝对定位，不
+                参与布局；data-probe 让内容宽度测量跳过它们）。 */}
+            <span
+              ref={modeFullProbeRef}
+              data-probe
+              aria-hidden
+              className="pointer-events-none absolute left-0 top-0 whitespace-nowrap opacity-0"
+            >
+              {currentModeLabel}
+            </span>
+            <span
+              ref={modeShortProbeRef}
+              data-probe
+              aria-hidden
+              className="pointer-events-none absolute left-0 top-0 whitespace-nowrap opacity-0"
+            >
+              {currentModeShortLabel}
+            </span>
             <span ref={modelRef} className="relative z-30 inline-flex shrink-0">
               <button
                 ref={modelBtnRef}
@@ -2332,7 +2391,7 @@ export function Composer() {
                 style={{ color: modeColor }}
                 title={`当前模式: ${currentModeLabel} · 点击切换模式`}
               >
-                {currentModeLabel}
+                {modeLabel}
               </button>
               {modeOpen && modeMenuPos && (
                 <ModeMenu pos={modeMenuPos} menu={modeMenu} />

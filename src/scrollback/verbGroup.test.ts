@@ -44,6 +44,24 @@ describe('verbGroupKind / labelKind', () => {
     expect(verbGroupKind(tool({ kindName: 'list' }))).toBe('dir')
   })
 
+  it('记忆作用域活动（_meta.memory_v2_activity）归入 memory（TUI is_memory_v2_activity）', () => {
+    const mem = (over: Partial<Extract<ScrollEntry, { kind: 'tool' }>> = {}) =>
+      tool({ raw: { _meta: { memory_v2_activity: true } } as never, ...over })
+    expect(verbGroupKind(mem({ kindName: 'read' }))).toBe('memory')
+    expect(verbGroupKind(mem({ kindName: 'list_dir' }))).toBe('memory')
+    expect(verbGroupKind(mem({ kindName: 'search' }))).toBe('memory')
+    // 普通 edit 不 eager-fold，命中记忆作用域时按 memory 分组
+    expect(verbGroupKind(mem({ kindName: 'edit' }))).toBe('memory')
+    expect(labelKind(mem({ kindName: 'edit' }))).toBe('memory')
+    // 未打标的同类调用还是原分组
+    expect(verbGroupKind(tool({ kindName: 'read' }))).toBe('file')
+    expect(verbGroupKind(tool({ kindName: 'edit' }))).toBeNull()
+    // 只认真布尔：字符串/其它值不算（与 TUI as_bool 一致）
+    expect(
+      verbGroupKind(tool({ kindName: 'read', raw: { _meta: { memory_v2_activity: 'true' } } as never })),
+    ).toBe('file')
+  })
+
   it('SKILL.md 读取归入 skill（TUI is_skill_read）', () => {
     const skillRead = (over: Partial<Extract<ScrollEntry, { kind: 'tool' }>> = {}) =>
       tool({

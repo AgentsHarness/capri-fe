@@ -11,11 +11,16 @@ import {
   groupMemoryFiles,
   isMemoryFileDeletable,
   memoryContentHash,
+  memoryCaptureEntry,
+  memoryCaptureLine,
+  memoryDreamOutcome,
   memoryFileLabel,
+  memoryFlushOutcome,
   memoryHasNotes,
   memorySizeText,
   normalizeMemoryListing,
   observationKeyLabel,
+  sanitizeModelDebugText,
   type MemoryFileInfo,
 } from './memory'
 
@@ -193,6 +198,121 @@ describe('disabled / empty notices', () => {
     const none = emptyMemoryNotice(false, false)
     expect(none.lines.join('\n')).not.toContain('/dream')
     expect(none.lines.join('\n')).not.toContain('自动保存')
+  })
+})
+
+describe('memoryFlushOutcome / memoryDreamOutcome / memoryCaptureLine', () => {
+  it('flush：disposition 决定文案与 warning；through_turn 只出现在成功路径', () => {
+    expect(memoryFlushOutcome({ disposition: 'flushed', through_turn: 12 })).toEqual({
+      summary: '记忆已刷新至第 12 回合。',
+      succeeded: true,
+    })
+    // 老 shell 不带 through_turn：不带回合号的简版，仍是成功
+    expect(memoryFlushOutcome({ flushed: true, disposition: 'flushed' })).toEqual({
+      summary: '记忆已刷新。',
+      succeeded: true,
+    })
+    expect(memoryFlushOutcome({ disposition: 'busy' })).toEqual({
+      summary: '已有一次记忆刷新在进行中。',
+      succeeded: false,
+    })
+    expect(memoryFlushOutcome({ disposition: 'timed_out' }).succeeded).toBe(false)
+    expect(memoryFlushOutcome({ disposition: 'disabled' }).succeeded).toBe(false)
+  })
+
+  it('dream：只有真的合并了内容才报数量（无内容时走短句）', () => {
+    expect(
+      memoryDreamOutcome({
+        disposition: 'completed',
+        observation_count: 3,
+        topics_affected: 2,
+      }),
+    ).toEqual({ summary: '记忆整合完成：已将 3 条观察合并进 2 个主题。', succeeded: true })
+    expect(
+      memoryDreamOutcome({ disposition: 'completed', observation_count: 0, topics_affected: 0 }),
+    ).toEqual({ summary: '记忆整合完成。', succeeded: true })
+    // no_work / shadow 是成功但不写盘的分支；busy / failed / cancelled 是失败
+    expect(memoryDreamOutcome({ disposition: 'no_work' }).succeeded).toBe(true)
+    expect(memoryDreamOutcome({ disposition: 'shadow' }).succeeded).toBe(true)
+    expect(memoryDreamOutcome({ disposition: 'busy' }).succeeded).toBe(false)
+    expect(memoryDreamOutcome({ disposition: 'retry_required' }).succeeded).toBe(false)
+  })
+
+  it('两个 outcome 对无法识别的响应给成功短句，不臆造失败', () => {
+    expect(memoryFlushOutcome({}).succeeded).toBe(true)
+    expect(memoryDreamOutcome({ disposition: 'future_disposition' }).succeeded).toBe(true)
+  })
+
+  it('capture 行按 activity 取词，缺回合范围返回 null', () => {
+    expect(
+      memoryCaptureLine({
+        activity: 'no_op',
+        from_turn: 2,
+        through_turn: 4,
+        attempt: 1,
+      }),
+    ).toBe('记忆捕获已完成（无变更）：第 2-4 回合')
+    expect(
+      memoryCaptureLine({
+        activity: 'retry',
+        from_turn: 2,
+        through_turn: 4,
+        attempt: 3,
+        memories: [{ path: '/a' }],
+      }),
+    ).toBe('记忆捕获将重试：第 2-4 回合（第 3 次尝试）')
+    // TUI 的 `_ => "updated"` 兜底
+    expect(memoryCaptureLine({ activity: 'future', from_turn: 1, through_turn: 1 })).toBe(
+      '记忆捕获已更新：第 1-1 回合',
+    )
+    expect(memoryCaptureLine({ activity: 'queued' })).toBeNull()
+  })
+
+  it('capture 载荷的渲染选择：完成且带观察 → 调试块，否则单行', () => {
+    // 完成 + 观察 → TUI MemoryCaptureBlock（标题行 + 逐条观察）
+    const block = memoryCaptureEntry({
+      activity: 'completed',
+      from_turn: 2,
+      through_turn: 4,
+      attempt: 1,
+      memories: [
+        { statement: '用聚焦测试目标。', body: '全量套件很贵。', path: '/tmp/obs.md' },
+      ],
+    })
+    expect(block?.text).toBe('模型生成的记忆调试输出：第 2-4 回合共 1 条观察')
+    expect(block?.memoryCapture).toEqual({
+      fromTurn: 2,
+      throughTurn: 4,
+      observations: [{ statement: '用聚焦测试目标。', body: '全量套件很贵。', path: '/tmp/obs.md' }],
+    })
+    // 完成但没带观察（debug 未开）→ 仍是生命周期单行
+    const plain = memoryCaptureEntry({
+      activity: 'completed',
+      from_turn: 2,
+      through_turn: 4,
+    })
+    expect(plain?.text).toBe('记忆捕获已完成：第 2-4 回合')
+    expect(plain?.memoryCapture).toBeUndefined()
+    // 缺路径 / 缺语句的观察被丢弃（TUI 只链已落盘的路径）
+    const partial = memoryCaptureEntry({
+      activity: 'completed',
+      from_turn: 1,
+      through_turn: 1,
+      memories: [{ statement: '有语句没路径' }, { path: '/only/path.md' }],
+    })
+    expect(partial?.memoryCapture).toBeUndefined()
+    expect(partial?.text).toBe('记忆捕获已完成：第 1-1 回合')
+  })
+
+  it('调试文本消毒：ANSI 剥掉，控制字符与 bidi 覆盖换成 U+FFFD，保留换行', () => {
+    expect(sanitizeModelDebugText('\u001b]8;;https://evil.example\u0007trusted\u001b]8;;\u0007')).toBe(
+      'trusted',
+    )
+    expect(sanitizeModelDebugText('a\u0001b\u202ec\nd\te')).toBe('a\uFFFDb\uFFFDc\nd\te')
+    expect(sanitizeModelDebugText('plain \u001b[31mred\u001b[0m')).toBe('plain red')
+    // 截断的 OSC（没有 BEL/ST 结尾）整体吞掉，不能漏出 `]2;title` 这类载荷
+    expect(sanitizeModelDebugText('\u001b]2;~/ws')).toBe('')
+    expect(sanitizeModelDebugText('a\u001bbext')).toBe('a\uFFFDbext')
   })
 })
 

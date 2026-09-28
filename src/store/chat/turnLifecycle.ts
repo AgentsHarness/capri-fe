@@ -11,7 +11,7 @@ import {
   sealAssistantStream,
   sealThought,
 } from './stream'
-import { isTurnEndLine, turnIsLive, turnMarker } from './turnStatus'
+import { isTurnEndLine, tailHasRetryBanner, turnIsLive, turnMarker } from './turnStatus'
 import { isBashBlocks, userRowText } from '../promptQueue'
 
 /** Selectable row ids in display order (entries + synthetic group headers). */
@@ -330,7 +330,7 @@ export function armTurnBlipWatchdog(
     // 通道仍开：回合还在正常推进（长工具调用、静默期都可能）——不动。
     if (transport.isLiveOpen()) return
     clearStreamBuf()
-    // 看门狗触发时 live 通道已断——live error 事件不会再来，横幅必须
+    // 看门狗触发时 live 通道已断——live error 事件不会再来，顶栏提示必须
     // 就地设置（host 级失败，会话无关，不进时间线、不写 statusText）。
     get().setLayerError('host', {
       level: 'error',
@@ -368,6 +368,27 @@ export function tailAlreadyTurnEnded(entries: ScrollEntry[]): boolean {
     return false
   }
   return false
+}
+
+/**
+ * TurnFailed 标记是否该跳过（TUI turn_completion.rs::terminal_marker 的两个
+ * 抑制臂）：
+ *
+ *  - 尾部已有收口标记 → 是（多载体收口同一回合，标记只能有一行）；
+ *  - error / rate_limit：尾部已有本回合的 retry 横幅（推理失败 / 重试已耗尽）
+ *    → 是。TUI 里 `TurnStopReason::RateLimit => None`，`Error` 且
+ *    `error_banner_present` → `None`（banner 已把 reason 报给用户，再画一行
+ *    "Turn failed: <同一个原因>" 只是重复）。
+ *
+ * cancelled 不受横幅影响：TUI 的 TurnCancelled 同样不被错误横幅抑制。
+ */
+export function turnFailureMarkerSuppressed(
+  entries: ScrollEntry[],
+  stopReason: string | undefined,
+): boolean {
+  if (tailAlreadyTurnEnded(entries)) return true
+  if (stopReason !== 'error' && stopReason !== 'rate_limit') return false
+  return tailHasRetryBanner(entries)
 }
 
 /**

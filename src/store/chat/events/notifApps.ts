@@ -3,7 +3,7 @@ import type { WireEvent } from './wire'
 import { formatTurnDuration } from '../format'
 import {
   busyPlausibleForView,
-  tailAlreadyTurnEnded,
+  turnFailureMarkerSuppressed,
   wireElapsedMs,
 } from '../turn'
 import { modelLabel } from '../model'
@@ -452,7 +452,9 @@ export function handleNotifApps(
             // Fallback rail: typed turn_completed events (capri-host)
             // already render the failed marker — dedupe via the tail.
             if (reason === 'error' || reason === 'rate_limit') {
-              if (tailAlreadyTurnEnded(get().entries)) break
+              // 尾部已有收口标记，或本回合的 retry 横幅已报过 reason
+              // （TUI terminal_marker 的失败抑制臂）→ 不再画标记。
+              if (turnFailureMarkerSuppressed(get().entries, reason)) break
               const err =
                 reason === 'error'
                   ? String(f.agent_result ?? 'unknown error')

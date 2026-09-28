@@ -2,6 +2,9 @@ import { useEffect, useRef, useState, type Ref } from 'react'
 import {
   Activity,
   Boxes,
+  ChevronDown,
+  ChevronUp,
+  EllipsisVertical,
   GitBranch,
   History,
   LogOut,
@@ -9,6 +12,7 @@ import {
   Plus,
   Puzzle,
   Settings,
+  TriangleAlert,
 } from 'lucide-react'
 import { useChatStore } from '../store/chat'
 import { ThemeOptions, ThemePicker } from './ThemePicker'
@@ -32,6 +36,8 @@ import { baseCwd, filterRunningEntries, shortCwd } from '../format'
 import type { HostInfo } from '../api/types'
 import { transport } from '../api/client'
 import { hostState, hostStateLabel, type HostState } from '../lib/hostState'
+import { pickLayerError } from '../lib/layerErr'
+import { LayerErrNotice } from './LayerErrNotice'
 import {
   AddHostModal,
   DeleteHostModal,
@@ -330,25 +336,33 @@ export function TopBar({
   const logoutInChrome = mode === 'local' && !!onLogout && !!transport.getAccessToken()
 
   // Host label reflects connection health: abnormal → "connecting" / "error".
-  // 分层横幅（hub/host 层错误）存在时，label 只显示简短 ⚠ 状态——完整
-  // 消息在顶部横幅（ErrorBanner），避免长文本截断与多入口重复。
-  const layerErr = layerErrors.host ?? layerErrors.hub
+  // 分层错误（hub/host 层）不改写这里的文案：host 名字保持原样并前置一个
+  // 告警图标，错误文案单独一条跟在右边（LayerErrNotice）——错误既不挤掉
+  // host 名字，也不另占一整条。
+  const layerErr = pickLayerError(layerErrors)
   const hostLabel = layerErr
-    ? `⚠ ${layerErr.level === 'error' ? '异常' : '警告'}`
+    ? hostName || 'Local Host'
     : conn === 'connecting'
       ? 'connecting'
       : conn === 'error' || conn === 'offline'
         ? 'error'
         : hostName || 'Local Host'
   const hostLabelColor = layerErr
-    ? layerErr.level === 'error'
-      ? 'text-gn-red'
-      : 'text-gn-warning'
+    ? ''
     : conn === 'connecting'
       ? 'text-gn-muted'
       : conn === 'error' || conn === 'offline'
         ? 'text-gn-red'
         : ''
+  // host 名字前的告警图标与右侧消息同色：error 红、warning 黄。
+  const errIcon = layerErr ? (
+    <TriangleAlert
+      size={12}
+      strokeWidth={2}
+      className={`shrink-0 ${layerErr.err.level === 'error' ? 'text-gn-red' : 'text-gn-warning'}`}
+      aria-hidden
+    />
+  ) : null
 
   // relative z-40 so host/history/more dropdowns stack above WorkspaceBar
   // (sticky z-30) and scrollback sticky prompts (z-10). Without a stacking
@@ -388,6 +402,7 @@ export function TopBar({
               className="flex min-h-8 max-w-[40vw] items-center gap-1 truncate rounded px-1.5 py-0.5 sm:max-w-xs"
               title="本地模式（仅本机 capri-host，无 host 切换）"
             >
+              {errIcon}
               <span className="truncate text-gn-fg">Localhost</span>
             </div>
           ) : (
@@ -405,15 +420,19 @@ export function TopBar({
               }}
               className={`flex max-w-[40vw] sm:max-w-xs items-center gap-1 truncate rounded px-1.5 py-0.5 hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8 ${hostLabelColor}`}
               title={
-                layerErr
-                  ? `${layerErr.message}${hostName ? ` · ${hostName}` : ''}`
-                  : conn === 'connecting' || conn === 'error' || conn === 'offline'
-                    ? `连接状态: ${conn}${hostName ? ` · ${hostName}` : ''}`
-                    : `${hostName || 'Local Host'}（右键可管理 Host）`
+                conn === 'connecting' || conn === 'error' || conn === 'offline'
+                  ? `连接状态: ${conn}${hostName ? ` · ${hostName}` : ''}`
+                  : `${hostName || 'Local Host'}（右键可管理 Host）`
               }
             >
+              {errIcon}
               <span className="truncate">{hostLabel}</span>
-              <span className="text-gn-gutter">▾</span>
+              <ChevronDown
+                size={12}
+                strokeWidth={2}
+                className="shrink-0 text-gn-gutter"
+                aria-hidden
+              />
             </button>
           )}
           {openHosts && (
@@ -611,6 +630,11 @@ export function TopBar({
           {addHostOpen && <AddHostModal onClose={() => setAddHostOpen(false)} />}
         </div>
 
+        {/* hub / host 层错误：紧跟在 host 名字右侧的一条内联消息（不另占整行）。 */}
+        {layerErr && (
+          <LayerErrNotice key={`${layerErr.layer}:${layerErr.err.at}`} layer={layerErr.layer} err={layerErr.err} />
+        )}
+
         <div className="flex-1" />
 
         {/* Desktop-only inline actions — on mobile they fold into the ⋮ menu below. */}
@@ -753,7 +777,12 @@ export function TopBar({
                     }}
                   />
                 )}
-                <div className="gn-no-scrollbar min-h-0 overflow-y-auto touch-pan-y overscroll-contain">
+                {/* 与桌面侧栏同一个列表：关原生锚定，重排位置交给
+                    SessionHistoryList 的 useScrollAnchor（取消待办不挪视口）。 */}
+                <div
+                  className="gn-no-scrollbar min-h-0 overflow-y-auto touch-pan-y overscroll-contain"
+                  style={{ overflowAnchor: 'none' }}
+                >
                   {historySearchOpen && historySearchActive ? null : <SessionHistoryList />}
                 </div>
               </div>
@@ -772,7 +801,7 @@ export function TopBar({
             title="更多操作：theme / mcp / git / ext / settings"
             className={chromeBtnClass(moreOpen)}
           >
-            ⋮
+            <EllipsisVertical size={13} strokeWidth={2} aria-hidden />
           </button>
           {moreOpen && (
             <>
@@ -796,7 +825,11 @@ export function TopBar({
                   <Palette size={14} strokeWidth={2} aria-hidden />
                   <span className="min-w-0 flex-1">theme</span>
                   <span className="shrink-0 text-gn-gutter" aria-hidden>
-                    {themeExpanded ? '▴' : '▾'}
+                    {themeExpanded ? (
+                      <ChevronUp size={13} strokeWidth={2} />
+                    ) : (
+                      <ChevronDown size={13} strokeWidth={2} />
+                    )}
                   </span>
                 </button>
                 {themeExpanded && (
