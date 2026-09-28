@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { X } from 'lucide-react'
+import { Diamond, X } from 'lucide-react'
 import { useChatStore } from '../store/chat'
 import { Glyphs } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
@@ -278,7 +278,7 @@ export function DiffReviewModal() {
       <div className="my-4 w-full max-w-[860px] gn-modal-panel">
         <header className="gn-modal-header">
           <span className="text-gn-magenta" aria-hidden>
-            {Glyphs.diamondFilled}
+            <Diamond size={13} strokeWidth={2} className="fill-current" />
           </span>
           <span className="text-[13px] font-bold text-gn-fg">Diff 审查</span>
           {req ? (

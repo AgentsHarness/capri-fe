@@ -99,7 +99,7 @@ export function handleConnEvent(
           set({
             conn:
               ev.error ? 'error' : ev.ready && liveTurn ? 'busy' : ev.ready ? 'ready' : 'connecting',
-            // boot 错误只进横幅（下方 setLayerError），statusText 不写
+            // boot 错误只进顶栏提示（下方 setLayerError），statusText 不写
             // 错误文本（stat/composer 不参与）——清空防残留旧文案。
             statusText:
               ev.error ? '' : ev.ready ? (liveTurn ? get().statusText : '就绪') : '启动中…',
@@ -156,7 +156,7 @@ export function handleConnEvent(
         set({
           conn:
             ev.error ? 'error' : ev.ready && liveTurn ? 'busy' : ev.ready ? 'ready' : 'connecting',
-          // boot 错误只进横幅（下方 setLayerError），statusText 不写
+          // boot 错误只进顶栏提示（下方 setLayerError），statusText 不写
           // 错误文本（stat/composer 不参与）——清空防残留旧文案。
           statusText:
             ev.error ? '' : ev.ready ? (liveTurn ? get().statusText : '就绪') : '启动中…',
@@ -223,7 +223,7 @@ export function handleConnEvent(
               // pid 置空走 legacy 匹配；reconnect mid-turn（newTurn=false）
               // 保留原 pid。
               ...(newTurn ? { genRate: undefined, currentPromptId: undefined } : {}),
-              // 系统恢复（busy/ready/新回合）：清空分层横幅。
+              // 系统恢复（busy/ready/新回合）：清空分层错误栈。
               layerErrors: {},
             })
           }
@@ -292,7 +292,7 @@ export function handleConnEvent(
             statusText: s.awaitingNext ? '待处理' : '就绪',
             hostId: ev.hostId,
             hostName: ev.hostName,
-            // 系统恢复（busy/ready/新回合）：清空分层横幅。
+            // 系统恢复（busy/ready/新回合）：清空分层错误栈。
             layerErrors: {},
             ...(s.openThoughtId == null &&
             s.openAssistantId == null &&
@@ -331,7 +331,7 @@ export function handleConnEvent(
           hostId: ev.hostId,
           hostName: ev.hostName,
           modes: ev.modes,
-          // 系统恢复（busy/ready/新回合）：清空分层横幅。
+          // 系统恢复（busy/ready/新回合）：清空分层错误栈。
           layerErrors: {},
           ...modelSnap,
           ...configSnap,

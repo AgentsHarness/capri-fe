@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Repeat } from 'lucide-react'
-import { Glyphs, SPINNER_FRAMES } from '../theme/glyphs'
+import { ArrowUpRight, Diamond, LoaderCircle, Repeat, X } from 'lucide-react'
+import { SPINNER_FRAMES } from '../theme/glyphs'
 import {
   fillAllLiteTurns,
   liteFillSummary,
@@ -14,6 +14,7 @@ import { usePromptQueue } from '../store/promptQueue'
 import type { ScrollEntry, TopTask } from '../api/types'
 import { useSessionSpinner } from '../hooks/sessionState'
 import { TodoMark, CheckMarkIcon } from './todoMark'
+import { ProgressBar } from './ProgressBar'
 import { InlineAction } from './InlineAction'
 import { ChipDropdown } from './ChipDropdown'
 import { KillTaskAction } from './KillTaskAction'
@@ -26,7 +27,7 @@ import type { TodoItem } from '../store/chat'
  * usage climbs). Hidden until the host reports a non-zero window.
  *
  * Hovered mirrors TUI context_bar: the tokens swap for a progress bar
- * filling the same width plus the 5-col percentage (`████ 42.0%`).
+ * filling the same width plus the 5-col percentage.
  * Clicked opens the /context modal (store contextOpen — same surface the
  * `/context` slash command drives) for the full breakdown.
  */
@@ -59,16 +60,15 @@ export function ContextChip({
   // would yield a zero-width bar — floor it so the bar is always visible.
   const defaultStr = `${fmtTok(used)}/${fmtTok(size)}`
   const barWidth = Math.max(6, defaultStr.length - 6)
-  // Two-segment bar like TUI progress_bar_spans: filled cells in the
-  // urgency color, the remaining track in a dim shade — both the used and
-  // the total parts stay visible.
-  const filled = Math.min(barWidth, Math.round((pct / 100) * barWidth))
+  // Bar keeps the width the default "used / total" string would have taken
+  // (TUI progress_bar_spans): filled cells in the urgency color, remaining
+  // track in a dim shade, so both the used and the total parts stay visible.
   const pctStr = `${pct.toFixed(1)}%`.padStart(5, ' ')
   return (
     <button
       type="button"
       onClick={openContext}
-      className={`shrink-0 cursor-pointer whitespace-nowrap rounded px-0 py-0.5 text-left font-mono text-[12px] leading-none tabular-nums hover:bg-gn-bg-highlight`}
+      className={`shrink-0 cursor-pointer whitespace-nowrap rounded px-1 py-0.5 text-left font-mono text-[12px] leading-none tabular-nums hover:bg-gn-bg-highlight`}
       style={{ color }}
       title={`上下文 ${Math.round(pct)}% (${fmtTok(used)} / ${fmtTok(size)})${
         thresholdPct != null ? ` · 自动压缩阈值 ${Math.round(thresholdPct)}%` : ''
@@ -79,12 +79,8 @@ export function ContextChip({
     >
       {hovered ? (
         <span className="inline-flex items-center gap-1.5">
-          {/* Bar (filled + track) stays one contiguous run — the gap goes
-              between the bar and the percentage, like TUI's BAR_PCT_GAP. */}
-          <span aria-hidden className="whitespace-nowrap">
-            <span>{'█'.repeat(filled)}</span>
-            <span className="text-gn-gray-dim">{'░'.repeat(barWidth - filled)}</span>
-          </span>
+          {/* Bar + gap + 5-col percentage keeps the chip width stable. */}
+          <ProgressBar pct={pct} cols={barWidth} />
           <span className="text-gn-fg2">{pctStr}</span>
         </span>
       ) : (
@@ -109,7 +105,7 @@ export function SessionCostChip() {
   const dur = durMs != null && durMs > 0 ? fmtElapsedCompact(durMs) : null
   return (
     <span
-      className="inline-flex shrink-0 items-center whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-gray-dim"
+      className="inline-flex shrink-0 items-center whitespace-nowrap rounded px-1 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-gray-dim"
       title={`会话费用 $${usd.toFixed(4)}${dur ? ` · 已运行 ${dur}` : ''}`}
     >
       ${usd.toFixed(4)}
@@ -168,7 +164,7 @@ export function TodoChip({
         onClick={() => expandable && setOpen((v) => !v)}
         aria-expanded={expandable ? open : undefined}
         aria-controls={expandable ? 'todo-inline-panel' : undefined}
-        className={`flex items-center gap-0.5 rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-fg2 hover:bg-gn-bg-highlight whitespace-nowrap ${expandable ? 'cursor-pointer' : 'cursor-default'} ${ open && expandable ? 'bg-gn-bg-highlight' : '' }`}
+        className={`flex items-center gap-0.5 rounded px-1 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-fg2 hover:bg-gn-bg-highlight whitespace-nowrap ${expandable ? 'cursor-pointer' : 'cursor-default'} ${ open && expandable ? 'bg-gn-bg-highlight' : '' }`}
         title={objective ? `目标: ${objective}` : '待办进度'}
       >
         <span>
@@ -360,9 +356,9 @@ function goalTodoItems(
  *
  * 只在还有 lite 行欠着正文时出现：全部补齐、或本页本来就是全量（开关关 /
  * 旧 host）都不渲染。数字 = 还欠正文的行数。
- *  - ◇N 还没去拉（首屏不再自动补全，点一下 = 一次并发补齐当前视图所有 lite 轮）
- *  - ⠿N 正在拉（braille spinner，与 ⠋N 任务计数同一套帧）
- *  - ✗N 上一轮拉失败，转警告色；展开任意一行或点这里都会重试
+ *  - N 还没去拉（空心菱形；首屏不再自动补全，点一下 = 一次并发补齐当前视图所有 lite 轮）
+ *  - N 正在拉（自转图标，与任务计数同一套节奏）
+ *  - N 上一轮拉失败，转警告色；展开任意一行或点这里都会重试
  *
  * 目录跳转加载在飞（historyJumpProgress 非空）时，同一芯片显示
  * 「跳转 N/M」——跳转加载的页正是补全的来源，落地后无缝切换回 ◇N 待补全：
@@ -378,7 +374,7 @@ export function LiteFillChip() {
   if (jump) {
     return (
       <span
-        className="inline-flex shrink-0 items-center whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-gray-dim"
+        className="inline-flex shrink-0 items-center whitespace-nowrap rounded px-1 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-gray-dim"
         title={`正在跳转到目标轮次 · 已加载到第 ${jump.current}/${jump.total} 轮`}
         aria-label={`跳转中：第 ${jump.current}/${jump.total} 轮`}
       >
@@ -391,18 +387,20 @@ export function LiteFillChip() {
   }
   if (!summary) return null
   const count = pending + loading + failed
-  const glyph = active
-    ? SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length]
-    : failed > 0
-      ? Glyphs.ballotX
-      : Glyphs.diamondHollow
+  const icon = active ? (
+    <LoaderCircle size={12} strokeWidth={2} className="animate-spin" />
+  ) : failed > 0 ? (
+    <X size={12} strokeWidth={2.5} />
+  ) : (
+    <Diamond size={12} strokeWidth={2} />
+  )
   return (
     <button
       type="button"
       onClick={() => {
         void fillAllLiteTurns()
       }}
-      className={`inline-flex shrink-0 items-center cursor-pointer whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums hover:bg-gn-bg-highlight ${ failed > 0 ? 'text-gn-warning' : 'text-gn-gray-dim' }`}
+      className={`inline-flex shrink-0 items-center cursor-pointer whitespace-nowrap rounded px-1 py-0.5 font-mono text-[12px] leading-none tabular-nums hover:bg-gn-bg-highlight ${ failed > 0 ? 'text-gn-warning' : 'text-gn-gray-dim' }`}
       title={
         active
           ? `正在补全精简回放裁掉的工具正文 · 还有 ${count} 行`
@@ -412,8 +410,8 @@ export function LiteFillChip() {
       }
       aria-label={`精简回放：${count} 行工具正文待补全`}
     >
-      <span className="mr-1 inline-block" aria-hidden>
-        {glyph}
+      <span className="mr-1 inline-flex shrink-0 items-center" aria-hidden>
+        {icon}
       </span>
       {count}
     </button>
@@ -450,8 +448,8 @@ export function GoalChip({
   // chip's rect and clamps the panel inside the screen).
   const wrapRef = useRef<HTMLDivElement>(null)
   // Action feedback: the status line carries the last instruction's
-  // confirmation. Hub/host-level failures live ONLY in the top banner
-  // (ErrorBanner) — stat stays session/action-scoped, no error echo.
+  // confirmation. Hub/host-level failures live ONLY in the top bar's host
+  // notice (LayerErrNotice) — stat stays session/action-scoped, no error echo.
   const statusText = useChatStore((s) => s.statusText)
   // Hooks must run unconditionally — derive the Active flag before the
   // early returns so the elapsed tick + spinner keep their stable order.
@@ -479,7 +477,6 @@ export function GoalChip({
   const budgetPct = budget > 0 ? Math.min(1, tokens / budget) : 0
   const budgetColorClass =
     budgetPct > 0.8 ? 'text-gn-red' : budgetPct >= 0.5 ? 'text-gn-yellow' : 'text-gn-green'
-  const budgetFilled = Math.round(budgetPct * GOAL_BUDGET_BAR_W)
 
   const chipClass = paused
     ? 'bg-gn-warning text-gn-bg-base'
@@ -500,7 +497,7 @@ export function GoalChip({
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className={`flex min-w-0 items-center rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums ${chipClass}`}
+        className={`flex min-w-0 items-center rounded px-1 py-0.5 font-mono text-[12px] leading-none tabular-nums ${chipClass}`}
         title={objective ? `目标: ${objective}` : '目标状态'}
       >
         {active && (
@@ -585,14 +582,11 @@ export function GoalChip({
             <div className="mt-1.5 flex items-center gap-2">
               <span className="shrink-0 text-gn-gutter">budget</span>
               <span className="inline-flex items-center gap-1.5 tabular-nums">
-                <span aria-hidden className="whitespace-nowrap">
-                  <span className={budgetColorClass}>
-                    {'█'.repeat(budgetFilled)}
-                  </span>
-                  <span className="text-gn-gray-dim">
-                    {'░'.repeat(GOAL_BUDGET_BAR_W - budgetFilled)}
-                  </span>
-                </span>
+                <ProgressBar
+                  pct={budgetPct * 100}
+                  cols={GOAL_BUDGET_BAR_W}
+                  tone={budgetColorClass}
+                />
                 <span className={budgetColorClass}>
                   {(budgetPct * 100).toFixed(0)}%
                 </span>
@@ -641,7 +635,12 @@ export function GoalChip({
             onRun={() => goalClear()}
           />
           <InlineAction
-            label="工作流 ↗"
+            label={
+              <span className="inline-flex items-center gap-0.5">
+                工作流
+                <ArrowUpRight size={11} strokeWidth={2} aria-hidden />
+              </span>
+            }
             tone="plan"
             className="ml-auto"
             title="打开 /workflows 工作流运行面板"
@@ -651,7 +650,7 @@ export function GoalChip({
             }}
           />
         </div>
-        {/* ── action feedback: live status line（hub/host 错误只在顶部横幅）── */}
+        {/* ── action feedback: live status line（hub/host 错误只在顶栏 host 提示）── */}
         <div className="border-t border-gn-prompt-border px-3 py-1.5 font-mono text-[10.5px]">
           {statusText && (
             <div className="truncate text-gn-muted" title={statusText}>
@@ -696,7 +695,7 @@ export function RunningChip({
       onClick={onToggle}
       aria-expanded={open}
       aria-controls="running-tasks-bar"
-      className={`inline-flex shrink-0 items-center whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-accent-running hover:bg-gn-bg-highlight ${ open ? 'bg-gn-bg-highlight' : '' }`}
+      className={`inline-flex shrink-0 items-center whitespace-nowrap rounded px-1 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-accent-running hover:bg-gn-bg-highlight ${ open ? 'bg-gn-bg-highlight' : '' }`}
       title={
         open
           ? '隐藏运行中的任务列表'
@@ -740,12 +739,12 @@ export function DetachedChip() {
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="inline-flex shrink-0 items-center cursor-pointer whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-warning hover:bg-gn-bg-highlight"
+        className="inline-flex shrink-0 items-center cursor-pointer whitespace-nowrap rounded px-1 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-warning hover:bg-gn-bg-highlight"
         title={`发现 ${tasks.length} 个仍在运行、但不属于当前 Grok 进程的后台命令（此处无法终止）· 点击查看`}
         aria-label={`游离后台进程：${tasks.length} 个`}
       >
-        <span className="mr-1 inline-block" aria-hidden>
-          {Glyphs.diamondDotted}
+        <span className="mr-1 inline-flex shrink-0 items-center" aria-hidden>
+          <Diamond size={12} strokeWidth={2} />
         </span>
         {tasks.length}
       </button>
@@ -1031,7 +1030,7 @@ export function McpChip({ onOpen }: { onOpen: () => void }) {
     <button
       type="button"
       onClick={onOpen}
-      className="inline-flex shrink-0 items-center whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-gray-dim hover:bg-gn-bg-highlight hover:text-gn-muted"
+      className="inline-flex shrink-0 items-center whitespace-nowrap rounded px-1 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-gray-dim hover:bg-gn-bg-highlight hover:text-gn-muted"
       title={`MCP 服务器 ${connected}/${total} 已连接 · 点击打开 MCP 面板`}
     >
       <span className="hidden sm:inline">MCP</span>
@@ -1055,7 +1054,7 @@ export function QueueBadge() {
       type="button"
       onClick={() => setQueuePanelOpen(!open)}
       aria-expanded={open}
-      className={`inline-flex shrink-0 items-center whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-fg2 hover:bg-gn-bg-highlight ${ open ? 'bg-gn-bg-highlight' : '' }`}
+      className={`inline-flex shrink-0 items-center whitespace-nowrap rounded px-1 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-fg2 hover:bg-gn-bg-highlight ${ open ? 'bg-gn-bg-highlight' : '' }`}
       title={open ? '收起排队消息' : `展开排队消息 · ${queue.length} 条`}
     >
       +{queue.length}

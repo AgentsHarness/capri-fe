@@ -164,9 +164,9 @@ export async function sendPrompt(
       const after = sealThought(s)
       // 回合失败 ≠ 连接失败：HTTP 错误响应说明 host 活着，错误来自 agent
       // （host 只是透传，如模型 API 400 "Internal Error"）——滚动一条错误
-      // 行即可，连接保持就绪、不亮红色 Host 横幅。只有网络级失败（fetch
+      // 行即可，连接保持就绪、不亮红色 Host 提示。只有网络级失败（fetch
       // 拒绝 = host 不可达，即 AgentTurnError 之外的异常）才进 host 错误
-      // 处理（conn: 'error' + 横幅）。
+      // 处理（conn: 'error' + 顶栏提示）。
       if (!(e instanceof AgentTurnError)) {
         // 网络级失败（fetch 拒绝）。但 POST /api/prompt（回合 RPC）与
         // live 通道（SSE/WS，回合输出）是两条独立连接——三种情形：
@@ -178,7 +178,7 @@ export async function sendPrompt(
         //    输出照常流——不渲染错误行、不翻转 conn，武装看门狗兜底
         //    （仅当回合卡死且通道断开才补错误态）。
         // 3) 回合从未启动（本回合零 live 事件）：真 host 不可达 / prompt
-        //    丢失——保留原硬错误处理（conn: 'error' + 横幅）。
+        //    丢失——保留原硬错误处理（conn: 'error' + 顶栏提示）。
         const started = s.turnStartedAt
         if (started == null) return
         const lastLive = transport.lastLiveEventAt()
@@ -188,7 +188,7 @@ export async function sendPrompt(
         }
         // 网络级失败（host 不可达）：丢弃未落库的流式缓冲并取消 rAF，
         // 避免残留 flush 在错误态之后把 conn 重新顶回 busy。host 级
-        // 失败（会话无关）不滚时间线错误行——横幅就地设置，不依赖
+        // 失败（会话无关）不滚时间线错误行——提示就地设置，不依赖
         // live error 事件（SSE 与 POST 是两条独立连接，事件可能迟到
         // 甚至缺失）。statusText 不写错误（stat/composer 不参与），
         // 清空以防 stat 残留陈旧连接文案。
@@ -240,7 +240,7 @@ export async function sendPrompt(
           e instanceof AgentTurnError && e.kind === 'unreachable'
             ? 'agent 连接异常，可重启 agent'
             : msg,
-        // 新回合开始：清空分层横幅。
+        // 新回合开始：清空分层错误栈。
         layerErrors: {},
         awaitingNext: false,
         turnStartedAt: undefined,

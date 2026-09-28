@@ -7,6 +7,7 @@ function coreWithBody(body: unknown, status = 200): TransportCore & { fetch: Ret
   return {
     mode: 'local',
     url: (path: string) => `http://host.test${path}`,
+    urlForHost: () => null,
     apiBase: () => 'http://host.test',
     prefsOrigin: () => 'http://host.test',
     fetch: vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status })),
@@ -131,6 +132,12 @@ describe('memoryRpc.memoryDream', () => {
     const res = await memoryRpc.memoryDream.call(core, 's1')
     expect(sentPath(core)).toBe('http://host.test/api/memory-dream')
     expect(res.disposition).toBe('no_work')
+  })
+
+  it('关掉传输硬超时（timeoutMs: 0）——整合是模型工作，pager 侧也无截止', async () => {
+    const core = coreWithBody(hostBody({ disposition: 'completed' }))
+    await memoryRpc.memoryDream.call(core, 's1')
+    expect(core.fetch.mock.calls[0][2]).toEqual({ timeoutMs: 0 })
   })
 })
 

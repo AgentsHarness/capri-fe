@@ -1,7 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { CustomModelsPanel } from './CustomModelsPanel'
-import type { CustomModelConfig } from '../api/types'
+import { useChatStore } from '../store/chat'
+import type { CustomModelConfig, CustomModelFilters } from '../api/types'
 
 const sampleModels: CustomModelConfig[] = [
   {
@@ -33,6 +34,14 @@ const transportMock = vi.hoisted(() => ({
   upsertCustomModel: vi.fn(async () => ({ ok: true })),
   deleteCustomModel: vi.fn(async () => ({ defaultCleared: false })),
   setDefaultModel: vi.fn(async () => ({ ok: true })),
+  listModelFilters: vi.fn(async (): Promise<CustomModelFilters> => ({ hidden: [], disabled: [] })),
+  setModelFilters: vi.fn(async () => ({ ok: true })),
+  // 面板现在读 chat store（选中 host / host 列表）——它会连带加载 hub 偏好
+  // 同步等模块级订阅，这些传输面必须存在（与 SettingsModal.test 同款）。
+  onEvent: () => () => {},
+  getHubUrl: () => '',
+  prefsOrigin: () => '',
+  getConnectionMode: () => 'hub' as const,
 }))
 
 vi.mock('../api/client', () => ({ transport: transportMock }))
@@ -41,6 +50,7 @@ describe('CustomModelsPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(transportMock.listCustomModels).mockResolvedValue(sampleModels)
+    vi.mocked(transportMock.listModelFilters).mockResolvedValue({ hidden: [], disabled: [] })
   })
 
   it('renders existing custom models and quick add button', async () => {
@@ -368,5 +378,173 @@ describe('CustomModelsPanel', () => {
       .getAllByRole('checkbox')
       .filter((c) => (c.closest('label')?.textContent ?? '').includes('默认'))
     expect(checkboxes.map((c) => (c as HTMLInputElement).checked)).toEqual([true, false])
+  })
+
+  it('hub 模式且有多台 Host 时显示「从其他 Host 导入」入口', async () => {
+    useChatStore.setState({
+      selectedHostId: 'mine',
+      hosts: [
+        { hostId: 'mine', hostName: '本机', online: true },
+        { hostId: 'vps', hostName: 'VPS', online: true },
+      ],
+    })
+    render(<CustomModelsPanel />)
+    await waitFor(() => {
+      expect(screen.getByText('DeepSeek Chat')).toBeDefined()
+    })
+    expect(screen.getByRole('button', { name: /从其他 Host 导入/ })).toBeDefined()
+  })
+
+  it('只有一台 Host 时不显示导入入口（没有源可读）', async () => {
+    useChatStore.setState({
+      selectedHostId: 'mine',
+      hosts: [{ hostId: 'mine', hostName: '本机', online: true }],
+    })
+    render(<CustomModelsPanel />)
+    await waitFor(() => {
+      expect(screen.getByText('DeepSeek Chat')).toBeDefined()
+    })
+    expect(screen.queryByRole('button', { name: /从其他 Host 导入/ })).toBeNull()
+  })
+
+  it('local 模式不显示导入入口（没有第二台 Host 可问）', async () => {
+    const spy = vi
+      .spyOn(transportMock, 'getConnectionMode')
+      .mockReturnValue('local' as never)
+    useChatStore.setState({
+      selectedHostId: 'mine',
+      hosts: [
+        { hostId: 'mine', hostName: '本机', online: true },
+        { hostId: 'vps', hostName: 'VPS', online: true },
+      ],
+    })
+    try {
+      render(<CustomModelsPanel />)
+      await waitFor(() => {
+        expect(screen.getByText('DeepSeek Chat')).toBeDefined()
+      })
+      expect(screen.queryByRole('button', { name: /从其他 Host 导入/ })).toBeNull()
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('换 Host 会重读列表（`?host=` 变了，旧列表不能留在屏幕上）', async () => {
+    useChatStore.setState({ selectedHostId: 'mine', hosts: [] })
+    render(<CustomModelsPanel />)
+    await waitFor(() => {
+      expect(screen.getByText('DeepSeek Chat')).toBeDefined()
+    })
+    const callsBefore = vi.mocked(transportMock.listCustomModels).mock.calls.length
+    useChatStore.setState({ selectedHostId: 'vps' })
+    await waitFor(() => {
+      expect(vi.mocked(transportMock.listCustomModels).mock.calls.length).toBeGreaterThan(
+        callsBefore,
+      )
+    })
+  })
+
+  // ── 目录过滤（[models] hidden_models / disabled_models）──
+
+  it('主视图有规则时显示单行摘要，点「编辑过滤」进二级视图；未保存点返回丢弃草稿', async () => {
+    vi.mocked(transportMock.listModelFilters).mockResolvedValue({
+      hidden: ['grok-4.6'],
+      disabled: ['grok-4.5'],
+    })
+    render(<CustomModelsPanel />)
+
+    await waitFor(() => {
+      expect(screen.getByText(/已隐藏 1 项（grok-4.6）/)).toBeDefined()
+    })
+    expect(screen.getByText(/已禁用 1 项（grok-4.5）/)).toBeDefined()
+    // 主视图默认不展开两个过滤输入框
+    expect(screen.queryByPlaceholderText('grok-4.6 或 grok-*')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: '编辑过滤' }))
+    expect(screen.getByText('grok-4.6')).toBeDefined()
+    expect(screen.getByText('grok-4.5')).toBeDefined()
+
+    // 加一条只改本地草稿：不进请求体。
+    const hiddenBlock = screen.getByText(/hidden_models（隐藏/).parentElement as HTMLElement
+    fireEvent.change(within(hiddenBlock).getByPlaceholderText('grok-4.6 或 grok-*'), {
+      target: { value: 'grok-*' },
+    })
+    fireEvent.click(within(hiddenBlock).getByRole('button', { name: '添加' }))
+    expect(screen.getByText('grok-*')).toBeDefined()
+    expect(transportMock.setModelFilters).not.toHaveBeenCalled()
+
+    // 点返回回到列表，未保存的 grok-* 被丢弃，再打开只剩原规则
+    fireEvent.click(screen.getByRole('button', { name: '返回' }))
+    expect(screen.getByText('DeepSeek Chat')).toBeDefined()
+    fireEvent.click(screen.getByRole('button', { name: /目录过滤/ }))
+    expect(screen.queryByText('grok-*')).toBeNull()
+  })
+
+  it('保存目录过滤把两份名单一起写出去，保存后回到模型列表并更新摘要', async () => {
+    render(<CustomModelsPanel />)
+    await waitFor(() => {
+      expect(screen.getByText('DeepSeek Chat')).toBeDefined()
+    })
+    // 零规则时底部不显示过滤摘要条
+    expect(screen.queryByRole('button', { name: '编辑过滤' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /目录过滤/ }))
+
+    const hiddenBlock = screen.getByText(/hidden_models（隐藏/).parentElement as HTMLElement
+    fireEvent.change(within(hiddenBlock).getByPlaceholderText('grok-4.6 或 grok-*'), {
+      target: { value: 'grok-*, claude-*' },
+    })
+    fireEvent.keyDown(within(hiddenBlock).getByPlaceholderText('grok-4.6 或 grok-*'), {
+      key: 'Enter',
+    })
+    const disabledBlock = screen.getByText(/disabled_models（禁用/).parentElement as HTMLElement
+    fireEvent.change(within(disabledBlock).getByPlaceholderText('grok-4.5 或 grok-*'), {
+      target: { value: 'grok-4.5' },
+    })
+    fireEvent.click(within(disabledBlock).getByRole('button', { name: '添加' }))
+
+    fireEvent.click(screen.getByRole('button', { name: '保存目录过滤' }))
+
+    await waitFor(() => {
+      expect(transportMock.setModelFilters).toHaveBeenCalledWith({
+        hidden: ['grok-*', 'claude-*'],
+        disabled: ['grok-4.5'],
+      })
+    })
+    // 保存成功后回到主列表，底部摘要条反映最新规则
+    expect(screen.getByText('DeepSeek Chat')).toBeDefined()
+    expect(screen.getByText(/已隐藏 2 项（grok-\*, claude-\*）/)).toBeDefined()
+  })
+
+  it('删掉 chip 后保存，被删的模式不再出现在请求体里', async () => {
+    vi.mocked(transportMock.listModelFilters).mockResolvedValue({
+      hidden: ['grok-4.6'],
+      disabled: [],
+    })
+    render(<CustomModelsPanel />)
+    await waitFor(() => {
+      expect(screen.getByText(/已隐藏 1 项（grok-4.6）/)).toBeDefined()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /目录过滤/ }))
+    fireEvent.click(screen.getByLabelText('删除 grok-4.6'))
+    fireEvent.click(screen.getByRole('button', { name: '保存目录过滤' }))
+
+    await waitFor(() => {
+      expect(transportMock.setModelFilters).toHaveBeenCalledWith({ hidden: [], disabled: [] })
+    })
+  })
+
+  it('host 读不出过滤名单时：主列表不受影响，点进「目录过滤」降级为提示且不给保存按钮', async () => {
+    vi.mocked(transportMock.listModelFilters).mockRejectedValue(new Error('list model filters failed (404)'))
+    render(<CustomModelsPanel />)
+
+    await waitFor(() => {
+      expect(screen.getByText('DeepSeek Chat')).toBeDefined()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /目录过滤/ }))
+    expect(screen.getByText(/不可用：list model filters failed \(404\)/)).toBeDefined()
+    expect(screen.queryByRole('button', { name: /保存目录过滤/ })).toBeNull()
   })
 })

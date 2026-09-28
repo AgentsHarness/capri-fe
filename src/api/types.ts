@@ -61,6 +61,7 @@ export type {
 } from './types/tools'
 export type {
   CustomModelConfig,
+  CustomModelFilters,
   ExtensionHook,
   ExtensionPlugin,
   ExtensionSkill,

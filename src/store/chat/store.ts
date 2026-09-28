@@ -51,6 +51,7 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
   statusText: '连接中…',
   newSessionPending: false,
   recapPendingFor: undefined,
+  memoryCommandPending: undefined,
   recapCache: {},
   awaitingNext: false,
   hosts: [],
@@ -260,7 +261,7 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
   /** 写入/清除某一层的错误（undefined = 清除该层）。 */
   setLayerError: (layer, err) =>
     set((s) => ({ layerErrors: { ...s.layerErrors, [layer]: err } })),
-  /** Dismiss the top error/status banner (user acknowledged the message). */
+  /** 关闭顶栏的 hub/host 层错误提示（用户已确认该消息）。 */
   dismissNotice: () => set({ layerErrors: {} }),
 
   loadHistory: (sessionId, cwd, opts) => loadSessionHistory(set, get, sessionId, cwd, opts),

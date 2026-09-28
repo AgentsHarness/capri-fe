@@ -547,7 +547,14 @@ export function McpPanel({
               <Sliders size={32} className="text-gn-muted/40 mb-2" aria-hidden />
               <div className="text-[12.5px] font-medium text-gn-fg2">没有已配置的服务器</div>
               <div className="mt-1 text-[11px] text-gn-muted">
-                点击下方「＋ 添加服务器」配置首个 MCP
+                点击下方「
+                <Plus
+                  size={11}
+                  strokeWidth={2}
+                  className="inline-block align-[-2px]"
+                  aria-hidden
+                />{' '}
+                添加服务器」配置首个 MCP
               </div>
             </div>
           ) : filteredRows.length === 0 ? (

@@ -16,7 +16,9 @@ import {
   useState,
   type ReactNode,
 } from 'react'
+import { Check, X } from 'lucide-react'
 import { formatTurnDuration, planTodos, useChatStore, type ViewerTask } from '../store/chat'
+import { ProgressBar } from './ProgressBar'
 import type { ScrollEntry } from '../api/types'
 import { subagentMeta } from '../format'
 import { LiteToolFill } from './scrollback/LiteToolFill'
@@ -195,8 +197,7 @@ export function BlockViewer() {
   if ((!viewerId || !entry) && !taskView) return null
   if (!active) return null
 
-  // 子代理标题栏（TUI 全屏边框视图 title bar）：状态图标 + label + 加粗
-  // 描述 + model + 活动后缀 · elapsed（见 subagentChrome）。
+  // 子代理标题栏：状态图标 + 状态动词 + 任务描述 + 耗时，次行汇总模型/统计/进度。
   const subChrome =
     active.kind === 'subagent'
       ? subagentChrome(active, now, spinnerFrame)
@@ -204,7 +205,7 @@ export function BlockViewer() {
   const { title, subtitle } = subChrome
     ? {
         title: subChrome.label,
-        subtitle: (active as Extract<ScrollEntry, { kind: 'subagent' }>).title,
+        subtitle: subChrome.description,
       }
     : viewerChrome(active, sessionCwd)
 
@@ -224,49 +225,86 @@ export function BlockViewer() {
         className="m-0 flex h-full w-full max-w-[960px] flex-col gn-modal-panel sm:m-4 sm:h-[calc(100%-2rem)]"
       >
         {/* Title bar */}
-        <header className="gn-modal-header">
-          <div className="min-w-0 flex-1">
-            {subChrome ? (
-              <>
-                {/* TUI 边框视图 title bar：状态图标 + label + 加粗描述同一行，
-                    移动端标题截断、metaLine 单独一行。 */}
-                <div className="flex min-w-0 items-center gap-1.5">
-                  {subChrome.icon}
-                  <span className="shrink-0 text-[13px] font-bold text-gn-fg">
-                    {title}
+        <header className={subChrome ? 'gn-modal-header py-1.5' : 'gn-modal-header'}>
+          {subChrome ? (
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 items-center gap-1.5">
+                {subChrome.icon}
+                <span
+                  className={`shrink-0 text-[12.5px] font-bold ${
+                    subtitle ? subChrome.statusColor : 'text-gn-fg'
+                  }`}
+                >
+                  {title}
+                </span>
+                {subtitle ? (
+                  <span
+                    className="min-w-0 flex-1 truncate text-[13px] font-bold text-gn-fg"
+                    title={subtitle}
+                  >
+                    {subtitle}
                   </span>
-                  {subtitle ? (
-                    <span className="min-w-0 truncate font-mono text-[12px] text-gn-muted">
-                      {subtitle}
+                ) : null}
+                <div className="ml-auto flex shrink-0 items-center gap-2">
+                  {subChrome.elapsed ? (
+                    <span className="font-mono text-[11.5px] tabular-nums text-gn-muted">
+                      {subChrome.elapsed}
                     </span>
                   ) : null}
+                  <button
+                    type="button"
+                    onClick={() => closeViewer()}
+                    className="inline-flex shrink-0 items-center gap-1 rounded px-2 py-1 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                    aria-label="Close viewer"
+                  >
+                    <IconGlyph glyph={Glyphs.ballotX} color="currentColor" />
+                    close
+                  </button>
                 </div>
-                {subChrome.metaLine ? (
-                  <div className="mt-0.5 truncate font-mono text-[11px] text-gn-gutter">
-                    {subChrome.metaLine}
-                  </div>
-                ) : null}
-              </>
-            ) : (
-              <>
+              </div>
+              {subChrome.hasSecondRow ? (
+                <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 pl-[19px] font-mono text-[11px] tabular-nums text-gn-gutter">
+                  {subChrome.metaSegments.map((seg, i) => (
+                    <span key={i} className="inline-flex items-center gap-2">
+                      {i > 0 && <span aria-hidden>·</span>}
+                      <span
+                        className={
+                          seg.tone === 'error'
+                            ? 'text-gn-red'
+                            : seg.tone === 'muted'
+                              ? 'text-gn-muted'
+                              : undefined
+                        }
+                      >
+                        {seg.text}
+                      </span>
+                    </span>
+                  ))}
+                  {subChrome.contextGauge}
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <>
+              <div className="min-w-0 flex-1">
                 <div className="truncate text-[13px] font-bold text-gn-fg">{title}</div>
                 {subtitle ? (
                   <div className="truncate font-mono text-[11px] text-gn-muted">
                     {subtitle}
                   </div>
                 ) : null}
-              </>
-            )}
-          </div>
-          <button
-            type="button"
-            onClick={() => closeViewer()}
-            className="inline-flex shrink-0 items-center gap-1 rounded px-2 py-1 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
-            aria-label="Close viewer"
-          >
-            <IconGlyph glyph={Glyphs.ballotX} color="currentColor" />
-            close
-          </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => closeViewer()}
+                className="inline-flex shrink-0 items-center gap-1 rounded px-2 py-1 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8"
+                aria-label="Close viewer"
+              >
+                <IconGlyph glyph={Glyphs.ballotX} color="currentColor" />
+                close
+              </button>
+            </>
+          )}
         </header>
 
         {/* Full content — no truncation. 子代理：外层不滚动（px/py 由
@@ -432,17 +470,30 @@ function viewerChrome(e: ScrollEntry, cwd?: string): { title: string; subtitle?:
   return { title: e.kind }
 }
 
+interface SubagentMetaSegment {
+  text: string
+  tone: 'muted' | 'gutter' | 'error'
+}
+
 /**
- * 子代理标题栏（TUI 全屏边框视图 title bar）：状态图标（spinner / ✓ / ✗）
- * + label（Agent running / done / cancelled / failed）+ 加粗描述 + model
- * （persona · role · model）+ 活动后缀 · elapsed。活动后缀用 TUI dashboard
- * 的 “Running: {last tool}”，无工具时退回 wire 的 detail 摘要。
+ * 子代理标题栏：
+ * - 首行：状态图标（spinner / ✓ / ✗）+ 状态标签（着色）+ 加粗任务描述 + 右侧耗时与关闭按钮
+ * - 次行（按需渲染）：去重后的角色/类型与模型 + 回合/工具/token/错误计数 + 当前运行工具 + 上下文进度条
  */
 function subagentChrome(
   e: Extract<ScrollEntry, { kind: 'subagent' }>,
   now: number,
   spinnerFrame: number,
-): { icon: ReactNode; label: string; metaLine: string } {
+): {
+  icon: ReactNode
+  label: string
+  statusColor: string
+  description?: string
+  elapsed?: string
+  metaSegments: SubagentMetaSegment[]
+  contextGauge: ReactNode
+  hasSecondRow: boolean
+} {
   const running = !!e.running
   const label = running
     ? 'Agent running'
@@ -451,45 +502,136 @@ function subagentChrome(
       : e.status === 'cancelled'
         ? 'Agent cancelled'
         : 'Agent failed'
+  const statusColor = running
+    ? 'text-gn-accent-running'
+    : e.status === 'completed'
+      ? 'text-gn-green'
+      : e.status === 'cancelled'
+        ? 'text-gn-yellow'
+        : 'text-gn-red'
   const icon = running ? (
-    <span className="shrink-0 text-gn-accent-running" aria-hidden>
+    <span
+      className="flex w-[13px] shrink-0 items-center justify-center text-gn-accent-running"
+      aria-hidden
+    >
       {SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length]}
     </span>
   ) : (
     <span
-      className={`shrink-0 ${
- e.status === 'completed'
-          ? 'text-gn-green'
-          : e.status === 'cancelled'
-            ? 'text-gn-yellow'
-            : 'text-gn-red'
-      }`}
+      className={`flex w-[13px] shrink-0 items-center justify-center ${statusColor}`}
       aria-hidden
     >
-      {e.status === 'completed' ? Glyphs.checkMark : Glyphs.ballotX}
+      {e.status === 'completed' ? (
+        <Check size={13} strokeWidth={2.5} />
+      ) : (
+        <X size={13} strokeWidth={2.5} />
+      )}
     </span>
   )
-  const meta = subagentMeta(e.persona, e.role, e.model, e.reasoningEffort).trim()
+
+  const rawTitle = e.title?.trim() ?? ''
+  const description =
+    rawTitle && rawTitle !== e.subagentId ? rawTitle : undefined
+
   const elapsedMs = running
     ? e.startedAt != null
-      ? now - e.startedAt
+      ? Math.max(0, now - e.startedAt)
       : e.durationMs
     : e.durationMs
-  const elapsed = elapsedMs != null ? formatTurnDuration(elapsedMs) : undefined
-  const activity =
-    running && e.toolsUsed?.length
-      ? `Running: ${e.toolsUsed[e.toolsUsed.length - 1]}`
-      : running && e.detail
-        ? e.detail
-        : undefined
-  const metaLine = [
-    meta || undefined,
-    activity,
-    elapsed != null ? `elapsed ${elapsed}` : undefined,
-  ]
-    .filter((s): s is string => !!s)
-    .join(' · ')
-  return { icon, label, metaLine }
+  const elapsed =
+    elapsedMs != null ? formatTurnDuration(elapsedMs) : undefined
+
+  const cleanType = e.subagentType?.trim()
+  const fallbackRole =
+    !e.persona?.trim() &&
+    !e.role?.trim() &&
+    cleanType &&
+    cleanType.toLowerCase() !== 'general-purpose' &&
+    cleanType.toLowerCase() !== description?.toLowerCase()
+      ? cleanType
+      : e.role
+  const rawMeta = subagentMeta(
+    e.persona,
+    fallbackRole,
+    e.model,
+    e.reasoningEffort,
+  ).trim()
+  const identity =
+    rawMeta.startsWith('(') && rawMeta.endsWith(')')
+      ? rawMeta.slice(1, -1)
+      : rawMeta
+
+  const hasContextGauge =
+    running &&
+    e.contextWindowTokens != null &&
+    e.contextWindowTokens > 0
+
+  const metaSegments: SubagentMetaSegment[] = []
+  if (identity) {
+    metaSegments.push({ text: identity, tone: 'muted' })
+  }
+  if (e.turns != null && e.turns > 0) {
+    metaSegments.push({
+      text: `${e.turns} ${e.turns === 1 ? 'turn' : 'turns'}`,
+      tone: 'gutter',
+    })
+  }
+  if (e.toolCalls != null && e.toolCalls > 0) {
+    metaSegments.push({
+      text: `${e.toolCalls} ${e.toolCalls === 1 ? 'tool' : 'tools'}`,
+      tone: 'gutter',
+    })
+  }
+  if (!hasContextGauge && e.tokensUsed != null && e.tokensUsed > 0) {
+    metaSegments.push({
+      text: `${fmtTok(e.tokensUsed)} tok`,
+      tone: 'gutter',
+    })
+  }
+  if (e.errorCount != null && e.errorCount > 0) {
+    metaSegments.push({
+      text: `${e.errorCount} ${e.errorCount === 1 ? 'error' : 'errors'}`,
+      tone: 'error',
+    })
+  }
+  if (running && e.toolsUsed?.length) {
+    metaSegments.push({
+      text: `Running: ${e.toolsUsed[e.toolsUsed.length - 1]}`,
+      tone: 'muted',
+    })
+  }
+
+  const pct = e.contextUsagePct
+  const gaugeColor =
+    pct == null ? undefined : contextUrgencyColor(Math.min(100, pct))
+  const contextGauge = hasContextGauge ? (
+    <span className="ml-auto inline-flex items-center gap-2">
+      <span
+        className={`inline-flex items-center gap-1 leading-none ${pct == null ? 'text-gn-gutter' : ''}`}
+        style={gaugeColor ? { color: gaugeColor } : undefined}
+        title={`上下文 ${Math.round(pct ?? 0)}%`}
+      >
+        <ProgressBar pct={pct ?? 0} cols={10} />
+        <span>{Math.round(pct ?? 0)}%</span>
+      </span>
+      <span>
+        {e.tokensUsed != null
+          ? `${fmtTok(e.tokensUsed)} / ${fmtTok(e.contextWindowTokens!)} tok`
+          : `${fmtTok(e.contextWindowTokens!)} tok`}
+      </span>
+    </span>
+  ) : null
+
+  return {
+    icon,
+    label,
+    statusColor,
+    description,
+    elapsed,
+    metaSegments,
+    contextGauge,
+    hasSecondRow: metaSegments.length > 0 || hasContextGauge,
+  }
 }
 
 function ViewerBody({
@@ -735,20 +877,9 @@ function useLiveTick(active: boolean): number {
 }
 
 /**
- * Subagent block-viewer body — TUI tasks-pane / dashboard parity for live
- * progress (xai-grok-pager):
- * - live elapsed: running → wall-clock since spawn (wire duration_ms
- *   fallback), finished → authoritative SubagentFinished duration_ms
- *   (SubagentInfo::display_elapsed)
- * - context mini gauge: context_usage_pct + tokens_used /
- *   context_window_tokens (dashboard row context_pct)
- * - live turns / tools / tokens / error_count (SubagentProgress ticks)
- * - 标题栏（status icon + label + 描述 + model + 活动后缀 · elapsed）在
- *   BlockViewer 的 header 里（subagentChrome）；tools_used 芯片不展示
- *   （冗余，活动后缀已含最近工具）
- *
- * 布局：状态区（gauge/统计/error）shrink-0 置顶，时间线 flex-1 占满
- * 剩余区域并自行滚动——移动端全屏弹窗下时间线撑满视口剩余高度。
+ * Subagent block-viewer body：
+ * - 顶部标题栏（subagentChrome）已收敛状态图标、描述、模型、统计、当前工具与上下文进度条
+ * - 正文仅在存在错误时置顶渲染错误提示，其余空间由活动时间线占满并独立滚动
  */
 function SubagentView({
   entry,
@@ -762,84 +893,19 @@ function SubagentView({
   const childSid = entry.childSessionId
   const view = childSid ? subagentViews[childSid] : undefined
 
-  const elapsedMs = entry.running
-    ? entry.startedAt != null
-      ? now - entry.startedAt
-      : entry.durationMs
-    : entry.durationMs
-
-  // Context mini gauge (TUI dashboard context_pct; urgency color follows
-  // the status-bar ContextChip gradient — contextUrgencyColor).
-  const pct = entry.contextUsagePct
-  const gaugeW = 20
-  const filled =
-    pct != null ? Math.min(gaugeW, Math.round((Math.min(100, pct) / 100) * gaugeW)) : 0
-  const gaugeColor = pct == null ? undefined : contextUrgencyColor(Math.min(100, pct))
-
-  const stats = [
-    entry.subagentType ? `type · ${entry.subagentType}` : undefined,
-    entry.turns != null ? `turns · ${entry.turns}` : undefined,
-    entry.toolCalls != null ? `tools · ${entry.toolCalls}` : undefined,
-    entry.tokensUsed != null ? `tokens · ${fmtTok(entry.tokensUsed)}` : undefined,
-    entry.errorCount != null && entry.errorCount > 0
-      ? `errors · ${entry.errorCount}`
-      : undefined,
-    elapsedMs != null ? `elapsed · ${formatTurnDuration(elapsedMs)}` : undefined,
-    entry.subagentId ? `id · ${entry.subagentId}` : undefined,
-  ].filter((s): s is string => !!s)
-
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* 状态区（标题栏之下，不随时间线滚动）：gauge + 统计 + error。
-          id 脚注并入统计行，不再单独占行。 */}
-      <div className="shrink-0 space-y-1.5 px-3 pt-3 sm:px-4">
-        {entry.running && (
-          <>
-            {/* Live context gauge — hidden until the host reports a window. */}
-            {entry.contextWindowTokens != null && entry.contextWindowTokens > 0 && (
-              <div className="flex items-center gap-2">
-                <span
-                  className={`inline-flex items-center gap-1 font-mono text-[12px] leading-none ${pct == null ? 'text-gn-gutter' : ''}`}
-                  style={gaugeColor ? { color: gaugeColor } : undefined}
-                  title={`上下文 ${Math.round(pct ?? 0)}%`}
-                >
-                  <span aria-hidden className="whitespace-nowrap">
-                    <span>{'█'.repeat(filled)}</span>
-                    <span className="text-gn-gray-dim">{'░'.repeat(gaugeW - filled)}</span>
-                  </span>
-                  <span className="tabular-nums">
-                    {(pct ?? 0).toFixed(1)}%
-                  </span>
-                </span>
-                <span className="font-mono text-[11px] tabular-nums text-gn-gutter">
-                  {entry.tokensUsed != null
-                    ? `${fmtTok(entry.tokensUsed)} / ${fmtTok(entry.contextWindowTokens)} tok`
-                    : `${fmtTok(entry.contextWindowTokens)} tok window`}
-                </span>
-              </div>
-            )}
-            {stats.length > 0 && (
-              <div className="flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[11px] tabular-nums text-gn-gutter">
-                {stats.map((s) => (
-                  <span key={s}>{s}</span>
-                ))}
-              </div>
-            )}
-          </>
-        )}
-        {entry.error && (
+      {entry.error && (
+        <div
+          className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} shrink-0 pt-2.5`}
+        >
           <div className="rounded border border-gn-red/40 bg-gn-diff-del-bg px-2.5 py-1.5 font-mono text-[12px] text-gn-red">
             {entry.error}
           </div>
-        )}
-        {!entry.running && stats.length > 0 && (
-          <div className="font-mono text-[11px] tabular-nums text-gn-gutter">
-            {stats.join(' · ')}
-          </div>
-        )}
-      </div>
+        </div>
+      )}
 
-      {/* 活动时间线占满剩余区域（flex-1 自行滚动），状态区之后。 */}
+      {/* 活动时间线占满剩余区域（flex-1 自行滚动）。 */}
       {childSid && (
         <SubagentTimeline
           childSid={childSid}
@@ -850,11 +916,21 @@ function SubagentView({
         />
       )}
 
-      {/* 底部简易 composer：仅输入框无其他组件，向子代理发送消息 */}
-      <SubagentComposer
-        agentAddress={entry.subagentId || entry.childSessionId || ''}
-        disabled={!entry.running}
-      />
+      {/* 子代理 composer 暂不渲染（组件本体保留在下方 SubagentComposer，
+          供 agent 侧支持后直接接回）。原因：它走 x.ai/subagent/message，
+          该方法被 Feature::ActiveAgentMessages 门控（agent 侧
+          extensions/subagent_message.rs，默认 active_agent_messages =
+          false），不进注册表，调用必然返回 Method not found；即便开启，
+          它要的也是 coordinator 铸的不透明 agentAddress（aa1.<hex>），
+          而非 subagentId / childSessionId（本地子代理两者同为一个
+          UUIDv7），且 SubagentSpawned.agentAddress 被
+          without_live_agent_address 在 SessionUpdate 序列化与落盘两处
+          抹掉，客户端拿不到该地址。
+          重开条件：1) agent 默认启用 active_agent_messages；
+          2) 客户端能拿到子代理的 agent address（或改由 host 代持、提供
+          按 subagentId 寻址的通道）。届时在此处渲染
+          <SubagentComposer agentAddress={...} disabled={!entry.running} />，
+          地址用那时可得的真实值。 */}
     </div>
   )
 }
@@ -865,8 +941,12 @@ function SubagentView({
  * 相同的图标轨（CONTENT_COLUMN + COMPOSER_BODY_PAD_LEFT）、失焦正文
  * 整体减光 0.72（主 prompt 的 blend_area 同款）。子代理已结束时整块
  * 再减一档亮度表示不可用，边框不另换色。
+ *
+ * 当前无渲染点（见 SubagentView 里的说明），整块保留以备重接。
+ * 保留就要付出未使用告警：noUnusedLocals 下 tsc -b 会报 TS6133，
+ * 故导出一次（同文件内的自引用不消解该检查）。
  */
-function SubagentComposer({
+export function SubagentComposer({
   agentAddress,
   disabled,
 }: {
@@ -1247,17 +1327,13 @@ function SubagentTimeline({
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      <div className="flex shrink-0 items-center gap-2 px-3 pt-3 text-[10px] uppercase tracking-wider text-gn-gutter sm:px-4">
-        <span>activity</span>
-        {running && (
-          <span className="normal-case tracking-normal text-gn-accent-running">live</span>
-        )}
-        {loadingMore && (
-          <span className="normal-case tracking-normal text-gn-muted">
-            加载更早…
-          </span>
-        )}
-      </div>
+      {loadingMore && (
+        <div
+          className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} shrink-0 pt-1.5 text-[11px] text-gn-muted`}
+        >
+          加载更早…
+        </div>
+      )}
       {/* 平铺无边框盒（主 scrollback 同款）：滚动容器占满弹窗剩余区域
           （flex-1），自行滚动——不再固定 35vh。上滑到顶触发更早分页。 */}
       <div
@@ -1272,7 +1348,9 @@ function SubagentTimeline({
             观察目标不能换元素（否则 ResizeObserver 盯的是旧节点）。 */}
         <div ref={timelineContentRef}>
           {renderItems.length === 0 ? (
-            <div className="space-y-1.5 px-3 sm:px-4">
+            <div
+              className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} space-y-1.5 py-2`}
+            >
               {promptEntry && (
                 <EntryView
                   e={promptEntry}

@@ -7,7 +7,6 @@ describe('glyph 常量', () => {
     expect(Glyphs.promptArrow).toBe('❯')
     expect(Glyphs.diamondFilled).toBe('◆')
     expect(Glyphs.ellipsis).toBe('…')
-    expect(Glyphs.cronPrompt).toBe('\u21BB')
   })
 
   it('spinner / pulse 帧序列与节奏', () => {

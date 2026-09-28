@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Check, Circle, Play, X } from 'lucide-react'
+import { ArrowLeft, Check, Circle, Play, X } from 'lucide-react'
 import { useChatStore } from '../store/chat'
 import type { WorkflowRun } from '../store/chat'
 import { fmtElapsedCompact, fmtTok } from '../format'
+import { ProgressBar } from './ProgressBar'
 
 /**
  * /workflows run dashboard (TUI /workflows pane + workflows_overlay.rs) —
@@ -187,9 +188,10 @@ export function WorkflowPanel() {
               type="button"
               aria-label="返回列表"
               onClick={() => setSelectedWorkflowRunId(undefined)}
-              className="shrink-0 rounded px-2 py-0.5 text-[11px] text-gn-plan hover:bg-gn-bg-highlight"
+              className="inline-flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-[11px] text-gn-plan hover:bg-gn-bg-highlight"
             >
-              ← 返回列表
+              <ArrowLeft size={12} strokeWidth={2} aria-hidden />
+              返回列表
             </button>
           )}
           <button
@@ -252,18 +254,12 @@ function statusLabel(status: string): string {
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : '—'
 }
 
-/** Fixed-width bar (ContextChip style) — shown only when the event
- *  carried a progress value. */
-function ProgressBar({ p }: { p: number }) {
+/** 事件带的进度（0–1）→ 进度条 + 百分比；只在事件带了 progress 时渲染。 */
+function RunProgress({ p }: { p: number }) {
   const pct = Math.max(0, Math.min(1, p)) * 100
-  const width = 14
-  const filled = Math.round((pct / 100) * width)
   return (
     <span className="inline-flex items-center gap-1.5 font-mono text-[10.5px] tabular-nums text-gn-fg2">
-      <span className="whitespace-nowrap" aria-hidden>
-        <span className="text-gn-plan">{'█'.repeat(filled)}</span>
-        <span className="text-gn-gray-dim">{'░'.repeat(width - filled)}</span>
-      </span>
+      <ProgressBar pct={pct} cols={14} tone="text-gn-plan" />
       <span>{pct.toFixed(0)}%</span>
     </span>
   )
@@ -356,7 +352,7 @@ function RunRow({
       </div>
       {run.progress != null && (
         <div className="mt-1.5">
-          <ProgressBar p={run.progress} />
+          <RunProgress p={run.progress} />
         </div>
       )}
       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-[10.5px] text-gn-muted">
@@ -492,7 +488,7 @@ function RunDetail({ run }: { run: WorkflowRun }) {
 
       {run.progress != null && (
         <div className="mt-2">
-          <ProgressBar p={run.progress} />
+          <RunProgress p={run.progress} />
         </div>
       )}
 

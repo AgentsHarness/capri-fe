@@ -259,7 +259,8 @@ export function viewerNavActions(set: SetState, get: () => ChatState) {
     else if (e.kind === 'thought') get().toggleThought(e.id)
     else if (e.kind === 'user') get().setExpanded(!e.expanded)
     else if (e.kind === 'btw') get().toggleBtw(e.id)
-    else if (e.kind === 'session_event' && e.recap) get().toggleSessionEvent(e.id)
+    else if (e.kind === 'session_event' && (e.recap || e.memoryCapture))
+      get().toggleSessionEvent(e.id)
     else {
       const idx = entries.findIndex((x) => x.id === selectedId)
       const spans = scanGroups(entries, expandedGroups, {

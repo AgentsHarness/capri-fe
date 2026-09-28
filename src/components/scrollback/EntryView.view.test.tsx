@@ -3,6 +3,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import type { ScrollEntry, ToolCall } from '../../api/types'
 import { useChatStore } from '../../store/chat'
 import { EntryView } from './EntryView'
+import { entryExpanded } from '../../scrollback/entryState'
 
 class ROStub {
   observe() {}
@@ -195,5 +196,54 @@ describe('lite 占位行的可见范围', () => {
     useChatStore.setState({ entries: [failed] })
     r.rerender(<EntryView e={failed} selected={false} pendingFreeze={false} now={0} />)
     expect(screen.getByRole('button', { name: '[重试]' })).toBeTruthy()
+  })
+})
+
+describe('memory capture 调试块（TUI MemoryCaptureBlock）', () => {
+  const captureEntry = (over: Partial<ScrollEntry> = {}): ScrollEntry =>
+    ({
+      id: 'mc1',
+      kind: 'session_event',
+      text: '模型生成的记忆调试输出：第 2-4 回合共 1 条观察',
+      memoryCapture: {
+        fromTurn: 2,
+        throughTurn: 4,
+        observations: [
+          {
+            statement: 'Use the focused test target.',
+            body: 'The full suite is expensive.',
+            path: '/tmp/memory/observation.md',
+          },
+        ],
+      },
+      ...over,
+    }) as ScrollEntry
+
+  it('默认折叠：只有标题行；点开后给出语句、正文、路径与不可信标记', () => {
+    const e = captureEntry()
+    useChatStore.setState({ entries: [e] })
+    const r = render(<EntryView e={e} selected={false} pendingFreeze={false} now={0} />)
+    expect(screen.getByText(/模型生成的记忆调试输出/)).toBeInTheDocument()
+    expect(screen.queryByText('Use the focused test target.')).toBeNull()
+    expect(screen.queryByText('/tmp/memory/observation.md')).toBeNull()
+
+    // 单击整块折叠（与 recap 同一条 open 通路）。
+    fireEvent.click(screen.getByText(/模型生成的记忆调试输出/))
+    const opened = useChatStore.getState().entries[0]
+    expect(entryExpanded(opened)).toBe(true)
+
+    r.rerender(<EntryView e={opened} selected={false} pendingFreeze={false} now={0} />)
+    expect(screen.getByText('不可信模型生成观察 1')).toBeInTheDocument()
+    expect(screen.getByText('Use the focused test target.')).toBeInTheDocument()
+    expect(screen.getByText('The full suite is expensive.')).toBeInTheDocument()
+    expect(screen.getByText('/tmp/memory/observation.md')).toBeInTheDocument()
+  })
+
+  it('普通 session_event（无载荷）仍不可折叠', () => {
+    const e = { id: 'se1', kind: 'session_event', text: '记忆捕获排队中：第 1-1 回合' } as ScrollEntry
+    useChatStore.setState({ entries: [e] })
+    render(<EntryView e={e} selected={false} pendingFreeze={false} now={0} />)
+    fireEvent.click(screen.getByText(/记忆捕获排队中/))
+    expect(screen.queryByText('不可信模型生成观察 1')).toBeNull()
   })
 })

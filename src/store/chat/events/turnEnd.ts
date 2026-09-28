@@ -19,6 +19,7 @@ import {
   tailAlreadyTurnEnded,
   tailHasCancellationDetail,
   turnEndMarkerText,
+  turnFailureMarkerSuppressed,
   turnIsLive,
   wireElapsedMs,
 } from '../turn'
@@ -122,7 +123,10 @@ export function handleTurnEndEvent(
           const railEndTs = get().turnStartedAt
           finalizeTurn(set, get, stopReason, railElapsed)
           if (stopReason === 'error' || stopReason === 'rate_limit') {
-            if (!tailAlreadyTurnEnded(get().entries)) {
+            // 失败原因已由 retry 横幅报过（同回合先到的 retry_state）→
+            // 不再追加 "Turn failed: <同一原因>"（TUI terminal_marker 的
+            // error_banner_present / rate_limit 臂）。
+            if (!turnFailureMarkerSuppressed(get().entries, stopReason)) {
               const { text, warning } = turnEndMarkerText(
                 stopReason,
                 agentResult,
@@ -224,12 +228,17 @@ export function handleTurnEndEvent(
           entries: settled,
         })
         // 标记行（连同挂起的 stop 批次）落在收口之后，取消细节再跟在标记后。
-        appendTurnMarker(set, get, {
-          id: nid(),
-          kind: 'session_event',
-          text,
-          ...(warning ? { warning } : {}),
-        })
+        // 回放同一抑制：日志里 retry_state 横幅先于收口信封落盘，重开会话
+        // 时不能再补一条 "Turn failed: <同一原因>"（TUI 回放的
+        // synthesize_replay_turn_marker 同样传 error_banner_present）。
+        if (!turnFailureMarkerSuppressed(settled, stopReason)) {
+          appendTurnMarker(set, get, {
+            id: nid(),
+            kind: 'session_event',
+            text,
+            ...(warning ? { warning } : {}),
+          })
+        }
         if (appendCancelDetail) {
           appendEntry(set, { kind: 'session_event', text: cancelDetail as string })
         }
@@ -324,8 +333,8 @@ export function handleTurnEndEvent(
         // Host withSid 约定：带 sessionId 的 error 是 agent 回合失败——
         // host 只是透传 agent 的错误（如模型 API 400 "Internal Error"），
         // host 本身没坏。渲染成 scrollback 错误行即可，不翻转连接状态、
-        // 不进横幅。不带 sessionId 的 error 才是 host 级错误（boot 失败：
-        // agent 进程起不来 / initialize / authenticate 失败），进横幅。
+        // 不进顶栏提示。不带 sessionId 的 error 才是 host 级错误（boot 失败：
+        // agent 进程起不来 / initialize / authenticate 失败），进顶栏提示。
         if (ev.sessionId) {
           // 回合级错误也是回合终态（下面就清了 turnStartedAt）——必须像
           // finalizeTurn 一样收口流：
@@ -364,7 +373,7 @@ export function handleTurnEndEvent(
           })
           break
         }
-        // Host 级错误（boot 失败等）：横幅是唯一权威位置，时间线不再
+        // Host 级错误（boot 失败等）：顶栏提示是唯一权威位置，时间线不再
         // 追加（全局状态不属于会话历史），statusText 也不写错误文本
         // （stat/composer 不参与，避免三处重复；conn: 'error' 已足以
         // 禁用发送）。statusText 清空是防止 stat 的 status 行在错误态
@@ -390,11 +399,11 @@ export function handleTurnEndEvent(
         if (ev.sessionId && ev.sessionId !== get().sessionId) break
         if (ev.sessionId) {
           // 回合级提示（如"连接已断开，本次回复已取消"）：只进 composer
-          // 状态行，不进横幅。
+          // 状态行，不进顶栏提示。
           set({ statusText: ev.text })
           break
         }
-        // Host 连接级 status（如"连接HOST异常"）：只进横幅 warning，
+        // Host 连接级 status（如"连接HOST异常"）：只进顶栏提示 warning，
         // stat/composer 不参与（与 host 错误同政策）。host 侧可带
         // action（如 restart-agent）——该条状态的唯一恢复动作。
         get().setLayerError('host', {

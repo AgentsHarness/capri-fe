@@ -212,6 +212,19 @@ describe('MemoryModal', () => {
     expect(useChatStore.getState().memoryOpen).toBe(false)
   })
 
+  it('y 复制选中笔记的路径（TUI memory modal `y`）', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    render(<MemoryModal />)
+    await waitFor(() => expect(screen.getByText('部署约定')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('部署约定'))
+    fireEvent.keyDown(window, { key: 'y' })
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(TOPIC))
+    await waitFor(() =>
+      expect(useChatStore.getState().memoryNotice?.text).toContain(TOPIC),
+    )
+  })
+
   it('列表读取失败（无活动会话）→ 明确提示', async () => {
     listMock.mockRejectedValue(new Error('暂无活动会话'))
     render(<MemoryModal />)

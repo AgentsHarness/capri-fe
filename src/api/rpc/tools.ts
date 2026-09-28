@@ -1,6 +1,6 @@
 import type { TransportCore } from '../transport'
 import { findArrayField, findField, findObjectField, unwrapExtResult, xaiCall } from './core'
-import type { AgentSkill, CustomModelConfig, ExtensionHook, WorkflowInfo } from '../types'
+import type { AgentSkill, CustomModelConfig, CustomModelFilters, ExtensionHook, WorkflowInfo } from '../types'
 import type { ExtensionsPayload, McpListServer, McpToolInfo, SettingsPatch, SettingsPayload, TerminalOutput } from '../transport'
 
 export const toolsRpc = {
@@ -232,29 +232,39 @@ export const toolsRpc = {
     return unwrapExtResult(await xaiCall(this, '/api/mcp/auth-status', opts))
   },
 
+  /**
+   * POST /api/memory-flush → _x.ai/memory/flush. The agent answers with its
+   * `MemoryFlushResponse` (disposition / through_turn), which is what the
+   * /flush outcome line renders (TUI handle_memory_command_complete).
+   * No transport deadline: the run is an LLM summary and the pager's /flush
+   * waits for it without a cap, so a 30s cap here only produced a bogus
+   * failure line while the flush was still running.
+   */
   async memoryFlush(this: TransportCore, sessionId: string) {
-    const res = await this.fetch(this.url('/api/memory-flush'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId }),
-    })
-    const data = await res.json()
-    if (!res.ok || data.ok === false) {
-      throw new Error(data.error || `memory flush failed (${res.status})`)
-    }
-    return data
+    return unwrapExtResult<Record<string, unknown>>(
+      await xaiCall(this, '/api/memory-flush', { sessionId }, { timeoutMs: 0 }),
+    )
   },
 
+  /**
+   * POST /api/memory-rewrite → _x.ai/memory/rewrite (the /remember note
+   * rewriter). No transport deadline, like flush/dream: the rewrite is an LLM
+   * call and the pager runs it through its no-deadline memory command helper.
+   */
   async memoryRewrite(this: TransportCore, sessionId: string, rawText: string, contextSummary?: string) {
-    const res = await this.fetch(this.url('/api/memory-rewrite'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        sessionId,
-        rawText,
-        ...(contextSummary ? { contextSummary } : {}),
-      }),
-    })
+    const res = await this.fetch(
+      this.url('/api/memory-rewrite'),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId,
+          rawText,
+          ...(contextSummary ? { contextSummary } : {}),
+        }),
+      },
+      { timeoutMs: 0 },
+    )
     const data = await res.json()
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || `memory rewrite failed (${res.status})`)
@@ -485,14 +495,29 @@ export const toolsRpc = {
   },
 
   async listCustomModels(this: TransportCore): Promise<CustomModelConfig[]> {
-    const res = await this.fetch(this.url('/api/custom-models'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: '{}',
-    })
-    const data = await res.json()
-    if (!res.ok || data.ok === false) throw new Error(data.error || 'list custom models failed')
-    return Array.isArray(data.models) ? (data.models as CustomModelConfig[]) : []
+    const res = await postJsonRpc(this, this.url('/api/custom-models'), {})
+    return parseCustomModels(res)
+  },
+
+  /**
+   * 读**指定** host 的自定义模型（跨 host 导入的源列表）。经 hub 中继
+   * （forceRelay）指向那台 host——不按选中 host 的近路自动判定：问的是
+   * 目标那台，不是正在使用的这台。非 hub 模式没有第二台 host，抛错，
+   * 调用方据此禁用入口。
+   */
+  async listCustomModelsFromHost(this: TransportCore, hostId: string): Promise<CustomModelConfig[]> {
+    const url = this.urlForHost(hostId, '/api/custom-models')
+    if (!url) throw new Error('仅 Hub 模式支持读取其他 Host 的模型配置')
+    const res = await this.fetch(
+      url,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      },
+      { forceRelay: true },
+    )
+    return parseCustomModels(res)
   },
 
   async upsertCustomModel(this: TransportCore, cfg: CustomModelConfig) {
@@ -515,6 +540,31 @@ export const toolsRpc = {
     })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'delete custom model failed')
+    return data
+  },
+
+  /**
+   * POST /api/model-filters — 读 config.toml `[models]` 的目录过滤名单
+   * （hidden_models / disabled_models）。
+   */
+  async listModelFilters(this: TransportCore): Promise<CustomModelFilters> {
+    const res = await postJsonRpc(this, this.url('/api/model-filters'), {})
+    return parseModelFilters(res)
+  },
+
+  /**
+   * POST /api/set-model-filters — 写目录过滤名单。省略的键保持原样（部分更
+   * 新），空数组表示清空该名单（host 侧会删掉对应的键）。host 写完会重载
+   * 模型目录，改动随即反映到模型列表。
+   */
+  async setModelFilters(this: TransportCore, filters: Partial<CustomModelFilters>) {
+    const res = await this.fetch(this.url('/api/set-model-filters'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(filters),
+    })
+    const data = await res.json()
+    if (!res.ok || data.ok === false) throw new Error(data.error || 'save model filters failed')
     return data
   },
 
@@ -630,4 +680,46 @@ export const toolsRpc = {
       toolset: findObjectField(data, 'toolset'),
     }
   },
+}
+
+/** POST 一个 `{}` 体的 host 本地端点（自定义模型配置族都是这个形状）。 */
+async function postJsonRpc(
+  core: TransportCore,
+  url: string,
+  body: Record<string, unknown>,
+): Promise<Response> {
+  return core.fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+/** 解析 `{ok, models}` 信封：失败抛出 host 自己的说法。 */
+async function parseCustomModels(res: Response): Promise<CustomModelConfig[]> {
+  const data = (await res.json().catch(() => ({}))) as {
+    ok?: boolean
+    error?: string
+    models?: CustomModelConfig[]
+  }
+  if (!res.ok || data.ok === false) {
+    throw new Error(data.error || `list custom models failed (${res.status})`)
+  }
+  return Array.isArray(data.models) ? data.models : []
+}
+
+/** 解析 `{ok, hidden, disabled}` 信封：缺字段/非字符串项按空名单处理。 */
+async function parseModelFilters(res: Response): Promise<CustomModelFilters> {
+  const data = (await res.json().catch(() => ({}))) as {
+    ok?: boolean
+    error?: string
+    hidden?: unknown
+    disabled?: unknown
+  }
+  if (!res.ok || data.ok === false) {
+    throw new Error(data.error || `list model filters failed (${res.status})`)
+  }
+  const patterns = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((s): s is string => typeof s === 'string') : []
+  return { hidden: patterns(data.hidden), disabled: patterns(data.disabled) }
 }

@@ -165,6 +165,8 @@ export type TerminalOutput = {
 /** RPC 模块可见的传输核心能力（LocalTransport 实现）。 */
 export interface TransportCore {
   url(path: string): string
+  /** 指向指定 host 的 URL（hub 中继）；非 hub 模式返回 null。 */
+  urlForHost(hostId: string, path: string): string | null
   apiBase(): string
   /**
    * 置顶/待办文档的 origin。hub 模式返回远端 hub 地址（跨源直连 /
@@ -176,6 +178,6 @@ export interface TransportCore {
   fetch(
     path: string,
     init?: RequestInit,
-    opts?: { timeoutMs?: number; signal?: AbortSignal; hubLevel?: boolean },
+    opts?: { timeoutMs?: number; signal?: AbortSignal; hubLevel?: boolean; forceRelay?: boolean },
   ): Promise<Response>
 }

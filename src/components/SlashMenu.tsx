@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef } from 'react'
+import { ChevronRight } from 'lucide-react'
 import type { SlashArgMatch, SlashCommand, SlashMatch } from '../commands/registry'
 import type { SlashPhase } from './composer/useSlashMenu'
 import { menuActionClass, menuRowClass } from './composer/menuRow'
@@ -191,10 +192,10 @@ export function SlashMenu({
                       // 二级列表预告：这行的 Enter/Tab 是展开，不是直接执行。
                       <span
                         aria-hidden
-                        className="ml-1.5 shrink-0 font-mono text-[10px] leading-[18px] text-gn-gray-dim"
+                        className="ml-1.5 inline-flex shrink-0 items-center text-gn-gray-dim"
                         title="带参数候选"
                       >
-                        ▸
+                        <ChevronRight size={11} strokeWidth={2} />
                       </span>
                     )}
                     {sel && (

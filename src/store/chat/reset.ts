@@ -44,6 +44,7 @@ export function resetSessionState(set: (partial: Partial<ChatState>) => void): v
     newSessionPending: false,
     lastSentPromptId: undefined,
     recapPendingFor: undefined,
+    memoryCommandPending: undefined,
     recapCache: {},
     toolIndex: {},
     pending: [],

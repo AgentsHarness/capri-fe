@@ -55,6 +55,11 @@ export type Transport = {
   lastLiveEventAt(): number | null
   isLiveOpen(): boolean
   apiUrl(path: string): string
+  /**
+   * 指向指定 host 的 API URL（跨 host 读别的 host 用），始终走 hub 中继。
+   * 非 hub 模式返回 null（没有第二台 host，调用方据此禁用入口）。
+   */
+  urlForHost(hostId: string, path: string): string | null
   apiFetch(
     path: string,
     init?: RequestInit,

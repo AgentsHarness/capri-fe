@@ -192,7 +192,7 @@ export async function loadHistory(
       viewerTask: undefined,
       followUps: undefined,
       followUpsResponseId: undefined,
-      // 新会话上下文：清空分层横幅。
+      // 新会话上下文：清空分层错误栈。
       layerErrors: {},
       usage: undefined,
       todoCounts: undefined,

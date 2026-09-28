@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { ScrollEntry } from '../../api/types'
 import type { ChatState, SetState } from './types'
-import { finalizeTurn } from './turnLifecycle'
+import {
+  finalizeTurn,
+  tailAlreadyTurnEnded,
+  turnFailureMarkerSuppressed,
+} from './turnLifecycle'
 
 function makeStore(seed: Partial<ChatState> = {}) {
   const state = {
@@ -72,5 +76,42 @@ describe('finalizeTurn 幂等（多载体重复收尾）', () => {
     // 让 rejectClosedTurnAgentOutput 丢掉下一个自动唤醒轮的直播。
     finalizeTurn(set, get, 'end_turn')
     expect(get().lastCompletedTurn).toMatchObject({ turnStartMs: 500, streamStartMs: 1000 })
+  })
+})
+
+describe('turnFailureMarkerSuppressed（TUI terminal_marker 抑制臂）', () => {
+  const banner: ScrollEntry = {
+    id: 'b',
+    kind: 'session_event',
+    text: '推理失败（server）: boom',
+    warning: true,
+    retryBanner: true,
+  }
+  const content: ScrollEntry = { id: 'u', kind: 'user', text: 'hi' }
+
+  it('error / rate_limit + 尾部横幅 → 抑制；无横幅 → 照常画标记', () => {
+    expect(turnFailureMarkerSuppressed([content, banner], 'error')).toBe(true)
+    expect(turnFailureMarkerSuppressed([content, banner], 'rate_limit')).toBe(true)
+    expect(turnFailureMarkerSuppressed([content], 'error')).toBe(false)
+    expect(turnFailureMarkerSuppressed([content], 'rate_limit')).toBe(false)
+  })
+
+  it('cancelled 不受横幅影响（TUI TurnCancelled 不被错误横幅抑制）', () => {
+    expect(turnFailureMarkerSuppressed([content, banner], 'cancelled')).toBe(false)
+  })
+
+  it('成功回合的横幅不影响收口判据，收口标记照旧抑制重复标记', () => {
+    expect(turnFailureMarkerSuppressed([banner], 'end_turn')).toBe(false)
+    expect(
+      turnFailureMarkerSuppressed(
+        [{ id: 'm', kind: 'session_event', text: 'Turn completed.' }],
+        'end_turn',
+      ),
+    ).toBe(true)
+  })
+
+  it('横幅之后已进入下一回合（有内容条目）→ 不抑制', () => {
+    expect(turnFailureMarkerSuppressed([banner, content], 'error')).toBe(false)
+    expect(tailAlreadyTurnEnded([banner, content])).toBe(false)
   })
 })

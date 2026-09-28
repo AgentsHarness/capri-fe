@@ -234,6 +234,29 @@ export function tailHasCancellationDetail(
 
 
 /**
+ * 尾部是否已有本回合的 retry 横幅行（失败原因已经报过一行）。TUI 的
+ * `dispatch/auth.rs::scrollback_has_recent_error_banner` 对应物：终态
+ * retry_state 在 FE 落成一行 warning session_event（见 notifMemory 的
+ * failed / exhausted 分支），它对 TurnFailed 标记是替代关系。走查规则与
+ * tailHasCancellationDetail 同款：越过 status/error；session_event 里命中
+ * 横幅 → true、撞上收口标记（说明已跨到上一回合）→ false、其他 → 继续；
+ * 遇到内容条目（user/assistant/tool/…）即止。
+ */
+export function tailHasRetryBanner(entries: ScrollEntry[]): boolean {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i]
+    if (e.kind === 'status' || e.kind === 'error') continue
+    if (e.kind === 'session_event') {
+      if (e.retryBanner) return true
+      if (isTurnEndLine(e)) return false
+      continue
+    }
+    return false
+  }
+  return false
+}
+
+/**
  * TUI "Worked for Xs" marker entry. `elapsedMs` undefined → plain
  * "Turn completed." (TUI TurnCompleted with no elapsed).
  */

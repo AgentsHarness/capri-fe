@@ -29,8 +29,8 @@ const HERNESS_ART = buildBlock([
 ])
 
 /** 空状态：无活动会话时的引导。居中显示 AGENTS 字符画，下方是「选择工作目录」
- *  入口（点开弹出 DirectoryPickerModal，底层复用 `!` shell 通道）。目录不选
- *  则留空用宿主默认目录；没有"开始"按钮——发送消息即等于开始新对话。
+ *  入口（点开弹出 DirectoryPickerModal，走 host 本地目录端点 /api/local/dirs）。
+ *  目录不选则留空用宿主默认目录；没有"开始"按钮——发送消息即等于开始新对话。
  *  已选目录且在 git 仓库里时，额外出现「在新 worktree 中开始」：为仓库新建
  *  一个 git worktree 并把 emptyCwd 切到 worktree 路径，仍由「发消息即开新
  *  会话」的既有流程接管。 */

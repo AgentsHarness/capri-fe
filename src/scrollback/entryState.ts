@@ -99,8 +99,9 @@ export function entryFoldable(e: ScrollEntry): boolean {
     return toolHasExpandableBody(e.raw, e.kindName, e.liteOmitted)
   }
   if (e.kind === 'thought') return !e.streaming && (!!e.text || !!e.liteOmitted)
-  // Recap body (TUI SessionEventBlock::is_foldable).
-  if (e.kind === 'session_event') return !!e.recap
+  // Recap body (TUI SessionEventBlock::is_foldable) and the memory-capture
+  // debug block (TUI MemoryCaptureBlock, collapsed by default).
+  if (e.kind === 'session_event') return !!e.recap || !!e.memoryCapture
   // 有待展开的内容（答案或错误）才可折叠；请求进行中无正文可看。
   if (e.kind === 'btw') return !e.streaming && (!!e.answer || !!e.error)
   if (e.kind === 'user') return userIsFoldable(e.text)

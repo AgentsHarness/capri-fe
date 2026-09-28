@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Plus, Search, X, Zap } from 'lucide-react'
+import { ArrowRightLeft, Filter, Plus, Search, X, Zap } from 'lucide-react'
 import { transport } from '../api/client'
-import type { CustomModelConfig } from '../api/types'
+import type { CustomModelConfig, CustomModelFilters } from '../api/types'
 import { compareCustomModels } from '../lib/quickAddModels'
 import { pushToast } from '../store/toast'
+import { useChatStore } from '../store/chat'
 import { Glyphs } from '../theme/glyphs'
 import { IconGlyph } from './IconGlyph'
 import { QuickAddModelsModal } from './QuickAddModelsModal'
+import { ImportModelsFromHostModal } from './ImportModelsFromHostModal'
 
 /**
  * 自定义模型面板（settings 内）—— `[model.<id>]` 可视化编辑。
@@ -15,6 +17,11 @@ import { QuickAddModelsModal } from './QuickAddModelsModal'
  * `ConfigModelOverride`（xai-grok-shell/src/agent/config.rs）；
  * 保存写入 ~/.grok/config.toml，agent 的 config watcher 热加载后
  * 出现在模型列表（无需重启）。
+ *
+ * 顶栏「目录过滤」切到二级视图，编辑 `[models]` 的另外两个键
+ * （hidden_models / disabled_models）：它们作用在整个模型目录上，因此能挡掉
+ * 没有 `[model.*]` 节的条目（内置 grok-4.5/4.6、官方拉取的 grok-4.7 等）。
+ * 列表主视图仅在已有生效规则时于底部展示一行轻量摘要。
  */
 
 const EFFORT_LEVELS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
@@ -54,7 +61,28 @@ export function CustomModelsPanel() {
   const [saving, setSaving] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [quickAddOpen, setQuickAddOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
+  // 目录过滤（[models] hidden_models / disabled_models）：二级视图编辑，
+  // savedFilters 记录 host 已落盘状态，filters 为打开二级视图期间的草稿。
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const [savedFilters, setSavedFilters] = useState<CustomModelFilters>({
+    hidden: [],
+    disabled: [],
+  })
+  const [filters, setFilters] = useState<CustomModelFilters>({ hidden: [], disabled: [] })
+  const [filtersDirty, setFiltersDirty] = useState(false)
+  const [filtersSaving, setFiltersSaving] = useState(false)
+  // 另一台 host（hub 模式）可能是旧版本，config.toml 里这两个键也可能写坏：
+  // 读不到就记下 host 的说法，整块降级成提示，而不是让「保存」打到 404 上。
+  const [filtersIssue, setFiltersIssue] = useState<string | null>(null)
+  // 跨 host 导入（hub 模式 + 还有别的 host 才可能）：源/目标都按 host 区分。
+  const selectedHostId = useChatStore((s) => s.selectedHostId)
+  const hosts = useChatStore((s) => s.hosts)
+  const targetHostName =
+    hosts.find((h) => h.hostId === selectedHostId)?.hostName ?? selectedHostId ?? '本机'
+  const canImportFromHost =
+    transport.getConnectionMode() === 'hub' && hosts.some((h) => h.hostId !== selectedHostId)
 
   const filteredModels = useMemo(() => {
     const list = [...models].sort(compareCustomModels)
@@ -71,8 +99,23 @@ export function CustomModelsPanel() {
 
   const refresh = useCallback(async () => {
     try {
-      const list = await transport.listCustomModels()
+      // 过滤名单与 [model.*] 同属一个 host 的配置：一次刷新同时读，
+      // 读不到（旧 host / 键写坏）只降级那一块，不影响模型列表。
+      const [list, hostFilters] = await Promise.all([
+        transport.listCustomModels(),
+        Promise.resolve()
+          .then(() => transport.listModelFilters())
+          .catch((e: unknown) => (e instanceof Error ? e.message : String(e))),
+      ])
       setModels([...list].sort(compareCustomModels))
+      if (typeof hostFilters === 'string') {
+        setFiltersIssue(hostFilters || '读取失败')
+      } else {
+        setFiltersIssue(null)
+        setSavedFilters(hostFilters)
+        setFilters(hostFilters)
+        setFiltersDirty(false)
+      }
       setError(undefined)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -81,9 +124,11 @@ export function CustomModelsPanel() {
     }
   }, [])
 
+  // 列表是 host 级的（`?host=` / 近路随选中 host 变）：换 host 必须重读，
+  // 否则面板会继续显示上一台的配置——对「导入到哪台」的判断尤其误导。
   useEffect(() => {
     void refresh()
-  }, [refresh])
+  }, [refresh, selectedHostId])
 
   /** 复制为新条目：沿用全部配置字段，id 追加 -copy 后缀（被占用则 -copy2、-copy3…）。 */
   const copyOf = (m: CustomModelConfig): CustomModelConfig => {
@@ -128,6 +173,36 @@ export function CustomModelsPanel() {
     }
   }
 
+  const openFilters = () => {
+    setEditing(null)
+    setFilters(savedFilters)
+    setFiltersDirty(false)
+    setFiltersOpen(true)
+  }
+
+  const closeFilters = () => {
+    setFilters(savedFilters)
+    setFiltersDirty(false)
+    setFiltersOpen(false)
+  }
+
+  const saveFilters = async () => {
+    setFiltersSaving(true)
+    try {
+      await transport.setModelFilters(filters)
+      setSavedFilters(filters)
+      setFiltersDirty(false)
+      setFiltersOpen(false)
+      pushToast('已保存目录过滤（hidden / disabled）')
+    } catch (e) {
+      pushToast(e instanceof Error ? e.message : String(e))
+    } finally {
+      setFiltersSaving(false)
+    }
+  }
+
+  const savedFiltersCount = savedFilters.hidden.length + savedFilters.disabled.length
+
   const del = async (id: string) => {
     try {
       const r = await transport.deleteCustomModel(id)
@@ -152,7 +227,10 @@ export function CustomModelsPanel() {
         <div className="flex shrink-0 items-center gap-1.5">
           <button
             type="button"
-            onClick={() => setEditing({ cfg: { id: '' } })}
+            onClick={() => {
+              setFiltersOpen(false)
+              setEditing({ cfg: { id: '' } })
+            }}
             className="flex items-center gap-1 rounded px-2 py-1 text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg focus:outline-none sm:py-px"
           >
             <Plus className="h-3 w-3 text-gn-gutter" />
@@ -167,6 +245,36 @@ export function CustomModelsPanel() {
             <Zap className="h-3 w-3 text-gn-cyan" />
             <span>快速添加</span>
           </button>
+          {canImportFromHost && (
+            <button
+              type="button"
+              onClick={() => setImportOpen(true)}
+              className="flex items-center gap-1 rounded px-2 py-1 text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg focus:outline-none sm:py-px"
+              title="复制另一台 Host 已配置好的 [model.*] 条目到当前 Host"
+            >
+              <ArrowRightLeft className="h-3 w-3 text-gn-orange" />
+              <span className="hidden sm:inline">从其他 Host 导入</span>
+              <span className="sm:hidden">导入</span>
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => (filtersOpen ? closeFilters() : openFilters())}
+            className={`flex items-center gap-1 rounded px-2 py-1 text-[11px] focus:outline-none sm:py-px ${
+              filtersOpen
+                ? 'bg-gn-bg-highlight text-gn-fg'
+                : 'text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg'
+            }`}
+            title="按模型 ID 或通配符隐藏 / 禁用目录中的模型（[models] hidden_models / disabled_models）"
+          >
+            <Filter className="h-3 w-3 text-gn-magenta" />
+            <span>目录过滤</span>
+            {savedFiltersCount > 0 && (
+              <span className="rounded bg-gn-bg-highlight px-1 py-px font-mono text-[10px] text-gn-fg2">
+                {savedFiltersCount}
+              </span>
+            )}
+          </button>
         </div>
       </div>
 
@@ -178,6 +286,19 @@ export function CustomModelsPanel() {
           models={models}
           onCancel={() => setEditing(null)}
           onSave={save}
+        />
+      ) : filtersOpen ? (
+        <CatalogFilters
+          filters={filters}
+          issue={filtersIssue}
+          dirty={filtersDirty}
+          saving={filtersSaving}
+          onChange={(next) => {
+            setFilters(next)
+            setFiltersDirty(true)
+          }}
+          onSave={() => void saveFilters()}
+          onCancel={closeFilters}
         />
       ) : (
         <div className="space-y-1.5 px-3 pb-2 sm:px-4">
@@ -196,7 +317,21 @@ export function CustomModelsPanel() {
             </div>
           ) : models.length === 0 ? (
             <div className="rounded border border-gn-prompt-border/40 bg-gn-bg-dark/30 p-3 text-center text-[11.5px] text-gn-muted">
-              暂无自定义模型。点击上方「＋ 新增模型」或「⚡ 快速添加」写入 ~/.grok/config.toml，agent 热加载后生效。
+              暂无自定义模型。点击上方「
+              <Plus
+                size={11}
+                strokeWidth={2}
+                className="inline-block align-[-2px]"
+                aria-hidden
+              />{' '}
+              新增模型」或「
+              <Zap
+                size={11}
+                strokeWidth={2}
+                className="inline-block align-[-2px]"
+                aria-hidden
+              />{' '}
+              快速添加」写入 ~/.grok/config.toml，agent 热加载后生效。
             </div>
           ) : (
             <>
@@ -304,6 +439,35 @@ export function CustomModelsPanel() {
               )}
             </>
           )}
+
+          {/* 仅当已有生效过滤规则时，在列表下方渲染单行摘要条；零规则不占位。 */}
+          {!loading && !error && !filtersIssue && savedFiltersCount > 0 && (
+            <div className="flex items-center justify-between gap-2 rounded border border-gn-prompt-border/40 bg-gn-bg-dark/25 px-2.5 py-1.5 text-[11px]">
+              <div className="min-w-0 flex-1 truncate text-gn-muted">
+                <span className="text-gn-fg2">目录过滤：</span>
+                {savedFilters.hidden.length > 0 && (
+                  <span>
+                    已隐藏 {savedFilters.hidden.length} 项（{savedFilters.hidden.join(', ')}）
+                  </span>
+                )}
+                {savedFilters.hidden.length > 0 && savedFilters.disabled.length > 0 && (
+                  <span> · </span>
+                )}
+                {savedFilters.disabled.length > 0 && (
+                  <span>
+                    已禁用 {savedFilters.disabled.length} 项（{savedFilters.disabled.join(', ')}）
+                  </span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={openFilters}
+                className="shrink-0 rounded border border-gn-prompt-border/50 px-1.5 py-0.5 text-[10.5px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg focus:outline-none"
+              >
+                编辑过滤
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -317,12 +481,191 @@ export function CustomModelsPanel() {
           }}
         />
       )}
+
+      {importOpen && selectedHostId && (
+        // key：换 host 即重建——源候选与「导入到」目标都会变，旧选择必须失效。
+        <ImportModelsFromHostModal
+          key={selectedHostId}
+          isOpen={importOpen}
+          onClose={() => setImportOpen(false)}
+          targetHostId={selectedHostId}
+          targetHostName={targetHostName}
+          hosts={hosts}
+          onImported={() => {
+            void refresh()
+          }}
+        />
+      )}
     </section>
   )
 }
 
-// ── 表单 ───────────────────────────────────────────────────────────────
+/**
+ * 「目录过滤」二级视图 —— config.toml `[models]` 的 `hidden_models` /
+ * `disabled_models`。与 `[model.*]` 表单不同，这两份名单作用在整个模型目录
+ * 上：hidden 让命中的条目从模型列表/选择器消失（`-m` 仍可用），disabled 把
+ * 命中的条目从目录里整条移除。条目按「目录键名或模型 id」做 glob 匹配。
+ */
+function CatalogFilters({
+  filters,
+  issue,
+  dirty,
+  saving,
+  onChange,
+  onSave,
+  onCancel,
+}: {
+  filters: CustomModelFilters
+  /** host 读不出这两份名单时的原话（旧 host 没有该端点 / 键的写法有问题）。 */
+  issue: string | null
+  dirty: boolean
+  saving: boolean
+  onChange: (next: CustomModelFilters) => void
+  onSave: () => void
+  onCancel: () => void
+}) {
+  if (issue) {
+    return (
+      <div className="border-t border-gn-prompt-border/40 px-3 py-2 sm:px-4">
+        <div className="rounded border border-gn-prompt-border/40 bg-gn-bg-dark/25 p-2.5 text-[11px] leading-snug text-gn-muted">
+          目录过滤（[models] hidden_models / disabled_models）不可用：{issue}
+          ；host 需更新，或先修正 config.toml 里这两个键的写法。
+        </div>
+        <div className="mt-3 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded px-3 py-1 text-[12px] text-gn-muted hover:text-gn-fg"
+          >
+            返回
+          </button>
+        </div>
+      </div>
+    )
+  }
+  const count = filters.hidden.length + filters.disabled.length
+  return (
+    <div className="border-t border-gn-prompt-border/40 px-3 py-2 sm:px-4">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] uppercase tracking-wider text-gn-gutter">
+          目录过滤（[models]）
+          {count > 0 && (
+            <span className="ml-1 normal-case tracking-normal text-gn-fg2">{count} 条</span>
+          )}
+        </span>
+      </div>
+      <div className="mt-1.5 space-y-2.5">
+        <PatternListEditor
+          label="hidden_models（隐藏：仅从模型列表/选择器消失，仍可用 -m 指定）"
+          placeholder="grok-4.6 或 grok-*"
+          patterns={filters.hidden}
+          onChange={(next) => onChange({ ...filters, hidden: next })}
+        />
+        <PatternListEditor
+          label="disabled_models（禁用：从模型目录整条移除，-m 也不再提供）"
+          placeholder="grok-4.5 或 grok-*"
+          patterns={filters.disabled}
+          onChange={(next) => onChange({ ...filters, disabled: next })}
+        />
+      </div>
+      <div className="mt-2 text-[10px] leading-snug text-gn-gutter">
+        保存后 host 会重载模型目录，改动随即反映到模型列表；被 disabled 掉的条目
+        若还被默认模型 / fork / 子代理等设置引用，会回落到其它模型。
+      </div>
+      <div className="mt-3 flex items-center gap-2">
+        <button
+          type="button"
+          disabled={!dirty || saving}
+          onClick={onSave}
+          className="rounded bg-gn-bg-highlight px-3 py-1 text-[12px] font-medium text-gn-fg hover:bg-gn-bg-hover disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {saving ? '保存中…' : '保存目录过滤'}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded px-3 py-1 text-[12px] text-gn-muted hover:text-gn-fg"
+        >
+          返回
+        </button>
+      </div>
+    </div>
+  )
+}
 
+/** 过滤模式列表：chip 逐条删除，输入框回车/「添加」写入（支持一次粘贴多条）。 */
+function PatternListEditor({
+  label,
+  placeholder,
+  patterns,
+  onChange,
+}: {
+  label: string
+  placeholder: string
+  patterns: string[]
+  onChange: (next: string[]) => void
+}) {
+  const [draft, setDraft] = useState('')
+  const add = () => {
+    const parts = draft
+      .split(/[,\s]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+    setDraft('')
+    if (parts.length === 0) return
+    const next = [...patterns]
+    for (const p of parts) if (!next.includes(p)) next.push(p)
+    onChange(next)
+  }
+  return (
+    <div>
+      <div className="mb-0.5 text-[10px] text-gn-muted">{label}</div>
+      {patterns.length > 0 && (
+        <div className="mb-1 flex flex-wrap gap-1">
+          {patterns.map((p) => (
+            <span
+              key={p}
+              className="flex items-center gap-1 rounded bg-gn-bg-highlight/60 px-1.5 py-px font-mono text-[10.5px] text-gn-fg2"
+            >
+              {p}
+              <button
+                type="button"
+                onClick={() => onChange(patterns.filter((x) => x !== p))}
+                className="text-gn-muted hover:text-gn-red"
+                aria-label={`删除 ${p}`}
+              >
+                <X size={10} aria-hidden />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="flex items-center gap-1">
+        <input
+          className={inputCls}
+          value={draft}
+          placeholder={placeholder}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              add()
+            }
+          }}
+        />
+        <button
+          type="button"
+          onClick={add}
+          className="shrink-0 rounded border border-gn-prompt-border/50 px-1.5 py-1 text-[10.5px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg focus:outline-none"
+        >
+          添加
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ── 表单 ───────────────────────────────────────────────────────────────
 /** reasoning_efforts 里只保留第一个 default（shell 的 derive_reasoning_effort_fields
  * 只认第一个 default 档），配置里多标时归一到第一个，保证表单展示与保存写回一致。 */
 function singleDefaultEfforts(
@@ -825,9 +1168,10 @@ function KVEditor({
       <button
         type="button"
         onClick={() => onChange({ ...(value ?? {}), [`k${entries.length + 1}`]: '' })}
-        className="rounded px-2 py-px text-[10.5px] text-gn-muted hover:text-gn-fg"
+        className="inline-flex items-center gap-1 rounded px-2 py-px text-[10.5px] text-gn-muted hover:text-gn-fg"
       >
-        ＋ 添加键值
+        <Plus size={11} strokeWidth={2} aria-hidden />
+        添加键值
       </button>
     </div>
   )
@@ -842,7 +1186,7 @@ function EffortListEditor({
   onChange: (v?: CustomModelConfig['reasoning_efforts']) => void
 }) {
   // 本地草稿态：value 为空的行（新增行、只填了 label 的行）保留在本地参与
-  // 渲染，只有非空行才向上 emit——否则「＋ 添加档位」的空行会被立即过滤，
+  // 渲染，只有非空行才向上 emit——否则「添加档位」的空行会被立即过滤，
   // 按钮看起来没反应。
   const [rows, setRows] = useState(() =>
     (value ?? []).map((r) =>
@@ -921,9 +1265,10 @@ function EffortListEditor({
       <button
         type="button"
         onClick={() => update([...rows, { value: '', label: '', default: false }])}
-        className="rounded px-2 py-px text-[10.5px] text-gn-muted hover:text-gn-fg"
+        className="inline-flex items-center gap-1 rounded px-2 py-px text-[10.5px] text-gn-muted hover:text-gn-fg"
       >
-        ＋ 添加档位
+        <Plus size={11} strokeWidth={2} aria-hidden />
+        添加档位
       </button>
     </div>
   )

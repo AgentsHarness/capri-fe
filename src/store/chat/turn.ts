@@ -30,5 +30,6 @@ export {
   clearTurnBlipTimer,
   armTurnBlipWatchdog,
   tailAlreadyTurnEnded,
+  turnFailureMarkerSuppressed,
   settleTurnEntries,
 } from './turnLifecycle'

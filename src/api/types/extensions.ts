@@ -127,6 +127,19 @@ export type CustomModelConfig = {
 /** One entry of agentInfo._meta.modelState.availableModels. */
 
 
+/**
+ * POST /api/model-filters — config.toml `[models]` 下的两个目录过滤名单。
+ * `hidden` 对应 `hidden_models`：命中的条目从模型列表/选择器消失，但仍能用
+ * `-m` 指定；`disabled` 对应 `disabled_models`：命中的条目从目录里整条移除。
+ * 条目按「目录键名或模型 id」做 glob 匹配，所以既可写 id（grok-4.6），也可写
+ * 模式（grok-*）——内置默认模型与官方拉取的模型不在 config.toml 里，只有这两
+ * 份名单能挡掉它们。
+ */
+export type CustomModelFilters = {
+  hidden: string[]
+  disabled: string[]
+}
+
 /** One entry of agentInfo._meta.modelState.availableModels. */
 export type ModelOption = {
   modelId: string

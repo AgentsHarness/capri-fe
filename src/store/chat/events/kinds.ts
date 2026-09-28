@@ -75,6 +75,9 @@ export const EXTENSION_KINDS = [
   'auto_continue_completed',
   'memory_flush_started',
   'memory_flush_completed',
+  'memory_capture_activity',
+  'memory_dream_queued',
+  'memory_dream_started',
   'memory_dream_completed',
   'memory_session_saved',
   'memory_files',
@@ -191,11 +194,22 @@ export const NOOP_TAGS: ReadonlySet<string> = new Set<string>([
   // 这条只是 TUI 的 ⏳ NeedsInput 状态位，web 无对应展示位。
   'pending_interaction',
   'interaction_resolved',
-  // relay（leader/follower）同步状态：web 走 hub 连接状态横幅，不用它。
+  // relay（leader/follower）同步状态：web 走 hub 连接状态提示，不用它。
   'relay_sync_status',
   // 单条模型响应完成：host 实测从不发 typed（updates.jsonl 里回合终态恒为
   // turn_completed），回放也只认 turn_completed。
   'response_completed',
+  // 记忆的 flush / dream / 会话结束保存：wire 通知对「手工命令」与「后台
+  // 自动运行」共用同一 tag（shell memory_dream.rs / memory_capture.rs），
+  // TUI 只在手工 /flush、/dream 的 RPC 响应上渲染结果行，后台一律静默
+  // （docs 13-memory.md「Memory Notifications」+ pager apply_session_event
+  // 的 `_ => false`）。FE 同此：结果行由 actions 从 RPC 响应生成。
+  'memory_flush_started',
+  'memory_flush_completed',
+  'memory_dream_queued',
+  'memory_dream_started',
+  'memory_dream_completed',
+  'memory_session_saved',
 ])
 
 /**

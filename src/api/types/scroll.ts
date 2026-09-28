@@ -15,7 +15,8 @@ export type ScrollEntry =
       ts?: number
       /**
        * Scheduled task (/loop) fire — TUI UserPromptBlock::is_cron.
-       * Renders with ↻ prefix; body is the raw prompt (system-reminder stripped).
+       * Renders with a RotateCw icon prefix; body is the raw prompt
+       * (system-reminder stripped).
        */
       isCron?: boolean
       /**
@@ -255,6 +256,15 @@ export type ScrollEntry =
       text: string
       recap?: boolean
       warning?: boolean
+      /**
+       * retry_state 终态横幅行（推理失败 / 重试已耗尽）——TUI 的
+       * `SessionEvent::RetryFailed` / `RequestFailed` 横幅。尾部存在这样一行
+       * 时，本回合的 TurnFailed 标记不再追加（TUI
+       * turn_completion.rs::terminal_marker：error + error_banner_present →
+       * None；reason 由横幅负责）。标志位而非文本前缀判定，避免抑制逻辑
+       * 绑死文案。
+       */
+      retryBanner?: boolean
       streaming?: boolean
       open?: boolean
       /**
@@ -263,6 +273,16 @@ export type ScrollEntry =
        * that call (TUI `SessionEvent::HookOutcome`).
        */
       hookOutcome?: boolean
+      /**
+       * memory-v2 捕获调试块（TUI `MemoryCaptureBlock`）：标题行 + 可展开的
+       * 逐条观察（语句 / 正文 / 文件路径）。只有 `memory_v2.capture_status_enabled`
+       * （默认关）打开时 agent 才会带上这些观察。`open` 控制展开，默认折叠。
+       */
+      memoryCapture?: {
+        fromTurn: number
+        throughTurn: number
+        observations: { statement: string; body?: string; path: string }[]
+      }
       msgSeq?: number
     }
   | { id: string; kind: 'credit_limit'; text: string; msgSeq?: number }

@@ -5,7 +5,6 @@ import { useThemeStore } from './store/theme'
 import { transport } from './api/client'
 import { AccessTokenGate } from './components/AccessTokenGate'
 import { TopBar } from './components/TopBar'
-import { ErrorBanner } from './components/ErrorBanner'
 import { HistorySidebar } from './components/HistorySidebar'
 import { Scrollback } from './components/Scrollback'
 import { Composer } from './components/Composer'
@@ -120,7 +119,7 @@ export default function App() {
       setPhase('gate')
       return
     }
-    // ok or network error → enter app (ErrorBanner covers offline)
+    // ok or network error → enter app (top-bar host notice covers offline)
     setPhase('ready')
     // 门已经过了（hub 或本机），才去找近路：默认直连本机，探不过再问一把。
     if (mode === 'hub') void transport.discoverLocalHost()
@@ -258,8 +257,6 @@ function AppShell({ onLogout }: { onLogout: () => void }) {
         gitOpen={gitOpen}
         onLogout={onLogout}
       />
-      {/* Host errors / connection warnings — always visible, dismissible. */}
-      <ErrorBanner />
       <div className="flex min-h-0 flex-1">
         {/* Persistent desktop history sidebar; mobile history lives in the TopBar dropdown. */}
         <HistorySidebar />

@@ -308,6 +308,204 @@ export function memoryHasNotes(listing: MemoryListing): boolean {
 }
 
 /**
+ * One `/flush` or `/dream` outcome line: the TUI's
+ * `MemoryFlushResponse::summary` / `MemoryDreamResponse::summary`
+ * (xai-grok-shell/src/extensions/memory.rs), rendered from the reply of the
+ * command RPC. The wire's `memory_flush_*` / `memory_dream_*` notifications
+ * carry no trigger, so they cannot tell a manual run from a background one —
+ * the TUI renders only the manual outcome and stays silent on the rest
+ * (docs/user-guide/13-memory.md, "Memory Notifications").
+ */
+export type MemoryCommandOutcome = { summary: string; succeeded: boolean }
+
+function memoryResponseObject(raw: unknown): Record<string, unknown> {
+  return (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+}
+
+/** Agent `MemoryFlushDisposition` → scrollback line. */
+export function memoryFlushOutcome(raw: unknown): MemoryCommandOutcome {
+  const o = memoryResponseObject(raw)
+  const through = pickNumber(o, 'through_turn', 'throughTurn')
+  switch (pickString(o, 'disposition')) {
+    case 'flushed':
+      return {
+        summary: through != null ? `记忆已刷新至第 ${through} 回合。` : '记忆已刷新。',
+        succeeded: true,
+      }
+    case 'retry_required':
+      return { summary: '记忆刷新未完成，捕获将在后台重试。', succeeded: false }
+    case 'timed_out':
+      return { summary: '记忆刷新超时，捕获将在后台继续。', succeeded: false }
+    case 'failed':
+      return { summary: '记忆刷新失败。', succeeded: false }
+    case 'disabled':
+      return { summary: '本会话已关闭记忆。', succeeded: false }
+    case 'busy':
+      return { summary: '已有一次记忆刷新在进行中。', succeeded: false }
+    default:
+      return { summary: '记忆已刷新。', succeeded: o.flushed !== false }
+  }
+}
+
+/** Agent `MemoryDreamDisposition` → scrollback line. */
+export function memoryDreamOutcome(raw: unknown): MemoryCommandOutcome {
+  const o = memoryResponseObject(raw)
+  const observations = pickNumber(o, 'observation_count', 'observationCount') ?? 0
+  const topics = pickNumber(o, 'topics_affected', 'topicsAffected') ?? 0
+  const merged = `已将 ${observations} 条观察合并进 ${topics} 个主题`
+  switch (pickString(o, 'disposition')) {
+    case 'completed':
+      return topics > 0
+        ? { summary: `记忆整合完成：${merged}。`, succeeded: true }
+        : { summary: '记忆整合完成。', succeeded: true }
+    case 'recovered':
+      return topics > 0
+        ? { summary: `记忆整合完成：补完了上次中断的整理，更新 ${topics} 个主题。`, succeeded: true }
+        : { summary: '记忆整合完成：补完了上次中断的整理。', succeeded: true }
+    case 'no_work':
+      return { summary: '没有需要整合的内容。', succeeded: true }
+    case 'busy':
+      return { summary: '已有一次记忆整合在进行中，完成后再试。', succeeded: false }
+    case 'retry_required':
+      return { summary: '记忆整合未完成，将自动重试。', succeeded: false }
+    case 'failed':
+      return { summary: '记忆整合失败。', succeeded: false }
+    case 'shadow':
+      return { summary: '记忆整合以影子模式运行，未写入内容。', succeeded: true }
+    case 'cancelled':
+      return { summary: '记忆整合已取消。', succeeded: false }
+    case 'disabled':
+      return { summary: '本会话已关闭记忆。', succeeded: false }
+    default:
+      return { summary: '记忆整合完成。', succeeded: true }
+  }
+}
+
+/**
+ * memory-v2 capture lifecycle line — TUI `memory_capture_system_message`
+ * (xai-grok-pager app/acp_handler/session_notification.rs). The shell sends
+ * it only when `memory_v2.capture_status_enabled` is on (default off).
+ * Returns null when the payload carries no turn range.
+ */
+export function memoryCaptureLine(fields: Record<string, unknown>): string | null {
+  const range = captureRange(fields)
+  if (!range) return null
+  const activity = pickString(fields, 'activity') ?? ''
+  const state =
+    {
+      queued: '排队中',
+      running: '进行中',
+      completed: '已完成',
+      no_op: '已完成（无变更）',
+      retry: '将重试',
+      failed: '失败',
+    }[activity] ?? '已更新'
+  const attempt = pickNumber(fields, 'attempt') ?? 0
+  const attemptText = attempt > 1 ? `（第 ${attempt} 次尝试）` : ''
+  return `记忆捕获${state}：第 ${range.from}-${range.through} 回合${attemptText}`
+}
+
+/** Capture payload's turn range; both ends must be present. */
+function captureRange(fields: Record<string, unknown>): { from: number; through: number } | null {
+  const from = pickNumber(fields, 'from_turn', 'fromTurn')
+  const through = pickNumber(fields, 'through_turn', 'throughTurn')
+  if (from == null || through == null) return null
+  return { from, through }
+}
+
+/**
+ * TUI `MemoryCaptureBlock::title`: "Model-generated memory debug output: N
+ * memory/memories for turns from-through".
+ */
+export function memoryCaptureBlockTitle(count: number, from: number, through: number): string {
+  return `模型生成的记忆调试输出：第 ${from}-${through} 回合共 ${count} 条观察`
+}
+
+/**
+ * ESC-introduced sequences: CSI (incl. SGR), OSC, DCS/APC/PM, charset
+ * designations and single-char ESC commands. Built from escape text (like
+ * `components/Ansi.tsx`) so the pattern carries no raw control bytes.
+ */
+const ANSI_ESCAPE = new RegExp(
+  '\\u001b\\[[0-9;:?>=]*[ -/]*[@-~]' + // CSI … final byte
+    '|\\u001b\\][^\\u0007\\u001b]*(?:\\u0007|\\u001b\\\\)?' + // OSC (terminator optional: truncated chunk)
+    '|\\u001b[P_^][^\\u0007\\u001b]*(?:\\u0007|\\u001b\\\\)?' + // DCS / APC / PM
+    '|\\u001b[()][0-9A-Za-z]' + // charset designation
+    '|\\u001b[@-Z\\\\-_]', // single-char ESC command
+  'g',
+)
+
+/**
+ * TUI `sanitize_model_debug_text` (scrollback/blocks/session_event.rs):
+ * ANSI escapes stripped, control characters (except \n and \t) and the
+ * bidi override / isolate set replaced with U+FFFD. The TUI additionally
+ * sprinkles U+2060 word joiners to defeat terminal-native link detection;
+ * the browser renders this as plain text and never auto-links it, so that
+ * step is deliberately not ported.
+ */
+export function sanitizeModelDebugText(text: string): string {
+  let out = ''
+  for (const ch of text.replace(ANSI_ESCAPE, '')) {
+    const code = ch.codePointAt(0) ?? 0
+    const control = code < 0x20 || (code >= 0x7f && code <= 0x9f)
+    const bidi = (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069)
+    if ((control && ch !== '\n' && ch !== '\t') || bidi) {
+      out += '\uFFFD'
+      continue
+    }
+    out += ch
+  }
+  return out
+}
+
+/** One debug observation (the agent's `MemoryCaptureDebugEntry`). */
+export type MemoryCaptureObservation = { statement: string; body?: string; path: string }
+
+/** Payload of the foldable capture debug block (`session_event.memoryCapture`). */
+export type MemoryCaptureBlockPayload = {
+  fromTurn: number
+  throughTurn: number
+  observations: MemoryCaptureObservation[]
+}
+
+/**
+ * One `memory_capture_activity` payload → the scrollback entry to append.
+ * `completed` with observations becomes the TUI's foldable debug block
+ * (title + per-observation statement/body/path) instead of the plain line,
+ * mirroring `apply_session_event`'s branch.
+ */
+export function memoryCaptureEntry(
+  fields: Record<string, unknown>,
+): { text: string; memoryCapture?: MemoryCaptureBlockPayload } | null {
+  const range = captureRange(fields)
+  if (!range) return null
+  const raw = Array.isArray(fields.memories) ? fields.memories : []
+  const observations = raw.flatMap((item): MemoryCaptureObservation[] => {
+    if (!item || typeof item !== 'object') return []
+    const o = item as Record<string, unknown>
+    const statement = sanitizeModelDebugText(pickString(o, 'statement') ?? '')
+    const path = pickString(o, 'path') ?? ''
+    // The TUI links only a committed path; a row without one has nothing to
+    // open, so drop it instead of rendering half an observation.
+    if (!statement || !path) return []
+    const body = pickString(o, 'body')
+    return [{ statement, path, ...(body ? { body: sanitizeModelDebugText(body) } : {}) }]
+  })
+  if ((pickString(fields, 'activity') ?? '') === 'completed' && observations.length > 0) {
+    return {
+      text: memoryCaptureBlockTitle(observations.length, range.from, range.through),
+      memoryCapture: {
+        fromTurn: range.from,
+        throughTurn: range.through,
+        observations,
+      },
+    }
+  }
+  const line = memoryCaptureLine(fields)
+  return line ? { text: line } : null
+}
+
+/**
  * BLAKE3 hex of the previewed bytes — the evidence `x.ai/memory/forget`
  * compares against the store's own bytes, so a note edited after the preview
  * is refused instead of deleted (TUI: preview_hash).

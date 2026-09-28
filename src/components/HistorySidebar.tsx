@@ -70,7 +70,13 @@ export function HistorySidebar() {
           onRequestClose={() => setSearchOpen(false)}
         />
       )}
-      <div className="gn-no-scrollbar flex-1 overflow-y-auto">
+      {/* overflow-anchor: none — 列表重排的滚动位置由 SessionHistoryList
+          的 useScrollAnchor 按行锚自己补；浏览器原生锚定在这里会挑被移动的
+          行做锚点（取消待办时最明显），把 scrollTop 改到用户没要求的位置。 */}
+      <div
+        className="gn-no-scrollbar flex-1 overflow-y-auto"
+        style={{ overflowAnchor: 'none' }}
+      >
         {searchOpen && searchActive ? null : <SessionHistoryList />}
       </div>
     </aside>

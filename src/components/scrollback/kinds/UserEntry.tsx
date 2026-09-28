@@ -1,3 +1,4 @@
+import { RotateCw } from 'lucide-react'
 import type { ScrollEntry } from '../../../api/types'
 import {
   USER_COLLAPSED_MAX_LINES,
@@ -21,8 +22,8 @@ export function UserEntry({
 }) {
   const { shell, toggleUser, openViewer } = chrome
   // UserPromptBlock: full-width bg_light band, accent_user ❯ prefix
-  // (↻ for is_cron scheduled /loop fires), continuation indent, optional
-  // collapse to 3 visual lines + " …".
+  // (RotateCw 图标 for is_cron scheduled /loop fires), continuation indent,
+  // optional collapse to 3 visual lines + " …".
   const foldable = userIsFoldable(e.text)
   const expanded = entryExpanded(e)
   const showView = foldable && expanded
@@ -34,11 +35,11 @@ export function UserEntry({
     ? 'color-mix(in srgb, var(--color-gn-bg-highlight) 70%, var(--color-gn-bg-hover))'
     : 'var(--color-gn-bg-highlight)'
   const lines = body.split('\n')
-  // TUI: is_bash → "$ " (command color), is_cron → "↻  ", else prompt_arrow.
+  // TUI: is_bash → "$ " (command color), is_cron → RotateCw 图标, else prompt_arrow.
   // Shell-mode submissions carry the isShell marker from the store's send().
   const isShell = e.isShell === true
   const isInterjection = e.isInterjection === true
-  const prefixGlyph = isShell ? '$' : e.isCron ? Glyphs.cronPrompt : Glyphs.promptArrow
+  const prefixGlyph = isShell ? '$' : Glyphs.promptArrow
   const prefixColor = isShell
     ? 'var(--color-gn-cyan)'
     : isInterjection
@@ -67,12 +68,13 @@ export function UserEntry({
                   : '查看 / enter view'
         }
       >
-        {/* Same icon column as tool/thought bullets so ❯ / ↻ / ◆ / › line up.
+        {/* Same icon column as tool/thought bullets so ❯ / cron 图标 / ◆ / › line up.
             Icon box is 1.2em@13px = 15.6px; first text line is 13.5px×1.35 ≈ 18.2px.
             mt-[1.5px] centers prefix on the first line (items-start keeps multiline top-aligned). */}
         <Bullet
           color={prefixColor}
           glyph={prefixGlyph}
+          icon={e.isCron ? <RotateCw size={13} strokeWidth={2} /> : undefined}
           className={`mt-[1.5px] ${isShell ? 'font-mono' : ''}`}
         />
         <div className="min-w-0 flex-1 text-gn-fg">
