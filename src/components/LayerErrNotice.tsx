@@ -31,7 +31,13 @@ export function LayerErrNotice({ layer, err }: { layer: 'hub' | 'host'; err: Lay
       role="alert"
       className={`flex min-w-0 max-w-[40vw] items-center gap-1.5 sm:max-w-[26rem] ${tone}`}
     >
-      <span className="shrink-0 font-mono text-[10px] uppercase tracking-wider opacity-70">
+      <span
+        className={`shrink-0 rounded border px-1.5 font-mono text-[10px] font-bold uppercase leading-[16px] tracking-wider ${
+          err.level === 'error'
+            ? 'border-gn-red/50 bg-gn-red/25'
+            : 'border-gn-warning/50 bg-gn-warning/25'
+        }`}
+      >
         {layer}
       </span>
       <span className="min-w-0 truncate" title={err.message}>

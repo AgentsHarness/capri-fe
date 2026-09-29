@@ -32,6 +32,7 @@ import { TodoMark } from './todoMark'
 import { fmtBytes, fmtTok } from '../format'
 import { contextUrgencyColor } from '../theme/contextColor'
 import { Accents } from '../theme/accents'
+import { toolDisplayMode } from '../scrollback/entryState'
 import { toolHeaderExtra } from '../scrollback/toolHeaderExtra'
 import { mergeLiveText } from '../scrollback/liveText'
 import { useSessionSpinner } from '../hooks/sessionState'
@@ -1254,6 +1255,12 @@ function SubagentTimeline({
       ) {
         p = { open: v } as Partial<ScrollEntry>
         cache.set(key, p)
+      } else if (e.kind === 'tool' && v != null) {
+        p = {
+          displayMode: v ? 'expanded' : 'collapsed',
+          expanded: v,
+        } as Partial<ScrollEntry>
+        cache.set(key, p)
       } else if (v != null) {
         p = { expanded: v } as Partial<ScrollEntry>
         cache.set(key, p)
@@ -1272,10 +1279,16 @@ function SubagentTimeline({
 
   // 局部动作：折叠写本地 folds；「查看」打开局部全文弹窗；选中局部化。缺省值
   // 仍是主 store 动作（EntryView 内部取 actions ?? store），此处全部覆盖。
+  const renderItemsRef = useRef(renderItems)
+  renderItemsRef.current = renderItems
   const actions: EntryViewActions = useMemo(
     () => ({
       toggleTool: (id) => {
-        const next = !(folds.get(id) ?? false)
+        const base = renderItemsRef.current.find((x) => x.id === id)
+        const cur =
+          folds.get(id) ??
+          (base && base.kind === 'tool' ? toolDisplayMode(base) !== 'collapsed' : false)
+        const next = !cur
         setFolds((m) => new Map(m).set(id, next))
         // 展开 = 要看正文：lite 裁掉的行按需补全（非 lite / 已补全 no-op）。
         if (next) void useChatStore.getState().fillToolEntryDetail(id)

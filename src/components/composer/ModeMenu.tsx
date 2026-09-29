@@ -62,7 +62,7 @@ export function ModeMenu({ pos, menu }: ModeMenuProps) {
       </div>
 
       {/* 权限单选列表 */}
-      <div className="min-h-0 flex-1 overflow-y-auto touch-pan-y overscroll-contain pb-1">
+      <div className="min-h-0 flex-1 overflow-y-auto touch-pan-y overscroll-contain">
         {PERMISSION_OPTIONS.map((item) => {
           const active = currentPermId === item.id
           return (

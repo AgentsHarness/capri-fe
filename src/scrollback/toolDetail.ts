@@ -983,7 +983,7 @@ function diffLines(a: string[], b: string[]): DiffOp[] {
 
 function extractEditHunks(tc: ToolCall): { lines: DiffLine[]; ins: number; del: number } {
   // Strategy 1: structured edits in rawOutput SearchReplace EditsApplied
-  const raw = tc.rawOutput
+  const raw = tc.rawOutput ?? (tc as { raw_output?: unknown }).raw_output
   if (raw) {
     const tagged = unwrapTagged(raw)
     let body: unknown = tagged && /search|replace|edit/i.test(tagged.tag) ? tagged.body : raw
@@ -1277,8 +1277,9 @@ export function parseAskUserQaPairs(output: string): AskUserQaPair[] {
  */
 export function extractToolDetail(tc: ToolCall, kindName?: string): ToolDetail {
   const kind = kindOf(tc, kindName)
-  const ri = isObj(tc.rawInput) ? tc.rawInput : undefined
-  const raw = tc.rawOutput
+  const riRaw = tc.rawInput ?? (tc as { raw_input?: unknown }).raw_input
+  const ri = isObj(riRaw) ? riRaw : undefined
+  const raw = tc.rawOutput ?? (tc as { raw_output?: unknown }).raw_output
   const title = asStr(tc.title) || ''
   const isFail = failed(tc)
   const variant = rawField(ri, 'variant')

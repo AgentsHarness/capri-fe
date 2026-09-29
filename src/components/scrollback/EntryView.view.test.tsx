@@ -91,6 +91,35 @@ describe('标题单击立刻折叠 / 展开后「查看」弹窗', () => {
     expect(toolExpanded('t1')).toBe(false)
   })
 
+  it('直播中尚未返回 rawOutput 的 tool 块，点击非标题区域同样展开与收起', () => {
+    const e: ScrollEntry = {
+      id: 't-live',
+      kind: 'tool',
+      title: 'ls -la',
+      kindName: 'execute',
+      verb: 'Running',
+      status: 'in_progress',
+      expanded: false,
+      raw: {
+        toolCallId: 'tc-live',
+        title: 'run_terminal_command',
+        kind: 'execute',
+        status: 'in_progress',
+        rawInput: { command: 'ls -la', description: 'List files' },
+      } as unknown as ToolCall,
+    }
+    useChatStore.setState({ entries: [e] })
+    const r = render(<EntryView e={e} selected={false} pendingFreeze={false} now={0} />)
+    const shell = r.container.querySelector('[data-entry-id="t-live"]')!
+    fireEvent.click(shell)
+    expect(toolExpanded('t-live')).toBe(true)
+
+    const opened = useChatStore.getState().entries[0]!
+    r.rerender(<EntryView e={opened} selected pendingFreeze={false} now={0} />)
+    fireEvent.click(screen.getByText('ls -la'))
+    expect(toolExpanded('t-live')).toBe(false)
+  })
+
   it('思考块点正文同样立刻收起', () => {
     const e = {
       id: 'th1',
