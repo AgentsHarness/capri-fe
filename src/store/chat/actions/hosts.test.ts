@@ -382,4 +382,52 @@ describe('switchHost 请求发起时机', () => {
       expect.objectContaining({ type: 'hello', sessionId: 's1' }),
     )
   })
+
+  it('切到空状态 host 时清空上一台 host 的上下文状态（usage / sessionStatus / todos / goalState / mcp）并保留按 host 记忆的 emptyCwd', async () => {
+    ;(transport.status as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ready: true,
+      sessionId: undefined,
+      cwd: undefined,
+    })
+    const state = makeState({
+      hosts: [host('a'), host('b')],
+      selectedHostId: 'a',
+      sessionId: 'sess-a',
+      cwd: '/repo-a',
+      emptyCwd: '/repo-a-empty',
+      emptyCwdByHost: { a: '/repo-a-empty', b: '/repo-b-empty' },
+      usage: { used: 49_000, size: 1_000_000 },
+      sessionStatus: {
+        contextTokens: 49_000,
+        contextWindowSize: 1_000_000,
+        usedPercent: 5,
+        autoCompactThresholdPercent: 85,
+        totalCostUsd: 0.1234,
+      },
+      todos: [{ id: '1', content: 'task', status: 'in_progress' }],
+      todoCounts: { completed: 0, inProgress: 1, pending: 0, total: 1 },
+      goalState: { status: 'active', objective: 'ship' },
+      mcpServers: [{ name: 'srv', status: 'ready' }],
+      mcpInit: { connected: 1, total: 1, startedAt: 1 },
+      runningHook: { eventName: 'PreToolUse', count: 1, startedAt: 1 },
+      refreshSessions: vi.fn(),
+      refreshWorkspaces: vi.fn(),
+      refreshSessionStats: vi.fn(),
+    })
+
+    await bindSwitch(state).switchHost('b')
+
+    expect(state.selectedHostId).toBe('b')
+    expect(state.sessionId).toBeUndefined()
+    expect(state.usage).toBeUndefined()
+    expect(state.sessionStatus).toBeUndefined()
+    expect(state.todos).toBeUndefined()
+    expect(state.todoCounts).toBeUndefined()
+    expect(state.goalState).toBeUndefined()
+    expect(state.mcpServers).toEqual([])
+    expect(state.mcpInit).toBeUndefined()
+    expect(state.runningHook).toBeNull()
+    expect(state.emptyCwd).toBe('/repo-b-empty')
+    expect(state.emptyCwdByHost).toEqual({ a: '/repo-a-empty', b: '/repo-b-empty' })
+  })
 })

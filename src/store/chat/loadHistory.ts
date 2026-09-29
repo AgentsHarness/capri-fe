@@ -195,6 +195,8 @@ export async function loadHistory(
       // 新会话上下文：清空分层错误栈。
       layerErrors: {},
       usage: undefined,
+      sessionStatus: undefined,
+      runningHook: null,
       todoCounts: undefined,
       todos: undefined,
       turnStartedAt: undefined,

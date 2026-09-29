@@ -9,10 +9,11 @@ import {
   runtime,
 } from '../globals'
 import { clearSuppressedTools } from '../tools'
+import { resetToolFillCache } from '../historyFill'
+import { resetSessionState } from '../reset'
 import { modelLabel } from '../model'
 import { appendEntry } from '../entries'
 import { pushToast } from '../../toast'
-import { clearSubagentSettleTimer, clearTurnBlipTimer } from '../turn'
 import { refreshDefaultModeFlags } from '../modePersist'
 import { KEY } from '../../../lib/keys'
 
@@ -101,98 +102,48 @@ export function hostActions(set: SetState, get: () => ChatState) {
     // localStorage capri-fe.host，避免残留状态）。
     if (transport.getConnectionMode() !== 'hub') return
     if (hostId === get().selectedHostId) return
-    // Invalidate every in-flight async result from the previous host.
-    const myGen = ++runtime.sessionSwitchGen
     clearContinueSessionTimer()
     clearPeerSessionLoad()
-    clearSubagentSettleTimer()
-    clearTurnBlipTimer()
     get().stopTopTaskPolling()
     transport.setHost(hostId)
     saveStr(KEY.host, hostId)
     const host = get().hosts.find((h) => h.hostId === hostId)
+    const emptyCwdByHost = get().emptyCwdByHost ?? {}
     clearSuppressedTools()
+    resetToolFillCache()
     clearStreamBuf()
-    set({
+    // 换 host 先经统一会话复位清空全部会话态（含 usage / sessionStatus /
+    // todos / goalState / mcpServers 等状态栏芯片数据源——目标 host 处于
+    // 无活跃会话的空状态时不会触发 loadHistory，漏清会把上一台 host 的
+    // 上下文状态留在 WorkspaceBar 最右侧），再覆盖 host 级字段。
+    resetSessionState(set, {
       selectedHostId: hostId,
       hostId,
       hostName: host?.hostName,
-      sessionId: undefined,
-      cwd: undefined,
-      // 换 host 即换会话视图：旧 host 的加载失败提示一并清掉。
-      historyLoadError: undefined,
       historyOpen: false,
       // 空状态工作目录按 host 隔离：切换到哪个 host 就显示哪个 host
       // 自己选过的目录（没有则 undefined → 宿主默认），绝不沿用别的
       // host 的路径。
-      emptyCwd: (get().emptyCwdByHost ?? {})[hostId] ?? undefined,
+      emptyCwd: emptyCwdByHost[hostId] ?? undefined,
+      emptyCwdByHost,
       // 模型 id 只对产生它的那台 host 有意义：空状态下选的模型（等新会话
       // 下发）不能带到另一台 host 的目录里。
       pendingModel: undefined,
       homeDir: undefined,
-      entries: [],
-      liveStream: null,
-      openAssistantId: undefined,
-      openThoughtId: undefined,
-      currentStreamStartMs: undefined,
-      lastCompletedTurn: undefined,
-      turnStartedAt: undefined,
-      currentPromptId: undefined,
-      awaitingNext: false,
-      genRate: undefined,
-      lastSentPromptId: undefined,
       sessions: [],
       workspaces: [],
       workspaceLoading: false,
-      pending: [],
-      xaiRequests: [],
-      diffReview: undefined,
-      diffReviewOpen: false,
-      memoryListing: undefined,
-      memoryStatus: undefined,
-      memoryError: undefined,
-      memoryNotice: undefined,
-      memoryOpen: false,
-      pendingOptimisticUserId: undefined,
       modes: undefined,
-      agentCommands: [],
       // 换 host 即换连接：清空分层错误栈，新 host 的状态由 hello 快照
       // 重新驱动。
       layerErrors: {},
       conn: 'connecting',
       statusText: host ? '连接中…' : 'Host 未配对',
-      historyLoading: false,
-      historyLoadingMore: false,
-      historySessionId: undefined,
-      historyCwd: undefined,
-      historyLoadedAt: undefined,
-      historyPrependedAt: undefined,
-      historyAnchorId: undefined,
-      historyLoadedCount: 0,
-      historyLoadedStart: undefined,
-      historyHasMore: false,
-      historyPromptStarts: undefined,
-      historyTurnIdx: 0,
-      toolIndex: {},
-      subagentIndex: {},
-      pendingSubagentFinishes: {},
-      subagentChildIndex: {},
-      subagentViews: {},
-      bgTaskIndex: {},
-      topTasks: [],
-      // 换 host 即换 agent 进程，游离进程提示必须重新判定。
-      detachedTasks: [],
-      detachedHintKey: null,
-      runningProbeTaskIds: [],
-      scheduledTasks: [],
-      gitInfo: undefined,
-      sessionStats: undefined,
-      followUps: undefined,
-      followUpsResponseId: undefined,
       cancelPanelOpen: false,
       queuePanelOpen: false,
-      planMode: false,
     })
+    // Invalidate every in-flight async result from the previous host.
+    const myGen = runtime.sessionSwitchGen
     // 先等 setHost 发起的端口归属探测落地（同一次探测，不重复请求），第一条
     // 快照 RPC 才能直接走本机近路而不是先绕一趟 hub。
     await transport.verifyLocalRoute(hostId)
