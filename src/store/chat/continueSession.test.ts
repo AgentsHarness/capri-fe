@@ -216,13 +216,15 @@ describe('continueSession 清掉上一条会话的运行态', () => {
     vi.mocked(transport.subagentListRunning).mockResolvedValue({ subagents: [] } as never)
   })
 
-  it('上一条会话的 topTasks / detached / scheduledTasks 不跨会话', async () => {
+  it('上一条会话的 topTasks / detached / scheduledTasks / sessionStatus / runningHook 不跨会话', async () => {
     useChatStore.setState({
       topTasks: [{ taskId: 'old-task', title: '上一条会话的任务' }],
       detachedTasks: [{ taskId: 'old-detached' }],
       detachedHintKey: 'old-detached',
       runningProbeTaskIds: ['old-detached'],
       scheduledTasks: [{ taskId: 'old-sched', prompt: 'loop', interval: '2h' }],
+      sessionStatus: { usedPercent: 42, totalCostUsd: 0.5 },
+      runningHook: { eventName: 'PreToolUse', count: 1, startedAt: 1 },
     })
 
     await useChatStore.getState().continueSession(SID, CWD)
@@ -235,6 +237,8 @@ describe('continueSession 清掉上一条会话的运行态', () => {
     expect(s.detachedHintKey).not.toBe('old-detached')
     expect(s.runningProbeTaskIds).toEqual([])
     expect(s.scheduledTasks).toEqual([])
+    expect(s.sessionStatus).toBeUndefined()
+    expect(s.runningHook).toBeNull()
   })
 
   it('上一条会话的子代理索引不跨会话（否则回放里同 id 的 spawn 会被跳过建行）', async () => {

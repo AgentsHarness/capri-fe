@@ -127,4 +127,17 @@ describe('handleNotifApps — session_status', () => {
     )
     expect(state().usage?.used).toBe(214_000)
   })
+
+  it('空状态（sessionId 为空）收到无归属 session_status → 忽略，不写上下文状态', () => {
+    const { set, get, state } = makeStore({ sessionId: undefined })
+    handleNotifApps(
+      set,
+      get,
+      { type: 'session_status' } as WireEvent,
+      'session_status',
+      statusFields({ session_id: undefined }) as Record<string, unknown>,
+    )
+    expect(state().sessionStatus).toBeUndefined()
+    expect(state().usage).toBeUndefined()
+  })
 })

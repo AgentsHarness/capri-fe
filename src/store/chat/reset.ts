@@ -10,7 +10,10 @@ import { runtime, clearHistoryWindowBuffer } from './globals'
  * 广播，**不随会话复位**；planMode 是会话态，随复位清空（由下次
  * replay/load 恢复）。
  */
-export function resetSessionState(set: (partial: Partial<ChatState>) => void): void {
+export function resetSessionState(
+  set: (partial: Partial<ChatState>) => void,
+  overrides?: Partial<ChatState>,
+): void {
   // Every reset invalidates async work even when it is not followed by a
   // session/new request (for example, the New button's empty state).
   clearHistoryWindowBuffer()
@@ -104,6 +107,9 @@ export function resetSessionState(set: (partial: Partial<ChatState>) => void): v
     historyTurnIdx: 0,
     historyPrependedAt: undefined,
     historyAnchorId: undefined,
+    historyProjected: undefined,
+    historyOmittedBytes: undefined,
+    liteFillBusy: 0,
     todoCounts: undefined,
     todos: undefined,
     // A fresh session starts with an empty context window — drop the
@@ -122,6 +128,7 @@ export function resetSessionState(set: (partial: Partial<ChatState>) => void): v
     currentPromptId: undefined,
     genRate: undefined,
     scheduledTasks: [],
+    ...overrides,
   })
   // 跨会话防线：会话复位时撤销在飞的子代理收口兜底——它属于离开的
   // 会话，绝不能在新会话里触发收口（F1 的 sessionId 守卫之外的兜底）。

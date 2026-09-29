@@ -389,6 +389,7 @@ export function handleNotifApps(
             const payloadSid =
               typeof fields.session_id === 'string' ? fields.session_id : undefined
             const current = get().sessionId
+            if (!current) break
             if (payloadSid) {
               if (payloadSid !== current) break
             } else if (isForeignSession(ev, current)) break
