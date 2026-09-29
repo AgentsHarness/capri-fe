@@ -52,12 +52,17 @@ export const GroupHeaderView = memo(function GroupHeaderView({
   const selectEntry = selectRow ?? storeSelectEntry
   const e = displayRowToEntry(row)
   const [hovered, setHovered] = useState(false)
+  const toggle = () => {
+    selectEntry(row.id)
+    onToggle()
+  }
   const shell = {
     e,
     selected,
     hovered,
     onHover: setHovered,
     onSelect: () => selectEntry(row.id),
+    onFold: toggle,
     pendingFreeze,
     now,
     dense,

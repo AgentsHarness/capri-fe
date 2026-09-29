@@ -104,20 +104,22 @@ export const EntryView = memo(function EntryView({
   const fillToolBodies = actions?.fillToolBodies ?? storeFillToolBodies
   const onSelect = () => selectEntry(e.id)
   // 整块单击折叠：标题行以外的正文/留白同样生效。「查看」是独立 button，
-  // 不走这条路径。流式思考 / 无可折叠正文的 kind 不挂 onFold（点击只选中）。
-  const foldAction = !entryFoldable(e)
-    ? undefined
-    : e.kind === 'tool'
+  // 不走这条路径。tool 块与标题行（HeaderWithView）统一始终可点切换；
+  // 流式思考 / 无可折叠正文的其余 kind 不挂 onFold（点击只选中）。
+  const foldAction =
+    e.kind === 'tool'
       ? () => toggleTool(e.id)
-      : e.kind === 'thought'
-        ? () => toggleThought(e.id)
-        : e.kind === 'user'
-          ? () => toggleUser(e.id)
-          : e.kind === 'btw'
-            ? () => toggleBtw(e.id)
-            : e.kind === 'session_event' && (e.recap || e.memoryCapture)
-              ? () => toggleSessionEvent(e.id)
-              : undefined
+      : !entryFoldable(e)
+        ? undefined
+        : e.kind === 'thought'
+          ? () => toggleThought(e.id)
+          : e.kind === 'user'
+            ? () => toggleUser(e.id)
+            : e.kind === 'btw'
+              ? () => toggleBtw(e.id)
+              : e.kind === 'session_event' && (e.recap || e.memoryCapture)
+                ? () => toggleSessionEvent(e.id)
+                : undefined
   const [hovered, setHovered] = useState(false)
   const opts = accentOpts(e, selected, pendingFreeze, now, hovered)
   const bullet = resolveBullet(opts)
