@@ -437,17 +437,19 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
         }`}
       >
         {loadFailedVisible ? (
-          <>
-            <span className="shrink-0 text-[12.5px] font-semibold text-gn-red">
+          // 失败提示分两行：标题一行、原因一行（原因吃整行宽度、可换行），
+          // 单行时窄屏把原因挤到 65% 宽再截断，几乎读不出是什么错。
+          <div className="flex max-w-[92%] flex-col items-center gap-1 px-3 text-center sm:max-w-[80%]">
+            <span className="text-[12.5px] font-semibold text-gn-red">
               加载失败
             </span>
             <span
-              className="min-w-0 max-w-[65%] truncate text-[12.5px] text-gn-muted"
+              className="min-w-0 text-[12px] leading-snug break-words line-clamp-3 text-gn-muted"
               title={historyLoadError ?? undefined}
             >
               {historyLoadError}
             </span>
-          </>
+          </div>
         ) : (
           <>
             <span className="text-[15px] leading-none text-gn-muted">
