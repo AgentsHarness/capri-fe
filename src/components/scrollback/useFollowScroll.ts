@@ -95,6 +95,8 @@ export function useFollowScroll(
   // page-flip 后 follow **不**立即 re-arm（TUI pin_reserve 语义）：保持
   // 顶对齐位置，等首个流式内容真正到达（entries 增长 / liveStream 增长）
   // 才重新跟随回底——否则响应一 stream 就被拽回底部，page-flip 形同虚设。
+  // 前提是顶对齐真的钉住了（下方还有余地）；写入被钳到底则视为已回底，
+  // 照常跟随（见下方分支注释）。
   const lastSentPromptId = useChatStore((s) => s.lastSentPromptId)
   const lastUserEntryIdRef = useRef<string | null>(null)
   // pin_reserve：>=0 表示 page-flip 已钉顶、等待首个流式内容。值 = flip
@@ -114,12 +116,23 @@ export function useFollowScroll(
       if (box && el) {
         // Prompt top aligns with the viewport top; hold here until the
         // first stream content arrives (flipBase release below).
-        followRef.current = false
-        flipBaseRef.current = entries.length
-        box.scrollTop +=
-          el.getBoundingClientRect().top - box.getBoundingClientRect().top
+        const target =
+          box.scrollTop +
+          el.getBoundingClientRect().top -
+          box.getBoundingClientRect().top
+        box.scrollTop = target
         lastScrollTopRef.current = box.scrollTop
-        return
+        // TUI 的 page_flip_to_entry 靠 pin_reserve 底垫把「prompt 顶对齐」
+        // 撑成真正的滚动底；FE 没有底垫，刚发完消息时 prompt 就是末条 →
+        // 写入必被钳到底。此时钉顶并不成立（视口已在尾部），必须继续跟随：
+        // 否则发送后一次晚到的排版增高（组尾行 / 补渲染的 markdown / 字体
+        // 回退）会把视口留在半路，直到首个流式内容到达才回底——用户看到的
+        // 就是「发送后滚动区没到最低」。真有下方余地时才保持钉顶。
+        if (box.scrollHeight - box.scrollTop - box.clientHeight > 1) {
+          followRef.current = false
+          flipBaseRef.current = entries.length
+          return
+        }
       }
     }
     flipBaseRef.current = -1
