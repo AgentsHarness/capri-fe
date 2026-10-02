@@ -370,8 +370,11 @@ export function TopBar({
   // siblings and chat text "shows through" the history panel.
   return (
     <header className="relative z-40 select-none border-b border-gn-prompt-border bg-gn-bg-base touch-pan-x overscroll-none">
-      {/* Main row: host switcher + actions. */}
-      <div className="flex shrink-0 items-center gap-2 px-3 py-[6px] sm:px-4 text-[12px] text-gn-muted">
+      {/* Main row: host switcher + actions. flex-wrap 只为分层错误提示：
+          窄屏（< lg）它整行落到第二行，不与 host 切换器和 new/history/更多
+          抢同一行的宽度。lg 起回到不换行——桌面一行的按钮簇不能因为一条
+          长错误被挤到第二行，让消息自己截断即可。 */}
+      <div className="flex shrink-0 flex-wrap items-center gap-2 px-3 py-[6px] sm:px-4 text-[12px] text-gn-muted lg:flex-nowrap">
         {/* Desktop-only sidebar collapse toggle — sits left of the host switcher. */}
         <button
           type="button"
@@ -630,9 +633,17 @@ export function TopBar({
           {addHostOpen && <AddHostModal onClose={() => setAddHostOpen(false)} />}
         </div>
 
-        {/* hub / host 层错误：紧跟在 host 名字右侧的一条内联消息（不另占整行）。 */}
+        {/* hub / host 层错误：紧跟在 host 名字右侧的一条内联消息（不另占整行）。
+            窄屏（< lg）另起一行占满整行：与 host 切换器 + new/history/更多
+            挤在一行时，消息会被压到 0 宽——只剩层级徽标和 ✕，错误内容完全
+            看不见。lg 起恢复行内，宽度上限 26rem。 */}
         {layerErr && (
-          <LayerErrNotice key={`${layerErr.layer}:${layerErr.err.at}`} layer={layerErr.layer} err={layerErr.err} />
+          <LayerErrNotice
+            key={`${layerErr.layer}:${layerErr.err.at}`}
+            layer={layerErr.layer}
+            err={layerErr.err}
+            className="order-last w-full pb-1 lg:order-none lg:w-auto lg:max-w-[26rem] lg:pb-0"
+          />
         )}
 
         <div className="flex-1" />
