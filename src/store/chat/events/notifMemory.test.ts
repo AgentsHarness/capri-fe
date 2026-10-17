@@ -161,3 +161,51 @@ describe('memory_files', () => {
     expect(state().memoryStatus).toBe('ready')
   })
 })
+
+/**
+ * 恢复会话时 agent 发现持久化模型已下线（TUI SessionEvent::ModelUnavailable）。
+ * host 的 model/model_update 两个事件只换 caption 与目录，previous/reason 只在
+ * 这条 typed 事件里，所以提示行必须由这里落。
+ */
+describe('model_auto_switched', () => {
+  it('同族兜底：一行警告，caption 用目录里的显示名而不是裸 id', () => {
+    const { set, get, state } = makeStore({
+      modelName: 'Grok 3',
+      models: [
+        { modelId: 'grok-5', name: 'Grok 5' },
+        { modelId: 'grok-3', name: 'Grok 3' },
+      ],
+    })
+    expect(
+      handleSessionNotification(
+        set,
+        get,
+        generic('model_auto_switched', {
+          previous_model_id: 'grok-3',
+          new_model_id: 'grok-5',
+          reason: 'Model "grok-3" is no longer available for your account.',
+        }),
+      ),
+    ).toBe(true)
+    expect(texts(state())).toEqual([
+      '模型 grok-3 不可用，已切换为 Grok 5（Model "grok-3" is no longer available for your account.）',
+    ])
+    expect((state().entries[0] as { warning?: boolean }).warning).toBe(true)
+    expect(state().modelName).toBe('Grok 5')
+  })
+
+  it('无同族兜底（new_model_id 为空）：只报 reason，不改 caption', () => {
+    const { set, get, state } = makeStore({ modelName: 'Gone' })
+    handleSessionNotification(
+      set,
+      get,
+      generic('model_auto_switched', {
+        previous_model_id: 'gone-model',
+        new_model_id: '',
+        reason: 'Please start a new session.',
+      }),
+    )
+    expect(texts(state())).toEqual(['模型 gone-model 不可用：Please start a new session.'])
+    expect(state().modelName).toBe('Gone')
+  })
+})

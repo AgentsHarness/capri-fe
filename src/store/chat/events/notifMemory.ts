@@ -3,6 +3,7 @@ import type { WireEvent } from './wire'
 import { appendEntry } from '../entries'
 import { applyModelIdentity, applySessionTitle } from '../sessionIdentity'
 import { memoryCaptureEntry, normalizeMemoryListing } from '../../../lib/memory'
+import { modelDisplayName } from '../model'
 export function handleNotifMemory(
   set: SetState,
   get: () => ChatState,
@@ -216,14 +217,23 @@ export function handleNotifMemory(
             applySessionTitle(set, get, fields.session_summary)
             break
           // ── model switches (TUI ModelUnavailable block / remote switch) ─
+          // 恢复会话时 agent 发现持久化模型已下线：同族兜底成功时 new_model_id
+          // 是落点；同族也没有可用模型时 new_model_id 为空、之后每条 prompt
+          // 都被拦（TUI 此时只显示 reason 原文）。
           case 'model_auto_switched': {
             const prev = String(fields.previous_model_id ?? '')
             const next = String(fields.new_model_id ?? '')
-            const reason = String(fields.reason ?? '')
-            applyModelIdentity(set, get, { name: next })
+            const reason = String(fields.reason ?? '').trim()
+            // 目录是显示名的唯一来源：host 的 `model` 事件已用显示名写过
+            // caption，这里若写裸 id 会把 caption 打回去。
+            const nextName = next ? modelDisplayName(get, next) : ''
+            if (nextName) applyModelIdentity(set, get, { name: nextName })
+            const what = prev ? `模型 ${prev} ` : '模型'
             appendEntry(set, {
               kind: 'session_event',
-              text: `模型 ${prev} 不可用，已切换为 ${next}${reason ? `（${reason}）` : ''}`,
+              text: nextName
+                ? `${what}不可用，已切换为 ${nextName}${reason ? `（${reason}）` : ''}`
+                : `${what}不可用${reason ? `：${reason}` : ''}`,
               warning: true,
             })
             break
