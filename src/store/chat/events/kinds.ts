@@ -93,6 +93,19 @@ export const EXTENSION_KINDS = [
   'model_changed',
   'goal_updated',
   'workflow_updated',
+  // 计划审阅信号（TUI 用它们开/关「回合后计划审阅」、提交已批准计划）。
+  // FE 的审阅卡走 x.ai/exit_plan_mode client_request，是另一条路径；
+  // 当前 shell 检出里这三个变体只有枚举与 serde 测试，没有生产者。
+  // 登记在 UNCONSUMED，等 wire 上真的出现再按 TUI 形态接。
+  'plan_kept',
+  'plan_cleared',
+  'plan_executing',
+  // 实际应答模型（后端把请求路由到别的模型时的显示名）。显示用，
+  // 不改变会话选择；同样暂无生产者。
+  'served_model',
+  // 单回合用量（TUI 只有 headless reducer 消费）。会话用量走
+  // session_status 快照。
+  'turn_usage',
   // 仅持久化（host 不建卡，走 generic 兜底）
   'compaction_checkpoint',
   'rewind_marker',
@@ -221,6 +234,11 @@ export const UNCONSUMED_KINDS: ReadonlyMap<string, string> = new Map([
   ['rewind_marker', '同上，宿主不建卡 → generic → 回放 default 直落'],
   ['unknown', 'serde(other) 前向兼容兜底，形状已在 agent 侧丢弃'],
   ['last_turn_summary', 'send-only 不持久化；侧边栏副标题走 roster lastTurnSummary'],
+  ['plan_kept', 'FE 的计划审阅卡走 x.ai/exit_plan_mode client_request；当前 shell 无生产者'],
+  ['plan_cleared', '同上；计划模式进出由 current_mode_update 恢复'],
+  ['plan_executing', '同上；接受计划走同一张审阅卡的 RPC 响应'],
+  ['served_model', '实际应答模型的显示名，暂无生产者；会话模型显示走模型目录'],
+  ['turn_usage', '单回合用量，仅 TUI headless 消费；会话用量走 session_status'],
 ])
 
 /**
@@ -259,4 +277,31 @@ export const GLOBAL_EVENT_TYPES: ReadonlySet<string> = new Set<string>([
   // 检索引擎状态流：host 用 agent 自报的 sessionId（模糊搜索是字面量
   // "agent"，非会话 UUID）打标签，按会话过滤必然全量丢弃。
   'search_fuzzy_status',
+])
+
+/**
+ * 宿主已建卡、FE 有意不消费的 typed 事件：handleChatEvent 的兜底链
+ * （handleExtEvent）返回 false 后直接丢弃，DEV 告警要跳过它们。
+ *
+ * 共同点：都在 `handleXaiNotification` 里有显式转发分支，是老 host 走
+ * generic `ext_notification` 时同样静默的那一批（extMisc.ts 顶部的理由）；
+ * 新 host 改发 typed 后，静默必须显式登记，否则和"漏接"无法区分。
+ */
+export const SILENT_HOST_EVENT_TYPES: ReadonlyMap<string, string> = new Map([
+  // 仅在其专属面板显示、web 无对应面板：文件监视 / 终端 / 检索面板。
+  // extMisc.ts 的 ext_notification 分支对同一批理由已写过一遍。
+  ['fs_notify', '文件监视面板状态，web 无该面板'],
+  ['fs_index', '同上（索引进度）'],
+  ['fs_index_delta', '同上（增量索引）'],
+  ['search_content_status', '检索面板状态，web 的 /search 走 HTTP'],
+  ['pty_notification', '终端面板通知，web 无终端面板'],
+  ['session_updates_chunk', '历史分页的流式块，FE 走 HTTP /api/session-updates'],
+  // leader / relay 内部状态：web 的 leader 关系由 hub 连接状态呈现。
+  ['leader_reconnected', 'leader 重连内部信号，hub 连接状态已覆盖'],
+  ['leader_version_mismatch', '同上（版本不一致由分层错误提示呈现）'],
+  ['log', '宿主日志转发，不进滚动区'],
+  // 已有替代数据源。
+  ['git_worktree_status', 'git_head_changed 已带 worktree 字段'],
+  ['config_changed', 'SettingsModal 打开时自拉 config，无需增量通知'],
+  ['settings_update', '同上（宿主设置变更）'],
 ])

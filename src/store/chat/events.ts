@@ -18,7 +18,7 @@ import { handleSessionCtrlEvent } from './events/sessionCtrl'
 import { handleSessionNotification } from './events/sessionNotif'
 import { handleExtEvent } from './events/ext'
 import { normalizeSessionEvent } from './events/normalize'
-import { TYPED_CARRIER_TAGS } from './events/kinds'
+import { SILENT_HOST_EVENT_TYPES, TYPED_CARRIER_TAGS } from './events/kinds'
 
 /**
  * After replaying an in-flight session, the first live chunk/thought that
@@ -82,5 +82,28 @@ export function handleChatEvent(
     handleSessionNotification(set, get, ev)
     return
   }
-  handleExtEvent(set, get, ev)
+  if (handleExtEvent(set, get, ev)) return
+  maybeWarnUnhandledTyped(String(ev.type))
+}
+
+/**
+ * 没有任何 handler 认领的 typed 事件：DEV 下每类型提示一次，已登记进
+ * SILENT_HOST_EVENT_TYPES 的跳过（见 kinds.ts 的逐条理由）。宿主新增
+ * 一个 `x.ai/*` 转发分支时，这里会替我们发出信号，而不是无声丢弃。
+ */
+const warnedTyped = new Set<string>()
+function maybeWarnUnhandledTyped(type: string): void {
+  if (!import.meta.env.DEV || warnedTyped.has(type)) return
+  if (SILENT_HOST_EVENT_TYPES.has(type)) return
+  warnedTyped.add(type)
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[chatEvent] 未处理的 typed 事件: ${type} —— 若为宿主新增的转发，` +
+      '请在 store/chat/events/ 补消费点，或登记进 events/kinds.ts 的 SILENT_HOST_EVENT_TYPES',
+  )
+}
+
+/** 测试用：重置告警去重集合。 */
+export function resetUnhandledTypedWarningsForTest(): void {
+  warnedTyped.clear()
 }
