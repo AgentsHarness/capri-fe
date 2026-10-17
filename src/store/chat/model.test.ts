@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest'
+import type { ModelOption } from '../../api/types'
 import {
   BUILTIN_REASONING_EFFORTS,
+  activeContextWindow,
   applySessionModelState,
   asModelState,
+  contextWindowOptions,
   extractEffortFromAgentInfo,
   extractModelFromAgentInfo,
   extractModelsFromAgentInfo,
+  formatContextWindow,
   modelDisplayName,
   modelLabel,
   normalizeEffortOption,
@@ -92,6 +96,88 @@ describe('normalizeEffortOption / extractModelsFromAgentInfo', () => {
   it('无目录 → []', () => {
     expect(extractModelsFromAgentInfo(null)).toEqual([])
     expect(extractModelsFromAgentInfo({})).toEqual([])
+  })
+
+  it('窗口目录：解析 contextWindows 与 contextWindow，丢弃非法项', () => {
+    const models = extractModelsFromAgentInfo({
+      _meta: {
+        modelState: {
+          availableModels: [
+            {
+              modelId: 'w1',
+              _meta: {
+                totalContextTokens: 500000,
+                contextWindows: [256000, 500000],
+                contextWindow: 256000,
+              },
+            },
+            {
+              modelId: 'w2',
+              // 脏数据：非数值/0/负数都丢掉；有效项保留原始顺序。
+              _meta: { totalContextTokens: 200000, contextWindows: [0, '500000', -1, 'x', 256000] },
+            },
+            // 没有 contextWindows 键 → undefined（本地不得凭空造菜单）。
+            { modelId: 'w3', _meta: { totalContextTokens: 1000000 } },
+            // contextWindows 全是非法值 → undefined，同样不出菜单。
+            { modelId: 'w4', _meta: { contextWindows: ['', 0] } },
+          ],
+        },
+      },
+    })
+
+    expect(models[0].contextWindows).toEqual([256000, 500000])
+    expect(models[0].contextWindowSelection).toBe(256000)
+    expect(models[0].contextWindow).toBe(500000)
+    expect(models[1].contextWindows).toEqual([500000, 256000])
+    expect(models[1].contextWindowSelection).toBeUndefined()
+    expect(models[2].contextWindows).toBeUndefined()
+    expect(models[3].contextWindows).toBeUndefined()
+  })
+})
+
+describe('上下文窗口菜单（目录驱动）', () => {
+  const model = (over: Partial<ModelOption>): ModelOption => ({ modelId: 'm', ...over })
+
+  it('contextWindowOptions：单窗口不算菜单（TUI has_selectable_windows）', () => {
+    expect(contextWindowOptions(model({ contextWindows: [256000, 500000] }))).toEqual([
+      256000, 500000,
+    ])
+    expect(contextWindowOptions(model({ contextWindows: [500000] }))).toEqual([])
+    expect(contextWindowOptions(model({}))).toEqual([])
+    expect(contextWindowOptions(undefined)).toEqual([])
+  })
+
+  it('activeContextWindow：会话选择优先，未声明则回落到模型默认窗口', () => {
+    expect(
+      activeContextWindow(model({ contextWindow: 256000, contextWindows: [256000, 500000] })),
+    ).toBe(256000)
+    expect(
+      activeContextWindow(
+        model({ contextWindow: 256000, contextWindows: [256000, 500000], contextWindowSelection: 500000 }),
+      ),
+    ).toBe(500000)
+    // 选择不被当前模型支持（换过模型/目录热重载）→ 用模型默认窗口，
+    // 与 ModelState::get_context_window 的过滤一致。
+    expect(
+      activeContextWindow(
+        model({ contextWindow: 256000, contextWindows: [256000, 500000], contextWindowSelection: 1000000 }),
+      ),
+    ).toBe(256000)
+    // 选择等于默认窗口也算有效（TUI 的 default == selection 分支）。
+    expect(
+      activeContextWindow(model({ contextWindow: 256000, contextWindowSelection: 256000 })),
+    ).toBe(256000)
+    expect(activeContextWindow(undefined)).toBeUndefined()
+  })
+
+  it('formatContextWindow：整百万/整千简写，其余原样', () => {
+    expect(formatContextWindow(256000)).toBe('256k')
+    expect(formatContextWindow(500000)).toBe('500k')
+    expect(formatContextWindow(1000000)).toBe('1m')
+    expect(formatContextWindow(2000000)).toBe('2m')
+    expect(formatContextWindow(960000)).toBe('960k')
+    expect(formatContextWindow(1048576)).toBe('1048576')
+    expect(formatContextWindow(12345)).toBe('12345')
   })
 })
 

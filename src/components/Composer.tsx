@@ -34,7 +34,6 @@ import {
 } from '../theme/layout'
 import { IconGlyph } from './IconGlyph'
 import { ArrowDown, ArrowDownToLine, ImagePlus, X } from 'lucide-react'
-import { fmtTok } from '../format'
 import { SlashMenu } from './SlashMenu'
 import { FilePickerMenu } from './FilePickerMenu'
 import { isMultilineEnabled, registerModelMenuOpener, escapeSlash, literalSlashPayload } from '../commands/registry'
@@ -152,7 +151,6 @@ export function Composer() {
     // 权威队列（与 Enter 忙时行为一致），不会并行开回合。
     for (const p of batch) void send(p.text, p.blocks)
   }, [newSessionPending, send])
-  const usage = useChatStore((s) => s.usage)
   const genRate = useChatStore((s) => s.genRate)
   const statusText = useChatStore((s) => s.statusText)
   /** /recap 等待指示：仅当发起会话仍是当前活动会话时显示（切换会话
@@ -1165,13 +1163,6 @@ export function Composer() {
     return base
   }, [conn, modelName, reasoningEffort])
 
-  const tokensText = useMemo(() => {
-    if (usage?.used != null && usage?.size != null) {
-      return `${fmtTok(usage.used)}/${fmtTok(usage.size)}`
-    }
-    return null
-  }, [usage])
-
   const otherFlags = useMemo(() => {
     const out: { text: string; color?: string }[] = []
     if (isMultilineEnabled()) {
@@ -1190,7 +1181,7 @@ export function Composer() {
   const footerRowRef = useRef<HTMLDivElement | null>(null)
   const modeFullProbeRef = useRef<HTMLSpanElement | null>(null)
   const modeShortProbeRef = useRef<HTMLSpanElement | null>(null)
-  const footerContentKey = [modelLabel, tokensText ?? '', ...otherFlags.map((f) => f.text)].join(
+  const footerContentKey = [modelLabel, ...otherFlags.map((f) => f.text)].join(
     '\u0001',
   )
   const modeLabel = useFittedModeLabel({
@@ -2325,7 +2316,7 @@ export function Composer() {
             style={{
               background: 'var(--color-gn-bg-base)',
             }}
-            title={[modelLabel, tokensText, currentModeLabel, ...otherFlags.map((f) => f.text)].filter(Boolean).join(' · ')}
+            title={[modelLabel, currentModeLabel, ...otherFlags.map((f) => f.text)].filter(Boolean).join(' · ')}
           >
             {/* 模式名宽度探针：量完整名/短名各自占多少 px（绝对定位，不
                 参与布局；data-probe 让内容宽度测量跳过它们）。 */}
@@ -2364,16 +2355,9 @@ export function Composer() {
               )}
             </span>
 
-            {tokensText && (
-              <span className="inline-flex items-center">
-                <span style={{ color: sepColor }} className="px-1">
-                  {Glyphs.middleDot}
-                </span>
-                <span className="truncate" style={{ color: flagColor }}>
-                  {tokensText}
-                </span>
-              </span>
-            )}
+            {/* 上下文用量读数（used/size）已移除：TUI 只在顶栏 context_bar 显示，
+                composer 这行只留模型名与模式名，避免与顶栏芯片重复。 */}
+
 
             {/* 模式按钮（点击弹出弹窗，在弹窗内提供 Plan 独立开关与权限模式切换） */}
             <span ref={modeRef} className="relative z-30 inline-flex shrink-0 items-center">

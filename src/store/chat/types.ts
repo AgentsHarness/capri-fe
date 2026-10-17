@@ -572,7 +572,12 @@ export interface ChatAgentExtState {
    * sessionId（无 sid 直接 400），此刻只能先记下选择，等 newSession
    * 锚定后由 newSession 补发；锚定即清空。caption 同期乐观更新为它。
    */
-  pendingModel?: { modelId: string; reasoningEffort?: string; asDefault?: boolean }
+  pendingModel?: {
+    modelId: string
+    reasoningEffort?: string
+    asDefault?: boolean
+    contextWindow?: number
+  }
   /**
    * /memory modal listing: from x.ai/memory/list on open, kept fresh by the
    * memory_files notification and by toggle/delete replies (TUI

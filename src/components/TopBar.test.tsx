@@ -166,6 +166,26 @@ describe('WorkspaceBar', () => {
     expect(container.textContent).toContain('3.0K/89K')
   })
 
+  it('上下文芯片回退用会话选中的窗口，不是模型默认', () => {
+    // 选中 500k（模型默认 256k）：芯片分母必须跟着选中值，否则与模型菜单里
+    // 高亮的 chip 自相矛盾。
+    resetChat({
+      usage: { used: 3000 },
+      models: [
+        {
+          modelId: 'm1',
+          name: 'M1',
+          contextWindow: 256000,
+          contextWindows: [256000, 500000],
+          contextWindowSelection: 500000,
+        },
+      ],
+      modelName: 'M1',
+    })
+    const { container } = render(<WorkspaceBar />)
+    expect(container.textContent).toContain('3.0K/500K')
+  })
+
   it('McpChip 回调 onOpenMcp；RunningChip 切换任务条', () => {
     const onOpenMcp = vi.fn()
     resetChat({

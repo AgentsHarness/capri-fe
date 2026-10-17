@@ -15,6 +15,7 @@ import {
   TriangleAlert,
 } from 'lucide-react'
 import { useChatStore } from '../store/chat'
+import { activeContextWindow } from '../store/chat/model'
 import { ThemeOptions, ThemePicker } from './ThemePicker'
 import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS, chromeBtnClass } from '../theme/layout'
 import { SessionHistoryList } from './SessionHistoryList'
@@ -230,8 +231,19 @@ export function WorkspaceBar({
             used={usage?.used}
             size={
               usage?.size ??
-              (models.find((m) => m.name === modelName)?.contextWindow ??
-                models[0]?.contextWindow)
+              // 目录回退用「生效中的窗口」（会话选择优先），不能只看模型默认
+              // totalContextTokens——选了 500k 却显示 256k 会与菜单里高亮的
+              // chip 自相矛盾。
+              activeContextWindow(
+                models.find(
+                  (m) =>
+                    !!modelName &&
+                    (m.modelId.toLowerCase() === modelName.trim().toLowerCase() ||
+                      (m.name != null &&
+                        m.name.trim().toLowerCase() === modelName.trim().toLowerCase())),
+                ),
+              ) ??
+              models[0]?.contextWindow
             }
             agentPct={sessionStatus?.usedPercent}
             thresholdPct={sessionStatus?.autoCompactThresholdPercent}

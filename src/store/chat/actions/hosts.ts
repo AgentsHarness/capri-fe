@@ -11,7 +11,7 @@ import {
 import { clearSuppressedTools } from '../tools'
 import { resetToolFillCache } from '../historyFill'
 import { resetSessionState } from '../reset'
-import { modelLabel } from '../model'
+import { modelLabel, formatContextWindow } from '../model'
 import { appendEntry } from '../entries'
 import { pushToast } from '../../toast'
 import { refreshDefaultModeFlags } from '../modePersist'
@@ -306,7 +306,7 @@ export function hostActions(set: SetState, get: () => ChatState) {
   setModel: async (
     modelId: string,
     reasoningEffort?: string,
-    opts?: { asDefault?: boolean },
+    opts?: { asDefault?: boolean; contextWindow?: number },
   ) => {
     // Optimistic: agent broadcasts model_changed on success, but the
     // request itself is the authority for local state (TUI does the same).
@@ -321,6 +321,8 @@ export function hostActions(set: SetState, get: () => ChatState) {
       def?.id ??
       m?.reasoningEffort
     const name = m?.name || modelId
+    const ctxWin =
+      opts?.contextWindow && opts.contextWindow > 0 ? opts.contextWindow : undefined
     // 空状态（尚未建会话 / 切换窗口期）：host 的 set-model 必须带
     // sessionId（无 sid 直接 400，不会有发错会话的风险），此刻下发不了。
     // 记下选择并乐观更新 caption，newSession 锚定后按它补发——新对话里
@@ -333,6 +335,7 @@ export function hostActions(set: SetState, get: () => ChatState) {
           modelId,
           ...(effort ? { reasoningEffort: effort } : {}),
           ...(opts?.asDefault ? { asDefault: true } : {}),
+          ...(ctxWin ? { contextWindow: ctxWin } : {}),
         },
       })
       pushToast(`${modelLabel(name, effort)} 将在新对话生效`, { type: 'info' })
@@ -344,26 +347,46 @@ export function hostActions(set: SetState, get: () => ChatState) {
       // 档位被 agent 拒绝（模型已切换）：caption 不能留在那个 agent 根本没
       // 采用的档位上，回滚成切换前会话实际生效的档位，并把 host 的话弹成
       // toast——静默成功会让用户以为档位生效了。
-      const warning = (await transport.setModel(modelId, reasoningEffort, get().sessionId))
-        ?.warning
+      const sid = get().sessionId
+      const warning = (
+        await (ctxWin
+          ? transport.setModel(modelId, reasoningEffort, sid, ctxWin)
+          : transport.setModel(modelId, reasoningEffort, sid))
+      )?.warning
       // 回滚后的档位就是 caption 与时间线应显示的值：失败时是旧档位，成功
       // 时是本次请求的档位（未指定档位则为 undefined，由后续 models_update
       // 补上新模型的默认档）。
       const shownEffort = warning ? prevEffort : effort
-      set({
+      set((s) => ({
         modelName: name,
         reasoningEffort: shownEffort,
-      })
+        // 目录是窗口的唯一真源：把本次选择乐观写进该模型条目，菜单与上下文
+        // 芯片立刻跟上；host 随后 patch 缓存目录并 models_update 收敛。
+        // 未指定窗口（普通切模型）保持原值——agent 是 Preserve 语义，沿用
+        // 会话当前选择，新模型不支持时回落到它自己的默认窗口。
+        ...(ctxWin
+          ? {
+              models: s.models.map((x) =>
+                x.modelId === modelId
+                  ? { ...x, contextWindowSelection: ctxWin }
+                  : x,
+              ),
+              // 芯片的分母跟着窗口走，不等下一帧 session_status。
+              usage: { used: s.usage?.used, size: ctxWin },
+            }
+          : {}),
+      }))
       // Model switch feedback goes to the scrollback (session_event),
       // like the TUI's `Switched to <model>` pager toast. The host's
       // model_changed broadcast also prints its own line. Amber accent
       // (warning) makes the switch visible in the timeline.
+      const ctxSuffix = ctxWin ? ` · 上下文 ${formatContextWindow(ctxWin)}` : ''
       appendEntry(set, {
         kind: 'session_event',
         text:
           prevName && prevName !== name
-            ? `模型已从 ${modelLabel(prevName, prevEffort)} 切换到 ${modelLabel(name, shownEffort)}`
-            : `模型已切换到 ${modelLabel(name, shownEffort)}`,
+            ? `模型已从 ${modelLabel(prevName, prevEffort)} 切换到 ${modelLabel(name, shownEffort)}${ctxSuffix}`
+            : `模型已切换到 ${modelLabel(name, shownEffort)}${ctxSuffix}`,
         warning: true,
       })
       if (warning) {
@@ -385,7 +408,9 @@ export function hostActions(set: SetState, get: () => ChatState) {
       const sid = get().sessionId
       if (sid) {
         try {
-          await transport.setDefaultModel(modelId, reasoningEffort, sid)
+          await (ctxWin
+            ? transport.setDefaultModel(modelId, reasoningEffort, sid, ctxWin)
+            : transport.setDefaultModel(modelId, reasoningEffort, sid))
           pushToast('已设为默认模型')
         } catch (e) {
           pushToast(`设为默认失败: ${e instanceof Error ? e.message : String(e)}`)

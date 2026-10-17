@@ -14,6 +14,46 @@ export function modelDisplayName(getStore: () => ChatState, modelId: string): st
 export function modelLabel(name: string, effort?: string | null): string {
   return effort ? `${name}(${effort})` : name
 }
+
+/**
+ * Context-window menu for a model, empty when there is nothing to choose.
+ *
+ * Mirrors the TUI (`ModelState::context_window_options` + `has_selectable_windows`):
+ * the agent lists a model's selectable windows in `_meta.contextWindows` and
+ * only sends the key when there is more than one, so a single-entry list is
+ * not a menu. Hard-coding window sizes here instead would offer values the
+ * model does not declare, and `session/set_model` answers those with
+ * invalid_params — failing the whole switch, not just the window.
+ */
+export function contextWindowOptions(model?: ModelOption): number[] {
+  const windows = model?.contextWindows ?? []
+  return windows.length > 1 ? windows : []
+}
+
+/**
+ * The window in effect for a model: the session's explicit selection when the
+ * model still lists it, else the model's default (`totalContextTokens`).
+ * Mirrors `ModelState::get_context_window`.
+ */
+export function activeContextWindow(model?: ModelOption): number | undefined {
+  if (!model) return undefined
+  const selection = model.contextWindowSelection
+  if (selection != null && (selection === model.contextWindow || contextWindowOptions(model).includes(selection))) {
+    return selection
+  }
+  return model.contextWindow
+}
+
+/** `256k` / `1m` / raw count — the TUI's `format_window`. */
+export function formatContextWindow(tokens: number): string {
+  if (tokens >= 1_000_000 && tokens % 1_000_000 === 0) {
+    return `${tokens / 1_000_000}m`
+  }
+  if (tokens >= 1_000 && tokens % 1_000 === 0) {
+    return `${tokens / 1_000}k`
+  }
+  return String(tokens)
+}
 export const BUILTIN_REASONING_EFFORTS: ModelOption['reasoningEfforts'] = [
   { id: 'xhigh', label: 'xhigh', value: 'xhigh' },
   { id: 'high', label: 'high', value: 'high' },
@@ -156,6 +196,28 @@ export function normalizeEffortOption(raw: unknown): {
   }
 }
 
+/** Non-negative token count from a wire number or numeric string, else undefined. */
+function tokenCount(raw: unknown): number | undefined {
+  if (typeof raw === 'number') return Number.isFinite(raw) ? raw : undefined
+  if (typeof raw === 'string' && raw.trim() !== '' && !Number.isNaN(Number(raw))) {
+    return Number(raw)
+  }
+  return undefined
+}
+
+/**
+ * Selectable context windows from a model's meta (`contextWindows`).
+ * Entries that are not positive integers are dropped; an empty result means
+ * the model offers no choice.
+ */
+function normalizeContextWindows(raw: unknown): number[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const windows = raw
+    .map(tokenCount)
+    .filter((w): w is number => w != null && w > 0)
+  return windows.length > 0 ? windows : undefined
+}
+
 /** Model catalog from agentInfo._meta.modelState.availableModels. */
 export function extractModelsFromAgentInfo(info: unknown): ModelOption[] {
   if (!info || typeof info !== 'object') return []
@@ -216,14 +278,12 @@ export function extractModelsFromAgentInfo(info: unknown): ModelOption[] {
       agentType: typeof rm.agentType === 'string' ? rm.agentType : undefined,
       // TUI context bar total: model meta.totalContextTokens (may be a
       // number or a numeric string across crates).
-      contextWindow:
-        typeof rm.totalContextTokens === 'number'
-          ? rm.totalContextTokens
-          : typeof rm.totalContextTokens === 'string' &&
-              rm.totalContextTokens.trim() !== '' &&
-              !Number.isNaN(Number(rm.totalContextTokens))
-            ? Number(rm.totalContextTokens)
-            : undefined,
+      contextWindow: tokenCount(rm.totalContextTokens),
+      // Selectable windows (meta.contextWindows) and the session's own pick
+      // (meta.contextWindow). Neither is invented locally: the agent rejects
+      // an undeclared window and fails the whole model switch.
+      contextWindows: normalizeContextWindows(rm.contextWindows),
+      contextWindowSelection: tokenCount(rm.contextWindow),
       reasoningEffort:
         typeof rm.reasoningEffort === 'string'
           ? rm.reasoningEffort

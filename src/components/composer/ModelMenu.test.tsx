@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { ModelMenu, formatEffortLabel } from './ModelMenu'
 import type { useModelMenu } from './useModelMenu'
@@ -12,6 +12,10 @@ const sampleModels: ModelOption[] = [
       { id: 'low', label: 'Low Effort', value: 'low' },
       { id: 'high', label: 'High Effort', value: 'high', default: true },
     ],
+    // 多窗口菜单：模型自己声明的可选窗口（agent 只声明时才发这个键）。
+    contextWindow: 256000,
+    contextWindows: [256000, 500000],
+    contextWindowSelection: 500000,
   },
   {
     modelId: 'deepseek-chat',
@@ -19,14 +23,51 @@ const sampleModels: ModelOption[] = [
   },
 ]
 
+/**
+ * 累积点击用的一组模型：非选中行有两类要挑（档位 + 窗口），以及一行什么都
+ * 不用挑。单独一份，避免与 sampleModels 的同名 chip（low/256k）撞在一起
+ * 让 getByRole 命中多个元素。
+ */
+const accumulateModels: ModelOption[] = [
+  {
+    modelId: 'grok-4',
+    name: 'Grok 4',
+    reasoningEfforts: [
+      { id: 'low', label: 'low', value: 'low' },
+      { id: 'high', label: 'high', value: 'high', default: true },
+    ],
+    contextWindow: 256000,
+    contextWindows: [256000, 500000],
+    contextWindowSelection: 500000,
+  },
+  {
+    modelId: 'gemini-3',
+    name: 'Gemini 3',
+    reasoningEfforts: [
+      { id: 'med', label: 'med', value: 'med', default: true },
+      { id: 'ultra', label: 'ultra', value: 'ultra' },
+    ],
+    contextWindow: 1000000,
+    contextWindows: [400000, 1000000],
+  },
+  {
+    modelId: 'plain',
+    name: 'Plain Model',
+  },
+]
+
 describe('ModelMenu', () => {
   const switchModel = vi.fn()
+  const pickOption = vi.fn()
   const setSetAsDefault = vi.fn()
   const mockMenu = {
     reasoningEffort: 'high',
     setAsDefault: false,
     setSetAsDefault,
     switchModel,
+    pickOption,
+    draftEffort: () => undefined,
+    draftWindow: () => undefined,
     effortActive: (opt: { id: string; value: string }) => opt.value === 'high',
     modelActive: (m: ModelOption) => m.modelId === 'grok-4',
     modelOpen: true,
@@ -35,6 +76,12 @@ describe('ModelMenu', () => {
     modelBtnRef: { current: null },
     modelMenuPos: { bottom: 40, right: 20, maxH: 320, width: 280 },
   } as unknown as ReturnType<typeof useModelMenu>
+
+  beforeEach(() => {
+    switchModel.mockClear()
+    pickOption.mockClear()
+    setSetAsDefault.mockClear()
+  })
 
   it('具有独立的列表可滚动区（overflow-y-auto），外层保持 flex-col 与 gn-modal-panel', () => {
     const { container } = render(
@@ -60,7 +107,7 @@ describe('ModelMenu', () => {
     expect(scrollArea).toHaveTextContent('DeepSeek Chat')
   })
 
-  it('点击模型触发 switchModel，带默认或当前 effort', () => {
+  it('点击模型行触发 switchModel，带默认或当前 effort，不指定窗口', () => {
     render(
       <ModelMenu
         models={sampleModels}
@@ -73,7 +120,7 @@ describe('ModelMenu', () => {
     expect(switchModel).toHaveBeenCalledWith('deepseek-chat', undefined)
   })
 
-  it('点击 effort chip 切换到指定推理强度', () => {
+  it('点击 effort chip 切换到指定推理强度（不带窗口，沿用会话选择）', () => {
     render(
       <ModelMenu
         models={sampleModels}
@@ -169,5 +216,145 @@ describe('ModelMenu', () => {
     expect(checkbox).not.toBeChecked()
     fireEvent.click(checkbox)
     expect(setSetAsDefault).toHaveBeenCalledWith(true)
+  })
+
+  it('只渲染目录为该模型声明的窗口 chips（不写死尺寸）', () => {
+    render(
+      <ModelMenu
+        models={sampleModels}
+        pos={{ bottom: 40, right: 20, maxH: 320, width: 280 }}
+        menu={mockMenu}
+      />,
+    )
+
+    // grok-4 声明 [256000, 500000]：只出这两颗，绝不出现本地预设
+    // （1000k 从没被这个模型声明过，点它会被 agent 整次拒收）。
+    expect(screen.getByRole('button', { name: '256k' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '500k' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '1000k' })).not.toBeInTheDocument()
+    // deepseek-chat 没有 contextWindows → 它的行不出窗口 chips。
+    expect(screen.queryByText('默认')).not.toBeInTheDocument()
+  })
+
+  it('点某一行自己的窗口 chip → switchModel 带该窗口', () => {
+    render(
+      <ModelMenu
+        models={sampleModels}
+        pos={{ bottom: 40, right: 20, maxH: 320, width: 280 }}
+        menu={mockMenu}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '256k' }))
+    expect(switchModel).toHaveBeenCalledWith('grok-4', 'high', 256000)
+  })
+
+  it('非选中模型：点一个类别不切换，走 pickOption 累积', () => {
+    render(
+      <ModelMenu
+        models={accumulateModels}
+        pos={{ bottom: 40, right: 20, maxH: 320, width: 280 }}
+        menu={mockMenu}
+      />,
+    )
+
+    // Gemini 3 有档位 + 窗口两类 → categories=2。
+    fireEvent.click(screen.getByRole('button', { name: 'ultra' }))
+    expect(switchModel).not.toHaveBeenCalled()
+    expect(pickOption).toHaveBeenCalledWith('gemini-3', 2, { effort: 'ultra' }, 'med')
+
+    pickOption.mockClear()
+    fireEvent.click(screen.getByRole('button', { name: '1m' }))
+    expect(switchModel).not.toHaveBeenCalled()
+    expect(pickOption).toHaveBeenCalledWith('gemini-3', 2, { window: 1000000 }, 'med')
+  })
+
+  it('非选中模型：点名字在有类别要挑时不提交', () => {
+    render(
+      <ModelMenu
+        models={accumulateModels}
+        pos={{ bottom: 40, right: 20, maxH: 320, width: 280 }}
+        menu={mockMenu}
+      />,
+    )
+
+    fireEvent.click(screen.getByText('Gemini 3'))
+    expect(switchModel).not.toHaveBeenCalled()
+  })
+
+  it('非选中且无类别可挑的模型：点名字直接切换', () => {
+    render(
+      <ModelMenu
+        models={accumulateModels}
+        pos={{ bottom: 40, right: 20, maxH: 320, width: 280 }}
+        menu={mockMenu}
+      />,
+    )
+
+    fireEvent.click(screen.getByText('Plain Model'))
+    expect(switchModel).toHaveBeenCalledWith('plain', undefined)
+  })
+
+  it('选中模型：点 chip 仍立即切换（不累积）', () => {
+    render(
+      <ModelMenu
+        models={accumulateModels}
+        pos={{ bottom: 40, right: 20, maxH: 320, width: 280 }}
+        menu={mockMenu}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'low' }))
+    expect(switchModel).toHaveBeenCalledWith('grok-4', 'low')
+    expect(pickOption).not.toHaveBeenCalled()
+  })
+
+  it('只有单个窗口的模型不出菜单（TUI has_selectable_windows：len > 1）', () => {
+    const single: ModelOption[] = [
+      { modelId: 'solo', name: 'Solo', contextWindow: 500000, contextWindows: [500000] },
+    ]
+    render(
+      <ModelMenu
+        models={single}
+        pos={{ bottom: 40, right: 20, maxH: 320, width: 280 }}
+        menu={mockMenu}
+      />,
+    )
+
+    expect(screen.getByText('Solo')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '500k' })).not.toBeInTheDocument()
+  })
+
+  it('窗口 chip 不带「上下文」标签，只有按钮本身', () => {
+    render(
+      <ModelMenu
+        models={sampleModels}
+        pos={{ bottom: 40, right: 20, maxH: 320, width: 280 }}
+        menu={mockMenu}
+      />,
+    )
+
+    expect(screen.queryByText('上下文')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '256k' })).toBeInTheDocument()
+  })
+
+  it('激活模型的当前窗口 chip 高亮（contextWindowSelection 优先于默认值）', () => {
+    render(
+      <ModelMenu
+        models={sampleModels}
+        pos={{ bottom: 40, right: 20, maxH: 320, width: 280 }}
+        menu={mockMenu}
+      />,
+    )
+
+    // sampleModels 的 grok-4：默认 256000、会话选择 500000 → 高亮 500k
+    expect(screen.getByRole('button', { name: '500k' })).toHaveClass(
+      'border-gn-cyan',
+      'text-gn-cyan',
+    )
+    expect(screen.getByRole('button', { name: '256k' })).toHaveClass(
+      'border-gn-prompt-border/60',
+      'text-gn-muted',
+    )
   })
 })

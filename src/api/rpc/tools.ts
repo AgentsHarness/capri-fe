@@ -579,6 +579,7 @@ export const toolsRpc = {
     modelId: string,
     reasoningEffort?: string,
     sessionId?: string,
+    contextWindow?: number,
   ): Promise<{ warning?: string }> {
     const res = await this.fetch(this.url('/api/set-model'), {
       method: 'POST',
@@ -587,6 +588,7 @@ export const toolsRpc = {
         modelId,
         ...(reasoningEffort ? { reasoningEffort } : {}),
         ...(sessionId ? { sessionId } : {}),
+        ...(contextWindow && contextWindow > 0 ? { contextWindow } : {}),
       }),
     })
     const data = await res.json()
@@ -594,7 +596,13 @@ export const toolsRpc = {
     return typeof data.warning === 'string' && data.warning ? { warning: data.warning } : {}
   },
 
-  async setDefaultModel(this: TransportCore, modelId: string, reasoningEffort?: string, sessionId?: string) {
+  async setDefaultModel(
+    this: TransportCore,
+    modelId: string,
+    reasoningEffort?: string,
+    sessionId?: string,
+    contextWindow?: number,
+  ) {
     const res = await this.fetch(this.url('/api/set-default-model'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -602,6 +610,7 @@ export const toolsRpc = {
         modelId,
         ...(reasoningEffort ? { reasoningEffort } : {}),
         ...(sessionId ? { sessionId } : {}),
+        ...(contextWindow && contextWindow > 0 ? { contextWindow } : {}),
       }),
     })
     const data = await res.json()

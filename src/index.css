@@ -64,10 +64,23 @@
   --color-gn-path: #ff9e64;
   --color-gn-md-code: #3a95ab;
 
-  --font-ui: "SF Mono", "Menlo", "Cascadia Code", "Consolas", "PingFang SC",
-    "Hiragino Sans GB", "Microsoft YaHei", ui-monospace, monospace;
-  --font-prose: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  /* 字体栈顺序：macOS 专有字体 → 微软雅黑 → Windows 专有字体 → 通用族。
+     Windows 上 SF Mono / Menlo / PingFang / Hiragino 都不存在，UI、正文、
+     等宽三类字体因此全部落到微软雅黑，界面字体统一；macOS 上首个命中的
+     仍是原来那套。通用族关键字（ui-monospace / monospace / sans-serif）
+     必须留在末尾，浏览器命中通用族即就地在系统默认字体停止回落。 */
+  --font-ui: "SF Mono", "Menlo", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Cascadia Code", "Consolas", ui-monospace, monospace;
+  --font-prose: -apple-system, BlinkMacSystemFont, "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", sans-serif;
+  /* 不放 "Courier New"：AOSP fonts.xml 把它别名到 serif-monospace（Cutive Mono，
+     衬线等宽）。Chrome 安卓不认 ui-monospace，前面的具名字体又都没有，
+     栈会在 Courier New 停住，滚动区 font-mono 的标题就变成衬线。去掉后
+     安卓落到末尾的 monospace（Droid Sans Mono）；Windows 在微软雅黑处
+     已经停了，不受影响。 */
+  --font-mono: "SF Mono", "Menlo", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Cascadia Code", "Consolas", "Liberation Mono",
+    ui-monospace, monospace;
 }
 
 /* Smooth theme transitions on chrome surfaces */

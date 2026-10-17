@@ -277,6 +277,57 @@ describe('setModel 空状态（无会话）与已锚定两条路径', () => {
     expect(pushToast).toHaveBeenCalledWith('设为默认失败: boom')
   })
 
+  it('已锚定 + contextWindow → 转发 contextWindow，窗口写进目录并更新 usage.size', async () => {
+    const state = makeState({
+      sessionId: 'sess-1',
+      modelName: 'grok-3',
+      reasoningEffort: 'low',
+      entries: [],
+      models: CATALOG,
+    })
+    await bindWith(state).setModel('grok-4', 'high', { contextWindow: 500000 })
+    expect(transport.setModel).toHaveBeenCalledWith('grok-4', 'high', 'sess-1', 500000)
+    // 目录是窗口的唯一真源（菜单从它派生），不能另存一份会话级副本。
+    expect(state.models.find((m) => m.modelId === 'grok-4')?.contextWindowSelection).toBe(500000)
+    expect(state.usage?.size).toBe(500000)
+    const entry = state.entries[0]
+    expect(entry.kind === 'session_event' && entry.text).toContain('上下文 500k')
+  })
+
+  it('已锚定 + 未指定窗口（普通切模型）→ 不清目录里的旧窗口选择', async () => {
+    const state = makeState({
+      sessionId: 'sess-1',
+      entries: [],
+      models: [
+        { modelId: 'grok-3' },
+        { modelId: 'grok-4', name: 'Grok 4', contextWindowSelection: 500000, contextWindows: [256000, 500000] },
+      ],
+    })
+    await bindWith(state).setModel('grok-4', 'high')
+    // agent 是 Preserve 语义：省略 contextWindow 表示沿用会话当前选择，
+    // 本地不能把它清成「默认」——那会让菜单显示一个 agent 并未采用的值。
+    expect(transport.setModel).toHaveBeenCalledWith('grok-4', 'high', 'sess-1')
+    expect(state.models.find((m) => m.modelId === 'grok-4')?.contextWindowSelection).toBe(500000)
+  })
+
+  it('已锚定 + 设为默认 + contextWindow → 携带 contextWindow 落盘', async () => {
+    const state = makeState({ sessionId: 'sess-1', entries: [], models: CATALOG })
+    await bindWith(state).setModel('grok-4', 'low', { asDefault: true, contextWindow: 256000 })
+    expect(transport.setModel).toHaveBeenCalledWith('grok-4', 'low', 'sess-1', 256000)
+    expect(transport.setDefaultModel).toHaveBeenCalledWith('grok-4', 'low', 'sess-1', 256000)
+  })
+
+  it('空状态 + contextWindow → 记入 pendingModel', async () => {
+    const state = makeState({ sessionId: undefined, entries: [], models: CATALOG })
+    await bindWith(state).setModel('grok-4', 'low', { contextWindow: 1000000 })
+    expect(transport.setModel).not.toHaveBeenCalled()
+    expect(state.pendingModel).toEqual({
+      modelId: 'grok-4',
+      reasoningEffort: 'low',
+      contextWindow: 1000000,
+    })
+  })
+
   // host 的半成功：模型切了、档位被 agent 拒。必须弹 toast 并把 caption
   // 回滚到切换前的档位——不能留下一个 agent 没采用的档位。
   it('host 返回 warning（档位未生效）→ 弹 toast 并回滚档位，模型仍切', async () => {

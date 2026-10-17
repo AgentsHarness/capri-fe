@@ -445,7 +445,14 @@ export function sessionActions(set: SetState, get: () => ChatState) {
         await get().setModel(
           pendingModel.modelId,
           pendingModel.reasoningEffort,
-          pendingModel.asDefault ? { asDefault: true } : undefined,
+          pendingModel.asDefault || pendingModel.contextWindow
+            ? {
+                ...(pendingModel.asDefault ? { asDefault: true } : {}),
+                ...(pendingModel.contextWindow
+                  ? { contextWindow: pendingModel.contextWindow }
+                  : {}),
+              }
+            : undefined,
         )
       }
       // 状态栏 git 分支不会自己回来：resetSessionState 清掉了 gitInfo，

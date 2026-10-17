@@ -154,6 +154,19 @@ export type ModelOption = {
   reasoningEfforts?: ReasoningEffortOption[]
   /** Model context window tokens (meta.totalContextTokens) — TUI context bar total. */
   contextWindow?: number
+  /**
+   * Context windows this model lets the client pick (meta.contextWindows).
+   * The agent sends the key only when there is more than one choice, so an
+   * absent list means "no menu" — never invent options locally: the agent
+   * rejects a window the model does not declare (session/set_model answers
+   * invalid_params, failing the whole switch).
+   */
+  contextWindows?: number[]
+  /**
+   * The session's explicit window choice for this model
+   * (meta.contextWindow). Unset means the model default (`contextWindow`).
+   */
+  contextWindowSelection?: number
 }
 
 /**
