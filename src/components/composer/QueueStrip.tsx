@@ -17,6 +17,11 @@ type QueueStripProps = {
   onToggleMode?: () => void
   /** 模式切换中（禁用按钮避免重复快速触发）。 */
   togglingMode?: boolean
+  /**
+   * 访客只读：只列排队消息正文（含附图标记 / 全屏预览），不挂发送、
+   * 编辑、删除按钮，也不接受拖拽排序——那些都是写操作。
+   */
+  readonly?: boolean
 }
 
 /**
@@ -35,6 +40,7 @@ export function QueueStrip({
   headSteer,
   onToggleMode,
   togglingMode,
+  readonly = false,
 }: QueueStripProps) {
   // 行内 `[image N]` 标记点开的全屏预览（null = 关闭）。
   const [preview, setPreview] = useState<{ images: InlineImage[]; index: number } | null>(
@@ -92,13 +98,18 @@ export function QueueStrip({
               key={q.id}
               data-queue-idx={i}
               onMouseEnter={() => {
+                if (readonly) return
                 if (!queueDrag) setQueueSel(i)
               }}
               onMouseDown={() => {
+                // 访客只读：不夺取焦点（否则 j/k 会被队列键盘层吃掉）。
+                if (readonly) return
                 setQueueSel(i)
                 setQueueFocus(true)
               }}
               onPointerDown={(e) => {
+                // 访客只读：不接受拖拽排序（它是写操作）。
+                if (readonly) return
                 // 按钮上按住不触发整行拖拽（按钮照常点）。
                 if ((e.target as HTMLElement).closest('button')) return
                 onQueueGripPointerDown(i, e)
@@ -112,7 +123,9 @@ export function QueueStrip({
                 }
               }}
               style={{ WebkitTouchCallout: 'none' }}
-              className={`relative flex min-h-5 shrink-0 cursor-grab items-center gap-1.5 rounded py-0.5 ${
+              className={`relative flex min-h-5 shrink-0 items-center gap-1.5 rounded py-0.5 ${
+                readonly ? '' : 'cursor-grab'
+              } ${
                 selected || editing ? 'bg-gn-bg-highlight/70' : ''
               } ${dragging ? 'cursor-grabbing opacity-40' : ''}`}
             >
@@ -125,10 +138,17 @@ export function QueueStrip({
                   aria-hidden
                 />
               ) : null}
+              {/* 抓手图标常驻：访客只读时也保留，正文左边距与管理员一致。
+                  只读态不带拖拽钩子（data-queue-grip）、光标与 tooltip——
+                  图标在，但它不是可抓的东西。 */}
               <span
-                data-queue-grip
-                className="inline-flex h-6 w-5 sm:h-[1.2em] sm:w-[1.25em] shrink-0 items-center justify-center touch-none text-gn-gray hover:text-gn-fg active:text-gn-cyan cursor-grab active:cursor-grabbing select-none"
-                title="拖拽排序"
+                data-queue-grip={readonly ? undefined : ''}
+                className={`inline-flex h-6 w-5 sm:h-[1.2em] sm:w-[1.25em] shrink-0 items-center justify-center select-none ${
+                  readonly
+                    ? 'text-gn-gutter'
+                    : 'touch-none text-gn-gray hover:text-gn-fg active:text-gn-cyan cursor-grab active:cursor-grabbing'
+                }`}
+                title={readonly ? undefined : '拖拽排序'}
                 aria-hidden
               >
                 <GripVertical size={17} className="h-[17px] w-[17px] sm:h-[13px] sm:w-[13px]" strokeWidth={2.25} />
@@ -137,6 +157,7 @@ export function QueueStrip({
                 className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden text-gn-gray"
                 title={q.degraded ? `发送失败：${q.errorText ?? ''}` : rowText}
                 onDoubleClick={() => {
+                  if (readonly) return
                   setQueueSel(i)
                   setQueueFocus(true)
                   usePromptQueue.getState().startEdit(i)
@@ -171,7 +192,7 @@ export function QueueStrip({
                   </span>
                 ) : null}
               </div>
-              {i === 0 && !q.degraded ? (
+              {!readonly && i === 0 && !q.degraded ? (
                 <button
                   type="button"
                   disabled={togglingMode}
@@ -193,36 +214,42 @@ export function QueueStrip({
                   {headSteer ? '引导' : '队列'}
                 </button>
               ) : null}
-              <button
-                type="button"
-                onClick={() => sendQueuedItem(q.id)}
-                className="shrink-0 rounded px-1.5 py-1 sm:py-[2px] min-h-6 sm:min-h-0 text-gn-cyan hover:bg-gn-bg-highlight"
-                title="立即发送这条"
-              >
-                <span className="hidden sm:inline">立即发送</span>
-                <span className="sm:hidden">发送</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setQueueSel(i)
-                  setQueueFocus(true)
-                  usePromptQueue.getState().startEdit(i)
-                }}
-                className={actionClass}
-                title="弹窗编辑这条排队消息"
-              >
-                编辑
-              </button>
-              <button
-                type="button"
-                onClick={() => usePromptQueue.getState().removeAt(q.id)}
-                className="shrink-0 rounded px-1.5 py-1 sm:py-[2px] min-h-6 sm:min-h-0 text-gn-gray hover:bg-gn-bg-highlight hover:text-gn-red active:text-gn-red"
-                aria-label="删除这条排队消息"
-                title="删除"
-              >
-                删除
-              </button>
+              {/* 访客只读：队首模式 / 立即发送 / 编辑 / 删除都是写操作，
+                  只保留正文与附图预览。 */}
+              {readonly ? null : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => sendQueuedItem(q.id)}
+                    className="shrink-0 rounded px-1.5 py-1 sm:py-[2px] min-h-6 sm:min-h-0 text-gn-cyan hover:bg-gn-bg-highlight"
+                    title="立即发送这条"
+                  >
+                    <span className="hidden sm:inline">立即发送</span>
+                    <span className="sm:hidden">发送</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQueueSel(i)
+                      setQueueFocus(true)
+                      usePromptQueue.getState().startEdit(i)
+                    }}
+                    className={actionClass}
+                    title="弹窗编辑这条排队消息"
+                  >
+                    编辑
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => usePromptQueue.getState().removeAt(q.id)}
+                    className="shrink-0 rounded px-1.5 py-1 sm:py-[2px] min-h-6 sm:min-h-0 text-gn-gray hover:bg-gn-bg-highlight hover:text-gn-red active:text-gn-red"
+                    aria-label="删除这条排队消息"
+                    title="删除"
+                  >
+                    删除
+                  </button>
+                </>
+              )}
             </div>
           )
         })}

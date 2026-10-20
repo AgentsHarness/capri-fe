@@ -117,8 +117,56 @@ describe('client_request 会话归属', () => {
   })
 })
 
-describe('client_request_resolved 退出 plan', () => {
-  it('另一端批准 exit_plan_mode → 清掉本页 plan 标记', () => {
+describe('访客：卡片不挂载，只重拉只读状态', () => {
+  const guestState = (patch: Partial<ChatState> = {}): ChatState =>
+    makeState({
+      guestIdentity: {
+        role: 'guest',
+        guest: { id: 'g1', label: '给小王', expiresAt: 0 },
+        sessions: [],
+      },
+      refreshGuestStatus: vi.fn().mockResolvedValue(undefined),
+      ...patch,
+    } as Partial<ChatState>)
+
+  it('client_request → 不建 pending 卡，只刷新状态', () => {
+    const state = guestState()
+    const { set, get } = bind(state)
+    handleSessionCtrlEvent(set, get, reqEvent({ sessionId: 's1' }))
+    expect(state.pending).toEqual([])
+    expect(state.xaiRequests).toEqual([])
+    expect(state.refreshGuestStatus).toHaveBeenCalled()
+  })
+
+  it('client_request 属于别的会话 → 不刷新本会话状态', () => {
+    const state = guestState()
+    const { set, get } = bind(state)
+    handleSessionCtrlEvent(set, get, reqEvent({}, 's2'))
+    expect(state.refreshGuestStatus).not.toHaveBeenCalled()
+  })
+
+  it('client_request_resolved → 状态行从「在等」收回', () => {
+    const state = guestState()
+    const { set, get } = bind(state)
+    handleSessionCtrlEvent(set, get, {
+      type: 'client_request_resolved',
+      requestId: 'r1',
+      sessionId: 's1',
+    } as AcpEvent)
+    expect(state.refreshGuestStatus).toHaveBeenCalled()
+  })
+
+  it('管理员壳行为不变：照常入卡、不刷新访客状态', () => {
+    const refresh = vi.fn().mockResolvedValue(undefined)
+    const state = makeState({ refreshGuestStatus: refresh } as Partial<ChatState>)
+    const { set, get } = bind(state)
+    handleSessionCtrlEvent(set, get, reqEvent({ sessionId: 's1' }))
+    expect(state.pending.map((p) => p.requestId)).toEqual(['r1'])
+    expect(refresh).not.toHaveBeenCalled()
+  })
+})
+
+describe('client_request_resolved 退出 plan', () => {  it('另一端批准 exit_plan_mode → 清掉本页 plan 标记', () => {
     const state = makeState({
       planMode: true,
       permissionMode: 'plan',

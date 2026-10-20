@@ -1062,6 +1062,8 @@ function SubagentTimeline({
   now: number
   prompt: string
 }) {
+  // 访客只读：迷你时间线里的 cancel / kill / fork 等写入口一并藏掉。
+  const guest = useChatStore((s) => s.guestIdentity != null)
   const fetchSubagentView = useChatStore((s) => s.fetchSubagentView)
   const loadMoreSubagentView = useChatStore((s) => s.loadMoreSubagentView)
   const view = useChatStore((s) =>
@@ -1371,6 +1373,7 @@ function SubagentTimeline({
                   pendingFreeze={false}
                   now={now}
                   actions={actions}
+                  readonly={guest}
                 />
               )}
               <div className="text-[11px] text-gn-muted">
@@ -1450,6 +1453,7 @@ function SubagentTimeline({
                     actions={actions}
                     patch={foldPatch(e)}
                     streamBodyRef={miniStreamBodyRef}
+                    readonly={guest}
                   />
                 )
               })}

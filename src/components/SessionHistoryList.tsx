@@ -11,6 +11,7 @@ import {
   Pencil,
   Pin,
   Plus,
+  Share2,
   Trash2,
   X,
 } from 'lucide-react'
@@ -40,6 +41,8 @@ import {
   type OrderSeed,
 } from '../store/historyOrder'
 import { scrollAncestor, useScrollAnchor } from '../hooks/useScrollAnchor'
+import { transport } from '../api/client'
+import { openShareGuest } from './shareGuestTarget'
 
 /** 根据 data-gkey 属性在根容器下查找指定工作区分组元素。 */
 function findGroupEl(root: HTMLElement | null, key: string): HTMLElement | null {
@@ -171,7 +174,22 @@ export function SessionHistoryList() {
   const setCollapsePref = useHistoryOrder((s) => s.setCollapse)
   // 锚点只在同一台 host 内有意义：换 host 即整表重锚（见 historyOrder）。
   const selectedHostId = useChatStore((s) => s.selectedHostId)
+  const hostName = useChatStore((s) => s.hostName)
   const hostScope = selectedHostId ?? 'local'
+  /**
+   * 「分享只读链接」的可用条件：hub 模式 + 已登录（有门禁令牌）+ 选中了
+   * 一台 host。local 模式没有 hub 承载白名单，直接禁用并给出提示。
+   * 模式取自 store（由启动链写入），列表渲染不依赖 transport 的方法面。
+   */
+  const connMode = useChatStore((s) => s.mode)
+  const hasToken = !!transport.getAccessToken()
+  const canShare = connMode === 'hub' && hasToken && !!selectedHostId
+  const shareHint =
+    connMode !== 'hub'
+      ? '仅 Hub 模式支持分享'
+      : !hasToken
+        ? '需要先登录 Hub'
+        : '需要先选中一台 Host'
   /** 列表根节点（其可滚动祖先是侧栏 / 移动端下拉的滚动容器）。 */
   const listRootRef = useRef<HTMLDivElement>(null)
   /** 组「默认是否收起」的钉住表：本次挂载内算一次就不再随时间翻转。 */
@@ -1177,6 +1195,28 @@ export function SessionHistoryList() {
                       <Pencil size={14} strokeWidth={2.5} />
                     </span>{' '}
                     重命名
+                  </MenuItem>
+                  <MenuItem
+                    disabled={!canShare}
+                    disabledTitle={shareHint}
+                    onClick={() => {
+                      const host = useChatStore
+                        .getState()
+                        .hosts.find((h) => h.hostId === selectedHostId)
+                      openShareGuest({
+                        hostId: selectedHostId ?? '',
+                        hostName: host?.hostName || hostName || 'Host',
+                        sessionId: menu.row.sessionId,
+                        cwd: menu.row.cwd || '',
+                        ...(menu.row.title ? { title: menu.row.title } : {}),
+                      })
+                      closeMenu()
+                    }}
+                  >
+                    <span aria-hidden className="inline-block w-4 shrink-0 text-center">
+                      <Share2 size={14} strokeWidth={2.5} />
+                    </span>{' '}
+                    分享只读链接
                   </MenuItem>
                   <MenuItem
                     onClick={() => applyMark(() => toggleSessionPin(menu.row.sessionId))}

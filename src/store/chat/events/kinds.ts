@@ -268,6 +268,7 @@ export const GLOBAL_EVENT_TYPES: ReadonlySet<string> = new Set<string>([
   'modes_update',
   'sessions_changed',
   'hosts_changed',
+  'subscribers_changed',
   'prefs_changed',
   'mcp_tools_changed',
   'mcp_servers_updated',

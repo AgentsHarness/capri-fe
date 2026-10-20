@@ -31,6 +31,8 @@ import { xaiActions } from './actions/xai'
 import { liveTaskActions } from './actions/liveTasks'
 import { sessionActions } from './actions/session'
 import { viewerActions } from './actions/viewer'
+import { guestActions } from './actions/guest'
+import { blockGuestWrite } from './guestMode'
 import { KEY } from '../../lib/keys'
 
 export const useChatStore = create<ChatState>((setRaw, get, api) => {
@@ -56,6 +58,7 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
   awaitingNext: false,
   hosts: [],
   mode: 'local',
+  guestSessions: [],
   sessions: [],
   workspaces: [],
   workspaceLoading: false,
@@ -121,7 +124,11 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
     })),
   scheduledTasks: [],
   rewindOpen: false,
-  openRewind: () => set({ rewindOpen: true }),
+  openRewind: () => {
+    // 访客只读：rewind 是写操作（会改会话与文件），不打开选择器。
+    if (blockGuestWrite(get())) return
+    set({ rewindOpen: true })
+  },
   closeRewind: () => set({ rewindOpen: false }),
   stashedDraft: null,
   setStashedDraft: (text) => set({ stashedDraft: text }),
@@ -315,6 +322,8 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
   ...sessionActions(set, get),
 
   ...viewerActions(set, get),
+
+  ...guestActions(set, get),
 }})
 
 // ── prompt-queue session tracking ──────────────────────────────────
@@ -328,5 +337,11 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
 useChatStore.subscribe((state, prev) => {
   if (state.sessionId !== prev.sessionId) {
     usePromptQueue.getState().switchSession(state.sessionId)
+    // 在线订阅者面板上的「正在查看」列：只有本端会知道当前视图锚在哪个
+    // 会话（hub 收到的是页面主动声明）。访客走 sendGuestSubscribe 那条
+    // 带白名单校验的路径，这里只在管理员身份下上报。
+    if (state.mode === 'hub' && state.guestIdentity == null) {
+      transport.reportViewingSession(state.sessionId ?? null)
+    }
   }
 })

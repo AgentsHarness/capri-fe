@@ -12,6 +12,7 @@ import { assistRpc } from './assist'
 import { memoryRpc } from './memory'
 import { usageRpc } from './usage'
 import { agentsRpc } from './agents'
+import { guestTokensRpc } from './guestTokens'
 
 export const rpcMixins = {
   ...sessionsRpc,
@@ -28,6 +29,7 @@ export const rpcMixins = {
   ...memoryRpc,
   ...usageRpc,
   ...agentsRpc,
+  ...guestTokensRpc,
 }
 
 export type RpcApi = {

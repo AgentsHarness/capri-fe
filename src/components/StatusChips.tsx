@@ -36,9 +36,12 @@ export function ContextChip({
   size,
   agentPct,
   thresholdPct,
+  readonly = false,
 }: {
   used?: number
   size?: number
+  /** 访客（只读）：渲染成静态文本，不打开 /context 面板（该面板未挂载）。 */
+  readonly?: boolean
   /** agent 自报的已用百分比（session_status.context_window.used_percentage）。
    *  有则以它为准：size 可能来自模型目录（猜测值），百分比是 agent 口径。 */
   agentPct?: number
@@ -64,6 +67,17 @@ export function ContextChip({
   // (TUI progress_bar_spans): filled cells in the urgency color, remaining
   // track in a dim shade, so both the used and the total parts stay visible.
   const pctStr = `${pct.toFixed(1)}%`.padStart(5, ' ')
+  if (readonly) {
+    return (
+      <span
+        className="shrink-0 whitespace-nowrap px-1 py-0.5 text-left font-mono text-[12px] leading-none tabular-nums"
+        style={{ color }}
+        title={`上下文 ${Math.round(pct)}% (${fmtTok(used)} / ${fmtTok(size)})`}
+      >
+        {defaultStr}
+      </span>
+    )
+  }
   return (
     <button
       type="button"
@@ -149,6 +163,7 @@ export function TodoChip({
     completed = Number(goalState?.completed_deliverables ?? 0)
     objective = typeof goalState?.objective === 'string' ? goalState.objective : ''
   }
+  // 展开面板只是读出待办列表（没有任何写入口），访客同样可以展开。
   const expandable = !!todos && todos.length > 0
   // Locate the sticky bar wrapper once the panel is about to open.
   useLayoutEffect(() => {
@@ -430,9 +445,12 @@ const GOAL_BUDGET_BAR_W = 14
 export function GoalChip({
   goalState,
   contextUsed,
+  readonly = false,
 }: {
   goalState?: Record<string, unknown>
   contextUsed?: number
+  /** 访客（只读）：只显示状态，不打开 goal 面板（面板里的暂停/恢复/清除是写操作）。 */
+  readonly?: boolean
 }) {
   // Panel visibility lives in the store so the GoalChip can toggle the
   // goal detail panel.
@@ -491,6 +509,25 @@ export function GoalChip({
   const currentRole = typeof goalState.current_subagent_role === 'string' ? goalState.current_subagent_role : ''
   const lastEvent = typeof goalState.last_event === 'string' ? goalState.last_event : ''
   const lastEventDetail = typeof goalState.last_event_detail === 'string' ? goalState.last_event_detail : ''
+
+  // 访客：同一行状态读数，静态文本（不挂下拉）。
+  if (readonly) {
+    return (
+      <span
+        className={`flex min-w-0 items-center whitespace-nowrap rounded px-1 py-0.5 font-mono text-[12px] leading-none tabular-nums ${chipClass}`}
+        title={objective ? `目标: ${objective}` : '目标状态'}
+      >
+        {active && (
+          <span className="mr-1 shrink-0" aria-hidden>
+            {SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length]}
+          </span>
+        )}
+        <span className="truncate max-w-[min(58vw,26rem)] lg:max-w-none">
+          [Goal: {label}] {tokensDisplay} {fmtElapsedCompact(elapsed)}
+        </span>
+      </span>
+    )
+  }
 
   return (
     <div className="relative" ref={wrapRef}>
@@ -720,7 +757,7 @@ export function RunningChip({
  * brings it back. Clicking a row still opens its log (the host rebuilds it
  * from disk), so nothing is hidden — only the false affordance is.
  */
-export function DetachedChip() {
+export function DetachedChip({ readonly = false }: { readonly?: boolean }) {
   const tasks = useChatStore((s) => s.detachedTasks)
   const dismiss = useChatStore((s) => s.dismissDetachedHint)
   const openTaskViewer = useChatStore((s) => s.openTaskViewer)
@@ -732,6 +769,22 @@ export function DetachedChip() {
 
   const label = (t: (typeof tasks)[number]) =>
     t.monitorDescription || t.description || t.command || `Task ${t.taskId.slice(0, 8)}`
+
+  // 访客只读：同一份计数，静态文本（下拉里的「知道了」是本地写，且整块
+  // 面板属于管理员视图偏好）。
+  if (readonly) {
+    return (
+      <span
+        className="inline-flex shrink-0 items-center whitespace-nowrap rounded px-1 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-warning"
+        title={`发现 ${tasks.length} 个仍在运行、但不属于当前 Grok 进程的后台命令（此处无法终止）`}
+      >
+        <span className="mr-1 inline-flex shrink-0 items-center" aria-hidden>
+          <Diamond size={12} strokeWidth={2} />
+        </span>
+        {tasks.length}
+      </span>
+    )
+  }
 
   return (
     <div className="relative shrink-0" ref={anchorRef}>
@@ -819,10 +872,16 @@ export function RunningTasksBar({
   entries,
   topTasks,
   open,
+  readonly = false,
 }: {
   entries: ScrollEntry[]
   topTasks: TopTask[]
   open: boolean
+  /**
+   * 访客（只读）：任务行照常可点开日志（只读），但行内的 kill / cancel /
+   * 调度任务 delete 一律不渲染。
+   */
+  readonly?: boolean
 }) {
   const running = filterRunningEntries(entries)
   const count = running.length + topTasks.length
@@ -885,6 +944,7 @@ export function RunningTasksBar({
                 )}
                 <KillTaskAction
                   onKill={(notifyAgent) => void killTask(t.taskId, { notifyAgent })}
+                  hidden={readonly}
                 />
               </div>
             ))}
@@ -921,7 +981,7 @@ export function RunningTasksBar({
                     {e.detail}
                   </span>
                 )}
-                {e.kind === 'subagent' && e.subagentId && (
+                {e.kind === 'subagent' && e.subagentId && !readonly && (
                   <InlineAction
                     label="cancel"
                     title="x.ai/subagent/cancel"
@@ -931,6 +991,7 @@ export function RunningTasksBar({
                 {e.kind === 'bg_task' && e.taskId && (
                   <KillTaskAction
                     onKill={(notifyAgent) => void killTask(e.taskId!, { notifyAgent })}
+                    hidden={readonly}
                   />
                 )}
               </div>
@@ -970,11 +1031,13 @@ export function RunningTasksBar({
                     {formatScheduledFire(t.nextFireAt)}
                   </span>
                 )}
-                <InlineAction
-                  label="delete"
-                  title="x.ai/scheduler/delete"
-                  onRun={() => void deleteScheduledTask(t.taskId)}
-                />
+                {!readonly && (
+                  <InlineAction
+                    label="delete"
+                    title="x.ai/scheduler/delete"
+                    onRun={() => void deleteScheduledTask(t.taskId)}
+                  />
+                )}
               </div>
             ))}
           </>
@@ -1021,11 +1084,22 @@ function isMcpConnected(status?: string): boolean {
  * stream (store mcpServers). Hidden until the stream reports servers;
  * click opens the MCP panel.
  */
-export function McpChip({ onOpen }: { onOpen: () => void }) {
+export function McpChip({ onOpen, readonly = false }: { onOpen: () => void; readonly?: boolean }) {
   const mcpServers = useChatStore((s) => s.mcpServers)
   const total = mcpServers.length
   if (total === 0) return null
   const connected = mcpServers.filter((s) => isMcpConnected(s.status)).length
+  if (readonly) {
+    return (
+      <span
+        className="inline-flex shrink-0 items-center whitespace-nowrap rounded px-1 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-gray-dim"
+        title={`MCP 服务器 ${connected}/${total} 已连接`}
+      >
+        <span className="hidden sm:inline">MCP</span>
+        <span>({connected}/{total})</span>
+      </span>
+    )
+  }
   return (
     <button
       type="button"
@@ -1043,6 +1117,9 @@ export function McpChip({ onOpen }: { onOpen: () => void }) {
  * `+N` queue badge — TUI queue item (accent_user, after the context
  * chip): mid-turn queued prompt count. Hidden at 0; click expands /
  * collapses the composer's inline queue strip (no popup).
+ *
+ * 展开/收起只是本页的显示开关：访客同样能点（队列条在只读态里不挂
+ * 发送 / 编辑 / 删除 / 拖拽）。
  */
 export function QueueBadge() {
   const queue = usePromptQueue((s) => s.queue)

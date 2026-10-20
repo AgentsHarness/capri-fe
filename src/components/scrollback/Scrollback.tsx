@@ -34,7 +34,14 @@ import { useWorkspaceBar } from './useWorkspaceBar'
  * selection (j/k), ←/→ collapse/expand, full accent matrix
  * (tool families, finish flash, pending freeze, per-row wave).
  */
-export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
+export function Scrollback({
+  onOpenMcp,
+  guest = false,
+}: {
+  onOpenMcp?: () => void
+  /** 访客只读壳：空状态不挂目录选择器，改为一句话说明。 */
+  guest?: boolean
+}) {
   const entries = useChatStore((s) => s.entries)
   // No active session (deleted the current one / fresh boot): show the
   // empty-state hint instead of a blank scrollback.
@@ -377,6 +384,7 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
         onOpenMcp={onOpenMcp}
         topRef={workspaceRef}
         fadeHidden={historyLoading}
+        guest={guest}
       />
       {/* Fade-in wrapper for freshly loaded history content — see the
           contentVisible layout effect above. transition-opacity is applied
@@ -476,8 +484,20 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
         {entries.length === 0 && !sessionId && !historyLoading && (
           // Empty state — current session was deleted (or nothing active):
           // a plain blank scrollback reads as a hang, so show the workspace
-          // picker instead.
-          <EmptyStatePicker />
+          // picker instead. 访客没有「新建会话」这回事，只给一句说明。
+          guest ? (
+            <div className="flex min-h-[160px] items-center justify-center px-3 text-center text-[12.5px] text-gn-muted">
+              当前会话暂无内容
+            </div>
+          ) : (
+            <EmptyStatePicker />
+          )
+        )}
+        {/* 访客 + 已锚定会话但历史为空：多为白名单会话在 Host 上已不存在。 */}
+        {guest && entries.length === 0 && !!sessionId && !historyLoading && !historyLoadError && (
+          <div className="flex min-h-[160px] items-center justify-center px-3 text-center text-[12.5px] text-gn-muted">
+            该会话在 Host 上已不存在，或暂无内容
+          </div>
         )}
         {/* 连续独立 image 行聚合为一个画廊组：单行等高 flex 行（items-end、
             nowrap）、点击任意一张打开组级 lightbox（‹ › / ← → 组内切换）。
@@ -566,6 +586,7 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
                   dense={dense}
                   densePrev={densePrev}
                   denseNext={denseNext}
+                  readonly={guest}
                   streamBodyRef={
                     row.entry.kind === 'thought' &&
                     row.entry.id === streamingThoughtId
@@ -630,6 +651,7 @@ export function Scrollback({ onOpenMcp }: { onOpenMcp?: () => void }) {
                           onOpenImage={item.onOpenImage}
                           noFrame
                           galleryItem
+                          readonly={guest}
                         />
                       </div>
                     )

@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
 import { LocalTransport } from './localTransport'
+import { loadGuestToken } from './credentials'
 import { clearHostRegistryHandoff, rememberHostRegistry } from './rpc/hosts'
 import type { HubPrefsDoc } from './types'
 
@@ -1185,4 +1186,270 @@ describe('hub 按 host 分流（/ws/fe ?host= + subscribe）', () => {
     expect(seen).toHaveLength(1)
     expect((seen[0] as { hostId?: string }).hostId).toBe('A')
   })
+})
+
+/** 访客模式：传输层恒走 hub 中继、WS 带 session、事件绕过排序引擎。 */
+describe('访客模式传输面', () => {
+  class GuestWS {
+    static readonly CONNECTING = 0
+    static readonly OPEN = 1
+    static readonly CLOSING = 2
+    static readonly CLOSED = 3
+    readyState = 1
+    binaryType = 'blob'
+    onopen: (() => void) | null = null
+    onmessage: ((m: MessageEvent) => void) | null = null
+    onclose: (() => void) | null = null
+    onerror: (() => void) | null = null
+    sent: string[] = []
+    url = ''
+    constructor(url: string) {
+      this.url = url
+    }
+    send(data: string) {
+      this.sent.push(data)
+    }
+    close() {
+      this.readyState = 3
+    }
+  }
+
+  let instances: GuestWS[] = []
+  let fetchUrls: string[] = []
+  let fetchInits: Array<RequestInit | undefined> = []
+
+  const guestIdentity = {
+    role: 'guest' as const,
+    guest: { id: 'g_1', label: '给小王', expiresAt: 0 },
+    sessions: [
+      { hostId: 'h1', hostName: 'H1', sessionId: 's1', cwd: '/w1', title: 'one' },
+      { hostId: 'h2', hostName: 'H2', sessionId: 's2', cwd: '/w2', title: 'two' },
+    ],
+  }
+
+  beforeEach(() => {
+    instances = []
+    fetchUrls = []
+    fetchInits = []
+    vi.stubGlobal('EventSource', class {
+      static readonly OPEN = 1
+      readyState = 1
+      onopen: (() => void) | null = null
+      onmessage: ((m: MessageEvent) => void) | null = null
+      onerror: (() => void) | null = null
+      constructor(_url: string) {}
+      close() {}
+    })
+    vi.stubGlobal(
+      'WebSocket',
+      class extends GuestWS {
+        constructor(url: string) {
+          super(url)
+          instances.push(this)
+        }
+      },
+    )
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        fetchUrls.push(url)
+        fetchInits.push(init)
+        if (url.endsWith('/api/ws-ticket')) {
+          return new Response(JSON.stringify({ ok: true, ticket: 'tk', role: 'guest' }), {
+            status: 200,
+          })
+        }
+        return new Response(JSON.stringify({ ok: true, events: [] }), { status: 200 })
+      }),
+    )
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    localStorage.clear()
+  })
+
+  const flush = async () => {
+    for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 0))
+  }
+
+  function guestTransport() {
+    const t = new LocalTransport('', 'g_guest_token')
+    t.setConnectionMode('hub', 'https://hub.example')
+    t.setGuestMode(guestIdentity)
+    return t
+  }
+
+  it('setGuestMode 把选中 host 夹到白名单第一条', () => {
+    const t = guestTransport()
+    expect(t.isGuest()).toBe(true)
+    expect(t.getHost()).toBe('h1')
+  })
+
+  it('URL 恒为 hub 中继 + ?host=<选中 host>，即使本机有近路也不走近路', () => {
+    const t = guestTransport()
+    // 伪造一条本机近路：访客也必须无视它
+    ;(t as unknown as { localRoutes: Map<string, unknown> }).localRoutes.set('h1', {
+      base: 'http://127.0.0.1:8765',
+      port: 8765,
+      authRequired: false,
+      probe: 'open',
+    })
+    expect(t.isLocalDirect()).toBe(false)
+    // 带 ?session= 让 hub 把 /api/status 钉到访客正在看的会话
+    expect(t.apiUrl('/api/session-updates')).toBe(
+      'https://hub.example/api/session-updates?host=h1&session=s1',
+    )
+    t.setHost('h2')
+    expect(t.apiUrl('/api/session-updates')).toBe(
+      'https://hub.example/api/session-updates?host=h2&session=s1',
+    )
+  })
+
+  it('discoverLocalHost / verifyLocalRoute / probeLocalRoute 直接短路（不撞本机端口）', async () => {
+    const t = guestTransport()
+    expect(await t.discoverLocalHost()).toBeNull()
+    await t.verifyLocalRoute('h1')
+    expect(await t.probeLocalRoute('h1')).toBe('rejected')
+    expect(fetchUrls.filter((u) => u.includes('127.0.0.1'))).toEqual([])
+  })
+
+  it('WS 建连带 ?host= 与 ?session=，切换会话发带 session 的 subscribe 帧', async () => {
+    const t = guestTransport()
+    t.connect()
+    await flush()
+    const ws = instances[instances.length - 1]
+    expect(ws).toBeTruthy()
+    const u = new URL(ws.url)
+    expect(u.searchParams.get('host')).toBe('h1')
+    expect(u.searchParams.get('session')).toBe('s1')
+
+    ws.onopen?.()
+    t.sendGuestSubscribe('h2', 's2')
+    const frames = ws.sent.map((s) => JSON.parse(s) as Record<string, unknown>)
+    expect(frames).toContainEqual({ v: 1, type: 'subscribe', host: 'h2', session: 's2' })
+    // 换 host 后没有新建连接（同一 WS 改订阅）
+    expect(instances).toHaveLength(1)
+  })
+
+  it('events 直接 emit，不排序、不补拉（seq 不连续也不堵）', async () => {
+    const t = guestTransport()
+    t.connect()
+    await flush()
+    const ws = instances[instances.length - 1]
+    ws.onopen?.()
+    const seen: Array<{ type: string; text?: string }> = []
+    t.onEvent((ev) => seen.push(ev as { type: string; text?: string }))
+    fetchUrls.length = 0
+
+    // seq 从 900 跳到 905：按排序引擎会等待前驱，访客必须直接收到
+    ws.onmessage?.({
+      data: JSON.stringify({
+        v: 1,
+        type: 'events',
+        events: [
+          { type: 'chunk', hostId: 'h1', sessionId: 's1', seq: 900, text: 'a' },
+          { type: 'chunk', hostId: 'h1', sessionId: 's1', seq: 905, text: 'b' },
+        ],
+      }),
+    } as MessageEvent)
+    await flush()
+
+    expect(seen.map((e) => e.text)).toEqual(['a', 'b'])
+    expect(fetchUrls.filter((u) => u.includes('/api/events'))).toEqual([])
+  })
+
+  it('退出访客：切回管理员槽，访客槽原样保留', async () => {
+    const t = guestTransport()
+    expect(t.getAccessToken()).toBe('g_guest_token')
+    t.exitGuestMode()
+    expect(t.isGuest()).toBe(false)
+    // 那把访客令牌是构造时塞进「门禁」的，归位后进了访客槽（老版本把这把
+    // 存在 hub 槽），管理员槽为空 → 门禁那把为空，由 App 回登录界面。
+    expect(t.getAccessToken()).toBe('')
+    expect(localStorage.getItem('capri-fe.token')).toBeNull()
+    expect(loadGuestToken()).toBe('g_guest_token')
+  })
+
+  it('访客守卫：getGuestIdentity 返回当前身份（store 渲染只读壳的依据）', () => {
+    const t = guestTransport()
+    expect(t.getGuestIdentity()?.guest.label).toBe('给小王')
+    t.setGuestMode(null)
+    expect(t.isGuest()).toBe(false)
+    expect(t.getGuestIdentity()).toBeNull()
+  })
+
+/** 在线订阅者面板：管理员页面把「正在看哪个会话」上报给 hub（纯台账，
+ * 不改事件过滤；访客走带白名单校验的 subscribe 帧，不重复上报）。 */
+describe('订阅者面板的会话上报（viewing 帧）', () => {
+  beforeEach(() => {
+    instances.length = 0
+  })
+
+  it('管理员连接：会话变化发 viewing 帧，切 host 时清空/重报，重连后补报', async () => {
+    const t = new LocalTransport('', 'hub-secret')
+    t.setConnectionMode('hub', 'https://hub.example')
+    t.setHost('A')
+    t.connect()
+    await flush()
+    const ws = instances[instances.length - 1]
+    ws.onopen?.()
+    const frames = () =>
+      ws.sent.map((s) => JSON.parse(s) as Record<string, unknown>)
+
+    // 连接刚开、还没锚会话：不发空帧（hub 的行本来就是空的）。
+    expect(frames().filter((f) => f.type === 'viewing')).toHaveLength(0)
+
+    t.reportViewingSession('s1')
+    expect(frames()).toContainEqual({ v: 1, type: 'viewing', host: 'A', session: 's1' })
+
+    // 重复上报同一会话是 no-op（store 的 sessionId 订阅会重复触发）。
+    t.reportViewingSession('s1')
+    expect(frames().filter((f) => f.type === 'viewing')).toHaveLength(1)
+
+    // 切 host：同一帧里带新 host，旧会话名必须清掉（否则面板会把它
+    // 显示成新 host 上的同名会话）。
+    t.setHost('B')
+    const afterSwitch = frames().filter((f) => f.type === 'viewing')
+    expect(afterSwitch[afterSwitch.length - 1]).toEqual({
+      v: 1,
+      type: 'viewing',
+      host: 'B',
+      session: '',
+    })
+
+    // 丢会话（新建会话前 / 回到空状态）发空串，hub 据此清行。
+    t.reportViewingSession(null)
+    const cleared = frames().filter((f) => f.type === 'viewing')
+    expect(cleared[cleared.length - 1]).toEqual({ v: 1, type: 'viewing', host: 'B', session: '' })
+
+    // 重连（新 WS）后 hub 的行是新建的：onopen 必须把当前会话补报一次。
+    t.reportViewingSession('s2')
+    t.connect()
+    await flush()
+    const ws2 = instances[instances.length - 1]
+    ws2.onopen?.()
+    const reopened = ws2.sent.map((s) => JSON.parse(s) as Record<string, unknown>)
+    expect(reopened).toContainEqual({ v: 1, type: 'viewing', host: 'B', session: 's2' })
+  })
+
+  it('访客身份不发 viewing 帧（会话随 subscribe 帧过白名单校验）', async () => {
+    const tokens = new LocalTransport('', 'hub-secret')
+    tokens.setConnectionMode('hub', 'https://hub.example')
+    // 访客身份由 setGuestMode 建立；白名单只有 (h1, s1)。
+    tokens.setGuestMode({
+      role: 'guest',
+      guest: { id: 'g_1', label: '小王', expiresAt: 0 },
+      sessions: [{ hostId: 'h1', sessionId: 's1' }],
+    })
+    tokens.connect()
+    await flush()
+    const ws = instances[instances.length - 1]
+    ws.onopen?.()
+    tokens.reportViewingSession('s2')
+    const sent = ws.sent.map((s) => JSON.parse(s) as Record<string, unknown>)
+    expect(sent.filter((f) => f.type === 'viewing')).toEqual([])
+  })
+})
 })

@@ -24,6 +24,7 @@ import { applyUiSettings, applyToolsetSettings } from '../store/settings'
 import { pushToast } from '../store/toast'
 import { historyViaHubRelay, useFePrefs, useLiteReplay } from '../store/historyPins'
 import { CustomModelsPanel } from './CustomModelsPanel'
+import { GuestTokensPanel } from './GuestTokensPanel'
 import {
   loadDefaultSelectedPermission,
   saveDefaultSelectedPermission,
@@ -39,7 +40,7 @@ const GROUPS = [
 ] as const
 
 /** 左侧分类键：四个可编辑分类 + 一个只读的 Agent 配置（有内容才出现）。 */
-type CategoryKey = 'behavior' | 'ask' | 'fe' | 'custom' | 'agent'
+type CategoryKey = 'behavior' | 'ask' | 'fe' | 'custom' | 'share' | 'agent'
 
 type Category = {
   key: CategoryKey
@@ -241,6 +242,12 @@ export function SettingsModal() {
         shortLabel: '模型',
         desc: '',
       },
+      {
+        key: 'share',
+        label: '分享',
+        shortLabel: '分享',
+        desc: '访客令牌与会话白名单；右键会话 →「分享只读链接」可快速加入单个会话。',
+      },
     ]
     if (GROUPS.some((g) => dumpRows[g.key])) {
       list.push({
@@ -327,6 +334,8 @@ export function SettingsModal() {
         return <FePrefsSection />
       case 'custom':
         return <CustomModelsPanel />
+      case 'share':
+        return <GuestTokensPanel />
       default:
         // 「Agent 配置」：每个 config.toml 分组一小节，键按字母序，只读。
         return (

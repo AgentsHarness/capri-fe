@@ -140,14 +140,14 @@ describe('SettingsModal', () => {
     // 四个可编辑分类 + 一个只读的 Agent 配置（不再按分组拆成多栏）
     expect(
       screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label')),
-    ).toEqual(['行为偏好', '问答超时', '前端偏好', '自定义模型', 'Agent 配置'])
+    ).toEqual(['行为偏好', '问答超时', '前端偏好', '自定义模型', '分享', 'Agent 配置'])
     // 移动端短标签（均分 Tab，无需横向滑动）与桌面端长标签并存
     expect(
       screen.getAllByRole('tab').map((t) => t.querySelector('.sm\\:hidden')?.textContent),
-    ).toEqual(['行为', '问答', '前端', '模型', 'Agent'])
+    ).toEqual(['行为', '问答', '前端', '模型', '分享', 'Agent'])
     expect(
       screen.getAllByRole('tab').map((t) => t.querySelector('.hidden.sm\\:inline')?.textContent),
-    ).toEqual(['行为偏好', '问答超时', '前端偏好', '自定义模型', 'Agent 配置'])
+    ).toEqual(['行为偏好', '问答超时', '前端偏好', '自定义模型', '分享', 'Agent 配置'])
     // 默认分类 = 行为偏好：可编辑行在，只读 dump 不在同一屏
     expect(screen.getByText('权限默认')).toBeInTheDocument()
     expect(screen.queryByText('extra_ui_key')).toBeNull()

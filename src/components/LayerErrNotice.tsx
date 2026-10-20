@@ -19,11 +19,17 @@ export function LayerErrNotice({
   layer,
   err,
   className,
+  allowRestart = true,
 }: {
   layer: 'hub' | 'host'
   err: LayerErr
   /** 摆放（行内 / 整行、宽度上限）由调用方的 flex 容器决定。 */
   className?: string
+  /**
+   * 访客只读壳传 false：`action === 'restart-agent'` 的「重启」按钮是写操作
+   * （杀进程 + 重新 boot），访客点了只会被 hub 拒，所以不渲染。
+   */
+  allowRestart?: boolean
 }) {
   const dismissNotice = useChatStore((s) => s.dismissNotice)
   const restartAgent = useChatStore((s) => s.restartAgent)
@@ -60,7 +66,7 @@ export function LayerErrNotice({
       >
         {err.message}
       </span>
-      {err.action === 'restart-agent' && (
+      {allowRestart && err.action === 'restart-agent' && (
         <button
           type="button"
           onClick={() => void onRestart()}

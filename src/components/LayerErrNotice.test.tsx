@@ -67,6 +67,21 @@ describe('LayerErrNotice', () => {
     expect(mockState.dismissNotice).toHaveBeenCalled()
   })
 
+  it('allowRestart=false（访客）：原因照显，重启按钮不渲染', () => {
+    mockState.restartAgent.mockClear()
+    render(
+      <LayerErrNotice
+        layer="host"
+        err={err({ level: 'error', message: 'agent 启动失败', at: 1, action: 'restart-agent' })}
+        allowRestart={false}
+      />,
+    )
+    expect(screen.getByText('agent 启动失败')).not.toBeNull()
+    expect(screen.queryByRole('button', { name: '重启' })).toBeNull()
+    // 只读也没有写入口：点不到 restartAgent。
+    expect(mockState.restartAgent).not.toHaveBeenCalled()
+  })
+
   it('error / warning 分别用红、黄配色', () => {
     const { container, rerender } = render(
       <LayerErrNotice layer="host" err={err({ level: 'error', message: 'e', at: 1 })} />,

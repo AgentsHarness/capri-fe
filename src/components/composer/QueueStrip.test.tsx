@@ -334,4 +334,32 @@ describe('QueueStrip', () => {
     expect(grip).not.toBeNull()
     expect(grip.className).toContain('touch-none')
   })
+
+  it('访客只读：正文与附图标记可见，抓手图标保留但不可拖，发送/编辑/删除/队首模式都不渲染', () => {
+    const onToggle = vi.fn()
+    const sendQueuedItem = vi.fn()
+    render(
+      <QueueStrip
+        nav={makeNav([makePrompt('q1', 'hello world')])}
+        sendQueuedItem={sendQueuedItem}
+        headSteer={false}
+        onToggleMode={onToggle}
+        readonly
+      />,
+    )
+    expect(screen.getByText('hello world')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '队列' })).toBeNull()
+    expect(screen.queryByTitle('立即发送这条')).toBeNull()
+    expect(screen.queryByTitle('弹窗编辑这条排队消息')).toBeNull()
+    expect(screen.queryByRole('button', { name: '删除这条排队消息' })).toBeNull()
+    // 抓手图标在（行首对齐与管理员一致），但它不是可抓的东西
+    const row = document.querySelector('[data-queue-idx]')!
+    expect(row.querySelector('svg.lucide-grip-vertical')).not.toBeNull()
+    expect(row.querySelector('[data-queue-grip]')).toBeNull()
+    expect(row.querySelector('[title="拖拽排序"]')).toBeNull()
+    // 只读态下指针按下不进入拖拽状态机
+    fireEvent.pointerDown(row)
+    expect(sendQueuedItem).not.toHaveBeenCalled()
+    expect(onToggle).not.toHaveBeenCalled()
+  })
 })

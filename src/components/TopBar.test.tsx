@@ -1,9 +1,14 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, within } from '@testing-library/react'
+import { render, screen, fireEvent, within, act, waitFor } from '@testing-library/react'
 import { WorkspaceBar, TopBar } from './TopBar'
 import { useChatStore } from '../store/chat'
 import { usePromptQueue } from '../store/promptQueue'
 import { useThemeStore } from '../store/theme'
+
+/** GET /api/subscribers（订阅者详情面板）。 */
+const { listSubscribers } = vi.hoisted(() => ({
+  listSubscribers: vi.fn(async () => [] as unknown[]),
+}))
 
 /** 已验证的本机近路候选（hostId → route），TopBar 用它逐行标「直连 / 中继」。 */
 const localRoutes = new Map<
@@ -31,6 +36,7 @@ vi.mock('../api/client', () => ({
     setRouteChoice: vi.fn(),
     getAccessToken: () => accessToken,
     sessionSearch: vi.fn(async () => ({ results: [] })),
+    listSubscribers,
   },
 }))
 
@@ -42,6 +48,7 @@ function resetChat(over: Record<string, unknown> = {}) {
     hostName: '',
     hostId: '',
     hosts: [],
+    feSubscribers: undefined,
     mode: 'local',
     selectedHostId: '',
     conn: 'connecting',
@@ -238,6 +245,50 @@ describe('TopBar', () => {
     expect(useChatStore.getState().switchHost).toHaveBeenCalledWith('h1')
   })
 
+  it('hub 模式在 host 块右侧显示在线 FE 订阅数；本地模式与旧 hub 不显示', () => {
+    resetChat({
+      mode: 'hub',
+      hostName: 'H1',
+      selectedHostId: 'h1',
+      hosts: [{ hostId: 'h1', hostName: 'H1', online: true }],
+      conn: 'ready',
+    })
+    render(<TopBar />)
+    // 旧 hub 不带这个字段：没有任何数字，不是 0。
+    expect(screen.queryByTitle(/FE 在线订阅/)).toBeNull()
+
+    act(() => {
+      useChatStore.setState({ feSubscribers: 3 })
+    })
+    expect(
+      screen.getByTitle('Hub 当前 3 个 FE 在线订阅（含本页）').textContent,
+    ).toBe('3')
+
+    // 本地模式没有 hub 订阅，即使 store 里残留旧值也不渲染。
+    resetChat({ mode: 'local', feSubscribers: 3 })
+    render(<TopBar />)
+    expect(screen.queryByTitle(/FE 在线订阅/)).toBeNull()
+  })
+
+  it('点订阅数打开详情面板（逐行列出订阅者）', async () => {
+    resetChat({
+      mode: 'hub',
+      hostName: 'H1',
+      selectedHostId: 'h1',
+      hosts: [{ hostId: 'h1', hostName: 'H1', online: true }],
+      conn: 'ready',
+      feSubscribers: 1,
+    })
+    render(<TopBar />)
+    fireEvent.click(screen.getByTitle(/FE 在线订阅/))
+    // 面板是独立模态：打开后列出真实行（mock 的 listSubscribers 回空表，
+    // 这里只需要确认它拉取了名单、渲染了表头）。
+    expect(await screen.findByText('在线订阅者')).toBeTruthy()
+    expect(listSubscribers).toHaveBeenCalled()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByText('在线订阅者')).toBeNull())
+  })
+
   it('host 列表行标记直连 / 中继通路；无近路候选的不显示通道', () => {
     resetChat({
       mode: 'hub',
@@ -401,6 +452,45 @@ describe('TopBar', () => {
     await vi.waitFor(() => {
       expect(screen.getByText('PAIR-CODE-123')).not.toBeNull()
     })
+  })
+
+  it('host 下拉：已登录时提供「切换到访客模式」，点击交给上层', () => {
+    const onEnterGuest = vi.fn()
+    resetChat({
+      mode: 'hub',
+      conn: 'ready',
+      hostName: 'H',
+      selectedHostId: 'h1',
+      hosts: [{ hostId: 'h1', hostName: 'H', online: true }],
+    })
+    accessToken = 'hub-key'
+    render(<TopBar onEnterGuest={onEnterGuest} />)
+    fireEvent.click(screen.getByTitle(/右键可管理/))
+    fireEvent.click(screen.getByTitle(/切换到访客模式/))
+    expect(onEnterGuest).toHaveBeenCalledTimes(1)
+    // 点完下拉收起
+    expect(screen.queryByText('hosts')).toBeNull()
+  })
+
+  it('未登录 / 没传 onEnterGuest 时不提供切访客入口', () => {
+    resetChat({
+      mode: 'hub',
+      conn: 'ready',
+      hostName: 'H',
+      selectedHostId: 'h1',
+      hosts: [{ hostId: 'h1', hostName: 'H', online: true }],
+    })
+    // 有回调但没登录：没有可用的身份可切
+    const { unmount } = render(<TopBar onEnterGuest={vi.fn()} />)
+    fireEvent.click(screen.getByTitle(/右键可管理/))
+    expect(screen.queryByTitle(/切换到访客模式/)).toBeNull()
+    unmount()
+
+    // 已登录但上层没给回调：纯 local 等场景
+    accessToken = 'hub-key'
+    render(<TopBar />)
+    fireEvent.click(screen.getByTitle(/右键可管理/))
+    expect(screen.queryByTitle(/切换到访客模式/)).toBeNull()
   })
 
   it('退出登录在 host 下拉里（「添加 Host」下面），右上角不再有', () => {

@@ -46,6 +46,12 @@ export function handleSessionCtrlEvent(
           (typeof ev.params?.sessionId === 'string' && ev.params.sessionId) ||
           (typeof ev.params?.session_id === 'string' && ev.params.session_id) ||
           undefined
+        // 访客：卡片不挂载，但他的状态行要立刻改成「在等管理员应答」。
+        // 事件本身已经在白名单里（hub 按会话过滤），这里只重拉一次状态。
+        if (get().guestIdentity) {
+          if (!evSid || evSid === get().sessionId) void get().refreshGuestStatus()
+          break
+        }
         const row: PendingReq = {
           requestId: ev.requestId,
           method,
@@ -87,6 +93,14 @@ export function handleSessionCtrlEvent(
         break
       }
       case 'client_request_resolved': {
+        // 访客：没有卡片可收，但状态行要从「在等管理员」收回。host 侧超时 /
+        // 管理员应答都会走到这里，比 5s 轮询更及时。
+        if (get().guestIdentity) {
+          if (!ev.sessionId || ev.sessionId === get().sessionId) {
+            void get().refreshGuestStatus()
+          }
+          break
+        }
         // Multi-tab: another client (or this tab, or host timeout) settled
         // the request — drop the matching card. Idempotent when we already
         // cleared locally after respondPermission / respondXai.

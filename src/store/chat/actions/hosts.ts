@@ -16,6 +16,7 @@ import { appendEntry } from '../entries'
 import { pushToast } from '../../toast'
 import { refreshDefaultModeFlags } from '../modePersist'
 import { KEY } from '../../../lib/keys'
+import { blockGuestWrite, isGuestState } from '../guestMode'
 
 export function hostActions(set: SetState, get: () => ChatState) {
   // 注册表应用（含首次自动选 host）：set 列表 + 离线/删除提示 + 挑选
@@ -26,6 +27,41 @@ export function hostActions(set: SetState, get: () => ChatState) {
     hosts: HostInfo[],
     defaultHostId: string | undefined,
   ) => {
+    // 访客：注册表只剩白名单里的 host，选中哪台由「当前会话」决定——
+    // 不走 switchHost（它会清会话视图），也不探本机近路。
+    if (isGuestState(get())) {
+      const cur = get().guestSessions.find((s) => s.sessionId === get().sessionId)
+      const hostId = cur?.hostId ?? transport.getHost() ?? undefined
+      // 选中 host 掉线/恢复：与管理员同一条 hub 层提示（访客顶栏也显示）。
+      if (hostId) {
+        const sel = hosts.find((h) => h.hostId === hostId)
+        const err = get().layerErrors.hub
+        if (sel && !sel.online && err?.id !== 'host-offline') {
+          get().setLayerError('hub', {
+            id: 'host-offline',
+            level: 'error',
+            message: `Host「${sel.hostName}」已离线`,
+            at: Date.now(),
+          })
+        } else if (sel && sel.online && err?.id === 'host-offline') {
+          get().setLayerError('hub', undefined)
+        }
+      }
+      set({
+        hosts,
+        ...(hostId ? { selectedHostId: hostId } : {}),
+        ...(hostId
+          ? {
+              hostId,
+              hostName:
+                hosts.find((h) => h.hostId === hostId)?.hostName ??
+                cur?.hostName ??
+                get().hostName,
+            }
+          : {}),
+      })
+      return
+    }
     set({ hosts })
     const s = get()
     // 选中 host 掉线/恢复：hub 层提示（id 精确清除，不影响
@@ -98,6 +134,9 @@ export function hostActions(set: SetState, get: () => ChatState) {
     },
 
   switchHost: async (hostId) => {
+    // 访客的 host 由白名单会话决定（switchGuestSession 换订阅），
+    // 不开放整台 host 的切换。
+    if (blockGuestWrite(get(), '访客模式下请切换会话')) return
     // 本地模式锁定本机：host 切换只在 hub 模式有效（也不写
     // localStorage capri-fe.host，避免残留状态）。
     if (transport.getConnectionMode() !== 'hub') return
@@ -308,6 +347,7 @@ export function hostActions(set: SetState, get: () => ChatState) {
     reasoningEffort?: string,
     opts?: { asDefault?: boolean; contextWindow?: number },
   ) => {
+    if (blockGuestWrite(get())) return
     // Optimistic: agent broadcasts model_changed on success, but the
     // request itself is the authority for local state (TUI does the same).
     const m = get().models.find((x) => x.modelId === modelId)

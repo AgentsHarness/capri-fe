@@ -16,6 +16,7 @@ import { resetSessionState } from '../reset'
 import { clearStreamBuf } from '../stream'
 import { KEY } from '../../../lib/keys'
 import { usePins } from '../../historyPins'
+import { blockGuestWrite, isGuestState } from '../guestMode'
 
 /** workspace-list-recent 每页条数（初始 limit，「加载更多」每次 +50）。 */
 const WORKSPACE_RECENT_PAGE = 50
@@ -102,6 +103,8 @@ function fallbackGroupsFromSessions(sessions: SessionInfo[]): WorkspaceGroup[] {
 export function sessionActions(set: SetState, get: () => ChatState) {
   return {
   refreshSessions: async (retry = 1) => {
+    // 访客：会话列表由白名单决定（guestSessions），不拉 host 的整份 roster。
+    if (isGuestState(get())) return
     const scope = captureAsyncScope(get)
     // hub 模式未选中 host：host 级请求没有 ?host= 会打到 hub 根路径
     // 404（数据不在 hub），且选中后（switchHost）自会重新拉取——跳过，
@@ -142,6 +145,8 @@ export function sessionActions(set: SetState, get: () => ChatState) {
   },
 
   refreshWorkspaces: async (retry = 1) => {
+    // 访客：侧栏不挂载，工作区分组没有消费者。
+    if (isGuestState(get())) return
     const scope = captureAsyncScope(get)
     const isCurrent = () => isAsyncScopeCurrent(get, scope)
     // hub 模式未选中 host：同上（refreshSessions），跳过并复位 loading，
@@ -354,6 +359,7 @@ export function sessionActions(set: SetState, get: () => ChatState) {
   },
 
   newSession: async (cwd?: string) => {
+    if (blockGuestWrite(get())) return undefined
     // Any in-flight session switch (grace-window callback / async loads)
     // must not re-anchor after a fresh session starts.
     clearContinueSessionTimer()
@@ -468,6 +474,7 @@ export function sessionActions(set: SetState, get: () => ChatState) {
   },
 
   resetToEmpty: () => {
+    if (blockGuestWrite(get())) return
     get().stopTopTaskPolling()
     clearSuppressedTools()
     clearStreamBuf()

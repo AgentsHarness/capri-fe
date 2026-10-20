@@ -91,3 +91,11 @@ export type {
   WorkflowStatus,
 } from './types/scroll'
 export type { HookRun, HookRunStatus } from './types/hooks'
+export type {
+  AccessRole,
+  GuestIdentity,
+  GuestSessionItem,
+  GuestTokenRecord,
+  SubscriberRow,
+} from './types/guest'
+export type { GuestSessionState } from './types/sessions'

@@ -119,6 +119,21 @@ describe('SubagentEntry — 整行单击弹查看器', () => {
     render(<SubagentEntry e={e} chrome={makeChrome(e)} />)
     expect(screen.getByText('(grok-4(high))')).toBeInTheDocument()
   })
+
+  it('访客只读：运行中的行不渲染 cancel（仍有正文与计数）', () => {
+    const e = subagentEntry({
+      id: 'sa1',
+      status: 'started',
+      running: true,
+      subagentId: 'sub-1',
+      detail: 'turns=2 tools=5',
+    })
+    const { container } = render(
+      <SubagentEntry e={e} chrome={{ ...makeChrome(e), readonly: true }} />,
+    )
+    expect(screen.queryByRole('button', { name: /cancel/ })).toBeNull()
+    expect(container.textContent).toContain('turns=2 tools=5')
+  })
 })
 
 const bgTaskEntry = (
@@ -221,5 +236,20 @@ describe('BgTaskEntry — 与 Agent 行同形态', () => {
     expect(btn.textContent).toBe('[kill]')
     expect(btn.className).not.toMatch(/border/)
     expect(btn.className).not.toMatch(/py-/)
+  })
+
+  it('访客只读：运行中的任务行不渲染 kill，标题照旧', () => {
+    const e = bgTaskEntry({
+      id: 'bg1',
+      status: 'started',
+      running: true,
+      taskId: 't-1',
+      title: 'npm run build',
+    })
+    const { container } = render(
+      <BgTaskEntry e={e} chrome={{ ...makeChrome(e), readonly: true }} />,
+    )
+    expect(screen.queryByRole('button', { name: /kill/ })).toBeNull()
+    expect(container.textContent).toContain('npm run build')
   })
 })

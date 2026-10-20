@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronUp,
   EllipsisVertical,
+  Eye,
   GitBranch,
   History,
   LogOut,
@@ -12,6 +13,7 @@ import {
   Plus,
   Puzzle,
   Settings,
+  ShieldQuestion,
   TriangleAlert,
 } from 'lucide-react'
 import { useChatStore } from '../store/chat'
@@ -39,6 +41,7 @@ import { transport } from '../api/client'
 import { hostState, hostStateLabel, type HostState } from '../lib/hostState'
 import { pickLayerError } from '../lib/layerErr'
 import { LayerErrNotice } from './LayerErrNotice'
+import { SubscribersPanel } from './SubscribersPanel'
 import {
   AddHostModal,
   DeleteHostModal,
@@ -100,8 +103,12 @@ export function WorkspaceBar({
   onOpenMcp,
   topRef,
   fadeHidden,
+  guest = false,
 }: {
   onOpenMcp?: () => void
+  /** 访客只读壳：状态芯片全部照常显示，但只有 lite 补全芯片可点；
+   *  其余一律降级成静态文本（打开的面板在访客壳里没挂载，动作都是写操作）。 */
+  guest?: boolean
   /** Scrollback measures this sticky bar's rendered height to offset the
    *  pinned user-prompt header below it (grows with the tasks bar). */
   topRef?: Ref<HTMLDivElement>
@@ -222,10 +229,12 @@ export function WorkspaceBar({
             onToggle={() => setTasksBarOpen(!tasksOpen)}
           />
           {/* 游离后台进程（本 agent 无法终止的那些）——只提示，不进任务列表 */}
-          <DetachedChip />
-          <GoalChip goalState={goalState} contextUsed={usage?.used} />
-          {onOpenMcp && <McpChip onOpen={onOpenMcp} />}
-          {/* 精简回放的正文补全进度（只在有 lite 行欠着正文时出现）。 */}
+          <DetachedChip readonly={guest} />
+          <GoalChip goalState={goalState} contextUsed={usage?.used} readonly={guest} />
+          {/* 访客没有 MCP 面板，但连接数照样是只读状态读数。 */}
+          {(onOpenMcp || guest) && <McpChip onOpen={onOpenMcp ?? (() => {})} readonly={guest} />}
+          {/* 精简回放的正文补全进度（只在有 lite 行欠着正文时出现）。
+              访客唯一保留可点的芯片：补全是只读拉取。 */}
           <LiteFillChip />
           <ContextChip
             used={usage?.used}
@@ -247,6 +256,7 @@ export function WorkspaceBar({
             }
             agentPct={sessionStatus?.usedPercent}
             thresholdPct={sessionStatus?.autoCompactThresholdPercent}
+            readonly={guest}
           />
           <QueueBadge />
           <TodoChip todos={todos} goalState={goalState} />
@@ -263,7 +273,12 @@ export function WorkspaceBar({
         aria-hidden={fadeHidden || undefined}
         inert={fadeHidden || undefined}
       >
-        <RunningTasksBar entries={entries} topTasks={topTasks} open={tasksOpen} />
+        <RunningTasksBar
+          entries={entries}
+          topTasks={topTasks}
+          open={tasksOpen}
+          readonly={guest}
+        />
       </div>
     </div>
   )
@@ -280,6 +295,7 @@ export function TopBar({
   mcpOpen,
   gitOpen,
   onLogout,
+  onEnterGuest,
 }: {
   onOpenMcp?: () => void
   onOpenGit?: () => void
@@ -288,10 +304,16 @@ export function TopBar({
   gitOpen?: boolean
   /** 退出登录：只清 hub 那把（各台 host 的近路钥匙保留）。无密钥时不显示。 */
   onLogout?: () => void
+  /**
+   * 切换到访客模式（左上角 host 列表里，退出登录上方）。本地没有存过访客
+   * 令牌时由调用方弹门禁要求输入。纯 local 模式没有 hub 承载白名单，不显示。
+   */
+  onEnterGuest?: () => void
 }) {
   const hostName = useChatStore((s) => s.hostName)
   const hostId = useChatStore((s) => s.hostId)
   const hosts = useChatStore((s) => s.hosts)
+  const feSubscribers = useChatStore((s) => s.feSubscribers)
   const mode = useChatStore((s) => s.mode)
   const selectedHostId = useChatStore((s) => s.selectedHostId)
   const switchHost = useChatStore((s) => s.switchHost)
@@ -315,6 +337,9 @@ export function TopBar({
   const toggleSidebar = useChatStore((s) => s.toggleSidebar)
 
   const [openHosts, setOpenHosts] = useState(false)
+  // 订阅者详情面板（顶栏数字点开）。hub 模式才有数据；关掉 host 下拉等
+  // 其他浮层不影响它，它是独立的模态。
+  const [subscribersOpen, setSubscribersOpen] = useState(false)
   // Mobile (lg:hidden) "更多" menu — the secondary action buttons fold
   // into one ⋮ trigger; clicking expands them vertically.
   const [moreOpen, setMoreOpen] = useState(false)
@@ -590,6 +615,22 @@ export function TopBar({
                     <Plus size={13} strokeWidth={2} aria-hidden />
                     添加 Host
                   </button>
+                  {/* 切换到访客模式：只读分享视图。纯 local 没有 hub 承载
+                      白名单，不给入口；管理员未登录时也没有可切的身份。 */}
+                  {onEnterGuest && transport.getAccessToken() && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpenHosts(false)
+                        onEnterGuest()
+                      }}
+                      className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                      title="切换到访客模式（只读分享视图；本地没有存过访客令牌时会要求输入）"
+                    >
+                      <ShieldQuestion size={13} strokeWidth={2} aria-hidden />
+                      切换到访客模式
+                    </button>
+                  )}
                   {onLogout && transport.getAccessToken() && (
                     <button
                       type="button"
@@ -644,6 +685,27 @@ export function TopBar({
           )}
           {addHostOpen && <AddHostModal onClose={() => setAddHostOpen(false)} />}
         </div>
+
+        {/* Hub 在线 FE 订阅数：紧跟 host 块右侧。数字来自 hub 的 hello /
+            subscribers_changed（/ws/fe 连接总数，含本页）；老 hub 不下发时
+            不渲染，避免显示一个假的 0。人物图标把裸数字读成「在线订阅者」，
+            与左右两侧的纯按钮区分开。点开 = 订阅者详情（地址 / 设备 /
+            哪把令牌 / 正在看哪个会话），数据来自 GET /api/subscribers。 */}
+        {mode === 'hub' && feSubscribers != null && (
+          <button
+            type="button"
+            onClick={() => setSubscribersOpen(true)}
+            aria-haspopup="dialog"
+            aria-expanded={subscribersOpen}
+            className="inline-flex min-h-8 shrink-0 items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[11px] leading-none tabular-nums text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+            title={`Hub 当前 ${feSubscribers} 个 FE 在线订阅（含本页）`}
+            aria-label={`Hub 在线 FE 订阅数 ${feSubscribers}，点击查看详情`}
+          >
+            <Eye size={12} strokeWidth={2} className="shrink-0 text-gn-gutter" aria-hidden />
+            {feSubscribers}
+          </button>
+        )}
+        {subscribersOpen && <SubscribersPanel onClose={() => setSubscribersOpen(false)} />}
 
         {/* hub / host 层错误：紧跟在 host 名字右侧的一条内联消息（不另占整行）。
             窄屏（< lg）另起一行占满整行：与 host 切换器 + new/history/更多

@@ -153,6 +153,15 @@ describe('handleConnEvent — hub hello 用注册表快照选 host', () => {
     expect(get().refreshHosts).toHaveBeenCalledTimes(1)
     expect(get().refreshHosts).toHaveBeenCalledWith(undefined)
   })
+
+  it('hello 带 feSubscribers → 写入在线订阅数；老 hub 不带则保持原值', () => {
+    const { set, get, state } = makeStore({})
+    handleConnEvent(set, get, hello({ feSubscribers: 3 }))
+    expect(state().feSubscribers).toBe(3)
+
+    handleConnEvent(set, get, hello({}))
+    expect(state().feSubscribers).toBe(3)
+  })
 })
 
 // ── 首屏/刷新回锚的会话回放：探活与快照一起发 ─────────────────────────
@@ -202,5 +211,17 @@ describe('handleConnEvent — hello 触发的历史回放带任务探活', () =>
     handleConnEvent(set, get, hostHello({ sessionId: 's1', cwd: '/w' }))
     expect(get().prefetchRunningTasks).not.toHaveBeenCalled()
     expect(loadHistory).not.toHaveBeenCalled()
+  })
+})
+
+describe('handleConnEvent — hub_conn 断开清空在线订阅数', () => {
+  it('断线 → feSubscribers 清空（重连 hello 回填），不留陈旧数字', () => {
+    const { set, get, state } = makeStore({
+      feSubscribers: 2,
+      layerErrors: {},
+      setLayerError: vi.fn(),
+    })
+    handleConnEvent(set, get, { type: 'hub_conn', online: false } as AcpEvent)
+    expect(state().feSubscribers).toBeUndefined()
   })
 })

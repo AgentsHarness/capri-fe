@@ -13,7 +13,7 @@ export function SubagentEntry({
   e: Extract<ScrollEntry, { kind: 'subagent' }>
   chrome: EntryChrome
 }) {
-  const { shell, bullet, openViewer, cancelSubagent } = chrome
+  const { shell, bullet, openViewer, cancelSubagent, readonly = false } = chrome
   // 整行单击直接弹全文查看器（原「先选中再点查看」的展开流程取消）。
   const rowShell = { ...shell, onSelect: () => openViewer(e.id) }
   const label =
@@ -49,7 +49,7 @@ export function SubagentEntry({
         {e.detail && (
           <span className="text-[11px] text-gn-gutter truncate">{e.detail}</span>
         )}
-        {e.running && e.subagentId && (
+        {e.running && e.subagentId && !readonly && (
           <InlineAction
             label="cancel"
             title="x.ai/subagent/cancel"
@@ -113,7 +113,7 @@ export function BgTaskEntry({
   e: Extract<ScrollEntry, { kind: 'bg_task' }>
   chrome: EntryChrome
 }) {
-  const { shell, bullet, openViewer, killTask } = chrome
+  const { shell, bullet, openViewer, killTask, readonly = false } = chrome
   // 整行单击直接弹全文查看器（与 Agent 行同一形态，不需要先选中再点查看）。
   const rowShell = { ...shell, onSelect: () => openViewer(e.id) }
   // TUI: "Task started: {description|command}" — bold "Task", name is primary.
@@ -148,7 +148,7 @@ export function BgTaskEntry({
             {e.detail}
           </span>
         )}
-        {e.running && e.taskId && (
+        {e.running && e.taskId && !readonly && (
           <KillTaskAction
             className="ml-auto"
             onKill={(notifyAgent) => void killTask(e.taskId!, { notifyAgent })}

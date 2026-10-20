@@ -60,6 +60,12 @@ export type EntryViewProps = {
    * 自己固定。恒为稳定引用（useRef 对象），memo 比较只做引用相等。
    */
   streamBodyRef?: { current: HTMLDivElement | null }
+  /**
+   * 访客只读壳：隐藏行内写操作入口（subagent cancel、bg_task kill、
+   * assistant fork、error 重启）。折叠 / 查看器 / 图片预览照旧。
+   * 迷你 scrollback 由父组件透传（弹窗里的写入口同样要藏）。
+   */
+  readonly?: boolean
 }
 
 /** Shared chrome handed to per-kind entry renderers. */
@@ -111,6 +117,11 @@ export type EntryChrome = {
   galleryItem?: boolean
   /** 迷你 scrollback（子代理弹窗）：消息操作行隐藏会话级动作（fork）。 */
   inMini: boolean
+  /**
+   * 访客只读壳：隐藏所有写操作入口（cancel / kill / fork / 重启），
+   * 保留折叠、查看器与只读补全。迷你 scrollback 继承主视图的取值。
+   */
+  readonly?: boolean
   /** 会话工作目录（historyCwd ?? cwd）——工具行路径按 surface 打印时用作
    *  相对基准（TUI path_for_tool_surface 的 cwd）。 */
   cwd?: string

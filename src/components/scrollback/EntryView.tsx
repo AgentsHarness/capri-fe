@@ -47,6 +47,7 @@ function entryViewEqual(prev: EntryViewProps, next: EntryViewProps): boolean {
     prev.onOpenImage === next.onOpenImage &&
     prev.noFrame === next.noFrame &&
     prev.galleryItem === next.galleryItem &&
+    prev.readonly === next.readonly &&
     (prev.now === next.now ||
       (!entryFlashActive(prev.e, prev.now) && !entryFlashActive(next.e, next.now)))
   )
@@ -67,6 +68,7 @@ export const EntryView = memo(function EntryView({
   onOpenImage,
   noFrame = false,
   galleryItem = false,
+  readonly = false,
 }: EntryViewProps) {
   // 迷你 scrollback 折叠覆盖：patch 合并进渲染条目（不写回 store）。
   const e = patch ? ({ ...eProp, ...patch } as ScrollEntry) : eProp
@@ -180,6 +182,9 @@ export const EntryView = memo(function EntryView({
     thoughtText,
     bodyRef,
     inMini: actions != null,
+    // 访客只读：写操作入口（cancel / kill / fork / 重启）由各行按此隐藏。
+    // 迷你 scrollback 没有独立的只读开关，继承父视图（弹窗）的取值。
+    readonly,
     cwd: sessionCwd,
     onOpenImage,
     galleryItem,

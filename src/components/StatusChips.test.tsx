@@ -3,6 +3,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import type { ScrollEntry, ToolCall } from '../api/types'
 import { useChatStore } from '../store/chat'
 import { fillAllLiteTurns } from '../store/chat/historyFill'
+import { usePromptQueue } from '../store/promptQueue'
 import { ContextChip, LiteFillChip, McpChip, RunningTasksBar, SessionCostChip } from './StatusChips'
 import { WorkspaceBar } from './TopBar'
 import { SPINNER_FRAMES } from '../theme/glyphs'
@@ -181,6 +182,104 @@ describe('RunningTasksBar — 子代理展示', () => {
       />,
     )
     expect(screen.getByText('(grok-4(high))')).toBeInTheDocument()
+  })
+
+  it('访客只读：任务行可点开日志，但 kill / cancel / 调度任务 delete 都不出现', () => {
+    const subEntry: ScrollEntry = {
+      id: 'sub-row-1',
+      kind: 'subagent',
+      title: 'reviewer',
+      status: 'started',
+      running: true,
+      subagentId: 'sa-1',
+    }
+    const bgEntry: ScrollEntry = {
+      id: 'bg-row-1',
+      kind: 'bg_task',
+      title: 'npm run build',
+      status: 'started',
+      running: true,
+      taskId: 't-1',
+    }
+    useChatStore.setState({
+      scheduledTasks: [{ taskId: 's1', prompt: 'p', interval: '5m' }] as never,
+    })
+    const openViewer = vi.fn()
+    useChatStore.setState({ openViewer })
+    const { container } = render(
+      <RunningTasksBar
+        entries={[subEntry, bgEntry]}
+        topTasks={[{ taskId: 'top-1', title: 'top task' }] as never}
+        open={true}
+        readonly
+      />,
+    )
+    // 只读视图里状态照旧可读、行照旧可点开日志
+    expect(container.textContent).toContain('reviewer')
+    expect(container.textContent).toContain('npm run build')
+    expect(container.textContent).toContain('调度任务 · 1')
+    fireEvent.click(screen.getByText('npm run build'))
+    expect(openViewer).toHaveBeenCalledWith('bg-row-1')
+    // 写入口一个都不剩
+    expect(screen.queryByRole('button', { name: /cancel/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /kill/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /delete/ })).toBeNull()
+  })
+})
+
+describe('访客只读芯片', () => {
+  it('待办 / 队列 / 运行计数 / MCP 都可点（只展开只读面板）', () => {
+    const subEntry: ScrollEntry = {
+      id: 'sub-row-1',
+      kind: 'subagent',
+      title: 'reviewer',
+      status: 'started',
+      running: true,
+      subagentId: 'sa-1',
+    }
+    useChatStore.setState({
+      mcpServers: [{ name: 's1', status: 'ready' }],
+      todos: [{ id: 't1', content: 'do it', status: 'in_progress' }] as never,
+      entries: [subEntry],
+    })
+    usePromptQueue.setState({
+      queue: [{ id: 'q1', text: 'later' }] as never,
+      sessionId: 's1',
+    })
+    // 队列条默认展开；先收起才验证「点开」这一侧。
+    useChatStore.setState({ queuePanelOpen: false, tasksBarOpen: true })
+    const { container } = render(<WorkspaceBar guest />)
+    // 读数都在
+    expect(container.textContent).toContain('1')
+    expect(container.textContent).toContain('MCP(1/1)')
+    expect(container.textContent).toContain('0/1')
+    expect(container.textContent).toContain('+1')
+    // 运行计数：任务条已随「有任务」自动展开，点一次收起、再点展开
+    fireEvent.click(screen.getByTitle(/隐藏运行中的任务列表/))
+    expect(useChatStore.getState().tasksBarOpen).toBe(false)
+    fireEvent.click(screen.getByTitle(/显示运行中的后台任务/))
+    expect(useChatStore.getState().tasksBarOpen).toBe(true)
+    // 队列：点开/收起内联队列条
+    fireEvent.click(screen.getByTitle(/展开排队消息/))
+    expect(useChatStore.getState().queuePanelOpen).toBe(true)
+    fireEvent.click(screen.getByTitle(/收起排队消息/))
+    expect(useChatStore.getState().queuePanelOpen).toBe(false)
+    // 待办：可点开只读列表
+    fireEvent.click(screen.getByTitle('待办进度'))
+    expect(screen.getByLabelText(/todo · 0\/1 完成/)).toBeInTheDocument()
+    // MCP 仍是只读读数，不打开面板
+    expect(screen.queryByTitle(/点击打开 MCP 面板/)).toBeNull()
+  })
+
+  it('访客仍可点 lite 补全芯片（只读拉取）', () => {
+    useChatStore.setState({
+      entries: [liteRow()],
+      historyProjected: 'lite',
+    })
+    render(<WorkspaceBar guest />)
+    const lite = screen.getByRole('button', { name: /精简回放：1 行工具正文待补全/ })
+    fireEvent.click(lite)
+    expect(fillAllLiteTurns).toHaveBeenCalled()
   })
 })
 

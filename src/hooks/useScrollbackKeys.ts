@@ -149,7 +149,8 @@ function onInteractiveControl(target: EventTarget | null): boolean {
  *   native behavior on interactive controls (link/button/select), so
  *   keyboard focus traversal and activation stay reachable (audit B1).
  */
-export function useScrollbackKeys() {
+export function useScrollbackKeys(opts: { guest?: boolean } = {}) {
+  const guest = opts.guest === true
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       // Ignore pure modifier chords (Ctrl-F also opens viewer — handled below)
@@ -218,7 +219,8 @@ export function useScrollbackKeys() {
           st.clearComposerDraft()
           return
         }
-        if (st.conn === 'busy') {
+        // 访客只读：Ctrl+C 不取消回合（hub 也会拒）。
+        if (st.conn === 'busy' && !guest) {
           e.preventDefault()
           void st.cancelTurn({})
         }
@@ -333,7 +335,7 @@ export function useScrollbackKeys() {
       // focused — PgUp/PgDn scroll the conversation").
       if (inField) {
         const store = useChatStore.getState()
-        if (e.key === 'Escape' && store.conn === 'busy') {
+        if (e.key === 'Escape' && store.conn === 'busy' && !guest) {
           e.preventDefault()
           void store.requestCancelTurn()
           return
@@ -469,11 +471,16 @@ export function useScrollbackKeys() {
           // 第二击仍落在 scrollback 时在这里触发；焦点已切走时由
           // composer 经 escArmTimestamp() 串联的臂定判定触发。
           e.preventDefault()
-          if (store.conn === 'busy') {
+          if (store.conn === 'busy' && !guest) {
             // busy 路径不经阶梯：消费掉可能挂着的臂定，取消后的首个
             // idle Esc 不会误判为第二击。
             escArmAt = 0
             void store.requestCancelTurn()
+            return
+          }
+          // 访客只读：没有取消，也没有 rewind（两次 Esc 不打开回退选择器）。
+          if (guest) {
+            escArmAt = 0
             return
           }
           if (Date.now() - escArmAt < ESC_ARM_TTL_MS) {
@@ -494,5 +501,5 @@ export function useScrollbackKeys() {
 
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [guest])
 }

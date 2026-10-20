@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   PAGE_SLOT,
+  adoptSharedToken,
   dropHost,
+  loadGuestToken,
   loadHostToken,
   loadHostTokens,
   loadHubToken,
   loadRouteChoices,
+  saveGuestToken,
   saveHostToken,
   saveHubToken,
   saveRouteChoice,
@@ -89,5 +92,75 @@ describe('通路选择', () => {
   it('只认 direct / relay，其余脏值丢弃', () => {
     localStorage.setItem('capri-fe.routeChoice', '{"a":"relay","b":"bogus","c":"direct"}')
     expect(loadRouteChoices()).toEqual({ a: 'relay', c: 'direct' })
+  })
+})
+
+describe('访客槽与管理员槽互不覆盖', () => {
+  afterEach(() => localStorage.clear())
+
+  it('写访客令牌不动 hub 槽，写 hub 令牌不动访客槽', () => {
+    saveGuestToken('g_tok')
+    expect(loadHubToken()).toBe('')
+    saveHubToken('admin-key')
+    expect(loadGuestToken()).toBe('g_tok')
+    saveHubToken('')
+    expect(loadGuestToken()).toBe('g_tok')
+  })
+
+  it('清空访客令牌留下空串，hub 槽不受影响', () => {
+    saveHubToken('admin-key')
+    saveGuestToken('g_tok')
+    saveGuestToken('  ')
+    expect(loadGuestToken()).toBe('')
+    expect(loadHubToken()).toBe('admin-key')
+  })
+})
+
+/**
+ * 分享链接采纳：`#g=<token>` 写进**访客槽**、fragment 立刻清掉。管理员那把
+ * 留在 hub 槽不动——两个身份各有自己的格子，退出访客直接切回去即可，不需要
+ * 备份/恢复。
+ */
+describe('访客分享链接（#g=）', () => {
+  afterEach(() => {
+    localStorage.clear()
+    sessionStorage.clear()
+    history.replaceState(null, '', '/')
+  })
+
+  it('采纳 fragment 里的令牌进访客槽、清掉 hash、不动管理员那把', () => {
+    saveHubToken('admin-key')
+    history.replaceState(null, '', '/#g=g_guest_token')
+
+    expect(adoptSharedToken()).toBe('g_guest_token')
+
+    // 令牌进访客槽（切到访客视图时出示这把）
+    expect(loadGuestToken()).toBe('g_guest_token')
+    // 管理员那把原封不动
+    expect(loadHubToken()).toBe('admin-key')
+    // fragment 被清掉：刷新 / 复制地址都不再带令牌
+    expect(location.hash).toBe('')
+  })
+
+  it('重复采纳同一个令牌：幂等', () => {
+    saveGuestToken('g_same')
+    history.replaceState(null, '', '/#g=g_same')
+    adoptSharedToken()
+    expect(loadGuestToken()).toBe('g_same')
+  })
+
+  it('没有 #g= 时不动任何槽', () => {
+    saveHubToken('admin-key')
+    saveGuestToken('g_kept')
+    history.replaceState(null, '', '/#g=')
+    expect(adoptSharedToken()).toBeNull()
+    expect(loadHubToken()).toBe('admin-key')
+    expect(loadGuestToken()).toBe('g_kept')
+  })
+
+  it('URL 编码的令牌按原文采纳', () => {
+    history.replaceState(null, '', '/#g=g_a%2Bb')
+    expect(adoptSharedToken()).toBe('g_a+b')
+    expect(loadGuestToken()).toBe('g_a+b')
   })
 })

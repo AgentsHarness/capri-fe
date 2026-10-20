@@ -2,10 +2,12 @@ import { transport } from '../../../api/client'
 import { usePromptQueue } from '../../promptQueue'
 import type { ChatState, SetState } from '../types'
 import { appendEntry } from '../entries'
+import { blockGuestWrite } from '../guestMode'
 
 export function cancelActions(set: SetState, get: () => ChatState) {
   return {
   cancel: async () => {
+    if (blockGuestWrite(get())) return
     await transport.cancel({ cancelSubagents: false }, get().sessionId)
   },
 
@@ -17,6 +19,7 @@ export function cancelActions(set: SetState, get: () => ChatState) {
    * empties the composer's send queue. The panel closes either way.
    */
   cancelTurn: async (opts) => {
+    if (blockGuestWrite(get())) return
     set({ cancelPanelOpen: false })
     // TUI turn_status.rs: (TurnCancelling | CommandCancelling, _) →
     // "Cancelling…" in accent_error — shown until the host's `done`

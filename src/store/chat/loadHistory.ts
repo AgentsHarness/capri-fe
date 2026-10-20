@@ -53,6 +53,12 @@ import {
 const TASK_PROBE_AWAIT_MS = 800
 
 /**
+ * 最近一次历史加载的序号。早退路径用它与当前值比对，只归还**自己**设上的
+ * historyLoading，不误清新一次加载的加载位。
+ */
+let loadToken = 0
+
+/**
  * Replay events received while rebuilding a history snapshot. Timestamp is
  * only a fast path: stored timestamps are normalized to epoch ms, and keys
  * cover tools, plans, images, and other non-text updates without timestamps.
@@ -96,6 +102,15 @@ export async function loadHistory(
       !isAsyncScopeCurrent(get, scope) ||
       get().sessionId !== loadSid ||
       get().cwd !== cwd
+    // 本次加载的序号。stale 早退必须归还自己设上的 historyLoading——早退
+    // 分支后面没有任何收口点，留在 true 上就是一个永不结束的「加载会话…」
+    // （访客首屏实测：hub hello 回填 host 锚点 → scope 判失效 → 永久转圈）。
+    // 序号比对保证不会误清新一次加载的加载位。
+    const token = ++loadToken
+    const abandon = (): void => {
+      if (token !== loadToken) return
+      if (get().historyLoading) set({ historyLoading: false })
+    }
     if (staleLoad()) return
     // Reset the scrollback; load only the newest turn (turnIndex: 1).
     // Older turns load on scroll-up via loadMoreHistory — one turn per
@@ -111,13 +126,17 @@ export async function loadHistory(
     // 调用前锚定了 sessionId，这里不匹配说明调用后、执行前会话已被切走
     // （newSession / resetToEmpty / switchHost）——连 entries 清空都不该
     // 发生，直接收口标志返回。
-    if (staleLoad()) return
+    if (staleLoad()) {
+      abandon()
+      return
+    }
     // Join-gap detection is per load: disarm until this snapshot's
     // turnOpen is known. Load start is the subscribe wall clock for
     // streamStartMs (agent epoch ms) comparisons.
     runtime.historyLiveJoinCheck = false
     runtime.historyLoadStartedAt = Date.now()
     runtime.historySnapStreamKeys.clear()
+    runtime.historyLiveStreamSeen.clear()
     set({
       historyOpen: false,
       historyLoading: true,
@@ -227,9 +246,12 @@ export async function loadHistory(
       } = {
         turnOpen: false,
       }
-      // 加载期间会话被切走：放弃本次加载（historyLoading 由下方
-      // stale 分支收口），绝不把旧会话的页灌进新视图。
-      if (staleLoad()) return
+      // 加载期间会话被切走：放弃本次加载（先把加载位还回去），绝不把
+      // 旧会话的页灌进新视图。
+      if (staleLoad()) {
+        abandon()
+        return
+      }
       // turnIndex only — no limit. Capping at INITIAL_TURN_LIMIT used to
       // cut the END of long last turns (agent returns [start, start+limit)),
       // so assistant text / turn_completed after the cap never appeared
@@ -240,7 +262,10 @@ export async function loadHistory(
         turnIndex: INITIAL_TURNS,
         ...(detail ? { detail } : {}),
       })
-      if (staleLoad()) return
+      if (staleLoad()) {
+        abandon()
+        return
+      }
       // 能力回显：请求过 lite 却没回 projected = 旧 host（本页就是全量，
       // 条目自然不带 lite 字段），停用该 host 的 lite。
       noteHistoryProjection(get, detail != null, r)
@@ -260,7 +285,10 @@ export async function loadHistory(
         } finally {
           if (waiter !== undefined) clearTimeout(waiter)
         }
-        if (staleLoad()) return
+        if (staleLoad()) {
+          abandon()
+          return
+        }
       }
       promptStarts = r.promptStarts
       turnIdx =
@@ -355,7 +383,10 @@ export async function loadHistory(
       const hasMore = turnBased
         ? turnIdx > 0
         : loadedStart > 0 && historyHasMorePage(total || undefined, loaded, fetched, INITIAL_TURN_LIMIT)
-      if (staleLoad()) return
+      if (staleLoad()) {
+        abandon()
+        return
+      }
       // snapTail 必须在 historyLoading 落回 false 之前生效：刷新走
       // hello → loadHistory，门控一落，hub gap-pull 的上一轮 live
       // 事件会当新事件进 handleEvent；水位晚于门控的话最后一条会再
@@ -418,6 +449,7 @@ export async function loadHistory(
       // thought 不丢。会话已切走时丢弃残留（回放会污染新会话视图）。
       if (staleLoad()) {
         clearHistoryWindowBuffer()
+        abandon()
         return
       }
       // In-flight tail: agent may still be aggregating the current
@@ -473,25 +505,32 @@ export async function loadHistory(
       // （runtime.lastLiveQueueChangedAt > 发出时刻），说明状态已前进，丢弃
       // 旧快照等下一次广播。adoption 返回值忽略：历史回放已渲染过该
       // 回合的用户行，这里只应用镜像更新，绝不重复 adoptTurn。
+      //
+      // 访客跳过：队列属于写路径（hub 的访客白名单不含该接口），只读视图
+      // 也没有队列消费者。
       const queuePullSentAt = Date.now()
+      // 访客判定读 store（transport 的方法面在测试里未必有桩）。
+      const guestView = get().guestIdentity != null
       // 精简回放的正文补全（契约 [E]）：首屏**不**自动拉 full。lite 页就是
       // 首屏时间线，欠正文的行由「展开这一行」按需补、或点顶部进度图标
       // （flushLiteFills）一次并发补齐整轮。
-      void transport
-        .queueStatus(sessionId, cwd)
-        .then((qr) => {
-          if (staleLoad()) return
-          if (runtime.lastLiveQueueChangedAt > queuePullSentAt) return
-          const qsnap = qr.queue
-          if (qsnap && typeof qsnap === 'object') {
-            applyQueueChanged(qsnap, sessionId)
-          }
-        })
-        .catch(() => {})
+      if (!guestView)
+        void transport
+          .queueStatus(sessionId, cwd)
+          .then((qr) => {
+            if (staleLoad()) return
+            if (runtime.lastLiveQueueChangedAt > queuePullSentAt) return
+            const qsnap = qr.queue
+            if (qsnap && typeof qsnap === 'object') {
+              applyQueueChanged(qsnap, sessionId)
+            }
+          })
+          .catch(() => {})
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       if (staleLoad()) {
         clearHistoryWindowBuffer()
+        abandon()
         return
       }
       // 快照失败：无回放基准（continueSession 的 grace timer 会再触发

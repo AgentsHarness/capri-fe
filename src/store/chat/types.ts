@@ -4,6 +4,9 @@ import type {
   ContentBlock,
   DetachedTask,
   FollowUp,
+  GuestIdentity,
+  GuestSessionItem,
+  GuestSessionState,
   HostInfo,
   ModelOption,
   PendingReq,
@@ -99,9 +102,36 @@ export interface ChatConnState {
   statusText: string
   /** 连接模式：local（本机 capri-host，锁定本机，无 host 切换）/ hub（跨源 hub，可切换 host）。 */
   mode: 'local' | 'hub'
+  /**
+   * 访客身份（凭分享令牌登录）。非空即只读访客模式：不挂侧栏/Composer，
+   * 写操作入口一律 toast 拒绝，hub 侧还有一层白名单强制。
+   */
+  guestIdentity?: GuestIdentity
+  /** 访客可切换的会话（access-role 的 sessions；refresh 后更新）。 */
+  guestSessions: GuestSessionItem[]
+  /**
+   * 访客只读视图里「当前会话」的状态（hub 的 /api/status 附加字段：
+   * sessionState / busy / awaitingInput / pendingInput）。管理员恒为
+   * undefined——管理员自己就是审批人，卡片本身就在他的界面上。
+   *
+   * 只在访客壳里挂载消费者（GuestStatusLine）；切会话/重连时重拉。
+   */
+  guestSessionState?: GuestSessionState
   hostId?: string
   hostName?: string
   hosts: HostInfo[]
+  /**
+   * Hub 当前在线的 FE 订阅数（/ws/fe 连接总数，含本页）。来自 hub hello
+   * 与 hub 级 `subscribers_changed`；旧 hub 不下发时保持 undefined（顶栏
+   * 不显示，而不是显示一个假的 0）。
+   */
+  feSubscribers?: number
+  /**
+   * 本页在 hub 订阅者名单里的行号（hello 里回带的 `subscriberId`）。
+   * 订阅者面板用它标出「本页」——同一台机器开两个标签页时地址与 UA 完全
+   * 相同，只有行号分得开。老 hub 不发送时保持 undefined。
+   */
+  feSubscriberId?: number
   /** Selected host (hub mode): API calls + event filtering target. */
   selectedHostId?: string
   sessionId?: string
@@ -1103,6 +1133,22 @@ export interface ChatActions {
   memoryFlush: () => Promise<void>
   /** Memory system — /remember: send a raw note to the agent's LLM rewriter. */
   rememberNote: (rawText: string) => Promise<void>
+  // ── 访客模式（只读分享）──────────────────────────────────────────
+  /** 启动链写入访客身份（null = 管理员 / 退出访客）。 */
+  setGuestIdentity: (identity: GuestIdentity | null) => void
+  /** 从顶栏 host 列表切进访客视图（身份 + 会话视图一起换）。 */
+  enterGuestSession: (identity: GuestIdentity) => void
+  /** 重读白名单（hub 的 /api/guest/sessions）。 */
+  refreshGuestSessions: () => Promise<void>
+  /**
+   * 重拉当前会话的只读状态（/api/status 的 sessionState + pendingInput）。
+   * 访客壳在切会话、WS 重连、以及等待中定时调用；管理员不调。
+   */
+  refreshGuestStatus: (sessionId?: string) => Promise<void>
+  /** 访客切换会话：换订阅 + 只读加载历史（不发 session/load）。 */
+  switchGuestSession: (item: GuestSessionItem) => Promise<void>
+  /** 退出访客：恢复本标签页备份的管理员令牌，或回门禁。 */
+  exitGuestSession: () => void
 }
 
 export type ChatState = ChatConnState &

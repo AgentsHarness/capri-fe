@@ -73,7 +73,13 @@ function computeSlotAndTo(
  * 编辑入口（点「编辑」或 e / Enter）只置 store 的 editIndex，正文在
  * QueueEditModal 弹窗里改。
  */
-export function useQueueNav() {
+/**
+ * 访客只读：队列条的正文照旧可见，但选中/编辑/删除/换位/拖拽这些
+ * 都是写操作——键盘层与拖拽层整段不装（点击行也不夺取焦点，j/k 仍归
+ * 滚动区）。
+ */
+export function useQueueNav(opts: { readonly?: boolean } = {}) {
+  const readonly = opts.readonly === true
   const queue = usePromptQueue((s) => s.queue)
   // queuePanelOpen = composer 内联队列是否展开（不再是弹窗）。顶部 +N
   // 徽标与标题行共用这个开关。
@@ -117,6 +123,7 @@ export function useQueueNav() {
   // or a row click) — typing in the composer and scrollback j/k win
   // otherwise. Capture phase so the scrollback nav keys never see these.
   useEffect(() => {
+    if (readonly) return
     if (!queueFocus || queueEditIndex != null || queue.length === 0) return
     const onKey = (e: KeyboardEvent) => {
       if (e.isComposing) return
@@ -167,7 +174,7 @@ export function useQueueNav() {
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [queueFocus, queueEditIndex, queueSel, queue.length])
+  }, [queueFocus, queueEditIndex, queueSel, queue.length, readonly])
 
   const setQueueDragBoth = (
     v: QueueDragState | null,
@@ -183,6 +190,7 @@ export function useQueueNav() {
     i: number,
     e: ReactPointerEvent<HTMLElement>,
   ) => {
+    if (readonly) return
     if (queueEditIndex != null) return
     if (e.button !== 0) return
 

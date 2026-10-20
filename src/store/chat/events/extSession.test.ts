@@ -136,3 +136,21 @@ describe('handleExtSessionEvent — mcp_server_status', () => {
     expect(store.state().mcpServers).toEqual([])
   })
 })
+
+describe('handleExtSessionEvent — subscribers_changed', () => {
+  it('写入 hub 在线 FE 订阅数', () => {
+    const { set, get, state } = makeStore({})
+    const handled = handleExtSessionEvent(set, get, {
+      type: 'subscribers_changed',
+      count: 4,
+    } as AcpEvent)
+    expect(handled).toBe(true)
+    expect(state().feSubscribers).toBe(4)
+  })
+
+  it('不带 count 的坏帧保持原值（不清成 0）', () => {
+    const { set, get, state } = makeStore({ feSubscribers: 2 })
+    handleExtSessionEvent(set, get, { type: 'subscribers_changed' } as AcpEvent)
+    expect(state().feSubscribers).toBe(2)
+  })
+})

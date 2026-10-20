@@ -73,4 +73,43 @@ describe('AccessTokenGate', () => {
     const { container } = render(<AccessTokenGate onSubmit={vi.fn()} />)
     expect(container.querySelector('[role="alert"]')).toBeNull()
   })
+
+  /**
+   * 访客令牌门禁：从 host 列表切访客、本地没存过令牌（或那把已失效）时出现。
+   * 它问的必须是访客令牌，别让用户误以为要再输一遍管理员密钥；取消要能回
+   * 管理员界面。
+   */
+  describe('访客令牌', () => {
+    it('标题/标签/按钮都是访客令牌语义', () => {
+      render(<AccessTokenGate guest onSubmit={vi.fn()} />)
+      expect(screen.getByRole('heading', { name: '输入访客令牌' })).toBeInTheDocument()
+      expect(screen.getByLabelText('访客令牌')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '进入访客视图' })).toBeInTheDocument()
+      expect(screen.getByText(/g_…/)).toBeInTheDocument()
+    })
+
+    it('提交 trim 后的值；空输入与 submitting 时不提交', () => {
+      const onSubmit = vi.fn()
+      render(<AccessTokenGate guest onSubmit={onSubmit} />)
+      const input = screen.getByLabelText('访客令牌')
+      fireEvent.change(input, { target: { value: '  g_tok  ' } })
+      fireEvent.click(screen.getByRole('button', { name: '进入访客视图' }))
+      expect(onSubmit).toHaveBeenCalledWith('g_tok')
+
+      onSubmit.mockClear()
+      fireEvent.change(input, { target: { value: '   ' } })
+      fireEvent.keyDown(input, { key: 'Enter' })
+      expect(onSubmit).not.toHaveBeenCalled()
+    })
+
+    it('给了 onCancel 才渲染返回按钮，点击回到管理员界面', () => {
+      const onCancel = vi.fn()
+      const { rerender } = render(<AccessTokenGate guest onSubmit={vi.fn()} />)
+      expect(screen.queryByRole('button', { name: '返回' })).toBeNull()
+
+      rerender(<AccessTokenGate guest onSubmit={vi.fn()} onCancel={onCancel} />)
+      fireEvent.click(screen.getByRole('button', { name: '返回' }))
+      expect(onCancel).toHaveBeenCalledTimes(1)
+    })
+  })
 })

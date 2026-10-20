@@ -17,6 +17,20 @@ export type AcpEvent =
       service?: 'hub'
       hosts?: HostInfo[]
       defaultHostId?: string
+      /**
+       * Hub-level hello: live browser /ws/fe clients (this page included) —
+       * the top bar renders it beside the host block. Changes arrive as
+       * hub-level `subscribers_changed` frames; older hubs omit the field.
+       */
+      feSubscribers?: number
+      /**
+       * Hub-level hello: this socket's row id in the admin subscriber
+       * panel (`GET /api/subscribers`). Lets the panel mark "this page"
+       * without guessing by address — two tabs on one machine look alike.
+       */
+      subscriberId?: number
+      /** 访客凭 token 登录时 hub 报的角色（admin 省略）。 */
+      role?: 'admin' | 'guest'
       /** User home dir — for "~/…" path shortening (TUI status bar). */
       homeDir?: string
       agentInfo?: unknown
@@ -404,6 +418,12 @@ export type AcpEvent =
   | { type: 'permissions_reset'; params?: Record<string, unknown> }
   /** Hub-level: a host paired / came online / dropped off (capri-hub). */
   | { type: 'hosts_changed'; params?: Record<string, unknown> }
+  /**
+   * Hub-level (`capri-hub`): the live browser subscriber total changed —
+   * a /ws/fe page connected or left. No hostId: the count covers the whole
+   * hub. The top bar shows it right of the host block.
+   */
+  | { type: 'subscribers_changed'; count?: number }
   /**
    * Hub-level: the shared browser prefs doc (pins / todos) was replaced
    * (capri-hub broadcasts this on every PUT /api/prefs). Browsers apply it

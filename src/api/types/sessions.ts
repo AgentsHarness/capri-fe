@@ -433,6 +433,34 @@ export type SessionState = {
   state?: 'active' | 'awaiting' | 'idle'
 }
 
+/**
+ * 访客只读视图的会话状态（hub 的 /api/status 附加字段）。
+ *
+ * 访客看不到 pendingRequests / roster——hub 会把它们整段删掉。它只告诉
+ * 访客「你正在看的这个会话」在忙还是在等输入，等的是什么类别（不含
+ * requestId / method / params）；真正的内容仍只在管理员那边。
+ */
+export type GuestSessionState = {
+  /** 当前会话的分类（由 hub 按 roster 行 + pending 推导）。 */
+  sessionState: 'active' | 'awaiting' | 'idle'
+  /** 该会话是否有回合在跑（host 全局 busy 不算数）。 */
+  busy: boolean
+  /** 该会话是否卡在某个客户端请求上。 */
+  awaitingInput: boolean
+  /** 待处理请求的摘要；无请求时缺省。 */
+  pendingInput?: {
+    /**
+     * 最老的那条请求的类别。访客永远拿不到 method 原文，只拿这个粗分类；
+     * other = 前端/Hub 都不认识的类别（照样算「在等」，只是说不出是什么）。
+     */
+    kind: 'permission' | 'question' | 'plan' | 'folder_trust' | 'diff_review' | 'mcp_elicit' | 'other'
+    /** 该会话待处理请求条数。 */
+    count: number
+    /** 最早那条请求的到达时刻（unix ms，倒计时起点）。 */
+    receivedAt?: number
+  }
+}
+
 /** One branch row of x.ai/git/branches (rpc/git.rs GitBranch, camelCase). */
 
 

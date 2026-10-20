@@ -122,6 +122,11 @@ export function handleExtSessionEvent(
         // Hub-level: a host paired / came online / dropped off.
         void get().refreshHosts()
         break
+      case 'subscribers_changed':
+        // Hub-level: 在线 FE 订阅数变了（有页面连上/离开）。顶栏 host 块
+        // 右侧展示；不是数字（老 hub / 坏帧）就保持原值。
+        if (typeof ev.count === 'number') set({ feSubscribers: ev.count })
+        break
     default:
       return false
   }

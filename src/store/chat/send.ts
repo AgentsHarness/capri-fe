@@ -12,6 +12,7 @@ import {
 import { armTurnBlipWatchdog, turnIsLive } from './turn'
 import { pushToast } from '../toast'
 import { captureAsyncScope, isAsyncScopeCurrent } from './globals'
+import { blockGuestWrite } from './guestMode'
 
 export async function sendPrompt(
   set: SetState,
@@ -20,6 +21,7 @@ export async function sendPrompt(
   blocks?: ContentBlock[],
   opts?: { fromShell?: boolean; promptId?: string }
 ): Promise<void> {
+    if (blockGuestWrite(get())) return
     const t = text.trim()
     // Image-only prompts (Composer thumbnails, no text) are sendable —
     // the images are the content. Without image blocks an empty prompt

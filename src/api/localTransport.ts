@@ -1,17 +1,21 @@
-import type { AcpEvent, HostInfo } from './types'
+import type { AcpEvent, GuestSessionItem, HostInfo } from './types'
 import { loadStr, removeKey, saveStr } from '../lib/storage'
 import {
   PAGE_SLOT,
+  adoptSharedToken as adoptTokenFromHash,
   dropHost,
+  loadGuestToken,
   loadHostTokens,
   loadHubToken,
   loadRouteChoices,
+  saveGuestToken,
   saveHostToken,
   saveHubToken,
   saveRouteChoice,
   type RouteChoice,
 } from './credentials'
 import type { TransportHandler, TransportMode } from './transport'
+import type { GuestIdentity } from './types'
 import { EventSequencer, type SequencedEvent } from './liveSequencing'
 import { rpcMixins } from './rpc/mixins'
 import { clearHostRegistryHandoff, rememberHostRegistry, freshHostRegistry } from './rpc/hosts'
@@ -153,8 +157,19 @@ export class LocalTransport {
    * 就往本机撞一发 401。用户给了钥匙 / 改了通路选择时立即清掉。
    */
   private probeAuthRetryAt = new Map<string, number>()
-  /** Shared secret for hub FE_TOKEN (Authorization / WS ?token=). */
+  /** 管理员那把 hub FE_TOKEN（Authorization / WS ?token=）。 */
   private hubToken: string
+  /**
+   * 访客槽（localStorage 的 `capri-fe.guestToken`）。与管理员那把彻底分开：
+   * 同一浏览器可以同时存两把，切换身份只是换「这次出示哪格」，谁都顶不掉谁。
+   */
+  private guestToken: string = loadGuestToken()
+  /**
+   * 本次启动/切换要用哪一格做门禁：admin = 管理员那把（hub 槽 / 纯 local 的
+   * 页面 host 槽），guest = 访客槽。**启动时管理员优先**，只有分享链接或
+   * 顶栏「切换到访客模式」才把它置为 guest。
+   */
+  private credentialSource: 'admin' | 'guest' = 'admin'
   /**
    * 每台 host 自己的近路钥匙（hostId → 密钥）。与 hub 槽彻底分开：中继路径
    * 由 host 进程自注入凭据，浏览器只有走近路才需要这把，且它可能和 hub 那把
@@ -235,6 +250,23 @@ export class LocalTransport {
    * (turn still streaming) from a turn that never started (host dead).
    */
   private lastLiveAt: number | null = null
+  /**
+   * 访客身份（凭 guest token 登录时的 access-role 应答）。非空即进入只读
+   * 访客模式：
+   * - 路由恒为「hub 中继 + 选中 host」，近路探测全部短路（本机直连没有
+   *   hub 承担白名单）；
+   * - live 事件直接 emit，绕过 EventSequencer（hub 已按会话过滤，per-host
+   *   seq 在这里不连续，排序引擎会把事件永远堵在 pending 里）；
+   * - 序号补拉（/api/events）不该被调用，hub 对访客直接 403。
+   */
+  private guest: GuestIdentity | null = null
+  /** 访客当前显示的会话（随 WS 连接与 subscribe 帧声明）。 */
+  private guestSessionId = ''
+  /**
+   * 本页正在看的会话（管理员）。只为 hub 的在线订阅者面板上报，不参与
+   * 事件过滤；与 guestSessionId 分开是因为访客那条路径还要过白名单校验。
+   */
+  private viewingSessionId = ''
 
   constructor(base = '', hubToken = resolveAccessToken()) {
     this.base = base.replace(/\/$/, '')
@@ -261,6 +293,10 @@ export class LocalTransport {
     // 就会按 after=0 把整段缓冲拉回来当新事件追加。
     if (hostId) this.seq.seedFromLive(hostId)
     this.sendSubscribeFrame()
+    // 换 host 会作废会话归属：旧会话名留在这行会指向另一台机器上的同名
+    // 会话。清掉并让面板那一格空着，等 store 按新会话再上报。
+    this.viewingSessionId = ''
+    this.sendViewingFrame(true)
   }
 
   /**
@@ -269,20 +305,344 @@ export class LocalTransport {
    * 水位。连接还没建起来（首次加载时 host 往往晚于 WS 选定）时不用补发：
    * connectWS 会把选中 host 直接写进 ?host=。
    */
-  private sendSubscribeFrame(): void {
+  private sendSubscribeFrame(sessionId?: string): void {
     if (this.mode !== 'hub') return
     const ws = this.ws
     if (!ws || ws.readyState !== WebSocket.OPEN) return
     const hostId = this.selectedHostId ?? ''
+    // 访客：没显式给 session 时用当前显示的会话（setHost 触发的那一帧
+    // 也要带上，否则 hub 只知道 host 不知道该放行哪个会话）。
+    const guestSession = sessionId ?? (this.guest ? this.guestSessionId : '')
     try {
-      ws.send(JSON.stringify({ v: 1, type: 'subscribe', host: hostId }))
+      ws.send(
+        JSON.stringify({
+          v: 1,
+          type: 'subscribe',
+          host: hostId,
+          // 访客：hub 按「host + session」双白名单校验；管理员忽略该字段。
+          ...(this.guest && guestSession ? { session: guestSession } : {}),
+        }),
+      )
     } catch {
       // 连接正好在关闭中：重连后的 ?host= 会带上同样的选择。
     }
   }
 
+  /**
+   * 声明本页正在看的会话，供 hub 的在线订阅者面板（GET /api/subscribers）
+   * 展示。只读台账：hub 不拿它做事件过滤，所以单独一帧、不换订阅、不回
+   * 执——用 subscribe 帧捎带会多打一次 seq 对齐，会话切换频繁时纯属噪声。
+   *
+   * null / 空串 = 当前没有会话（切 host、新建会话前），hub 会把该行清空。
+   */
+  reportViewingSession(sessionId: string | null): void {
+    const next = (sessionId ?? '').trim()
+    if (next === this.viewingSessionId) return
+    this.viewingSessionId = next
+    this.sendViewingFrame(true)
+  }
+
+  /**
+   * force: 发一帧即使会话为空（切 host 时用来清掉旧会话名）。常规上报与
+   * 重连补报都只在有会话时发——空帧对面板没有任何信息量。
+   */
+  private sendViewingFrame(force = false): void {
+    // 访客的会话已经随 subscribe 帧声明（hub 还要按白名单校验），不再
+    // 重复上报。
+    if (this.mode !== 'hub' || this.guest) return
+    if (!force && !this.viewingSessionId) return
+    const ws = this.ws
+    if (!ws || ws.readyState !== WebSocket.OPEN) return
+    try {
+      ws.send(
+        JSON.stringify({
+          v: 1,
+          type: 'viewing',
+          host: this.selectedHostId ?? '',
+          session: this.viewingSessionId,
+        }),
+      )
+    } catch {
+      // 连接正在关闭：重连的 onopen 会重新上报。
+    }
+  }
+
+  /**
+   * 访客切换会话：换 host（若不同）+ 在同一 WS 上改订阅到 (host, session)。
+   * 只做订阅，不触发任何写操作。
+   */
+  sendGuestSubscribe(hostId: string, sessionId: string): void {
+    if (!this.guest) return
+    // 先写会话再换 host：setHost 内部会发一帧 subscribe，此时两字段都是新的。
+    this.guestSessionId = sessionId
+    if (hostId !== this.selectedHostId) this.setHost(hostId)
+    else this.sendSubscribeFrame(sessionId)
+  }
+
   getHost(): string | null {
     return this.selectedHostId
+  }
+
+  // ── 访客模式 ──────────────────────────────────────────────────────
+
+  /**
+   * 采纳 URL fragment 里的分享令牌（`#g=…`）。返回是否采到一个新令牌；
+   * 调用方在启动链最前面调用（早于 detectMode）。
+   */
+  adoptSharedToken(): boolean {
+    const token = adoptTokenFromHash()
+    if (!token) return false
+    this.guestToken = token
+    this.useGuestCredentials()
+    return true
+  }
+
+  /**
+   * 进入访客模式：记下身份、锁定 hub 中继、把选中 host 夹到白名单里的
+   * 第一台。之后 url()/WS/live 事件全走访客分支。
+   *
+   * hub 判这把是访客，说明**当前出示的就是访客令牌**（老版本可能把它存在
+   * hub 槽）：归位到访客槽并腾空 hub 槽，否则退出访客会拿着一把访客令牌
+   * 站在管理员门禁前，怎么都进不去。
+   */
+  setGuestMode(identity: GuestIdentity | null) {
+    this.guest = identity
+    this.guestSessionId = identity?.sessions[0]?.sessionId ?? ''
+    if (!identity) return
+    if (this.credentialSource !== 'guest') {
+      const t = this.doorToken()
+      if (t) {
+        this.guestToken = t
+        saveGuestToken(t)
+        if (this.mode !== 'local') {
+          this.hubToken = ''
+          saveHubToken('')
+        }
+      }
+      this.credentialSource = 'guest'
+      this.allowDetectAuth = true
+      this.hubRejected = false
+      clearHostRegistryHandoff()
+    }
+    const first = identity.sessions[0]
+    if (first?.hostId) this.setHost(first.hostId)
+  }
+
+  /**
+   * 切成「出示访客槽」。管理员那把留在自己的槽里不动——退出访客时直接切回
+   * 去即可，不需要备份/恢复。存储与内存的访客令牌是同一份真相源。
+   */
+  private useGuestCredentials(): void {
+    this.credentialSource = 'guest'
+    this.allowDetectAuth = true
+    this.hubRejected = false
+    this.hostRejected.clear()
+    clearHostRegistryHandoff()
+    this.abortInflight()
+  }
+
+  /**
+   * 切成「出示管理员槽」。只换令牌来源，不清任何存储：访客令牌照旧留着，
+   * 下次再切回去不用重新输入。
+   */
+  private useAdminCredentials(): void {
+    this.credentialSource = 'admin'
+    this.allowDetectAuth = true
+    this.hubRejected = false
+    this.hostRejected.clear()
+    clearHostRegistryHandoff()
+    this.abortInflight()
+    if (this.es || this.ws) this.connect()
+  }
+
+  /**
+   * hub 判定现在出示的那把是管理员：把它从访客槽搬回 hub 槽，身份归位管理员。
+   *
+   * 只在「访客槽被当成门禁令牌」时发生——分享链接里贴的其实是管理员密钥，
+   * 或老版本把访客令牌写进 hub 槽留下的反向状态。搬过去之后两个槽仍然各司
+   * 其职，下次切访客会重新问令牌。
+   */
+  settleAdminCredential(): void {
+    if (this.credentialSource !== 'guest') return
+    // 纯 local 没有 hub 槽的概念：只把身份归位，两个槽都不动。
+    if (this.mode === 'local') {
+      this.credentialSource = 'admin'
+      return
+    }
+    const t = this.guestToken
+    if (t && !this.hubToken) {
+      this.hubToken = t
+      saveHubToken(t)
+    }
+    this.guestToken = ''
+    saveGuestToken('')
+    this.credentialSource = 'admin'
+  }
+
+  /** 当前门禁用的是哪一格（顶栏据此渲染「切换到访客 / 退出访客」）。 */
+  getCredentialSource(): 'admin' | 'guest' {
+    return this.credentialSource
+  }
+
+  /** 存过的访客令牌（空串 = 没存过，切访客时要先问用户）。 */
+  getGuestToken(): string {
+    // 存储是真相源：多标签页写入、或本轮早于构造函数写入时，内存值可能是旧的。
+    const stored = loadGuestToken()
+    if (stored !== this.guestToken) {
+      this.guestToken = stored
+    }
+    return this.guestToken
+  }
+
+  /**
+   * 访客槽那把打不开门（分享链接已失效 / 被吊销）：清掉访客槽并回管理员
+   * 身份。管理员那把一个字不动——它从来不在同一个槽里。
+   */
+  dropGuestCredential(): void {
+    this.guestToken = ''
+    saveGuestToken('')
+    this.guest = null
+    this.guestSessionId = ''
+    this.credentialSource = 'admin'
+    this.hubRejected = false
+  }
+
+  /**
+   * 启动时选令牌来源：**管理员优先**。分享链接（`#g=`）已在 adoptSharedToken
+   * 里抢先把来源置成 guest，这里不覆盖；其余情况只要有管理员密钥就用它，
+   * 只有「本地从来没存过管理员密钥、但存过访客令牌」时才直接进访客视图，
+   * 否则那台浏览器会被管理员门禁永远挡在自己进不去的地方。
+   */
+  chooseStartupCredential(): 'admin' | 'guest' {
+    // 纯 local 没有 hub 承载白名单，无所谓访客视图：门禁那把永远是这台 host 的
+    // （分享链接落到 local 页面也一样，别让访客槽顶掉本机钥匙）。
+    if (this.mode === 'local') {
+      this.credentialSource = 'admin'
+      return 'admin'
+    }
+    if (this.credentialSource === 'guest') return 'guest'
+    if (this.hasAdminToken()) return 'admin'
+    if (this.getGuestToken()) {
+      this.credentialSource = 'guest'
+      return 'guest'
+    }
+    return 'admin'
+  }
+
+  /** 是否已经存着一把管理员门禁密钥（hub 槽；纯 local 是页面这台的 host 槽）。 */
+  hasAdminToken(): boolean {
+    return this.mode === 'local'
+      ? !!this.hostTokens[this.pageSlot()]
+      : loadHubToken() !== ''
+  }
+
+  /**
+   * 顶栏「切换到访客模式」：有存过的访客令牌就直接拿它向 hub 复核身份；
+   * 没存过则返回 'need_token'（此时**不动令牌槽**，管理员请求照常），由
+   * UI 弹访客令牌输入框，输入后再调 {@link tryGuestToken}。
+   *
+   * 'invalid' = 存的那把被 hub 拒了（吊销 / 过期 / 其实是管理员密钥），
+   * 已从访客槽清掉；'error' = 网络问题，槽原样保留，稍后重试即可。
+   */
+  async enterGuestMode(): Promise<'ok' | 'need_token' | 'invalid' | 'error'> {
+    const stored = this.getGuestToken()
+    if (!stored) return 'need_token'
+    // 先验后切：失败时管理员身份与在途请求都没被动过，页面原样不动。
+    const r = await this.probeGuestRole(stored)
+    if (typeof r === 'string') {
+      // 存的那把开不了访客视图（吊销 / 过期 / 其实是管理员密钥）：清掉，
+      // 让 UI 要一把新的。
+      if (r === 'invalid') this.dropGuestCredential()
+      return r
+    }
+    this.useGuestCredentials()
+    this.setGuestMode(r)
+    if (this.es || this.ws) this.connect()
+    return 'ok'
+  }
+
+  /**
+   * 用一把用户输入的访客令牌进入访客模式：hub 的 `/api/access-role` 回 guest
+   * 才算数（回 admin 说明这是管理员密钥，不是访客令牌）。通过才落库；失败
+   * 不落库，当前管理员身份照常。
+   */
+  async tryGuestToken(token: string): Promise<GuestIdentity | null> {
+    const t = token.trim()
+    if (!t) return null
+    const r = await this.probeGuestRole(t)
+    if (typeof r === 'string') return null
+    this.guestToken = t
+    saveGuestToken(t)
+    this.useGuestCredentials()
+    this.setGuestMode(r)
+    if (this.es || this.ws) this.connect()
+    return r
+  }
+
+  /**
+   * 拿指定令牌问一次 hub 的角色。**不改身份、不改存储**：管理员界面上的
+   * 「切到访客」必须能在验证失败时原样留在管理员那边，不能先把令牌槽换掉、
+   * 把在途请求全 abort 一遍再退回来。
+   *
+   * 返回身份对象，或 'invalid'（401 / 404 / 不是访客令牌）、'error'（网络等）。
+   */
+  private async probeGuestRole(token: string): Promise<GuestIdentity | 'invalid' | 'error'> {
+    if (this.mode !== 'hub') return 'error'
+    try {
+      const res = await this.fetch(
+        `${this.apiBase()}/api/access-role`,
+        {},
+        {
+          hubLevel: true,
+          // 自带 401 语义：验令牌失败不能触发运行时「登录失效」分流。
+          authProbe: true,
+          forceToken: token,
+        },
+      )
+      // 旧 hub 没有访客功能：404 当「不是访客令牌」处理。
+      if (res.status === 401 || res.status === 404) return 'invalid'
+      if (!res.ok) return 'error'
+      const data = (await res.json().catch(() => null)) as {
+        role?: string
+        guest?: { id?: string; label?: string; expiresAt?: number }
+        sessions?: GuestSessionItem[]
+      } | null
+      if (data?.role !== 'guest') return 'invalid'
+      return {
+        role: 'guest',
+        guest: {
+          id: data.guest?.id ?? '',
+          label: data.guest?.label ?? '',
+          expiresAt: data.guest?.expiresAt ?? 0,
+        },
+        sessions: Array.isArray(data.sessions) ? data.sessions : [],
+      }
+    } catch {
+      return 'error'
+    }
+  }
+
+  /** 当前访客身份（null = 管理员 / local）。 */
+  getGuestIdentity(): GuestIdentity | null {
+    return this.guest
+  }
+
+  isGuest(): boolean {
+    return this.guest != null
+  }
+
+  /**
+   * 退出访客：清掉访客身份，切回管理员槽（那把本来就没被顶掉），并重连。
+   * 管理员槽为空时由调用方决定回门禁（`hasAdminToken()` 为 false）。
+   */
+  exitGuestMode(): void {
+    const wasGuest = this.guest != null
+    this.guest = null
+    this.guestSessionId = ''
+    if (!wasGuest) return
+    this.useAdminCredentials()
+    // 选中 host 不动：访客看的那台在管理员注册表里通常也在，applyHostRegistry
+    // 会直接沿用；真不在（令牌只对白名单开放）时它自己会重新挑一台。
   }
 
   /**
@@ -306,6 +666,10 @@ export class LocalTransport {
    */
   setAccessToken(token: string | null) {
     const next = (token ?? '').trim()
+    // 门禁里输入的是管理员密钥：身份切回管理员，访客槽原样保留。
+    this.credentialSource = 'admin'
+    this.guest = null
+    this.guestSessionId = ''
     if (this.mode === 'local') {
       this.setHostToken(this.pageSlot(), next)
     } else {
@@ -339,10 +703,11 @@ export class LocalTransport {
   }
 
   /**
-   * 当前门禁那把：hub 模式 = hub 槽；纯 local = 页面这台的 host 槽。
-   * 启动探测与「要不要弹门禁」都问它。
+   * 当前门禁那把：管理员身份 = hub 槽（纯 local = 页面这台的 host 槽）；
+   * 访客身份 = 访客槽。启动探测与「要不要弹门禁」都问它。
    */
   private doorToken(): string {
+    if (this.credentialSource === 'guest') return this.guestToken
     if (this.mode !== 'local') return this.hubToken
     return this.hostTokens[this.pageSlot()] ?? ''
   }
@@ -577,6 +942,8 @@ export class LocalTransport {
    * 不按页面 hostname 过滤，避免局域网 IP 访问内嵌前端被误判为远程。
    */
   isLocalDirect(): boolean {
+    // 访客没有本机近路：白名单只在 hub 上，直连本机等于绕过它。
+    if (this.guest) return false
     return this.usableRoute(this.selectedHostId) != null
   }
 
@@ -638,6 +1005,7 @@ export class LocalTransport {
    * 作废旧近路，宁可回落到 hub 中继也不能把请求发到已经不属于它的端口上。
    */
   verifyLocalRoute(hostId: string): Promise<void> {
+    if (this.guest) return Promise.resolve()
     const running = this.probing.get(hostId)
     if (running) return running
     const p = (async () => {
@@ -714,6 +1082,7 @@ export class LocalTransport {
    * 每台 host 一次会话只弹窗问一遍（askedKeyFor）。
    */
   async probeLocalRoute(hostId: string): Promise<LocalProbe> {
+    if (this.guest) return 'rejected'
     const route = this.localRoutes.get(hostId)
     if (!route) return 'rejected'
     const at = { base: route.base, port: route.port }
@@ -870,6 +1239,7 @@ export class LocalTransport {
   async discoverLocalHost(
     hosts?: Array<{ hostId: string; port?: number; online?: boolean }>,
   ): Promise<string | null> {
+    if (this.guest) return null
     if (this.mode !== 'hub') return this.getLocalHostId()
     if (this.pageIsLoopback() && this.hasPageOriginRoute()) return this.getLocalHostId()
 
@@ -1201,6 +1571,17 @@ export class LocalTransport {
   }
 
   private url(path: string): string {
+    // 访客：恒走 hub 中继 + 选中 host。本机直连没有 hub 承担白名单，
+    // 也拿不到这台 host 的近路钥匙。
+    if (this.guest) {
+      const params = new URLSearchParams()
+      if (this.selectedHostId) params.set('host', this.selectedHostId)
+      // hub 用它把 /api/status 的 sessionId/cwd 钉到访客正在看的会话
+      // （host 的活动会话可能是别人的）。其余端点忽略这个参数。
+      if (this.guestSessionId) params.set('session', this.guestSessionId)
+      const qs = params.toString()
+      return `${this.apiBase()}${path}${qs ? `?${qs}` : ''}`
+    }
     // hub 模式：base 指向 hub，带 ?host= 由 hub 中转到目标 host；
     // 但选中本机 host 时直连本地（不绕 hub 中继，省一跳网络往返）。
     // local 模式：同源本机，绝不带 ?host=（避免 hostId=local 混淆）。
@@ -1286,6 +1667,8 @@ export class LocalTransport {
    *   通过的那把，两把同值时全程只问一次）。
    */
   private tokenFor(input: string): string | null {
+    // 访客：全部请求都打 hub（isLocalDirect 恒 false），出示访客槽那把。
+    if (this.credentialSource === 'guest') return this.guestToken || null
     if (!this.isLocalRequest(input)) return this.hubToken || null
     const slot = this.routeOwner(input)
     const route = slot ? this.localRoutes.get(slot) : null
@@ -1320,6 +1703,22 @@ export class LocalTransport {
     }
     const slot = this.pageSlot()
     if (this.hubRejected) return
+    // 访客槽被拒：清访客槽，**管理员那把原样保留**（切回管理员照样能进）。
+    if (this.credentialSource === 'guest') {
+      if (!this.guestToken) return
+      this.hubRejected = true
+      this.guestToken = ''
+      saveGuestToken('')
+      clearHostRegistryHandoff()
+      for (const h of this.hubAuthHandlers) {
+        try {
+          h()
+        } catch {
+          /* 一个订阅者出错不影响其余 */
+        }
+      }
+      return
+    }
     if (!this.hubToken && !(this.mode === 'local' && this.hostTokens[slot])) return
     this.hubRejected = true
     this.hubToken = ''
@@ -1455,8 +1854,8 @@ export class LocalTransport {
       // 的 access log 里。hub 侧 feAuth 的顺序是 Bearer 头 → ?ticket= →
       // 兼容旧版 ?token=。
       params.set('ticket', ticket)
-    } else if (this.hubToken) {
-      params.set('token', this.hubToken)
+    } else if (this.doorToken()) {
+      params.set('token', this.doorToken())
     }
     // Ask the hub to flate-compress events frames; the browser
     // DecompressionStream API decodes them.
@@ -1469,6 +1868,10 @@ export class LocalTransport {
     if (this.mode === 'hub' && scope) {
       params.set('host', scope)
     }
+    // 访客：当前会话随连接一起声明，hub 据此把订阅夹进白名单。管理员
+    // 忽略该参数（行为不变）。
+    const guestSession = this.guest ? this.guestSessionId : ''
+    if (this.guest && guestSession) params.set('session', guestSession)
     u.search = params.toString()
     u.hash = ''
     return u.toString()
@@ -1481,7 +1884,9 @@ export class LocalTransport {
    * hubLevel：ticket 属于 hub 级请求，不能被切 host 的 abort 风暴取消。
    */
   private async wsTicket(): Promise<string | null> {
-    if (!this.hubToken) return null
+    // 访客也用 ticket（hub 在 ticket 里带 guest 身份），凭据是自己的
+    // guest token；管理员用 hub 槽那把。没有凭据就不裸连。
+    if (!this.getAccessToken()) return null
     try {
       const res = await this.fetch(
         `${this.apiBase()}/api/ws-ticket`,
@@ -1506,6 +1911,9 @@ export class LocalTransport {
     after: number,
     signal: AbortSignal,
   ): Promise<SequencedEvent[] | null> {
+    // 访客不做序号补拉：hub 对 /api/events 直接 403（事件已被按会话
+    // 过滤，per-host seq 不再连续），调用只会换来一次失败往返。
+    if (this.guest) return null
     const qs = `?host=${encodeURIComponent(hostId)}&after=${after}`
     const res = await this.fetch(`${this.apiBase()}/api/events${qs}`, {}, { signal })
     if (!res.ok) return null
@@ -1614,6 +2022,12 @@ export class LocalTransport {
     if (data.type === 'subscribed') {
       // 切 host 的 subscribe 回执：以 hub 报的该 host 水位对齐本地序号。
       // 只认当前选中 host 的回执——连续快点选时旧回执不能拿来对齐新 host。
+      // 访客不参与排序/补拉（见 onWsMessage 的 events 分支），回执只用于
+      // 通知上层订阅已生效。
+      if (this.guest) {
+        this.emit(data as unknown as AcpEvent)
+        return
+      }
       const d = data as { host?: unknown; seq?: unknown }
       if (d.host && d.host === this.selectedHostId && typeof d.seq === 'number') {
         this.reconcileHostSeq(this.selectedHostId, d.seq)
@@ -1626,6 +2040,15 @@ export class LocalTransport {
       return
     }
     if (data.type === 'events' && Array.isArray((data as { events?: unknown }).events)) {
+      // 访客：hub 已按「host + session」白名单过滤，per-host seq 因而不再
+      // 连续（别的会话的事件被丢弃）。任何序号排序/缺口补拉都会把这些
+      // 事件永远堵在 pending 里，所以直接 emit。
+      if (this.guest) {
+        for (const ev of (data as { events: AcpEvent[] }).events) {
+          if (ev && typeof ev === 'object' && 'type' in ev) this.emit(ev)
+        }
+        return
+      }
       for (const ev of (data as { events: AcpEvent[] }).events) {
         if (ev && typeof ev === 'object' && 'type' in ev) {
           // 双连接：选中本机 host 时，本机事件以本地 SSE 为唯一来源
@@ -1721,6 +2144,9 @@ export class LocalTransport {
       this.reconnectAttempt = 0
       // hub 恢复在线：让 store 清掉"与 hub 连接断开"提示。
       this.emitLocal({ type: 'hub_conn', online: true })
+      // 新连接上订阅者面板还看不到「在看哪个会话」：补报一次（hub 的
+      // 行是新建的，旧连接的台账不会跟过来）。
+      this.sendViewingFrame()
     }
 
     ws.onmessage = (msg) => {

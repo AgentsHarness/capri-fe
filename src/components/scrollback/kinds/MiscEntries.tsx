@@ -62,7 +62,7 @@ export function ErrorEntry({
   e: Extract<ScrollEntry, { kind: 'error' }>
   chrome: EntryChrome
 }) {
-  const { shell, openViewer } = chrome
+  const { shell, openViewer, readonly = false } = chrome
   const showView = shell.selected
   const restartAgent = useChatStore((s) => s.restartAgent)
   const [restarting, setRestarting] = useState(false)
@@ -80,7 +80,7 @@ export function ErrorEntry({
           {e.text}
         </div>
         <ViewButton visible={showView} onOpen={() => openViewer(e.id)} />
-        {e.action === 'restart-agent' && (
+        {e.action === 'restart-agent' && !readonly && (
           // 传输级失败：agent 不可达，唯一恢复动作是重启——行内直接可点。
           <InlineAction
             label={restarting ? '重启中…' : '重启'}

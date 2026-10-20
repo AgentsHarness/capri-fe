@@ -15,8 +15,10 @@ type KVHandle = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
 
 export const KEY = {
   // ── 连接与凭据 ────────────────────────────────────────────────
-  /** 公网 hub 的门禁密钥。 */
+  /** 公网 hub 的门禁密钥（管理员）。 */
   hubToken: 'capri-fe.token',
+  /** 访客令牌（只读分享）。与管理员密钥分开存，切换身份互不覆盖。 */
+  guestToken: 'capri-fe.guestToken',
   /** hostId → 该机 FE_TOKEN（仅浏览器直连本机端口时出示）。 */
   hostTokens: 'capri-fe.hostTokens',
   /** hostId → 'direct' | 'relay' 通路覆盖。 */

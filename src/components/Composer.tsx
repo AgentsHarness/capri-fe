@@ -33,7 +33,8 @@ import {
   IMAGE_THUMB_CLASS,
 } from '../theme/layout'
 import { IconGlyph } from './IconGlyph'
-import { ArrowDown, ArrowDownToLine, ImagePlus, X } from 'lucide-react'
+import { ArrowDown, ArrowDownToLine, ImagePlus, ShieldQuestion, X } from 'lucide-react'
+import { guestWaitingLabel, guestWaitingSince as guestWaitingSinceOf } from './composer/guestStatus'
 import { SlashMenu } from './SlashMenu'
 import { FilePickerMenu } from './FilePickerMenu'
 import { isMultilineEnabled, registerModelMenuOpener, escapeSlash, literalSlashPayload } from '../commands/registry'
@@ -90,8 +91,11 @@ import { useScrollbarGutter } from '../hooks/useScrollbarGutter'
  * corner elements. A stashed draft breaks the top border on the right
  * ("Stashed", TUI prompt_caption); the model · flags caption breaks the
  * bottom border the same way. Both mask the line with the base background.
+ *
+ * 访客只读态（guest）：保留输入框外观与模型/模式读数，但输入框禁用，
+ * 并收起所有依赖输入的菜单、队列与发送入口。
  */
-export function Composer() {
+export function Composer({ guest = false }: { guest?: boolean }) {
   const isTouch = useTouchUi()
   const [text, setText] = useState('')
   const [focused, setFocused] = useState(false)
@@ -271,7 +275,7 @@ export function Composer() {
 
   // ── TUI mid-turn send queue (Enter during a turn → queued) —
   // 选择/焦点/拖拽/键盘操作状态机 — composer/useQueueNav.ts ──
-  const queueNav = useQueueNav()
+  const queueNav = useQueueNav({ readonly: guest })
   const {
     queue,
     setQueuePanelOpen,
@@ -774,7 +778,13 @@ export function Composer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rewindOpen])
 
-  const promptFocused = isTouch ? focused : focused || focusMode === 'prompt'
+  // 访客只读：输入框永远不呈现聚焦态（store 的 focusMode 默认就是
+  // 'prompt'，不能让它把访客的边框点亮）。
+  const promptFocused = guest
+    ? false
+    : isTouch
+      ? focused
+      : focused || focusMode === 'prompt'
 
   // ── TUI turn status line (turn_status.rs) ──
   // `⠧ Thinking…  1m20s ⇣12k [stop]` while busy; hidden when idle —
@@ -786,6 +796,34 @@ export function Composer() {
   // turn-timer re-renders and the monitor pulse (half speed).
   const idleCue = useMemo(() => stillRunningCue(entries, topTasks), [entries, topTasks])
   const idleCueVisible = !busy && conn === 'ready' && awaitingNext && idleCue != null
+  // ── 访客状态（只读）──
+  // 访客壳不挂审批/提问卡（他不是审批人），状态改由这一行承担：在跑 / 在等
+  // 管理员 / 空闲。数据来自 hub 的 /api/status（按会话过滤过的摘要），刷新
+  // 时机见 refreshGuestStatus 的调用点。管理员两条选择器恒为 undefined，
+  // 下面的分支照旧走原来的活动臂。
+  const guestSessionState = useChatStore((s) => s.guestSessionState)
+  const refreshGuestStatus = useChatStore((s) => s.refreshGuestStatus)
+  const sessionId = useChatStore((s) => s.sessionId)
+  const guestWaitingNow = guestSessionState?.pendingInput != null
+  const guestTick = useCallback(() => {
+    void refreshGuestStatus()
+  }, [refreshGuestStatus])
+  useEffect(() => {
+    if (!guest || !sessionId) return
+    // 挂载 / 切会话立刻拉一次；之后等待中/运行中跟得快（下一秒可能变），
+    // 空闲才降速。切回前台标签页补一次：后台期间定时器被浏览器节流，回来
+    // 时那一屏状态可能已经是十几分钟前的。
+    guestTick()
+    const t = window.setInterval(guestTick, guestWaitingNow ? 5000 : 15000)
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') guestTick()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      window.clearInterval(t)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [guest, sessionId, guestWaitingNow, guestTick])
   // Busy arm: dynamic activity label (newest running tool / thinking /
   // streaming reply) with its phase timer — TUI turn_status.rs activity
   // arm. Falls back to the static statusText when nothing is running.
@@ -870,6 +908,18 @@ export function Composer() {
     }
     return null
   }, [busy, entries])
+  // 访客唯一特殊的一段：会话卡在等客户端应答时，他没有卡片可点，只能看到
+  // 一句话。其余（活动标签、相位计时、statusText 的每一处写入）与管理员的
+  // 状态行完全共用——所以这里只替换文案与配色，不另起一套渲染。
+  //
+  // 回放/建会话优先：那两种状态下"等应答"是上一个会话的残留读数（切换时
+  // resetSessionState 已清 guestSessionState，这里是双保险），不能盖住
+  // 「回放中…」。
+  const guestWaiting =
+    guest && !historyLoading && !newSessionPending
+      ? guestWaitingLabel(guestSessionState)
+      : undefined
+  const guestWaitingSince = guest ? guestWaitingSinceOf(guestSessionState) : undefined
   // 会话切换加载中（historyLoading）状态行固定显示「回放中…」而不是
   // 旧会话的 busy/状态（避免加载期间显示误导性的活动标签）：见下方
   // 状态行渲染。statusVisible 只决定「加载结束后」该不该显示——加载
@@ -959,6 +1009,8 @@ export function Composer() {
   // Touch devices (mobile) never auto-focus from store changes (prevents soft keyboard popup).
   const prevFocusModeRef = useRef(focusMode)
   useEffect(() => {
+    // 访客的输入框禁用：不响应 store 的聚焦切换，免得抢走滚动区的键盘。
+    if (guest) return
     const prev = prevFocusModeRef.current
     prevFocusModeRef.current = focusMode
     if (prev === focusMode) return
@@ -971,7 +1023,7 @@ export function Composer() {
     } else {
       taRef.current?.blur()
     }
-  }, [focusMode, isTouch])
+  }, [focusMode, isTouch, guest])
 
   /** Inline a chip's stashed content at its label range (TUI expand_element).
    *  Image chips never carry a label in the buffer — they are always
@@ -1154,14 +1206,22 @@ export function Composer() {
     ? 'var(--color-gn-accent-user)'
     : 'var(--color-gn-gray-dim)'
 
-  const modelLabel = useMemo(() => {
+  /**
+   * 模型槽拆成「名字」与「思考强度」两段渲染：槽宽有上限时只截断名字，
+   * 强度后缀 shrink-0 原样保留，避免 `grok-4.5 (xhigh)` 被整体截成
+   * `grok-4.5 (x…`。
+   */
+  const modelCaption = useMemo(() => {
     // Offline / error: surface connection state in the model slot
-    if (conn === 'offline' || conn === 'error') return 'disconnected'
-    if (conn === 'connecting') return 'connecting…'
+    if (conn === 'offline' || conn === 'error')
+      return { base: 'disconnected', effort: '' }
+    if (conn === 'connecting') return { base: 'connecting…', effort: '' }
     const base = (modelName && modelName.trim()) || 'grok'
-    if (reasoningEffort) return `${base} (${reasoningEffort})`
-    return base
+    return { base, effort: reasoningEffort || '' }
   }, [conn, modelName, reasoningEffort])
+  const modelLabel = modelCaption.effort
+    ? `${modelCaption.base} (${modelCaption.effort})`
+    : modelCaption.base
 
   const otherFlags = useMemo(() => {
     const out: { text: string; color?: string }[] = []
@@ -1261,12 +1321,35 @@ export function Composer() {
             加载完毕立即按真实状态渲染（busy 臂 / 已切换文案），不再
             整行淡出。空态（真正空闲）时外层容器零高度，不占布局。 */}
         <div>
-          {(statusVisible || historyLoading || newSessionPending) && (
+          {(statusVisible || historyLoading || newSessionPending || guestWaiting != null) && (
           <div
             className="flex min-h-5 items-center gap-1.5 pb-2 pr-0.5 font-ui text-[13.5px] leading-[1.4] select-none"
             style={{ paddingLeft: COMPOSER_BODY_PAD_LEFT_PX }}
+            // 访客：等他之外的「Human」时这行是唯一可见反馈，标成 status /
+            // polite 让读屏也能听到状态翻转。其余情况与管理员的渲染一致。
+            {...(guest ? { role: 'status', 'aria-live': 'polite' as const } : {})}
           >
-            {newSessionPending ? (
+            {guestWaiting != null ? (
+              // 访客的「等 Human」臂：管理员在这时看到的是审批/提问/计划
+              // 卡片本身，访客没有那张卡，只能看到这一句。
+              <>
+                <span className="inline-flex w-[1.25em] shrink-0 items-center justify-center leading-none text-gn-yellow">
+                  <ShieldQuestion size={12} strokeWidth={2.2} aria-hidden />
+                </span>
+                <span className="min-w-0 truncate text-gn-yellow" title={guestWaiting}>
+                  {guestWaiting}
+                </span>
+                {guestWaitingSince != null && (
+                  <span className="shrink-0 tabular-nums text-gn-gray">
+                    {formatTurnDuration(Math.max(0, Date.now() - guestWaitingSince))}
+                  </span>
+                )}
+                <span className="flex-1" />
+                <span className="hidden shrink-0 text-[11px] text-gn-gutter sm:inline">
+                  只读 · 由会话所有者应答
+                </span>
+              </>
+            ) : newSessionPending ? (
               // 建会话 POST 在飞：状态行提示创建中——输入可用，发送会
               // 挂起到创建收口后自动补发（见 submitCurrent / pendingSendsRef）。
               <>
@@ -1397,8 +1480,9 @@ export function Composer() {
                   </span>
                 )}
                 {/* [↓] send-to-background (TUI DemoteToBackground) — hover
-                    label "send to bg", accent_running on hover. */}
-                {runningExecute && (
+                    label "send to bg", accent_running on hover. 访客只读：
+                    转后台是写操作（x.ai/terminal/background），不渲染。 */}
+                {runningExecute && !guest && (
                   <button
                     type="button"
                     title="将当前命令转入后台继续运行（TUI [send to bg]）"
@@ -1422,7 +1506,7 @@ export function Composer() {
                     <ArrowDownToLine size={12} aria-hidden />
                   </button>
                 )}
-                {busy && (
+                {busy && !guest && (
                   <button
                     type="button"
                     onClick={() => void useChatStore.getState().requestCancelTurn()}
@@ -1436,13 +1520,16 @@ export function Composer() {
           </div>
           )}
         </div>
-        {/* 内联发送队列（无弹窗）：排队消息正文 + 行内操作。 */}
+        {/* 内联发送队列（无弹窗）：排队消息正文 + 行内操作。访客以只读态
+            挂载——正文与附图可见，发送/编辑/删除/拖拽/队首模式都收起
+            （顶栏 +N 芯片照常展开/收起这一块）。 */}
         <QueueStrip
           nav={queueNav}
           sendQueuedItem={(id) => void sendQueuedItem(id)}
           headSteer={headSteer}
           onToggleMode={() => void toggleFollowUpBehavior()}
           togglingMode={togglingFollowUp}
+          readonly={guest}
         />
         {/* 排队消息正文的编辑弹窗（store 的 editIndex 打开它）。 */}
         <QueueEditModal />
@@ -1466,7 +1553,7 @@ export function Composer() {
           hidden while busy (TUI clears the chips at turn start). Click sends
           the suggestion immediately as a literal model prompt.
         */}
-        {followUps && followUps.length > 0 && !busy && (
+        {!guest && followUps && followUps.length > 0 && !busy && (
           <div
             className="mb-1.5 flex min-h-6 flex-wrap items-center gap-1.5"
             style={{ paddingLeft: COMPOSER_BODY_PAD_LEFT_PX }}
@@ -1496,7 +1583,7 @@ export function Composer() {
           data-prompt-focused={promptFocused ? '1' : '0'}
           onMouseDown={(e) => {
             // Clicking chrome focuses the textarea on desktop (don't steal from buttons; skip on touch devices).
-            if (isTouch || (e.target as HTMLElement).closest('button, a')) return
+            if (guest || isTouch || (e.target as HTMLElement).closest('button, a')) return
             taRef.current?.focus()
           }}
         >
@@ -1630,7 +1717,12 @@ export function Composer() {
                 ref={taRef}
                 rows={1}
                 value={text}
+                // 访客只读：禁用输入（disabled 连键盘事件都不派发），下面
+                // 的处理器再各留一道守卫，避免以后把 disabled 换回 readOnly
+                // 时粘贴/拖拽绕过受控值。
+                disabled={guest}
                 onChange={(e) => {
+                  if (guest) return
                   const v = e.target.value
                   // TUI shell mode: typing `!` into an empty buffer enters
                   // shell mode — the `!` lives in the prefix, not the buffer.
@@ -1651,11 +1743,13 @@ export function Composer() {
                   detectAtToken(v, e.target.selectionStart ?? v.length)
                 }}
                 onFocus={() => {
+                  if (guest) return
                   setFocused(true)
                   useChatStore.getState().setFocus('prompt')
                 }}
                 onBlur={() => setFocused(false)}
                 onKeyDown={(e) => {
+                  if (guest) return
                   // IME composition (Chinese pinyin etc.): Enter commits the
                   // candidate and Backspace edits the composition — hand
                   // composition keys through untouched or Enter would send
@@ -2185,6 +2279,7 @@ export function Composer() {
                   }
                 }}
                 onBeforeInput={(e) => {
+                  if (guest) return
                   // IME / drag-drop inserts into a chip label are swallowed.
                   const el = taRef.current
                   if (!el) return
@@ -2193,6 +2288,10 @@ export function Composer() {
                   }
                 }}
                 onPaste={(e) => {
+                  if (guest) {
+                    e.preventDefault()
+                    return
+                  }
                   onPaste(e)
                 }}
                 onDragOver={(e) => {
@@ -2202,6 +2301,7 @@ export function Composer() {
                 }}
                 onDrop={(e) => {
                   e.preventDefault()
+                  if (guest) return
                   const files = Array.from(e.dataTransfer.files).filter((f) =>
                     f.type.startsWith('image/'),
                   )
@@ -2244,22 +2344,26 @@ export function Composer() {
                   }
                 }}
                 title={
-                  chips.length > 0
-                    ? 'enter / double-click / paste-again on a chip to expand'
-                    : undefined
+                  guest
+                    ? '访客模式为只读，无法输入'
+                    : chips.length > 0
+                      ? 'enter / double-click / paste-again on a chip to expand'
+                      : undefined
                 }
                 placeholder={
-                  shellMode
-                    ? '发送命令给 agent（! 前缀）'
-                    : // 占位提示只看真实焦点（focused），不看 store 的
-                      // focusMode：后者默认就是 'prompt' 且失焦不清，
-                      // 用它判断会导致「Build anything」几乎永远不显示。
-                      focused
-                      ? ''
-                      : 'Build anything'
+                  guest
+                    ? '访客模式'
+                    : shellMode
+                      ? '发送命令给 agent（! 前缀）'
+                      : // 占位提示只看真实焦点（focused），不看 store 的
+                        // focusMode：后者默认就是 'prompt' 且失焦不清，
+                        // 用它判断会导致「Build anything」几乎永远不显示。
+                        focused
+                        ? ''
+                        : 'Build anything'
                 }
                 spellCheck={false}
-                className="gn-no-scrollbar min-h-[20px] flex-1 resize-none bg-transparent font-ui text-[13.5px] leading-[1.55] text-gn-fg outline-none placeholder:text-gn-gray touch-pan-y"
+                className="gn-no-scrollbar min-h-[20px] flex-1 resize-none bg-transparent font-ui text-[13.5px] leading-[1.55] text-gn-fg outline-none placeholder:text-gn-gray disabled:cursor-not-allowed touch-pan-y"
               />
               {slashLiteral && (
                 // 转义生效的即时回执：这行不会被当命令执行，Enter 原样发出。
@@ -2270,7 +2374,7 @@ export function Composer() {
               {/* 触控端选图入口：移动端系统剪贴板基本不携带图片数据
                   （粘贴拿不到 file），手机相册/相机只能靠文件选择器进入。
                   桌面端不渲染——那里粘贴与拖拽都直接可用。 */}
-              {isTouch && (
+              {isTouch && !guest && (
                 <button
                   type="button"
                   onClick={() => imgPickRef.current?.click()}
@@ -2286,7 +2390,7 @@ export function Composer() {
           {/* 选图入口的文件输入：同 QueueEditModal 的读文件路径
               （fileToDataUrl → insertImageChips）。清空 value 让同一张图
               可以被重复选择。 */}
-          {isTouch && (
+          {isTouch && !guest && (
             <input
               ref={imgPickRef}
               type="file"
@@ -2340,17 +2444,24 @@ export function Composer() {
               <button
                 ref={modelBtnRef}
                 type="button"
+                disabled={guest}
                 onClick={() => {
+                  if (guest) return
                   if (!modelOpen) setModeOpen(false)
                   setModelOpen((v) => !v)
                 }}
-                className="pointer-events-auto max-w-[220px] truncate rounded px-0.5 transition-colors hover:bg-gn-bg-highlight"
+                className="pointer-events-auto inline-flex max-w-[220px] min-w-0 items-center gap-1 rounded px-0.5 transition-colors hover:bg-gn-bg-highlight disabled:cursor-default disabled:hover:bg-transparent"
                 style={{ color: captionColor }}
-                title={`${modelLabel} · 点击切换模型`}
+                title={guest ? `${modelLabel} · 访客只读` : `${modelLabel} · 点击切换模型`}
               >
-                {modelLabel}
+                <span className="min-w-0 truncate">{modelCaption.base}</span>
+                {modelCaption.effort && (
+                  <span className="shrink-0 whitespace-nowrap">
+                    ({modelCaption.effort})
+                  </span>
+                )}
               </button>
-              {modelOpen && models.length > 0 && modelMenuPos && (
+              {!guest && modelOpen && models.length > 0 && modelMenuPos && (
                 <ModelMenu models={models} pos={modelMenuPos} menu={modelMenu} />
               )}
             </span>
@@ -2367,17 +2478,23 @@ export function Composer() {
               <button
                 ref={modeBtnRef}
                 type="button"
+                disabled={guest}
                 onClick={() => {
+                  if (guest) return
                   if (!modeOpen) setModelOpen(false)
                   setModeOpen((v) => !v)
                 }}
-                className="pointer-events-auto max-w-[160px] cursor-pointer truncate rounded px-0.5 transition-colors hover:bg-gn-bg-highlight"
+                className="pointer-events-auto max-w-[160px] cursor-pointer truncate rounded px-0.5 transition-colors hover:bg-gn-bg-highlight disabled:cursor-default disabled:hover:bg-transparent"
                 style={{ color: modeColor }}
-                title={`当前模式: ${currentModeLabel} · 点击切换模式`}
+                title={
+                  guest
+                    ? `当前模式: ${currentModeLabel} · 访客只读`
+                    : `当前模式: ${currentModeLabel} · 点击切换模式`
+                }
               >
                 {modeLabel}
               </button>
-              {modeOpen && modeMenuPos && (
+              {!guest && modeOpen && modeMenuPos && (
                 <ModeMenu pos={modeMenuPos} menu={modeMenu} />
               )}
             </span>

@@ -34,9 +34,12 @@ const CHOICES = [
 export function KillTaskAction({
   onKill,
   className = '',
+  hidden = false,
 }: {
   onKill: (notifyAgent: boolean) => void
   className?: string
+  /** 访客只读：终止是写操作，整块不渲染（含浮层）。 */
+  hidden?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const anchorRef = useRef<HTMLSpanElement>(null)
@@ -59,6 +62,8 @@ export function KillTaskAction({
     setOpen(false)
     onKill(notifyAgent)
   }
+
+  if (hidden) return null
 
   return (
     <>

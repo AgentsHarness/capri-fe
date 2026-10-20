@@ -4,6 +4,7 @@ import type { FePrefsDoc, HubPrefsDoc, SessionInfo, TodoStatus, WorkspaceGroup }
 import { PrefsConflictError } from '../api/transport'
 import { sessionSortRank } from './historyGroups'
 import { transport } from '../api/client'
+import { isGuestActive } from './chat/guestMode'
 import { KEY } from '../lib/keys'
 import {
   alive,
@@ -342,6 +343,9 @@ export const usePins = create<HubPrefsState>((set, get) => {
     },
 
     syncPrefsFromHub: async () => {
+      // 访客只读：置顶/待办是管理员的视图偏好，访客不读也不写 hub 文档。
+      // 判定读 chat store（transport 的方法面在测试里未必有桩）。
+      if (isGuestActive()) return
       if (!transport.prefsOrigin()) return
       await runHubSync(mergeDoc)
     },
@@ -513,7 +517,9 @@ async function runHubSync(mergeDoc: (doc: HubPrefsDoc | undefined, site: string)
 // 刷新，也不必再问「我本地是不是还没推」——合并对所有顺序都安全。
 transport.onEvent((ev) => {
   if (ev.type === 'hub_conn') {
-    if (ev.online) void usePins.getState().syncPrefsFromHub()
+    if (ev.online && !isGuestActive()) {
+      void usePins.getState().syncPrefsFromHub()
+    }
     return
   }
   if (ev.type !== 'prefs_changed') return

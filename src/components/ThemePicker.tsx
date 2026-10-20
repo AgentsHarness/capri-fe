@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, Palette } from 'lucide-react'
 import { THEMES, useThemeStore } from '../store/theme'
 import type { ThemeId } from '../theme/tokens'
 import { chromeBtnClass } from '../theme/layout'
@@ -87,8 +87,10 @@ export function ThemePicker() {
         className={chromeBtnClass(open)}
         title="Theme"
       >
+        {/* 窄屏只放图标：访客顶栏那一行还要塞 host、只读徽标与令牌入口，
+            「theme」这个词会把整行挤到换行。桌面仍是完整主题名。 */}
         <span className="hidden sm:inline truncate max-w-[7rem]">{currentLabel}</span>
-        <span className="sm:hidden">theme</span>
+        <Palette size={13} strokeWidth={2} className="sm:hidden" aria-hidden />
         <ChevronDown size={12} strokeWidth={2} className="shrink-0 text-gn-gutter" aria-hidden />
       </button>
       {open && (

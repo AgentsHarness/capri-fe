@@ -5,6 +5,14 @@ import { fmtTok } from '../format'
 import { COLUMN_PAD_X_CLASS, CONTENT_COLUMN_CLASS } from '../theme/layout'
 
 /**
+ * 统计条的保底底距：无数据 / 无活动历史时只渲染它，取值与有数据时的
+ * `pb-4` 等量。访客壳不拉会话统计，也用这个占位保持同样的底距。
+ */
+export function SessionStatsSpacer() {
+  return <div className="pb-4 touch-pan-x overscroll-none" aria-hidden="true" />
+}
+
+/**
  * Composer 下方会话统计条（host 侧聚合，前端只展示）：
  *   `3 轮 3 步 | LLM 3m3s 工具调用 2m1s | 首 token 平均 3 s · 5711 tok/s
  *    | 缓存命中 98 % | 输入 1.7M tok · 输出 24K tok`
@@ -35,7 +43,7 @@ export function SessionStatsBar() {
 
   // 无数据 / 无任何活动历史（空会话）→ 不渲染内容。但保留底部间距
   // 占位（与 stats 显示时 pb-4 等量）：composer 直接贴底会显得局促。
-  const bottomSpacer = <div className="pb-4 touch-pan-x overscroll-none" aria-hidden="true" />
+  const bottomSpacer = <SessionStatsSpacer />
   if (
     !stats ||
     (stats.turns === 0 &&

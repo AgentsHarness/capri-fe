@@ -17,6 +17,7 @@ import { loadHistoryWithTaskProbe } from '../loadHistory'
 import { usePins } from '../../historyPins'
 import { clearPlanMode } from '../modePersist'
 import { pushToast } from '../../toast'
+import { blockGuestWrite } from '../guestMode'
 
 /** Composer status while /flush runs (TUI AgentCommand::MemoryFlush label). */
 const FLUSH_STATUS = 'Flushing memory…'
@@ -280,6 +281,7 @@ export function xaiActions(set: SetState, get: () => ChatState) {
    * forked session (TUI switches to the peer agent).
    */
   forkSession: async (opts) => {
+    if (blockGuestWrite(get())) return
     const { worktree, targetPromptIndex, ...rest } = opts ?? {}
     const st = get()
     const sid = st.sessionId
@@ -607,6 +609,8 @@ export function xaiActions(set: SetState, get: () => ChatState) {
   // ── MCP management (TUI /mcps — host endpoints may be unsupported;
   //    every method rethrows so the McpPanel renders the failure inline) ──
   syncMcpServers: async (prefetched?: McpListServer[]) => {
+    // 访客不挂 MCP 面板，也不该为只读视图拉 host 的 MCP 配置。
+    if (blockGuestWrite(get())) return
     if (!prefetched && typeof transport.mcpList !== 'function') return
     try {
       const servers = prefetched ?? (await transport.mcpList()).servers ?? []

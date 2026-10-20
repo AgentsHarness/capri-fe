@@ -53,6 +53,9 @@ export function resetSessionState(
     pending: [],
     sessionStats: undefined,
     xaiRequests: [],
+    // 访客状态属于「当前会话」：切会话后必须重拉，不能把上一个会话的
+    // 「在等审批」挂在新视图上。
+    guestSessionState: undefined,
     diffReview: undefined,
     diffReviewOpen: false,
     memoryListing: undefined,

@@ -12,10 +12,12 @@ import {
 import { appendEntry } from '../entries'
 import { pushToast } from '../../toast'
 import { savePlanMode } from '../modePersist'
+import { blockGuestWrite } from '../guestMode'
 
 export function modeActions(set: SetState, get: () => ChatState) {
   const actions = {
   cycleMode: async () => {
+    if (blockGuestWrite(get())) return
     const cycle = bumpReseedGen()
     const s = get()
     // 会话级 RPC：请求锁定发起时的会话（缺省 = host active，多 tab /
@@ -135,6 +137,7 @@ export function modeActions(set: SetState, get: () => ChatState) {
   },
 
   selectMode: async (target: 'normal' | 'plan' | 'auto' | 'always-approve') => {
+    if (blockGuestWrite(get())) return
     const s = get()
     const sid = s.sessionId
     const inPlan = s.planMode === true || s.permissionMode === 'plan'
@@ -227,6 +230,7 @@ export function modeActions(set: SetState, get: () => ChatState) {
   },
 
   togglePlanMode: async () => {
+    if (blockGuestWrite(get())) return
     const s = get()
     const sid = s.sessionId
     const inPlan = s.planMode === true || s.permissionMode === 'plan'
@@ -275,6 +279,7 @@ export function modeActions(set: SetState, get: () => ChatState) {
    * does not touch it, and planMode is kept so the composer shows plan·auto).
    */
   setAutoMode: async () => {
+    if (blockGuestWrite(get())) return
     const s = get()
     const inPlan = s.planMode === true || s.permissionMode === 'plan'
     const perm = (s.permissionMode || '').toLowerCase()
@@ -319,6 +324,7 @@ export function modeActions(set: SetState, get: () => ChatState) {
    * order across host builds: always_approve → yolo → always-approve.
    */
   setAlwaysApproveMode: async () => {
+    if (blockGuestWrite(get())) return
     const s = get()
     const inPlan = s.planMode === true || s.permissionMode === 'plan'
     const perm = (s.permissionMode || '').toLowerCase()
@@ -363,6 +369,7 @@ export function modeActions(set: SetState, get: () => ChatState) {
 
   /** Forget every remembered permission rule (always-allow patterns…). */
   resetPermissions: async () => {
+    if (blockGuestWrite(get())) return
     try {
       await transport.permissionsReset(get().sessionId)
       set({ statusText: '已重置已记忆的权限规则' })

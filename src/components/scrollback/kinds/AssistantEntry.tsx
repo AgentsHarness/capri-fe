@@ -41,7 +41,7 @@ export function AssistantEntry({
   e: Extract<ScrollEntry, { kind: 'assistant' }>
   chrome: EntryChrome
 }) {
-  const { shell, liveText, openViewer, inMini } = chrome
+  const { shell, liveText, openViewer, inMini, readonly = false } = chrome
   // liveText = liveStream delta/suffix for this entry only (not a full
   // replacement). Additive merge works for both store shapes:
   // entry.text '' + live full stream, or base + later chunks in liveStream.
@@ -190,7 +190,7 @@ export function AssistantEntry({
               )}
               {copied ? '已复制' : '复制'}
             </button>
-            {!inMini && (
+            {!inMini && !readonly && (
               <button
                 type="button"
                 onClick={forkMessage}

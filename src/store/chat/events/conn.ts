@@ -73,6 +73,14 @@ export function handleConnEvent(
         if (ev.service === 'hub') {
           set({ conn: 'ready', statusText: '就绪' })
           if (ev.hosts) set({ hosts: ev.hosts })
+          // 在线 FE 订阅数（旧 hub 不带 → 保留旧值，不写 undefined）。
+          if (typeof ev.feSubscribers === 'number') {
+            set({ feSubscribers: ev.feSubscribers })
+          }
+          // 本页在订阅者名单里的行号（旧 hub 不带 → 保持 undefined）。
+          if (typeof ev.subscriberId === 'number' && ev.subscriberId > 0) {
+            set({ feSubscriberId: ev.subscriberId })
+          }
           // hello 帧已携带注册表快照（含 defaultHostId）：直接跑选 host
           // 逻辑，不再重复 GET /api/hosts（打开页面省一趟跨网往返；
           // 快照至多旧几毫秒，hosts_changed 会持续修正）。
@@ -398,13 +406,18 @@ export function handleConnEvent(
         if (ev.online) {
           const cur = get().layerErrors.hub
           if (cur?.id === 'hub-ws') get().setLayerError('hub', undefined)
-        } else if (!get().layerErrors.hub) {
-          get().setLayerError('hub', {
-            id: 'hub-ws',
-            level: 'warning',
-            message: '与 hub 的连接已断开，重连中…',
-            at: Date.now(),
-          })
+        } else {
+          // 与 hub 断开后在线订阅数无从得知：清掉，别在 host 块旁边挂一个
+          // 停在上次连接瞬间的陈旧数字（重连的 hello 会重新带回）。
+          set({ feSubscribers: undefined, feSubscriberId: undefined })
+          if (!get().layerErrors.hub) {
+            get().setLayerError('hub', {
+              id: 'hub-ws',
+              level: 'warning',
+              message: '与 hub 的连接已断开，重连中…',
+              at: Date.now(),
+            })
+          }
         }
         break
       }

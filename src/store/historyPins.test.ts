@@ -36,6 +36,8 @@ vi.mock('../api/client', () => ({
     // liteReplay 的默认值按部署模式现取（hub 开 / local 关）——本文件一律
     // 按 local 测，模式相关的断言在 liteReplay.test.ts 里。
     getConnectionMode: vi.fn((): string => 'local'),
+    // 访客模式判定：本文件按管理员测（访客不读写 hub 文档）。
+    isGuest: vi.fn((): boolean => false),
   },
 }))
 

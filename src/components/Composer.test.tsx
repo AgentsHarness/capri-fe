@@ -539,3 +539,122 @@ describe('记忆命令状态行（TUI CommandRunning）', () => {
     expect(screen.queryByText('Consolidating memory…')).toBeNull()
   })
 })
+
+describe('Composer 访客只读态', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useChatStore.setState({
+      sessionId: 'test-sess-1',
+      cwd: '/test/cwd',
+      conn: 'ready',
+      historyLoading: false,
+      newSessionPending: false,
+      entries: [],
+      pending: [],
+      focusMode: 'prompt',
+    })
+    usePromptQueue.setState({ queue: [], sending: false })
+  })
+
+  it('输入框禁用：键入 / 回车 / 粘贴都不改草稿、不发送', () => {
+    render(<Composer guest />)
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement
+    expect(textarea).toBeDisabled()
+    expect(textarea).toHaveAttribute('placeholder', '访客模式')
+
+    fireEvent.change(textarea, { target: { value: '访客输入' } })
+    expect(textarea.value).toBe('')
+
+    fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter' })
+    expect(transport.prompt).not.toHaveBeenCalled()
+
+    fireEvent.paste(textarea, { clipboardData: { getData: () => 'pasted' } })
+    expect(textarea.value).toBe('')
+  })
+
+  it('模型 / 模式底栏禁用，不打开菜单', () => {
+    render(<Composer guest />)
+    const readOnlyLabels = screen.getAllByTitle(/访客只读/)
+    expect(readOnlyLabels).toHaveLength(2)
+    for (const btn of readOnlyLabels) expect(btn).toBeDisabled()
+  })
+
+  it('有 pending 时显示「正在等待 Human 响应…」并带计时，标明只读', () => {
+    useChatStore.setState({
+      guestSessionState: {
+        sessionState: 'awaiting',
+        busy: true,
+        awaitingInput: true,
+        pendingInput: { kind: 'permission', count: 1, receivedAt: Date.now() - 65_000 },
+      },
+      refreshGuestStatus: vi.fn(async () => {}),
+    } as never)
+    render(<Composer guest />)
+    const line = screen.getByRole('status')
+    expect(line.textContent).toContain('正在等待 Human 响应权限')
+    // 计时来自 receivedAt：65 秒前到达 → 至少 1m（不是从挂载时刻从 0 数起）
+    expect(line.textContent).toMatch(/1m/)
+    // 只读：这一行没有任何可点的东西
+    expect(line.querySelector('button')).toBeNull()
+  })
+
+  it('没有 pending 时访客复用管理员那套 statusText / 活动标签', () => {
+    useChatStore.setState({
+      guestSessionState: { sessionState: 'active', busy: true, awaitingInput: false },
+      conn: 'busy',
+      statusText: 'Thinking…',
+      entries: [],
+      refreshGuestStatus: vi.fn(async () => {}),
+    } as never)
+    const { unmount } = render(<Composer guest />)
+    // 活动臂与管理员同源：没有活动条目时回退到 statusText 本身
+    expect(screen.getByRole('status').textContent).toContain('Thinking…')
+    unmount()
+
+    useChatStore.setState({
+      guestSessionState: {
+        sessionState: 'idle',
+        busy: false,
+        awaitingInput: false,
+      },
+      conn: 'connecting',
+      statusText: '只读 · 历史',
+      refreshGuestStatus: vi.fn(async () => {}),
+    } as never)
+    render(<Composer guest />)
+    // 空闲 + connecting → 管理员的空闲臂同样走 statusText
+    expect(screen.getByRole('status').textContent).toContain('只读 · 历史')
+  })
+
+  it('回放中不被「等 Human」盖住（那条是上一个会话的残留读数）', () => {
+    useChatStore.setState({
+      guestSessionState: {
+        sessionState: 'awaiting',
+        busy: true,
+        awaitingInput: true,
+        pendingInput: { kind: 'permission', count: 1 },
+      },
+      historyLoading: true,
+      refreshGuestStatus: vi.fn(async () => {}),
+    } as never)
+    render(<Composer guest />)
+    const line = screen.getByRole('status')
+    expect(line.textContent).toContain('回放中')
+    expect(line.textContent).not.toContain('Human')
+  })
+
+  it('访客渲染期间会去拉一次状态（管理员不拉）', () => {
+    const refresh = vi.fn(async () => {})
+    useChatStore.setState({
+      guestSessionState: undefined,
+      refreshGuestStatus: refresh,
+    } as never)
+    const { unmount } = render(<Composer guest />)
+    expect(refresh).toHaveBeenCalled()
+    unmount()
+
+    refresh.mockClear()
+    render(<Composer />)
+    expect(refresh).not.toHaveBeenCalled()
+  })
+})
