@@ -98,7 +98,7 @@ describe('工具行的渲染（store → DOM）', () => {
         toolCallId: 'tc-skill',
         title: 'read_file',
         kind: 'read',
-        rawInput: { target_file: '/Users/dev/.grok/skills/deploy/SKILL.md' },
+        rawInput: { target_file: '/home/dev/.grok/skills/deploy/SKILL.md' },
       },
     } as unknown as AcpEvent)
     const entry = useChatStore.getState().entries[0]
@@ -145,18 +145,18 @@ function renderHeader(e: ScrollEntry): string {
 
 describe('TUI 行头复刻（surface / 名词改写）', () => {
   beforeEach(() => {
-    useChatStore.setState({ cwd: '/Users/dev/ccwork/acp-fe', historyCwd: undefined })
+    useChatStore.setState({ cwd: '/repo/acp-fe', historyCwd: undefined })
   })
 
   it('折叠 read 行只显示文件名，不打印目录', () => {
     const text = renderHeader(
       toolEntry({
         kindName: 'read',
-        rawInput: { path: '/Users/dev/ccwork/acp-fe/src/scrollback/toolDetail.ts' },
+        rawInput: { path: '/repo/acp-fe/src/scrollback/toolDetail.ts' },
       }),
     )
     expect(text).toMatch(/Read\s*toolDetail\.ts/)
-    expect(text).not.toContain('/Users/dev')
+    expect(text).not.toContain('/repo')
     expect(text).not.toContain('src/scrollback')
   })
 
@@ -165,11 +165,11 @@ describe('TUI 行头复刻（surface / 名词改写）', () => {
       toolEntry({
         kindName: 'read',
         expanded: true,
-        rawInput: { path: '/Users/dev/ccwork/acp-fe/src/scrollback/toolDetail.ts' },
+        rawInput: { path: '/repo/acp-fe/src/scrollback/toolDetail.ts' },
       }),
     )
     expect(text).toContain('src/scrollback/toolDetail.ts')
-    expect(text).not.toContain('/Users/dev')
+    expect(text).not.toContain('/repo')
   })
 
   it('cwd 外的路径 → 规范化绝对路径（不硬凑相对）', () => {

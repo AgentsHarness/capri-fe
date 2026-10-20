@@ -15,8 +15,8 @@ mutations.json 是数组，每项:
 
     W=/tmp/mut-wt; rm -rf "$W"; mkdir -p "$W"
     rsync -a --exclude node_modules --exclude .git --exclude coverage --exclude .playwright-cli ./ "$W/"
-    ln -sfn /Users/dev/ccwork/acp-fe/node_modules "$W/node_modules"
-    cd "$W" && python3 /Users/dev/ccwork/acp-fe/scripts/mutate.py /tmp/mut.json "$W"
+    ln -sfn "$PWD/node_modules" "$W/node_modules"          # 在仓库根执行
+    cd "$W" && python3 "$OLDPWD/scripts/mutate.py" /tmp/mut.json "$W"
 
 判读:
   * KILLED = 测试抓住了这个缺陷。
