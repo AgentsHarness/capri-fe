@@ -2,7 +2,6 @@ import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
 import { LocalTransport } from './localTransport'
 import { loadGuestToken } from './credentials'
 import { clearHostRegistryHandoff, rememberHostRegistry } from './rpc/hosts'
-import type { HubPrefsDoc } from './types'
 
 /** 注册表交接快照是模块级缓存（按 URL 键）：每个用例前清一次，否则上一条
  *  detectMode/probeAccess 存下的快照会被后一条的 listHosts 消费掉。 */
@@ -16,16 +15,8 @@ beforeEach(() => {
  * - hub 模式 + 双空（部署版与 hub 同源，base 为空串）→ 页面 origin；
  * - local 模式 → 空串（仅 localStorage，不写 hub）。
  */
-// rpcMixins 经 Object.assign 挂在原型上，类类型上不可见——补上测试用面。
-type PrefsRpc = {
-  getPrefs(): Promise<{ prefs: HubPrefsDoc; version?: number }>
-  putPrefs(prefs: HubPrefsDoc, baseVersion?: number): Promise<{ version?: number }>
-  listCustomModels(): Promise<unknown[]>
-  listCustomModelsFromHost(hostId: string): Promise<unknown[]>
-}
-
-function makeTransport(): LocalTransport & PrefsRpc {
-  return new LocalTransport() as LocalTransport & PrefsRpc
+function makeTransport(): LocalTransport {
+  return new LocalTransport()
 }
 
 describe('prefsOrigin', () => {

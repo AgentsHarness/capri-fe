@@ -18,6 +18,8 @@ src/
 - 组件分组：`shell/`（App 外壳：TopBar / Scrollback 容器 / BlockViewer / 状态芯片）、`session/`（会话列表、历史、统计与各类信息弹窗）、`approvals/`（审批与应答卡片）、`panels/`（设置类面板与 host 管理，`panels/git/` 是 Git 面板的图与单元格）、`ui/`（无领域语义的原子组件）、`composer/`、`scrollback/`。
 - 依赖方向单向：`api → store → components`。`api` 不 import `store`/`components`，`store` 不 import `components`。类型可以反向引用（`import type`），值不行。
 - 用完整相对路径，不建 barrel：`from '../ui/IconGlyph'`，不要为了缩短而加 `index.ts` 再导出。`src/api/types.ts` 与 `src/store/chat.ts` 是历史入口，新增模块直接引具体文件。
+- 传输层按职责拆在 `src/api/local/`：`guest`（访客身份与令牌槽）、`auth`（门禁与近路钥匙）、`routes`（近路发现与验证）、`mode`（连接模式判定）、`net`（HTTP / 鉴权头 / abort 分桶）、`live`（WS / SSE / 事件扇出）。各模块导出 mixin 对象，由 `localTransport.ts` 在模块尾部 `Object.assign` 挂到 `LocalTransportImpl.prototype`。
+- mixin 方法一律写成 `method(this: TransportCtx, …)`，`TransportCtx`（`src/api/local/ctx.ts`）是实例的编译期契约。**字段声明在 `LocalTransportImpl`，契约写在 `TransportCtx`，新增 public 方法还要补进 `TransportApi`**——三处齐全才不会在 `tsc` 阶段掉队。
 
 ## 界面改动不做浏览器自动化验证
 

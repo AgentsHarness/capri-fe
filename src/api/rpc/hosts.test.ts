@@ -32,17 +32,6 @@ function json(data: unknown): Promise<Response> {
   )
 }
 
-/** mixin 方法（Object.assign 挂上原型）对类型不可见，测试里按最小面取用。 */
-function asHostApi(t: LocalTransport) {
-  return t as unknown as {
-    listHosts(): Promise<{ hosts: HostInfo[]; defaultHostId?: string }>
-    probeAccess(): Promise<'ok' | 'need_token' | 'error'>
-    setConnectionMode(mode: 'local' | 'hub', hubUrl?: string): void
-    detectMode(): Promise<{ mode: 'local' | 'hub'; hubUrl: string; localHostId?: string }>
-    discoverLocalHost(hosts?: unknown): Promise<string | null>
-  }
-}
-
 describe('listHosts 注册表交接', () => {
   beforeEach(() => {
     clearHostRegistryHandoff()
@@ -108,7 +97,7 @@ describe('probeAccess 交出自己的注册表应答', () => {
   })
 
   it('门禁探测问过 hub /api/hosts 后，首个 listHosts 不再重问', async () => {
-    const t = asHostApi(new LocalTransport('', 'tok'))
+    const t = new LocalTransport('', 'tok')
     t.setConnectionMode('hub', 'https://hub.example')
     const hosts = [h('mba', { local: false }), h('mbp', { local: false })]
     const fetchMock = vi.fn(() => json({ hosts, defaultHostId: 'mba', authRequired: true }))
@@ -121,7 +110,7 @@ describe('probeAccess 交出自己的注册表应答', () => {
   })
 
   it('门禁没过（需要密钥）时不交接，listHosts 仍自己问', async () => {
-    const t = asHostApi(new LocalTransport('', ''))
+    const t = new LocalTransport('', '')
     t.setConnectionMode('hub', 'https://hub.example')
     const fetchMock = vi.fn(() => json({ hosts: [h('mba')], authRequired: true }))
     vi.stubGlobal('fetch', fetchMock)
@@ -131,7 +120,7 @@ describe('probeAccess 交出自己的注册表应答', () => {
   })
 
   it('detectMode 问过的注册表直接回答门禁，probeAccess 不再发请求', async () => {
-    const t = asHostApi(new LocalTransport('', 'tok'))
+    const t = new LocalTransport('', 'tok')
     const fetchMock = vi.fn(() =>
       json({
         hosts: [h('mba'), h('mbp')],

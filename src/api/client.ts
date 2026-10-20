@@ -101,8 +101,8 @@ export type Transport = {
   disconnect(): void
 } & RpcApi
 
-// Prototype mixin methods are invisible to the class type.
-export const transport: Transport = new LocalTransport() as unknown as Transport
+// Mixin 方法经 Object.assign 挂到原型，LocalTransport 类型已把它们交叉进来。
+export const transport: Transport = new LocalTransport() as Transport
 
 export type {
   TransportCore,
