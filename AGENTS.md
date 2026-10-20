@@ -1,5 +1,24 @@
 # 项目规则
 
+## 目录分层
+
+```
+src/
+  api/         传输层（client / transport / credentials / rpc/* / types/*）
+  store/       zustand：chat/（actions / events / history / turn）+ 其余小 store
+  scrollback/  滚动区的纯逻辑（不 import react）
+  lib/         无状态工具
+  theme/       配色、字体、字形
+  hooks/       跨组件复用的 hook
+  commands/    slash 命令表
+  components/  视图，按领域分组见下
+```
+
+- `components/` 只放视图与和该视图绑定的 hook；纯逻辑放 `src/scrollback/`、`src/lib/`。新逻辑文件不要落在 `components/` 下。
+- 组件分组：`shell/`（App 外壳：TopBar / Scrollback 容器 / BlockViewer / 状态芯片）、`session/`（会话列表、历史、统计与各类信息弹窗）、`approvals/`（审批与应答卡片）、`panels/`（设置类面板与 host 管理，`panels/git/` 是 Git 面板的图与单元格）、`ui/`（无领域语义的原子组件）、`composer/`、`scrollback/`。
+- 依赖方向单向：`api → store → components`。`api` 不 import `store`/`components`，`store` 不 import `components`。类型可以反向引用（`import type`），值不行。
+- 用完整相对路径，不建 barrel：`from '../ui/IconGlyph'`，不要为了缩短而加 `index.ts` 再导出。`src/api/types.ts` 与 `src/store/chat.ts` 是历史入口，新增模块直接引具体文件。
+
 ## 界面改动不做浏览器自动化验证
 
 - 涉及界面（UI / 布局 / 样式 / 交互 / 渲染数据）的需求，改完**默认不跑 playwright、不起 dev server 做浏览器验证**。直接说明改了哪些文件、在哪个入口能看到什么效果，由用户自己打开页面确认并反馈结果。

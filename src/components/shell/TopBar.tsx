@@ -1,0 +1,1015 @@
+import { useEffect, useRef, useState, type Ref } from 'react'
+import {
+  Activity,
+  Boxes,
+  ChevronDown,
+  ChevronUp,
+  EllipsisVertical,
+  Eye,
+  GitBranch,
+  History,
+  LogOut,
+  Palette,
+  Plus,
+  Puzzle,
+  Settings,
+  ShieldQuestion,
+  TriangleAlert,
+} from 'lucide-react'
+import { useChatStore } from '../../store/chat'
+import { activeContextWindow } from '../../store/chat/model'
+import { ThemeOptions, ThemePicker } from '../ui/ThemePicker'
+import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS, chromeBtnClass } from '../../theme/layout'
+import { SessionHistoryList } from '../session/SessionHistoryList'
+import { SessionListHeader } from '../session/SessionListHeader'
+import { SessionSearchBox } from '../session/SessionSearchBox'
+import {
+  ContextChip,
+  DetachedChip,
+  GoalChip,
+  LiteFillChip,
+  McpChip,
+  QueueBadge,
+  SessionCostChip,
+  RunningChip,
+  RunningTasksBar,
+  TodoChip,
+} from './StatusChips'
+import { baseCwd, filterRunningEntries, shortCwd } from '../../format'
+import type { HostInfo } from '../../api/types'
+import { transport } from '../../api/client'
+import { hostState, hostStateLabel, type HostState } from '../../lib/hostState'
+import { pickLayerError } from '../../lib/layerErr'
+import { LayerErrNotice } from '../ui/LayerErrNotice'
+import { SubscribersPanel } from '../panels/SubscribersPanel'
+import {
+  AddHostModal,
+  DeleteHostModal,
+  HostActionsMenu,
+  RenameHostModal,
+  RestartAgentModal,
+} from '../panels/HostActions'
+
+/**
+ * Hub 模式下列表行的通路标记（transport.activeRouteFor 的三态文案）：
+ * - 直连 —— 本机近路可用，API/SSE 不绕 hub；
+ * - 待验证 —— 探到了本机候选，但还差这台自己的钥匙，此刻仍走中继；
+ * - 中继 —— 只有 hub 一条路（同机之外的一切机器，或用户显式选了中继）。
+ * 没有近路候选（不能直连本机）的行不显示通道——只有中继一条路可走，
+ * 标了也是噪声；对应 host 的操作菜单里「通路」区块也一并隐去。
+ */
+function hostRouteLabel(state: 'direct' | 'pending' | 'relay'): '直连' | '待验证' | '中继' {
+  return state === 'direct' ? '直连' : state === 'pending' ? '待验证' : '中继'
+}
+
+/** 菜单打开位置边缘夹取：菜单宽 208px（w-52）、高 ~200px，贴着视口边缘。 */
+function clampMenuPos(x: number, y: number): { x: number; y: number } {
+  return {
+    x: Math.max(4, Math.min(x, window.innerWidth - 212)),
+    y: Math.max(4, Math.min(y, window.innerHeight - 136)),
+  }
+}
+
+/** Host 列表行的实时状态点配色（离线/旧 hub 无状态字段 → 沿用绿/灰）。 */
+function hostDotClass(h: HostInfo): string {
+  switch (hostState(h)) {
+    case 'thinking':
+      return 'bg-gn-blue animate-pulse'
+    case 'pending':
+      return 'bg-gn-orange'
+    case 'booting':
+      return 'bg-gn-yellow'
+    case 'idle':
+      return 'bg-gn-green'
+    default:
+      return h.online ? 'bg-gn-green' : 'bg-gn-muted'
+  }
+}
+
+const HOST_STATE_TEXT_CLASS: Record<HostState, string> = {
+  thinking: 'text-gn-cyan',
+  pending: 'text-gn-orange',
+  booting: 'text-gn-yellow',
+  idle: 'text-gn-green1',
+}
+
+/**
+ * Workspace + git + status chips — the whole TUI status-bar row (branch +
+ * `~`-shortened cwd on the left, ⠋N / goal / ⠋ MCP / context / queue /
+ * todo / credits on the right — TUI status.push order). Click ⠋N toggles
+ * the sticky {@link RunningTasksBar} under the bar.
+ */
+export function WorkspaceBar({
+  onOpenMcp,
+  topRef,
+  fadeHidden,
+  guest = false,
+}: {
+  onOpenMcp?: () => void
+  /** 访客只读壳：状态芯片全部照常显示，但只有 lite 补全芯片可点；
+   *  其余一律降级成静态文本（打开的面板在访客壳里没挂载，动作都是写操作）。 */
+  guest?: boolean
+  /** Scrollback measures this sticky bar's rendered height to offset the
+   *  pinned user-prompt header below it (grows with the tasks bar). */
+  topRef?: Ref<HTMLDivElement>
+  /** 会话切换加载中（historyLoading）栏内内容淡出：git branch / cwd /
+   *  状态芯片等旧会话数据不属于新会话，加载完毕再淡入。栏本身（背景
+   *  条）保持常驻可见、高度不变。隐藏期间不可交互、不可聚焦、不进
+   *  无障碍树。 */
+  fadeHidden?: boolean
+}) {
+  const gitInfo = useChatStore((s) => s.gitInfo)
+  const cwd = useChatStore((s) => s.cwd)
+  const homeDir = useChatStore((s) => s.homeDir)
+  const usage = useChatStore((s) => s.usage)
+  const sessionStatus = useChatStore((s) => s.sessionStatus)
+  const goalState = useChatStore((s) => s.goalState)
+  const todos = useChatStore((s) => s.todos)
+  const entries = useChatStore((s) => s.entries)
+  const topTasks = useChatStore((s) => s.topTasks)
+  const scheduledTasks = useChatStore((s) => s.scheduledTasks)
+  const models = useChatStore((s) => s.models)
+  const modelName = useChatStore((s) => s.modelName)
+
+  // ⠋N toggles sticky task list (also opened by the composer's idle
+  // still-running cue — shared store flag). Auto-open when the first task
+  // appears (TUI opened_by_auto) or the first scheduled task lands; user
+  // hide stays until they click again or everything finishes and a new
+  // one starts. Restored top-strip tasks count.
+  const tasksOpen = useChatStore((s) => s.tasksBarOpen)
+  const setTasksBarOpen = useChatStore((s) => s.setTasksBarOpen)
+  const prevCount = useRef(0)
+  const prevScheduled = useRef(0)
+  const runningCount = filterRunningEntries(entries).length + topTasks.length
+  useEffect(() => {
+    if (runningCount > 0 && prevCount.current === 0) {
+      setTasksBarOpen(true)
+    }
+    if (scheduledTasks.length > 0 && prevScheduled.current === 0) {
+      setTasksBarOpen(true)
+    }
+    if (runningCount === 0 && scheduledTasks.length === 0) {
+      setTasksBarOpen(false)
+    }
+    prevCount.current = runningCount
+    prevScheduled.current = scheduledTasks.length
+  }, [runningCount, scheduledTasks.length, setTasksBarOpen])
+
+  // z-30 above scrollback sticky user prompt (z-10) so todo/goal
+  // dropdowns aren't covered when the sticky header is pinned.
+  return (
+    <div ref={topRef} className="sticky top-0 z-30 shrink-0 bg-gn-bg-base">
+      {/* Content column matches scrollback/composer (mx-auto max-w-[960px]).
+          Mobile: single row (h-[37px], nowrap) with base cwd and compact chips;
+          overflow chips scroll horizontally with no-scrollbar instead of
+          wrapping to a second line.
+          会话切换加载中（historyLoading）只有栏内内容淡出：栏本身保持
+          常驻可见，高度不变（min-h 仍在布局里），wsBarH 连续测量，
+          钉住的用户提示头始终与栏底齐平。 */}
+      <div
+        className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} flex h-[37px] min-w-0 flex-nowrap items-center gap-x-2 py-0 text-[13px] select-none transition-opacity duration-300 ${
+          fadeHidden ? 'pointer-events-none opacity-0' : 'opacity-100'
+        }`}
+        aria-hidden={fadeHidden || undefined}
+        inert={fadeHidden || undefined}
+      >
+        {/* Git head (x.ai/git_head_changed) — TUI status-bar branch.
+            Detached HEAD renders as a branch icon + "detached" (TUI
+            render.rs: empty branch → "{icon} detached"); worktrees get
+            the `wt` badge. */}
+        {gitInfo?.branch ? (
+          <span
+            className="flex min-w-0 max-w-[28vw] shrink-0 sm:shrink items-center gap-1 truncate font-mono text-[13px] leading-none text-gn-cyan sm:max-w-[24vw]"
+            title={
+              gitInfo.isWorktree
+                ? `${gitInfo.branch} · worktree${gitInfo.mainRepo ? ` of ${gitInfo.mainRepo}` : ''}`
+                : gitInfo.branch
+            }
+          >
+            <GitBranch size={12} className="shrink-0" aria-hidden />
+            <span className="truncate">
+              {gitInfo.branch === '(detached)' ? 'detached' : gitInfo.branch}
+            </span>
+            {gitInfo.isWorktree && <span className="shrink-0 text-gn-gutter">wt</span>}
+          </span>
+        ) : null}
+
+        {/* Active session workspace — TUI status-bar path, `~`-shortened.
+            Linked worktrees append "(worktree of <main>)" after the path
+            (TUI render.rs cwd_line suffix), using the host-reported main
+            repo when present. */}
+        {cwd ? (
+          <span
+            className="flex min-w-0 max-w-[32vw] shrink items-center truncate font-mono text-[13px] leading-none text-gn-gray-dim sm:max-w-[52vw]"
+            title={cwd}
+          >
+            <span className="truncate sm:hidden">{baseCwd(cwd)}</span>
+            <span className="hidden truncate sm:inline">{shortCwd(cwd, homeDir)}</span>
+            {gitInfo?.isWorktree && gitInfo.mainRepo ? (
+              <span
+                className="hidden min-w-0 max-w-[10vw] truncate sm:inline sm:max-w-[16vw]"
+                title={gitInfo.mainRepo}
+              >
+                {' '}
+                (worktree of {shortCwd(gitInfo.mainRepo, homeDir)})
+              </span>
+            ) : null}
+          </span>
+        ) : null}
+
+        {/* Chip cluster — right-aligned; wraps horizontally with no-scrollbar
+            on narrow screens instead of wrapping to a second line. */}
+        <div className="ml-auto flex min-w-0 max-w-[75vw] sm:max-w-none shrink-0 flex-nowrap items-center gap-1.5 sm:gap-2 overflow-x-auto overflow-y-hidden py-0.5 gn-no-scrollbar touch-pan-x">
+          {/* ⠋N toggles sticky task list · goal · ⠋ MCP · context · queue · todo · credits
+              (TUI status.push order: bg_tasks → goal → mcp → context → queue → badge → credits) */}
+          <RunningChip
+            entries={entries}
+            topTasks={topTasks}
+            open={tasksOpen}
+            onToggle={() => setTasksBarOpen(!tasksOpen)}
+          />
+          {/* 游离后台进程（本 agent 无法终止的那些）——只提示，不进任务列表 */}
+          <DetachedChip readonly={guest} />
+          <GoalChip goalState={goalState} contextUsed={usage?.used} readonly={guest} />
+          {/* 访客没有 MCP 面板，但连接数照样是只读状态读数。 */}
+          {(onOpenMcp || guest) && <McpChip onOpen={onOpenMcp ?? (() => {})} readonly={guest} />}
+          {/* 精简回放的正文补全进度（只在有 lite 行欠着正文时出现）。
+              访客唯一保留可点的芯片：补全是只读拉取。 */}
+          <LiteFillChip />
+          <ContextChip
+            used={usage?.used}
+            size={
+              usage?.size ??
+              // 目录回退用「生效中的窗口」（会话选择优先），不能只看模型默认
+              // totalContextTokens——选了 500k 却显示 256k 会与菜单里高亮的
+              // chip 自相矛盾。
+              activeContextWindow(
+                models.find(
+                  (m) =>
+                    !!modelName &&
+                    (m.modelId.toLowerCase() === modelName.trim().toLowerCase() ||
+                      (m.name != null &&
+                        m.name.trim().toLowerCase() === modelName.trim().toLowerCase())),
+                ),
+              ) ??
+              models[0]?.contextWindow
+            }
+            agentPct={sessionStatus?.usedPercent}
+            thresholdPct={sessionStatus?.autoCompactThresholdPercent}
+            readonly={guest}
+          />
+          <QueueBadge />
+          <TodoChip todos={todos} goalState={goalState} />
+          {/* 会话费用（TUI status.push 末尾的 credits 位）。 */}
+          <SessionCostChip />
+        </div>
+      </div>
+      {/* Sticky task rows under the bar (not a floating popup).
+          会话切换加载中随栏内内容一起淡出（旧会话任务不属于新会话）。 */}
+      <div
+        className={`transition-opacity duration-300 ${
+ fadeHidden ? 'pointer-events-none opacity-0' : 'opacity-100'
+        }`}
+        aria-hidden={fadeHidden || undefined}
+        inert={fadeHidden || undefined}
+      >
+        <RunningTasksBar
+          entries={entries}
+          topTasks={topTasks}
+          open={tasksOpen}
+          readonly={guest}
+        />
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Minimal top chrome — closer to TUI status (gray on bg_base) than a fat web header.
+ * Host switcher pre-wired for multi-host; git branch + session actions
+ * (fork / rename / recap) live off the x.ai extension surface.
+ */
+export function TopBar({
+  onOpenMcp,
+  onOpenGit,
+  mcpOpen,
+  gitOpen,
+  onLogout,
+  onEnterGuest,
+}: {
+  onOpenMcp?: () => void
+  onOpenGit?: () => void
+  /** MCP / git 面板是否打开（顶栏按钮选中态；点击已打开的按钮关闭）。 */
+  mcpOpen?: boolean
+  gitOpen?: boolean
+  /** 退出登录：只清 hub 那把（各台 host 的近路钥匙保留）。无密钥时不显示。 */
+  onLogout?: () => void
+  /**
+   * 切换到访客模式（左上角 host 列表里，退出登录上方）。本地没有存过访客
+   * 令牌时由调用方弹门禁要求输入。纯 local 模式没有 hub 承载白名单，不显示。
+   */
+  onEnterGuest?: () => void
+}) {
+  const hostName = useChatStore((s) => s.hostName)
+  const hostId = useChatStore((s) => s.hostId)
+  const hosts = useChatStore((s) => s.hosts)
+  const feSubscribers = useChatStore((s) => s.feSubscribers)
+  const mode = useChatStore((s) => s.mode)
+  const selectedHostId = useChatStore((s) => s.selectedHostId)
+  const switchHost = useChatStore((s) => s.switchHost)
+  const setHostRoute = useChatStore((s) => s.setHostRoute)
+  const conn = useChatStore((s) => s.conn)
+  const layerErrors = useChatStore((s) => s.layerErrors)
+  const resetToEmpty = useChatStore((s) => s.resetToEmpty)
+  const historyOpen = useChatStore((s) => s.historyOpen)
+  const openHistory = useChatStore((s) => s.openHistory)
+  const closeHistory = useChatStore((s) => s.closeHistory)
+  const openExtensions = useChatStore((s) => s.openExtensions)
+  const closeExtensions = useChatStore((s) => s.closeExtensions)
+  const extensionsOpen = useChatStore((s) => s.extensionsOpen)
+  const openSettings = useChatStore((s) => s.openSettings)
+  const closeSettings = useChatStore((s) => s.closeSettings)
+  const settingsOpen = useChatStore((s) => s.settingsOpen)
+  const openUsage = useChatStore((s) => s.openUsage)
+  const closeUsage = useChatStore((s) => s.closeUsage)
+  const usageOpen = useChatStore((s) => s.usageOpen)
+  const sidebarCollapsed = useChatStore((s) => s.sidebarCollapsed)
+  const toggleSidebar = useChatStore((s) => s.toggleSidebar)
+
+  const [openHosts, setOpenHosts] = useState(false)
+  // 订阅者详情面板（顶栏数字点开）。hub 模式才有数据；关掉 host 下拉等
+  // 其他浮层不影响它，它是独立的模态。
+  const [subscribersOpen, setSubscribersOpen] = useState(false)
+  // Mobile (lg:hidden) "更多" menu — the secondary action buttons fold
+  // into one ⋮ trigger; clicking expands them vertically.
+  const [moreOpen, setMoreOpen] = useState(false)
+  // history 下拉的会话搜索（与桌面侧边栏同一套 SessionSearchBox：按钮
+  // 展开 → 命中接管列表；打开命中或收起下拉后归位）。
+  const [historySearchOpen, setHistorySearchOpen] = useState(false)
+  const [historySearchActive, setHistorySearchActive] = useState(false)
+  // 收起下拉同时归位搜索：下次打开回到紧凑列表态。
+  const closeMobileHistory = () => {
+    closeHistory()
+    setHistorySearchOpen(false)
+    setHistorySearchActive(false)
+  }
+  // The theme row expands inline (accordion) inside the 更多 menu.
+  const [themeExpanded, setThemeExpanded] = useState(false)
+  // 单个 host 的操作菜单（右键 / 行内 ⋮ 打开，fixed 坐标）。
+  const [menuHost, setMenuHost] = useState<{ host: HostInfo; pos: { x: number; y: number } } | null>(null)
+  // 添加 Host（配对码）模态框。
+  const [addHostOpen, setAddHostOpen] = useState(false)
+  // 修改名称 / 删除 / 重启确认的目标 host。
+  const [renameTarget, setRenameTarget] = useState<HostInfo | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<HostInfo | null>(null)
+  const [restartTarget, setRestartTarget] = useState<HostInfo | null>(null)
+  // 当前选中的 host（右键左上角开关直接对当前 host 弹菜单）。
+  const currentHost =
+    hosts.find((h) => h.hostId === selectedHostId) ??
+    (hosts.length ? hosts[0] : null)
+  // 退出登录：hub 模式下它在 host 下拉里（「添加 Host」下面，两端共用）。
+  // 纯 local 模式左上角是静态 Localhost 标签、没有 host 下拉，退出留在
+  // 右上角（桌面）/ ⋮ 菜单（移动端），否则无处可点。
+  const logoutInChrome = mode === 'local' && !!onLogout && !!transport.getAccessToken()
+
+  // Host label reflects connection health: abnormal → "connecting" / "error".
+  // 分层错误（hub/host 层）不改写这里的文案：host 名字保持原样并前置一个
+  // 告警图标，错误文案单独一条跟在右边（LayerErrNotice）——错误既不挤掉
+  // host 名字，也不另占一整条。
+  const layerErr = pickLayerError(layerErrors)
+  const hostLabel = layerErr
+    ? hostName || 'Local Host'
+    : conn === 'connecting'
+      ? 'connecting'
+      : conn === 'error' || conn === 'offline'
+        ? 'error'
+        : hostName || 'Local Host'
+  const hostLabelColor = layerErr
+    ? ''
+    : conn === 'connecting'
+      ? 'text-gn-muted'
+      : conn === 'error' || conn === 'offline'
+        ? 'text-gn-red'
+        : ''
+  // host 名字前的告警图标与右侧消息同色：error 红、warning 黄。
+  const errIcon = layerErr ? (
+    <TriangleAlert
+      size={12}
+      strokeWidth={2}
+      className={`shrink-0 ${layerErr.err.level === 'error' ? 'text-gn-red' : 'text-gn-warning'}`}
+      aria-hidden
+    />
+  ) : null
+
+  // relative z-40 so host/history/more dropdowns stack above WorkspaceBar
+  // (sticky z-30) and scrollback sticky prompts (z-10). Without a stacking
+  // context on this chrome, absolute z-40 children still lose to later
+  // siblings and chat text "shows through" the history panel.
+  return (
+    <header className="relative z-40 select-none border-b border-gn-prompt-border bg-gn-bg-base touch-pan-x overscroll-none">
+      {/* Main row: host switcher + actions. flex-wrap 只为分层错误提示：
+          窄屏（< lg）它整行落到第二行，不与 host 切换器和 new/history/更多
+          抢同一行的宽度。lg 起回到不换行——桌面一行的按钮簇不能因为一条
+          长错误被挤到第二行，让消息自己截断即可。 */}
+      <div className="flex shrink-0 flex-wrap items-center gap-2 px-3 py-[6px] sm:px-4 text-[12px] text-gn-muted lg:flex-nowrap">
+        {/* Desktop-only sidebar collapse toggle — sits left of the host switcher. */}
+        <button
+          type="button"
+          onClick={toggleSidebar}
+          aria-label={sidebarCollapsed ? '展开会话侧边栏' : '折叠会话侧边栏'}
+          title={sidebarCollapsed ? '展开会话侧边栏' : '折叠会话侧边栏'}
+          className="hidden min-h-8 items-center rounded px-1.5 hover:bg-gn-bg-highlight hover:text-gn-fg lg:inline-flex"
+        >
+          <svg
+            width="13"
+            height="13"
+            viewBox="0 0 14 14"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.3"
+            className="shrink-0"
+            aria-hidden
+          >
+            <rect x="1.2" y="2.2" width="11.6" height="9.6" rx="1" />
+            <line x1="5" y1="2.2" x2="5" y2="11.8" />
+            <path d="M2.4 5h1.4M2.4 8h1.4" />
+          </svg>
+        </button>
+        <div className="relative min-w-0">
+          {mode === 'local' ? (
+            // 本地模式：锁定本机 —— 静态 Localhost 标签，不可点击、无下拉。
+            <div
+              className="flex min-h-8 max-w-[40vw] items-center gap-1 truncate rounded px-1.5 py-0.5 sm:max-w-xs"
+              title="本地模式（仅本机 capri-host，无 host 切换）"
+            >
+              {errIcon}
+              <span className="truncate text-gn-fg">Localhost</span>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setOpenHosts((v) => !v)}
+              onContextMenu={(e) => {
+                // 网页端：右键当前 host 直接弹操作菜单（修改 / 删除）。
+                e.preventDefault()
+                if (currentHost) {
+                  setMenuHost({ host: currentHost, pos: clampMenuPos(e.clientX, e.clientY) })
+                } else {
+                  setOpenHosts(true)
+                }
+              }}
+              className={`flex max-w-[40vw] sm:max-w-xs items-center gap-1 truncate rounded px-1.5 py-0.5 hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8 ${hostLabelColor}`}
+              title={
+                conn === 'connecting' || conn === 'error' || conn === 'offline'
+                  ? `连接状态: ${conn}${hostName ? ` · ${hostName}` : ''}`
+                  : `${hostName || 'Local Host'}（右键可管理 Host）`
+              }
+            >
+              {errIcon}
+              <span className="truncate">{hostLabel}</span>
+              <ChevronDown
+                size={12}
+                strokeWidth={2}
+                className="shrink-0 text-gn-gutter"
+                aria-hidden
+              />
+            </button>
+          )}
+          {openHosts && (
+            <>
+              <button
+                type="button"
+                className="fixed inset-0 z-30 cursor-default"
+                aria-label="close"
+                onClick={() => {
+                  setOpenHosts(false)
+                  setMenuHost(null)
+                }}
+              />
+              <div className="absolute left-0 top-full z-40 mt-1 w-64 max-w-[90vw] gn-menu">
+                <div className="px-3 pb-1 pt-1.5 text-[10px] uppercase tracking-wider text-gn-gutter">
+                  hosts
+                </div>
+                {(hosts.length
+                  ? hosts
+                  : [{ hostId: hostId || 'local', hostName: hostName || 'Local Host', online: true }]
+                ).map((h) => {
+                  const current = h.hostId === selectedHostId
+                  const state = hostState(h)
+                  const stateLabel = hostStateLabel(state)
+                  // 每次渲染读 transport：discoverLocalHost / refreshHosts 后
+                  // hosts 更新会带动重绘，通路标记随之刷新。近路是按 hostId 逐台
+                  // 验证的（同机可能有多台 host，也可能一台都没有）。
+                  const localRoute = transport.getLocalRoute(h.hostId)
+                  // 不能直连本机的（无近路候选）不显示通道：行内标记与悬停
+                  // 提示都省掉——反正只有 Hub 中继一条路，标了也是噪声。
+                  const hasCandidate = transport.hasLocalCandidate(h.hostId)
+                  const routeState = transport.activeRouteFor(h.hostId)
+                  const route = hostRouteLabel(routeState)
+                  const routeHint =
+                    routeState === 'direct'
+                      ? `API/SSE 直连 ${localRoute?.base || '本机'}`
+                      : routeState === 'pending'
+                        ? '已探到本机这台，等它的钥匙（现在走 Hub 中继）'
+                        : '经 Hub 中继'
+                  return (
+                    <div
+                      key={h.hostId}
+                      className="group/host relative"
+                      onContextMenu={(e) => {
+                        // 网页端：右键任意 host 行弹操作菜单。
+                        e.preventDefault()
+                        setMenuHost({ host: h, pos: clampMenuPos(e.clientX, e.clientY) })
+                      }}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMenuHost(null)
+                          setOpenHosts(false)
+                          void switchHost(h.hostId)
+                        }}
+                        className={`flex w-full items-center gap-2 px-3 py-2 pr-9 text-left text-[12px] hover:bg-gn-bg-highlight ${current ? 'bg-gn-bg-highlight' : ''}`}
+                        title={
+                          h.online
+                            ? stateLabel
+                              ? `切换到 ${h.hostName}（${stateLabel}${hasCandidate ? ` · ${routeHint}` : ''}，右键可管理）`
+                              : hasCandidate
+                                ? `切换到 ${h.hostName}（${routeHint}，右键可管理）`
+                                : `切换到 ${h.hostName}（右键可管理）`
+                            : `${h.hostName}（离线${hasCandidate ? ` · ${routeHint}` : ''}）`
+                        }
+                      >
+                        <span
+                          className={`h-1.5 w-1.5 shrink-0 rounded-full ${hostDotClass(h)}`}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-gn-fg">
+                            {h.hostName}
+                            {current && <span className="ml-1.5 text-[10px] text-gn-cyan">当前</span>}
+                            {hasCandidate && (
+                              <span
+                                className={`ml-1.5 text-[10px] ${
+ route === '直连'
+                                    ? 'text-gn-green'
+                                    : route === '待验证'
+                                      ? 'text-gn-yellow'
+                                      : 'text-gn-gutter'
+                                }`}
+                              >
+                                {route}
+                              </span>
+                            )}
+                          </div>
+                          <div className="truncate font-mono text-[10px] text-gn-muted">
+                            {h.hostId}
+                            {stateLabel && (
+                              <span className={`ml-1.5 ${state ? HOST_STATE_TEXT_CLASS[state] : ''}`}>
+                                {stateLabel}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </button>
+                      {/* 行内 ⋮ 菜单图标：移动端（无右键）的主要入口，桌面端悬停可见。 */}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          const r = e.currentTarget.getBoundingClientRect()
+                          setMenuHost(
+                            menuHost?.host.hostId === h.hostId
+                              ? null
+                              : { host: h, pos: clampMenuPos(r.right - 208, r.bottom + 2) },
+                          )
+                        }}
+                        aria-label={`${h.hostName} 操作`}
+                        title="修改 / 删除"
+                        className={`absolute right-1 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded text-gn-gutter hover:bg-gn-bg-highlight hover:text-gn-fg lg:opacity-0 lg:group-hover/host:opacity-100 ${menuHost?.host.hostId === h.hostId ? 'lg:opacity-100' : ''}`}
+                      >
+                        <svg
+                          width="13"
+                          height="13"
+                          viewBox="0 0 16 16"
+                          fill="currentColor"
+                          aria-hidden
+                        >
+                          <circle cx="3.2" cy="8" r="1.4" />
+                          <circle cx="8" cy="8" r="1.4" />
+                          <circle cx="12.8" cy="8" r="1.4" />
+                        </svg>
+                      </button>
+                    </div>
+                  )
+                })}
+                <div className="border-t border-gn-prompt-border">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOpenHosts(false)
+                      setAddHostOpen(true)
+                    }}
+                    className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                    title="获取新配对码，在另一台机器上接入 hub"
+                  >
+                    <Plus size={13} strokeWidth={2} aria-hidden />
+                    添加 Host
+                  </button>
+                  {/* 切换到访客模式：只读分享视图。纯 local 没有 hub 承载
+                      白名单，不给入口；管理员未登录时也没有可切的身份。 */}
+                  {onEnterGuest && transport.getAccessToken() && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpenHosts(false)
+                        onEnterGuest()
+                      }}
+                      className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                      title="切换到访客模式（只读分享视图；本地没有存过访客令牌时会要求输入）"
+                    >
+                      <ShieldQuestion size={13} strokeWidth={2} aria-hidden />
+                      切换到访客模式
+                    </button>
+                  )}
+                  {onLogout && transport.getAccessToken() && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpenHosts(false)
+                        onLogout()
+                      }}
+                      className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                      title="退出登录（清掉本机保存的 Hub 密钥；各台 Host 的近路钥匙保留）"
+                    >
+                      <LogOut size={13} strokeWidth={2} aria-hidden />
+                      退出登录
+                    </button>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+          {/* 单个 host 的操作菜单：右键（网页）/ ⋮ 图标（移动端）打开。 */}
+          {menuHost && (
+            <HostActionsMenu
+              host={menuHost.host}
+              pos={menuHost.pos}
+              onClose={() => setMenuHost(null)}
+              onRename={(h) => {
+                setMenuHost(null)
+                setRenameTarget(h)
+              }}
+              onDelete={(h) => {
+                setMenuHost(null)
+                setDeleteTarget(h)
+              }}
+              onRestart={(h) => {
+                setMenuHost(null)
+                setRestartTarget(h)
+              }}
+              routeState={transport.activeRouteFor(menuHost.host.hostId)}
+              onRoute={(h, choice) => void setHostRoute(h.hostId, choice)}
+              // 重启作用于当前选中 host 的 agent（transport 按选中
+              // host 路由）；非当前 host 行不显示重启项，避免误解。
+              canRestart={menuHost.host.hostId === selectedHostId}
+            />
+          )}
+          {renameTarget && (
+            <RenameHostModal host={renameTarget} onClose={() => setRenameTarget(null)} />
+          )}
+          {deleteTarget && (
+            <DeleteHostModal host={deleteTarget} onClose={() => setDeleteTarget(null)} />
+          )}
+          {restartTarget && (
+            <RestartAgentModal host={restartTarget} onClose={() => setRestartTarget(null)} />
+          )}
+          {addHostOpen && <AddHostModal onClose={() => setAddHostOpen(false)} />}
+        </div>
+
+        {/* Hub 在线 FE 订阅数：紧跟 host 块右侧。数字来自 hub 的 hello /
+            subscribers_changed（/ws/fe 连接总数，含本页）；老 hub 不下发时
+            不渲染，避免显示一个假的 0。人物图标把裸数字读成「在线订阅者」，
+            与左右两侧的纯按钮区分开。点开 = 订阅者详情（地址 / 设备 /
+            哪把令牌 / 正在看哪个会话），数据来自 GET /api/subscribers。 */}
+        {mode === 'hub' && feSubscribers != null && (
+          <button
+            type="button"
+            onClick={() => setSubscribersOpen(true)}
+            aria-haspopup="dialog"
+            aria-expanded={subscribersOpen}
+            className="inline-flex min-h-8 shrink-0 items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[11px] leading-none tabular-nums text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+            title={`Hub 当前 ${feSubscribers} 个 FE 在线订阅（含本页）`}
+            aria-label={`Hub 在线 FE 订阅数 ${feSubscribers}，点击查看详情`}
+          >
+            <Eye size={12} strokeWidth={2} className="shrink-0 text-gn-gutter" aria-hidden />
+            {feSubscribers}
+          </button>
+        )}
+        {subscribersOpen && <SubscribersPanel onClose={() => setSubscribersOpen(false)} />}
+
+        {/* hub / host 层错误：紧跟在 host 名字右侧的一条内联消息（不另占整行）。
+            窄屏（< lg）另起一行占满整行：与 host 切换器 + new/history/更多
+            挤在一行时，消息会被压到 0 宽——只剩层级徽标和 ✕，错误内容完全
+            看不见。lg 起恢复行内，宽度上限 26rem。 */}
+        {layerErr && (
+          <LayerErrNotice
+            key={`${layerErr.layer}:${layerErr.err.at}`}
+            layer={layerErr.layer}
+            err={layerErr.err}
+            className="order-last w-full pb-1 lg:order-none lg:w-auto lg:max-w-[26rem] lg:pb-0"
+          />
+        )}
+
+        <div className="flex-1" />
+
+        {/* Desktop-only inline actions — on mobile they fold into the ⋮ menu below. */}
+        <div className="hidden items-center gap-2 lg:flex">
+          <ThemePicker />
+          {onOpenMcp && (
+            <button
+              type="button"
+              onClick={onOpenMcp}
+              aria-pressed={!!mcpOpen}
+              className={chromeBtnClass(!!mcpOpen)}
+              title="MCP 服务器状态"
+            >
+              <Boxes size={13} strokeWidth={2} aria-hidden />
+              mcp
+            </button>
+          )}
+          {onOpenGit && (
+            <button
+              type="button"
+              onClick={onOpenGit}
+              aria-pressed={!!gitOpen}
+              className={chromeBtnClass(!!gitOpen)}
+              title="Git 面板 — 工作区状态 / diff / 提交"
+            >
+              <GitBranch size={13} strokeWidth={2} aria-hidden />
+              git
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => (extensionsOpen ? closeExtensions() : openExtensions('hooks'))}
+            aria-pressed={extensionsOpen}
+            className={chromeBtnClass(extensionsOpen)}
+            title="扩展（/hooks /plugins /skills /marketplace）"
+          >
+            <Puzzle size={13} strokeWidth={2} aria-hidden />
+            ext
+          </button>
+          <button
+            type="button"
+            onClick={() => (usageOpen ? closeUsage() : openUsage())}
+            aria-pressed={usageOpen}
+            className={chromeBtnClass(usageOpen)}
+            title="usage — token 用量聚合（按模型/时间窗口）+ billing credits"
+          >
+            <Activity size={13} strokeWidth={2} aria-hidden />
+            usage
+          </button>
+          <button
+            type="button"
+            onClick={() => (settingsOpen ? closeSettings() : openSettings())}
+            aria-pressed={settingsOpen}
+            className={chromeBtnClass(settingsOpen)}
+            title="设置（F2）"
+          >
+            <Settings size={13} strokeWidth={2} aria-hidden />
+            settings
+          </button>
+          {logoutInChrome && (
+            <button
+              type="button"
+              onClick={onLogout}
+              className={chromeBtnClass()}
+              title="退出登录（清掉本机保存的 Hub 密钥；各台 Host 的近路钥匙保留）"
+            >
+              <LogOut size={13} strokeWidth={2} aria-hidden />
+              退出
+            </button>
+          )}
+        </div>
+        {/* Mobile-only new — sits left of history (no ⋮ dive needed).
+            Desktop relies on the sidebar "会话 new" header button. */}
+        <div className="lg:hidden">
+          <button
+            type="button"
+            onClick={() => resetToEmpty()}
+            className={chromeBtnClass()}
+            title="新建会话（先进入空状态选择工作目录）"
+          >
+            <Plus size={13} strokeWidth={2} aria-hidden />
+            new
+          </button>
+        </div>
+        {/* Mobile-only history trigger — desktop history lives in the persistent left sidebar. */}
+        <div className="relative lg:hidden">
+          <button
+            type="button"
+            onClick={() => (historyOpen ? closeMobileHistory() : void openHistory())}
+            className={chromeBtnClass(historyOpen)}
+            aria-pressed={historyOpen}
+            title="加载历史会话"
+          >
+            <History size={13} strokeWidth={2} aria-hidden />
+            history
+          </button>
+          {historyOpen && (
+            <>
+              <button
+                type="button"
+                className="fixed inset-0 z-30 cursor-default"
+                aria-label="close"
+                onClick={closeMobileHistory}
+              />
+              {/* Mobile dropdown — renders the SAME workspace-grouped list as
+                  the desktop sidebar (SessionHistoryList), so the two ends
+                  stay in sync (分组 / 折叠 / 加载更多 / 重命名 / 删除)，
+                  plus the same「会话 + 刷新 + 搜索」header
+                  (SessionListHeader). Session search mirrors the desktop
+                  sidebar: button → SessionSearchBox replaces the grouped
+                  list while a query is active; opening a hit also closes
+                  the dropdown.
+                  Width is viewport-capped: right-anchored to the history
+                  button, a fixed w-80 would poke past the LEFT edge on
+                  narrow phones (320px). Header is outside the scroll area
+                  (flex-col) so the list's sticky group headers stick below
+                  it instead of sliding underneath. */}
+              <div
+                className="absolute right-0 top-full z-40 mt-1 flex max-h-[70vh] w-[min(84vw,20rem)] flex-col overflow-hidden gn-menu isolate"
+                style={{ backgroundColor: 'var(--color-gn-bg-base)' }}
+              >
+                {/* py-1.5（非 py-2）：给 labeled 大按钮留高度的同时，
+                    头部总高保持 37px 不变。 */}
+                <div className="flex min-h-[37px] shrink-0 items-center gap-2 border-b border-gn-prompt-border px-3 py-1.5">
+                  <SessionListHeader
+                    alignRight
+                    labeled
+                    searchOpen={historySearchOpen}
+                    onToggleSearch={() => setHistorySearchOpen((v) => !v)}
+                  />
+                </div>
+                {historySearchOpen && (
+                  <SessionSearchBox
+                    onActive={setHistorySearchActive}
+                    onRequestClose={() => {
+                      // 打开命中后：搜索归位，下拉一并收起（会话已切换）。
+                      setHistorySearchOpen(false)
+                      setHistorySearchActive(false)
+                      closeHistory()
+                    }}
+                  />
+                )}
+                {/* 与桌面侧栏同一个列表：关原生锚定，重排位置交给
+                    SessionHistoryList 的 useScrollAnchor（取消待办不挪视口）。 */}
+                <div
+                  className="gn-no-scrollbar min-h-0 overflow-y-auto touch-pan-y overscroll-contain"
+                  style={{ overflowAnchor: 'none' }}
+                >
+                  {historySearchOpen && historySearchActive ? null : <SessionHistoryList />}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Mobile-only "更多" — the secondary action buttons fold into one ⋮
+            trigger; clicking expands them vertically under the button. */}
+        <div className="relative lg:hidden">
+          <button
+            type="button"
+            onClick={() => setMoreOpen((v) => !v)}
+            aria-expanded={moreOpen}
+            aria-label="更多操作"
+            title="更多操作：theme / mcp / git / ext / settings"
+            className={chromeBtnClass(moreOpen)}
+          >
+            <EllipsisVertical size={13} strokeWidth={2} aria-hidden />
+          </button>
+          {moreOpen && (
+            <>
+              <button
+                type="button"
+                className="fixed inset-0 z-30 cursor-default"
+                aria-label="close"
+                onClick={() => setMoreOpen(false)}
+              />
+              <div className="absolute right-0 top-full z-40 mt-1 max-h-[70vh] w-64 max-w-[90vw] overflow-y-auto gn-menu touch-pan-y overscroll-contain">
+                <div className="px-3 pb-1 pt-1.5 text-[10px] uppercase tracking-wider text-gn-gutter">
+                  more
+                </div>
+                {/* theme — inline accordion, same options as the desktop picker. */}
+                <button
+                  type="button"
+                  onClick={() => setThemeExpanded((v) => !v)}
+                  className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                  title={themeExpanded ? '收起主题选项' : '展开主题选项'}
+                >
+                  <Palette size={14} strokeWidth={2} aria-hidden />
+                  <span className="min-w-0 flex-1">theme</span>
+                  <span className="shrink-0 text-gn-gutter" aria-hidden>
+                    {themeExpanded ? (
+                      <ChevronUp size={13} strokeWidth={2} />
+                    ) : (
+                      <ChevronDown size={13} strokeWidth={2} />
+                    )}
+                  </span>
+                </button>
+                {themeExpanded && (
+                  <div className="border-t border-gn-prompt-border/60">
+                    <ThemeOptions
+                      onSelect={() => {
+                        setMoreOpen(false)
+                        setThemeExpanded(false)
+                      }}
+                    />
+                  </div>
+                )}
+                {onOpenMcp && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMoreOpen(false)
+                      onOpenMcp()
+                    }}
+                    className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                    title="MCP 服务器状态"
+                  >
+                    <Boxes size={14} strokeWidth={2} aria-hidden />
+                    mcp
+                  </button>
+                )}
+                {onOpenGit && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMoreOpen(false)
+                      onOpenGit()
+                    }}
+                    className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                    title="Git 面板 — 工作区状态 / diff / 提交"
+                  >
+                    <GitBranch size={14} strokeWidth={2} aria-hidden />
+                    git
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMoreOpen(false)
+                    openExtensions('hooks')
+                  }}
+                  className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                  title="扩展（/hooks /plugins /skills /marketplace）"
+                >
+                  <Puzzle size={14} strokeWidth={2} aria-hidden />
+                  ext
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMoreOpen(false)
+                    openUsage()
+                  }}
+                  className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                  title="usage — token 用量聚合（按模型/时间窗口）+ billing credits"
+                >
+                  <Activity size={14} strokeWidth={2} aria-hidden />
+                  usage
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMoreOpen(false)
+                    openSettings()
+                  }}
+                  className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                  title="设置（F2）"
+                >
+                  <Settings size={14} strokeWidth={2} aria-hidden />
+                  settings
+                </button>
+                {logoutInChrome && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMoreOpen(false)
+                      onLogout?.()
+                    }}
+                    className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                    title="退出登录（清掉本机保存的 Hub 密钥；各台 Host 的近路钥匙保留）"
+                  >
+                    <LogOut size={14} strokeWidth={2} aria-hidden />
+                    退出登录
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </header>
+  )
+}

@@ -22,7 +22,7 @@ vi.mock('./api/client', () => ({
   },
 }))
 vi.mock('./hooks/useScrollbackKeys', () => ({ useScrollbackKeys: vi.fn() }))
-vi.mock('./components/GuestTopBar', () => ({
+vi.mock('./components/shell/GuestTopBar', () => ({
   GuestTopBar: ({ onExit }: { onExit: () => void }) => (
     <button type="button" onClick={onExit}>
       guest-topbar
@@ -34,32 +34,32 @@ vi.mock('./components/scrollback/Scrollback', () => ({
     <div data-testid="scrollback">{guest ? 'scrollback-guest' : 'scrollback-admin'}</div>
   ),
 }))
-vi.mock('./components/BlockViewer', () => ({ BlockViewer: () => <div>block-viewer</div> }))
-vi.mock('./components/ToastStack', () => ({ ToastStack: () => <div>toasts</div> }))
-vi.mock('./components/SessionStatsBar', () => ({
+vi.mock('./components/shell/BlockViewer', () => ({ BlockViewer: () => <div>block-viewer</div> }))
+vi.mock('./components/ui/ToastStack', () => ({ ToastStack: () => <div>toasts</div> }))
+vi.mock('./components/session/SessionStatsBar', () => ({
   SessionStatsBar: () => <div>session-stats</div>,
 }))
-vi.mock('./components/Composer', () => ({
+vi.mock('./components/composer/Composer', () => ({
   Composer: ({ guest }: { guest?: boolean }) => (
     <div>{guest ? 'composer-guest' : 'composer-admin'}</div>
   ),
 }))
-vi.mock('./components/HistorySidebar', () => ({
+vi.mock('./components/session/HistorySidebar', () => ({
   HistorySidebar: () => <div>sidebar-should-not-mount</div>,
 }))
-vi.mock('./components/SettingsModal', () => ({
+vi.mock('./components/panels/SettingsModal', () => ({
   SettingsModal: () => <div>settings-should-not-mount</div>,
 }))
-vi.mock('./components/McpPanel', () => ({
+vi.mock('./components/panels/McpPanel', () => ({
   McpPanel: () => <div>mcp-should-not-mount</div>,
 }))
-vi.mock('./components/GitPanel', () => ({
+vi.mock('./components/panels/GitPanel', () => ({
   GitPanel: () => <div>git-should-not-mount</div>,
 }))
-vi.mock('./components/ApprovalStrip', () => ({
+vi.mock('./components/approvals/ApprovalStrip', () => ({
   ApprovalStrip: () => <div>approval-should-not-mount</div>,
 }))
-vi.mock('./components/QuestionModal', () => ({
+vi.mock('./components/approvals/QuestionModal', () => ({
   QuestionModal: () => <div>question-should-not-mount</div>,
 }))
 

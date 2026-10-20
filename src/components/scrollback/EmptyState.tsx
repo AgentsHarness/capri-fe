@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useChatStore } from '../../store/chat'
 import { transport } from '../../api/client'
-import { DirectoryPickerModal } from '../DirectoryPickerModal'
+import { DirectoryPickerModal } from '../ui/DirectoryPickerModal'
 import { useWorktreeGate } from './useWorktreeGate'
 
 /** "Agents" 与 "Herness" 两段字符画（空状态居中 logo）。figlet「lean」风格，

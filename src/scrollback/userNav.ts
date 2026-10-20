@@ -1,5 +1,5 @@
 import type { ScrollEntry } from '../api/types'
-import type { UserMessageNavItem } from '../components/UserMessageNav'
+import type { UserMessageNavItem } from '../components/session/UserMessageNav'
 import { userMessagePreview } from '../format'
 import { classifyUserPrompt } from '../store/chat/envelope'
 

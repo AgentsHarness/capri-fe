@@ -16,7 +16,7 @@ vi.mock('../../api/client', () => ({
   },
 }))
 
-vi.mock('../DirectoryPickerModal', () => ({
+vi.mock('../ui/DirectoryPickerModal', () => ({
   DirectoryPickerModal: ({
     open,
     initial,

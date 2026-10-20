@@ -1,0 +1,501 @@
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
+import { Copy, Network, Pencil, RefreshCw, Trash2, X, Zap } from 'lucide-react'
+import type { HostInfo } from '../../api/types'
+import { transport } from '../../api/client'
+import { useChatStore } from '../../store/chat'
+import { pushToast } from '../../store/toast'
+
+/**
+ * Hub 多 Host 管理面板（TopBar 左上角 host 选择器配套）：
+ * - HostActionsMenu —— 单个 host 的操作菜单（右键点击 / 行内 ⋮ 图标打开），
+ *   只含菜单项：修改名称、删除（解除配对）；本机 host（hub 所在机器）
+ *   不可删除。添加 Host 的唯一入口是下拉面板底部的按钮。
+ * - AddHostModal —— 添加新 host：展示当前配对码、轮换出新码、复制、指引用。
+ * - RenameHostModal / DeleteHostModal —— 修改 / 删除的确认与输入。
+ *
+ * 所有端点都是 hub 管理面（不带 ?host= 中继），仅 hub 模式可用；
+ * 组件本身只在 hub 模式的 host 下拉里渲染，local 模式不会触达。
+ */
+
+/** 菜单打开位置（fixed 视口坐标，已做边缘夹取）。 */
+export type HostMenuPos = { x: number; y: number }
+
+export function HostActionsMenu({
+  host,
+  pos,
+  onClose,
+  onRename,
+  onDelete,
+  onRestart,
+  canRestart,
+  routeState,
+  onRoute,
+}: {
+  host: HostInfo
+  pos: HostMenuPos
+  onClose: () => void
+  onRename: (h: HostInfo) => void
+  onDelete: (h: HostInfo) => void
+  onRestart: (h: HostInfo) => void
+  /** 仅当前选中的 host 可重启（重启作用于选中 host 的 agent 进程）。 */
+  canRestart: boolean
+  /** 这台当前实际通路（direct / pending / relay），用于给两个通路项打勾。 */
+  routeState: 'direct' | 'pending' | 'relay'
+  /** 切通路；`direct` 在近路钥匙没就绪时会走一遍「先试 hub 那把，再问这台」。 */
+  onRoute: (h: HostInfo, choice: 'direct' | 'relay') => void
+}) {
+  // 菜单弹出即捕获焦点，Esc 关闭（与 TUI 菜单一致）。
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    ref.current?.focus()
+  }, [])
+  // Portaled to body：脱离 header 的 z-40 层叠上下文，保证盖住全页面。
+  return createPortal(
+    <>
+      <button
+        type="button"
+        className="fixed inset-0 z-[45] cursor-default"
+        aria-label="close"
+        onClick={onClose}
+        onContextMenu={(e) => {
+          e.preventDefault()
+          onClose()
+        }}
+      />
+      <div
+        ref={ref}
+        tabIndex={-1}
+        role="menu"
+        className="fixed z-[46] w-52 gn-menu outline-none"
+        style={{ left: pos.x, top: pos.y }}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onClose()
+        }}
+      >
+        {/* ── 通路：本机近路 vs Hub 中继 ─────────────────────────────
+            近路默认开（transport 探到本机这台就会走），这里只给用户反悔的
+            入口。没有近路候选的机器（手机上看别的电脑）不能直连本机，
+            只有 Hub 中继一条路——整段通道菜单直接不显示。 */}
+        {transport.hasLocalCandidate(host.hostId) && (
+          <>
+            <div className="px-3 pb-1 pt-1.5 text-[10px] uppercase tracking-wider text-gn-gutter">
+              通路
+            </div>
+            <button
+              type="button"
+              role="menuitemradio"
+              aria-checked={routeState === 'direct'}
+              disabled={!transport.hasLocalCandidate(host.hostId)}
+              onClick={() => {
+                onRoute(host, 'direct')
+                onClose()
+              }}
+              className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+              title={
+                transport.hasLocalCandidate(host.hostId)
+                  ? '浏览器直连这台的本地端口，少一跳中继；缺钥匙时会让你补一把'
+                  : '这台不在这台电脑上，只能经 Hub 中继'
+              }
+            >
+              <Zap size={13} strokeWidth={2} aria-hidden />
+              直连本机
+              {routeState === 'direct' && <span className="ml-auto text-[10px] text-gn-green">当前</span>}
+              {routeState === 'pending' && <span className="ml-auto text-[10px] text-gn-yellow">待验证</span>}
+            </button>
+            <button
+              type="button"
+              role="menuitemradio"
+              aria-checked={routeState !== 'direct'}
+              onClick={() => {
+                onRoute(host, 'relay')
+                onClose()
+              }}
+              className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+              title="请求一律经 Hub 中转（这台不需要它自己的钥匙）"
+            >
+              <Network size={13} strokeWidth={2} aria-hidden />
+              经 Hub 中继
+              {routeState === 'relay' && <span className="ml-auto text-[10px] text-gn-cyan">当前</span>}
+            </button>
+            <div className="border-t border-gn-prompt-border" />
+          </>
+        )}
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => onRename(host)}
+          className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+          title="修改 Host 展示名（不影响连接与 token）"
+        >
+          <Pencil size={13} strokeWidth={2} aria-hidden />
+          修改名称
+        </button>
+        {canRestart && (
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => onRestart(host)}
+            className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+            title="杀掉当前 agent 进程并重新启动（恢复上次会话；在飞回合会被中断）"
+          >
+            <RefreshCw size={13} strokeWidth={2} aria-hidden />
+            重启 Agent
+          </button>
+        )}
+        {!host.local && (
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => onDelete(host)}
+            className="flex w-full min-h-9 items-center gap-2 px-3 py-2 text-left text-[12px] text-gn-red hover:bg-gn-red/10"
+            title="解除配对：吊销 token 并断开中继"
+          >
+            <Trash2 size={13} strokeWidth={2} aria-hidden />
+            删除 Host
+          </button>
+        )}
+      </div>
+    </>,
+    document.body,
+  )
+}
+
+/** 通用模态外壳（TUI 平面边框，与 sidebar / 滚动区同款；portaled 到 body）。 */
+export function ModalShell({
+  title,
+  onClose,
+  children,
+}: {
+  title: string
+  onClose: () => void
+  children: ReactNode
+}) {
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center gn-modal-dim p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose()
+      }}
+    >
+      <div className="mt-8 w-full max-w-[480px] gn-modal-panel">
+        <header className="gn-modal-header">
+          <span className="text-[13px] font-bold text-gn-fg">{title}</span>
+          <button
+            type="button"
+            onClick={onClose}
+            className="ml-auto rounded p-1 text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+            aria-label="关闭"
+          >
+            <X size={13} aria-hidden />
+          </button>
+        </header>
+        {children}
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+export function RenameHostModal({
+  host,
+  onClose,
+}: {
+  host: HostInfo
+  onClose: () => void
+}) {
+  const renameHost = useChatStore((s) => s.renameHost)
+  const [value, setValue] = useState(host.hostName)
+  const [submitting, setSubmitting] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    inputRef.current?.focus()
+    inputRef.current?.select()
+  }, [])
+
+  const submit = async () => {
+    const name = value.trim()
+    if (!name || submitting) return
+    setSubmitting(true)
+    const ok = await renameHost(host.hostId, name)
+    setSubmitting(false)
+    if (ok) onClose()
+  }
+
+  return (
+    <ModalShell title="修改 Host 名称" onClose={onClose}>
+      <div className="p-4">
+        <p className="mb-3 text-[12px] text-gn-muted leading-snug">
+          仅修改展示名（hostId 不变），不会断开连接或吊销 token。
+        </p>
+        <input
+          ref={inputRef}
+          type="text"
+          value={value}
+          maxLength={256}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            // 输入法组字中的 Enter 是上屏候选词，不是提交（中文 Host
+            // 名按回车选词会把半截名字存下来）。Escape 照常放行——
+            // 组字中的 Esc 由输入法自己吞掉，不会到这里。
+            if (e.nativeEvent.isComposing) return
+            if (e.key === 'Enter') void submit()
+            if (e.key === 'Escape') onClose()
+          }}
+          placeholder="Host 名称…"
+          className="mb-4 w-full rounded-md border border-gn-prompt-border bg-gn-bg-base px-3 py-2 font-mono text-[13px] text-gn-fg outline-none placeholder:text-gn-gray-dim focus:border-gn-prompt-border-active"
+        />
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md px-3 py-1.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            disabled={!value.trim() || submitting}
+            onClick={submit}
+            className="rounded px-3 py-1.5 text-[12px] text-gn-cyan hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {submitting ? '保存中…' : '保存'}
+          </button>
+        </div>
+      </div>
+    </ModalShell>
+  )
+}
+
+export function DeleteHostModal({
+  host,
+  onClose,
+}: {
+  host: HostInfo
+  onClose: () => void
+}) {
+  const deleteHost = useChatStore((s) => s.deleteHost)
+  const [submitting, setSubmitting] = useState(false)
+
+  const submit = async () => {
+    if (submitting) return
+    setSubmitting(true)
+    const ok = await deleteHost(host.hostId)
+    setSubmitting(false)
+    if (ok) onClose()
+  }
+
+  return (
+    <ModalShell title="删除 Host" onClose={onClose}>
+      <div className="p-4">
+        <p className="text-[12px] text-gn-fg leading-snug">
+          确定要解除配对并删除「<span className="text-gn-red">{host.hostName}</span>
+          」吗？
+        </p>
+        <p className="mt-1 text-[11px] text-gn-muted leading-snug">
+          删除后其 token 立即失效、中继连接被断开，该机器上的 capri-host 需重新配对才能恢复接入。
+        </p>
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md px-3 py-1.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            disabled={submitting}
+            onClick={submit}
+            className="rounded px-3 py-1.5 text-[12px] text-gn-red hover:bg-gn-diff-del-bg disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {submitting ? '删除中…' : '删除'}
+          </button>
+        </div>
+      </div>
+    </ModalShell>
+  )
+}
+
+export function AddHostModal({ onClose }: { onClose: () => void }) {
+  const fetchPairingCode = useChatStore((s) => s.fetchPairingCode)
+  const rotatePairingCode = useChatStore((s) => s.rotatePairingCode)
+
+
+  const [code, setCode] = useState<string | null>(null)
+  const [expiresAt, setExpiresAt] = useState<string | undefined>()
+  const [ttl, setTtl] = useState<number | undefined>()
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [rotating, setRotating] = useState(false)
+
+  // 打开即拉当前配对码；失败可点重试。
+  const load = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const r = await fetchPairingCode()
+      setCode(r.code)
+      setExpiresAt(r.expiresAt)
+      setTtl(r.ttl)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+  useEffect(() => {
+    void load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const rotate = async () => {
+    if (rotating) return
+    setRotating(true)
+    try {
+      const r = await rotatePairingCode()
+      setCode(r.code)
+      setExpiresAt(r.expiresAt)
+    } catch {
+      /* toast 已提示 */
+    } finally {
+      setRotating(false)
+    }
+  }
+
+  const copy = async () => {
+    if (!code) return
+    try {
+      await navigator.clipboard.writeText(code)
+      pushToast('配对码已复制')
+    } catch {
+      pushToast('复制失败，请手动选择复制')
+    }
+  }
+
+  const hubUrl = transport.getHubUrl() || location.origin
+  const expireText = expiresAt
+    ? ` ${new Date(expiresAt).toLocaleTimeString()} 过期`
+    : ''
+
+  return (
+    <ModalShell title="添加 Host" onClose={onClose}>
+      <div className="p-4">
+        <p className="mb-2 text-[12px] text-gn-muted leading-snug">
+          启动 capri-host 时填入以下配对码（每台机器一个）：
+        </p>
+        {loading ? (
+          <div className="mb-3 rounded-md border border-gn-prompt-border bg-gn-bg-dark px-3 py-3 text-center text-[12px] text-gn-muted">
+            获取配对码中…
+          </div>
+        ) : error ? (
+          <div className="mb-3 rounded-md border border-gn-red/30 bg-gn-red/10 px-3 py-2 text-[12px] text-gn-red" role="alert">
+            {error}
+            <button
+              type="button"
+              onClick={() => void load()}
+              className="ml-2 underline underline-offset-2 hover:text-gn-fg"
+            >
+              重试
+            </button>
+          </div>
+        ) : code ? (
+          <>
+            <div className="mb-2 flex items-center gap-2">
+              <code className="flex-1 rounded-md border border-gn-prompt-border bg-gn-bg-dark px-3 py-2 font-mono text-[16px] tracking-[0.25em] text-gn-cyan select-all">
+                {code}
+              </code>
+              <button
+                type="button"
+                onClick={copy}
+                className="inline-flex h-9 shrink-0 items-center gap-1 rounded-md px-2.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                title="复制配对码"
+              >
+                <Copy size={13} strokeWidth={2} aria-hidden />
+                复制
+              </button>
+            </div>
+            <div className="mb-3 text-[11px] text-gn-muted">
+              {ttl ? `${ttl} 分钟内有效` : '一次性配对码'} · 
+              {expireText}
+            </div>
+          </>
+        ) : null}
+
+        <button
+          type="button"
+          onClick={rotate}
+          disabled={rotating || !!error}
+          className="mb-3 inline-flex w-full items-center justify-center gap-1.5 rounded-md px-3 py-2 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40"
+          title="轮换配对码：旧码立即失效（正在配对的机器需用新码）"
+        >
+          <RefreshCw size={13} strokeWidth={2} aria-hidden className={rotating ? 'animate-spin' : ''} />
+          {rotating ? '生成中…' : '生成新配对码'}
+        </button>
+
+        <div className="rounded-md border border-gn-prompt-border bg-gn-bg-dark p-3">
+          <div className="mb-1.5 text-[12px] text-gn-fg">新机器启动示例</div>
+          <pre className="whitespace-pre-wrap break-all font-mono text-[11px] text-gn-cyan leading-relaxed">{`HOST_ID=macbook\nHOST_NAME=MacBook Air\nFE_TOKEN=sk-xxx\nHUB_URL=${hubUrl}\nHUB_PAIR_CODE=${code ?? '<配对码>'}\ngo run ./cmd/capri-host`}</pre>
+          <div className="mt-1.5 text-[11px] text-gn-muted leading-snug">
+            已配对过的机器无需重复配对
+          </div>
+        </div>
+      </div>
+    </ModalShell>
+  )
+}
+
+/** 重启 Agent 确认框：杀进程会中断所有会话的在飞回合（不重试），需确认。 */
+export function RestartAgentModal({
+  host,
+  onClose,
+}: {
+  host: HostInfo
+  onClose: () => void
+}) {
+  const restartAgent = useChatStore((s) => s.restartAgent)
+  const [submitting, setSubmitting] = useState(false)
+
+  const submit = async () => {
+    if (submitting) return
+    setSubmitting(true)
+    const ok = await restartAgent()
+    setSubmitting(false)
+    if (ok) onClose()
+  }
+
+  return (
+    <ModalShell title="重启 Agent" onClose={onClose}>
+      <div className="p-4">
+        <p className="text-[12px] text-gn-fg leading-snug">
+          确定要重启「<span className="text-gn-cyan">{host.hostName}</span>
+          」的 agent 进程吗？
+        </p>
+        <p className="mt-1 text-[11px] text-gn-muted leading-snug">
+          会中断所有会话的在飞回合（不自动重试），随后重新启动并恢复上次会话。
+          通常用于 agent 卡死 / 输出通道异常等需要手动恢复的情况。
+        </p>
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md px-3 py-1.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            disabled={submitting}
+            onClick={submit}
+            className="rounded px-3 py-1.5 text-[12px] text-gn-cyan hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {submitting ? '重启中…' : '重启'}
+          </button>
+        </div>
+      </div>
+    </ModalShell>
+  )
+}

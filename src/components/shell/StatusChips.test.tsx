@@ -1,0 +1,345 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
+import type { ScrollEntry, ToolCall } from '../../api/types'
+import { useChatStore } from '../../store/chat'
+import { fillAllLiteTurns } from '../../store/chat/historyFill'
+import { usePromptQueue } from '../../store/promptQueue'
+import { ContextChip, LiteFillChip, McpChip, RunningTasksBar, SessionCostChip } from './StatusChips'
+import { WorkspaceBar } from './TopBar'
+import { SPINNER_FRAMES } from '../../theme/glyphs'
+
+vi.mock('../../store/chat/historyFill', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('../../store/chat/historyFill')>()
+  return { ...mod, fillAllLiteTurns: vi.fn() }
+})
+
+/**
+ * TopBar 的 lite 补全进度图标：有 lite 行欠着正文才出现，补齐 / 非 lite 页
+ * 一律不渲染；点在途转 spinner；点击催发排队中的补全。
+ */
+function liteRow(over: Partial<ScrollEntry> = {}): ScrollEntry {
+  return {
+    id: 't1',
+    kind: 'tool',
+    title: 'Execute `ls -la`',
+    kindName: 'execute',
+    verb: 'Ran',
+    status: 'completed',
+    expanded: true,
+    toolCallId: 'tc-1',
+    msgSeq: 1,
+    msgSeqEnd: 2,
+    liteOmitted: 4096,
+    raw: {
+      toolCallId: 'tc-1',
+      kind: 'execute',
+      status: 'completed',
+      rawOutput: { Bash: { output: { omitted: 4096 } } },
+      _meta: { lite: { omitted: 4096, fields: ['rawOutput.output'] } },
+    } as unknown as ToolCall,
+    ...over,
+  } as ScrollEntry
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  useChatStore.setState({
+    entries: [],
+    historyProjected: undefined,
+    liteFillBusy: undefined,
+    sessionId: 's1',
+    cwd: '/w',
+  })
+})
+
+describe('LiteFillChip', () => {
+  it('lite 页还有欠着正文的行 → 显示菱形 + 行数', () => {
+    useChatStore.setState({ entries: [liteRow()], historyProjected: 'lite' })
+    render(<LiteFillChip />)
+    const btn = screen.getByRole('button', { name: /精简回放：1 行工具正文待补全/ })
+    expect(btn.textContent).toContain('1')
+    expect(btn.querySelector('svg.lucide-diamond')).not.toBeNull()
+  })
+
+  it('全部补齐 → 不渲染', () => {
+    useChatStore.setState({
+      entries: [liteRow({ liteState: 'filled', liteOmitted: undefined })],
+      historyProjected: 'lite',
+    })
+    const { container } = render(<LiteFillChip />)
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  // 图标只看「有没有行欠着正文」，不看 historyProjected 那一页的回显：
+  // 滚动区里几页并存时，那个旗标可能属于另一页（开关关后重进会话则压根
+  // 没有 liteOmitted 的行，自然也不显示）。
+  it('最新一页不是 lite 也算数：只要还有欠正文的行就显示', () => {
+    useChatStore.setState({ entries: [liteRow()], historyProjected: undefined })
+    render(<LiteFillChip />)
+    expect(screen.getByRole('button', { name: /精简回放：1 行工具正文待补全/ })).toBeTruthy()
+  })
+
+  it('开关关掉后的重进（条目不带 lite 字段）→ 不渲染', () => {
+    const plain = liteRow({ liteOmitted: undefined, raw: { toolCallId: 'tc-1', kind: 'execute', status: 'completed', rawOutput: { Bash: { output: 'total 8' } } } as unknown as ToolCall })
+    useChatStore.setState({ entries: [plain], historyProjected: undefined })
+    const { container } = render(<LiteFillChip />)
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it('补全在途 → 图标转自转 loader', () => {
+    useChatStore.setState({ entries: [liteRow()], historyProjected: 'lite', liteFillBusy: 1 })
+    render(<LiteFillChip />)
+    const btn = screen.getByRole('button', { name: /精简回放：1 行工具正文待补全/ })
+    const icon = btn.querySelector('svg.lucide-loader-circle')
+    expect(icon).not.toBeNull()
+    expect(icon?.classList.contains('animate-spin')).toBe(true)
+  })
+
+  it('有失败行 → 叉号 + 警告色，点击照样催发排队', () => {
+    useChatStore.setState({
+      entries: [liteRow({ liteState: 'error' })],
+      historyProjected: 'lite',
+    })
+    render(<LiteFillChip />)
+    const btn = screen.getByRole('button', { name: /精简回放：1 行工具正文待补全/ })
+    expect(btn.querySelector('svg.lucide-x')).not.toBeNull()
+    expect(btn.className).toContain('text-gn-warning')
+    fireEvent.click(btn)
+    expect(vi.mocked(fillAllLiteTurns)).toHaveBeenCalledTimes(1)
+  })
+
+  it('目录跳转在飞 → 同一芯片显示「跳转 N/M」+ spinner，不抢占 ◇ 待补全', () => {
+    useChatStore.setState({
+      historyJumpProgress: { current: 2, total: 5 },
+    })
+    const { container } = render(<LiteFillChip />)
+    const chip = screen.getByLabelText('跳转中：第 2/5 轮')
+    expect(chip.textContent).toContain('跳转 2/5')
+    const glyph = chip.querySelector('span')?.textContent ?? ''
+    expect(SPINNER_FRAMES).toContain(glyph)
+    expect(container.querySelector('button')).toBeNull()
+  })
+
+  it('跳转落地、仍有 lite 行 → 芯片回到 ◇N 待补全', () => {
+    useChatStore.setState({
+      historyJumpProgress: undefined,
+      entries: [liteRow()],
+      historyProjected: 'lite',
+    })
+    render(<LiteFillChip />)
+    expect(screen.getByRole('button', { name: /精简回放：1 行工具正文待补全/ })).toBeTruthy()
+  })
+})
+
+/**
+ * 芯片单独渲染通过不代表它在真实芯片簇里（那一簇在 WorkspaceBar，由
+ * Scrollback 挂上去）。挂整个 WorkspaceBar 断言位置。
+ */
+describe('LiteFillChip 在 WorkspaceBar 簇里的位置', () => {
+  it('出现在 context chip 之前', () => {
+    useChatStore.setState({
+      entries: [liteRow()],
+      historyProjected: 'lite',
+      usage: { used: 12000, size: 200000 },
+    })
+    render(<WorkspaceBar />)
+    const lite = screen.getByRole('button', { name: /精简回放：1 行工具正文待补全/ })
+    const context = screen.getByRole('button', { name: /上下文 6% · 打开 \/context 明细/ })
+    // 文档顺序：lite 在 context 之前。
+    expect(
+      !!(lite.compareDocumentPosition(context) & Node.DOCUMENT_POSITION_FOLLOWING),
+    ).toBe(true)
+  })
+
+  it('补齐之后芯片簇里就没有它了', () => {
+    useChatStore.setState({
+      entries: [liteRow({ liteState: 'filled', liteOmitted: undefined })],
+      historyProjected: 'lite',
+      usage: { used: 12000, size: 200000 },
+    })
+    render(<WorkspaceBar />)
+    expect(screen.queryByRole('button', { name: /精简回放/ })).toBeNull()
+  })
+})
+
+describe('RunningTasksBar — 子代理展示', () => {
+  it('带 model 和 reasoningEffort 时正确渲染 model(effort)', () => {
+    const subEntry: ScrollEntry = {
+      id: 'sub-row-1',
+      kind: 'subagent',
+      title: 'reviewer',
+      status: 'started',
+      running: true,
+      model: 'grok-4',
+      reasoningEffort: 'high',
+      subagentId: 'sa-1',
+    }
+    render(
+      <RunningTasksBar
+        entries={[subEntry]}
+        topTasks={[]}
+        open={true}
+      />,
+    )
+    expect(screen.getByText('(grok-4(high))')).toBeInTheDocument()
+  })
+
+  it('访客只读：任务行可点开日志，但 kill / cancel / 调度任务 delete 都不出现', () => {
+    const subEntry: ScrollEntry = {
+      id: 'sub-row-1',
+      kind: 'subagent',
+      title: 'reviewer',
+      status: 'started',
+      running: true,
+      subagentId: 'sa-1',
+    }
+    const bgEntry: ScrollEntry = {
+      id: 'bg-row-1',
+      kind: 'bg_task',
+      title: 'npm run build',
+      status: 'started',
+      running: true,
+      taskId: 't-1',
+    }
+    useChatStore.setState({
+      scheduledTasks: [{ taskId: 's1', prompt: 'p', interval: '5m' }] as never,
+    })
+    const openViewer = vi.fn()
+    useChatStore.setState({ openViewer })
+    const { container } = render(
+      <RunningTasksBar
+        entries={[subEntry, bgEntry]}
+        topTasks={[{ taskId: 'top-1', title: 'top task' }] as never}
+        open={true}
+        readonly
+      />,
+    )
+    // 只读视图里状态照旧可读、行照旧可点开日志
+    expect(container.textContent).toContain('reviewer')
+    expect(container.textContent).toContain('npm run build')
+    expect(container.textContent).toContain('调度任务 · 1')
+    fireEvent.click(screen.getByText('npm run build'))
+    expect(openViewer).toHaveBeenCalledWith('bg-row-1')
+    // 写入口一个都不剩
+    expect(screen.queryByRole('button', { name: /cancel/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /kill/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /delete/ })).toBeNull()
+  })
+})
+
+describe('访客只读芯片', () => {
+  it('待办 / 队列 / 运行计数 / MCP 都可点（只展开只读面板）', () => {
+    const subEntry: ScrollEntry = {
+      id: 'sub-row-1',
+      kind: 'subagent',
+      title: 'reviewer',
+      status: 'started',
+      running: true,
+      subagentId: 'sa-1',
+    }
+    useChatStore.setState({
+      mcpServers: [{ name: 's1', status: 'ready' }],
+      todos: [{ id: 't1', content: 'do it', status: 'in_progress' }] as never,
+      entries: [subEntry],
+    })
+    usePromptQueue.setState({
+      queue: [{ id: 'q1', text: 'later' }] as never,
+      sessionId: 's1',
+    })
+    // 队列条默认展开；先收起才验证「点开」这一侧。
+    useChatStore.setState({ queuePanelOpen: false, tasksBarOpen: true })
+    const { container } = render(<WorkspaceBar guest />)
+    // 读数都在
+    expect(container.textContent).toContain('1')
+    expect(container.textContent).toContain('MCP(1/1)')
+    expect(container.textContent).toContain('0/1')
+    expect(container.textContent).toContain('+1')
+    // 运行计数：任务条已随「有任务」自动展开，点一次收起、再点展开
+    fireEvent.click(screen.getByTitle(/隐藏运行中的任务列表/))
+    expect(useChatStore.getState().tasksBarOpen).toBe(false)
+    fireEvent.click(screen.getByTitle(/显示运行中的后台任务/))
+    expect(useChatStore.getState().tasksBarOpen).toBe(true)
+    // 队列：点开/收起内联队列条
+    fireEvent.click(screen.getByTitle(/展开排队消息/))
+    expect(useChatStore.getState().queuePanelOpen).toBe(true)
+    fireEvent.click(screen.getByTitle(/收起排队消息/))
+    expect(useChatStore.getState().queuePanelOpen).toBe(false)
+    // 待办：可点开只读列表
+    fireEvent.click(screen.getByTitle('待办进度'))
+    expect(screen.getByLabelText(/todo · 0\/1 完成/)).toBeInTheDocument()
+    // MCP 仍是只读读数，不打开面板
+    expect(screen.queryByTitle(/点击打开 MCP 面板/)).toBeNull()
+  })
+
+  it('访客仍可点 lite 补全芯片（只读拉取）', () => {
+    useChatStore.setState({
+      entries: [liteRow()],
+      historyProjected: 'lite',
+    })
+    render(<WorkspaceBar guest />)
+    const lite = screen.getByRole('button', { name: /精简回放：1 行工具正文待补全/ })
+    fireEvent.click(lite)
+    expect(fillAllLiteTurns).toHaveBeenCalled()
+  })
+})
+
+describe('McpChip', () => {
+  it('无 MCP 服务器时返回 null', () => {
+    useChatStore.setState({ mcpServers: [] })
+    const { container } = render(<McpChip onOpen={vi.fn()} />)
+    expect(container).toBeEmptyDOMElement()
+  })
+  it('渲染 inline-flex 单行纯文本排版与已连接计数', () => {
+    const onOpen = vi.fn()
+    useChatStore.setState({
+      mcpServers: [
+        { name: 's1', status: 'ready' },
+        { name: 's2', status: 'failed' },
+      ],
+    })
+    render(<McpChip onOpen={onOpen} />)
+    const btn = screen.getByTitle(/MCP 服务器 1\/2 已连接/)
+    expect(btn).toBeInTheDocument()
+    expect(btn.className).toContain('inline-flex')
+    expect(btn.className).toContain('items-center')
+    expect(btn.textContent).toBe('MCP(1/2)')
+    fireEvent.click(btn)
+    expect(onOpen).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('ContextChip', () => {
+  it('agent 自报百分比优先于 used/size 推算（size 可能是模型目录猜测值）', () => {
+    render(<ContextChip used={100} size={1000} agentPct={42} thresholdPct={85} />)
+    const chip = screen.getByTitle(/上下文 42% \(100 \/ 1.0K\) · 自动压缩阈值 85%/)
+    expect(chip.textContent).toBe('100/1.0K')
+  })
+
+  it('无自报百分比时按 used/size 推算', () => {
+    render(<ContextChip used={500} size={1000} />)
+    expect(screen.getByTitle(/上下文 50% \(500 \/ 1.0K\)/)).toBeInTheDocument()
+  })
+})
+
+describe('SessionCostChip', () => {
+  it('无快照 / 费用低于 $0.005 → 不渲染（TUI status-line cost 阈值）', () => {
+    useChatStore.setState({ sessionStatus: undefined })
+    const { container } = render(<SessionCostChip />)
+    expect(container).toBeEmptyDOMElement()
+
+    useChatStore.setState({ sessionStatus: { totalCostUsd: 0.001 } })
+    const low = render(<SessionCostChip />)
+    expect(low.container).toBeEmptyDOMElement()
+  })
+
+  it('渲染四位小数费用，tooltip 带 attach 起的墙钟', () => {
+    useChatStore.setState({
+      sessionStatus: { totalCostUsd: 0.1234, totalDurationMs: 83_000 },
+    })
+    render(<SessionCostChip />)
+    const chip = screen.getByTitle(/会话费用 \$0\.1234 · 已运行 1m/)
+    expect(chip.textContent).toBe('$0.1234')
+  })
+})
+
+
