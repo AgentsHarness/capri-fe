@@ -66,21 +66,29 @@
 
   /* 字体栈顺序：macOS 专有字体 → 微软雅黑 → Windows 专有字体 → 通用族。
      Windows 上 SF Mono / Menlo / PingFang / Hiragino 都不存在，UI、正文、
-     等宽三类字体因此全部落到微软雅黑，界面字体统一；macOS 上首个命中的
+     等宽三类因此全部落到微软雅黑，界面字体统一；macOS 上首个命中的
      仍是原来那套。通用族关键字（ui-monospace / monospace / sans-serif）
      必须留在末尾，浏览器命中通用族即就地在系统默认字体停止回落。 */
   --font-ui: "SF Mono", "Menlo", "PingFang SC", "Hiragino Sans GB",
     "Microsoft YaHei", "Cascadia Code", "Consolas", ui-monospace, monospace;
   --font-prose: -apple-system, BlinkMacSystemFont, "PingFang SC",
     "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", sans-serif;
-  /* 不放 "Courier New"：AOSP fonts.xml 把它别名到 serif-monospace（Cutive Mono，
+  /* 与 --font-ui 同序：Windows 上代码块、命令输出、状态 chip 也统一走
+     微软雅黑。代价是这些地方在 Windows 上不再按列对齐——用户明确选了
+     这个观感，只有首页字符画例外（见 --font-art）。
+     不收 "Cascadia Code"：它默认开编程连字，`//`、`->` 会合成一个字。
+     不放 "Courier New"：AOSP fonts.xml 把它别名到 serif-monospace（Cutive Mono，
      衬线等宽）。Chrome 安卓不认 ui-monospace，前面的具名字体又都没有，
-     栈会在 Courier New 停住，滚动区 font-mono 的标题就变成衬线。去掉后
-     安卓落到末尾的 monospace（Droid Sans Mono）；Windows 在微软雅黑处
-     已经停了，不受影响。 */
+     栈会在 Courier New 停住，滚动区 font-mono 的标题就变成衬线。 */
   --font-mono: "SF Mono", "Menlo", "PingFang SC", "Hiragino Sans GB",
-    "Microsoft YaHei", "Cascadia Code", "Consolas", "Liberation Mono",
+    "Microsoft YaHei", "Cascadia Mono", "Consolas", "Liberation Mono",
     ui-monospace, monospace;
+  /* 字符画专用（首页 AGENTS / HERNESS 那两段 pre）。这类图形按列拼出来，
+     每一列宽度必须相等，所以这里只列真等宽字体：微软雅黑、PingFang 这些
+     比例字体一个都不能进来，否则 Windows 上整张图会错位重叠。图形本身
+     是纯 ASCII，用不到 CJK 字形，因此不需要中文字体兜底。 */
+  --font-art: "Consolas", "Cascadia Mono", "SF Mono", "Menlo",
+    "Liberation Mono", ui-monospace, monospace;
 }
 
 /* Smooth theme transitions on chrome surfaces */

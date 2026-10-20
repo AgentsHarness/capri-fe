@@ -77,14 +77,14 @@ export function EmptyStatePicker() {
     <div className="flex h-full min-h-32 flex-col items-center justify-center px-4 pt-8 min-[481px]:pt-20">
       <div className="flex w-full justify-center">
         <div className="flex flex-col items-center">
-          <pre className="select-none whitespace-pre font-mono text-[9px] leading-[1.05] text-gn-fg min-[481px]:text-[14px]">
+          <pre className="select-none whitespace-pre font-art text-[9px] leading-[1.05] text-gn-fg min-[481px]:text-[14px]">
             {AGENTS_ART}
           </pre>
         </div>
       </div>
       <div className="flex w-full justify-center">
         <div className="flex flex-col items-center">
-          <pre className="select-none whitespace-pre font-mono text-[9px] leading-[1.05] text-gn-fg min-[481px]:text-[14px]">
+          <pre className="select-none whitespace-pre font-art text-[9px] leading-[1.05] text-gn-fg min-[481px]:text-[14px]">
             {HERNESS_ART}
           </pre>
         </div>

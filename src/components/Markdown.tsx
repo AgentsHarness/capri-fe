@@ -140,7 +140,7 @@ function MermaidDiagram({ source }: { source: string }) {
   // diagrams): no diagram, no affordance row.
   if (status.kind === 'error') {
     return (
-      <pre className="my-2 overflow-x-auto rounded bg-gn-bg-code px-2.5 py-2 font-ui text-[12.5px] leading-snug text-gn-fg2">
+      <pre className="my-2 overflow-x-auto rounded bg-gn-bg-code px-2.5 py-2 font-mono text-[12.5px] leading-snug text-gn-fg2">
         <code className="language-mermaid text-gn-fg2">{source}</code>
       </pre>
     )
@@ -423,7 +423,7 @@ const MarkdownBody = memo(function MarkdownBody({
         return <code className={`${className} text-gn-fg2`}>{children}</code>
       }
       return (
-        <code className="rounded bg-gn-bg-code px-1 py-0.5 font-ui text-[12.5px] text-gn-teal">
+        <code className="rounded bg-gn-bg-code px-1 py-0.5 font-mono text-[12.5px] text-gn-teal">
           {children}
         </code>
       )
@@ -434,7 +434,7 @@ const MarkdownBody = memo(function MarkdownBody({
         return children
       }
       return (
-        <pre className="my-2 overflow-x-auto rounded bg-gn-bg-code px-2.5 py-2 font-ui text-[12.5px] leading-snug text-gn-fg2">
+        <pre className="my-2 overflow-x-auto rounded bg-gn-bg-code px-2.5 py-2 font-mono text-[12.5px] leading-snug text-gn-fg2">
           {children}
         </pre>
       )
