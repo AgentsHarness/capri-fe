@@ -1,13 +1,16 @@
 import type { AcpEvent } from '../../api/types'
 import type { ChatState, SetState } from './types'
 import {
+  claimLiveGapToast,
   dropLiveCoveredBySnapshot,
   LIVE_STREAM_HISTORY_GAP_TOAST,
   LIVE_STREAM_HISTORY_GAP_TOAST_ID,
   LIVE_STREAM_HISTORY_GAP_TOAST_MS,
   liveStreamPrefixMissingFromHistory,
+  noteLiveStreamSeen,
   runtime,
 } from './globals'
+import { TURN_TERMINAL_TYPES } from './turn'
 import { pushToast } from '../toast'
 import { flushStreamBufBeforeEvent } from './stream'
 import { handleConnEvent } from './events/conn'
@@ -21,18 +24,33 @@ import { normalizeSessionEvent } from './events/normalize'
 import { SILENT_HOST_EVENT_TYPES, TYPED_CARRIER_TAGS } from './events/kinds'
 
 /**
- * After replaying an in-flight session, the first live chunk/thought that
- * is not already in the snapshot decides whether we joined mid-block.
- * Agent persistence still holds the current complete block in memory, so
- * history cannot supply the prefix that already went out on the live
- * channel. Toast once: wait for the stream to end, then reopen.
+ * 切进进行中的会话后，第一条 live 正文决定快照是否缺了它的前半段。
+ *
+ * 只有 assistant 正文值得提示：思考块缺开头不改变用户读到的回答，而推理
+ * 模型大半时间都在思考，按思考流判定等于每次切会话都弹一次。同一路流在
+ * 接入后先看到过思考段时，正文段是接入之后才开始的，前半段并不缺。
+ * 回合终态撤掉一次性检测：此后可能还有 gap-pull 回放的旧 chunk，不能
+ * 拿它误报（也可能根本不会再有正文）。
  */
-function maybeToastLiveStreamHistoryGap(ev: AcpEvent): void {
+function maybeToastLiveStreamHistoryGap(
+  get: () => ChatState,
+  ev: AcpEvent,
+): void {
   if (!runtime.historyLiveJoinCheck) return
+  if (TURN_TERMINAL_TYPES.has(ev.type)) {
+    runtime.historyLiveJoinCheck = false
+    return
+  }
   if (ev.type !== 'chunk' && ev.type !== 'thought') return
-  if ((ev as { sessionId?: string }).sessionId == null) return
+  const sid = (ev as { sessionId?: string }).sessionId
+  if (sid == null || sid !== get().sessionId) return
+  if (ev.type === 'thought') {
+    noteLiveStreamSeen(ev)
+    return
+  }
   runtime.historyLiveJoinCheck = false
   if (!liveStreamPrefixMissingFromHistory(ev)) return
+  if (!claimLiveGapToast(sid, ev)) return
   pushToast(LIVE_STREAM_HISTORY_GAP_TOAST, {
     id: LIVE_STREAM_HISTORY_GAP_TOAST_ID,
     type: 'warning',
@@ -55,7 +73,7 @@ export function handleChatEvent(
   // message is not appended a second time. Snapshot replay has no
   // sessionId and is unaffected.
   if (dropLiveCoveredBySnapshot(ev)) return
-  maybeToastLiveStreamHistoryGap(ev)
+  maybeToastLiveStreamHistoryGap(get, ev)
   const raw = ev as { update?: unknown; sessionId?: unknown; msgSeq?: unknown }
   if (raw.update && typeof raw.update === 'object') {
     const u = raw.update as { sessionUpdate?: unknown }

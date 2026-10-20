@@ -6,6 +6,7 @@ import {
   captureAsyncScope,
   isAsyncScopeCurrent,
   bufferHistoryWindowEvent,
+  claimLiveGapToast,
   clearHistoryWindowBuffer,
   clearContinueSessionTimer,
   clearPeerSessionLoad,
@@ -91,6 +92,7 @@ describe('historyWindowBuffer', () => {
     runtime.historySnapStreamKeys.add('chunk:1')
     runtime.historyLoadStartedAt = 99
     runtime.historyLiveJoinCheck = true
+    runtime.historyLiveStreamSeen.add(1)
     clearHistoryWindowBuffer()
     expect(runtime.historyWindowBuffer).toHaveLength(0)
     expect(runtime.historySnapTail).toBeUndefined()
@@ -98,6 +100,31 @@ describe('historyWindowBuffer', () => {
     expect(runtime.historySnapStreamKeys.size).toBe(0)
     expect(runtime.historyLoadStartedAt).toBeUndefined()
     expect(runtime.historyLiveJoinCheck).toBe(false)
+    expect(runtime.historyLiveStreamSeen.size).toBe(0)
+  })
+
+  it('切走再切回同一路流的缺口提醒只保留一份', () => {
+    runtime.historyGapToastedKeys.clear()
+    runtime.historyLoadStartedAt = 2000
+    const ev = {
+      type: 'chunk',
+      text: '后半',
+      sessionId: 's1',
+      streamStartMs: 1000,
+    } as never
+    expect(claimLiveGapToast('s1', ev)).toBe(true)
+    expect(claimLiveGapToast('s1', ev)).toBe(false)
+    // 别的会话 / 另一路流不受影响
+    expect(claimLiveGapToast('s2', ev)).toBe(true)
+    expect(
+      claimLiveGapToast('s1', {
+        type: 'chunk',
+        text: '后半',
+        sessionId: 's1',
+        streamStartMs: 3000,
+      } as never),
+    ).toBe(true)
+    runtime.historyGapToastedKeys.clear()
   })
 })
 
@@ -169,7 +196,10 @@ describe('dropLiveCoveredBySnapshot', () => {
 })
 
 describe('liveStreamPrefixMissingFromHistory', () => {
-  beforeEach(() => clearHistoryWindowBuffer())
+  beforeEach(() => {
+    clearHistoryWindowBuffer()
+    runtime.historyGapToastedKeys.clear()
+  })
 
   it('无 sessionId 的回放事件不判缺口', () => {
     runtime.historyLoadStartedAt = 2000
@@ -195,7 +225,7 @@ describe('liveStreamPrefixMissingFromHistory', () => {
     ).toBe(false)
   })
 
-  it('流在本次回放开始之前开工且快照没有这一路 → 缺口', () => {
+  it('流在本次回放开始之前开工且快照没有这一路 → 正文缺口', () => {
     runtime.historyLoadStartedAt = 2000
     expect(
       liveStreamPrefixMissingFromHistory({
@@ -205,6 +235,10 @@ describe('liveStreamPrefixMissingFromHistory', () => {
         streamStartMs: 1000,
       } as never),
     ).toBe(true)
+  })
+
+  it('思考块缺前半段不算缺口：只有正文才值得提示', () => {
+    runtime.historyLoadStartedAt = 2000
     expect(
       liveStreamPrefixMissingFromHistory({
         type: 'thought',
@@ -212,7 +246,21 @@ describe('liveStreamPrefixMissingFromHistory', () => {
         sessionId: 's1',
         streamStartMs: 1000,
       } as never),
-    ).toBe(true)
+    ).toBe(false)
+  })
+
+  it('接入后同流先看到过思考 → 正文段从接入后开始，不判缺口', () => {
+    runtime.historyLoadStartedAt = 2000
+    // 先来的是同一路流的 thought（直播），说明正文还没开始推送。
+    runtime.historyLiveStreamSeen.add(1000)
+    expect(
+      liveStreamPrefixMissingFromHistory({
+        type: 'chunk',
+        text: '后半',
+        sessionId: 's1',
+        streamStartMs: 1000,
+      } as never),
+    ).toBe(false)
   })
 
   it('thought 与 assistant 按 kind 分路：快照有 thought 不挡住 assistant 缺口', () => {

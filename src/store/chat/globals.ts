@@ -2,11 +2,11 @@ import type { AcpEvent } from '../../api/types'
 import type { ChatState } from './types'
 import { eventAgentTimestampMs, replayEventKeys } from './envelopeParse'
 
-/** Toast when history replay joins a live stream mid-block (prefix not on disk). */
+/** Toast when the replayed snapshot lacks the head of the live answer stream. */
 export const LIVE_STREAM_HISTORY_GAP_TOAST_ID = 'live-stream-history-gap'
 
 export const LIVE_STREAM_HISTORY_GAP_TOAST =
-  '当前会话仍在直播输出，回放历史未包含正在推送内容的前半段。请等直播结束后重新打开会话。'
+  '这段回答的前半段在切回本会话前就已推送，回放历史里没有它。等本次直播结束后重新打开会话可看到完整回答。'
 
 export const LIVE_STREAM_HISTORY_GAP_TOAST_MS = 6_000
 
@@ -62,10 +62,24 @@ export const runtime = {
    */
   historyLoadStartedAt: undefined as number | undefined,
   /**
-   * One-shot after an in-flight snapshot replay: the first live
-   * chunk/thought decides whether to toast a missing live-stream prefix.
+   * One-shot after an in-flight snapshot replay: the first live assistant
+   * chunk decides whether the answer's head is missing. Thought chunks
+   * leave it armed (their head is not worth reporting) but are recorded in
+   * `historyLiveStreamSeen`.
    */
   historyLiveJoinCheck: false,
+  /**
+   * Generation streams (streamStartMs) that already produced live content
+   * since this load. A thought seen live on a stream proves its assistant
+   * text block starts after we subscribed — the head cannot be missing.
+   */
+  historyLiveStreamSeen: new Set<number>(),
+  /**
+   * Streams already reported as missing their head (`sessionId:chunk:ss`).
+   * Switching away and back mid-answer leaves the same gap; do not interrupt
+   * again with the same notice.
+   */
+  historyGapToastedKeys: new Set<string>(),
 }
 
 /** 缓冲上限：超限丢弃新事件（窗口正常只有几十条，防异常场景膨胀）。 */
@@ -164,6 +178,7 @@ export function clearHistoryWindowBuffer(): void {
   runtime.historySnapStreamKeys.clear()
   runtime.historyLoadStartedAt = undefined
   runtime.historyLiveJoinCheck = false
+  runtime.historyLiveStreamSeen.clear()
 }
 
 export function liveReplayStreamKey(ev: AcpEvent): string | undefined {
@@ -173,13 +188,41 @@ export function liveReplayStreamKey(ev: AcpEvent): string | undefined {
   return `${ev.type}:${ss}`
 }
 
+/** 记录接入后已直播过的流：同流的正文段必然从接入之后才开始。 */
+export function noteLiveStreamSeen(ev: AcpEvent): void {
+  const ss = (ev as { streamStartMs?: number }).streamStartMs
+  if (typeof ss === 'number' && Number.isFinite(ss)) {
+    runtime.historyLiveStreamSeen.add(ss)
+  }
+}
+
+/** 单路流的缺口只提醒一次（切走再切回，缺口还是那一个）。 */
+const LIVE_GAP_TOAST_KEYS_CAP = 32
+
+export function claimLiveGapToast(sessionId: string, ev: AcpEvent): boolean {
+  const key = liveReplayStreamKey(ev)
+  if (key == null) return false
+  const id = `${sessionId}:${key}`
+  const seen = runtime.historyGapToastedKeys
+  if (seen.has(id)) return false
+  seen.add(id)
+  if (seen.size > LIVE_GAP_TOAST_KEYS_CAP) {
+    const oldest = seen.values().next().value
+    if (oldest != null) seen.delete(oldest)
+  }
+  return true
+}
+
 /**
- * History replay of an in-flight turn joined a live generation whose
- * current complete block is not on disk (agent pending merge) and whose
- * stream started before this load — the first half already went out on
- * the live channel before we subscribed.
+ * 回放的快照没有正在直播的**正文回答**的前半段。
+ *
+ * 只判 assistant 正文：思考块缺开头不影响用户读到的回答，而推理模型
+ * 大部分时间都在思考——按思考流判定，几乎每次切进运行中的会话都会弹。
+ * 同一路流在接入后先看到过直播内容（思考段）时，正文段是接入之后才
+ * 开始的，前半段并不缺。
  */
 export function liveStreamPrefixMissingFromHistory(ev: AcpEvent): boolean {
+  if (ev.type !== 'chunk') return false
   if ((ev as { sessionId?: string }).sessionId == null) return false
   const key = liveReplayStreamKey(ev)
   if (key == null) return false
@@ -187,6 +230,7 @@ export function liveStreamPrefixMissingFromHistory(ev: AcpEvent): boolean {
   const ss = (ev as { streamStartMs?: number }).streamStartMs
   const loadAt = runtime.historyLoadStartedAt
   if (typeof ss !== 'number' || loadAt == null) return false
+  if (runtime.historyLiveStreamSeen.has(ss)) return false
   return ss < loadAt
 }
 

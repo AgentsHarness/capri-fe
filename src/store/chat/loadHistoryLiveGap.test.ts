@@ -6,6 +6,7 @@ import { useToastStore } from '../toast'
 import {
   bufferHistoryWindowEvent,
   clearHistoryWindowBuffer,
+  runtime,
   LIVE_STREAM_HISTORY_GAP_TOAST,
   LIVE_STREAM_HISTORY_GAP_TOAST_ID,
   LIVE_STREAM_HISTORY_GAP_TOAST_MS,
@@ -55,6 +56,7 @@ describe('loadHistory 直播完整块前半段缺口 toast', () => {
 
   beforeEach(() => {
     clearHistoryWindowBuffer()
+    runtime.historyGapToastedKeys.clear()
     useToastStore.setState({ toasts: [] })
     vi.useFakeTimers({ now: NOW })
     useChatStore.setState({
@@ -65,6 +67,35 @@ describe('loadHistory 直播完整块前半段缺口 toast', () => {
       historyLoading: false,
     })
   })
+
+  /** 只含用户消息的进行中回合快照（当前回答块尚未落盘）。 */
+  const openTurnSnapshot = () =>
+    ({
+      updates: [
+        envelope(
+          'user_message_chunk',
+          { type: 'text', text: 'go' },
+          { agentTimestampMs: NOW - 10_000, turnStartMs: NOW - 10_000 },
+        ),
+      ],
+      promptStarts: [0],
+      totalCount: 1,
+      hasMore: false,
+    }) as never
+
+  const live = (
+    type: 'chunk' | 'thought',
+    text: string,
+    streamStartMs = STREAM_START,
+  ) =>
+    ({
+      type,
+      text,
+      sessionId: SID,
+      streamStartMs,
+      agentTimestampMs: NOW - 100,
+      turnStartMs: NOW - 10_000,
+    }) as AcpEvent
 
   it('进行中回合：快照没有这一路流，窗口期 live 是中途订阅 → toast', async () => {
     vi.mocked(transport.loadSessionHistory).mockResolvedValue({
@@ -263,6 +294,48 @@ describe('loadHistory 直播完整块前半段缺口 toast', () => {
       turnStartMs: NOW - 10_000,
     } as AcpEvent)
 
+    await useChatStore.getState().loadHistory(SID, CWD)
+    expect(toastTexts()).toEqual([LIVE_STREAM_HISTORY_GAP_TOAST])
+  })
+
+  it('思考阶段不提示：live 只有 thought → 不 toast', async () => {
+    vi.mocked(transport.loadSessionHistory).mockResolvedValue(openTurnSnapshot())
+    await useChatStore.getState().loadHistory(SID, CWD)
+
+    useChatStore.getState().handleEvent(live('thought', '思考后半段'))
+    expect(toastTexts()).toEqual([])
+  })
+
+  it('同流思考先到、正文随后开始 → 不 toast（正文没有缺前半段）', async () => {
+    vi.mocked(transport.loadSessionHistory).mockResolvedValue(openTurnSnapshot())
+    await useChatStore.getState().loadHistory(SID, CWD)
+
+    useChatStore.getState().handleEvent(live('thought', '思考后半段'))
+    useChatStore.getState().handleEvent(live('chunk', '回答首包'))
+    expect(toastTexts()).toEqual([])
+  })
+
+  it('回合收口后撤掉检测：之后迟到的正文 chunk 不 toast', async () => {
+    vi.mocked(transport.loadSessionHistory).mockResolvedValue(openTurnSnapshot())
+    await useChatStore.getState().loadHistory(SID, CWD)
+
+    useChatStore.getState().handleEvent({
+      type: 'turn_completed',
+      sessionId: SID,
+      stopReason: 'end_turn',
+    } as AcpEvent)
+    useChatStore.getState().handleEvent(live('chunk', '迟到的后半段'))
+    expect(toastTexts()).toEqual([])
+  })
+
+  it('同一路缺口切走再切回只提示一次', async () => {
+    vi.mocked(transport.loadSessionHistory).mockResolvedValue(openTurnSnapshot())
+    bufferHistoryWindowEvent(live('chunk', '后半段'))
+    await useChatStore.getState().loadHistory(SID, CWD)
+    expect(toastTexts()).toEqual([LIVE_STREAM_HISTORY_GAP_TOAST])
+
+    // 同一条流仍在直播时切回来：缺口没变，不重复打断。
+    bufferHistoryWindowEvent(live('chunk', '后半段续'))
     await useChatStore.getState().loadHistory(SID, CWD)
     expect(toastTexts()).toEqual([LIVE_STREAM_HISTORY_GAP_TOAST])
   })
