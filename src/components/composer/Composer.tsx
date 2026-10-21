@@ -143,6 +143,9 @@ export function Composer({ guest = false }: { guest?: boolean }) {
   // （成功锚定 / 失败落平）后按序补发；直接放行会让首条消息误触发第二次
   // 建会话 POST，且丢失右键指定的 cwd。
   const newSessionPending = useChatStore((s) => s.newSessionPending)
+  // 空状态首条消息正在建 worktree：这段时间再回车不能重发（第二次会白建
+  // 一个 worktree）。草稿留在输入框里，等创建收口后用户自己再发。
+  const emptyWorktreeBusy = useChatStore((s) => s.emptyWorktreeBusy === true)
   // 建会话在飞期间的发送挂起桶：内容先收起（不吞、不丢），创建收口后
   // 逐条补发。创建失败时由 send() 的无会话分支自理（再试建一次或渲染
   // 错误行），挂起内容不会丢。
@@ -420,6 +423,14 @@ export function Composer({ guest = false }: { guest?: boolean }) {
       if (!isTouch) taRef.current?.focus()
       return
     }
+    // 空状态首条消息正在建 worktree：不再触发一次发送（会白建第二个
+    // worktree）。草稿原样留着，创建收口后再发。抢在 newSessionPending 的
+    // 挂起分支之前：否则内容会被收起挂起，而 create 失败时没有创建可以
+    // 「收口」，挂起的内容就没人补发了。
+    if (emptyWorktreeBusy) {
+      pushToast('正在创建 worktree，请稍候')
+      return
+    }
     // 建会话 POST 在飞：不吞内容，发送挂起——收起本轮内容（含图片
     // chips），等创建收口后按序补发（见 pendingSendsRef 的 effect）。
     // 直接放行会让 send 的无会话分支再触发一次建会话，丢失右键 cwd。
@@ -668,6 +679,13 @@ export function Composer({ guest = false }: { guest?: boolean }) {
     // means Double-Enter → send the queue head now.
     if (!trimmed && !chips.some((c) => c.image)) {
       if (q.queue.length > 0) void sendQueuedItem()
+      return
+    }
+    // 空状态首条消息正在建 worktree：任何发送入口都先拦住（shell 命令同理），
+    // 草稿不被 consumeDraftForSend 收走，等创建收口后用户再发。
+    if (useChatStore.getState().emptyWorktreeBusy) {
+      pushToast('正在创建 worktree，请稍候')
+      if (!isTouch) taRef.current?.focus()
       return
     }
     if (shellMode) {

@@ -490,5 +490,18 @@ export function sessionActions(set: SetState, get: () => ChatState) {
       emptyCwdByHost: { ...(st.emptyCwdByHost ?? {}), [hostKey]: cwd },
     }))
   },
+
+  setEmptyWorktree: (on) => {
+    // 开关只表达意图：worktree 在首条消息发出时才创建（TUI 的 worktree
+    // 模式同款语义）。关掉开关同时清掉自定义路径与错误态，避免下次打开
+    // 时带上一次留下的路径。
+    set(
+      on
+        ? { emptyWorktree: true }
+        : { emptyWorktree: false, emptyWorktreePath: undefined, emptyWorktreeBusy: false },
+    )
+  },
+
+  setEmptyWorktreePath: (path) => set({ emptyWorktreePath: path }),
   } satisfies Partial<ChatState>
 }

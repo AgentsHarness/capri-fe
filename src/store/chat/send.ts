@@ -2,6 +2,7 @@ import type { ContentBlock } from '../../api/types'
 import { transport, AgentTurnError } from '../../api/client'
 import { qid, isBashBlocks, userRowText, usePromptQueue } from '../promptQueue'
 import type { ChatState, SetState } from './types'
+import { createEmptyStateWorktree } from './emptyWorktree'
 import { nid } from './ids'
 import {
   clearStreamBuf,
@@ -36,8 +37,39 @@ export async function sendPrompt(
     if (!initial.sessionId) {
       const emptyCwd = initial.emptyCwd?.trim()
       const hostAtStart = initial.hostId
+      // 建 worktree 在飞时再次回车：不重复建（第二个 worktree 会白占一个
+      // 目录），提示用户等这次收口。
+      if (initial.emptyWorktreeBusy) {
+        pushToast('正在创建 worktree，请稍候')
+        return
+      }
+      // 空状态的 worktree 开关：真正建 worktree 放在这一刻（首条消息），
+      // 而不是用户点开关时——TUI 的 worktree 模式同款语义：开关只表达
+      // 意图，发消息才落盘。建失败不建会话，开关留在原处方便改目录重试。
+      let createdWorktree: string | undefined
+      let startCwd = emptyCwd
+      if (initial.emptyWorktree && emptyCwd) {
+        set({ emptyWorktreeBusy: true })
+        try {
+          startCwd = await createEmptyStateWorktree({
+            sourcePath: emptyCwd,
+            ...(initial.emptyWorktreePath?.trim()
+              ? { worktreePath: initial.emptyWorktreePath.trim() }
+              : {}),
+          })
+          createdWorktree = startCwd
+        } catch (e) {
+          if (get().hostId !== hostAtStart) return
+          const msg = e instanceof Error ? e.message : String(e)
+          set({ emptyWorktreeBusy: false })
+          pushToast(`创建 worktree 失败：${msg}`)
+          return
+        }
+        set({ emptyWorktreeBusy: false })
+        if (get().hostId !== hostAtStart) return
+      }
       try {
-        const createdSessionId = await get().newSession(emptyCwd || undefined)
+        const createdSessionId = await get().newSession(startCwd || undefined)
         // A new-session response is only usable by the request that created
         // it. A host switch can otherwise leave this prompt targeting the new
         // host's unrelated active session.
@@ -52,10 +84,23 @@ export async function sendPrompt(
       } catch (e) {
         if (get().hostId !== hostAtStart) return
         const msg = e instanceof Error ? e.message : String(e)
+        // worktree 建好了但会话没建起来：把它当成新的工作目录、关掉开关，
+        // 重发时直接在它里面建会话——否则重试会再建一个 worktree，把刚建
+        // 好的那份留在盘上没人用（newSession 的复位已把 emptyCwd 清掉）。
+        const orphaned = createdWorktree
+          ? `（worktree 已建在 ${createdWorktree}，重发即在该目录中开始）`
+          : ''
         set({
+          ...(createdWorktree
+            ? {
+                emptyCwd: createdWorktree,
+                emptyWorktree: false,
+                emptyWorktreePath: undefined,
+              }
+            : {}),
           entries: [
             ...get().entries,
-            { id: nid(), kind: 'error', text: `创建会话失败: ${msg}` },
+            { id: nid(), kind: 'error', text: `创建会话失败: ${msg}${orphaned}` },
           ],
         })
         return

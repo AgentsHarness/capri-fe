@@ -295,6 +295,16 @@ export interface ChatHistoryState {
    * （同一路径在不同 host 上是不同的文件系统）。
    */
   emptyCwdByHost?: Record<string, string>
+  /**
+   * 空状态「使用 Worktree」开关（默认关）。开启时首条消息先为 emptyCwd
+   * 建一个新 git worktree，再把会话目录设到 worktree 上——与 TUI 一致：
+   * 开关只改意图，真正建 worktree 发生在发送时，不是点按钮时。
+   */
+  emptyWorktree?: boolean
+  /** 空状态 worktree 的自定义路径（留空由 agent 自动命名）。 */
+  emptyWorktreePath?: string
+  /** 空状态首条消息正在建 worktree（picker 上与状态行显示进行中）。 */
+  emptyWorktreeBusy?: boolean
 }
 
 /** 回合生命周期与统计：当前/上一回合锚点、速率、recap、token 用量。 */
@@ -1064,6 +1074,10 @@ export interface ChatActions {
   resetToEmpty: () => void
   /** 空状态工作目录（用户输入/选择）；发送消息时用于创建新会话。 */
   setEmptyCwd: (cwd: string) => void
+  /** 空状态 worktree 开关：只翻状态，发送首条消息时才真正建 worktree。 */
+  setEmptyWorktree: (on: boolean) => void
+  /** 空状态 worktree 自定义路径（空串 = 自动命名）。 */
+  setEmptyWorktreePath: (path: string) => void
   /** Refresh the host registry (+ auto-select). snap 来自 hub 的 WS hello
    *  快照（含 defaultHostId）时跳过 GET /api/hosts，省一次跨网往返。 */
   refreshHosts: (snap?: { hosts: HostInfo[]; defaultHostId?: string }) => Promise<void>

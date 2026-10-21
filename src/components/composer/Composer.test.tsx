@@ -84,6 +84,7 @@ describe('Composer 切换会话中发送不吞内容', () => {
       conn: 'ready',
       historyLoading: false,
       newSessionPending: false,
+      emptyWorktreeBusy: false,
       entries: [],
       pending: [],
     })
@@ -91,6 +92,23 @@ describe('Composer 切换会话中发送不吞内容', () => {
       queue: [],
       sending: false,
     })
+  })
+
+  // 空状态首条消息建 worktree 期间再回车：不能重发（会白建第二个
+  // worktree），也不能进 newSessionPending 的挂起桶——那条路径只在
+  // 建会话成功后才补发，worktree 建失败时内容会永远挂着。
+  it('建 worktree 在飞时按 Enter：提示并保留草稿，不挂起也不发送', () => {
+    useChatStore.setState({ emptyWorktreeBusy: true })
+
+    render(<Composer />)
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement
+    fireEvent.change(textarea, { target: { value: '首条消息' } })
+    fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter' })
+
+    expect(pushToast).toHaveBeenCalledWith('正在创建 worktree，请稍候')
+    expect(textarea.value).toBe('首条消息')
+    expect(transport.newSession).not.toHaveBeenCalled()
+    expect(transport.prompt).not.toHaveBeenCalled()
   })
 
   it('正在切换会话（historyLoading 为 true）时按 Enter：弹出提示且保留输入框内容', () => {

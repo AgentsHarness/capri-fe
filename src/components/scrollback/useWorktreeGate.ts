@@ -3,7 +3,7 @@ import { transport } from '../../api/client'
 import { findField } from '../../api/rpc/core'
 
 /**
- * 空状态「在新 worktree 中开始」的门控探测：判断选中的工作目录是否在
+ * 空状态「使用 Worktree」开关的门控探测：判断选中的工作目录是否在
  * git 仓库里。走 transport.gitRepoRoot（host /api/git/repo-root → agent
  * x.ai/git/git_repo_root，不依赖活动会话——home 时还没有会话，不能走按
  * 会话取 git 信息的那条路），失败时退到 git/branches 的 repoRoot
@@ -41,7 +41,7 @@ function repoRootFrom(raw: unknown): string | undefined {
  *
  * 兜底不是多余的：旧 host 的 /api/git/repo-root 发的是错的 wire 键（gitRoot
  * 而非 agent 侧必填的 currentWorkingDirectory），agent 判缺字段回 -32602
- * "Invalid params"——没有这条兜底，home 的「在新 worktree 中开始」在任何
+ * "Invalid params"——没有这条兜底，home 的「使用 Worktree」在任何
  * 未升级的 host 上都会永远灰着。
  *
  * 只有「拿到仓库根」才是肯定信号：非 git 目录下 git/branches 是报错而不是
