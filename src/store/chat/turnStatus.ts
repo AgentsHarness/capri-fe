@@ -1,9 +1,11 @@
 import type { AcpEvent, ScrollEntry } from '../../api/types'
 import {
+  groupScopeForDensity,
   projectDisplayRows,
   scanGroups,
 } from '../../scrollback/verbGroup'
 import { currentCollapseToolGroups } from '../historyPins'
+import { toolCallDensity } from '../settings'
 import type { ChatState, SetState } from './types'
 import { nid } from './ids'
 import { formatTurnDuration } from './format'
@@ -15,6 +17,7 @@ export function selectableRowIds(
 ): string[] {
   const spans = scanGroups(entries, expandedGroups, {
     defaultExpanded: !currentCollapseToolGroups(),
+    scope: groupScopeForDensity(toolCallDensity()),
   })
   const rows = projectDisplayRows(entries, spans)
   return rows.map((r) => (r.type === 'entry' ? r.entry.id : r.id))

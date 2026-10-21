@@ -47,12 +47,14 @@ import {
 } from '../../scrollback/userText'
 import {
   displayRowKey,
+  groupScopeForDensity,
   isDensePackableRow,
   projectDisplayRows,
   scanGroups,
   spanContaining,
 } from '../../scrollback/verbGroup'
 import { useFePrefs } from '../../store/historyPins'
+import { toolCallDensity } from '../../store/settings'
 import { useJunctionDissolve } from '../scrollback/useJunctionDissolve'
 import { useScrollbarGutter } from '../../hooks/useScrollbarGutter'
 import {
@@ -1217,10 +1219,12 @@ function SubagentTimeline({
   // 主 scrollback 同款分组管线：scanGroups → projectDisplayRows。
   // 只用渲染窗口内的条目（renderItems），DOM 保持扁平。
   const { rows, spans } = useMemo(() => {
+    const scope = groupScopeForDensity(toolCallDensity())
     const spans = scanGroups(renderItems, expandedGroups, {
       defaultExpanded: !collapseToolGroups,
+      scope,
     })
-    return { rows: projectDisplayRows(renderItems, spans), spans }
+    return { rows: projectDisplayRows(renderItems, spans, true, undefined, scope), spans }
   }, [renderItems, expandedGroups, collapseToolGroups])
 
   // 折叠覆盖（按条目 id）：工具/用户折叠与思考 displayMode 本地化——

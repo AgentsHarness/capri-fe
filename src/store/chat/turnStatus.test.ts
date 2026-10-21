@@ -22,11 +22,20 @@ function tool(id: string, over: Partial<Extract<ScrollEntry, { kind: 'tool' }>> 
 }
 
 describe('selectableRowIds', () => {
-  it('包含折叠组成员头 + 可见条目', () => {
-    const entries = [tool('r1', { kindName: 'read' }), tool('r2', { kindName: 'read' }), tool('ex1', { kindName: 'execute' })]
+  it('默认密度（compact-all-grouped）下 read 与 execute 同属一段 → 只有组头', () => {
+    const entries = [
+      tool('r1', { kindName: 'read' }),
+      tool('r2', { kindName: 'read' }),
+      tool('ex1', { kindName: 'execute' }),
+    ]
     const ids = selectableRowIds(entries, new Set())
-    expect(ids).toContain('gh_r1')
-    expect(ids).toContain('ex1')
+    expect(ids).toEqual(['gh_r1'])
+  })
+
+  it('单条工具不折时自己就是可选行（不再是组头）', () => {
+    const entries = [tool('r1', { kindName: 'read' })]
+    const ids = selectableRowIds(entries, new Set())
+    expect(ids).toEqual(['r1'])
   })
 })
 

@@ -1,4 +1,5 @@
-import { scanGroups, spanContaining } from '../../../scrollback/verbGroup'
+import { groupScopeForDensity, scanGroups, spanContaining } from '../../../scrollback/verbGroup'
+import { toolCallDensity } from '../../settings'
 import {
   nextThoughtMode,
   thoughtDisplayMode,
@@ -158,6 +159,7 @@ export function viewerNavActions(set: SetState, get: () => ChatState) {
     if (!expanded && memberCollapsed) {
       const spans = scanGroups(entries, expandedGroups, {
         defaultExpanded: !currentCollapseToolGroups(),
+        scope: groupScopeForDensity(toolCallDensity()),
       })
       const span = spanContaining(spans, idx)
       if (span?.expanded) {
@@ -265,6 +267,7 @@ export function viewerNavActions(set: SetState, get: () => ChatState) {
       const idx = entries.findIndex((x) => x.id === selectedId)
       const spans = scanGroups(entries, expandedGroups, {
         defaultExpanded: !currentCollapseToolGroups(),
+        scope: groupScopeForDensity(toolCallDensity()),
       })
       const span = spanContaining(spans, idx)
       if (span && !span.expanded) get().toggleGroupExpansion(span.anchorId)

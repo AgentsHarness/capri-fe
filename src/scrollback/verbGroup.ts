@@ -1,51 +1,70 @@
 /**
- * TUI verb-group + truncation fold port
- * (xai-grok-pager scrollback/state/verb_group.rs + groups.rs).
+ * TUI verb-group fold port (xai-grok-pager scrollback/state/verb_group.rs +
+ * groups.rs，口径对齐真机 grok 1.0.62 的 `/density` 五档).
  *
- * Verb runs: consecutive collapsed non-destructive tools and subagent
- * rows fold into one "Read 3 files, Ran 2 subagents" header. Sealed
- * collapsed thoughts claim into the run (hidden when folded) but never
- * count toward the member threshold.
- * Truncation: long dense collapsed-groupable runs — tools AND sealed
- * collapsed thoughts (thought-tool-thought alternation included) — hide
- * the oldest rows behind one header. The header label counts the WHOLE
- * run (FE deviation: the TUI counts only the hidden prefix). The fold
- * TRIGGER counts tools only, so short thought-tool alternation stays
- * flat (thoughts hide / label with the group once it forms). A manually
- * expanded thought keeps its participant slot (still counted, exempt
- * from hiding) so opening it never shifts counts or slides rows.
+ * Verb runs: 连续的、按当前密度参与分组的工具行折成一行聚合头
+ * （`Explored 3 files, 2 searches` / `Edited 2 files, ran 1 command`）。
+ * 收口思考认领进 run（折叠时随组隐藏），但不计入成员数；流式 / 手动展开
+ * 的思考保持透明，既不认领也不打断。
+ *
+ * 单条规则：段里只有一个成员时**不**折——它保留自己的行（`Read a.py`、
+ * `Edit report.py`）。被 200 条上限切出来的尾段同样适用：尾段只剩 1 条时
+ * 也单独显示。聚合头只在段里至少有 2 个成员时出现。
+ *
+ * 展开不影响分组结构：手动展开的成员仍算这一段的成员（参与成员数、组边界
+ * 与聚合头数字），只是自己保持可见。展开组里 2 条中的 1 条，组不会解散，
+ * 上下条目也不会重新分组。
+ *
+ * 密度（`[ui] tool_call_density`）决定哪些工具参与分组：
+ *  - 读取 / 搜索 / 列目录 / 其他工具在所有档位都折成 `Explored …` 段。
+ *  - detailed / compact-shells / compact-ungrouped：编辑与命令逐条显示。
+ *  - compact-grouped：编辑段、命令段各自成组（`Edited report.py +1 -1`
+ *    / `Ran 2 commands`），两族之间不并组。
+ *  - compact-all-grouped（默认）：所有连续工具调用合成一组
+ *    （`Edited report.py, explored 2 files, ran 2 commands +1 -1`）。
+ *
+ * 段长上限：每段最多 200 个成员，超出的部分另起一段（真机 1.0.62 实测
+ * 300 条命令 → `Ran 200 commands` + `Ran 100 commands`）。旧的
+ * `group_max_visible` 截断（头部藏最旧 10 条、标签 "N more"）在 1.0.62
+ * 已失效，FE 不再实现。
  */
 
-import type { ScrollEntry, ToolCall } from '../api/types'
-import { toolFamily } from '../theme/toolFamily'
-import { readPathOf, skillNameFromPath } from './toolDetail'
+import type { ScrollEntry } from '../api/types'
+import { isCreateToolKind, toolFamily } from '../theme/toolFamily'
+import { extractToolDetail, readPathOf } from './toolDetail'
 import { thoughtDisplayMode } from './thoughtMode'
 
-/** Eager verb-fold kinds (ToolCallBlock::verb_group_kind). */
+/**
+ * Label buckets. `file` / `search` / `dir` / `other` are the eager verb-fold
+ * kinds; `edit` / `command` join only at the grouped densities; `subagent`
+ * never folds (1.0.62 keeps its own `Subagent …` row).
+ */
 export type VerbGroupKind =
   | 'file'
-  | 'skill'
   | 'search'
   | 'dir'
-  | 'web_fetch'
-  | 'web_search'
-  | 'memory'
-  | 'integration'
-  | 'subagent'
-  | 'command' // label-only (truncation)
-  | 'edit' // label-only
-  | 'mcp' // label-only
-  | 'other' // label-only
+  | 'other' // web / MCP / 未分类工具，标签统一叫 "tool"
+  | 'edit' // 就地修改
+  | 'create' // 新建文件（write / create）
+  | 'command'
 
 export type RunStep =
+  /** 参与分组的成员（折叠态）。 */
   | { kind: 'member'; vg: VerbGroupKind }
+  /** 认领进 run 的收口思考（折叠时随组隐藏）。 */
   | { kind: 'thought' }
+  /**
+   * 手动展开的工具成员：仍算这段 run 的成员（参与成员数、组边界、族判定与
+   * 聚合头数字），只是自己保持可见、不随折叠头隐藏。展开因此不改变分组
+   * 结构——组里 2 条时展开 1 条，组不会解散、上下也不会重新分组。
+   */
+  | { kind: 'open'; vg: VerbGroupKind }
+  /** 不参与分组、也不劈开 run 的行（流式 / 手动展开的思考）。 */
   | { kind: 'transparent' }
+  /** 分组边界（非工具行、不参与当前密度的工具）。 */
   | { kind: 'break' }
 
-export type GroupKind =
-  | { type: 'verb'; members: number }
-  | { type: 'truncation'; participants: number; hidden: number }
+export type GroupKind = { type: 'verb'; members: number }
 
 export type GroupSpan = {
   range: { start: number; end: number } // end exclusive
@@ -59,6 +78,11 @@ export type GroupLabel = {
   text: string
   running: boolean
   failed: boolean
+  /**
+   * 段内编辑的增删行数（官方 density 预览的彩色 `+1 -1`）。只在段内有
+   * 编辑 / 新建时出现；renderer 把它画在标签右侧。
+   */
+  diffstat?: { insertions: number; deletions: number }
 }
 
 export type DisplayRow =
@@ -77,61 +101,99 @@ export type DisplayRow =
       family: 'verb' | 'truncation'
     }
 
-/** Default appearance.scrollback.display.group_max_visible. */
-export const GROUP_MAX_VISIBLE = 10
+/** 每段最多容纳的成员数（真机 1.0.62 实测上限）。 */
+export const GROUP_MAX_MEMBERS = 200
+
+/** 分组范围：哪些工具族参与折组，以及各族是否分开成组。 */
+export type GroupScope = {
+  /** 读取 / 搜索 / 列目录 / 其他工具（`Explored …` 段）。 */
+  explore: boolean
+  /** 编辑 / 新建文件（`Edited …` 段）。 */
+  edits: boolean
+  /** shell 命令（`Ran …` 段）。 */
+  commands: boolean
+  /**
+   * true = 编辑段、命令段、探查段各自成组，不互相并组（grouped 档）；
+   * false = 所有参与的族合成一段（compact 档）。
+   */
+  separateFamilies: boolean
+}
+
+/** 默认档（compact-all-grouped）：所有工具参与，且合成一组。 */
+const SCOPE_ALL: GroupScope = {
+  explore: true,
+  edits: true,
+  commands: true,
+  separateFamilies: false,
+}
+/** 更详细的档位：只折探查类工具（`Explored 2 files, 1 search`）。 */
+const SCOPE_EXPLORE: GroupScope = {
+  explore: true,
+  edits: false,
+  commands: false,
+  separateFamilies: false,
+}
+
+/**
+ * 密度档 → 分组范围（对齐官方 density 预览）。
+ *  - detailed / compact-shells / compact-ungrouped：只折探查类工具；
+ *    编辑与命令逐条显示。
+ *  - compact-grouped：编辑段、命令段各自成组，与探查段互不并组。
+ *  - compact-all-grouped：所有连续工具调用合成一组。
+ */
+export function groupScopeForDensity(density: string): GroupScope {
+  switch (density) {
+    case 'detailed':
+    case 'compact-shells':
+    case 'compact-ungrouped':
+      return SCOPE_EXPLORE
+    case 'compact-grouped':
+      return { ...SCOPE_ALL, separateFamilies: true }
+    // compact-all-grouped 与未知值（旧 host / 手改坏的配置）都按默认档。
+    default:
+      return SCOPE_ALL
+  }
+}
 
 // ── Classification ─────────────────────────────────────────────────────
 
-/** Agent-stamped `_meta.memory_v2_activity` (TUI tracker.rs::is_memory_v2_activity). */
-function isMemoryActivity(tc: ToolCall | undefined): boolean {
-  const meta = (tc as { _meta?: Record<string, unknown> } | undefined)?._meta
-  return meta?.memory_v2_activity === true
+function normalizedKind(kindName: string | undefined): string {
+  return (kindName || '').toLowerCase().replace(/[\s-]+/g, '_')
 }
 
-/** Eager verb-group membership (excludes Execute/Edit/MCP/Other). */
-export function verbGroupKind(e: ScrollEntry): VerbGroupKind | null {
-  if (e.kind === 'subagent') return 'subagent'
+/**
+ * run_step 用的成员桶。真机 1.0.62 的词表只有四种可命名桶：文件 / 目录 /
+ * 搜索 / 其他工具。技能读取并入 files（`Explored 2 files`），web、MCP、
+ * 未分类工具一律 `called N tools`。
+ */
+export function verbGroupKind(
+  e: ScrollEntry,
+  scope: GroupScope = SCOPE_ALL,
+): VerbGroupKind | null {
   if (e.kind !== 'tool') return null
-  const k = (e.kindName || '').toLowerCase().replace(/[\s-]+/g, '_')
+  const k = normalizedKind(e.kindName)
   const fam = toolFamily(e.kindName)
-
-  // TUI ToolCallBlock::is_memory_activity: the agent stamps
-  // `_meta.memory_v2_activity` on read / list / search / edit calls that
-  // touch a memory scope, and those join the "Searched N memories" group.
-  if ((fam === 'never' || fam === 'edit') && isMemoryActivity(e.raw)) return 'memory'
-  if (fam === 'execute' || fam === 'edit') return null
-  if (k === 'skill') return 'skill'
+  if (fam === 'execute') return scope.commands ? 'command' : null
+  if (fam === 'edit')
+    return scope.edits ? (isCreateToolKind(e.kindName) ? 'create' : 'edit') : null
+  if (!scope.explore) return null
   if (fam === 'never') {
     if (k === 'list_dir' || k === 'listdir' || k === 'ls' || k === 'list') return 'dir'
     if (k === 'search' || k === 'grep' || k === 'glob' || k === 'find') return 'search'
-    // TUI ReadToolCallBlock::is_skill_read — reads of `SKILL.md` group as
-    // skills ("Read 2 skills"), not plain files.
-    if (skillNameFromPath(e.raw ? readPathOf(e.raw) : e.title)) return 'skill'
-    return 'file' // read
+    // 技能读取与普通文件读取同桶（1.0.62：两个 SKILL.md → "Explored 2 files"）。
+    return 'file'
   }
-  if (k === 'websearch' || k === 'web_search' || k === 'x_search') return 'web_search'
-  if (k === 'fetch' || k === 'webfetch' || k === 'web_fetch') return 'web_fetch'
-  if (k === 'memory_search' || k === 'memorysearch') return 'memory'
-  if (k === 'search_tool' || k === 'integration_search') return 'integration'
-  // standard tools that aren't web/mcp discovery don't eager-fold
-  if (k === 'mcp' || k === 'use_tool') return null
-  return null
+  // memory_v2_activity 的读写/搜索在 1.0.62 仍按原桶归类（实测两条
+  // memory 读 → "Explored 2 files"），因此这里不再单列 memory 桶。
+  return 'other'
 }
 
-/** Label bucket (superset — includes Command/Edit/MCP for truncation labels). */
-export function labelKind(e: ScrollEntry): VerbGroupKind | null {
-  const vg = verbGroupKind(e)
-  if (vg) return vg
-  if (e.kind === 'tool') {
-    const fam = toolFamily(e.kindName)
-    if (fam === 'execute') return 'command'
-    if (fam === 'edit') return 'edit'
-    const k = (e.kindName || '').toLowerCase()
-    if (k === 'mcp' || k === 'use_tool') return 'mcp'
-    return 'other'
-  }
-  if (e.kind === 'subagent') return 'subagent'
-  return null
+/** 兼容导出：标签桶与成员桶一致（1.0.62 只有一组词表）。 */
+export function labelKind(
+  e: ScrollEntry,
+  scope: GroupScope = SCOPE_ALL,
+): VerbGroupKind | null {
+  return verbGroupKind(e, scope)
 }
 
 function isCollapsed(e: ScrollEntry): boolean {
@@ -159,29 +221,26 @@ function isFailed(e: ScrollEntry): boolean {
   return false
 }
 
-function isGroupable(e: ScrollEntry): boolean {
-  return e.kind === 'tool' || e.kind === 'subagent' || e.kind === 'thought' || e.kind === 'bg_task'
-}
-
-/** run_step — single source of truth for walk classification. */
-export function runStep(e: ScrollEntry, showThinking = true): RunStep {
-  const vg = verbGroupKind(e)
-  if (vg != null) {
-    if (isCollapsed(e)) return { kind: 'member', vg }
-    // Manually opened member stays in run without splitting it
-    return { kind: 'transparent' }
-  }
-  if (e.kind === 'subagent') {
-    if (isCollapsed(e)) return { kind: 'member', vg: 'subagent' }
-    return { kind: 'break' }
+/**
+ * run_step — 单一路径的走查分类。subagent 行在 1.0.62 恒单独成行（`Break`），
+ * 与本组无关；bg_task / workflow 也打破 run（它们的行自带状态）。
+ */
+export function runStep(
+  e: ScrollEntry,
+  showThinking = true,
+  scope: GroupScope = SCOPE_ALL,
+): RunStep {
+  if (e.kind === 'tool') {
+    const vg = verbGroupKind(e, scope)
+    if (vg == null) return { kind: 'break' }
+    // 展开的成员仍算这段的成员（只是不隐藏）：若把它排除在成员之外，
+    // 组里 2 条时展开 1 条会让组掉到 1 个成员而解散，上下条目随之重新分组。
+    // 正在跑的尾部成员例外，见 scanRunForward 的收尾裁剪。
+    return isCollapsed(e) ? { kind: 'member', vg } : { kind: 'open', vg }
   }
   if (e.kind === 'thought') {
-    // 收口思考(含空文本噪音行)认领进 run,折叠时随组隐藏——空文本的
-    // 光杆 "Thought" 行不该漏在折叠组外。流式/手动展开保持 transparent:
-    // 实时与用户主动打开的内容不藏。
-    if (showThinking && !isRunning(e) && isCollapsed(e)) {
-      return { kind: 'thought' }
-    }
+    // 收口思考（含空文本噪音行）认领进 run；流式 / 手动展开保持透明。
+    if (showThinking && !isRunning(e) && isCollapsed(e)) return { kind: 'thought' }
     return { kind: 'transparent' }
   }
   return { kind: 'break' }
@@ -189,78 +248,301 @@ export function runStep(e: ScrollEntry, showThinking = true): RunStep {
 
 // ── Verb / noun labels ─────────────────────────────────────────────────
 
-function verbOf(vg: VerbGroupKind, running: boolean): string {
-  const table: Record<VerbGroupKind, [string, string]> = {
-    file: ['Read', 'Reading'],
-    skill: ['Read', 'Reading'],
-    search: ['Searched', 'Searching'],
-    dir: ['Listed', 'Listing'],
-    web_fetch: ['Fetched', 'Fetching'],
-    web_search: ['Searched', 'Searching'],
-    memory: ['Searched', 'Searching'],
-    integration: ['Searched', 'Searching'],
-    subagent: ['Ran', 'Running'],
-    command: ['Ran', 'Running'],
-    edit: ['Edited', 'Editing'],
-    mcp: ['Called', 'Calling'],
-    other: ['Ran', 'Running'],
+/**
+ * 聚合头动词。文件 / 目录 / 搜索归 `Explored`，其余工具（web、MCP、未分类）
+ * 归 `Called`，编辑 `Edited`，命令 `Ran`。1.0.62 的聚合头不使用进行时——
+ * 运行中的段落也用过去式。
+ */
+function verbOf(vg: VerbGroupKind): string {
+  switch (vg) {
+    case 'edit':
+      return 'Edited'
+    case 'create':
+      return 'Created'
+    case 'command':
+      return 'Ran'
+    case 'other':
+      return 'Called'
+    default:
+      return 'Explored'
   }
-  const [past, present] = table[vg]
-  return running ? present : past
 }
 
-function nounOf(vg: VerbGroupKind, count: number): string {
-  const table: Record<VerbGroupKind, [string, string]> = {
-    file: ['file', 'files'],
-    skill: ['skill', 'skills'],
-    search: ['pattern', 'patterns'],
-    dir: ['dir', 'dirs'],
-    web_fetch: ['website', 'websites'],
-    web_search: ['website', 'websites'],
-    memory: ['memory', 'memories'],
-    integration: ['MCP tool', 'MCP tools'],
-    subagent: ['subagent', 'subagents'],
-    command: ['command', 'commands'],
-    edit: ['file', 'files'],
-    mcp: ['MCP tool', 'MCP tools'],
-    other: ['tool', 'tools'],
+type Phrase = {
+  /** 名词单数 / 复数（`files` / `directories`…）。 */
+  noun: string
+  nounPlural: string
+}
+
+/** 每种桶的名词与短语模板（`Explored 2 files` / `Explored a.py`）。 */
+const PHRASES: Record<VerbGroupKind, Phrase> = {
+  file: { noun: 'file', nounPlural: 'files' },
+  dir: { noun: 'directory', nounPlural: 'directories' },
+  search: { noun: 'search', nounPlural: 'searches' },
+  other: { noun: 'tool', nounPlural: 'tools' },
+  edit: { noun: 'file', nounPlural: 'files' },
+  create: { noun: 'file', nounPlural: 'files' },
+  command: { noun: 'command', nounPlural: 'commands' },
+}
+
+/** 聚合头里桶的固定顺序（与出现顺序无关；真机实测）。 */
+const BUCKET_ORDER: VerbGroupKind[] = [
+  'create',
+  'edit',
+  'dir',
+  'file',
+  'search',
+  'other',
+  'command',
+]
+
+
+type Bucket = {
+  vg: VerbGroupKind
+  members: ScrollEntry[]
+}
+
+/**
+ * 单值命名：某桶只有一个成员、且它是整条标签里的**第一个**短语时，
+ * 用成员自己的名字代替数字——`Explored a.py`、`Explored work`、
+ * `Edited a.py`、`Ran ls`。后续短语一律用数字（`Explored a.py, 1 search`）。
+ */
+function singleName(e: Extract<ScrollEntry, { kind: 'tool' }>): string | undefined {
+  if (e.kind !== 'tool') return undefined
+  const k = normalizedKind(e.kindName)
+  if (k === 'list_dir' || k === 'listdir' || k === 'ls' || k === 'list') {
+    const path = listDirPath(e)
+    if (!path) return undefined
+    const tail = path.replace(/\/+$/, '').split('/').pop()
+    return tail || path
   }
-  const [one, many] = table[vg]
-  return count === 1 ? one : many
+  if (k === 'search' || k === 'grep' || k === 'glob' || k === 'find') return undefined
+  const path = readPathOf(e.raw ?? {}) || e.title
+  if (!path) return undefined
+  const tail = path.replace(/\/+$/, '').split('/').pop()
+  return tail || undefined
+}
+
+function listDirPath(e: Extract<ScrollEntry, { kind: 'tool' }>): string | undefined {
+  const input = e.raw?.rawInput as Record<string, unknown> | undefined
+  const v = input?.target_directory ?? input?.path ?? input?.directory ?? e.title
+  return typeof v === 'string' && v ? v : undefined
+}
+
+/** `Ran ls`, `Edit a.py`：命令用 description，编辑用文件名。 */
+function commandName(e: Extract<ScrollEntry, { kind: 'tool' }>): string | undefined {
+  const input = e.raw?.rawInput as Record<string, unknown> | undefined
+  const v = input?.description ?? input?.command ?? e.title
+  return typeof v === 'string' && v ? v : undefined
+}
+
+function editName(e: Extract<ScrollEntry, { kind: 'tool' }>): string | undefined {
+  const input = e.raw?.rawInput as Record<string, unknown> | undefined
+  const v = input?.file_path ?? input?.path ?? e.title
+  if (typeof v !== 'string' || !v) return undefined
+  return v.replace(/\/+$/, '').split('/').pop() || v
+}
+
+function memberName(
+  e: ScrollEntry,
+  vg: VerbGroupKind,
+): string | undefined {
+  if (e.kind !== 'tool') return undefined
+  if (vg === 'command') return commandName(e)
+  if (vg === 'edit' || vg === 'create') return editName(e)
+  // 文件 / 目录用路径末段；搜索与"其他工具"没有单值命名（真机恒用数字）。
+  if (vg === 'file' || vg === 'dir') return singleName(e)
+  return undefined
+}
+/** 逐段扫成员、按固定桶序拼标签。 */
+function buildLabel(
+  entries: ScrollEntry[],
+  range: { start: number; end: number },
+  showThinking: boolean,
+  scope: GroupScope,
+): GroupLabel {
+  const buckets = new Map<VerbGroupKind, Bucket>()
+  let running = false
+  let failed = false
+  for (let i = range.start; i < range.end; i++) {
+    const e = entries[i]
+    if (!e) break
+    const step = runStep(e, showThinking, scope)
+    if (step.kind === 'break') break
+    // 展开的成员照常计入聚合头：展开不改数字。
+    if (step.kind !== 'member' && step.kind !== 'open') continue
+    let b = buckets.get(step.vg)
+    if (!b) {
+      b = { vg: step.vg, members: [] }
+      buckets.set(step.vg, b)
+    }
+    b.members.push(e)
+    if (isRunning(e)) running = true
+    if (isFailed(e)) failed = true
+  }
+
+  const parts: string[] = []
+  let lastVerb: string | undefined
+  for (const vg of BUCKET_ORDER) {
+    const b = buckets.get(vg)
+    if (!b) continue
+    const count = b.members.length
+    const p = PHRASES[vg]
+    const verb = verbOf(vg)
+    // 同一动词的相邻桶省略重复动词：`Explored 1 directory, 1 file, 1 search`。
+    // 动词变化时才重写（`Edited 2 files, explored 1 file`）。
+    const lead = parts.length === 0
+    const showVerb = verb !== lastVerb
+    lastVerb = verb
+    // 第一个短语且只有一个成员 → 用成员名字代替数字。
+    if (lead && count === 1) {
+      const name = memberName(b.members[0], vg)
+      parts.push(name ? `${verb} ${name}` : `${verb} 1 ${p.noun}`)
+    } else if (showVerb) {
+      parts.push(`${verb} ${count} ${count === 1 ? p.noun : p.nounPlural}`)
+    } else {
+      parts.push(`${count} ${count === 1 ? p.noun : p.nounPlural}`)
+    }
+  }
+
+  // 只有第一个短语首字母大写，后续短语小写（`Edited a.py, explored 1 file`）。
+  const text = parts
+    .map((part, i) => (i === 0 ? part : part.charAt(0).toLowerCase() + part.slice(1)))
+    .join(', ')
+
+  // 段内编辑的 diffstat（官方密度预览：`Edited report.py, … ran 2 commands +1 -1`）。
+  let insertions = 0
+  let deletions = 0
+  let hasEdits = false
+  for (const vg of ['edit', 'create'] as const) {
+    const b = buckets.get(vg)
+    if (!b) continue
+    hasEdits = true
+    for (const m of b.members) {
+      if (m.kind !== 'tool' || !m.raw) continue
+      const d = extractToolDetail(m.raw, m.kindName)
+      if (d.kind !== 'edit') continue
+      insertions += d.insertions
+      deletions += d.deletions
+    }
+  }
+  return {
+    text: text || 'Tools',
+    running,
+    failed,
+    ...(hasEdits ? { diffstat: { insertions, deletions } } : {}),
+  }
+}
+
+/** 全段标签（展开态 / 截断头共用）。 */
+export function verbGroupLabel(
+  entries: ScrollEntry[],
+  span: GroupSpan,
+  showThinking = true,
+  scope: GroupScope = SCOPE_ALL,
+): GroupLabel {
+  return buildLabel(entries, span.range, showThinking, scope)
+}
+
+/** 1.0.62 已无 "N more" 截断头；保留函数签名供旧调用方，恒返回 null。 */
+export function truncationLabel(): GroupLabel | null {
+  return null
 }
 
 // ── Scan ───────────────────────────────────────────────────────────────
 
-type RunScan = { members: number; end: number; stop: number }
+type RunScan = {
+  members: number
+  thoughts: number
+  end: number
+  stop: number
+  /** 段内的桶集合（separateFamilies 判族用）。 */
+  kinds: Set<VerbGroupKind>
+}
 
+/** 从 start 起走一段最大 200 成员的 run。 */
 function scanRunForward(
   entries: ScrollEntry[],
   start: number,
   showThinking: boolean,
+  scope: GroupScope,
 ): RunScan | null {
   const first = entries[start]
   if (!first) return null
-  const step0 = runStep(first, showThinking)
-  if (step0.kind !== 'member' && step0.kind !== 'thought') return null
+  const step0 = runStep(first, showThinking, scope)
+  if (
+    step0.kind !== 'member' &&
+    step0.kind !== 'open' &&
+    step0.kind !== 'thought'
+  ) {
+    return null
+  }
 
   let members = 0
   let end = start
+  let thoughts = 0
+  const kinds = new Set<VerbGroupKind>()
+  /** 段内最后一个工具成员的索引，以及它计入时的成员序号。 */
+  let lastToolIdx = -1
+  let lastToolOrdinal = 0
   let i = start
   while (i < entries.length) {
-    const step = runStep(entries[i], showThinking)
-    if (step.kind === 'member') {
+    const step = runStep(entries[i], showThinking, scope)
+    if (step.kind === 'member' || step.kind === 'open') {
+      if (members >= GROUP_MAX_MEMBERS) break
+      kinds.add(step.vg)
+      // separateFamilies：族一变就收口，编辑段 / 命令段 / 探查段各自成组。
+      if (
+        scope.separateFamilies &&
+        members > 0 &&
+        !sameFamily(kinds, step.vg)
+      ) {
+        break
+      }
       members += 1
       end = i + 1
+      lastToolIdx = i
+      lastToolOrdinal = members
     } else if (step.kind === 'thought') {
+      thoughts += 1
       end = i + 1
     } else if (step.kind === 'transparent') {
-      // skip
+      // 跳过：透明行留在 run 内，既不算成员也不延长 claimed 边界
     } else {
       break
     }
     i += 1
   }
-  return { members, end, stop: i }
+  // 段里最后一个工具调用还在跑 → 把它（及它之后的收口思考）留在组外：
+  // 正在输出的行缩进折叠头后面就看不到了。它跑完进终态后下一帧再入组。
+  // 注意 stop 仍指向整段末尾（不是裁剪点）：外层扫描要从这里继续前进，
+  // 否则指针原地不动会死循环。
+  const tail = lastToolIdx >= 0 ? entries[lastToolIdx] : undefined
+  if (tail?.kind === 'tool' && isRunning(tail)) {
+    return {
+      members: lastToolOrdinal - 1,
+      thoughts: 0,
+      end: lastToolIdx,
+      stop: i,
+      kinds,
+    }
+  }
+  return { members, thoughts, end, stop: i, kinds }
+}
+
+/** 工具族：编辑 / 新建同属编辑族，探查类同属探查族，命令单独一族。 */
+function familyOf(vg: VerbGroupKind): 'edit' | 'command' | 'explore' {
+  if (vg === 'edit' || vg === 'create') return 'edit'
+  if (vg === 'command') return 'command'
+  return 'explore'
+}
+
+function sameFamily(kinds: ReadonlySet<VerbGroupKind>, vg: VerbGroupKind): boolean {
+  const fam = familyOf(vg)
+  for (const k of kinds) {
+    if (familyOf(k) !== fam) return false
+  }
+  return true
 }
 
 /**
@@ -278,257 +560,64 @@ export function spanExpanded(
 }
 
 /**
- * Scan verb runs then truncation runs (verb claims break truncation).
- * `groupToolVerbs` defaults true (TUI default).
+ * 扫描所有 verb run。成员数不足 2 的 run 不折，成员各自成行；被 200 条
+ * 上限切出来的尾段同样按这条判定。
  */
 export function scanGroups(
   entries: ScrollEntry[],
   expandedGroups: ReadonlySet<string>,
   opts: {
+    /** false = 完全不做分组（保留给调试 / 旧调用方）。 */
     groupToolVerbs?: boolean
     showThinking?: boolean
-    maxVisible?: number
-    /** 分组默认展开（false = 默认折叠成分组头，TUI 默认）。 */
+    /** 分组范围（密度）。默认与 compact-all-grouped 一致。 */
+    scope?: GroupScope
+    /** 分组默认展开（false = 默认折叠成分组头）。 */
     defaultExpanded?: boolean
   } = {},
 ): GroupSpan[] {
   const groupToolVerbs = opts.groupToolVerbs !== false
   const showThinking = opts.showThinking !== false
-  const maxVisible = opts.maxVisible ?? GROUP_MAX_VISIBLE
+  const scope = opts.scope ?? SCOPE_ALL
   const defaultExpanded = opts.defaultExpanded === true
   const n = entries.length
-  const claimed = new Array<boolean>(n).fill(false)
   const spans: GroupSpan[] = []
+  if (!groupToolVerbs || n === 0) return spans
 
-  // ── Verb runs ────────────────────────────────────────────────────────
-  if (groupToolVerbs && n > 0) {
-    let i = 0
-    while (i < n) {
-      const scan = scanRunForward(entries, i, showThinking)
-      if (!scan) {
-        i += 1
-        continue
-      }
-      // TUI RunScan::folds: members >= 1（verb_group.rs）。纯 subagent
-      // 也折——紧凑的 "Running N subagents" 头优于 N 条独立行，且第一
-      // 个成员到达即出 header，避免第二条进来时从单行跳成组头。thought
-      // 认领进 run 但不计数，纯思考 walk（标签会空）永不折。
-      if (scan.members < 1) {
-        i = scan.stop
-        continue
-      }
-      for (let j = i; j < scan.end; j++) {
-        const step = runStep(entries[j], showThinking)
-        if (step.kind === 'member' || step.kind === 'thought') claimed[j] = true
-      }
-      const anchorId = entries[i].id
-      spans.push({
-        range: { start: i, end: scan.end },
-        kind: { type: 'verb', members: scan.members },
-        expanded: spanExpanded(anchorId, expandedGroups, defaultExpanded),
-        anchorId,
-      })
-      i = scan.end
+  let i = 0
+  while (i < n) {
+    const scan = scanRunForward(entries, i, showThinking, scope)
+    if (!scan) {
+      i += 1
+      continue
     }
-  }
-
-  // ── Truncation ("N more") ────────────────────────────────────────────
-  if (maxVisible > 0 && n > 0) {
-    let i = 0
-    while (i < n) {
-      if (claimed[i] || !participatesInTruncation(entries[i], showThinking)) {
-        i += 1
-        continue
-      }
-      const groupStart = i
-      let groupLen = 1
-      // 触发计数按全参与者（TUI groups.rs:220-235 group_len 含收口思考，
-      // 仅隐藏思考剔除）：思考-工具交替段与纯工具回合同门槛折叠
-      // （groupLen > maxVisible + 1）。隐藏思考（showThinking=false）透明
-      // 不计数；流式思考不计数也不打断（FE 直播行语义，见下）。
-      let j = i + 1
-      while (j < n) {
-        if (claimed[j]) break
-        const e = entries[j]
-        if (participatesInTruncation(e, showThinking)) {
-          groupLen += 1
-        } else if (e.kind === 'thought') {
-          // 思考永不截断密集段（与 verb 扫描的 transparent 语义一致）。
-          // 走到这里的是流式思考（直播行不计数、不隐藏）以及
-          // showThinking=false 时的全部思考；展开的思考已计入参与者。
-          j += 1
-          continue
-        } else {
-          break
-        }
-        j += 1
-      }
-      const groupEnd = j
-      if (groupLen > maxVisible + 1) {
-        const anchorId = entries[groupStart].id
-        spans.push({
-          range: { start: groupStart, end: groupEnd },
-          kind: {
-            type: 'truncation',
-            participants: groupLen,
-            hidden: groupLen - maxVisible,
-          },
-          expanded: spanExpanded(anchorId, expandedGroups, defaultExpanded),
-          anchorId,
-        })
-      }
-      i = groupEnd
+    // 组里只有一个成员（或只有收口思考）→ 不成组，单独展示自己的行。
+    // 200 条上限切出来的尾段同样按这条判定：尾段只有 1 条时也单独显示。
+    if (scan.members < 2) {
+      i = scan.stop
+      continue
     }
+    const anchorId = entries[i].id
+    spans.push({
+      range: { start: i, end: scan.end },
+      kind: { type: 'verb', members: scan.members },
+      expanded: spanExpanded(anchorId, expandedGroups, defaultExpanded),
+      anchorId,
+    })
+    // 进度保护：scan.end 在裁剪尾部时可能等于/小于当前起点，扫描指针必须
+    // 严格前进，否则外层 while 会原地死循环。
+    i = scan.end > i ? scan.end : Math.max(scan.stop, i + 1)
   }
-
-  spans.sort((a, b) => a.range.start - b.range.start)
   return spans
-}
-
-function participatesInTruncation(e: ScrollEntry, showThinking: boolean): boolean {
-  if (!isGroupable(e)) return false
-  if (e.kind === 'thought') {
-    // 收口思考（含空文本噪音行）计入截断密度，且**展开不退出参与者集合**：
-    // 手动打开只豁免隐藏（projectDisplayRows 里跳过），参与数 / 隐藏预算 /
-    // 标签计数全部不动——否则点开一条 thought 会让 hidden 预算 +1，尾部
-    // 滑出一条旧行。流式思考不参与（直播行不进数字）。
-    return showThinking && !e.streaming
-  }
-  return (
-    isCollapsed(e) && (e.kind === 'tool' || e.kind === 'subagent' || e.kind === 'bg_task')
-  )
-}
-
-// ── Labels ─────────────────────────────────────────────────────────────
-
-export function verbGroupLabel(
-  entries: ScrollEntry[],
-  span: GroupSpan,
-  showThinking = true,
-): GroupLabel {
-  const buckets = new Map<VerbGroupKind, number>()
-  let running = false
-  let failedCount = 0
-  const order: VerbGroupKind[] = []
-
-  for (let i = span.range.start; i < span.range.end; i++) {
-    const e = entries[i]
-    if (!e) break
-    const step = runStep(e, showThinking)
-    if (step.kind === 'break') break
-    if (step.kind !== 'member') continue
-    if (!buckets.has(step.vg)) {
-      buckets.set(step.vg, 0)
-      order.push(step.vg)
-    }
-    buckets.set(step.vg, (buckets.get(step.vg) || 0) + 1)
-    if (isRunning(e)) running = true
-    if (isFailed(e)) failedCount += 1
-  }
-
-  const parts: string[] = []
-  for (const vg of order) {
-    const count = buckets.get(vg) || 0
-    parts.push(`${verbOf(vg, running)} ${count} ${nounOf(vg, count)}`)
-  }
-  let text = parts.join(', ')
-  if (failedCount > 0) text += ` · ${failedCount} failed`
-  return {
-    text: text || 'Tools',
-    running,
-    failed: failedCount > 0,
-  }
-}
-
-/**
- * Truncation 组标签（TUI verb_group.rs:273-305 truncation_header_label）：
- * 与 verb 组头同一套动词条表，但按 `limit` 只描述**被隐藏的前缀**——
- * 折叠头 limit=hidden，展开头不传（描述整段）。思考行占参与者名额、
- * 永不进词表（TUI "Thoughts … are NEVER bucketed"，无 Thought N times）；
- * showThinking=false 的隐藏思考整行跳过（不占名额）。遇到词表叫不出
- * 名字的非思考参与者（bg_task 等）整个放弃（返回 null → 回落 "N more"），
- * 否则标签会对折叠隐藏的内容撒谎。
- */
-export function truncationLabel(
-  entries: ScrollEntry[],
-  span: GroupSpan,
-  showThinking = true,
-  limit?: number,
-): GroupLabel | null {
-  if (span.kind.type !== 'truncation') return null
-  const buckets = new Map<VerbGroupKind, number>()
-  let running = false
-  let failedCount = 0
-  let participants = 0
-  const order: VerbGroupKind[] = []
-
-  for (let i = span.range.start; i < span.range.end; i++) {
-    const e = entries[i]
-    if (!e) break
-    if (limit != null && participants >= limit) break
-    // 隐藏思考（showThinking=false）：透明行，不占名额不进词表。
-    if (e.kind === 'thought' && !showThinking) continue
-    // 流式思考（直播行，不参与截断计数）同样跳过不占名额。
-    if (e.kind === 'thought' && e.streaming) continue
-    participants += 1
-    // 思考占名额但永不进词表。
-    if (e.kind === 'thought') continue
-    const lk = labelKind(e)
-    if (!lk) return null
-    if (!buckets.has(lk)) {
-      buckets.set(lk, 0)
-      order.push(lk)
-    }
-    buckets.set(lk, (buckets.get(lk) || 0) + 1)
-    if (isRunning(e)) running = true
-    if (isFailed(e)) failedCount += 1
-  }
-
-  const parts: string[] = []
-  for (const vg of order) {
-    const count = buckets.get(vg) || 0
-    parts.push(`${verbOf(vg, running)} ${count} ${nounOf(vg, count)}`)
-  }
-  if (parts.length === 0) return null
-  let text = parts.join(', ')
-  if (failedCount > 0) text += ` · ${failedCount} failed`
-  return { text, running, failed: failedCount > 0 }
-}
-
-/**
- * Truncation header label — 折叠头只描述 hidden 前缀（limit=hidden，
- * render.rs:421 `(!span.expanded).then_some(hidden)`），展开头描述整段。
- * 退化（前缀无可命名参与者，如纯思考前缀）时回落 "N more"。
- */
-function truncationHeaderLabel(
-  entries: ScrollEntry[],
-  span: GroupSpan,
-  kind: { type: 'truncation'; participants: number; hidden: number },
-  showThinking: boolean,
-): GroupLabel {
-  return (
-    truncationLabel(
-      entries,
-      span,
-      showThinking,
-      span.expanded ? undefined : Math.max(0, kind.hidden),
-    ) || {
-      text: `${Math.max(0, kind.hidden)} more`,
-      running: false,
-      failed: false,
-    }
-  )
 }
 
 /**
  * Build a group-header row, reusing the cached row when the span object is
  * unchanged (see projectDisplayRows' headerCache). `makeLabel` is lazy —
- * on a cache hit it never runs, so the per-flush label recompute
- * (runStep over the span members) disappears.
+ * on a cache hit it never runs.
  */
 function headerRowFor(
   span: GroupSpan,
-  family: 'verb' | 'truncation',
   makeLabel: () => GroupLabel,
   cache?: Map<GroupSpan, DisplayRow>,
 ): DisplayRow {
@@ -539,64 +628,31 @@ function headerRowFor(
     id: `gh_${span.anchorId}`,
     span,
     label: makeLabel(),
-    family,
+    family: 'verb',
   }
   cache?.set(span, row)
   return row
 }
 
-// ── Project to display rows ────────────────────────────────────────────
-
 /**
  * Build the flat list of rows the scrollback renders.
- * Collapsed verb/truncation members are omitted; headers are synthetic.
- *
- * `headerCache` (optional): span-keyed map of previously built header rows.
- * Scrollback caches spans keyed on groupingSignature — on a cache hit every
- * span is the same object, so header rows (label text included) are reused
- * verbatim and the per-flush label recompute + header re-render disappear.
+ * Collapsed run members are omitted; headers are synthetic.
  */
 export function projectDisplayRows(
   entries: ScrollEntry[],
   spans: GroupSpan[],
   showThinking = true,
   headerCache?: Map<GroupSpan, DisplayRow>,
+  scope: GroupScope = SCOPE_ALL,
 ): DisplayRow[] {
   const spanByStart = new Map(spans.map((s) => [s.range.start, s]))
   const hidden = new Set<number>()
 
-  // Mark hidden indices for collapsed folds
   for (const span of spans) {
-    if (span.expanded) {
-      if (span.kind.type === 'verb') {
-        // expanded verb: all members visible; header is extra synthetic row
-        continue
-      }
-      // expanded truncation: all participants visible + collapse header
-      continue
-    }
-    if (span.kind.type === 'verb') {
-      // collapsed: only header shows; claimed members/thoughts hidden
-      for (let i = span.range.start; i < span.range.end; i++) {
-        const step = runStep(entries[i], showThinking)
-        if (step.kind === 'member' || step.kind === 'thought') hidden.add(i)
-      }
-    } else {
-      // collapsed truncation: hide the oldest `hidden` participants
-      // （thought 参与者一并藏进前缀；透明行跳过、不打断前缀计数）。
-      // 展开的思考占参与者名额但豁免隐藏——保持可见，预算由其余参与者补齐。
-      const toHide = span.kind.hidden
-      let seen = 0
-      for (let i = span.range.start; i < span.range.end && seen < toHide; i++) {
-        const e = entries[i]
-        if (e?.kind === 'thought' && !isCollapsed(e)) continue
-        if (!participatesInTruncation(e, showThinking)) {
-          if (e?.kind === 'thought') continue
-          break
-        }
-        hidden.add(i)
-        seen += 1
-      }
+    if (span.expanded) continue
+    for (let i = span.range.start; i < span.range.end; i++) {
+      const step = runStep(entries[i], showThinking, scope)
+      if (step.kind === 'member' || step.kind === 'thought') hidden.add(i)
     }
   }
 
@@ -604,42 +660,21 @@ export function projectDisplayRows(
   let i = 0
   while (i < entries.length) {
     const span = spanByStart.get(i)
-    if (span && !span.expanded && span.kind.type === 'verb') {
-      rows.push(headerRowFor(span, 'verb', () => verbGroupLabel(entries, span, showThinking), headerCache))
-      i = span.range.end
-      continue
-    }
-    if (span && !span.expanded && span.kind.type === 'truncation') {
-      const kind = span.kind
+    if (span && !span.expanded) {
       rows.push(
-        headerRowFor(span, 'truncation', () => truncationHeaderLabel(entries, span, kind, showThinking), headerCache),
+        headerRowFor(span, () => verbGroupLabel(entries, span, showThinking, scope), headerCache),
       )
-      // skip hidden prefix; emit remaining visible tail
+      // 折叠头后面按原顺序补出区间内保持可见的行（用户手动展开的成员 /
+      // 思考）。它们不能被折叠头一并吞掉，也不能挪到组外。
       for (let j = span.range.start; j < span.range.end; j++) {
-        if (hidden.has(j)) continue
-        rows.push({ type: 'entry', entry: entries[j], index: j })
+        if (!hidden.has(j)) rows.push({ type: 'entry', entry: entries[j], index: j })
       }
       i = span.range.end
       continue
     }
-    if (span && span.expanded && span.kind.type === 'verb') {
-      // collapse header + all claimed entries (transparent keep their rows too)
-      rows.push(headerRowFor(span, 'verb', () => verbGroupLabel(entries, span, showThinking), headerCache))
-      for (let j = span.range.start; j < span.range.end; j++) {
-        rows.push({ type: 'entry', entry: entries[j], index: j })
-      }
-      i = span.range.end
-      continue
-    }
-    if (span && span.expanded && span.kind.type === 'truncation') {
-      const kind = span.kind
+    if (span && span.expanded) {
       rows.push(
-        headerRowFor(
-          span,
-          'truncation',
-          () => truncationHeaderLabel(entries, span, kind, showThinking),
-          headerCache,
-        ),
+        headerRowFor(span, () => verbGroupLabel(entries, span, showThinking, scope), headerCache),
       )
       for (let j = span.range.start; j < span.range.end; j++) {
         rows.push({ type: 'entry', entry: entries[j], index: j })
@@ -647,7 +682,6 @@ export function projectDisplayRows(
       i = span.range.end
       continue
     }
-
     if (!hidden.has(i)) {
       rows.push({ type: 'entry', entry: entries[i], index: i })
     }
@@ -658,9 +692,7 @@ export function projectDisplayRows(
 
 /**
  * Find group span containing entry index (if any).
- * Spans are sorted by `range.start` (scanGroups sorts before returning),
- * so this is a binary search — called once per displayed row, linear
- * find would be O(rows × spans) per flush.
+ * Spans are sorted by `range.start`, so this is a binary search.
  */
 export function spanContaining(
   spans: GroupSpan[],
@@ -684,15 +716,9 @@ export function spanContaining(
 }
 
 /**
- * Cheap per-entry signature of the fields that participate in grouping
- * (verb runs / truncation folds). Text CONTENT is deliberately excluded:
- * streaming appends change only the text, and running/streaming entries
- * never participate in grouping — so the signature is stable across
- * streaming flushes and scanGroups can be skipped (Scrollback caches
- * spans keyed on this signature).
- *
- * The id fold (length + first/last chars + djb2) detects insertion,
- * removal and reorder of entries that carry identical grouping flags.
+ * Cheap per-entry signature of the fields that participate in grouping.
+ * Text CONTENT is deliberately excluded: streaming appends change only the
+ * text, and running/streaming entries never participate in grouping.
  */
 export function groupingSignature(entries: ScrollEntry[]): string {
   const parts = new Array<string>(entries.length + 1)
@@ -707,8 +733,7 @@ export function groupingSignature(entries: ScrollEntry[]): string {
     let s = `${e.kind[0]}${id.length}${id[0] ?? ''}${id[id.length - 1] ?? ''}${h.toString(36)}`
     switch (e.kind) {
       case 'tool':
-        // kindName 决定 verbGroupKind/labelKind 的归类（tool_call_update 后到
-        // 的 _meta 会改写它），漏进签名会让 span 缓存停留在旧分组上。
+        // kindName 决定 verbGroupKind 的归类，漏进签名会让 span 缓存停留在旧分组上。
         s += `${e.expanded ? '1' : '0'}${e.status ?? ''}|${
           typeof e.kindName === 'string' ? e.kindName : ''
         }`
@@ -731,9 +756,8 @@ export function groupingSignature(entries: ScrollEntry[]): string {
 // ── 显示行辅助（主 scrollback 与迷你 scrollback 共用）──────────────────
 
 /**
- * TUI gap rule (recompute_gap_after): gap=0 between consecutive collapsed
- * groupable rows; gap=1 otherwise. Dense packable = tool/thought/subagent/
- * group_header one-liners that participate in dense runs.
+ * TUI gap rule: 折叠成组后组内相邻行不加空行。Dense packable = 参与分组的
+ * 单行工具 / 思考 / 分组头。
  */
 export function isDensePackable(e: ScrollEntry): boolean {
   if (e.kind === 'group_header') return true

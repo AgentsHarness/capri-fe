@@ -63,3 +63,18 @@ export function toolFamily(kindName?: string): ToolFamily {
 export function isEditToolKind(kindName?: string): boolean {
   return toolFamily(kindName) === 'edit'
 }
+
+/**
+ * 编辑族里「新建文件」的子类（write / create …）。行头与聚合头用
+ * `Creating` / `Created` 区分于就地修改的 `Edit` / `Edited`。
+ */
+export function isCreateToolKind(kindName?: string): boolean {
+  const k = (kindName || '').toLowerCase().replace(/[\s-]+/g, '_')
+  return (
+    k === 'write' ||
+    k === 'create' ||
+    k === 'write_file' ||
+    k === 'create_file' ||
+    k === 'new_file'
+  )
+}

@@ -22,24 +22,9 @@ function verbRow(over: Partial<GroupHeaderViewProps['row']> = {}): GroupHeaderVi
       expanded: false,
       anchorId: 'r1',
     },
-    label: { text: 'Read 2 files', running: false, failed: false },
+    label: { text: 'Explored 2 files', running: false, failed: false },
     family: 'verb',
     ...over,
-  }
-}
-
-function truncRow(): GroupHeaderViewProps['row'] {
-  return {
-    type: 'group_header',
-    id: 'gh_t1',
-    span: {
-      range: { start: 0, end: 5 },
-      kind: { type: 'truncation', participants: 5, hidden: 3 },
-      expanded: false,
-      anchorId: 't1',
-    },
-    label: { text: 'Ran 2 commands', running: false, failed: false },
-    family: 'truncation',
   }
 }
 
@@ -53,18 +38,25 @@ describe('GroupHeaderView', () => {
     const { container } = render(
       <GroupHeaderView row={verbRow()} selected={false} pendingFreeze={false} now={0} onToggle={onToggle} />,
     )
-    expect(screen.getByText('Read 2 files')).toBeInTheDocument()
+    expect(screen.getByText('Explored 2 files')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button'))
     expect(onToggle).toHaveBeenCalledTimes(1)
     expect(useChatStore.getState().selectEntry).toHaveBeenCalledWith('gh_r1')
     void container
   })
 
-  it('truncation 组头渲染 label', () => {
-    render(
-      <GroupHeaderView row={truncRow()} selected={false} pendingFreeze={false} now={0} onToggle={vi.fn()} />,
+  it('展开态组头用 collapse 语义（⌄ 只在选中/悬停时出现）', () => {
+    const { container } = render(
+      <GroupHeaderView
+        row={verbRow({ span: { ...verbRow().span, expanded: true } })}
+        selected={false}
+        pendingFreeze={false}
+        now={0}
+        onToggle={vi.fn()}
+      />,
     )
-    expect(screen.getByText('Ran 2 commands')).toBeInTheDocument()
+    expect(screen.getByText('Explored 2 files')).toBeInTheDocument()
+    void container
   })
 
   it('label 颜色跟随 failed / running', () => {

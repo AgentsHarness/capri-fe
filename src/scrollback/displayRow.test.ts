@@ -54,26 +54,26 @@ describe('displayRowToEntry', () => {
     })
   })
 
-  it('truncation header：count = hidden，无 verbRun', () => {
+  it('单成员 verb 组头：count = members，无 group_header 的 truncation 分支', () => {
     const row: DisplayRow = {
       type: 'group_header',
       id: 'gh_c',
-      family: 'truncation',
+      family: 'verb',
       span: {
-        range: { start: 0, end: 12 },
-        kind: { type: 'truncation', participants: 12, hidden: 7 },
+        range: { start: 0, end: 1 },
+        kind: { type: 'verb', members: 1 },
         expanded: false,
         anchorId: 'c',
       },
-      label: { text: '7 more', running: false, failed: false },
+      label: { text: 'Explored a.py', running: false, failed: false },
     }
     const e = displayRowToEntry(row)
     expect(e).toMatchObject({
       kind: 'group_header',
-      count: 7,
+      count: 1,
       collapse: false,
-      label: '7 more',
+      label: 'Explored a.py',
     })
-    expect('verbRun' in e && (e as { verbRun?: unknown }).verbRun).toBeUndefined()
+    expect((e as { verbRun?: { verb?: string } }).verbRun?.verb).toBe('Explored a.py')
   })
 })

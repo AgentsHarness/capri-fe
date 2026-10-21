@@ -314,7 +314,13 @@ export type ScrollEntry =
       collapse?: boolean
       label?: string
       /** Verb-run aggregated header — drives running/error accents. */
-      verbRun?: { running?: boolean; failed?: boolean; verb?: string }
+      verbRun?: {
+        running?: boolean
+        failed?: boolean
+        verb?: string
+        /** 段内编辑的增删行数（聚合头右侧彩色 `+N -M`）。 */
+        diffstat?: { insertions: number; deletions: number }
+      }
       msgSeq?: number
     }
 

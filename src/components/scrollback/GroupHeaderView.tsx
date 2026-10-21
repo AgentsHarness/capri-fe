@@ -109,6 +109,15 @@ export const GroupHeaderView = memo(function GroupHeaderView({
         >
           {row.label.text}
         </span>
+        {/* 官方 density 预览：聚合头右侧的彩色 diffstat（`+1 -1`）。
+            增删都为 0（纯新建空文件）时不摆一对 0。 */}
+        {row.label.diffstat &&
+        (row.label.diffstat.insertions > 0 || row.label.diffstat.deletions > 0) ? (
+          <span className="shrink-0 font-mono text-[12px] leading-[1.35]">
+            <span className="text-gn-green">+{row.label.diffstat.insertions}</span>{' '}
+            <span className="text-gn-red">-{row.label.diffstat.deletions}</span>
+          </span>
+        ) : null}
       </button>
     </EntryShell>
   )

@@ -14,7 +14,7 @@ export function displayRowToEntry(row: DisplayRow): ScrollEntry {
     count:
       row.span.kind.type === 'verb'
         ? row.span.kind.members
-        : row.span.kind.hidden,
+        : 0,
     collapse: row.span.expanded,
     label: row.label.text,
     verbRun:
@@ -23,6 +23,7 @@ export function displayRowToEntry(row: DisplayRow): ScrollEntry {
             running: row.label.running,
             failed: row.label.failed,
             verb: row.label.text,
+            ...(row.label.diffstat ? { diffstat: row.label.diffstat } : {}),
           }
         : undefined,
   }
