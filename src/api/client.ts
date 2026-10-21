@@ -114,6 +114,7 @@ export type {
   ExtensionsPayload,
   SettingsPayload,
   SettingsPatch,
+  ToolCallDensity,
   TerminalOutput,
 } from './transport'
 export type { ExtensionHook, ExtensionPlugin, ExtensionSkill } from './types'

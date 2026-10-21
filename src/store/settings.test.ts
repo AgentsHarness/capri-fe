@@ -98,6 +98,37 @@ describe('applyUiSettings / 同步访问器', () => {
     expect(cb).toHaveBeenCalledTimes(1)
   })
 
+  it('tool_call_density：缺省 / 未知值回落默认档，档位门槛正确', async () => {
+    const mod = await freshSettings()
+    mod.applyUiSettings({})
+    expect(mod.toolCallDensity()).toBe('compact-all-grouped')
+    expect(mod.densityGroupsEdits()).toBe(true)
+    expect(mod.densityGroupsCommands()).toBe(true)
+    expect(mod.densityCollapsesEdits()).toBe(true)
+
+    mod.applyUiSettings({ tool_call_density: 'detailed' })
+    expect(mod.toolCallDensity()).toBe('detailed')
+    expect(mod.densityGroupsEdits()).toBe(false)
+    expect(mod.densityGroupsCommands()).toBe(false)
+    expect(mod.densityCollapsesEdits()).toBe(false)
+    expect(mod.densityCollapsesCommands()).toBe(false)
+
+    // 未知值（旧 host / 手改坏的配置）按默认档处理
+    mod.applyUiSettings({ tool_call_density: 'verbose' })
+    expect(mod.toolCallDensity()).toBe('compact-all-grouped')
+
+    mod.applyUiSettings({ tool_call_density: 'compact-shells' })
+    expect(mod.densityCollapsesCommands()).toBe(true)
+    expect(mod.densityCollapsesEdits()).toBe(false)
+    mod.applyUiSettings({ tool_call_density: 'compact-ungrouped' })
+    expect(mod.densityCollapsesEdits()).toBe(true)
+    expect(mod.densityGroupsEdits()).toBe(false)
+    // grouped 起编辑与命令都成组（差别在是否与探查段并组，见 groupScope）
+    mod.applyUiSettings({ tool_call_density: 'compact-grouped' })
+    expect(mod.densityGroupsEdits()).toBe(true)
+    expect(mod.densityGroupsCommands()).toBe(true)
+  })
+
   it('notificationsSettings 容错', async () => {
     const mod = await freshSettings()
     mod.applyUiSettings({ notifications: {} })

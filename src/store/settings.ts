@@ -1,5 +1,10 @@
 import { transport } from '../api/client'
-import type { SettingsPayload } from '../api/transport'
+import {
+  TOOL_CALL_DENSITY_CHOICES,
+  TOOL_CALL_DENSITY_DEFAULT,
+  type SettingsPayload,
+  type ToolCallDensity,
+} from '../api/transport'
 
 /**
  * `[ui]` section of GET /api/settings — cached module-wide and shared by
@@ -135,6 +140,46 @@ export function uiBool(key: string, dflt: boolean): boolean {
 export function uiString(key: string): string | undefined {
   const v = uiSettings()[key]
   return typeof v === 'string' && v ? v : undefined
+}
+
+const DENSITY_IDS: readonly ToolCallDensity[] = TOOL_CALL_DENSITY_CHOICES.map(
+  (c) => c.id,
+)
+
+/**
+ * `[ui] tool_call_density` — the TUI `/density` level. Unknown / missing
+ * values fall back to the TUI default (`compact-all-grouped`); the retired
+ * `group_tool_verbs` / `collapsed_edit_blocks` migration is the TUI's job,
+ * so the FE reads the level verbatim rather than re-deriving it.
+ */
+export function toolCallDensity(): ToolCallDensity {
+  const v = uiSettings().tool_call_density
+  return DENSITY_IDS.find((id) => id === v) ?? TOOL_CALL_DENSITY_DEFAULT
+}
+
+/** Level index, 0 = detailed … 4 = compact-all-grouped. Higher = groups more. */
+export function toolCallDensityRank(d: ToolCallDensity = toolCallDensity()): number {
+  return DENSITY_IDS.indexOf(d)
+}
+
+/** grouped 起编辑段成组（grouped 各自成组，compact 与探查段合并）。 */
+export function densityGroupsEdits(d: ToolCallDensity = toolCallDensity()): boolean {
+  return toolCallDensityRank(d) >= DENSITY_IDS.indexOf('compact-grouped')
+}
+
+/** grouped 起连续 shell 命令折成 "Ran N commands"。 */
+export function densityGroupsCommands(d: ToolCallDensity = toolCallDensity()): boolean {
+  return densityGroupsEdits(d)
+}
+
+/** Whether edit rows start folded (one-line +N/−M) instead of showing diffs. */
+export function densityCollapsesEdits(d: ToolCallDensity = toolCallDensity()): boolean {
+  return toolCallDensityRank(d) >= DENSITY_IDS.indexOf('compact-ungrouped')
+}
+
+/** Whether shell rows start folded (one-line) instead of previewing output. */
+export function densityCollapsesCommands(d: ToolCallDensity = toolCallDensity()): boolean {
+  return toolCallDensityRank(d) >= DENSITY_IDS.indexOf('compact-shells')
 }
 
 /** Replace the cached `[ui]` section (after GET/POST /api/settings). */

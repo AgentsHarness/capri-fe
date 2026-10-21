@@ -24,6 +24,7 @@ export {
   sessionModeFlags,
   resolveDisplayModeFlags,
   collapsedEditBlocks,
+  collapsedCommandBlocks,
   applyCollapsedEditBlocksFlip,
   applyCollapsedEditBlocksFromCache,
   permissionSeedMeta,

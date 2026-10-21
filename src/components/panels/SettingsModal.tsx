@@ -10,6 +10,7 @@ import {
 import { ChevronRight, X } from 'lucide-react'
 import { useChatStore } from '../../store/chat'
 import { transport, type SettingsPatch, type SettingsPayload } from '../../api/client'
+import { TOOL_CALL_DENSITY_CHOICES, TOOL_CALL_DENSITY_DEFAULT } from '../../api/transport'
 import {
   applyCollapsedEditBlocksFromCache,
   bumpReseedGen,
@@ -61,6 +62,7 @@ const CONSUMED_UI_KEYS = new Set([
   'page_flip_on_send',
   'remember_tool_approvals',
   'follow_up_behavior',
+  'tool_call_density',
 ])
 
 const PERM_CHOICES: { id: PermissionModeLabel; label: string }[] = [
@@ -74,6 +76,12 @@ const FOLLOW_UP_CHOICES: { id: 'queue' | 'steer'; label: string }[] = [
   { id: 'queue', label: '排队' },
   { id: 'steer', label: '引导' },
 ]
+
+/** TUI `/density` 五档（`[ui] tool_call_density`）。 */
+const DENSITY_CHOICES = TOOL_CALL_DENSITY_CHOICES.map((c) => ({
+  id: c.id,
+  label: c.label,
+}))
 
 /** 审批弹窗默认选中行四选一（canonical 与 TUI 一致；顺序对齐设置面板与
  *  审批弹窗的渲染顺序 YOLO → allow-always → allow-once → reject）。 */
@@ -663,6 +671,11 @@ function ConsumedSettings({
 }) {
   const perm = effectivePermissionLabelFromUi(ui)
   const followUp = ui?.follow_up_behavior === 'steer' ? 'steer' : 'queue'
+  const density =
+    TOOL_CALL_DENSITY_CHOICES.find((c) => c.id === ui?.tool_call_density)?.id ??
+    TOOL_CALL_DENSITY_DEFAULT
+  const densityDesc =
+    TOOL_CALL_DENSITY_CHOICES.find((c) => c.id === density)?.desc ?? ''
   return (
     <section>
       <SettingRow
@@ -689,6 +702,19 @@ function ConsumedSettings({
           value={followUp}
           disabled={disabled}
           onPick={(id) => void onPatch({ follow_up_behavior: id })}
+        />
+      </SettingRow>
+      <SettingRow
+        label="工具调用密度"
+        code="tool_call_density"
+        hint={`滚动区里每条工具调用显示多少、怎么分组。${densityDesc}`}
+        stackOnMobile
+      >
+        <ChoicePills
+          choices={DENSITY_CHOICES}
+          value={density}
+          disabled={disabled}
+          onPick={(id) => void onPatch({ tool_call_density: id })}
         />
       </SettingRow>
       {BOOL_ROWS.map((row) => {

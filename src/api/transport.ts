@@ -117,6 +117,60 @@ export type ExtensionsPayload = {
 
 
 /**
+ * `[ui] tool_call_density` levels, most to least detailed（读取 / 搜索 /
+ * 列目录这类探查工具在每一档都折成 `Explored …` 组）：
+ *  - detailed：编辑带 diff，命令带输出；编辑段、命令段逐条显示；
+ *  - compact-shells（diff focus）：编辑带 diff，命令收成一行；
+ *  - compact-ungrouped（balanced）：编辑与命令都收成一行；
+ *  - compact-grouped（grouped）：编辑段、命令段各自成组，不互相并组；
+ *  - compact-all-grouped（compact，默认）：所有连续工具调用合成一组。
+ */
+export type ToolCallDensity =
+  | 'detailed'
+  | 'compact-shells'
+  | 'compact-ungrouped'
+  | 'compact-grouped'
+  | 'compact-all-grouped'
+
+export const TOOL_CALL_DENSITY_DEFAULT: ToolCallDensity = 'compact-all-grouped'
+
+/**
+ * TUI `/density` 五档（顺序 = 从最详细到最紧凑）。label / desc 与 TUI 的
+ * /density 菜单同一口径：该档的编辑 / 命令展开与分组范围。
+ */
+export const TOOL_CALL_DENSITY_CHOICES: {
+  id: ToolCallDensity
+  label: string
+  desc: string
+}[] = [
+  {
+    id: 'detailed',
+    label: '详细',
+    desc: '编辑带 diff，命令带输出',
+  },
+  {
+    id: 'compact-shells',
+    label: 'diff focus',
+    desc: '编辑带 diff，命令收成一行',
+  },
+  {
+    id: 'compact-ungrouped',
+    label: 'balanced',
+    desc: '编辑与命令都收成一行，不分组',
+  },
+  {
+    id: 'compact-grouped',
+    label: 'grouped',
+    desc: '编辑段与命令段各自成组',
+  },
+  {
+    id: 'compact-all-grouped',
+    label: 'compact（默认）',
+    desc: '所有连续工具调用合并成一组',
+  },
+]
+
+/**
  * GET / POST /api/settings — safe config.toml subset. `toolset` carries
  * ONLY [toolset.ask_user_question].timeout_enabled / timeout_secs (the
  * host filters the rest of the [toolset] subtree out of the payload).
@@ -146,6 +200,9 @@ export type SettingsPatch = {
   /** TUI [ui].follow_up_behavior — 'steer' lets the agent promote queued
    *  follow-ups into mid-turn interjections at safe gaps. */
   follow_up_behavior?: 'queue' | 'steer'
+  /** TUI [ui].tool_call_density — how much of each tool call the transcript
+   *  shows; also gates the FE's grouping / edit-expansion defaults. */
+  tool_call_density?: ToolCallDensity
   toolset?: {
     ask_user_question?: {
       timeout_enabled?: boolean

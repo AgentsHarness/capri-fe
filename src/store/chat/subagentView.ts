@@ -10,8 +10,8 @@ import { formatElapsed, imageSrc, toolVerb } from './format'
 import { extractTarget, toolCallIdOf, toolKindName } from './tools'
 import { liteMark } from './envelopeParse'
 import { turnEndMarkerText, wireElapsedMs } from './turnStatus'
-import { collapsedEditBlocks } from './modeFlags'
-import { isEditToolKind } from '../../theme/toolFamily'
+import { collapsedCommandBlocks, collapsedEditBlocks } from './modeFlags'
+import { isEditToolKind, toolFamily } from '../../theme/toolFamily'
 
 export function sealSubagentStreaming(items: ScrollEntry[]): ScrollEntry[] {
   let changed = false
@@ -395,7 +395,11 @@ export function subagentToolItem(
       ? isEditToolKind(kindName) && !isEditToolKind(prev.kindName)
         ? !collapsedEditBlocks()
         : prev.expanded
-      : isEditToolKind(kindName) && !collapsedEditBlocks(),
+      : isEditToolKind(kindName)
+        ? !collapsedEditBlocks()
+        : toolFamily(kindName) === 'execute'
+          ? !collapsedCommandBlocks()
+          : false,
     raw: tc,
     // 活动起点（epoch ms）——主 scrollback 相位计时器同款；运行中才打。
     ...(running && !prev ? { startedAt: Date.now() } : {}),

@@ -308,6 +308,27 @@ describe('SettingsModal', () => {
     expect(queueBtn().className).toContain('text-gn-green')
   })
 
+  it('工具调用密度：默认档高亮；点选其他档 patch tool_call_density 并回显', async () => {
+    openModal()
+    render(<SettingsModal />)
+    await waitFor(() => expect(screen.getByText('工具调用密度')).not.toBeNull())
+    const compact = () => screen.getByText('compact（默认）')
+    const detailed = () => screen.getByText('详细')
+    // 未配置 → 默认档 compact-all-grouped 高亮
+    expect(compact().className).toContain('text-gn-green')
+    expect(detailed().className).not.toContain('text-gn-green')
+    // 点已选中项不重复请求
+    fireEvent.click(compact())
+    expect(transport.updateSettings).not.toHaveBeenCalled()
+    fireEvent.click(detailed())
+    await waitFor(() => {
+      expect(transport.updateSettings).toHaveBeenCalledWith({ tool_call_density: 'detailed' })
+    })
+    await waitFor(() => expect(detailed().className).toContain('text-gn-green'))
+    // hint 跟着选中档位的说明走
+    expect(screen.getByText(/编辑带 diff，命令带输出/)).toBeInTheDocument()
+  })
+
   it('加载失败 → 错误 + 重试', async () => {
     vi.mocked(transport.settings).mockRejectedValueOnce(new Error('net down')).mockResolvedValueOnce({
       ui: { ...uiData },

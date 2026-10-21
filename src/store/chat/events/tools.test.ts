@@ -56,6 +56,39 @@ function makeStore(seed?: Partial<ChatState>) {
 
 beforeEach(() => clearSuppressedTools())
 
+describe('usage 事件的会话归属', () => {
+  // 回合末的收尾 chunk 常晚于 turn_completed：busy 已清，若此时丢掉带
+  // sid 的 usage，顶栏会停在上一轮的数，与 /session-info 弹窗的权威值
+  // 分叉（实测 0500f：顶栏 113K vs 弹窗 115K）。
+  it('空闲期带当前 sid 的 live usage 仍写进 usage', () => {
+    const { state, feed } = makeStore({ conn: 'ready', statusText: '' })
+    feed({ type: 'usage', sessionId: 's1', used: 118_007 } as AcpEvent)
+    expect(state.usage).toEqual({ used: 118_007, size: undefined })
+  })
+
+  it('空闲期外来 sid 的 usage 被忽略', () => {
+    const { state, feed } = makeStore({ conn: 'ready', statusText: '' })
+    feed({ type: 'usage', sessionId: 'other', used: 1 } as AcpEvent)
+    expect(state.usage).toBeUndefined()
+  })
+
+  it('空闲期无 sid 的 usage 仍按 busy 防线丢弃', () => {
+    const { state, feed } = makeStore({ conn: 'ready', statusText: '', sessions: [] })
+    feed({ type: 'usage', used: 1 } as AcpEvent)
+    expect(state.usage).toBeUndefined()
+  })
+
+  it('loading 期间无 sid 的回放 usage 照常应用', () => {
+    const { state, feed } = makeStore({
+      conn: 'ready',
+      statusText: '',
+      historyLoading: true,
+    })
+    feed({ type: 'usage', used: 5, size: 10 } as AcpEvent)
+    expect(state.usage).toEqual({ used: 5, size: 10 })
+  })
+})
+
 describe('tool_call_update 带 id 走 toolIndex', () => {
   it('带 id 的 update 走 toolIndex 正常更新', () => {
     const { state, feed, tool } = makeStore()

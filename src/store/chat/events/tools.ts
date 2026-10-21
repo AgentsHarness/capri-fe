@@ -2,9 +2,10 @@ import type { AcpEvent, ScrollEntry, ToolCall } from '../../../api/types'
 import type { ChatState, SetState } from '../types'
 import { nid } from '../ids'
 import {
+  collapsedCommandBlocks,
   collapsedEditBlocks,
 } from '../modeFlags'
-import { isEditToolKind } from '../../../theme/toolFamily'
+import { isEditToolKind, toolFamily } from '../../../theme/toolFamily'
 import { planTodos, toolVerb } from '../format'
 import {
   absorbBashOutputIntoBgTask,
@@ -152,6 +153,7 @@ export function handleToolEvent(
         }
 
         const isBash = isBashModeTool(tc)
+        const isExec = toolFamily(kindName) === 'execute'
         const entry: ScrollEntry = {
           id,
           kind: 'tool',
@@ -161,10 +163,18 @@ export function handleToolEvent(
           status,
           kindName,
           detail: tc.title as string | undefined,
-          // collapsed_edit_blocks=false (default): edit diffs expanded.
-          // TUI bash_mode: direct bash execute block expands so command output is immediately visible.
-          expanded: isBash || (isEditToolKind(kindName) && !collapsedEditBlocks()),
-          displayMode: isBash ? 'expanded' : undefined,
+          // 密度决定编辑 / shell 的初始展开态：detailed 显示 diff 与命令输出，
+          // compact-shells 起命令收成一行，compact-ungrouped 起编辑收成
+          // +N/−M 一行。直连 bash（`!` 命令）是用户主动执行的，恒显示全量
+          // 输出；普通命令展开时是行内截断预览。
+          expanded: isEditToolKind(kindName)
+            ? !collapsedEditBlocks()
+            : isBash
+              ? true
+              : isExec
+                ? !collapsedCommandBlocks()
+                : false,
+          displayMode: isBash ? ('expanded' as const) : undefined,
           raw: tc,
           // Activity start for the turn status line's phase timer (TUI
           // tracker started_at); replay/completed snapshots omit it.
@@ -307,6 +317,7 @@ export function handleToolEvent(
               raw: merged,
               finishedAt,
               ...liteAfterLiveBody(e, merged),
+              // 直连 bash 恒显示全量输出（用户主动执行）；普通命令跟着密度。
               ...(isBash
                 ? { expanded: true, displayMode: 'expanded' as const }
                 : becameEdit
@@ -367,9 +378,14 @@ export function handleToolEvent(
         if (ev.sessionId && ev.sessionId !== get().sessionId) break
         // 同 busy 防线（错标/缺省 sid 的 usage 会把别的会话的 token 数
         // 画在已完成会话的 context chip 上）：当前视图没有 live 回合时
-        // 不接受。回放（loadHistory / loadMoreHistory）的 usage 无 sid 且
-        // 属于正在加载的会话本身，照常应用（历史页只在新页应用 usage）。
+        // 不接受无 sid 的 usage。回放（loadHistory / loadMoreHistory）的
+        // usage 无 sid 且属于正在加载的会话本身，照常应用（历史页只在新
+        // 页应用 usage）。显式带 sid 且等于当前会话的 live 值不受此限：
+        // 回合末（turn_completed 之后的收尾 chunk）busy 已清，丢掉它会让
+        // 顶栏停在上一轮的数，而 /session-info 弹窗读的是同一时刻的
+        // 权威值——两处就对不上了。
         if (
+          !ev.sessionId &&
           !get().historyLoading &&
           !get().historyLoadingMore &&
           !busyPlausibleForView(get())

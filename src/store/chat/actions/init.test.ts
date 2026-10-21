@@ -49,6 +49,11 @@ vi.mock('../loadHistory', async (importOriginal) => ({
 vi.mock('../../settings', () => ({
   onUiSettingsReady: vi.fn(),
   onUiSettingsChange: vi.fn(() => () => {}),
+  uiString: vi.fn(() => undefined),
+  uiBool: vi.fn(() => false),
+  uiSettings: vi.fn(() => ({})),
+  densityCollapsesEdits: vi.fn(() => false),
+  densityCollapsesCommands: vi.fn(() => false),
 }))
 
 describe('initChat 多会话与双 FE 全局模式同步', () => {

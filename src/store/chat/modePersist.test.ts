@@ -6,7 +6,11 @@ vi.mock('../../api/client', () => ({
 vi.mock('../settings', () => ({
   ensureUiSettings: vi.fn(),
   uiBool: vi.fn(() => false),
+  uiString: vi.fn(() => undefined),
+  uiSettings: vi.fn(() => ({})),
   uiSettingsLoaded: vi.fn(),
+  densityCollapsesEdits: vi.fn(() => false),
+  densityCollapsesCommands: vi.fn(() => false),
 }))
 
 import {
@@ -33,7 +37,7 @@ import {
   syncDefaultModeFlagsFromUi,
   PLAN_EXIT_GRACE_MS,
 } from './modePersist'
-import { uiBool } from '../settings'
+import { densityCollapsesEdits } from '../settings'
 
 describe('normalizeModeFlags', () => {
   it('只保留有效写入；默认 ask 记录归一为空', () => {
@@ -188,8 +192,9 @@ describe('applyCollapsedEditBlocksFlip / FromCache', () => {
     expanded,
   })
 
-  it('FromCache 依据 uiBool 联动（先跑：依赖模块级 lastApplied 初始 false）', () => {
-    vi.mocked(uiBool).mockReturnValue(true)
+  it('FromCache 依据密度联动（先跑：依赖模块级 lastApplied 初始 false）', () => {
+    // 密度档说「编辑收成一行」；模块默认（导入时）是 false。
+    vi.mocked(densityCollapsesEdits).mockReturnValue(true)
     let state: { entries: Array<Record<string, unknown>>; subagentViews: Record<string, never>; expandedGroups: Set<string> } = {
       entries: [editEntry('x', true)],
       subagentViews: {},
@@ -203,6 +208,7 @@ describe('applyCollapsedEditBlocksFlip / FromCache', () => {
     expect(state.entries[0]).toMatchObject({ expanded: false })
     // 再次调用不重复
     applyCollapsedEditBlocksFromCache(set as never)
+    vi.mocked(densityCollapsesEdits).mockReturnValue(false)
   })
 
   it('切换策略时重物化仍停留在旧默认的 edit 行', () => {

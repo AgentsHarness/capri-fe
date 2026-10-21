@@ -6,8 +6,14 @@ import {
   saveStr,
 } from '../../lib/storage'
 import { transport } from '../../api/client'
-import { ensureUiSettings, refreshUiSettings, uiBool, uiSettingsLoaded } from '../settings'
-import { isEditToolKind } from '../../theme/toolFamily'
+import {
+  densityCollapsesCommands,
+  densityCollapsesEdits,
+  ensureUiSettings,
+  refreshUiSettings,
+  uiSettingsLoaded,
+} from '../settings'
+import { isEditToolKind, toolFamily } from '../../theme/toolFamily'
 import type { ChatState, ModeFlags, SetState } from './types'
 import { KEY } from '../../lib/keys'
 
@@ -300,87 +306,140 @@ export function resolveDisplayModeFlags(
   return snap
 }
 
-/** TUI [ui] collapsed_edit_blocks — read from the shared settings cache. */
+/**
+ * 编辑行默认是否折叠（一行 +N/−M）。只看 `[ui] tool_call_density`：
+ * detailed / diff focus 显示 diff，balanced 起收成一行。
+ */
 export function collapsedEditBlocks(): boolean {
-  return uiBool('collapsed_edit_blocks', false)
+  return densityCollapsesEdits()
+}
+
+/** shell 命令行默认是否收起（不展开输出预览）。 */
+export function collapsedCommandBlocks(): boolean {
+  return densityCollapsesCommands()
 }
 
 /**
- * Last rematerialized flag. Starts as the `uiBool` default (false) so a
- * history replay that lands before GET /api/settings can be flipped once
- * the cache arrives (TUI `apply_collapsed_edit_blocks_flip`).
+ * 上次按密度重排时用的初值。启动时读缓存（GET /api/settings 往往晚于历史
+ * 回放），缓存到达后 `applyCollapsedEditBlocksFromCache` 再按实际档位翻转。
  */
-let lastAppliedCollapsedEditBlocks = false
+let lastAppliedCollapsedEdits = collapsedEditBlocks()
+let lastAppliedCollapsedCommands = collapsedCommandBlocks()
 
-function remapEditExpanded(
+/** 密度切换时要重排的一类工具行（编辑族 / 命令族）。 */
+type RemapTarget = 'edit' | 'command'
+
+function remapTarget(e: ChatState['entries'][number]): RemapTarget | null {
+  if (e.kind !== 'tool') return null
+  if (isEditToolKind(e.kindName)) return 'edit'
+  if (toolFamily(e.kindName) === 'execute') return 'command'
+  return null
+}
+
+/** 工具行的窄类型（重排按 kind === 'tool' 过滤后使用）。 */
+type ToolRow = Extract<ChatState['entries'][number], { kind: 'tool' }>
+
+function remapCollapsedRows(
   entries: ChatState['entries'],
+  target: RemapTarget,
   oldExpanded: boolean,
   newExpanded: boolean,
 ): { entries: ChatState['entries']; changed: boolean } {
   let changed = false
   const next = entries.map((e) => {
-    if (e.kind !== 'tool' || !isEditToolKind(e.kindName)) return e
+    if (e.kind !== 'tool' || remapTarget(e) !== target) return e
+    const row: ToolRow = e
     // Still on the old policy default — a user ←/→ / click away from it
     // survives (TUI: gesture is indistinguishable from "folded back to
     // the old default" and those do flip).
-    if (!!e.expanded !== oldExpanded) return e
+    if (!!row.expanded !== oldExpanded) return row
     changed = true
     // displayMode 与 expanded 布尔同步镜像（toolDisplayMode 读侧优先
-    // displayMode，只写布尔会把钉在三态档上的行洗错）。
+    // displayMode，只写布尔会把钉在三态档上的行洗错）。命令行展开到
+    // 行内截断预览即可（bash_mode 的全量正文保留）。
     return {
-      ...e,
+      ...row,
       expanded: newExpanded,
-      displayMode: newExpanded
-        ? ('expanded' as const)
-        : ('collapsed' as const),
+      displayMode: !newExpanded
+        ? ('collapsed' as const)
+        : target === 'command' && row.displayMode !== 'expanded'
+          ? ('truncated' as const)
+          : ('expanded' as const),
     }
   })
   return { entries: changed ? next : entries, changed }
 }
 
 /**
- * TUI `apply_collapsed_edit_blocks_flip`: rematerialize Edit rows still
- * sitting on the old policy default. Does not merge / unmerge already
- * landed rows (TUI tracker: ingestion-time only).
+ * 密度切换后重排仍停留在旧默认上的编辑 / 命令行（TUI
+ * `apply_collapsed_edit_blocks_flip` 的扩展）：用户显式展开或折起的行
+ * 不动；已经落地的同文件编辑合并不拆（合并在写入时就决定了）。
  */
-export function applyCollapsedEditBlocksFlip(
+export function applyDensityFlip(
   set: SetState,
-  oldFlag: boolean,
-  newFlag: boolean,
+  targets: Array<{ target: RemapTarget; oldFlag: boolean; newFlag: boolean }>,
 ): void {
-  if (oldFlag === newFlag) return
-  lastAppliedCollapsedEditBlocks = newFlag
-  const oldExpanded = !oldFlag
-  const newExpanded = !newFlag
+  const flips = targets.filter((t) => t.oldFlag !== t.newFlag)
+  if (flips.length === 0) return
   set((s) => {
-    const main = remapEditExpanded(s.entries, oldExpanded, newExpanded)
+    let entries = s.entries
+    let mainChanged = false
+    for (const f of flips) {
+      const r = remapCollapsedRows(entries, f.target, !f.oldFlag, !f.newFlag)
+      if (!r.changed) continue
+      entries = r.entries
+      mainChanged = true
+    }
     let views = s.subagentViews
     let viewsChanged = false
     for (const [sid, view] of Object.entries(s.subagentViews)) {
-      const r = remapEditExpanded(view.items, oldExpanded, newExpanded)
-      if (!r.changed) continue
+      let items = view.items
+      let viewChanged = false
+      for (const f of flips) {
+        const r = remapCollapsedRows(items, f.target, !f.oldFlag, !f.newFlag)
+        if (!r.changed) continue
+        items = r.entries
+        viewChanged = true
+      }
+      if (!viewChanged) continue
       if (!viewsChanged) {
         views = { ...s.subagentViews }
         viewsChanged = true
       }
-      views[sid] = { ...view, items: r.entries }
+      views[sid] = { ...view, items }
     }
-    if (!main.changed && !viewsChanged) return {}
+    if (!mainChanged && !viewsChanged) return {}
     return {
-      ...(main.changed ? { entries: main.entries } : {}),
+      ...(mainChanged ? { entries } : {}),
       ...(viewsChanged ? { subagentViews: views } : {}),
-      // Collapsed Edits join verb groups; drop stale group-expansion ids
-      // (TUI `clear_group_expansion` on the same flip).
+      // 分组范围随密度变化；丢弃旧档位下的展开锚点。
       expandedGroups: new Set(),
     }
   })
 }
 
-/** Rematerialize if the cached `[ui]` flag moved since last apply. */
+/** 旧入口（编辑族翻转），保留给既有调用方。 */
+export function applyCollapsedEditBlocksFlip(
+  set: SetState,
+  oldFlag: boolean,
+  newFlag: boolean,
+): void {
+  applyDensityFlip(set, [{ target: 'edit', oldFlag, newFlag }])
+}
+
+/** Rematerialize if the cached 密度 moved since last apply. */
 export function applyCollapsedEditBlocksFromCache(set: SetState): void {
-  const next = collapsedEditBlocks()
-  if (next === lastAppliedCollapsedEditBlocks) return
-  applyCollapsedEditBlocksFlip(set, lastAppliedCollapsedEditBlocks, next)
+  const nextEdits = collapsedEditBlocks()
+  const nextCommands = collapsedCommandBlocks()
+  const editFlip = { target: 'edit' as const, oldFlag: lastAppliedCollapsedEdits, newFlag: nextEdits }
+  const cmdFlip = {
+    target: 'command' as const,
+    oldFlag: lastAppliedCollapsedCommands,
+    newFlag: nextCommands,
+  }
+  lastAppliedCollapsedEdits = nextEdits
+  lastAppliedCollapsedCommands = nextCommands
+  applyDensityFlip(set, [editFlip, cmdFlip])
 }
 
 /**
