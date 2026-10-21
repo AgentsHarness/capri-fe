@@ -271,8 +271,11 @@ export function groupMemoryFiles(files: MemoryFileInfo[]): MemoryGroup[] {
     else if (f.path.includes('.grok/memory') || /(^|[\\/])MEMORY\.md$/i.test(f.path)) global.push(f)
     else session.push(f)
   }
+  // The generated index heads its scope's group; notes follow A–Z by label.
   const byLabel = (a: MemoryFileInfo, b: MemoryFileInfo) =>
-    memoryFileLabel(a).localeCompare(memoryFileLabel(b)) || a.path.localeCompare(b.path)
+    Number(b.generated) - Number(a.generated) ||
+    memoryFileLabel(a).localeCompare(memoryFileLabel(b)) ||
+    a.path.localeCompare(b.path)
   global.sort(byLabel)
   workspace.sort(byLabel)
   // Session logs: newest first, unknown timestamps last (TUI session.reverse()).

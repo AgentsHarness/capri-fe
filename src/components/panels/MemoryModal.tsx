@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, ChevronLeft, Copy, Diamond, FileText, RefreshCw, Search, Trash2, X } from 'lucide-react'
 import { transport } from '../../api/client'
+import { Markdown } from '../ui/Markdown'
 import { useChatStore } from '../../store/chat'
 import type { MemoryFileInfo } from '../../lib/memory'
 import {
@@ -76,13 +77,16 @@ export function MemoryModal() {
   const listRef = useRef<HTMLDivElement>(null)
 
   const files = listing?.files ?? NO_FILES
-  const activePath = selected ?? files[0]?.path
   const contents = useSearchContents(files, query, open)
   const shown = useMemo(
     () => filterMemoryFiles(files, query, contents),
     [files, query, contents],
   )
   const groups = useMemo(() => groupMemoryFiles(shown), [shown])
+  /** First row as displayed (the generated index heads its group), used as the
+   *  initial selection so the highlighted row is the top one on open. */
+  const firstPath = useMemo(() => groupMemoryFiles(files)[0]?.items[0]?.path, [files])
+  const activePath = selected ?? firstPath
   // TUI shows_notice: memory off, or on with nothing but the generated indexes.
   const stateNotice = useMemo(() => {
     if (!listing) return undefined
@@ -94,12 +98,12 @@ export function MemoryModal() {
   }, [listing, files])
 
   // Selection: keep the current note while it is still listed, otherwise start
-  // at the first row (TUI apply_listing → selected = 0).
+  // at the top row shown in the list (TUI apply_listing → selected = 0).
   useEffect(() => {
     if (!open) return
     if (selected && files.some((f) => f.path === selected)) return
-    setSelected(files[0]?.path)
-  }, [open, files, selected])
+    setSelected(firstPath)
+  }, [open, files, selected, firstPath])
 
   // Every open re-reads the listing (the TUI opens on a fresh
   // x.ai/memory/list); the cached listing stays painted while it lands.
@@ -690,9 +694,7 @@ function MemoryPreview({
             （文件过大，未完整读取，无法预览或删除）
           </div>
         ) : preview?.content ? (
-          <pre className="whitespace-pre-wrap break-words font-mono text-[11.5px] leading-[1.6] text-gn-fg2">
-            {preview.content}
-          </pre>
+          <Markdown source={preview.content} />
         ) : (
           <div className="flex h-full min-h-[160px] items-center justify-center text-[11.5px] text-gn-muted">
             无内容

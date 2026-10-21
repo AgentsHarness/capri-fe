@@ -47,7 +47,14 @@ beforeEach(() => {
   forgetMock.mockReset()
   readMock.mockReset()
   listMock.mockResolvedValue(listing())
-  readMock.mockResolvedValue({ content: TOPIC_BODY })
+  readMock.mockImplementation(async (path: string) => ({
+    content:
+      path === INDEX
+        ? '# Workspace memory index\n\n- `topics/deploy-conventions.md`\n'
+        : path === SESSION_LOG
+          ? '# 2026-09-18\n\n- 完成了部署\n'
+          : TOPIC_BODY,
+  }))
   useChatStore.setState({
     sessionId: 'sess-1',
     memoryOpen: true,
@@ -80,6 +87,17 @@ describe('MemoryModal', () => {
     fireEvent.click(screen.getByText('部署约定'))
     await waitFor(() => expect(screen.getByText(/eu-west 集群/)).toBeInTheDocument())
     expect(readMock).toHaveBeenCalledWith(TOPIC)
+  })
+
+  it('右侧预览按 Markdown 渲染（标题成 h1、列表成 li）', async () => {
+    const { container } = render(<MemoryModal />)
+    await waitFor(() => expect(screen.getByText('部署约定')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('部署约定'))
+    await waitFor(() => expect(screen.getByText(/eu-west 集群/)).toBeInTheDocument())
+    const body = container.querySelector('.gn-md')
+    expect(body).not.toBeNull()
+    expect(body?.querySelector('h1')?.textContent).toBe('部署约定')
+    expect(body?.querySelector('li')?.textContent).toContain('eu-west 集群')
   })
 
   it('删除需二次确认，并把预览正文的 BLAKE3 当凭据传出', async () => {
@@ -117,7 +135,7 @@ describe('MemoryModal', () => {
       expect(screen.getByText('This note changed since you opened it.')).toBeInTheDocument(),
     )
     // 笔记仍在列表里
-    expect(screen.getByText('部署约定')).toBeInTheDocument()
+    expect(screen.getAllByText('部署约定').length).toBeGreaterThan(0)
   })
 
   it('索引文件与会话日志的删除资格按 store 规则区分', async () => {

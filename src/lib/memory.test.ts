@@ -104,6 +104,19 @@ describe('labels and grouping', () => {
     expect(groups[2].items.map((f) => baseName(f.path))).toEqual(['new.md', 'old.md'])
   })
 
+  it('生成的索引排在所在分组的第一条，笔记按标签排序', () => {
+    const groups = groupMemoryFiles([
+      note({ path: '/ws/.grok/memory/topics/alpha.md', source: 'workspace' }),
+      note({ path: '/ws/.grok/memory/MEMORY.md', source: 'workspace', generated: true }),
+      note({ path: '/ws/.grok/memory/topics/zero.md', source: 'workspace' }),
+    ])
+    expect(groups[0].items.map((f) => baseName(f.path))).toEqual([
+      'MEMORY.md',
+      'alpha.md',
+      'zero.md',
+    ])
+  })
+
   it('source 缺失时按路径嗅探，无法分类的归入 Sessions（TUI `_ => session`）', () => {
     const groups = groupMemoryFiles([
       note({ path: '/x/.grok/memory/sessions/2026-09-18.md', source: '' }),
