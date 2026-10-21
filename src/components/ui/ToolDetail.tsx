@@ -4,7 +4,7 @@
  */
 
 import type { ToolCall } from '../../api/types'
-import { Fragment, useState } from 'react'
+import { Fragment, useMemo, useState } from 'react'
 import { Check, Circle, X } from 'lucide-react'
 import {
   EXEC_FIRST,
@@ -27,6 +27,10 @@ import { useChatStore } from '../../store/chat'
 import { IconGlyph } from './IconGlyph'
 import { fmtBytes } from '../../format'
 import { Ansi } from './Ansi'
+import {
+  highlightCommand,
+  type CommandTone,
+} from '../../scrollback/highlightCommand'
 
 /**
  * Full-viewer page size for long stdout / read / edit bodies.
@@ -35,6 +39,45 @@ import { Ansi } from './Ansi'
  * Keep small (≤250) so mobile DOM stays light — load-more adds one page at a time.
  */
 const VIEWER_PAGE_LINES = 200
+
+/** Command tones → theme tokens. Not the markdown Tokyo Night hexes
+ *  (those wash out on grokday). */
+const TONE_COLOR: Record<CommandTone, string> = {
+  keyword: 'var(--color-gn-purple)',
+  builtin: 'var(--color-gn-cyan)',
+  command: 'var(--color-gn-blue)',
+  flag: 'var(--color-gn-teal)',
+  operator: 'var(--color-gn-magenta)',
+  path: 'var(--color-gn-path)',
+  string: 'var(--color-gn-green)',
+  comment: 'var(--color-gn-muted)',
+  number: 'var(--color-gn-orange)',
+  variable: 'var(--color-gn-yellow)',
+}
+
+function ShellCommand({ command }: { command: string }) {
+  // Output streams re-render this row; the command string usually doesn't.
+  const spans = useMemo(() => highlightCommand(command), [command])
+  return (
+    <span className="min-w-0 flex-1 whitespace-pre-wrap break-all text-gn-fg">
+      {spans.map((span, i) =>
+        span.tone ? (
+          <span
+            key={i}
+            style={{
+              color: TONE_COLOR[span.tone],
+              ...(span.tone === 'comment' ? { fontStyle: 'italic' } : null),
+            }}
+          >
+            {span.text}
+          </span>
+        ) : (
+          <span key={i}>{span.text}</span>
+        ),
+      )}
+    </span>
+  )
+}
 
 /** TUI web_search `MAX_INLINE_SOURCES` — domains shown before "+N more". */
 const MAX_INLINE_SOURCES = 3
@@ -380,9 +423,7 @@ function ExecuteBody({
         <div className="flex min-w-0 items-center gap-1.5 font-mono text-[12.5px] leading-[1.45]">
           {/* Same ICON_COL as scrollback so $ lines up under ◆ / ⌄. */}
           <IconGlyph glyph="$" color="var(--color-gn-gray-dim)" />
-          <span className="min-w-0 flex-1 whitespace-pre-wrap break-all text-gn-fg">
-            {d.command}
-          </span>
+          <ShellCommand command={d.command} />
         </div>
       ) : null}
 

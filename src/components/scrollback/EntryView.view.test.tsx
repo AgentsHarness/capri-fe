@@ -116,7 +116,11 @@ describe('标题单击立刻折叠 / 展开后「查看」弹窗', () => {
 
     const opened = useChatStore.getState().entries[0]!
     r.rerender(<EntryView e={opened} selected pendingFreeze={false} now={0} />)
-    fireEvent.click(screen.getByText('ls -la'))
+    // 命令行正文做了语法高亮，文本被切成多个 span：按整块文字匹配，
+    // 锚在命令行的 `$` 图标所在容器上。
+    const cmdLine = r.container.querySelector('[data-entry-id="t-live"] .font-mono')
+    if (!cmdLine) throw new Error('expected command line')
+    fireEvent.click(cmdLine)
     expect(toolExpanded('t-live')).toBe(false)
   })
 

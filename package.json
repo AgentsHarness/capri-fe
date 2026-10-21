@@ -16,6 +16,7 @@
   "dependencies": {
     "@noble/hashes": "^2.4.0",
     "ansi-to-html": "^0.7.2",
+    "highlight.js": "11.11.1",
     "lucide-react": "^1.30.0",
     "mermaid": "^11.16.1",
     "react": "^19.2.8",

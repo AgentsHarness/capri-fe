@@ -67,6 +67,42 @@ describe('ToolDetail — execute', () => {
     expect(c2.textContent).not.toContain('exit code 2')
     expect(c2.querySelector('[style*="accent-error"]')).toBeNull()
   })
+
+  it('命令行按 bash 上色，同一段文本出现在 stdout 时不上色', () => {
+    const command = 'echo "hi" # note'
+    const { container } = renderDetail(
+      {
+        rawInput: { command, description: 'say hi' },
+        rawOutput: { Bash: { output: command, exit_code: 0 } },
+      },
+      'execute',
+    )
+    const panel = container.querySelector('.bg-gn-bg-dark')
+    expect(panel?.textContent).toContain(command)
+    expect(panel?.querySelector('[style*="--color-gn-"]')).toBeNull()
+
+    expect(container.querySelector('[style*="--color-gn-green"]')?.textContent).toBe('"hi"')
+    expect(container.querySelector('[style*="--color-gn-muted"]')?.textContent).toBe('# note')
+    expect(
+      [...container.querySelectorAll('[style*="--color-gn-cyan"]')].map((el) => el.textContent),
+    ).toContain('echo')
+  })
+
+  it('外部命令和 flag 上色，stdout 不上色', () => {
+    const command = 'git status -s'
+    const { container } = renderDetail(
+      {
+        rawInput: { command, description: 'st' },
+        rawOutput: { Bash: { output: command, exit_code: 0 } },
+      },
+      'execute',
+    )
+    expect(
+      [...container.querySelectorAll('[style*="--color-gn-blue"]')].map((el) => el.textContent),
+    ).toEqual(expect.arrayContaining(['git', 'status']))
+    expect(container.querySelector('[style*="--color-gn-teal"]')?.textContent).toBe('-s')
+    expect(container.querySelector('.bg-gn-bg-dark')?.querySelector('[style*="--color-gn-"]')).toBeNull()
+  })
 })
 
 describe('ToolDetail — read', () => {
