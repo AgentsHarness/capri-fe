@@ -25,12 +25,16 @@ export function worktreePathFromCreate(raw: unknown): string | undefined {
 /** 建 worktree 并返回它的路径；响应缺路径时抛错（调用方渲染错误行）。 */
 export async function createEmptyStateWorktree(opts: {
   sourcePath: string
-  /** 固定在指定路径建；留空由 agent 自动命名（YYYY-MM-DD-<uuid>）。 */
-  worktreePath?: string
+  /**
+   * worktree 名称（TUI New Worktree 弹窗的 label）；留空由 agent 自动命名
+   * （`YYYY-MM-DD-<uuid>`）。agent 负责 slug 化（小写、非字母数字换 `-`）
+   * 与重名加后缀，前端只传用户填的原文。
+   */
+  label?: string
 }): Promise<string> {
   const raw = await transport.gitWorktreeCreate({
     sourcePath: opts.sourcePath,
-    ...(opts.worktreePath ? { worktreePath: opts.worktreePath } : {}),
+    ...(opts.label ? { label: opts.label } : {}),
     copyMode: 'dirty',
   })
   const path = worktreePathFromCreate(raw)

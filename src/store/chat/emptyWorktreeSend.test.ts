@@ -37,7 +37,7 @@ describe('空状态首条消息建 worktree', () => {
       cwd: undefined,
       emptyCwd: SRC,
       emptyWorktree: false,
-      emptyWorktreePath: undefined,
+      emptyWorktreeLabel: undefined,
       emptyWorktreeBusy: false,
       entries: [],
       pending: [],
@@ -89,14 +89,14 @@ describe('空状态首条消息建 worktree', () => {
     expect(useChatStore.getState().cwd).toBe(SRC)
   })
 
-  it('自定义 worktree 路径随请求带上', async () => {
-    useChatStore.setState({ emptyWorktree: true, emptyWorktreePath: ' /wt/x ' })
+  it('自定义 worktree 名称作为 label 随请求带上（原文，不做 slug 化）', async () => {
+    useChatStore.setState({ emptyWorktree: true, emptyWorktreeLabel: ' Fix Login ' })
 
     await useChatStore.getState().send('你好')
 
     expect(transport.gitWorktreeCreate).toHaveBeenCalledWith({
       sourcePath: SRC,
-      worktreePath: '/wt/x',
+      label: 'Fix Login',
       copyMode: 'dirty',
     })
   })
@@ -151,7 +151,7 @@ describe('空状态首条消息建 worktree', () => {
     // 重发直接在刚建好的 worktree 里建会话，不再建新的那个。
     expect(useChatStore.getState().emptyWorktree).toBe(false)
     expect(useChatStore.getState().emptyCwd).toBe(WT)
-    expect(useChatStore.getState().emptyWorktreePath).toBeUndefined()
+    expect(useChatStore.getState().emptyWorktreeLabel).toBeUndefined()
 
     vi.mocked(transport.gitWorktreeCreate).mockClear()
     vi.mocked(transport.newSession).mockResolvedValue({ sessionId: NEW_SID } as never)

@@ -30,9 +30,9 @@ export function resetSessionState(
     emptyCwd: undefined,
     emptyCwdByHost: {},
     // worktree 开关是空状态的一次性意图：会话锚定后即失效（首条消息已经
-    // 用过它），下次落到空状态要从关开始，不能带着上次的开关与路径。
+    // 用过它），下次落到空状态要从关开始，不能带着上次的开关与名称。
     emptyWorktree: false,
-    emptyWorktreePath: undefined,
+    emptyWorktreeLabel: undefined,
     emptyWorktreeBusy: false,
     // 会话级失败提示随视图复位：新视图不该残留上一个会话的加载失败。
     historyLoadError: undefined,

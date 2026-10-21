@@ -53,8 +53,8 @@ export async function sendPrompt(
         try {
           startCwd = await createEmptyStateWorktree({
             sourcePath: emptyCwd,
-            ...(initial.emptyWorktreePath?.trim()
-              ? { worktreePath: initial.emptyWorktreePath.trim() }
+            ...(initial.emptyWorktreeLabel?.trim()
+              ? { label: initial.emptyWorktreeLabel.trim() }
               : {}),
           })
           createdWorktree = startCwd
@@ -95,7 +95,7 @@ export async function sendPrompt(
             ? {
                 emptyCwd: createdWorktree,
                 emptyWorktree: false,
-                emptyWorktreePath: undefined,
+                emptyWorktreeLabel: undefined,
               }
             : {}),
           entries: [

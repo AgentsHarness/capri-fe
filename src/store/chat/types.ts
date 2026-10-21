@@ -301,8 +301,12 @@ export interface ChatHistoryState {
    * 开关只改意图，真正建 worktree 发生在发送时，不是点按钮时。
    */
   emptyWorktree?: boolean
-  /** 空状态 worktree 的自定义路径（留空由 agent 自动命名）。 */
-  emptyWorktreePath?: string
+  /**
+   * 空状态 worktree 的名称（TUI New Worktree 弹窗的 label）。留空由 agent
+   * 自动命名（`YYYY-MM-DD-<uuid>`）；填了交给 agent 做 slug 化与重名去重，
+   * 前端不拼路径。
+   */
+  emptyWorktreeLabel?: string
   /** 空状态首条消息正在建 worktree（picker 上与状态行显示进行中）。 */
   emptyWorktreeBusy?: boolean
 }
@@ -1076,8 +1080,8 @@ export interface ChatActions {
   setEmptyCwd: (cwd: string) => void
   /** 空状态 worktree 开关：只翻状态，发送首条消息时才真正建 worktree。 */
   setEmptyWorktree: (on: boolean) => void
-  /** 空状态 worktree 自定义路径（空串 = 自动命名）。 */
-  setEmptyWorktreePath: (path: string) => void
+  /** 空状态 worktree 名称（空串 = 自动命名）。 */
+  setEmptyWorktreeLabel: (label: string) => void
   /** Refresh the host registry (+ auto-select). snap 来自 hub 的 WS hello
    *  快照（含 defaultHostId）时跳过 GET /api/hosts，省一次跨网往返。 */
   refreshHosts: (snap?: { hosts: HostInfo[]; defaultHostId?: string }) => Promise<void>

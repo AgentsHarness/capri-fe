@@ -40,12 +40,28 @@ const repoRootMock = vi.mocked(transport.gitRepoRoot)
 const branchesMock = vi.mocked(transport.gitBranches)
 const wtCreateMock = vi.mocked(transport.gitWorktreeCreate)
 
+/** 打开「工作目录」下拉：触发器是空状态里唯一带 aria-haspopup 的按钮。 */
+function openCwdMenu() {
+  const trigger = screen
+    .getAllByRole('button')
+    .find((b) => b.getAttribute('aria-haspopup') === 'menu')
+  if (!trigger) throw new Error('找不到工作目录下拉触发器')
+  fireEvent.click(trigger)
+  // 面板根（.gn-menu）：列表在内部滚动区，尾行「选择其他目录…」在滚动区之外。
+  return document.querySelector('.gn-menu') as HTMLElement
+}
+
+/** 空状态里的工作目录触发器（有无已知目录都存在）。 */
+function cwdTrigger() {
+  return screen.getByRole('button', { name: /工作目录/ })
+}
+
 describe('EmptyStatePicker', () => {
   beforeEach(() => {
     useChatStore.setState({
       emptyCwd: undefined,
       emptyWorktree: false,
-      emptyWorktreePath: undefined,
+      emptyWorktreeLabel: undefined,
       emptyWorktreeBusy: false,
       workspaces: [],
       sessions: [],
@@ -73,39 +89,76 @@ describe('EmptyStatePicker', () => {
     ).toBeInTheDocument()
   })
 
-  it('已选 emptyCwd → 显示目录路径', () => {
+  it('已选 emptyCwd → 触发器显示短名，下方显示完整路径', () => {
     useChatStore.setState({ emptyCwd: '~/ccwork/acp-fe' })
     const { container } = render(<EmptyStatePicker />)
     expect(container.textContent).toContain('~/ccwork/acp-fe')
+    // 触发器本身用侧边栏短名（末两段），不把整条路径塞进按钮。
+    expect(screen.getByRole('button', { name: /acp-fe/ }).textContent).not.toContain('~/ccwork')
   })
 
-  it('点击「选择工作目录」→ 打开 DirectoryPickerModal；pick 写回 store', () => {
+  it('没有已知目录 → 触发器直接打开浏览弹窗（不弹只有一个选项的下拉）', () => {
     const { container } = render(<EmptyStatePicker />)
-    fireEvent.click(screen.getByText('选择工作目录'))
-    const modal = container.querySelector('[data-testid="dir-modal"]')
-    expect(modal?.getAttribute('data-open')).toBe('true')
-    expect(modal?.getAttribute('data-initial')).toBe('')
+    expect(cwdTrigger().getAttribute('aria-haspopup')).toBeNull()
+    fireEvent.click(cwdTrigger())
+    expect(container.querySelector('[data-testid="dir-modal"]')?.getAttribute('data-open')).toBe(
+      'true',
+    )
+    expect(container.querySelector('.gn-menu')).toBeNull()
     fireEvent.click(screen.getByText('pick'))
     expect(useChatStore.getState().emptyCwd).toBe('/tmp/picked')
-    // pick 后 modal 仍开着（由 onClose 关闭）
+  })
+
+  it('有已知目录 → 下拉末行「选择其他目录…」打开浏览弹窗，并先收起菜单', () => {
+    useChatStore.setState({ workspaces: [{ cwd: '/repo/a', label: 'a', sessions: [] }] })
+    const { container } = render(<EmptyStatePicker />)
+    const menu = openCwdMenu()
+    fireEvent.click(within(menu).getByText('选择其他目录…'))
+    expect(container.querySelector('[data-testid="dir-modal"]')?.getAttribute('data-open')).toBe(
+      'true',
+    )
+    // 菜单在打开浏览弹窗前收起，避免两层浮层叠着。
+    expect(container.querySelector('.gn-menu')).toBeNull()
+  })
+
+  it('尾行在滚动区之外：目录再多也不会被滚出面板', () => {
+    // 面板高度上限挂在内部滚动区上；尾行是它的兄弟节点，常驻底部。
+    useChatStore.setState({
+      workspaces: Array.from({ length: 12 }, (_, i) => ({
+        cwd: `/repo/${i}`,
+        label: `${i}`,
+        sessions: [],
+      })),
+    })
+    render(<EmptyStatePicker />)
+    const menu = openCwdMenu()
+    const footer = within(menu).getByText('选择其他目录…')
+    const scroller = menu.querySelector('.max-h-\\[55vh\\]')
+    expect(scroller).not.toBeNull()
+    expect(scroller!.contains(footer)).toBe(false)
+    expect(menu.contains(footer)).toBe(true)
+  })
+
+  it('modal 中选中目录 → 写回 emptyCwd 并在触发器上显示', () => {
+    useChatStore.setState({ workspaces: [{ cwd: '/repo/a', label: 'a', sessions: [] }] })
+    const { container } = render(<EmptyStatePicker />)
+    fireEvent.click(within(openCwdMenu()).getByText('选择其他目录…'))
+    fireEvent.click(screen.getByText('pick'))
+    expect(useChatStore.getState().emptyCwd).toBe('/tmp/picked')
+    expect(cwdTrigger().textContent).toContain('tmp-picked')
     expect(container.querySelector('[data-testid="dir-modal"]')).not.toBeNull()
   })
 
   it('modal 关闭 → onClose 收起', () => {
     const { container } = render(<EmptyStatePicker />)
-    fireEvent.click(screen.getByText('选择工作目录'))
+    fireEvent.click(cwdTrigger())
     fireEvent.click(screen.getByText('close'))
     expect(
       container.querySelector('[data-testid="dir-modal"]')?.getAttribute('data-open'),
     ).toBe('false')
   })
 
-  describe('快速选择（侧边栏已有目录）', () => {
-    it('没有已知工作区 → 不渲染入口', () => {
-      render(<EmptyStatePicker />)
-      expect(screen.queryByText('快速选择')).toBeNull()
-    })
-
+  describe('工作目录下拉', () => {
     it('列出 workspace 与 live 会话的目录（去重、跳过空 cwd），点选写回 emptyCwd', () => {
       useChatStore.setState({
         workspaces: [
@@ -122,21 +175,21 @@ describe('EmptyStatePicker', () => {
         ],
       })
       render(<EmptyStatePicker />)
-      fireEvent.click(screen.getByText('快速选择'))
-      const menu = screen.getByText('最近的工作目录').parentElement as HTMLElement
+      const menu = openCwdMenu()
       const items = within(menu).getAllByRole('menuitem')
-      expect(items).toHaveLength(2)
+      // 目录各一条 + 末尾的「选择其他目录…」。
+      expect(items).toHaveLength(3)
       // 每项两行：侧边栏短名（repoNameFromCwd）+ 完整路径。
-      const label = (b: HTMLElement) => b.querySelectorAll('span span')[0]?.textContent
+      const name = (b: HTMLElement) => b.querySelectorAll('span span')[0]?.textContent
       const path = (b: HTMLElement) => b.querySelectorAll('span span')[1]?.textContent
-      expect(items.map((b) => [label(b), path(b)])).toEqual([
+      expect(items.slice(0, 2).map((b) => [name(b), path(b)])).toEqual([
         ['repo-a', '/repo/a'],
         ['repo-b', '/repo/b'],
       ])
       fireEvent.click(items[1]!)
       expect(useChatStore.getState().emptyCwd).toBe('/repo/b')
       // 选完收起菜单
-      expect(screen.queryByText('最近的工作目录')).toBeNull()
+      expect(screen.queryByText('选择其他目录…')).toBeNull()
     })
 
     it('点选当前已被选中的目录也照常收起菜单', () => {
@@ -145,10 +198,10 @@ describe('EmptyStatePicker', () => {
         workspaces: [{ cwd: '/repo/a', label: 'a', sessions: [] }],
       })
       render(<EmptyStatePicker />)
-      fireEvent.click(screen.getByText('快速选择'))
-      fireEvent.click(screen.getByRole('menuitem'))
+      const menu = openCwdMenu()
+      fireEvent.click(within(menu).getAllByRole('menuitem')[0]!)
       expect(useChatStore.getState().emptyCwd).toBe('/repo/a')
-      expect(screen.queryByText('最近的工作目录')).toBeNull()
+      expect(screen.queryByText('选择其他目录…')).toBeNull()
     })
   })
 
@@ -176,36 +229,36 @@ describe('EmptyStatePicker', () => {
       expect(off.getAttribute('aria-pressed')).toBe('true')
     })
 
-    it('再次按下 → 关闭状态并清掉自定义路径', async () => {
-      useChatStore.setState({ emptyCwd: '/repo', emptyWorktree: true, emptyWorktreePath: '/wt/x' })
+    it('再次按下 → 关闭状态并清掉名称', async () => {
+      useChatStore.setState({ emptyCwd: '/repo', emptyWorktree: true, emptyWorktreeLabel: 'my-wt' })
       repoRootMock.mockResolvedValue({ gitRoot: '/repo' } as never)
       render(<EmptyStatePicker />)
       const off = await screen.findByRole('button', { name: '关闭 Worktree' })
-      // 开启时显示路径输入框（预填已有路径）
-      expect(screen.getByPlaceholderText(/worktree 路径/)).toHaveValue('/wt/x')
+      // 开启时显示名称输入框（预填已有名称）
+      expect(screen.getByLabelText('worktree 名称')).toHaveValue('my-wt')
       fireEvent.click(off)
       expect(useChatStore.getState().emptyWorktree).toBe(false)
-      expect(useChatStore.getState().emptyWorktreePath).toBeUndefined()
-      expect(screen.queryByPlaceholderText(/worktree 路径/)).toBeNull()
+      expect(useChatStore.getState().emptyWorktreeLabel).toBeUndefined()
+      expect(screen.queryByLabelText('worktree 名称')).toBeNull()
     })
 
-    it('自定义路径输入写进 store，供发送时带上', async () => {
+    it('名称输入写进 store，供发送时作为 label 带上', async () => {
       useChatStore.setState({ emptyCwd: '/repo', emptyWorktree: true })
       repoRootMock.mockResolvedValue({ gitRoot: '/repo' } as never)
       render(<EmptyStatePicker />)
-      fireEvent.change(await screen.findByPlaceholderText(/worktree 路径/), {
-        target: { value: '/wt/x' },
+      fireEvent.change(await screen.findByLabelText('worktree 名称'), {
+        target: { value: 'fix login' },
       })
-      expect(useChatStore.getState().emptyWorktreePath).toBe('/wt/x')
+      expect(useChatStore.getState().emptyWorktreeLabel).toBe('fix login')
     })
 
-    it('创建在飞 → 提示改成进行中且开关/路径输入禁用（不能重复触发）', async () => {
+    it('创建在飞 → 提示改成进行中且开关/名称输入禁用（不能重复触发）', async () => {
       useChatStore.setState({ emptyCwd: '/repo', emptyWorktree: true, emptyWorktreeBusy: true })
       repoRootMock.mockResolvedValue({ gitRoot: '/repo' } as never)
       render(<EmptyStatePicker />)
       expect(await screen.findByText('正在创建 worktree…')).toBeInTheDocument()
       expect(screen.getByRole('button', { name: '关闭 Worktree' })).toBeDisabled()
-      expect(screen.getByPlaceholderText(/worktree 路径/)).toBeDisabled()
+      expect(screen.getByLabelText('worktree 名称')).toBeDisabled()
     })
 
     it('非 git 仓库 → 开关置灰且不可点，title 说明原因', async () => {
@@ -251,6 +304,7 @@ describe('EmptyStatePicker', () => {
         expect(btn).toBeDisabled()
       })
       expect(useChatStore.getState().emptyWorktree).toBe(false)
+      expect(useChatStore.getState().emptyWorktreeLabel).toBeUndefined()
     })
   })
 })

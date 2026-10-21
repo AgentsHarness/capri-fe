@@ -1,7 +1,7 @@
 import type { SessionInfo, WorkspaceGroup } from '../api/types'
 
 /**
- * 空状态「快速选择」的候选目录：侧边栏已有的工作区（保持
+ * 空状态「工作目录」下拉的候选目录：侧边栏已有的工作区（保持
  * workspace-list-recent 的先后顺序），再补上 live 会话里还没成组的新目录。
  * 去重、去掉空串，截断到 `limit` 条。
  */

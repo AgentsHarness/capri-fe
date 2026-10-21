@@ -493,15 +493,15 @@ export function sessionActions(set: SetState, get: () => ChatState) {
 
   setEmptyWorktree: (on) => {
     // 开关只表达意图：worktree 在首条消息发出时才创建（TUI 的 worktree
-    // 模式同款语义）。关掉开关同时清掉自定义路径与错误态，避免下次打开
-    // 时带上一次留下的路径。
+    // 模式同款语义）。关掉开关同时清掉名称与进行中标志，避免下次打开时
+    // 带上一次留下的名字。
     set(
       on
         ? { emptyWorktree: true }
-        : { emptyWorktree: false, emptyWorktreePath: undefined, emptyWorktreeBusy: false },
+        : { emptyWorktree: false, emptyWorktreeLabel: undefined, emptyWorktreeBusy: false },
     )
   },
 
-  setEmptyWorktreePath: (path) => set({ emptyWorktreePath: path }),
+  setEmptyWorktreeLabel: (label) => set({ emptyWorktreeLabel: label }),
   } satisfies Partial<ChatState>
 }

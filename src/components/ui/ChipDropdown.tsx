@@ -10,6 +10,7 @@ export function ChipDropdown({
   open,
   onClose,
   children,
+  footer,
   label,
   widthClass,
   anchorRef,
@@ -17,7 +18,10 @@ export function ChipDropdown({
   open: boolean
   onClose: () => void
   children: ReactNode
-  label: string
+  /** 固定在面板底部、不随列表滚动的操作行（如「选择其他目录…」）。 */
+  footer?: ReactNode
+  /** 面板小标题；省略时不占那一行（列表本身就足以说明内容时）。 */
+  label?: string
   widthClass?: string
   anchorRef: RefObject<HTMLElement | null>
 }) {
@@ -90,13 +94,22 @@ export function ChipDropdown({
       {pos ? (
         <div
           ref={panelRef}
-          className={`fixed z-40 max-h-[55vh] max-w-[92vw] overflow-y-auto gn-menu ${widthClass ?? 'w-80'}`}
+          className={`fixed z-40 max-w-[92vw] gn-menu ${widthClass ?? 'w-80'}`}
           style={{ left: pos.left, top: pos.top, width: pos.width }}
         >
-          <div className="px-3 pb-1 pt-1.5 text-[10px] uppercase tracking-wider text-gn-gutter">
-            {label}
+          {/* 高度上限落在滚动区上，不落在整个面板上：footer 常驻底部，
+              不会被长列表挤出可视区（列表满了以后滚的是这里）。 */}
+          <div className="max-h-[55vh] overflow-y-auto py-0.5">
+            {label ? (
+              <div className="px-3 pb-1 pt-1.5 text-[10px] uppercase tracking-wider text-gn-gutter">
+                {label}
+              </div>
+            ) : null}
+            {children}
           </div>
-          {children}
+          {footer ? (
+            <div className="border-t border-gn-prompt-border/60 py-0.5">{footer}</div>
+          ) : null}
         </div>
       ) : null}
     </>

@@ -60,7 +60,7 @@ describe('resetSessionState', () => {
     // 空状态 worktree 是一次性意图：复位后必须回到关，不能带着上次的
     // 开关/路径进下一个空状态。
     expect(partial.emptyWorktree).toBe(false)
-    expect(partial.emptyWorktreePath).toBeUndefined()
+    expect(partial.emptyWorktreeLabel).toBeUndefined()
     expect(partial.emptyWorktreeBusy).toBe(false)
   })
 
