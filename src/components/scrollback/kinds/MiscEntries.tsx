@@ -29,11 +29,11 @@ export function ImageEntry({
   // thumbnail-level outline. Click opens the group lightbox via
   // onOpenImage (‹ › navigation), or the block viewer as fallback (mini).
   //
-  // 画廊行（galleryItem）：缩略图铺满条目盒、cover 裁切。百分比上限在
-  // 这里不可用——条目本身是 shrink-to-fit 的 flex item，max-w-[45%] 会
-  // 按条目自己的内容宽度解析，把缩略图压到不足半宽、上下留白、行间还
-  // 拉出大小不等的空洞。其它位置（迷你 scrollback）父级宽度确定，保持
-  // 按比例的缩略图。
+  // 画廊行（galleryItem）：缩略图固定 96×96、cover 裁切——同组每张同宽同高，
+  // 不随原图比例变化。百分比上限在这里不可用——条目本身是 shrink-to-fit
+  // 的 flex item，max-w-[45%] 会按条目自己的内容宽度解析，把缩略图压到
+  // 不足半宽、上下留白、行间还拉出大小不等的空洞。其它位置（迷你
+  // scrollback）父级宽度确定，保持按比例的缩略图。
   return (
     <EntryShell {...shell}>
       <img
@@ -48,7 +48,7 @@ export function ImageEntry({
         }}
         title="点击放大查看"
         className={`h-24 cursor-zoom-in rounded border border-gn-prompt-border ${
-          galleryItem ? 'w-full object-cover' : 'max-w-[45%] object-contain'
+          galleryItem ? 'w-24 object-cover' : 'max-w-[45%] object-contain'
         }`}
       />
     </EntryShell>

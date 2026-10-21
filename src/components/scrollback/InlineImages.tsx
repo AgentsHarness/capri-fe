@@ -10,7 +10,7 @@ export type { InlineImage }
  * Inline images for a conversation row. `size` selects the layout:
  * - assistant rows get wide images (max 65%), click opens the block viewer
  *   for the owning entry (full-size view with byte/mime meta lives there);
- * - user rows render uniform-height thumbnails (h-24) in a bottom-aligned
+ * - user rows render fixed-size thumbnails (96×96) in a bottom-aligned
  *   gallery (`items-end`) that cover-fill their frame (no letterbox bands;
  *   the full image lives in the lightbox), click magnifies in a lightbox
  *   preview — the lightbox navigates multi-image sets with ‹ › / ← →, Esc
@@ -55,12 +55,12 @@ export function InlineImages({
             title="点击放大查看"
             // 两种 size 都封顶高度：图片解码是异步的，未封顶的原始比例
             // 会在 prepend 的旧轮次里把行撑高，把刚恢复好的视口再挪一次。
-            // user 缩略图 cover：宽度被 45% 上限截断时按比例会有上下留白
-            // （「图小框大」），裁切铺满即可，全图看 lightbox。
+            // user 缩略图固定 96×96 cover：同组每张同宽同高（宽度若随原图
+            // 比例走，宽图与竖图并排时大小不一），裁切掉的边角看 lightbox。
             className={
               size === 'assistant'
                 ? 'max-h-[60vh] max-w-[65%] cursor-zoom-in rounded border border-gn-prompt-border object-contain'
-                : 'h-24 max-w-[45%] cursor-zoom-in rounded border border-gn-prompt-border object-cover'
+                : 'h-24 w-24 cursor-zoom-in rounded border border-gn-prompt-border object-cover'
             }
           />
         ))}

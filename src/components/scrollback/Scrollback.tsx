@@ -9,6 +9,7 @@ import {
   type DisplayRow,
 } from '../../scrollback/verbGroup'
 import { buildUserNavItems } from '../../scrollback/userNav'
+import { appendImageRow } from '../../scrollback/imageGallery'
 import { SelectionBox } from '../ui/SelectionBox'
 import { SPINNER_FRAMES } from '../../theme/glyphs'
 import { COLUMN_PAD_X_CLASS, CONTENT_COLUMN_CLASS } from '../../theme/layout'
@@ -499,12 +500,11 @@ export function Scrollback({
             该会话在 Host 上已不存在，或暂无内容
           </div>
         )}
-        {/* 连续独立 image 行聚合为一个画廊组：单行等高 flex 行（items-end、
-            nowrap）、点击任意一张打开组级 lightbox（‹ › / ← → 组内切换）。
-            组内每张图仍是独立 EntryView（各自 accent/选中/查看器），聚合只做
-            横向对齐与预览共享。nowrap + 组内 min-w-0：整行放不下时等比收缩
-            铺满内容列（行高恒为 h-24，永不换行、不撑高），缩略图 cover 裁切
-            而非压缩留白。image 本就不参与 dense 打包。 */}
+        {/* 连续独立 image 行聚合为一个画廊组：横向排列、点击任意一张打开
+            组级 lightbox（‹ › / ← → 组内切换）。组内每张图仍是独立
+            EntryView（各自 accent/选中/查看器），聚合只做横向对齐与预览
+            共享。缩略图统一为 96×96 cover（见 ImageEntry），组内宽度一致；
+            整行放不下时换行，不撑破内容列。image 本就不参与 dense 打包。 */}
         {(() => {
           const items: Array<
             | { kind: 'row'; row: DisplayRow; i: number }
@@ -523,29 +523,25 @@ export function Scrollback({
             const row = displayRows[i]
             const isImg = row.type === 'entry' && row.entry.kind === 'image'
             const last = items[items.length - 1]
-            if (isImg && last && last.kind === 'imgGroup') {
-              last.rows.push({
-                row: row as Extract<DisplayRow, { type: 'entry' }>,
-                i,
-              })
-              continue
-            }
             if (isImg) {
-              const first = row as Extract<DisplayRow, { type: 'entry' }>
-              const rows = [{ row: first, i }]
-              const images = rows.map(({ row: r }) => {
-                const e = r.entry as Extract<ScrollEntry, { kind: 'image' }>
-                return { data: e.data, mimeType: e.mimeType }
-              })
-              const key = `ig_${row.entry.id}`
+              const entryRow = row as Extract<DisplayRow, { type: 'entry' }>
+              if (last && last.kind === 'imgGroup') {
+                appendImageRow(last, entryRow, i)
+                continue
+              }
+              const group = appendImageRow(undefined, entryRow, i)
               items.push({
                 kind: 'imgGroup',
-                key,
-                rows,
-                images,
+                key: group.key,
+                rows: group.rows,
+                images: group.images,
+                // 读组对象本身（而非建组时捕获的数组）：后追加的图也要能
+                // 定位到自己的索引。
                 onOpenImage: (entryId: string) => {
-                  const idx = rows.findIndex(({ row: r }) => r.entry.id === entryId)
-                  if (idx >= 0) setImgPreview({ key, images, index: idx })
+                  const idx = group.rows.findIndex(
+                    ({ row: r }) => r.entry.id === entryId,
+                  )
+                  if (idx >= 0) setImgPreview({ key: group.key, images: group.images, index: idx })
                 },
               })
               continue
@@ -599,7 +595,7 @@ export function Scrollback({
             return (
               <Fragment key={item.key}>
                 <div
-                  className="relative flex flex-nowrap items-end gap-1.5"
+                  className="relative flex flex-wrap items-end gap-1.5"
                   onMouseEnter={() => setImgHoverKey(item.key)}
                   onMouseLeave={() =>
                     setImgHoverKey((k) => (k === item.key ? null : k))
@@ -633,10 +629,7 @@ export function Scrollback({
                       i < displayRows.length - 1 &&
                       isDensePackableRow(displayRows[i + 1])
                     return (
-                      // min-w-0：flex item 默认不能小于内容宽，缩略图就会
-                      // 顶出内容列而不是收缩（内容列里的 1fr 列自身带
-                      // min-w-0，收缩后缩略图铺满该列）。
-                      <div key={displayRowKey(row)} className="min-w-0">
+                      <div key={displayRowKey(row)}>
                         <EntryView
                           e={row.entry}
                           selected={

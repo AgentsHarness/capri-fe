@@ -25,6 +25,9 @@ describe('InlineImages', () => {
     expect(img!.getAttribute('alt')).toBe('image (image/png)')
     expect(img!.getAttribute('loading')).toBe('lazy')
     expect(img!.className).toContain('h-24')
+    // 固定宽度：多图并排时同宽同高，不随原图比例变化。
+    expect(img!.className).toContain('w-24')
+    expect(img!.className).not.toContain('max-w-[45%]')
     // 无 hover 缩放/图片级外框（hover/选中框由条目 SelectionBox 统一绘制）
     expect(img!.className).not.toContain('hover:scale')
     expect(img!.className).not.toContain('outline')

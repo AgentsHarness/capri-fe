@@ -58,14 +58,14 @@ const img: Extract<ScrollEntry, { kind: 'image' }> = {
 }
 
 describe('ImageEntry', () => {
-  it('画廊行：缩略图铺满条目盒并 cover（不再按百分比收缩留白）', () => {
+  it('画廊行：缩略图固定 96×96 并 cover（同组每张同宽同高）', () => {
     const onOpenImage = vi.fn()
     const { container } = render(
       <ImageEntry e={img} chrome={makeChrome(img, { onOpenImage, galleryItem: true })} />,
     )
     const el = container.querySelector('img')!
     expect(el.className).toContain('h-24')
-    expect(el.className).toContain('w-full')
+    expect(el.className).toContain('w-24')
     expect(el.className).toContain('object-cover')
     expect(el.className).not.toContain('max-w-[45%]')
     expect(el.className).not.toContain('object-contain')
