@@ -117,14 +117,17 @@ export function SessionInfoModal() {
     }
   }
 
-  // Context window: host-tracked usage size if reported, else the model's
-  // totalContextTokens — same precedence as the TUI context bar, with the
-  // agent snapshot's context as last-resort fallback when the host has
-  // none. pct is clamped to 100 like the TUI (used can transiently exceed
-  // the window); the color follows the same urgency gradient as the
-  // context chip.
-  const ctxSize = data?.contextSize || data?.model?.contextWindow || ext?.contextTotal || 0
-  const ctxUsed = data?.contextUsed ?? ext?.contextUsed ?? 0
+  // Context window: the agent snapshot's live estimate first (same number
+  // the TUI context bar reads), then the host-tracked usage, then the
+  // model's totalContextTokens. The host cache is only a fallback because
+  // it also absorbs `available_commands_update` broadcasts, whose
+  // `_meta.totalTokens` never reaches updates.jsonl — see the note in
+  // acp-host handleSessionUpdate. pct is clamped to 100 like the TUI (used
+  // can transiently exceed the window); the color follows the same urgency
+  // gradient as the context chip.
+  const ctxSize =
+    ext?.contextTotal || data?.contextSize || data?.model?.contextWindow || 0
+  const ctxUsed = ext?.contextUsed ?? data?.contextUsed ?? 0
   const pct =
     ctxSize > 0 ? Math.min(100, Math.round((ctxUsed / ctxSize) * 100)) : undefined
 

@@ -149,9 +149,27 @@ describe('SessionInfoModal', () => {
     expect(screen.getByText('shell version')).toBeInTheDocument()
   })
 
-  it('agent context 兜底：host 无 contextSize 时用快照 context 渲染 Context 行', async () => {
-    hostMock.mockResolvedValue({ ...HOST, contextSize: undefined } as never)
-    extMock.mockResolvedValue({ context: { used: 500, total: 2000 } } as never)
+  it('Context 行优先用 agent 快照（与 TUI 同源），host 缓存只兜底', async () => {
+    // host 缓存会被不落盘的 available_commands_update 刷新，agent 快照才是
+    // 实时估值：两者都给时必须以快照为准。
+    hostMock.mockResolvedValue({
+      ...HOST,
+      contextUsed: 114_884,
+      contextSize: 1_000_000,
+    } as never)
+    extMock.mockResolvedValue({ context: { used: 118_007, total: 1_000_000 } } as never)
+    render(<SessionInfoModal />)
+    await screen.findByText(/118K \/ 1\.0M \(12%\)/)
+    expect(screen.queryByText(/115K/)).not.toBeInTheDocument()
+  })
+
+  it('agent 快照缺 context → 退回 host 缓存渲染 Context 行', async () => {
+    hostMock.mockResolvedValue({
+      ...HOST,
+      contextUsed: 500,
+      contextSize: 2000,
+    } as never)
+    extMock.mockResolvedValue({} as never)
     render(<SessionInfoModal />)
     await screen.findByText(/500 \/ 2\.0K \(25%\)/)
   })
