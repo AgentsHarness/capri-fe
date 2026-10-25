@@ -640,6 +640,72 @@ describe('TopBar', () => {
     })
   })
 
+  it('窄屏 ⋮ 菜单按视口夹取，不跑到屏幕左侧外', async () => {
+    const original = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 320 })
+    const rectSpy = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        if (this.querySelector?.('button[aria-label="更多操作"]')) {
+          return {
+            x: 12, y: 46, left: 12, right: 41, top: 46, bottom: 78,
+            width: 29, height: 32, toJSON: () => ({}),
+          } as DOMRect
+        }
+        return {
+          x: 0, y: 0, left: 0, right: 0, top: 0, bottom: 0,
+          width: 0, height: 0, toJSON: () => ({}),
+        } as DOMRect
+      })
+    try {
+      render(<TopBar />)
+      fireEvent.click(screen.getByRole('button', { name: '更多操作' }))
+      await waitFor(() => {
+        const menu = screen.getByText('more').closest('.gn-menu') as HTMLElement
+        expect(menu).not.toBeNull()
+        expect(menu.style.left).toBe('8px')
+        expect(menu.style.top).toBe('82px')
+        expect(menu.style.width).toBe('256px')
+      })
+    } finally {
+      rectSpy.mockRestore()
+      Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: original })
+    }
+  })
+
+  it('窄屏历史下拉按视口夹取，不跑到屏幕左侧外', async () => {
+    const original = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 320 })
+    const rectSpy = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        if (this.querySelector?.('button[title="加载历史会话"]')) {
+          return {
+            x: 12, y: 46, left: 12, right: 85, top: 46, bottom: 78,
+            width: 73, height: 32, toJSON: () => ({}),
+          } as DOMRect
+        }
+        return {
+          x: 0, y: 0, left: 0, right: 0, top: 0, bottom: 0,
+          width: 0, height: 0, toJSON: () => ({}),
+        } as DOMRect
+      })
+    try {
+      render(<TopBar />)
+      fireEvent.click(screen.getByTitle('加载历史会话'))
+      await waitFor(() => {
+        const menu = screen.getByText('没有历史会话').closest('.gn-menu') as HTMLElement
+        expect(menu).not.toBeNull()
+        expect(menu.style.left).toBe('8px')
+        expect(menu.style.top).toBe('82px')
+        expect(menu.style.width).toBe('269px')
+      })
+    } finally {
+      rectSpy.mockRestore()
+      Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: original })
+    }
+  })
+
   it('移动端 ⋮ 菜单：主题手风琴 + 操作项', async () => {
     render(<TopBar />)
     fireEvent.click(screen.getByTitle('更多操作：theme / mcp / git / ext / settings'))
