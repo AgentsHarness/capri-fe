@@ -93,6 +93,26 @@ describe('useFittedModeLabel', () => {
     expect(render(0, 0).result.current).toBe('always-approve')
   })
 
+  it('手机宽度固定短名，即使内容量得下', () => {
+    const original = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 390 })
+    try {
+      expect(render(200, 300).result.current).toBe('always')
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: original })
+    }
+  })
+
+  it('达到 640px 后回到实测判定，放得下则完整名', () => {
+    const original = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 640 })
+    try {
+      expect(render(200, 300).result.current).toBe('always-approve')
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: original })
+    }
+  })
+
   it('data-probe 探针不计入内容宽度', () => {
     const r = refs(292, 675, 28)
     const probe = document.createElement('span')
