@@ -2621,7 +2621,10 @@ export function Composer({ guest = false }: { guest?: boolean }) {
             >
               {currentModeShortLabel}
             </span>
-            <span ref={modelRef} className="relative z-30 inline-flex shrink-0">
+            {/* min-w-0 + shrink：底栏只有 max-w-[75%]，模型槽若固定
+                shrink-0，按钮的 max-w-[220px] 会在窄屏把后面的权限标签
+                顶出屏幕。让模型名先截断，模式标签保持完整。 */}
+            <span ref={modelRef} className="relative z-30 inline-flex min-w-0 shrink">
               <button
                 ref={modelBtnRef}
                 type="button"
