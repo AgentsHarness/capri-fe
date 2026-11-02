@@ -54,14 +54,23 @@ export function handleNotifCore(
             handleTaskBackgrounded(get, set, fields)
             // 后台任务行出现 → 让轮询跑起来，否则它的终态没有收口来源。
             get().ensureTopTaskPolling?.()
+            // [bg] 徽标读的是 /api/sessions 的 census（bgRunning/bgCount/
+            // hasTasks）；task_backgrounded 不改会话 busy 态，host 不会发
+            // sessions_changed，侧栏只有重拉名册才能看到这枚徽标。
+            get().refreshSessions?.()
             break
           case 'background_tasks':
             // 多会话归属已由分发层统一处理（events/sessionNotif.ts）。
             handleBackgroundTasks(get, set, fields)
             get().ensureTopTaskPolling?.()
+            // 快照可能先于/晚于 task_backgrounded 到达；闸门保证单飞，
+            // 第二次刷新会顺带兜住 census 文件的落盘延迟。
+            get().refreshSessions?.()
             break
           case 'task_completed':
             handleTaskCompleted(get, set, fields)
+            // 任务收口后 bgRunning 归零，同样要重拉名册撤掉侧栏徽标。
+            get().refreshSessions?.()
             break
           case 'monitor_event': {
             // Stdout accumulation for BOTH live rows (bgTaskIndex) and

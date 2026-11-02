@@ -35,6 +35,48 @@ describe('handleNotifCore — auto_compact 的相位文案', () => {
   })
 })
 
+describe('handleNotifCore — 后台任务生命周期刷新会话名册', () => {
+  it('task_backgrounded 触发一次 refreshSessions（侧栏 bg 徽标）', () => {
+    const refreshSessions = vi.fn().mockResolvedValue(undefined)
+    const { set, get } = makeStore({
+      entries: [],
+      topTasks: [],
+      bgTaskIndex: {},
+      refreshSessions,
+    } as Partial<ChatState>)
+    handleNotifCore(
+      set,
+      get,
+      { type: 'session_notification', sessionId: 's1' } as WireEvent,
+      'task_backgrounded',
+      { sessionUpdate: 'task_backgrounded', task_id: 't-1', command: 'sleep 100' },
+    )
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
+
+  it('task_completed 触发一次 refreshSessions（撤掉侧栏 bg 徽标）', () => {
+    const refreshSessions = vi.fn().mockResolvedValue(undefined)
+    const { set, get } = makeStore({
+      entries: [
+        { id: 'e-1', kind: 'bg_task', taskId: 't-1', title: 'sleep', status: 'started', running: true },
+      ],
+      topTasks: [],
+      bgTaskIndex: { 't-1': 'e-1' },
+      phaseText: 'Waiting for response…',
+      conn: 'busy',
+      refreshSessions,
+    } as unknown as Partial<ChatState>)
+    handleNotifCore(
+      set,
+      get,
+      { type: 'session_notification', sessionId: 's1' } as WireEvent,
+      'task_completed',
+      { sessionUpdate: 'task_completed', task_snapshot: { task_id: 't-1', command: 'sleep 100', exit_code: 0 } },
+    )
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('handleNotifCore — current_mode_update', () => {
   beforeEach(() => {
     resetPlanExitApprovedForTest()
