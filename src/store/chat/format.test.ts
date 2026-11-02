@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   contentText,
-  fmtTokens,
   formatElapsed,
   formatTurnDuration,
   imageSrc,
@@ -39,19 +38,6 @@ describe('toolVerb / formatElapsed / formatTurnDuration', () => {
     expect(formatTurnDuration(32_000)).toBe('32s')
     expect(formatTurnDuration(125_000)).toBe('2m5s')
     expect(formatTurnDuration(3_720_000)).toBe('1h2m')
-  })
-})
-
-describe('fmtTokens', () => {
-  it('K / M 阈值与精度', () => {
-    expect(fmtTokens(500)).toBe('500')
-    expect(fmtTokens(5_200)).toBe('5.2K')
-    expect(fmtTokens(8_800)).toBe('8.8K')
-    expect(fmtTokens(10_000)).toBe('10K')
-    // >=10K 起四舍五入到整 K
-    expect(fmtTokens(48_800)).toBe('49K')
-    expect(fmtTokens(1_200_000)).toBe('1.2M')
-    expect(fmtTokens(10_000_000)).toBe('10M')
   })
 })
 
@@ -103,11 +89,10 @@ describe('stillRunningCue', () => {
         { id: 'b2', kind: 'bg_task', title: 'm', status: 'started', running: true, isMonitor: true },
         { id: 'b3', kind: 'bg_task', title: 'done', status: 'completed' },
         { id: 's1', kind: 'subagent', title: 's', status: 'started', running: true },
-        { id: 'w1', kind: 'workflow', title: 'w', status: 'running', running: true },
       ] as never,
       [{ taskId: 'x', title: 't' } as never],
     )
-    expect(cue).toBe('2 commands · 1 monitor · 1 subagent · 1 workflow still running')
+    expect(cue).toBe('2 commands · 1 monitor · 1 subagent still running')
   })
 
   it('无运行任务 → null', () => {

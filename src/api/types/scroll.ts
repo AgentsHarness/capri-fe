@@ -31,6 +31,14 @@ export type ScrollEntry =
       isShell?: boolean
       /** Mid-turn interjection (steer) — TUI UserPromptBlock::is_interjection. */
       isInterjection?: boolean
+      /**
+       * The host went offline before this prompt was accepted, so the row's
+       * turn never started. Renders an inline retry on the prompt itself
+       * (the row is where the user looks when "my message didn't go
+       * through"), reusing the same promptId so a retry cannot double-run a
+       * turn the host did accept after all.
+       */
+      undelivered?: boolean
       /** 回放归一化序号（host msgSeq）：产生该条目的首条信封序号；live 条目无此字段 → 排序/归并回退现有行为。 */
       msgSeq?: number
       /**
@@ -72,9 +80,9 @@ export type ScrollEntry =
        */
       open?: boolean
       /**
-       * ThinkingBlock display mode (TUI three-state): 'collapsed' = header
-       * only, 'truncated' (default) = header + head/tail preview, 'expanded'
-       * = full body. Missing → 'truncated' (replay compat).
+       * ThinkingBlock display mode (TUI three-state): 'collapsed' (default) =
+       * header only, 'truncated' = header + head/tail preview, 'expanded' =
+       * full body. Missing → 'collapsed' (replay compat).
        */
       displayMode?: 'collapsed' | 'truncated' | 'expanded'
       streaming?: boolean
@@ -154,8 +162,8 @@ export type ScrollEntry =
       id: string
       kind: 'error'
       text: string
-      /** 可执行的恢复动作（当前：传输级错误 → 重启 agent）。 */
-      action?: 'restart-agent'
+      /** 可执行的恢复动作（传输级错误 → 重启 agent / 未送达 → 重发）。 */
+      action?: 'restart-agent' | 'resend'
       msgSeq?: number
     }
   | { id: string; kind: 'status'; text: string; msgSeq?: number }
@@ -218,16 +226,6 @@ export type ScrollEntry =
     }
   | {
       id: string
-      kind: 'workflow'
-      title: string
-      status: WorkflowStatus
-      detail?: string
-      running?: boolean
-      finishedAt?: number
-      msgSeq?: number
-    }
-  | {
-      id: string
       kind: 'bg_task'
       title: string
       status: 'started' | 'completed' | 'failed'
@@ -285,7 +283,6 @@ export type ScrollEntry =
       }
       msgSeq?: number
     }
-  | { id: string; kind: 'credit_limit'; text: string; msgSeq?: number }
   | {
       id: string
       kind: 'btw'
@@ -310,7 +307,7 @@ export type ScrollEntry =
       id: string
       kind: 'group_header'
       count: number
-      /** Expanded-group collapse chrome ("▾ N tool calls") vs truncation ("N more"). */
+      /** Expanded-group collapse chrome ("▾ N tool calls"). */
       collapse?: boolean
       label?: string
       /** Verb-run aggregated header — drives running/error accents. */
@@ -323,20 +320,6 @@ export type ScrollEntry =
       }
       msgSeq?: number
     }
-
-/**
- * Mini scrollback of one subagent session (keyed by child_session_id).
- * Fed by the host's broadcast of the child session's own event stream
- * (live) and by on-demand history fetch of the child session's updates
- * (replay — TUI replay_inherited_updates 同款). No item cap — older
- * history is paged in on scroll-up.
- *
- * items 直接复用主 scrollback 的 ScrollEntry 模型——BlockViewer 的迷你
- * 时间线与主 scrollback 走同一条渲染管线（scanGroups/projectDisplayRows
- * → EntryShell/GroupHeaderView + AccentRail/Bullet），不再另设一套条目
- * 类型和样式。
- */
-
 
 /**
  * Mini scrollback of one subagent session (keyed by child_session_id).
@@ -390,8 +373,6 @@ export type SubagentViewState = {
 
 
 export type SubagentStatus = 'started' | 'completed' | 'failed' | 'cancelled'
-
-export type WorkflowStatus = 'running' | 'done' | 'failed' | 'cancelled' | 'paused'
 
 /**
  * /btw 侧问的回放记录（host 从 agent 落盘的 btw_history.jsonl 读出，随

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Eye, RefreshCw, X } from 'lucide-react'
+import { Spinner } from '../ui/Spinner'
 import { transport } from '../../api/client'
 import { useChatStore } from '../../store/chat'
 import type { SubscriberRow } from '../../api/types'
@@ -128,10 +129,14 @@ export function SubscribersPanel({ onClose }: { onClose: () => void }) {
             type="button"
             disabled={loading}
             onClick={() => void load()}
-            className="ml-auto inline-flex min-h-7 shrink-0 items-center gap-1 rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
+            className="ml-auto inline-flex min-h-7 shrink-0 items-center gap-1 rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-50"
             title="重新读取订阅者名单"
           >
-            <RefreshCw size={11} strokeWidth={2.5} aria-hidden />
+            {loading ? (
+              <Spinner size={11} />
+            ) : (
+              <RefreshCw size={11} strokeWidth={2.5} aria-hidden />
+            )}
             刷新
           </button>
           <button

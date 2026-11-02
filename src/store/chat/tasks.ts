@@ -209,16 +209,16 @@ export function settleUntrackedTask(
 /**
  * kill 请求已发出、等待 task_completed 的瞬态文案。点亮在 actions/xai.ts
  * 的 killTask；熄灭在 handleTaskCompleted（任务结算即终态，不能再当成一个
- * 持续计时的阶段——状态行会在没有活动标签时按 statusText 计时）。
+ * 持续计时的阶段——状态行会在没有活动标签时按 phaseText 计时）。
  */
 export const TASK_KILL_STATUS_TEXT = '正在终止后台任务…'
 
-/** 熄灭 kill 瞬态：只动自己点亮的那条文案，不碰 Cancelling…/Compacting… 等。 */
+/** 熄灭 kill 瞬态：只动自己点亮的那条 phaseText，不碰 Cancelling…/Compacting… 等。 */
 function clearTaskKillStatus(get: () => ChatState, set: SetState): void {
   const s = get()
-  if (s.statusText !== TASK_KILL_STATUS_TEXT) return
+  if (s.phaseText !== TASK_KILL_STATUS_TEXT) return
   set({
-    statusText:
+    phaseText:
       s.conn === 'busy' ? 'Waiting for response…' : s.awaitingNext ? '待处理' : '就绪',
   })
 }

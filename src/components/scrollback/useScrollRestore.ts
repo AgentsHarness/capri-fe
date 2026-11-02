@@ -90,7 +90,9 @@ export function useScrollRestore(
 
   /** 这次 scroll 事件是否由本 hook 自己写 scrollTop 引发。
    *  动量窗口内一律算自己的：触发翻页的那一下滚轮会在我们写完之后再拖
-   *  几十毫秒（见 ANCHOR_MOMENTUM_MS），那些中间帧不是用户接管。 */
+   *  几十毫秒（见 ANCHOR_MOMENTUM_MS），那些中间帧不是用户接管。
+   *  键盘 / 拖滚动条这类不会经过 wheel/touch 入口的手势由 Scrollback 直接
+   *  调 cancelScrollSettle，不靠这个时间窗区分。 */
   const isProgrammaticScroll = useCallback(
     (box: HTMLElement) => {
       if (Date.now() < momentumUntilRef.current) return true
@@ -419,7 +421,6 @@ export function useScrollRestore(
     cancelScrollSettle,
     isProgrammaticScroll,
     settleScrollAnchor,
-    restoreScrollAfterPrepend,
     settleFitOrKeep,
     revealPrependedTurn,
   }

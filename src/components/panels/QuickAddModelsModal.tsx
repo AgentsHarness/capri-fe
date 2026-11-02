@@ -686,7 +686,10 @@ export function QuickAddModelsModal({
               className="flex items-center gap-1 rounded bg-gn-bg-highlight px-3 py-1 text-[11.5px] font-semibold text-gn-fg hover:bg-gn-bg-hover disabled:cursor-not-allowed disabled:opacity-40 sm:px-3.5 sm:text-[12px]"
             >
               {saving ? (
-                '正在写入配置…'
+                <>
+                  <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                  <span>正在写入配置…</span>
+                </>
               ) : (
                 <>
                   <span className="hidden sm:inline">添加所选模型 ({selectedRemoteIds.size})</span>

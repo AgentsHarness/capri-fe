@@ -267,9 +267,9 @@ export function handleNotifApps(
             // the wait-for-token text once verification clears.
             const verifying = f.verifying_completion === true
             if (verifying) {
-              set({ statusText: 'Verifying…' })
-            } else if (get().statusText === 'Verifying…') {
-              set({ statusText: 'Waiting for response…' })
+              set({ phaseText: 'Verifying…' })
+            } else if (get().phaseText === 'Verifying…') {
+              set({ phaseText: 'Waiting for response…' })
             }
             if (status === 'complete') {
               appendEntry(set, {

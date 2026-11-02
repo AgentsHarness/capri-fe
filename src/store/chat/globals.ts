@@ -19,7 +19,6 @@ export const NOTICE_DEDUP_WINDOW_MS = 30_000
  * and event/pending helpers mutate live on this object.
  */
 export const runtime = {
-  lastBusySnapshot: {} as Record<string, boolean>,
   displayedAnnouncementFingerprints: new Map<string, string>(),
   continueSessionTimer: null as ReturnType<typeof setTimeout> | null,
   peerSessionLoadSid: null as string | null,

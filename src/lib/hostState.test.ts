@@ -4,9 +4,9 @@ import { hostState, hostStateLabel, type HostState } from './hostState'
 const base = { hostId: 'h1', hostName: 'H', online: true }
 
 describe('hostState', () => {
-  it('旧 hub（无 busy/booting/pendingCount 字段）不派生状态，退回原样', () => {
-    expect(hostState(base)).toBeUndefined()
-    expect(hostState({ ...base, ready: true })).toBeUndefined()
+  it('在线且无任何实时旗标 → idle（v2 hub 空闲时省略 busy/booting/pendingCount）', () => {
+    expect(hostState(base)).toBe('idle')
+    expect(hostState({ ...base, ready: true })).toBe('idle')
     expect(hostStateLabel(undefined)).toBeUndefined()
   })
 

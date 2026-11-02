@@ -51,16 +51,27 @@ describe('migrateStorageKeys', () => {
   it('acpfe.* 旧键搬到 capri-fe.* 并删除旧键', () => {
     seedLegacy({
       'acpfe.modeFlags': '{"yoloMode":true}',
-      'acpfe.historyPins.synced': 'snapshot-v1',
       'acpfe.multiline': 'true',
     })
     migrateStorageKeys(store)
     expect(store.getItem(KEY.modeFlags)).toBe('{"yoloMode":true}')
-    expect(store.getItem(KEY.historyPinsSynced)).toBe('snapshot-v1')
     expect(store.getItem(KEY.multiline)).toBe('true')
     expect(store.getItem('acpfe.modeFlags')).toBeNull()
-    expect(store.getItem('acpfe.historyPins.synced')).toBeNull()
     expect(store.getItem('acpfe.multiline')).toBeNull()
+  })
+
+  it('清除废弃的 pins 同步副产物键（acpfe.* 与 capri-fe.* 两个前缀）', () => {
+    const deadPins = [
+      'acpfe.historyPins.synced',
+      'acpfe.historyPins.ver',
+      'acpfe.historyPins.ops',
+      'capri-fe.historyPins.synced',
+      'capri-fe.historyPins.ver',
+      'capri-fe.historyPins.ops',
+    ]
+    seedLegacy(Object.fromEntries(deadPins.map((k) => [k, 'stale'])))
+    migrateStorageKeys(store)
+    for (const k of deadPins) expect(store.getItem(k), `${k} 应被清除`).toBeNull()
   })
 
   it('分隔符收口：短横键进点键', () => {

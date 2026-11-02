@@ -67,8 +67,7 @@ function makeState(patch: Partial<ChatState> = {}): ChatState {
     detachedTasks: [],
     detachedHintKey: null,
     continueSession: vi.fn().mockResolvedValue(undefined),
-    refreshSessions: vi.fn().mockResolvedValue(undefined),
-    refreshWorkspaces: vi.fn().mockResolvedValue(undefined),
+    refreshSessionLists: vi.fn().mockResolvedValue(undefined),
     clearCompletedNotice: vi.fn(),
     ...patch,
   } as unknown as ChatState
@@ -112,7 +111,7 @@ describe('xaiActions.forkSession', () => {
       's1',
     )
     // fork 成功后刷新列表并切换到新会话（TUI 切到对等 agent）。
-    expect(state.refreshSessions).toHaveBeenCalled()
+    expect(state.refreshSessionLists).toHaveBeenCalled()
     expect(state.continueSession).toHaveBeenCalledWith('fork-1', '/w')
   })
 
@@ -151,16 +150,15 @@ describe('xaiActions.forkSession', () => {
     expect(transport.sessionDelete).toHaveBeenCalledWith('s1', '/w')
     expect(resetToEmpty).toHaveBeenCalled()
     expect(refreshOrder(state)).toBeGreaterThan(resetToEmpty.mock.invocationCallOrder[0])
-    expect(state.refreshWorkspaces).toHaveBeenCalled()
+    expect(state.refreshSessionLists).toHaveBeenCalled()
   })
 
-  it('删除历史会话：不 resetToEmpty，仍刷新两个列表', async () => {
+  it('删除历史会话：不 resetToEmpty，仍刷新列表', async () => {
     const resetToEmpty = vi.fn()
     const state = makeState({ resetToEmpty })
     await bind(state).deleteSession('other', '/w')
     expect(resetToEmpty).not.toHaveBeenCalled()
-    expect(state.refreshSessions).toHaveBeenCalled()
-    expect(state.refreshWorkspaces).toHaveBeenCalled()
+    expect(state.refreshSessionLists).toHaveBeenCalled()
   })
 
   it('删除会话同步清理 prefs（置顶/待办）、completedNotice 和 planMode', async () => {
@@ -179,9 +177,10 @@ describe('xaiActions.forkSession', () => {
   })
 })
 
-/** refreshSessions 的全局调用序（对照 invocationCallOrder 用）。 */
+/** 统一刷新入口的全局调用序（对照 invocationCallOrder 用）。 */
 function refreshOrder(state: ChatState): number {
-  return (state.refreshSessions as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]
+  return (state.refreshSessionLists as ReturnType<typeof vi.fn>).mock
+    .invocationCallOrder[0]
 }
 
 describe('xaiActions.askBtw', () => {

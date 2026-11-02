@@ -13,9 +13,9 @@ import {
 } from './stream'
 import { isTurnEndLine, tailHasRetryBanner, turnIsLive, turnMarker } from './turnStatus'
 import { isBashBlocks, userRowText } from '../promptQueue'
+import type { StreamBufKind } from './stream'
 
-/** Selectable row ids in display order (entries + synthetic group headers). */
-export type StreamBufKind = 'thought' | 'assistant'
+export type { StreamBufKind }
 
 /**
  * 回合终态戳记（幂等盖章）。done / prompt_complete / turn_completed /
@@ -89,7 +89,7 @@ export function finalizeTurn(
     return {
       conn: 'ready',
       // Blue "待处理" until the next user message.
-      statusText: '待处理',
+      phaseText: '待处理',
       awaitingNext: true,
       openAssistantId: undefined,
       openThoughtId: undefined,
@@ -108,6 +108,7 @@ export function finalizeTurn(
       ),
       turnStartedAt: undefined,
       currentPromptId: undefined,
+      promptAcceptedAt: undefined,
       // Turn end: the host resolved every outstanding permission request
       // (approval timeout / completion), so a non-empty pending queue
       // here is stale — drop it (TUI drain_permission_queue).
@@ -162,8 +163,11 @@ export function adoptTurn(
     currentStreamStartMs: undefined,
     lastCompletedTurn: undefined,
     pendingOptimisticUserId: userId,
+    // 队列出队开跑 = TUI queue drain 的 follow_new_turn(Some(prompt), flip)：
+    // 新回合从队首 prompt 起翻一页，[ui] page_flip_on_send 照常生效。
+    lastSentPromptId: userId,
     conn: 'busy',
-    statusText: 'Waiting for response…',
+    phaseText: 'Waiting for response…',
     awaitingNext: false,
     turnStartedAt: Date.now(),
     // 收养回合的身份 = 权威队列广播的 running_prompt_id（agent 侧
@@ -250,13 +254,12 @@ export function clearSubagentSettleTimer(): void {
   }
 }
 
-/** 父回合是否有未决活动（open 流式条目 / 运行中工具 / 运行中 workflow）。 */
+/** 父回合是否有未决活动（open 流式条目 / 运行中工具）。 */
 export function parentTurnHasOpenActivity(s: ChatState): boolean {
   if (s.openAssistantId != null || s.openThoughtId != null) return true
   return s.entries.some(
     (e) =>
       (e.kind === 'tool' && (e.status === 'pending' || e.status === 'in_progress')) ||
-      (e.kind === 'workflow' && e.running) ||
       (e.kind === 'thought' && e.streaming),
   )
 }
@@ -345,6 +348,7 @@ export function armTurnBlipWatchdog(
       awaitingNext: false,
       turnStartedAt: undefined,
       currentPromptId: undefined,
+      promptAcceptedAt: undefined,
     })
   }, TURN_BLIP_GRACE_MS)
 }

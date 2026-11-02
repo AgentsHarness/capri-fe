@@ -101,8 +101,9 @@ export type EntryChrome = {
   toggleThought: (id: string) => void
   toggleUser: (id: string) => void
   toggleBtw: (id: string) => void
-  cancelSubagent: (id: string) => void
-  killTask: (id: string, opts?: { notifyAgent?: boolean }) => void
+  /** 返回 Promise：行内 `[cancel]` / `[kill]` 的转圈覆盖到请求有结果。 */
+  cancelSubagent: (id: string) => Promise<void> | void
+  killTask: (id: string, opts?: { notifyAgent?: boolean }) => Promise<void> | void
   liveText: string | undefined
   thoughtText: string | undefined
   bodyRef: { current: HTMLDivElement | null }

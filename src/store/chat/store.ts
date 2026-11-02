@@ -21,7 +21,7 @@ import {
 import { appendEntry, type EntryWithoutId } from './entries'
 import { initChat } from './actions/init'
 import { goalActions } from './actions/goal'
-import { hostActions } from './actions/hosts'
+import { hostActions, resendUndeliveredPrompt } from './actions/hosts'
 import { memoryActions } from './actions/memory'
 import { noticeActions } from './actions/notices'
 import { livePollActions } from './actions/livePoll'
@@ -50,7 +50,8 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
   currentStreamStartMs: undefined,
   lastCompletedTurn: undefined,
   conn: 'connecting',
-  statusText: '连接中…',
+  phaseText: '连接中…',
+  statusText: '',
   newSessionPending: false,
   recapPendingFor: undefined,
   memoryCommandPending: undefined,
@@ -117,6 +118,10 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
   tasksBarOpen: false,
   setTasksBarOpen: (open) => set({ tasksBarOpen: open }),
   showTimestamps: true,
+  idleStatusLine: () => {
+    const s = get()
+    return s.statusText || s.phaseText
+  },
   toggleTimestamps: () =>
     set((s) => ({
       showTimestamps: !s.showTimestamps,
@@ -270,6 +275,7 @@ export const useChatStore = create<ChatState>((setRaw, get, api) => {
     set((s) => ({ layerErrors: { ...s.layerErrors, [layer]: err } })),
   /** 关闭顶栏的 hub/host 层错误提示（用户已确认该消息）。 */
   dismissNotice: () => set({ layerErrors: {} }),
+  resendUndeliveredPrompt: () => resendUndeliveredPrompt(set, get),
 
   loadHistory: (sessionId, cwd, opts) => loadSessionHistory(set, get, sessionId, cwd, opts),
 

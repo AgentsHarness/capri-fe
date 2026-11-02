@@ -98,11 +98,19 @@ describe('QuestionModal timeout 呈现', () => {
   })
 
   it('wire 无 deadline + 未配置 → 按 agent 默认 1800 秒倒计时', async () => {
-    transportMock.settings.mockResolvedValue({})
-    await ensureToolsetSettings()
-    renderCard({}, 'r-default')
-    // 1800s = 30:00。
-    expect(screen.getByRole('status').textContent).toContain('提问倒计时 30:00')
+    vi.useFakeTimers()
+    try {
+      // 锚点取请求到达时的 Date.now()，首次渲染晚 1ms 就会 floor 成 29:59；
+      // 固定系统时钟让满值断言不依赖调度速度。
+      vi.setSystemTime(1_700_000_000_000)
+      transportMock.settings.mockResolvedValue({})
+      await ensureToolsetSettings()
+      renderCard({}, 'r-default')
+      // 1800s = 30:00。
+      expect(screen.getByRole('status').textContent).toContain('提问倒计时 30:00')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('冷缓存 → 先按默认预算，配置落地后收敛到真值（同一锚点，不重新计时）', async () => {
@@ -375,5 +383,53 @@ describe('QuestionModal 键盘选择 + 提交', () => {
     fireEvent.keyDown(window, { key: 'ArrowDown' })
     await waitFor(() => expect(screen.getByText('该选项无详细说明')).not.toBeNull())
     expect(screen.getByText(/选项说明/)).not.toBeNull()
+  })
+})
+
+describe('QuestionModal 提交等待态', () => {
+  const twoOptions = {
+    questions: [
+      {
+        question: 'Q?',
+        options: [{ label: 'A' }, { label: 'B' }],
+      },
+    ],
+  }
+
+  it('回执未到 → 提交按钮转圈且禁用，其余出口一起锁住；连点只发一次请求', async () => {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    respondXaiMock.mockClear()
+    respondXaiMock.mockImplementation(() => gate)
+    renderCard(twoOptions)
+    await waitFor(() => expect(screen.getByText('Q?')).not.toBeNull())
+    fireEvent.click(screen.getByText('A'))
+    const submit = screen.getByRole('button', { name: /提交/ })
+    fireEvent.click(submit)
+    fireEvent.click(submit)
+    expect(respondXaiMock).toHaveBeenCalledTimes(1)
+    expect(submit).toBeDisabled()
+    expect(submit.querySelector('svg.animate-spin')).not.toBeNull()
+    // 取消也一起锁住：第二笔应答会撞上「已过期」。
+    expect(screen.getByRole('button', { name: '取消' })).toBeDisabled()
+    release()
+    await act(async () => {})
+    expect(screen.getByRole('button', { name: /提交/ })).not.toBeDisabled()
+  })
+
+  it('应答失败（store 保留卡片）→ 转圈收起，用户可以重试', async () => {
+    respondXaiMock.mockClear()
+    respondXaiMock.mockRejectedValueOnce(new Error('offline'))
+    renderCard(twoOptions)
+    await waitFor(() => expect(screen.getByText('Q?')).not.toBeNull())
+    fireEvent.click(screen.getByText('A'))
+    const submit = screen.getByRole('button', { name: /提交/ })
+    fireEvent.click(submit)
+    await waitFor(() => expect(submit).not.toBeDisabled())
+    expect(submit.querySelector('svg.animate-spin')).toBeNull()
+    fireEvent.click(submit)
+    expect(respondXaiMock).toHaveBeenCalledTimes(2)
   })
 })

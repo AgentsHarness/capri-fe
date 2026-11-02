@@ -281,16 +281,6 @@ describe('EmptyStatePicker', () => {
       expect(btn.getAttribute('title')).toContain('probe down')
     })
 
-    it('旧 host：gitRepoRoot 报 Invalid params，gitBranches 给出 repoRoot → 开关仍可用', async () => {
-      useChatStore.setState({ emptyCwd: '/repo' })
-      repoRootMock.mockRejectedValue(new Error('Invalid params') as never)
-      branchesMock.mockResolvedValue({ branches: [], repoRoot: '/repo' } as never)
-      render(<EmptyStatePicker />)
-      await waitFor(() =>
-        expect(screen.getByRole('button', { name: '使用 Worktree' })).not.toBeDisabled(),
-      )
-    })
-
     it('目录换成非 git 仓库 → 开关自动复位（不让按钮停在做不到的状态）', async () => {
       useChatStore.setState({ emptyCwd: '/repo', emptyWorktree: true })
       repoRootMock.mockResolvedValue({ gitRoot: '/repo' } as never)

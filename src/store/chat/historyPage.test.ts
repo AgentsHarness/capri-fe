@@ -163,10 +163,38 @@ describe('mergeEntriesByMsgSeq', () => {
     ])
   })
 
-  it('任一侧有条目缺 msgSeq → null（调用方回退现有拼接）', () => {
-    expect(mergeEntriesByMsgSeq([e('o', 0)], [e('n')])).toBeNull()
-    expect(mergeEntriesByMsgSeq([e('o')], [e('n', 0)])).toBeNull()
+  it('少数条目缺 msgSeq → 按邻居位置归并，不再整段放弃', () => {
+    // 旧页里有一条没盖到序号（跨页工具行的正文补写），它应留在原位。
+    const older = [e('o0', 0), e('o1'), e('o2', 2)]
+    const newer = [e('n3', 3)]
+    expect(mergeEntriesByMsgSeq(older, newer)!.map((x) => x.id)).toEqual([
+      'o0',
+      'o1',
+      'o2',
+      'n3',
+    ])
+  })
+
+  it('页首缺 msgSeq → 跟随其后第一条已编号的行（该页最前）', () => {
+    const older = [e('o0'), e('o1', 10)]
+    const newer = [e('n11', 11)]
+    expect(mergeEntriesByMsgSeq(older, newer)!.map((x) => x.id)).toEqual([
+      'o0',
+      'o1',
+      'n11',
+    ])
+  })
+
+  it('两侧完全没有 msgSeq → null（调用方回退旧页在前）', () => {
+    expect(mergeEntriesByMsgSeq([e('o')], [e('n')])).toBeNull()
     expect(mergeEntriesByMsgSeq([], [])).toEqual([])
+  })
+
+  it('只有一侧全无 msgSeq，另一侧有序号 → 仍能归并', () => {
+    // 旧页来自透传路径（整页无号），新页有序号：旧页整体排在新页前。
+    expect(
+      mergeEntriesByMsgSeq([e('o0'), e('o1')], [e('n2', 2)])!.map((x) => x.id),
+    ).toEqual(['o0', 'o1', 'n2'])
   })
 })
 

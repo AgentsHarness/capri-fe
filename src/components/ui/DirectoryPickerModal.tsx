@@ -221,7 +221,7 @@ export function DirectoryPickerModal({
                 if (upTarget && !loading) void load(upTarget)
               }}
               disabled={!upTarget || loading}
-              className="inline-flex shrink-0 items-center gap-1 rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-40 disabled:hover:bg-transparent"
+              className="inline-flex shrink-0 items-center gap-1 rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
               title="上级目录"
             >
               <ArrowUp size={12} aria-hidden />
@@ -367,8 +367,9 @@ export function DirectoryPickerModal({
                 onClick={() => void choose()}
                 disabled={!canPick}
                 title={knownInvalid ? '路径不可用：先按回车确认或修正路径' : '把当前目录作为工作目录'}
-                className="rounded bg-gn-bg-highlight px-3 py-1 text-[11px] text-gn-cyan hover:bg-gn-bg-dark disabled:opacity-40"
+                className="inline-flex items-center gap-1 rounded bg-gn-bg-highlight px-3 py-1 text-[11px] text-gn-cyan hover:bg-gn-bg-dark disabled:cursor-not-allowed disabled:opacity-40"
               >
+                {choosing ? <LoaderCircle size={12} className="animate-spin" aria-hidden /> : null}
                 选择此目录
               </button>
             </div>

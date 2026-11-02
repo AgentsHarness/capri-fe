@@ -1,4 +1,5 @@
 import type { ScrollEntry } from '../../api/types'
+import { findArrayField } from '../../api/rpc/core'
 import type { ChatState } from './types'
 import { nid } from './ids'
 import { nonBlankStr } from './util'
@@ -82,7 +83,7 @@ export function parseRunningSubagent(
 
 /** 从任意响应包络里取出注册表数组（host 可能包一层 result）。 */
 export function parseRunningSubagents(raw: unknown): RunningSubagentRow[] {
-  const list = findSubagentsArray(raw)
+  const list = findArrayField(raw, 'subagents')
   return list
     .filter(
       (x): x is Record<string, unknown> =>
@@ -90,25 +91,6 @@ export function parseRunningSubagents(raw: unknown): RunningSubagentRow[] {
     )
     .map(parseRunningSubagent)
     .filter((r): r is RunningSubagentRow => r !== null)
-}
-
-function findSubagentsArray(root: unknown): unknown[] {
-  const seen = new Set<unknown>()
-  const walk = (v: unknown, depth: number): unknown[] | null => {
-    if (v == null || depth > 6) return null
-    if (typeof v !== 'object') return null
-    if (seen.has(v)) return null
-    seen.add(v)
-    if (Array.isArray(v)) return null
-    const o = v as Record<string, unknown>
-    if (Array.isArray(o.subagents)) return o.subagents
-    for (const k of ['result', 'data', 'payload']) {
-      const found = walk(o[k], depth + 1)
-      if (found) return found
-    }
-    return null
-  }
-  return walk(root, 0) ?? []
 }
 
 /**

@@ -45,23 +45,38 @@ describe('client_request 会话归属', () => {
     SUPPORTED_XAI_REQUESTS.add('x.ai/ask_user_question')
   })
 
-  it('params 带别的会话 sid（host 未打顶层 sid）→ 不画进当前视图', () => {
+  it('顶层 sid 是别的会话 → 不画进当前视图', () => {
     const state = makeState()
     const { set, get } = bind(state)
-    const handled = handleSessionCtrlEvent(set, get, reqEvent({ sessionId: 's2' }))
+    const handled = handleSessionCtrlEvent(set, get, reqEvent({}, 's2'))
     expect(handled).toBe(true)
     expect(state.pending).toEqual([])
   })
 
-  it('params sid 就是当前会话 → 正常入卡并带上归属', () => {
+  it('顶层 sid 就是当前会话 → 正常入卡并带上归属', () => {
     const state = makeState()
     const { set, get } = bind(state)
-    handleSessionCtrlEvent(set, get, reqEvent({ sessionId: 's1' }))
+    handleSessionCtrlEvent(set, get, reqEvent({}, 's1'))
     expect(state.pending.map((p) => p.requestId)).toEqual(['r1'])
     expect(state.pending[0]).toMatchObject({ sessionId: 's1' })
   })
 
-  it('无 sid 的 legacy 请求照旧放行（兼容老 host）', () => {
+  it('归属只认顶层 sid，params 里的同名字段不再参与', () => {
+    const state = makeState()
+    const { set, get } = bind(state)
+    handleSessionCtrlEvent(set, get, reqEvent({ sessionId: 's2' }, 's1'))
+    expect(state.pending[0]).toMatchObject({ sessionId: 's1' })
+  })
+
+  it('只有 params 带 sid 的行按无归属的 legacy 行放行', () => {
+    const state = makeState()
+    const { set, get } = bind(state)
+    handleSessionCtrlEvent(set, get, reqEvent({ sessionId: 's2' }))
+    expect(state.pending.map((p) => p.requestId)).toEqual(['r1'])
+    expect(state.pending[0]?.sessionId).toBeUndefined()
+  })
+
+  it('无顶层 sid 的 legacy 请求照旧放行', () => {
     const state = makeState()
     const { set, get } = bind(state)
     handleSessionCtrlEvent(set, get, reqEvent({ options: [] }))
@@ -71,7 +86,7 @@ describe('client_request 会话归属', () => {
   it('空状态（会话尚未锚定）下带 sid 的请求丢弃，无 sid 仍放行', () => {
     const empty = makeState({ sessionId: undefined })
     const a = bind(empty)
-    handleSessionCtrlEvent(a.set, a.get, reqEvent({ sessionId: 's2' }))
+    handleSessionCtrlEvent(a.set, a.get, reqEvent({}, 's2'))
     expect(empty.pending).toEqual([])
     handleSessionCtrlEvent(a.set, a.get, reqEvent({ options: [] }))
     expect(empty.pending.map((p) => p.requestId)).toEqual(['r1'])
@@ -83,7 +98,7 @@ describe('client_request 会话归属', () => {
     handleSessionCtrlEvent(
       set,
       get,
-      { type: 'client_request', requestId: 'r9', method: 'x.ai/nope', params: { sessionId: 's2' } } as unknown as AcpEvent,
+      { type: 'client_request', requestId: 'r9', method: 'x.ai/nope', sessionId: 's2', params: {} } as unknown as AcpEvent,
     )
     expect(state.respondXai).not.toHaveBeenCalled()
     expect(state.xaiRequests).toEqual([])
@@ -107,7 +122,8 @@ describe('client_request 会话归属', () => {
       type: 'client_request',
       requestId: 'r-recv',
       method: 'x.ai/ask_user_question',
-      params: { sessionId: 's1' },
+      params: {},
+      sessionId: 's1',
       receivedAt: 1_700_000_000_123,
     } as unknown as AcpEvent)
     expect(state.xaiRequests[0]).toMatchObject({
@@ -132,7 +148,7 @@ describe('访客：卡片不挂载，只重拉只读状态', () => {
   it('client_request → 不建 pending 卡，只刷新状态', () => {
     const state = guestState()
     const { set, get } = bind(state)
-    handleSessionCtrlEvent(set, get, reqEvent({ sessionId: 's1' }))
+    handleSessionCtrlEvent(set, get, reqEvent({}, 's1'))
     expect(state.pending).toEqual([])
     expect(state.xaiRequests).toEqual([])
     expect(state.refreshGuestStatus).toHaveBeenCalled()
@@ -160,7 +176,7 @@ describe('访客：卡片不挂载，只重拉只读状态', () => {
     const refresh = vi.fn().mockResolvedValue(undefined)
     const state = makeState({ refreshGuestStatus: refresh } as Partial<ChatState>)
     const { set, get } = bind(state)
-    handleSessionCtrlEvent(set, get, reqEvent({ sessionId: 's1' }))
+    handleSessionCtrlEvent(set, get, reqEvent({}, 's1'))
     expect(state.pending.map((p) => p.requestId)).toEqual(['r1'])
     expect(refresh).not.toHaveBeenCalled()
   })

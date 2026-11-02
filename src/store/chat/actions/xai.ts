@@ -344,8 +344,7 @@ export function xaiActions(set: SetState, get: () => ChatState) {
       // sidebar. After the switch the generation is stable and both
       // refreshes land.
       await get().continueSession(newId, newCwd)
-      void get().refreshSessions()
-      void get().refreshWorkspaces()
+      void get().refreshSessionLists()
       set({
         statusText: worktree
           ? `已在 worktree 中派生新会话 ${newId.slice(0, 8)}…`
@@ -374,7 +373,7 @@ export function xaiActions(set: SetState, get: () => ChatState) {
   cancelSubagent: async (subagentId) => {
     try {
       await transport.cancelSubagent(subagentId, get().sessionId)
-      set({ statusText: '正在取消子代理…' })
+      set({ phaseText: '正在取消子代理…' })
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       set({
@@ -406,9 +405,9 @@ export function xaiActions(set: SetState, get: () => ChatState) {
       // 只看 HTTP ok 会把"这个进程里没有这条任务"演成"正在终止"。
       const outcome = await transport.killTask(taskId, get().sessionId, source)
       if (outcome === 'killed') {
-        // task_completed 紧随其后，由它把行结算掉；statusText 只在回合
+        // task_completed 紧随其后，由它把行结算掉；phaseText 只在回合
         // 运行时可见，所以这里同时给一条 toast。
-        set({ statusText: TASK_KILL_STATUS_TEXT })
+        set({ phaseText: TASK_KILL_STATUS_TEXT })
         pushToast(
           source === 'teardown'
             ? '已请求静默终止后台任务（不通知 agent）'
@@ -465,8 +464,7 @@ export function xaiActions(set: SetState, get: () => ChatState) {
       // fresh lists (the sidebar kept showing the deleted session until
       // an unrelated refresh).
       if (isCurrent) get().resetToEmpty()
-      void get().refreshSessions()
-      void get().refreshWorkspaces()
+      void get().refreshSessionLists()
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       set({

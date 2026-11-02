@@ -263,7 +263,7 @@ export function handleToolEvent(
           wasRunningBefore &&
           (tc.status === 'completed' || tc.status === 'failed')
         set({
-          ...(settledNow ? { statusText: 'Waiting for response…' } : {}),
+          ...(settledNow ? { phaseText: 'Waiting for response…' } : {}),
           entries: get().entries.map((e) => {
             if (e.id !== entryId || e.kind !== 'tool') return e
             // TUI collapsed_edit_blocks merged row: an update for a

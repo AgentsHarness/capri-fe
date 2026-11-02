@@ -45,7 +45,6 @@ beforeEach(() => {
   vi.clearAllMocks()
   useChatStore.setState({
     entries: [],
-    historyProjected: undefined,
     liteFillBusy: undefined,
     sessionId: 's1',
     cwd: '/w',
@@ -54,7 +53,7 @@ beforeEach(() => {
 
 describe('LiteFillChip', () => {
   it('lite 页还有欠着正文的行 → 显示菱形 + 行数', () => {
-    useChatStore.setState({ entries: [liteRow()], historyProjected: 'lite' })
+    useChatStore.setState({ entries: [liteRow()] })
     render(<LiteFillChip />)
     const btn = screen.getByRole('button', { name: /精简回放：1 行工具正文待补全/ })
     expect(btn.textContent).toContain('1')
@@ -64,30 +63,28 @@ describe('LiteFillChip', () => {
   it('全部补齐 → 不渲染', () => {
     useChatStore.setState({
       entries: [liteRow({ liteState: 'filled', liteOmitted: undefined })],
-      historyProjected: 'lite',
     })
     const { container } = render(<LiteFillChip />)
     expect(container).toBeEmptyDOMElement()
   })
 
-  // 图标只看「有没有行欠着正文」，不看 historyProjected 那一页的回显：
-  // 滚动区里几页并存时，那个旗标可能属于另一页（开关关后重进会话则压根
-  // 没有 liteOmitted 的行，自然也不显示）。
-  it('最新一页不是 lite 也算数：只要还有欠正文的行就显示', () => {
-    useChatStore.setState({ entries: [liteRow()], historyProjected: undefined })
+  // 图标只看「有没有行欠着正文」：开关关掉后重进会话时条目不带 lite
+  // 字段，自然也不显示。
+  it('只要还有欠正文的行就显示', () => {
+    useChatStore.setState({ entries: [liteRow()] })
     render(<LiteFillChip />)
     expect(screen.getByRole('button', { name: /精简回放：1 行工具正文待补全/ })).toBeTruthy()
   })
 
   it('开关关掉后的重进（条目不带 lite 字段）→ 不渲染', () => {
     const plain = liteRow({ liteOmitted: undefined, raw: { toolCallId: 'tc-1', kind: 'execute', status: 'completed', rawOutput: { Bash: { output: 'total 8' } } } as unknown as ToolCall })
-    useChatStore.setState({ entries: [plain], historyProjected: undefined })
+    useChatStore.setState({ entries: [plain] })
     const { container } = render(<LiteFillChip />)
     expect(container).toBeEmptyDOMElement()
   })
 
   it('补全在途 → 图标转自转 loader', () => {
-    useChatStore.setState({ entries: [liteRow()], historyProjected: 'lite', liteFillBusy: 1 })
+    useChatStore.setState({ entries: [liteRow()], liteFillBusy: 1 })
     render(<LiteFillChip />)
     const btn = screen.getByRole('button', { name: /精简回放：1 行工具正文待补全/ })
     const icon = btn.querySelector('svg.lucide-loader-circle')
@@ -98,7 +95,6 @@ describe('LiteFillChip', () => {
   it('有失败行 → 叉号 + 警告色，点击照样催发排队', () => {
     useChatStore.setState({
       entries: [liteRow({ liteState: 'error' })],
-      historyProjected: 'lite',
     })
     render(<LiteFillChip />)
     const btn = screen.getByRole('button', { name: /精简回放：1 行工具正文待补全/ })
@@ -124,7 +120,6 @@ describe('LiteFillChip', () => {
     useChatStore.setState({
       historyJumpProgress: undefined,
       entries: [liteRow()],
-      historyProjected: 'lite',
     })
     render(<LiteFillChip />)
     expect(screen.getByRole('button', { name: /精简回放：1 行工具正文待补全/ })).toBeTruthy()
@@ -139,7 +134,6 @@ describe('LiteFillChip 在 WorkspaceBar 簇里的位置', () => {
   it('出现在 context chip 之前', () => {
     useChatStore.setState({
       entries: [liteRow()],
-      historyProjected: 'lite',
       usage: { used: 12000, size: 200000 },
     })
     render(<WorkspaceBar />)
@@ -154,7 +148,6 @@ describe('LiteFillChip 在 WorkspaceBar 簇里的位置', () => {
   it('补齐之后芯片簇里就没有它了', () => {
     useChatStore.setState({
       entries: [liteRow({ liteState: 'filled', liteOmitted: undefined })],
-      historyProjected: 'lite',
       usage: { used: 12000, size: 200000 },
     })
     render(<WorkspaceBar />)
@@ -274,7 +267,6 @@ describe('访客只读芯片', () => {
   it('访客仍可点 lite 补全芯片（只读拉取）', () => {
     useChatStore.setState({
       entries: [liteRow()],
-      historyProjected: 'lite',
     })
     render(<WorkspaceBar guest />)
     const lite = screen.getByRole('button', { name: /精简回放：1 行工具正文待补全/ })

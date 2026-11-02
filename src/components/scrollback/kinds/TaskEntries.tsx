@@ -1,9 +1,9 @@
+import { useState } from 'react'
 import type { ScrollEntry } from '../../../api/types'
 import { subagentMeta } from '../../../format'
 import { InlineAction } from '../../ui/InlineAction'
 import { KillTaskAction } from '../../ui/KillTaskAction'
 import { Bullet, EntryShell } from '../EntryShell'
-import { ViewButton } from '../ViewButton'
 import type { EntryChrome } from '../chrome'
 
 export function SubagentEntry({
@@ -14,6 +14,11 @@ export function SubagentEntry({
   chrome: EntryChrome
 }) {
   const { shell, bullet, openViewer, cancelSubagent, readonly = false } = chrome
+  /**
+   * 取消请求在飞：`[cancel]` 转圈并禁用。成功时行由 agent 的
+   * subagent_finished 事件收口，这里的转圈在请求返回后落下。
+   */
+  const [cancelling, setCancelling] = useState(false)
   // 整行单击直接弹全文查看器（原「先选中再点查看」的展开流程取消）。
   const rowShell = { ...shell, onSelect: () => openViewer(e.id) }
   const label =
@@ -52,55 +57,25 @@ export function SubagentEntry({
         {e.running && e.subagentId && !readonly && (
           <InlineAction
             label="cancel"
+            busyLabel="cancel"
+            busy={cancelling}
             title="x.ai/subagent/cancel"
             className="ml-auto"
-            onRun={() => void cancelSubagent(e.subagentId!)}
+            onRun={() => {
+              if (cancelling) return
+              setCancelling(true)
+              const pending = cancelSubagent(e.subagentId!)
+              if (pending && typeof pending.then === 'function') {
+                void pending.then(
+                  () => setCancelling(false),
+                  () => setCancelling(false),
+                )
+                return
+              }
+              setCancelling(false)
+            }}
           />
         )}
-      </div>
-    </EntryShell>
-  )
-}
-
-export function WorkflowEntry({
-  e,
-  chrome,
-}: {
-  e: Extract<ScrollEntry, { kind: 'workflow' }>
-  chrome: EntryChrome
-}) {
-  const { shell, bullet, openViewer } = chrome
-  const showView = shell.selected
-  const label =
-    e.status === 'running'
-      ? 'Workflow'
-      : e.status === 'done'
-        ? 'Workflow done'
-        : e.status === 'failed'
-          ? 'Workflow failed'
-          : e.status === 'paused'
-            ? 'Workflow paused'
-            : 'Workflow cancelled'
-  return (
-    <EntryShell {...shell}>
-      <div
-        className={`flex items-center gap-1.5 ${shell.dense ? 'py-0' : 'py-[2px]'} text-[13px] leading-[1.35]`}
-      >
-        <Bullet color={bullet.color} animated={bullet.animated} />
-        <span
-          className="shrink-0 whitespace-nowrap font-bold"
-          style={{ color: bullet.color }}
-        >
-          {label}
-        </span>
-        <span className="min-w-0 truncate font-mono text-[12.5px] text-gn-muted">
-          {e.title}
-        </span>
-        <ViewButton
-          visible={showView}
-          onOpen={() => openViewer(e.id)}
-          className="ml-auto"
-        />
       </div>
     </EntryShell>
   )
@@ -151,7 +126,7 @@ export function BgTaskEntry({
         {e.running && e.taskId && !readonly && (
           <KillTaskAction
             className="ml-auto"
-            onKill={(notifyAgent) => void killTask(e.taskId!, { notifyAgent })}
+            onKill={(notifyAgent) => killTask(e.taskId!, { notifyAgent })}
           />
         )}
       </div>

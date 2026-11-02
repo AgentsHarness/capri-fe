@@ -335,6 +335,26 @@ describe('QueueStrip', () => {
     expect(grip.className).toContain('touch-none')
   })
 
+  it('一行在发送：只锁该行的操作，另一行的删除/编辑仍可用', () => {
+    render(
+      <QueueStrip
+        nav={makeNav([makePrompt('q1', 'first'), makePrompt('q2', 'second')])}
+        sendQueuedItem={vi.fn()}
+        headSteer={false}
+        sendingId="q1"
+      />,
+    )
+    const rows = document.querySelectorAll('[data-queue-idx]')
+    const del = (r: Element) =>
+      r.querySelector('button[aria-label="删除这条排队消息"]') as HTMLButtonElement
+    const edit = (r: Element) =>
+      r.querySelector('button[title="弹窗编辑这条排队消息"]') as HTMLButtonElement
+    expect(del(rows[0])).toBeDisabled()
+    expect(edit(rows[0])).toBeDisabled()
+    expect(del(rows[1])).not.toBeDisabled()
+    expect(edit(rows[1])).not.toBeDisabled()
+  })
+
   it('访客只读：正文与附图标记可见，抓手图标保留但不可拖，发送/编辑/删除/队首模式都不渲染', () => {
     const onToggle = vi.fn()
     const sendQueuedItem = vi.fn()

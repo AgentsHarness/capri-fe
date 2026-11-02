@@ -8,7 +8,8 @@
  *  1. 无归属标记或就是当前会话 → 保留；
  *  2. 全局 kind（客户端级广播）→ 保留；
  *  3. 全局事件类型（检索/git/队列等，见 kinds.GLOBAL_EVENT_TYPES）→ 保留；
- *  4. 会话级但处理器要主动处理外来事件（recap 按会话缓存）→ 保留；
+ *  4. 会话级但处理器要主动处理外来事件（recap 按会话缓存、标题/摘要写
+ *     该会话自己的 sessions 行，见 kinds.FOREIGN_PROCESSED_TAGS）→ 保留；
  *  5. 其余外来会话事件 → 丢弃。
  *
  * 子代理子会话（child_session_id）的流事件在订阅层已路由给 subagent view
@@ -24,13 +25,21 @@ import {
   GLOBAL_TAGS,
 } from './kinds'
 
-/** session_notification 载体的 kind 标签（typed 事件没有内层 update）。 */
+/**
+ * 事件的 kind 标签：generic `session_notification` 在 params 上，宿主
+ * 派发的 typed kind 事件在 `update` 上（`{type:<kind>, update:{sessionUpdate}}`）。
+ * 两者都要认，否则 FOREIGN_PROCESSED_TAGS 只对 generic 载体生效——typed
+ * 载体在订阅层就被当成「会话级未知广播」丢掉。
+ */
 function kindTagOf(ev: AcpEvent): string | undefined {
-  const params = (ev as { params?: Record<string, unknown> }).params
+  const raw = ev as { params?: Record<string, unknown>; update?: unknown }
+  const params = raw.params
   const update =
     params && typeof params.update === 'object' && params.update !== null
       ? (params.update as Record<string, unknown>)
-      : params
+      : raw.update && typeof raw.update === 'object' && !Array.isArray(raw.update)
+        ? (raw.update as Record<string, unknown>)
+        : params
   const tag = update?.sessionUpdate
   return typeof tag === 'string' && tag ? tag : undefined
 }

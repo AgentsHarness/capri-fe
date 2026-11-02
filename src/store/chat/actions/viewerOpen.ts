@@ -1,12 +1,33 @@
-import type { ScrollEntry } from '../../../api/types'
+import type { ScrollEntry, ToolCall } from '../../../api/types'
 import { transport } from '../../../api/client'
 import type { ChatState, SetState } from '../types'
 import { envelopeToEvents } from '../history'
+import { envelopeMsgSeq } from '../envelopeParse'
 import { fillEntryRange, historyDetailParam, noteHistoryProjection } from '../historyFill'
 import {
   SUBAGENT_VIEW_PAGE_SIZE,
+  subagentToolItem,
   subagentViewAppend,
 } from '../subagent'
+
+/**
+ * 本页最老信封在宿主 msgSeq 空间里的行号；整页都不带 msgSeq（旧 host /
+ * 透传回退）→ undefined。
+ *
+ * 游标必须用这个，不能用 `totalCount - 本页条数`：lite 投影会把同
+ * toolCallId 的 tool_call/update、连续 thought 并成一封，本页条数因此
+ * 可能远小于窗口宽度（实测 100 条只剩 60 条），反推出的起点会落到窗口
+ * 中间，下一次上滑的窗口与已加载区重叠，同一批内容重复上屏。
+ */
+function oldestEnvelopeMsgSeq(envs: readonly unknown[]): number | undefined {
+  let min: number | undefined
+  for (const env of envs) {
+    const seq = envelopeMsgSeq(env)
+    if (seq == null) continue
+    if (min == null || seq < min) min = seq
+  }
+  return min
+}
 
 export function viewerOpenActions(set: SetState, get: () => ChatState) {
   return {
@@ -26,7 +47,6 @@ export function viewerOpenActions(set: SetState, get: () => ChatState) {
       e.kind !== 'plan' &&
       e.kind !== 'bg_task' &&
       e.kind !== 'subagent' &&
-      e.kind !== 'workflow' &&
       e.kind !== 'btw'
     ) {
       return
@@ -150,10 +170,20 @@ export function viewerOpenActions(set: SetState, get: () => ChatState) {
         const events = envelopeToEvents(env)
         for (const ev of events) replayed = subagentViewAppend(replayed, ev)
       }
-      // 记录分页游标（包络条数——与宿主负 offset 语义一致，过滤掉的非
-      // scrollback 事件不占游标位）：回放填充的视图（loadedCount > 0）
-      // 才支持上滑分页。
+      // 记录分页游标：优先取本页最老信封的 msgSeq；缺这个字段时按**请求
+      // 窗口**反推，而不是按返回条数。
+      //
+      // 透传回退路径（子代理的 cwd 与父会话不同时必然发生：host 按父 cwd
+      // 找不到子会话文件，就把请求转给 agent）返回的信封没有 msgSeq，而
+      // lite 投影仍在 host 出口生效——本页条数因此小于窗口宽度，`total -
+      // 条数` 会把起点算到窗口中间，下一次上滑的窗口与已加载区重叠，同一
+      // 批内容重复上屏。首拉是负 offset 的尾部窗口 [total-PAGE, total)，
+      // 起点只能由请求本身决定。
       const total = r.totalCount ?? (r.updates?.length ?? 0)
+      const pageEnvs = r.updates ?? []
+      const fetched = pageEnvs.length
+      const requestedStart = Math.max(0, total - SUBAGENT_VIEW_PAGE_SIZE)
+      const loadedStart = oldestEnvelopeMsgSeq(pageEnvs) ?? requestedStart
       set((st) => {
         const v = st.subagentViews[childSessionId]
         if (!v) return {}
@@ -167,10 +197,10 @@ export function viewerOpenActions(set: SetState, get: () => ChatState) {
               ...v,
               items,
               fetchState: 'loaded',
-              loadedCount: r.updates?.length ?? 0,
+              loadedCount: fetched,
               totalCount: total,
-              // 绝对最老行号（首拉 = 最新一页）：已加载区 = [start, total)。
-              loadedStart: Math.max(0, total - (r.updates?.length ?? 0)),
+              // 已加载区 = [loadedStart, totalCount)。
+              loadedStart,
             },
           },
         }
@@ -262,6 +292,49 @@ export function viewerOpenActions(set: SetState, get: () => ChatState) {
           finishedAt: Date.now(),
         }
         oldItems = oldItems.slice(1)
+      }
+      // 页边界会切开的工具调用：tool_call 在旧页、它的 update 在新页。
+      // 旧页在隔离数组里回放时找不到已加载区那行，更新分支会按首次
+      // tool_call 再建一行（标题退化成 kindName）——上滑一次就多出一组
+      // 重复的 Run 行。同 toolCallId 的旧页副本合并进已加载区那一行
+      // （后到的 update 字段优先），并丢弃旧页副本。
+      const toolRowById = new Map<string, number>()
+      oldItems.forEach((e, i) => {
+        if (e.kind === 'tool' && e.toolCallId) toolRowById.set(e.toolCallId, i)
+      })
+      if (toolRowById.size > 0) {
+        const kept: ScrollEntry[] = []
+        for (const e of newItems) {
+          const idx =
+            e.kind === 'tool' && e.toolCallId
+              ? toolRowById.get(e.toolCallId)
+              : undefined
+          const cur = idx != null ? oldItems[idx] : undefined
+          if (e.kind === 'tool' && cur && cur.kind === 'tool' && idx != null) {
+            // update 的字段优先（它是更晚的状态）；空标题回退到展开前的
+            // 那行（tool_call），否则标题会被洗成 kindName。
+            const mergedRaw: ToolCall = { ...(e.raw || {}), ...(cur.raw || {}) }
+            if (!mergedRaw.title && e.raw?.title) mergedRaw.title = e.raw.title
+            const row = subagentToolItem(mergedRaw, e)
+            const seqs = [e.msgSeq, cur.msgSeq].filter(
+              (n): n is number => n != null,
+            )
+            const ends = [e.msgSeqEnd, cur.msgSeqEnd].filter(
+              (n): n is number => n != null,
+            )
+            const omitted = (e.liteOmitted ?? 0) + (cur.liteOmitted ?? 0)
+            const merged = {
+              ...row,
+              ...(seqs.length ? { msgSeq: Math.min(...seqs) } : {}),
+              ...(ends.length ? { msgSeqEnd: Math.max(...ends) } : {}),
+              ...(omitted > 0 ? { liteOmitted: omitted } : {}),
+            }
+            oldItems = oldItems.map((it, i) => (i === idx ? merged : it))
+            continue
+          }
+          kept.push(e)
+        }
+        newItems = kept
       }
       // 更早的页在前拼接；不设条目上限——由用户上滑分页控制（不再丢弃最旧）。
       const merged = [...newItems, ...oldItems]

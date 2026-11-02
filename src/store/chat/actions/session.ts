@@ -14,9 +14,11 @@ import { permissionSeedMeta } from '../modeFlags'
 import { clearSuppressedTools } from '../tools'
 import { resetSessionState } from '../reset'
 import { clearStreamBuf } from '../stream'
+import { preserveLiveSessionSummary } from '../sessionIdentity'
 import { KEY } from '../../../lib/keys'
 import { usePins } from '../../historyPins'
 import { blockGuestWrite, isGuestState } from '../guestMode'
+import { createRefreshGate } from '../refreshGate'
 
 /** workspace-list-recent 每页条数（初始 limit，「加载更多」每次 +50）。 */
 const WORKSPACE_RECENT_PAGE = 50
@@ -101,8 +103,17 @@ function fallbackGroupsFromSessions(sessions: SessionInfo[]): WorkspaceGroup[] {
 }
 
 export function sessionActions(set: SetState, get: () => ChatState) {
-  return {
-  refreshSessions: async (retry = 1) => {
+  /**
+   * 两个列表资源各自的刷新闸门。会话列表与工作区摘要的刷新点有十几处
+   * （挂载 / hello / ready / sessions_changed / 切 host / 重命名 / 删除 /
+   * fork / rewind），一次重连会把它们在同一瞬间走一遍。闸门负责单飞与
+   * 尾部合并，见 refreshGate.ts。
+   */
+  const sessionsGate = createRefreshGate()
+  const workspacesGate = createRefreshGate()
+
+  /** 带重试的拉取本体；闸门只包住它，重试直接递归这里而不是走 action。 */
+  const pullSessions = async (retry: number): Promise<void> => {
     // 访客：会话列表由白名单决定（guestSessions），不拉 host 的整份 roster。
     if (isGuestState(get())) return
     const scope = captureAsyncScope(get)
@@ -113,21 +124,11 @@ export function sessionActions(set: SetState, get: () => ChatState) {
     try {
       const { sessions } = await transport.listSessions()
       if (!isAsyncScopeCurrent(get, scope)) return
-      set({ sessions })
-      // Busy 转变检测（完成提醒兜底）：某会话从 busy → idle 且不是
-      // 当前会话 → 通知 + ✓。第一次拉取只建基线，不误报。
-      let next: Record<string, boolean> = {}
-      for (const s of sessions) next[s.sessionId] = s.status?.busy === true
-      const cur = get()
-      for (const [sid, wasBusy] of Object.entries(runtime.lastBusySnapshot)) {
-        if (wasBusy && next[sid] === false && sid !== cur.sessionId) {
-          cur.noteSessionCompleted(sid)
-        }
-      }
-      // 上限：会话数过多时放弃本轮对比、重置为空基线（下轮重新建基线），
-      // 防止模块级快照无上限增长。
-      if (Object.keys(next).length > 100) next = {}
-      runtime.lastBusySnapshot = next
+      // 完成提醒不在拉取路径上判：`sessions` 换新数组后由 store 的统一
+      // 订阅（store/notifications.ts）比较 busy 转移，见 sessionCompletion.ts。
+      // `/api/sessions` 不带 lastTurnSummary：与上一份按会话合并，保住
+      // live `last_turn_summary` 写进副行的摘要（见 preserveLiveSessionSummary）。
+      set({ sessions: preserveLiveSessionSummary(get().sessions, sessions) })
     } catch (e) {
       // 主动 abort（StrictMode 双挂载的 disconnect / host 切换）：请求
       // 作废而非失败，不重试——新一轮挂载/切换自会重新拉取，否则 dev
@@ -139,12 +140,12 @@ export function sessionActions(set: SetState, get: () => ChatState) {
       if (retry > 0) {
         await new Promise((r) => setTimeout(r, 4000))
         if (!isAsyncScopeCurrent(get, scope)) return
-        return get().refreshSessions(retry - 1)
+        await pullSessions(retry - 1)
       }
     }
-  },
+  }
 
-  refreshWorkspaces: async (retry = 1) => {
+  const pullWorkspaces = async (retry: number): Promise<void> => {
     // 访客：侧栏不挂载，工作区分组没有消费者。
     if (isGuestState(get())) return
     const scope = captureAsyncScope(get)
@@ -173,7 +174,8 @@ export function sessionActions(set: SetState, get: () => ChatState) {
         if (retry > 0) {
           await new Promise((r) => setTimeout(r, 4000))
           if (!isCurrent()) return
-          return get().refreshWorkspaces(retry - 1)
+          await pullWorkspaces(retry - 1)
+          return
         }
         set({
           workspaces: fallbackGroupsFromSessions(get().sessions),
@@ -212,7 +214,8 @@ export function sessionActions(set: SetState, get: () => ChatState) {
       if (retry > 0) {
         await new Promise((r) => setTimeout(r, 4000))
         if (!isCurrent()) return
-        return get().refreshWorkspaces(retry - 1)
+        await pullWorkspaces(retry - 1)
+        return
       }
       // 降级 1：全量 workspace-list（旧 agent 无 workspace-list-recent）。
       try {
@@ -235,6 +238,36 @@ export function sessionActions(set: SetState, get: () => ChatState) {
         })
       }
     }
+  }
+
+  const refreshSessions = (retry = 1, opts?: { immediate?: boolean }) =>
+    sessionsGate(() => pullSessions(retry), opts)
+
+  const refreshWorkspaces = (retry = 1, opts?: { immediate?: boolean }) =>
+    workspacesGate(() => pullWorkspaces(retry), opts)
+
+  return {
+  refreshSessions,
+
+  refreshWorkspaces,
+
+  /**
+   * 会话名册与工作区摘要一起刷新：两者在同一批时机同时失效（挂载 /
+   * sessions_changed / 重命名 / fork / 删除 / rewind / 切 host），散着写
+   * 容易只刷一侧。各自仍走自己的闸门（互不合并节流窗口），这里只等两次
+   * 刷新都收尾；只失效单个列表的路径（workspaceLoadMore 等）仍用原 action。
+   */
+  refreshSessionLists: async (retry = 1, opts?: { immediate?: boolean }) => {
+    await Promise.all([
+      refreshSessions(retry, opts),
+      refreshWorkspaces(retry, opts),
+    ])
+  },
+
+  /** 切 host：两个列表都要立刻重来一遍，且不继承上一台的节流窗口。 */
+  resetListRefreshGates: () => {
+    sessionsGate.reset()
+    workspacesGate.reset()
   },
 
   workspaceLoadMore: async () => {
@@ -422,7 +455,7 @@ export function sessionActions(set: SetState, get: () => ChatState) {
         sessionId: sid,
         cwd: startCwd || undefined,
         conn: 'ready',
-        statusText: '就绪',
+        phaseText: '就绪',
         awaitingNext: false,
         turnStartedAt: undefined,
         currentPromptId: undefined,

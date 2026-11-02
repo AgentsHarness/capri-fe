@@ -75,18 +75,15 @@ describe('accentOpts', () => {
     })
   })
 
-  it('subagent → subagentStatus；workflow → workflowStatus；bg_task → bgTaskStatus', () => {
+  it('subagent → subagentStatus；bg_task → bgTaskStatus', () => {
     const sa: ScrollEntry = { id: 's', kind: 'subagent', title: 's', status: 'started', running: true }
     expect(accentOpts(sa, false, false, 1000).subagentStatus).toBe('started')
-
-    const wf: ScrollEntry = { id: 'w', kind: 'workflow', title: 'w', status: 'running', running: true }
-    expect(accentOpts(wf, false, false, 1000).workflowStatus).toBe('running')
 
     const bg: ScrollEntry = { id: 'b', kind: 'bg_task', title: 'b', status: 'started', running: true }
     expect(accentOpts(bg, false, false, 1000).bgTaskStatus).toBe('started')
   })
 
-  it('session_event → recap/warning 透传；group_header → verbRun 或 truncation', () => {
+  it('session_event → recap/warning 透传；group_header → verbRun', () => {
     const se: ScrollEntry = { id: 'e', kind: 'session_event', text: 'x', recap: true, warning: false }
     expect(accentOpts(se, false, false, 1000).sessionEvent).toEqual({ recap: true, warning: false })
 
@@ -102,10 +99,9 @@ describe('accentOpts', () => {
       failed: false,
     })
 
-    const trunc: ScrollEntry = { id: 'g2', kind: 'group_header', count: 5 }
-    expect(accentOpts(trunc, false, false, 1000).groupHeader).toEqual({
-      variant: 'truncation',
-    })
+    // 无 verbRun → 不加 groupHeader（走 base）。
+    const bare: ScrollEntry = { id: 'g2', kind: 'group_header', count: 1 }
+    expect(accentOpts(bare, false, false, 1000).groupHeader).toBeUndefined()
   })
 
   it('pendingFreeze 透传', () => {

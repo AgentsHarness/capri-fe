@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Diamond, X } from 'lucide-react'
 import { useChatStore } from '../../store/chat'
 import { Glyphs } from '../../theme/glyphs'
 import { IconGlyph } from '../ui/IconGlyph'
+import { Spinner } from '../ui/Spinner'
 
 /**
  * x.ai/diff_review modal — web counterpart of the TUI diff-review view.
@@ -209,6 +210,11 @@ export function DiffReviewModal() {
   const [selectedIdx, setSelectedIdx] = useState(0)
   const [decisions, setDecisions] = useState<Record<number, Decision>>({})
   const [comment, setComment] = useState('')
+  /** 已发出的回执（`submit` / `close`）：往返期间锁住出口并转圈。 */
+  const [submitting, setSubmitting] = useState<'submit' | 'close' | null>(null)
+  /** 同一把锁的同步副本：键盘处理器注册在 window 上，闭包读不到最新的
+   *  submitting，重复回执的拦截必须走 ref。 */
+  const submittingRef = useRef(false)
 
   // Reset local review state when a new request arrives.
   useEffect(() => {
@@ -217,6 +223,25 @@ export function DiffReviewModal() {
     setComment('')
   }, [req?.requestId])
 
+  /** 取消回执（Esc / 背景点击 / 关闭按钮同一入口）：请求路径 dismissXai，
+   *  通知路径只关弹窗。往返期间重复调用是 no-op——第二笔应答会撞上
+   *  「已过期」，把一次成功变成红色失败。 */
+  const close = useCallback(async () => {
+    if (submittingRef.current) return
+    if (!req) {
+      closeDiffReview()
+      return
+    }
+    submittingRef.current = true
+    setSubmitting('close')
+    try {
+      await dismissXai(req.requestId)
+    } finally {
+      submittingRef.current = false
+      setSubmitting(null)
+    }
+  }, [req, dismissXai, closeDiffReview])
+
   // Esc: request path cancels (outcome:cancelled); notification path closes.
   useEffect(() => {
     if (!visible) return
@@ -224,13 +249,12 @@ export function DiffReviewModal() {
       if (e.key === 'Escape') {
         e.preventDefault()
         e.stopPropagation()
-        if (req) void dismissXai(req.requestId)
-        else closeDiffReview()
+        void close()
       }
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [visible, req, dismissXai, closeDiffReview])
+  }, [visible, close])
 
   // 弹窗打开 = 要把这些改动摊开看：滚动区里被 lite 裁掉正文的 edit 工具行
   // 在这里一次补回（同区间只拉一次；非 lite 场景 no-op、不发请求）。
@@ -240,11 +264,6 @@ export function DiffReviewModal() {
   }, [visible])
 
   if (!visible) return null
-
-  const close = () => {
-    if (req) void dismissXai(req.requestId)
-    else closeDiffReview()
-  }
 
   const active = files[Math.min(selectedIdx, Math.max(files.length - 1, 0))]
   const ins = active?.rows.filter((r) => r.kind === 'insert').length ?? 0
@@ -256,13 +275,20 @@ export function DiffReviewModal() {
     files.length === 0 || files.every((_, i) => decisions[i] !== undefined)
   const anyRejected = files.some((_, i) => decisions[i] === 'rejected')
 
-  const submit = () => {
-    if (!req) return
+  const submit = async () => {
+    if (!req || submittingRef.current) return
     const comments = comment.trim()
-    void respondXai(req.requestId, {
-      approved: !anyRejected,
-      ...(comments ? { comments } : {}),
-    })
+    submittingRef.current = true
+    setSubmitting('submit')
+    try {
+      await respondXai(req.requestId, {
+        approved: !anyRejected,
+        ...(comments ? { comments } : {}),
+      })
+    } finally {
+      submittingRef.current = false
+      setSubmitting(null)
+    }
   }
 
   return (
@@ -290,12 +316,13 @@ export function DiffReviewModal() {
           )}
           <button
             type="button"
-            onClick={close}
-            className="ml-auto rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+            onClick={() => void close()}
+            disabled={submitting !== null}
+            className="ml-auto rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40"
             aria-label="关闭弹窗"
             title="关闭 (Esc)"
           >
-            <X size={14} aria-hidden />
+            {submitting === 'close' ? <Spinner /> : <X size={14} aria-hidden />}
           </button>
         </header>
 
@@ -446,17 +473,20 @@ export function DiffReviewModal() {
             />
             <button
               type="button"
-              onClick={submit}
-              disabled={!allDecided}
-              className="min-h-9 rounded bg-gn-bg-highlight px-4 py-1.5 text-[12.5px] font-semibold text-gn-fg hover:bg-gn-bg-hover disabled:cursor-not-allowed disabled:opacity-40"
+              onClick={() => void submit()}
+              disabled={!allDecided || submitting !== null}
+              className="inline-flex min-h-9 items-center gap-1.5 rounded bg-gn-bg-highlight px-4 py-1.5 text-[12.5px] font-semibold text-gn-fg hover:bg-gn-bg-hover disabled:cursor-not-allowed disabled:opacity-40"
             >
+              {submitting === 'submit' ? <Spinner /> : null}
               提交审查
             </button>
             <button
               type="button"
-              onClick={close}
-              className="min-h-9 rounded px-3 py-1.5 text-[12.5px] text-gn-red hover:bg-gn-diff-del-bg"
+              onClick={() => void close()}
+              disabled={submitting !== null}
+              className="inline-flex min-h-9 items-center gap-1.5 rounded px-3 py-1.5 text-[12.5px] text-gn-red hover:bg-gn-diff-del-bg disabled:cursor-not-allowed disabled:opacity-40"
             >
+              {submitting === 'close' ? <Spinner /> : null}
               取消
             </button>
           </footer>
@@ -467,7 +497,7 @@ export function DiffReviewModal() {
             </span>
             <button
               type="button"
-              onClick={close}
+              onClick={() => void close()}
               className="min-h-9 rounded px-4 py-1.5 text-[12.5px] text-gn-fg2 hover:bg-gn-bg-highlight"
             >
               关闭

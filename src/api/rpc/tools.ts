@@ -1,7 +1,25 @@
 import type { TransportCore } from '../transport'
-import { findArrayField, findField, findObjectField, unwrapExtResult, xaiCall } from './core'
+import { findArrayField, findField, unwrapExtResult, xaiCall } from './core'
 import type { AgentSkill, CustomModelConfig, CustomModelFilters, ExtensionHook, WorkflowInfo } from '../types'
 import type { ExtensionsPayload, McpListServer, McpToolInfo, SettingsPatch, SettingsPayload, TerminalOutput } from '../transport'
+
+/**
+ * set-model / set-default-model 共用的请求体：空的可选字段不发送，
+ * contextWindow 只在正数时带（0 / 负值等同未指定）。
+ */
+function modelPatchBody(
+  modelId: string,
+  reasoningEffort?: string,
+  sessionId?: string,
+  contextWindow?: number,
+): Record<string, unknown> {
+  return {
+    modelId,
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(sessionId ? { sessionId } : {}),
+    ...(contextWindow && contextWindow > 0 ? { contextWindow } : {}),
+  }
+}
 
 export const toolsRpc = {
   async mcpList(this: TransportCore): Promise<{ servers: McpListServer[] }> {
@@ -584,12 +602,7 @@ export const toolsRpc = {
     const res = await this.fetch(this.url('/api/set-model'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        modelId,
-        ...(reasoningEffort ? { reasoningEffort } : {}),
-        ...(sessionId ? { sessionId } : {}),
-        ...(contextWindow && contextWindow > 0 ? { contextWindow } : {}),
-      }),
+      body: JSON.stringify(modelPatchBody(modelId, reasoningEffort, sessionId, contextWindow)),
     })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'set model failed')
@@ -606,12 +619,7 @@ export const toolsRpc = {
     const res = await this.fetch(this.url('/api/set-default-model'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        modelId,
-        ...(reasoningEffort ? { reasoningEffort } : {}),
-        ...(sessionId ? { sessionId } : {}),
-        ...(contextWindow && contextWindow > 0 ? { contextWindow } : {}),
-      }),
+      body: JSON.stringify(modelPatchBody(modelId, reasoningEffort, sessionId, contextWindow)),
     })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'set default model failed')
@@ -659,13 +667,7 @@ export const toolsRpc = {
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || `settings failed (${res.status})`)
     }
-    return {
-      ui: findObjectField(data, 'ui'),
-      session: findObjectField(data, 'session'),
-      models: findObjectField(data, 'models'),
-      cli: findObjectField(data, 'cli'),
-      toolset: findObjectField(data, 'toolset'),
-    }
+    return readSettingsPayload(data)
   },
 
   async updateSettings(
@@ -681,14 +683,20 @@ export const toolsRpc = {
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || `update settings failed (${res.status})`)
     }
-    return {
-      ui: findObjectField(data, 'ui'),
-      session: findObjectField(data, 'session'),
-      models: findObjectField(data, 'models'),
-      cli: findObjectField(data, 'cli'),
-      toolset: findObjectField(data, 'toolset'),
-    }
+    return readSettingsPayload(data)
   },
+}
+
+/** /api/settings 的应答：每张 config.toml 表按自己的 TOML 路径返回。
+ *  只丢弃非对象值（`ok` 之类）；具体展示哪些表由设置面板决定。 */
+function readSettingsPayload(data: unknown): SettingsPayload {
+  const out: Record<string, unknown> = {}
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+      if (value && typeof value === 'object' && !Array.isArray(value)) out[key] = value
+    }
+  }
+  return out as SettingsPayload
 }
 
 /** POST 一个 `{}` 体的 host 本地端点（自定义模型配置族都是这个形状）。 */

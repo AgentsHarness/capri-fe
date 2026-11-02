@@ -10,7 +10,6 @@ import type { EntryChrome, EntryViewProps } from './chrome'
 import { AssistantEntry } from './kinds/AssistantEntry'
 import {
   BtwEntry,
-  CreditLimitEntry,
   ErrorEntry,
   GroupHeaderEntry,
   ImageEntry,
@@ -18,7 +17,7 @@ import {
   SessionEventEntry,
   StatusEntry,
 } from './kinds/MiscEntries'
-import { BgTaskEntry, SubagentEntry, WorkflowEntry } from './kinds/TaskEntries'
+import { BgTaskEntry, SubagentEntry } from './kinds/TaskEntries'
 import { ThoughtEntry } from './kinds/ThoughtEntry'
 import { ToolEntry } from './kinds/ToolEntry'
 import { UserEntry } from './kinds/UserEntry'
@@ -199,10 +198,8 @@ export const EntryView = memo(function EntryView({
   if (e.kind === 'status') return <StatusEntry e={e} />
   if (e.kind === 'plan') return <PlanEntry e={e} chrome={chrome} />
   if (e.kind === 'subagent') return <SubagentEntry e={e} chrome={chrome} />
-  if (e.kind === 'workflow') return <WorkflowEntry e={e} chrome={chrome} />
   if (e.kind === 'bg_task') return <BgTaskEntry e={e} chrome={chrome} />
   if (e.kind === 'session_event') return <SessionEventEntry e={e} chrome={chrome} />
-  if (e.kind === 'credit_limit') return <CreditLimitEntry e={e} chrome={chrome} />
   if (e.kind === 'btw') return <BtwEntry e={e} chrome={chrome} />
   if (e.kind === 'group_header') return <GroupHeaderEntry e={e} chrome={chrome} />
   return null

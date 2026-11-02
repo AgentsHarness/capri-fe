@@ -1,4 +1,5 @@
 import type { DetachedTask } from '../../api/types'
+import type { ChatState } from './types'
 
 // 顶栏运行中任务的唯一来源是 agent 的活动注册表（x.ai/task/list，见
 // actions/liveTasks.ts 的 syncLiveTasks）——注册表认识的任务才杀得掉。
@@ -96,4 +97,21 @@ export function clearTopTaskTimer(): void {
 
 export function setTopTaskTimer(id: ReturnType<typeof window.setInterval>): void {
   topTaskTimer = id
+}
+
+/**
+ * 是否还有值得继续轮询的活：本会话在跑的后台任务、游离进程提示，或
+ * 回放/注册表补出来的在跑子代理。
+ *
+ * 轮询是这两类运行态的唯一收口来源（子代理 finish 与 task_completed 都可能
+ * 丢），所以只要有一类非空就要继续盯；反过来，三者全空时继续每 10 秒问
+ * 三个接口就纯属空转——空闲会话一页开着就是每小时 1080 次请求。
+ */
+export function hasLiveRunningWork(
+  s: Pick<ChatState, 'topTasks' | 'detachedTasks' | 'entries'>,
+): boolean {
+  if (s.topTasks.length > 0 || s.detachedTasks.length > 0) return true
+  return s.entries.some(
+    (e) => (e.kind === 'subagent' || e.kind === 'bg_task') && e.running === true,
+  )
 }

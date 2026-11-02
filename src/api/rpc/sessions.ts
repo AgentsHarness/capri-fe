@@ -284,21 +284,14 @@ export const sessionsRpc = {
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || `history failed (${res.status})`)
     }
-    // projected / omittedBytes 是能力回显而非权威数据：非约定取值一律按
-    // 「旧 host 不支持」处理（丢字段），调用方据此降级 full。原键先剥掉，
-    // 免得非法值穿透进类型化结果。
-    const {
-      projected: rawProjected,
-      omittedBytes: rawOmitted,
-      promptPreviews: rawPreviews,
-      ...rest
-    } = data
+    // projected 是能力回显而非权威数据：非约定取值一律按「旧 host 不支持」
+    // 处理（丢字段），调用方据此降级 full。原键先剥掉，免得非法值穿透进
+    // 类型化结果。
+    const { projected: rawProjected, promptPreviews: rawPreviews, ...rest } = data
     const projected =
       rawProjected === 'lite' || rawProjected === 'meta'
         ? (rawProjected as SessionHistoryProjected)
         : undefined
-    const omittedBytes =
-      typeof rawOmitted === 'number' && Number.isFinite(rawOmitted) ? rawOmitted : undefined
     // promptPreviews 是展示元数据（轮次目录）：非纯字符串数组一律按缺失
     // 处理（旧 host / 透传路径不带该键，FE 回退为已加载轮目录）。
     const promptPreviews = Array.isArray(rawPreviews)
@@ -307,7 +300,6 @@ export const sessionsRpc = {
     return {
       ...rest,
       ...(projected ? { projected } : {}),
-      ...(omittedBytes != null ? { omittedBytes } : {}),
       ...(promptPreviews ? { promptPreviews } : {}),
     }
   },

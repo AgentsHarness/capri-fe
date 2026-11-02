@@ -54,6 +54,4 @@ export type SessionHistoryPage = {
   btw?: import('./scroll').BtwHistoryRecord[]
   /** host 的投影能力回显；缺省 = 旧 host 不认识 detail。 */
   projected?: SessionHistoryProjected
-  /** 整页被裁掉的总字节数（projected 生效时带；补全预算闸门用）。 */
-  omittedBytes?: number
 }

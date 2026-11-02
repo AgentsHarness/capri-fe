@@ -11,20 +11,14 @@ export function displayRowToEntry(row: DisplayRow): ScrollEntry {
   return {
     id: row.id,
     kind: 'group_header',
-    count:
-      row.span.kind.type === 'verb'
-        ? row.span.kind.members
-        : 0,
+    count: row.span.kind.members,
     collapse: row.span.expanded,
     label: row.label.text,
-    verbRun:
-      row.family === 'verb'
-        ? {
-            running: row.label.running,
-            failed: row.label.failed,
-            verb: row.label.text,
-            ...(row.label.diffstat ? { diffstat: row.label.diffstat } : {}),
-          }
-        : undefined,
+    verbRun: {
+      running: row.label.running,
+      failed: row.label.failed,
+      verb: row.label.text,
+      ...(row.label.diffstat ? { diffstat: row.label.diffstat } : {}),
+    },
   }
 }

@@ -73,11 +73,6 @@ describe('resolveAccent — group_header', () => {
     expect(idle).toMatchObject({ show: true, color: Accents.tool, collapsedGlyph: true, dim: true })
   })
 
-  it('truncation header → 短 tick dim', () => {
-    const p = resolveAccent(opts({ kind: 'group_header', groupHeader: { variant: 'truncation' } }))
-    expect(p).toMatchObject({ show: true, color: Accents.tool, collapsedGlyph: true, dim: true })
-  })
-
   it('无 groupHeader 信息 → 兜底无色（不画）', () => {
     expect(resolveAccent(opts({ kind: 'group_header' }))).toEqual(noPaint)
   })
@@ -89,13 +84,6 @@ describe('resolveAccent — subagent / workflow / bg_task / session_event', () =
       resolveAccent(opts({ kind: 'subagent', subagentStatus: 'started', running: true })),
     ).toMatchObject({ show: true, color: Accents.running })
     expect(resolveAccent(opts({ kind: 'subagent', subagentStatus: 'completed' }))).toEqual(noPaint)
-  })
-
-  it('workflow running → running 色；done → 无色', () => {
-    expect(
-      resolveAccent(opts({ kind: 'workflow', workflowStatus: 'running', running: true })),
-    ).toMatchObject({ show: true, color: Accents.running })
-    expect(resolveAccent(opts({ kind: 'workflow', workflowStatus: 'done' }))).toEqual(noPaint)
   })
 
   it('bg_task running → running 色；否则无色', () => {
@@ -121,9 +109,8 @@ describe('resolveAccent — subagent / workflow / bg_task / session_event', () =
   })
 })
 
-describe('resolveAccent — credit_limit / plan / error / user / status', () => {
-  it('credit_limit 与 plan 与 error 各有色', () => {
-    expect(resolveAccent(opts({ kind: 'credit_limit' }))).toMatchObject({ color: Accents.warning })
+describe('resolveAccent — plan / error / user / status', () => {
+  it('plan 与 error 各有色', () => {
     expect(resolveAccent(opts({ kind: 'plan' }))).toMatchObject({ color: Accents.plan })
     expect(resolveAccent(opts({ kind: 'error' }))).toMatchObject({ color: Accents.error })
   })
@@ -251,14 +238,6 @@ describe('resolveBullet', () => {
     expect(resolveBullet(opts({ kind: 'subagent', subagentStatus: 'completed' }))).toEqual({ color: Accents.success })
     expect(resolveBullet(opts({ kind: 'subagent', subagentStatus: 'failed' }))).toEqual({ color: Accents.error })
     expect(resolveBullet(opts({ kind: 'subagent', subagentStatus: 'cancelled' }))).toEqual({ color: Accents.error })
-
-    expect(resolveBullet(opts({ kind: 'workflow', workflowStatus: 'running', running: true }))).toMatchObject({
-      color: Accents.running,
-    })
-    expect(resolveBullet(opts({ kind: 'workflow', workflowStatus: 'done' }))).toEqual({ color: Accents.success })
-    expect(resolveBullet(opts({ kind: 'workflow', workflowStatus: 'failed' }))).toEqual({ color: Accents.error })
-    expect(resolveBullet(opts({ kind: 'workflow', workflowStatus: 'cancelled' }))).toEqual({ color: Accents.grayDim })
-    expect(resolveBullet(opts({ kind: 'workflow', workflowStatus: 'paused' }))).toEqual({ color: Accents.warning })
 
     expect(resolveBullet(opts({ kind: 'bg_task', running: true }))).toMatchObject({ color: Accents.running })
     expect(resolveBullet(opts({ kind: 'bg_task', failed: true }))).toEqual({ color: Accents.error })

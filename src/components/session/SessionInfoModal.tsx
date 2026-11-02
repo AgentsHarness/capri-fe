@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Check, Copy, X } from 'lucide-react'
+import { Check, Copy } from 'lucide-react'
 import { useChatStore } from '../../store/chat'
 import { transport } from '../../api/client'
 import type { SessionInfoDetail, SessionInfoExt } from '../../api/types'
 import { fmtTok, shortCwd } from '../../format'
 import { contextUrgencyColor } from '../../theme/contextColor'
-import { UsageInfoTabs } from './UsageInfoTabs'
+import { InfoModalFrame, InfoModalState } from './InfoModalShell'
 
 /** agent 快照的按需抽取字段（x.ai/session/info，context 只取两个兜底数）。 */
 type AgentExt = Omit<SessionInfoExt, 'context'> & {
@@ -236,86 +236,45 @@ export function SessionInfoModal() {
   ]
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center gn-modal-dim p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-label="session info"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) close()
-      }}
+    <InfoModalFrame
+      open={open}
+      ariaLabel="session info"
+      title="/session-info"
+      maxWidth={460}
+      panelRef={panelRef}
+      tab="session-info"
+      onClose={close}
     >
-      <div
-        ref={panelRef}
-        tabIndex={-1}
-        className="mt-8 w-full max-w-[460px] gn-modal-panel"
+      <InfoModalState
+        loading={loading}
+        error={error}
+        empty={!data || rows.length === 0}
+        emptyText="暂无活动会话"
+        onRetry={() => void fetchInfo()}
       >
-        <header className="gn-modal-header">
-          <span className="font-mono text-[13px] font-bold text-gn-fg">/session-info</span>
-          <button
-            type="button"
-            onClick={close}
-            className="ml-auto rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
-            aria-label="关闭"
-            title="关闭 (Esc)"
+        {rows.map((r, i) => (
+          <div
+            key={r.label}
+            className={`flex items-start gap-3 px-4 py-2 ${i < rows.length - 1 ? 'border-b border-gn-prompt-border/50' : ''}`}
           >
-            <X size={14} aria-hidden />
-          </button>
-        </header>
-        <UsageInfoTabs active="session-info" />
-
-        <div className="py-1">
-          {loading ? (
-            <div className="px-4 py-6 text-center text-[12px] text-gn-muted">
-              加载中…
-            </div>
-          ) : error ? (
-            <div className="px-4 py-5 text-center">
-              <div className="text-[12px] text-gn-red">{error}</div>
-              <button
-                type="button"
-                onClick={() => void fetchInfo()}
-                className="mt-2 rounded px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-              >
-                重试
-              </button>
-            </div>
-          ) : !data ? (
-            <div className="px-4 py-6 text-center text-[12px] text-gn-muted">
-              暂无活动会话
-            </div>
-          ) : rows.length === 0 ? (
-            <div className="px-4 py-6 text-center text-[12px] text-gn-muted">
-              暂无活动会话
-            </div>
-          ) : (
-            <>
-              {rows.map((r, i) => (
-                <div
-                  key={r.label}
-                  className={`flex items-start gap-3 px-4 py-2 ${i < rows.length - 1 ? 'border-b border-gn-prompt-border/50' : ''}`}
-                >
-                  <span className="w-24 shrink-0 pt-px text-[10px] uppercase tracking-wider text-gn-gutter">
-                    {r.label}
-                  </span>
-                  <span
-                    className={`min-w-0 flex-1 break-words text-[12px] leading-snug ${r.mono ? 'font-mono text-gn-fg' : 'text-gn-fg2'}`}
-                  >
-                    {r.value}
-                  </span>
-                </div>
-              ))}
-              {extError && (
-                <div className="px-4 py-1.5 text-[10.5px] leading-snug text-gn-warning">
-                  agent 快照获取失败，conversation id / model hash / api backend /
-                  turn 等行缺失：{extError}
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      </div>
-    </div>
+            <span className="w-24 shrink-0 pt-px text-[10px] uppercase tracking-wider text-gn-gutter">
+              {r.label}
+            </span>
+            <span
+              className={`min-w-0 flex-1 break-words text-[12px] leading-snug ${r.mono ? 'font-mono text-gn-fg' : 'text-gn-fg2'}`}
+            >
+              {r.value}
+            </span>
+          </div>
+        ))}
+        {extError && (
+          <div className="px-4 py-1.5 text-[10.5px] leading-snug text-gn-warning">
+            agent 快照获取失败，conversation id / model hash / api backend /
+            turn 等行缺失：{extError}
+          </div>
+        )}
+      </InfoModalState>
+    </InfoModalFrame>
   )
 }
 

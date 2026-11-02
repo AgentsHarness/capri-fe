@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Check, Copy, GitFork } from 'lucide-react'
+import { Spinner } from '../../ui/Spinner'
 import type { ScrollEntry } from '../../../api/types'
 import { useChatStore } from '../../../store/chat'
 import { mergeLiveText } from '../../../scrollback/liveText'
@@ -198,7 +199,7 @@ export function AssistantEntry({
                 title="从该消息分叉出新会话（含这轮及之前的全部历史）"
                 className={`${rowBtn} text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-50`}
               >
-                <GitFork size={11} strokeWidth={2} aria-hidden />
+                {forking ? <Spinner size={11} /> : <GitFork size={11} strokeWidth={2} aria-hidden />}
                 {forking ? 'Fork 中…' : 'Fork'}
               </button>
             )}

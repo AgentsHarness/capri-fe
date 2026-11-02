@@ -61,16 +61,15 @@ export type AccentResolveOpts = {
   pendingFreeze?: boolean
   // ── specialized entry kinds ──────────────────────────────────────
   subagentStatus?: 'started' | 'completed' | 'failed' | 'cancelled'
-  workflowStatus?: 'running' | 'done' | 'failed' | 'cancelled' | 'paused'
   /** bg_task row status (live rows: running set; history rows: static). */
   bgTaskStatus?: 'started' | 'completed' | 'failed'
   sessionEvent?: { recap?: boolean; warning?: boolean }
   groupHeader?: {
-    variant: 'truncation' | 'verb'
+    variant: 'verb'
     running?: boolean
     failed?: boolean
   }
-  /** Entry is a visible member of a group (expanded verb / truncation tail). */
+  /** Entry is a visible member of a group (expanded verb group). */
   inGroup?: boolean
 }
 
@@ -180,31 +179,20 @@ export function resolveAccent(opts: AccentResolveOpts): AccentPaint {
   // ── Group header ───────────────────────────────────────────────────
   if (kind === 'group_header' && opts.groupHeader) {
     const gh = opts.groupHeader
-    if (gh.variant === 'verb') {
-      if (gh.failed) {
-        paint = { show: true, color: Accents.error, animated: false }
-        return withInteraction(paint, selected, hovered)
-      }
-      if (gh.running) {
-        paint = {
-          show: true,
-          color: Accents.tool,
-          animated: true,
-          frozen: pendingFreeze,
-        }
-        return withInteraction(paint, selected, hovered)
-      }
-      // idle verb-run header: short tick (content mode); color via interaction
+    if (gh.failed) {
+      paint = { show: true, color: Accents.error, animated: false }
+      return withInteraction(paint, selected, hovered)
+    }
+    if (gh.running) {
       paint = {
         show: true,
         color: Accents.tool,
-        animated: false,
-        collapsedGlyph: true,
-        dim: true,
+        animated: true,
+        frozen: pendingFreeze,
       }
       return withInteraction(paint, selected, hovered)
     }
-    // truncation "N more"
+    // idle verb-run header: short tick (content mode); color via interaction
     paint = {
       show: true,
       color: Accents.tool,
@@ -219,18 +207,6 @@ export function resolveAccent(opts: AccentResolveOpts): AccentPaint {
   if (kind === 'subagent') {
     const st = opts.subagentStatus
     if (st === 'started' && running) {
-      return withInteraction(
-        { show: true, color: Accents.running, animated: false },
-        selected,
-        hovered,
-      )
-    }
-    return { show: false, color: 'transparent', animated: false }
-  }
-
-  // ── Workflow ───────────────────────────────────────────────────────
-  if (kind === 'workflow') {
-    if (opts.workflowStatus === 'running' && running) {
       return withInteraction(
         { show: true, color: Accents.running, animated: false },
         selected,
@@ -273,15 +249,6 @@ export function resolveAccent(opts: AccentResolveOpts): AccentPaint {
       return { show: false, color: 'transparent', animated: false }
     }
     return { show: false, color: 'transparent', animated: false }
-  }
-
-  // ── Credit limit ───────────────────────────────────────────────────
-  if (kind === 'credit_limit') {
-    return withInteraction(
-      { show: true, color: Accents.warning, animated: false },
-      selected,
-      hovered,
-    )
   }
 
   // ── Plan (FE-only chrome; gold bar) ─────────────────────────────────
@@ -509,18 +476,6 @@ export function resolveBullet(opts: AccentResolveOpts): BulletPaint {
     }
     if (st === 'completed') return { color: Accents.success }
     if (st === 'failed' || st === 'cancelled') return { color: Accents.error }
-    return { color: Accents.gray }
-  }
-
-  if (kind === 'workflow') {
-    const st = opts.workflowStatus
-    if (st === 'running' && running) {
-      return { color: Accents.running, animated: !pendingFreeze }
-    }
-    if (st === 'done') return { color: Accents.success }
-    if (st === 'failed') return { color: Accents.error }
-    if (st === 'cancelled') return { color: Accents.grayDim }
-    if (st === 'paused') return { color: Accents.warning }
     return { color: Accents.gray }
   }
 

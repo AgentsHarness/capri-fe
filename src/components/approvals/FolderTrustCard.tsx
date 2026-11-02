@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useChatStore } from '../../store/chat'
 import { Glyphs } from '../../theme/glyphs'
 import { IconGlyph } from '../ui/IconGlyph'
+import { Spinner } from '../ui/Spinner'
 
 /**
  * x.ai/folder_trust/request card — web counterpart of the TUI folder
@@ -36,12 +37,27 @@ export function FolderTrustCard() {
     ? params.configKinds.filter((k): k is string => typeof k === 'string')
     : []
 
-  const trust = () => {
-    if (req) void respondXai(req.requestId, { outcome: 'trust' })
+  /**
+   * 已发出、等回执的出口。应答往返前卡片不动，不锁的话重复点击会撞上
+   * 「已过期」；失败时 store 保留卡片并 toast，这里清掉让用户重试。
+   */
+  const [submitting, setSubmitting] = useState<'trust' | 'reject' | null>(null)
+  /** 键盘处理器闭包读不到最新的 submitting，用 ref 拦截重复应答。 */
+  const submittingRef = useRef(false)
+
+  const answer = async (key: 'trust' | 'reject', outcome: string) => {
+    if (submittingRef.current || !req) return
+    submittingRef.current = true
+    setSubmitting(key)
+    try {
+      await respondXai(req.requestId, { outcome })
+    } finally {
+      submittingRef.current = false
+      setSubmitting(null)
+    }
   }
-  const decline = () => {
-    if (req) void respondXai(req.requestId, { outcome: 'reject' })
-  }
+  const trust = () => void answer('trust', 'trust')
+  const decline = () => void answer('reject', 'reject')
 
   // Keyboard: y/Enter = trust, n/Esc = decline. Same window-capture
   // pattern as the question card; text fields keep their keys (typing is
@@ -121,15 +137,19 @@ export function FolderTrustCard() {
           <button
             type="button"
             onClick={trust}
-            className="rounded px-2.5 py-1 text-[11.5px] text-gn-green transition-colors hover:bg-gn-bg-highlight"
+            disabled={submitting !== null}
+            className="inline-flex min-h-8 items-center gap-1.5 rounded px-2.5 py-1 text-[11.5px] text-gn-green transition-colors hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40"
           >
+            {submitting === 'trust' ? <Spinner /> : null}
             信任此目录 <span className="text-[10px] opacity-70">y</span>
           </button>
           <button
             type="button"
             onClick={decline}
-            className="rounded px-2.5 py-1 text-[11.5px] text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+            disabled={submitting !== null}
+            className="inline-flex min-h-8 items-center gap-1.5 rounded px-2.5 py-1 text-[11.5px] text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40"
           >
+            {submitting === 'reject' ? <Spinner /> : null}
             不信任 <span className="text-[10px] opacity-70">n</span>
           </button>
           <span className="text-[10px] text-gn-gutter">

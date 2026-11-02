@@ -1,11 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
-import { handleExtSessionEvent } from './extSession'
 import type { AcpEvent } from '../../../api/types'
 import type { ChatState, SetState } from '../types'
-import { runtime } from '../globals'
+import { handleExtSessionEvent } from './extSession'
 
 function makeStore(initial: Partial<ChatState> = {}) {
-  let state = { sessionId: 's1', gitInfo: undefined, ...initial } as ChatState
+  let state = { entries: [], sessionId: 's1', sessions: [], ...initial } as ChatState
   const set = vi.fn(
     (patch: Partial<ChatState> | ((s: ChatState) => Partial<ChatState>)) => {
       state = { ...state, ...(typeof patch === 'function' ? patch(state) : patch) }
@@ -15,142 +14,81 @@ function makeStore(initial: Partial<ChatState> = {}) {
   return { set: set as unknown as SetState, get, state: () => state }
 }
 
-describe('handleExtSessionEvent — git_head_changed', () => {
-  it('当前会话 HEAD 变更写入状态栏分支', () => {
-    const { set, get, state } = makeStore({ sessionId: 's1' })
-    const handled = handleExtSessionEvent(set, get, {
-      type: 'git_head_changed',
-      sessionId: 's1',
-      params: { sessionId: 's1', branch: 'feat/x', isWorktree: false },
-    } as AcpEvent)
-    expect(handled).toBe(true)
-    expect(state().gitInfo).toEqual({
-      branch: 'feat/x',
-      isWorktree: false,
-      mainRepo: undefined,
-    })
-  })
+const sessionsChanged = (params?: Record<string, unknown>) =>
+  ({ type: 'sessions_changed', params }) as AcpEvent
 
-  it('payload sessionId 属于别的会话时不覆盖当前分支', () => {
+describe('sessions_changed 的分流', () => {
+  it('带 upserted 的行级补丁：合并进列表，不触发整表重拉', () => {
+    const refreshSessionLists = vi.fn()
     const { set, get, state } = makeStore({
-      sessionId: 's1',
-      gitInfo: { branch: 'main', isWorktree: false },
-    })
-    handleExtSessionEvent(set, get, {
-      type: 'git_head_changed',
-      sessionId: 's1',
-      params: { sessionId: 's-other', branch: 'other-branch' },
-    } as AcpEvent)
-    expect(state().gitInfo?.branch).toBe('main')
+      sessions: [
+        {
+          sessionId: 's1',
+          cwd: '/w',
+          title: 'keep',
+          status: { state: 'active', busy: true },
+          bgCount: 3,
+        },
+      ],
+      refreshSessionLists,
+    } as Partial<ChatState>)
+
+    handleExtSessionEvent(set, get, sessionsChanged({
+      upserted: [
+        { sessionId: 's1', status: { state: 'idle', busy: false } },
+      ],
+    }))
+
+    // 这是本次改动的核心收益：一次忙碌翻转不再换来一对全量拉取。
+    expect(refreshSessionLists).not.toHaveBeenCalled()
+    const row = state().sessions[0]
+    expect(row.status?.busy).toBe(false)
+    // census 字段不在补丁行里 → 不能被清零
+    expect(row.bgCount).toBe(3)
+    expect(row.title).toBe('keep')
   })
 
-  it('信封 sessionId 错标时仍以 payload sessionId 为准', () => {
-    const { set, get, state } = makeStore({ sessionId: 's1' })
-    handleExtSessionEvent(set, get, {
-      type: 'git_head_changed',
-      sessionId: 'active-fallback',
-      params: { sessionId: 's1', branch: 'from-payload' },
-    } as AcpEvent)
-    expect(state().gitInfo?.branch).toBe('from-payload')
+  it('空 params（结构变化）：仍然整表重拉', () => {
+    const refreshSessionLists = vi.fn()
+    const { set, get } = makeStore({
+      sessions: [],
+      refreshSessionLists,
+    } as Partial<ChatState>)
+
+    handleExtSessionEvent(set, get, sessionsChanged({}))
+
+    expect(refreshSessionLists).toHaveBeenCalledTimes(1)
   })
 
-  it('空 branch 显示 detached', () => {
-    const { set, get, state } = makeStore({ sessionId: 's1' })
-    handleExtSessionEvent(set, get, {
-      type: 'git_head_changed',
-      params: { sessionId: 's1', branch: '' },
-    } as AcpEvent)
-    expect(state().gitInfo?.branch).toBe('(detached)')
+  it('补丁里有日历里没有的会话：回落成整表重拉（缺 cwd / 摘要）', () => {
+    const refreshSessionLists = vi.fn()
+    const { set, get } = makeStore({
+      sessions: [{ sessionId: 's1', cwd: '/w' }],
+      refreshSessionLists,
+    } as Partial<ChatState>)
+
+    handleExtSessionEvent(set, get, sessionsChanged({
+      upserted: [{ sessionId: 'brand-new', cwd: '/other' }],
+    }))
+
+    expect(refreshSessionLists).toHaveBeenCalledTimes(1)
+    // 纠正是整表重拉里最不该等的：绕过闸门的 400ms 尾随窗口。
+    expect(refreshSessionLists).toHaveBeenCalledWith(1, { immediate: true })
   })
 
-  it('落地后抬升 gitInfoEpoch，挡住在飞的探盘覆盖', () => {
-    const before = runtime.gitInfoEpoch
-    const { set, get } = makeStore({ sessionId: 's1' })
-    handleExtSessionEvent(set, get, {
-      type: 'git_head_changed',
-      params: { sessionId: 's1', branch: 'new' },
-    } as AcpEvent)
-    expect(runtime.gitInfoEpoch).toBe(before + 1)
-  })
-})
+  it('removed 生效且不需要重拉', () => {
+    const refreshSessionLists = vi.fn()
+    const { set, get, state } = makeStore({
+      sessions: [
+        { sessionId: 's1', cwd: '/w' },
+        { sessionId: 's2', cwd: '/w' },
+      ],
+      refreshSessionLists,
+    } as Partial<ChatState>)
 
-describe('handleExtSessionEvent — mcp_server_status', () => {
-  const newStore = () => makeStore({ sessionId: 's1', mcpServers: [] })
-  const fire = (
-    store: ReturnType<typeof makeStore>,
-    params: Record<string, unknown>,
-  ) =>
-    handleExtSessionEvent(store.set, store.get, {
-      type: 'mcp_server_status',
-      params,
-    } as AcpEvent)
+    handleExtSessionEvent(set, get, sessionsChanged({ removed: ['s2'] }))
 
-  it('带 status 的事件是完整快照：健康的 initialized 清掉上一轮握手错误', () => {
-    const store = newStore()
-    fire(store, {
-      name: 'linear',
-      source: 'local',
-      status: 'unavailable',
-      reason: 'handshake_failed',
-      detail: 'cli-chat-proxy returned 502',
-    })
-    expect(store.state().mcpServers[0].detail).toBe('cli-chat-proxy returned 502')
-
-    fire(store, { name: 'linear', source: 'local', status: 'ready', reason: 'initialized' })
-    const row = store.state().mcpServers[0]
-    expect(row.status).toBe('ready')
-    expect(row.reason).toBe('initialized')
-    // detail 未随事件下发 = 本轮无诊断，不能把旧错误文本挂在健康行上。
-    expect(row.detail).toBeUndefined()
-  })
-
-  it('缺 status 的增量事件沿用上一行字段（旧 shell 只推 reason）', () => {
-    const store = newStore()
-    fire(store, {
-      name: 'fs',
-      status: 'unavailable',
-      reason: 'transport_closed',
-      detail: 'child exited',
-    })
-    fire(store, { name: 'fs', sessionId: 's1' })
-    const row = store.state().mcpServers[0]
-    expect(row.status).toBe('unavailable')
-    expect(row.reason).toBe('transport_closed')
-    expect(row.detail).toBe('child exited')
-  })
-
-  it('同名行原地替换，不重复堆积', () => {
-    const store = newStore()
-    fire(store, { name: 'a', status: 'initializing', reason: 'config_added' })
-    fire(store, { name: 'b', status: 'ready', reason: 'initialized' })
-    fire(store, { name: 'a', status: 'ready', reason: 'initialized' })
-    expect(store.state().mcpServers.map((s) => `${s.name}:${s.status}`)).toEqual([
-      'b:ready',
-      'a:ready',
-    ])
-  })
-
-  it('无 name 的事件丢弃', () => {
-    const store = newStore()
-    fire(store, { status: 'ready', reason: 'initialized' })
-    expect(store.state().mcpServers).toEqual([])
-  })
-})
-
-describe('handleExtSessionEvent — subscribers_changed', () => {
-  it('写入 hub 在线 FE 订阅数', () => {
-    const { set, get, state } = makeStore({})
-    const handled = handleExtSessionEvent(set, get, {
-      type: 'subscribers_changed',
-      count: 4,
-    } as AcpEvent)
-    expect(handled).toBe(true)
-    expect(state().feSubscribers).toBe(4)
-  })
-
-  it('不带 count 的坏帧保持原值（不清成 0）', () => {
-    const { set, get, state } = makeStore({ feSubscribers: 2 })
-    handleExtSessionEvent(set, get, { type: 'subscribers_changed' } as AcpEvent)
-    expect(state().feSubscribers).toBe(2)
+    expect(refreshSessionLists).not.toHaveBeenCalled()
+    expect(state().sessions.map((s) => s.sessionId)).toEqual(['s1'])
   })
 })

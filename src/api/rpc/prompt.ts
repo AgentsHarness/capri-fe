@@ -3,20 +3,15 @@ import { AgentTurnError } from '../transport'
 import { assertRpcOk, readRpcJson } from './core'
 import type { ContentBlock, PermissionScope } from '../types'
 
-/**
- * POST /api/prompt 的超时上限（受理即返回后实际毫秒级；旧 host 阻塞式
- * 回合最长 30min）。调用方可按需用 prompt({ timeoutMs }) 覆盖。
- */
-const PROMPT_TIMEOUT_MS = 30 * 60_000
+import { DEFAULT_FETCH_TIMEOUT_MS } from '../local/types'
 
 /** 回合控制：发送 prompt、取消回合、权限/转发请求应答。 */
 export const promptRpc = {
   /**
-   * POST /api/prompt — host 已改为"受理即返回"：校验通过（含显式会话
-   * 存在性）立即回 200 {ok:true}，不再等到回合结束。回合结果（成功 /
-   * 失败 / 取消 + meta）全部经 live 通道（SSE/WS）的 done / error /
-   * cancelled 事件送达，本响应不再携带 stopReason/meta（旧 host 才会在
-   * 响应里透传 session/prompt 的 `_meta`，这里保留解析兼容）。
+   * POST /api/prompt — host 受理即返回：校验通过（含显式会话存在性）
+   * 立即回 200 {ok:true}，不等回合结束。回合结果（成功 / 失败 / 取消 + meta）
+   * 全部经 live 通道（SSE/WS）的 done / error / cancelled 事件送达；本响应
+   * 只表示受理。
    *
    * `sessionId`（可选，缺省 = host 的 active 会话）：按会话发 prompt。
    * host bridge 是多会话的——带着目标 sessionId 的 prompt 会在那个会话
@@ -29,22 +24,18 @@ export const promptRpc = {
    * idle 直接运行），经 x.ai/queue/changed 广播回显。TUI pager 同款
    * wire（prompt_request_meta）。注意：HTTP 层键名是 `meta`（不是
    * `_meta`）——错写成 `_meta` 会被 host 静默丢弃，agent 自造 id，本地
-   * 乐观行与广播行对不上就会在队列里显示成两条。旧 host 忽略该字段；
-   * busy 时仍可能 409（竞态）——调用方（promptQueue.enqueue）渲染错误
-   * 行、行保留手动重发（legacy 降级自动重发已移除）。
+   * 乐观行与广播行对不上就会在队列里显示成两条。busy 时仍可能 409
+   * （竞态）——调用方（promptQueue.enqueue）渲染错误行、行保留手动重发。
    *
-   * 失败分类：新 host 下本响应只携带"受理前"的错误——参数校验 400、
-   * 显式未知会话 404、网络级失败（fetch 拒绝 = host 不可达，保持普通
-   * Error）。回合级失败（agent 拒绝如模型 API 400、传输中断）不再走
-   * HTTP，由 live 通道的 error 事件（带 sessionId + source）送达。
-   * 例外：旧 host（阻塞到回合结束）仍可能返回反代超时（524 Cloudflare /
-   * 504 nginx / 408）——抛 AgentTurnError，store 依据 status 识别并走
-   * 对应的重试/展示分支。
+   * 失败分类：本响应只携带"受理前"的错误——参数校验 400、显式未知
+   * 会话 404、网络级失败（fetch 拒绝 = host 不可达，保持普通 Error）。
+   * 回合级失败（agent 拒绝如模型 API 400、传输中断）不走 HTTP，由 live
+   * 通道的 error 事件（带 sessionId + source）送达。
    */
   async prompt(this: TransportCore,
     blocks: ContentBlock[],
     opts: { sessionId?: string; timeoutMs?: number; promptId?: string } = {},
-  ): Promise<{ stopReason?: string; meta?: Record<string, unknown> }> {
+  ): Promise<void> {
     const body: Record<string, unknown> = { blocks }
     if (opts.sessionId) body.sessionId = opts.sessionId
     // Host JSON 键是 `meta`（http.go promptBody），再转发为 agent `_meta`。
@@ -56,9 +47,8 @@ export const promptRpc = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       },
-      // 受理响应毫秒级返回；30min 上限只兜底死 relay（旧 host 阻塞到
-      // 回合结束，最长 30min，也不会被误杀）。调用方可按需覆盖。
-      { timeoutMs: opts.timeoutMs ?? PROMPT_TIMEOUT_MS },
+      // 受理响应毫秒级返回；默认上限只用来兜底死 relay。
+      { timeoutMs: opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS },
     )
     const data = (await res.json().catch(() => ({}))) as Record<string, unknown>
     if (!res.ok || data.ok === false) {
@@ -75,17 +65,6 @@ export const promptRpc = {
         res.status,
       )
     }
-    const out: { stopReason?: string; meta?: Record<string, unknown> } = {}
-    if (typeof data.stopReason === 'string') out.stopReason = data.stopReason
-    if (
-      data.meta &&
-      typeof data.meta === 'object' &&
-      !Array.isArray(data.meta) &&
-      Object.keys(data.meta as Record<string, unknown>).length > 0
-    ) {
-      out.meta = data.meta as Record<string, unknown>
-    }
-    return out
   },
 
   /**

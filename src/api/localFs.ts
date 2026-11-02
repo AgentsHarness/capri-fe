@@ -43,7 +43,7 @@ function asText(v: unknown): string | undefined {
   return typeof v === 'string' && v.trim() ? v : undefined
 }
 
-/** 只保留 name/path 都是非空字符串的条目（旧/新 host 都按这个形状读）。 */
+/** 只保留 name/path 都是非空字符串的条目。 */
 function entriesFrom(data: LocalFsPayload): LocalDirEntry[] {
   if (!Array.isArray(data.dirs)) return []
   const out: LocalDirEntry[] = []
@@ -55,13 +55,6 @@ function entriesFrom(data: LocalFsPayload): LocalDirEntry[] {
     if (name && path) out.push({ name, path })
   }
   return out
-}
-
-/** 端点缺失（旧 host）时给一句能照做的提示，别只丢一个 404。 */
-function endpointError(status: number, route: string, fallback: string): string {
-  return status === 404
-    ? `宿主不支持目录浏览（${route} 缺失）—— 需要升级 host`
-    : fallback
 }
 
 async function postLocalFs(path: string, body: Record<string, unknown>) {
@@ -85,7 +78,7 @@ export async function listLocalDirs(path?: string): Promise<ListLocalDirsResult>
     if (!res.ok || data.ok === false) {
       return {
         ok: false,
-        error: asText(data.error) || endpointError(res.status, route, `目录读取失败 (${res.status})`),
+        error: asText(data.error) || `目录读取失败 (${res.status})`,
         path: asText(data.path),
       }
     }
@@ -116,7 +109,7 @@ export async function createLocalDir(
     if (!res.ok || data.ok === false) {
       return {
         ok: false,
-        error: asText(data.error) || endpointError(res.status, route, `新建文件夹失败 (${res.status})`),
+        error: asText(data.error) || `新建文件夹失败 (${res.status})`,
       }
     }
     const created = asText(data.path)

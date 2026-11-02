@@ -39,9 +39,6 @@ export function accentOpts(
   if (e.kind === 'subagent') {
     return { ...base, subagentStatus: e.status }
   }
-  if (e.kind === 'workflow') {
-    return { ...base, workflowStatus: e.status }
-  }
   if (e.kind === 'bg_task') {
     return { ...base, bgTaskStatus: e.status }
   }
@@ -52,15 +49,14 @@ export function accentOpts(
     }
   }
   if (e.kind === 'group_header') {
+    if (!e.verbRun) return base
     return {
       ...base,
-      groupHeader: e.verbRun
-        ? {
-            variant: 'verb',
-            running: e.verbRun.running,
-            failed: e.verbRun.failed,
-          }
-        : { variant: 'truncation' },
+      groupHeader: {
+        variant: 'verb',
+        running: e.verbRun.running,
+        failed: e.verbRun.failed,
+      },
     }
   }
   return base

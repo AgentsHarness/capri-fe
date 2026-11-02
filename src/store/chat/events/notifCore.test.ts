@@ -15,6 +15,26 @@ function makeStore(initial: Partial<ChatState> = {}) {
   return { set: set as unknown as SetState, get, state: () => state }
 }
 
+describe('handleNotifCore — auto_compact 的相位文案', () => {
+  it('空闲时 auto_compact_completed 只写相位，不把反馈槽占住', () => {
+    const { set, get, state } = makeStore({
+      conn: 'ready',
+      phaseText: '就绪',
+      statusText: '',
+    })
+    const handled = handleNotifCore(
+      set,
+      get,
+      { type: 'session_notification', sessionId: 's1' } as WireEvent,
+      'auto_compact_completed',
+      {},
+    )
+    expect(handled).toBe(true)
+    expect(state().phaseText).toBe('Waiting for response…')
+    expect(state().statusText).toBe('')
+  })
+})
+
 describe('handleNotifCore — current_mode_update', () => {
   beforeEach(() => {
     resetPlanExitApprovedForTest()

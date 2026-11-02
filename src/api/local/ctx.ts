@@ -122,7 +122,6 @@ export interface TransportCtx {
   declineHostKey(hostId: string): void
   discoverLocalHost(hosts?: Array<{ hostId: string; port?: number; online?: boolean }>): Promise<string | null>
   detectMode(): Promise<DetectModeResult>
-  detectModeLegacy(hostId: string, authRequired: boolean, localHostName?: string): Promise<DetectModeResult>
   getAccessToken(): string
   probeAccess(): Promise<'ok' | 'need_token' | 'error'>
   onEvent(handler: TransportHandler): () => void

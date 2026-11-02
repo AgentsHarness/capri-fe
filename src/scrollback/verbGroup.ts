@@ -31,6 +31,7 @@
 
 import type { ScrollEntry } from '../api/types'
 import { isCreateToolKind, toolFamily } from '../theme/toolFamily'
+import { entryFailed, entryRunning } from './entryState'
 import { extractToolDetail, readPathOf } from './toolDetail'
 import { thoughtDisplayMode } from './thoughtMode'
 
@@ -97,8 +98,6 @@ export type DisplayRow =
       id: string
       span: GroupSpan
       label: GroupLabel
-      /** Verb run vs truncation ("N more"). */
-      family: 'verb' | 'truncation'
     }
 
 /** 每段最多容纳的成员数（真机 1.0.62 实测上限）。 */
@@ -200,30 +199,19 @@ function isCollapsed(e: ScrollEntry): boolean {
   if (e.kind === 'tool') return !e.expanded
   if (e.kind === 'thought')
     return thoughtDisplayMode(e) === 'collapsed' && !e.streaming
-  if (e.kind === 'subagent' || e.kind === 'bg_task' || e.kind === 'workflow') return true
+  if (e.kind === 'subagent' || e.kind === 'bg_task') return true
   return false
 }
 
-function isRunning(e: ScrollEntry): boolean {
-  if (e.kind === 'tool')
-    return e.status === 'pending' || e.status === 'in_progress'
-  if (e.kind === 'thought') return !!e.streaming
-  if (e.kind === 'subagent' || e.kind === 'workflow' || e.kind === 'bg_task')
-    return !!e.running
-  return false
-}
-
-function isFailed(e: ScrollEntry): boolean {
-  if (e.kind === 'tool')
-    return e.status === 'failed' || e.status === 'error'
-  if (e.kind === 'subagent')
-    return e.status === 'failed' || e.status === 'cancelled'
-  return false
-}
+// 运行 / 失败判定统一走 entryState：本文件曾各写一份（且漏了 assistant /
+// btw 的 streaming、bg_task 的 failed），同一行会在分组头与行内呈现两套
+// 结论。分组只需要「这段里有没有在跑 / 有没有失败」。
+const isRunning = entryRunning
+const isFailed = entryFailed
 
 /**
  * run_step — 单一路径的走查分类。subagent 行在 1.0.62 恒单独成行（`Break`），
- * 与本组无关；bg_task / workflow 也打破 run（它们的行自带状态）。
+ * 与本组无关；bg_task 也打破 run（它的行自带状态）。
  */
 export function runStep(
   e: ScrollEntry,
@@ -444,11 +432,6 @@ export function verbGroupLabel(
   return buildLabel(entries, span.range, showThinking, scope)
 }
 
-/** 1.0.62 已无 "N more" 截断头；保留函数签名供旧调用方，恒返回 null。 */
-export function truncationLabel(): GroupLabel | null {
-  return null
-}
-
 // ── Scan ───────────────────────────────────────────────────────────────
 
 type RunScan = {
@@ -546,17 +529,14 @@ function sameFamily(kinds: ReadonlySet<VerbGroupKind>, vg: VerbGroupKind): boole
 }
 
 /**
- * 分组展开态：expandedGroups 记录「与默认方向相反」的手动切换——默认
- * 折叠（defaultExpanded=false）时集合里有 anchor = 用户展开了该组；
- * 默认展开（true）时集合里有 anchor = 用户收起了该组。
+ * 分组展开态：分组默认折叠，expandedGroups 里记的是被手动展开的组
+ * （anchor = 段首条目 id）。
  */
 export function spanExpanded(
   anchorId: string,
   expandedGroups: ReadonlySet<string>,
-  defaultExpanded: boolean,
 ): boolean {
-  const flipped = expandedGroups.has(anchorId)
-  return defaultExpanded ? !flipped : flipped
+  return expandedGroups.has(anchorId)
 }
 
 /**
@@ -572,14 +552,11 @@ export function scanGroups(
     showThinking?: boolean
     /** 分组范围（密度）。默认与 compact-all-grouped 一致。 */
     scope?: GroupScope
-    /** 分组默认展开（false = 默认折叠成分组头）。 */
-    defaultExpanded?: boolean
   } = {},
 ): GroupSpan[] {
   const groupToolVerbs = opts.groupToolVerbs !== false
   const showThinking = opts.showThinking !== false
   const scope = opts.scope ?? SCOPE_ALL
-  const defaultExpanded = opts.defaultExpanded === true
   const n = entries.length
   const spans: GroupSpan[] = []
   if (!groupToolVerbs || n === 0) return spans
@@ -601,7 +578,7 @@ export function scanGroups(
     spans.push({
       range: { start: i, end: scan.end },
       kind: { type: 'verb', members: scan.members },
-      expanded: spanExpanded(anchorId, expandedGroups, defaultExpanded),
+      expanded: spanExpanded(anchorId, expandedGroups),
       anchorId,
     })
     // 进度保护：scan.end 在裁剪尾部时可能等于/小于当前起点，扫描指针必须
@@ -628,7 +605,6 @@ function headerRowFor(
     id: `gh_${span.anchorId}`,
     span,
     label: makeLabel(),
-    family: 'verb',
   }
   cache?.set(span, row)
   return row
@@ -764,8 +740,7 @@ export function isDensePackable(e: ScrollEntry): boolean {
   if (e.kind === 'tool') return !e.expanded
   if (e.kind === 'thought')
     return thoughtDisplayMode(e) === 'collapsed' && !e.streaming
-  if (e.kind === 'subagent' || e.kind === 'bg_task' || e.kind === 'workflow')
-    return true
+  if (e.kind === 'subagent' || e.kind === 'bg_task') return true
   return false
 }
 

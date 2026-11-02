@@ -3,6 +3,7 @@ import { GripVertical } from 'lucide-react'
 import { usePromptQueue, imageMarkerLabels, queueRowText, queuedImages } from '../../store/promptQueue'
 import { COMPOSER_BODY_PAD_LEFT_PX } from '../../theme/layout'
 import { ImageLightbox, type InlineImage } from '../scrollback/InlineImages'
+import { Spinner } from '../ui/Spinner'
 import type { QueuedPrompt } from '../../store/promptQueue'
 import type { useQueueNav } from './useQueueNav'
 
@@ -17,6 +18,9 @@ type QueueStripProps = {
   onToggleMode?: () => void
   /** 模式切换中（禁用按钮避免重复快速触发）。 */
   togglingMode?: boolean
+  /** 正在发送的那一行 id（store 的 sending 是互斥锁，这里只标行）：
+   *  只锁这一行自己的发送/编辑/删除，别的行照常可操作。 */
+  sendingId?: string
   /**
    * 访客只读：只列排队消息正文（含附图标记 / 全屏预览），不挂发送、
    * 编辑、删除按钮，也不接受拖拽排序——那些都是写操作。
@@ -40,6 +44,7 @@ export function QueueStrip({
   headSteer,
   onToggleMode,
   togglingMode,
+  sendingId,
   readonly = false,
 }: QueueStripProps) {
   // 行内 `[image N]` 标记点开的全屏预览（null = 关闭）。
@@ -143,7 +148,7 @@ export function QueueStrip({
                   图标在，但它不是可抓的东西。 */}
               <span
                 data-queue-grip={readonly ? undefined : ''}
-                className={`inline-flex h-6 w-5 sm:h-[1.2em] sm:w-[1.25em] shrink-0 items-center justify-center select-none ${
+                className={`inline-flex h-6 w-[1.25em] sm:h-[1.2em] shrink-0 items-center justify-center select-none ${
                   readonly
                     ? 'text-gn-gutter'
                     : 'touch-none text-gn-gray hover:text-gn-fg active:text-gn-cyan cursor-grab active:cursor-grabbing'
@@ -220,15 +225,20 @@ export function QueueStrip({
                 <>
                   <button
                     type="button"
+                    disabled={sendingId === q.id}
                     onClick={() => sendQueuedItem(q.id)}
-                    className="shrink-0 rounded px-1.5 py-1 sm:py-[2px] min-h-6 sm:min-h-0 text-gn-cyan hover:bg-gn-bg-highlight"
+                    className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-1 sm:py-[2px] min-h-6 sm:min-h-0 text-gn-cyan hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40"
                     title="立即发送这条"
                   >
+                    {/* 转圈槽位只在真正发送时占位：常驻会让按钮左右内边距
+                        不均（左侧多 12px 槽 + 4px gap），高亮底色伸到文字左边。 */}
+                    {sendingId === q.id ? <Spinner size={10} /> : null}
                     <span className="hidden sm:inline">立即发送</span>
                     <span className="sm:hidden">发送</span>
                   </button>
                   <button
                     type="button"
+                    disabled={sendingId === q.id}
                     onClick={() => {
                       setQueueSel(i)
                       setQueueFocus(true)
@@ -241,8 +251,9 @@ export function QueueStrip({
                   </button>
                   <button
                     type="button"
+                    disabled={sendingId === q.id}
                     onClick={() => usePromptQueue.getState().removeAt(q.id)}
-                    className="shrink-0 rounded px-1.5 py-1 sm:py-[2px] min-h-6 sm:min-h-0 text-gn-gray hover:bg-gn-bg-highlight hover:text-gn-red active:text-gn-red"
+                    className="shrink-0 rounded px-1.5 py-1 sm:py-[2px] min-h-6 sm:min-h-0 text-gn-gray hover:bg-gn-bg-highlight hover:text-gn-red active:text-gn-red disabled:cursor-not-allowed disabled:opacity-40"
                     aria-label="删除这条排队消息"
                     title="删除"
                   >

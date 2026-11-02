@@ -25,8 +25,8 @@ export type TodoStatus = 'todo' | 'completed'
  * fe 偏好 "true"|"false"），`at` 是写入时刻（epoch ms），`site` 是写入端
  * 标识（同时钟下按它定序），`d` = 墓碑（该条目已被删除）。
  *
- * hub 与浏览器都以此为准，`HubPrefsDoc` 里那四个集合字段只是它的投影——
- * 旧 FE / 旧 hub 读投影即可继续工作。
+ * hub 与浏览器都以此为准，`HubPrefsDoc` 里那四个集合字段是它的投影，
+ * 供渲染与排障读取。
  */
 export type PrefsEntry = {
   v: string
@@ -47,7 +47,7 @@ export type PrefsEntries = Record<string, PrefsEntry>
  * conversation without an explicit hostId scope.
  */
 export type HubPrefsDoc = {
-  /** 以下四项是 entries 的投影（兼容不认 entries 的旧 FE / 旧 hub）。 */
+  /** 以下四项是 entries 的投影。 */
   pinnedWorkspaces?: string[]
   pinnedSessions?: string[]
   todos?: Record<string, TodoStatus>
@@ -62,8 +62,6 @@ export type HubPrefsDoc = {
  * 缺省字段 = 默认值，字段可扩展。
  */
 export type FePrefsDoc = {
-  /** scrollback 中 toolcall 分组默认折叠（false = 分组默认展开、逐条显示）。 */
-  collapseToolGroups?: boolean
   /** 精简回放（历史只裁工具正文）。缺省 = 未显式选过 = 按部署模式取默认。 */
   liteReplay?: boolean
   /** 发起新对话自动设置为待办（默认 false）。 */

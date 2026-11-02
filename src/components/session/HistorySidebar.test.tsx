@@ -5,18 +5,16 @@ import { HistorySidebar } from './HistorySidebar'
 
 beforeEach(() => {
   useChatStore.setState({
-    refreshSessions: vi.fn(),
-    refreshWorkspaces: vi.fn(),
+    refreshSessionLists: vi.fn(),
     resetToEmpty: vi.fn(),
     sidebarCollapsed: false,
   })
 })
 
 describe('HistorySidebar', () => {
-  it('挂载即刷新会话与工作区', () => {
+  it('挂载即刷新会话与工作区列表', () => {
     render(<HistorySidebar />)
-    expect(useChatStore.getState().refreshSessions).toHaveBeenCalledTimes(1)
-    expect(useChatStore.getState().refreshWorkspaces).toHaveBeenCalledTimes(1)
+    expect(useChatStore.getState().refreshSessionLists).toHaveBeenCalledTimes(1)
   })
 
   it('渲染头部 + 会话列表（空态）', () => {

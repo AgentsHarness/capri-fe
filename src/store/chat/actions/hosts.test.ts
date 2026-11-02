@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { hostActions } from './hosts'
+import { hostActions, probeHostHeartbeat, resendUndeliveredPrompt, HOST_HEARTBEAT_STALE_MS } from './hosts'
+import { handleConnEvent } from '../events/conn'
 import type { HostInfo } from '../../../api/types'
 import type { ChatState, SetState } from '../types'
 
@@ -21,11 +22,15 @@ vi.mock('../../../api/client', () => ({
     status: vi.fn().mockResolvedValue({ ready: true }),
     verifyLocalRoute: vi.fn().mockResolvedValue(undefined),
     emitLocal: vi.fn(),
+    lastLiveEventAt: vi.fn(() => undefined),
   },
 }))
 
 vi.mock('../../toast', () => ({ pushToast: vi.fn() }))
-vi.mock('../modePersist', () => ({ refreshDefaultModeFlags: vi.fn().mockResolvedValue(undefined) }))
+vi.mock('../modePersist', () => ({
+  refreshDefaultModeFlags: vi.fn().mockResolvedValue(undefined),
+  restorePlanMode: vi.fn(() => ({})),
+}))
 
 import { transport } from '../../../api/client'
 import { pushToast } from '../../toast'
@@ -53,6 +58,7 @@ function makeState(patch: Partial<ChatState> = {}): ChatState {
     switchHost: vi.fn().mockResolvedValue(undefined),
     resetToEmpty: vi.fn(),
     stopTopTaskPolling: vi.fn(),
+    resetListRefreshGates: vi.fn(),
     ...patch,
   } as unknown as ChatState
 }
@@ -397,16 +403,14 @@ describe('switchHost 请求发起时机', () => {
     const state = makeState({
       hosts: [host('a'), host('b')],
       selectedHostId: 'a',
-      refreshSessions: vi.fn(),
-      refreshWorkspaces: vi.fn(),
+      refreshSessionLists: vi.fn(),
       refreshSessionStats: vi.fn(),
     })
     const p = bindSwitch(state).switchHost('b')
     await new Promise((r) => setTimeout(r, 0))
 
     expect(transport.status).toHaveBeenCalledTimes(1)
-    expect(state.refreshSessions).toHaveBeenCalledTimes(1)
-    expect(state.refreshWorkspaces).toHaveBeenCalledTimes(1)
+    expect(state.refreshSessionLists).toHaveBeenCalledTimes(1)
     expect(refreshDefaultModeFlags).toHaveBeenCalledTimes(1)
 
     resolveStatus({ ready: true })
@@ -422,8 +426,7 @@ describe('switchHost 请求发起时机', () => {
     const state = makeState({
       hosts: [host('a'), host('b')],
       selectedHostId: 'a',
-      refreshSessions: vi.fn(),
-      refreshWorkspaces: vi.fn(),
+      refreshSessionLists: vi.fn(),
       refreshSessionStats: vi.fn(),
     })
     await bindSwitch(state).switchHost('b')
@@ -461,8 +464,7 @@ describe('switchHost 请求发起时机', () => {
       mcpServers: [{ name: 'srv', status: 'ready' }],
       mcpInit: { connected: 1, total: 1, startedAt: 1 },
       runningHook: { eventName: 'PreToolUse', count: 1, startedAt: 1 },
-      refreshSessions: vi.fn(),
-      refreshWorkspaces: vi.fn(),
+      refreshSessionLists: vi.fn(),
       refreshSessionStats: vi.fn(),
     })
 
@@ -480,5 +482,301 @@ describe('switchHost 请求发起时机', () => {
     expect(state.runningHook).toBeNull()
     expect(state.emptyCwd).toBe('/repo-b-empty')
     expect(state.emptyCwdByHost).toEqual({ a: '/repo-a-empty', b: '/repo-b-empty' })
+  })
+})
+
+describe('refreshHosts 选中 host 掉线时的在途回合', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(transport.getConnectionMode as ReturnType<typeof vi.fn>).mockReturnValue('hub')
+    ;(transport.getLocalHostId as ReturnType<typeof vi.fn>).mockReturnValue(undefined)
+    saveStr(HOST_KEY, 'a')
+  })
+
+  function offlineTurnState(lastLiveAt: number | undefined) {
+    ;(transport.lastLiveEventAt as ReturnType<typeof vi.fn>).mockReturnValue(lastLiveAt)
+    const state = makeState({
+      hosts: [host('a')],
+      selectedHostId: 'a',
+      conn: 'busy',
+      statusText: 'Waiting for response…',
+      turnStartedAt: 1_000,
+      currentPromptId: 'p-1',
+      lastSentPromptId: 'u-1',
+      entries: [{ id: 'u-1', kind: 'user', text: 'hi' }],
+    })
+    return state
+  }
+
+  it('本回合零 live 事件 → 收口为未送达，并给一条可重发的错误行', async () => {
+    ;(transport.listHosts as ReturnType<typeof vi.fn>).mockResolvedValue({
+      hosts: [host('a', { online: false })],
+    })
+    const state = offlineTurnState(undefined)
+    await bind(state).refreshHosts()
+
+    expect(state.conn).toBe('error')
+    expect(state.turnStartedAt).toBeUndefined()
+    expect(state.statusText).toBe('')
+    const err = state.entries.find((e) => e.kind === 'error')
+    expect(err).toMatchObject({ action: 'resend' })
+    expect(err && 'text' in err ? err.text : '').toContain('消息未送达')
+  })
+
+  it('本回合收到过 live 事件 → 不动：回合确实在 host 上跑过', async () => {
+    ;(transport.listHosts as ReturnType<typeof vi.fn>).mockResolvedValue({
+      hosts: [host('a', { online: false })],
+    })
+    // lastLiveAt 晚于 turnStartedAt(=1000) = 断线前就有事件送达。
+    const state = offlineTurnState(5_000)
+    await bind(state).refreshHosts()
+
+    expect(state.conn).toBe('busy')
+    expect(state.turnStartedAt).toBe(1_000)
+    expect(state.entries.some((e) => e.kind === 'error')).toBe(false)
+  })
+
+  it('没有在途回合 → 只亮离线横幅', async () => {
+    ;(transport.listHosts as ReturnType<typeof vi.fn>).mockResolvedValue({
+      hosts: [host('a', { online: false })],
+    })
+    const state = makeState({ hosts: [host('a')], selectedHostId: 'a', conn: 'ready' })
+    await bind(state).refreshHosts()
+
+    expect(state.setLayerError).toHaveBeenCalledWith(
+      'hub',
+      expect.objectContaining({ id: 'host-offline' }),
+    )
+    expect(state.conn).toBe('ready')
+  })
+})
+
+describe('host 掉线时按「是否已受理」区分', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(transport.getConnectionMode as ReturnType<typeof vi.fn>).mockReturnValue('hub')
+    ;(transport.getLocalHostId as ReturnType<typeof vi.fn>).mockReturnValue(undefined)
+    saveStr(HOST_KEY, 'a')
+  })
+
+  it('拿到过 200 → 回合保留，只提示已送达等恢复', async () => {
+    ;(transport.listHosts as ReturnType<typeof vi.fn>).mockResolvedValue({
+      hosts: [host('a', { online: false })],
+    })
+    ;(transport.lastLiveEventAt as ReturnType<typeof vi.fn>).mockReturnValue(undefined)
+    const state = makeState({
+      hosts: [host('a')],
+      selectedHostId: 'a',
+      conn: 'busy',
+      phaseText: 'Waiting for response…',
+      turnStartedAt: 1_000,
+      promptAcceptedAt: 2_000,
+      currentPromptId: 'p-1',
+      lastSentPromptId: 'u-1',
+      entries: [{ id: 'u-1', kind: 'user', text: 'hi' }],
+    })
+    await bind(state).refreshHosts()
+
+    // 已受理 = 回合真的在跑；不能把用户引向重发（会被 host 当重号丢弃）。
+    expect(state.conn).toBe('busy')
+    expect(state.turnStartedAt).toBe(1_000)
+    // busy 状态行读 phaseText；statusText 是操作回执槽，不能被过程提示占用。
+    expect(state.phaseText).toContain('已送达')
+    expect(state.statusText ?? '').not.toContain('已送达')
+    expect(state.entries.some((e) => e.kind === 'error')).toBe(false)
+  })
+
+  it('拿到过 200 且处于空闲态 → 清掉旧操作回执，让「已送达」可见', async () => {
+    ;(transport.listHosts as ReturnType<typeof vi.fn>).mockResolvedValue({
+      hosts: [host('a', { online: false })],
+    })
+    ;(transport.lastLiveEventAt as ReturnType<typeof vi.fn>).mockReturnValue(undefined)
+    const state = makeState({
+      hosts: [host('a')],
+      selectedHostId: 'a',
+      conn: 'ready',
+      phaseText: '就绪',
+      statusText: '已切换到 plan 模式',
+      turnStartedAt: 1_000,
+      promptAcceptedAt: 2_000,
+      currentPromptId: 'p-1',
+      lastSentPromptId: 'u-1',
+      entries: [{ id: 'u-1', kind: 'user', text: 'hi' }],
+    })
+    await bind(state).refreshHosts()
+
+    expect(state.phaseText).toContain('已送达')
+    expect(state.statusText).toBe('')
+  })
+
+  it('既无 200 也无 live 事件 → 判未送达（这是真正没出去的那一类）', async () => {
+    ;(transport.listHosts as ReturnType<typeof vi.fn>).mockResolvedValue({
+      hosts: [host('a', { online: false })],
+    })
+    ;(transport.lastLiveEventAt as ReturnType<typeof vi.fn>).mockReturnValue(undefined)
+    const state = makeState({
+      hosts: [host('a')],
+      selectedHostId: 'a',
+      conn: 'busy',
+      turnStartedAt: 1_000,
+      currentPromptId: 'p-1',
+      lastSentPromptId: 'u-1',
+      entries: [{ id: 'u-1', kind: 'user', text: 'hi' }],
+    })
+    await bind(state).refreshHosts()
+
+    expect(state.conn).toBe('error')
+    expect(state.entries.some((e) => e.kind === 'error')).toBe(true)
+  })
+
+  it('离线收口后再收到 ready → 不会把已判死的回合顶回 busy', async () => {
+    ;(transport.listHosts as ReturnType<typeof vi.fn>).mockResolvedValue({
+      hosts: [host('a', { online: false })],
+    })
+    ;(transport.lastLiveEventAt as ReturnType<typeof vi.fn>).mockReturnValue(undefined)
+    const state = makeState({
+      hosts: [host('a')],
+      selectedHostId: 'a',
+      sessionId: 's1',
+      conn: 'busy',
+      turnStartedAt: 1_000,
+      currentPromptId: 'p-1',
+      lastSentPromptId: 'u-1',
+      // 旧 handler 保留了这个「回合在飞」标记，重连后的 ready 会据此
+      // 本地真相守卫把 conn 翻回 busy。
+      pendingOptimisticUserId: 'u-1',
+      entries: [{ id: 'u-1', kind: 'user', text: 'hi' }],
+      refreshHosts: vi.fn().mockResolvedValue(undefined),
+      refreshGitInfo: vi.fn().mockResolvedValue(undefined),
+    })
+    await bind(state).refreshHosts()
+    expect(state.conn).toBe('error')
+    expect(state.pendingOptimisticUserId).toBeUndefined()
+
+    handleConnEvent(
+      (partial) => {
+        Object.assign(state, typeof partial === 'function' ? partial(state) : partial)
+      },
+      () => state,
+      { type: 'ready', sessionId: 's1' } as never,
+    )
+    expect(state.conn).toBe('ready')
+  })
+})
+
+describe('未送达重试挂在用户行上', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(transport.getConnectionMode as ReturnType<typeof vi.fn>).mockReturnValue('hub')
+    ;(transport.getLocalHostId as ReturnType<typeof vi.fn>).mockReturnValue(undefined)
+    ;(transport.lastLiveEventAt as ReturnType<typeof vi.fn>).mockReturnValue(undefined)
+    saveStr(HOST_KEY, 'a')
+  })
+
+  async function offlineState() {
+    ;(transport.listHosts as ReturnType<typeof vi.fn>).mockResolvedValue({
+      hosts: [host('a', { online: false })],
+    })
+    const state = makeState({
+      hosts: [host('a')],
+      selectedHostId: 'a',
+      conn: 'busy',
+      turnStartedAt: 1_000,
+      currentPromptId: 'p-1',
+      lastSentPromptId: 'u-1',
+      entries: [
+        { id: 'u-0', kind: 'user', text: '上一条' },
+        { id: 'u-1', kind: 'user', text: '这一条' },
+      ],
+    })
+    await bind(state).refreshHosts()
+    return state
+  }
+
+  it('离线收口把标记打在刚发的那条用户行上，别的行不受影响', async () => {
+    const state = await offlineState()
+    const rows = state.entries.filter((e) => e.kind === 'user')
+    expect(rows.map((e) => (e.kind === 'user' ? !!e.undelivered : false))).toEqual([
+      false,
+      true,
+    ])
+  })
+
+  it('host 恢复 ready 后行内重试仍可用（连接状态清掉了，标记还在）', async () => {
+    const state = await offlineState()
+    // 重连成功：conn 回到 ready，layerErrors 清空。
+    state.conn = 'ready'
+    state.send = vi.fn().mockResolvedValue(undefined)
+    expect(resendUndeliveredPrompt(() => {}, () => state)).toBe(true)
+    expect(state.send).toHaveBeenCalledTimes(1)
+  })
+
+  it('重发收走用户行与未送达错误行，避免时间线出现两遍', async () => {
+    const state = await offlineState()
+    state.conn = 'ready'
+    state.send = vi.fn().mockResolvedValue(undefined)
+    const before = state.entries.length
+    resendUndeliveredPrompt(
+      (partial) => {
+        Object.assign(state, typeof partial === 'function' ? partial(state) : partial)
+      },
+      () => state,
+    )
+    expect(state.entries.length).toBe(before - 2)
+    expect(state.entries.some((e) => e.kind === 'error')).toBe(false)
+    expect(state.entries.some((e) => e.id === 'u-0')).toBe(true)
+  })
+
+  it('没有标记的回合不能重发（已送达 / 已收口）', async () => {
+    const state = makeState({
+      conn: 'ready',
+      currentPromptId: 'p-1',
+      lastSentPromptId: 'u-1',
+      entries: [{ id: 'u-1', kind: 'user', text: 'hi' }],
+    })
+    state.send = vi.fn().mockResolvedValue(undefined)
+    expect(resendUndeliveredPrompt(() => {}, () => state)).toBe(false)
+    expect(state.send).not.toHaveBeenCalled()
+  })
+})
+
+describe('probeHostHeartbeat — 区分「在思考」与「心跳停了」', () => {  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  function withHost(over: Partial<HostInfo>) {
+    ;(transport.listHosts as ReturnType<typeof vi.fn>).mockResolvedValue({
+      hosts: [host('a', over)],
+    })
+  }
+
+  it('心跳新鲜 → alive（host 只是在思考，不该报警）', async () => {
+    withHost({ lastSeenAgeMs: 1_000 })
+    expect(await probeHostHeartbeat('a')).toBe('alive')
+  })
+
+  it('偶发丢拍（age 2.8s）仍在窗口内 → alive，不误报', async () => {
+    withHost({ lastSeenAgeMs: 2_800 })
+    expect(await probeHostHeartbeat('a')).toBe('alive')
+  })
+
+  it('心跳停住 → silent', async () => {
+    withHost({ lastSeenAgeMs: HOST_HEARTBEAT_STALE_MS + 1_000 })
+    expect(await probeHostHeartbeat('a')).toBe('silent')
+  })
+
+  it('host 已被 hub 标离线 → silent', async () => {
+    withHost({ online: false, lastSeenAgeMs: 0 })
+    expect(await probeHostHeartbeat('a')).toBe('silent')
+  })
+
+  it('缺 lastSeenAgeMs → 按刚收到心跳处理（alive），不做跨机器时钟比较', async () => {
+    withHost({})
+    expect(await probeHostHeartbeat('a')).toBe('alive')
+  })
+
+  it('拿不到注册表（FE↔hub 有问题）→ unknown，不误报成 host 断线', async () => {
+    ;(transport.listHosts as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('offline'))
+    expect(await probeHostHeartbeat('a')).toBe('unknown')
   })
 })

@@ -1,4 +1,5 @@
 import { RotateCw } from 'lucide-react'
+import { useState } from 'react'
 import type { ScrollEntry } from '../../../api/types'
 import {
   USER_COLLAPSED_MAX_LINES,
@@ -11,6 +12,8 @@ import { Bullet, EntryShell } from '../EntryShell'
 import { InlineImages } from '../InlineImages'
 import { UserSteerTime } from '../PromptTime'
 import { ViewButton } from '../ViewButton'
+import { InlineAction } from '../../ui/InlineAction'
+import { useChatStore } from '../../../store/chat'
 import type { EntryChrome } from '../chrome'
 
 export function UserEntry({
@@ -20,7 +23,21 @@ export function UserEntry({
   e: Extract<ScrollEntry, { kind: 'user' }>
   chrome: EntryChrome
 }) {
-  const { shell, toggleUser, openViewer } = chrome
+  const { shell, toggleUser, openViewer, readonly = false } = chrome
+  // 未送达重试：错误行在时间线末尾，而用户回头找的是自己那条 prompt，
+  // 所以按钮也挂在这里。沿用原 promptId，host 侧同号去重，重发不会跑
+  // 出第二个回合。
+  const resend = useChatStore((s) => s.resendUndeliveredPrompt)
+  const [resending, setResending] = useState(false)
+  const onResend = () => {
+    if (resending) return
+    setResending(true)
+    try {
+      resend()
+    } finally {
+      setResending(false)
+    }
+  }
   // UserPromptBlock: full-width bg_light band, accent_user ❯ prefix
   // (RotateCw 图标 for is_cron scheduled /loop fires), continuation indent,
   // optional collapse to 3 visual lines + " …".
@@ -92,6 +109,20 @@ export function UserEntry({
         </div>
         <UserSteerTime ts={e.ts} steer={isInterjection} className="top-[14.5px]" />
       </button>
+      {/* 重试按钮必须是外层 <button> 的兄弟：嵌在按钮里是非法嵌套，浏览器
+          会重排 DOM 把两者拆开。放在行下方左对齐正文列——右上角是时间戳，
+          右下角是 ViewButton，两个角落都已占用。 */}
+      {e.undelivered && !readonly && (
+        <div className="pb-1.5 pl-[22px]">
+          <InlineAction
+            label="重试"
+            busyLabel="重试"
+            busy={resending}
+            title="Host 当时已离线，这条消息没有送达。重新发送（沿用原 promptId，已受理时不会重复执行）"
+            onRun={onResend}
+          />
+        </div>
+      )}
       <ViewButton
         visible={showView}
         compact

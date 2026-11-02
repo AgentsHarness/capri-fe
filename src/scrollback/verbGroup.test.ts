@@ -124,13 +124,13 @@ describe('runStep', () => {
 })
 
 describe('spanExpanded', () => {
-  it('默认折叠：集合里有 anchor → 展开', () => {
-    expect(spanExpanded('a', new Set(['a']), false)).toBe(true)
-    expect(spanExpanded('a', new Set(), false)).toBe(false)
+  it('分组默认折叠：集合里有 anchor 才是展开', () => {
+    expect(spanExpanded('a', new Set(['a']))).toBe(true)
+    expect(spanExpanded('a', new Set())).toBe(false)
   })
 
-  it('默认展开：集合里有 anchor → 收起', () => {
-    expect(spanExpanded('a', new Set(['a']), true)).toBe(false)
+  it('集合里是别段的 anchor → 本段仍折叠', () => {
+    expect(spanExpanded('a', new Set(['b']))).toBe(false)
   })
 })
 
@@ -642,7 +642,6 @@ describe('isDensePackable / displayRowKey', () => {
       type: 'group_header' as const,
       span: {} as never,
       label: {} as never,
-      family: 'verb' as const,
     }
     expect(displayRowKey(g)).toBe('gh_x')
     expect(isDensePackableRow(g)).toBe(true)

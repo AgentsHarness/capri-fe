@@ -32,7 +32,7 @@ import { TodoMark } from '../ui/todoMark'
 import { fmtBytes, fmtTok } from '../../format'
 import { contextUrgencyColor } from '../../theme/contextColor'
 import { Accents } from '../../theme/accents'
-import { toolDisplayMode } from '../../scrollback/entryState'
+import { entryFailed, entryRunning, toolDisplayMode } from '../../scrollback/entryState'
 import { toolHeaderExtra } from '../../scrollback/toolHeaderExtra'
 import { mergeLiveText } from '../../scrollback/liveText'
 import { useSessionSpinner } from '../../hooks/sessionState'
@@ -53,7 +53,6 @@ import {
   scanGroups,
   spanContaining,
 } from '../../scrollback/verbGroup'
-import { useFePrefs } from '../../store/historyPins'
 import { toolCallDensity } from '../../store/settings'
 import { useJunctionDissolve } from '../scrollback/useJunctionDissolve'
 import { useScrollbarGutter } from '../../hooks/useScrollbarGutter'
@@ -61,6 +60,7 @@ import {
   COLUMN_PAD_X_CLASS,
   COMPOSER_BODY_PAD_LEFT_PX,
   CONTENT_COLUMN_CLASS,
+  ICON_COL_INSET_PX,
 } from '../../theme/layout'
 
 /** Poll interval for live bg_task stdout while the viewer is open. */
@@ -338,7 +338,6 @@ const MINI_VIEWABLE_KINDS = new Set([
   'image',
   'btw',
   'bg_task',
-  'workflow',
   'subagent',
 ])
 
@@ -413,8 +412,8 @@ function BlockBodyDialog({ entry, onClose }: { entry: ScrollEntry; onClose: () =
 
 function viewerChrome(e: ScrollEntry, cwd?: string): { title: string; subtitle?: string } {
   if (e.kind === 'tool') {
-    const running = e.status === 'pending' || e.status === 'in_progress'
-    const failed = e.status === 'failed' || e.status === 'error'
+    const running = entryRunning(e)
+    const failed = entryFailed(e)
     const { verb } = toolHeader(e.kindName, running)
     if (e.raw) {
       // Fullscreen surface: same rule set as the row header, only the path
@@ -460,12 +459,6 @@ function viewerChrome(e: ScrollEntry, cwd?: string): { title: string; subtitle?:
     return {
       title: e.running ? 'Agent running' : `Agent ${e.status}`,
       subtitle: e.title,
-    }
-  }
-  if (e.kind === 'workflow') {
-    return {
-      title: 'Workflow',
-      subtitle: e.running ? 'running' : e.status,
     }
   }
   return { title: e.kind }
@@ -826,39 +819,6 @@ function ViewerBody({
   if (entry.kind === 'subagent') {
     return <SubagentView entry={entry} now={now ?? Date.now()} />
   }
-  if (entry.kind === 'workflow') {
-    return (
-      <div className="space-y-3">
-        <div className="rounded border border-gn-prompt-border bg-gn-bg-dark px-3 py-2 font-mono text-[12px] leading-relaxed text-gn-fg">
-          <div className="mb-1 text-[10px] uppercase tracking-wider text-gn-gutter">
-            status
-          </div>
-          <div className="whitespace-pre-wrap break-words">
-            {entry.status}
-            {entry.running ? ' · running' : ''}
-          </div>
-        </div>
-        {entry.detail && (
-          <div>
-            <div className="mb-1 text-[10px] uppercase tracking-wider text-gn-gutter">
-              detail
-            </div>
-            <pre className="whitespace-pre-wrap break-words font-mono text-[12px] leading-[1.45] text-gn-fg">
-              {entry.detail}
-            </pre>
-          </div>
-        )}
-        {entry.title && entry.title !== entry.detail && (
-          <div>
-            <div className="mb-1 text-[10px] uppercase tracking-wider text-gn-gutter">
-              name
-            </div>
-            <div className="text-[12.5px] text-gn-fg">{entry.title}</div>
-          </div>
-        )}
-      </div>
-    )
-  }
   return (
     <pre className="whitespace-pre-wrap font-mono text-[12px] text-gn-muted">
       {JSON.stringify(entry, null, 2)}
@@ -1070,7 +1030,6 @@ function SubagentTimeline({
     childSid ? s.subagentViews[childSid] : undefined,
   )
   const scrollRef = useRef<HTMLDivElement>(null)
-  const collapseToolGroups = useFePrefs((s) => s.fePrefs.collapseToolGroups)
   // 迷你视图的折叠/选中全部局部化：主 scrollback 的 expandedGroups /
   // selectedId 不接（mini 条目不在主 entries 里）。
   const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(
@@ -1220,12 +1179,9 @@ function SubagentTimeline({
   // 只用渲染窗口内的条目（renderItems），DOM 保持扁平。
   const { rows, spans } = useMemo(() => {
     const scope = groupScopeForDensity(toolCallDensity())
-    const spans = scanGroups(renderItems, expandedGroups, {
-      defaultExpanded: !collapseToolGroups,
-      scope,
-    })
+    const spans = scanGroups(renderItems, expandedGroups, { scope })
     return { rows: projectDisplayRows(renderItems, spans, true, undefined, scope), spans }
-  }, [renderItems, expandedGroups, collapseToolGroups])
+  }, [renderItems, expandedGroups])
 
   // 折叠覆盖（按条目 id）：工具/用户折叠与思考 displayMode 本地化——
   // 不写回 store，渲染时以 patch 合并进条目（EntryView 的 patch 语义）。
@@ -1404,7 +1360,12 @@ function SubagentTimeline({
                     className="pointer-events-auto absolute inset-x-0 top-0 border-b border-gn-prompt-border/40 font-ui text-[12.5px] leading-[1.35] text-gn-fg select-none"
                     style={{ backgroundColor: 'var(--color-gn-bg-highlight)' }}
                   >
-                    <div className="flex items-start gap-1.5 px-2.5 py-[7px]">
+                    {/* 左内边距对齐同模态行内用户消息的图标列（EntryShell 的
+                        accent 条 + 间距），❯ 与文字落在同一条竖线上。 */}
+                    <div
+                      className="flex items-start gap-1.5 py-[7px] pr-2.5"
+                      style={{ paddingLeft: ICON_COL_INSET_PX }}
+                    >
                       <span
                         className="mt-[1.5px] shrink-0"
                         style={{ color: 'var(--color-gn-accent-user)' }}

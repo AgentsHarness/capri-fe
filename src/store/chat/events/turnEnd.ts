@@ -46,10 +46,9 @@ export function handleTurnEndEvent(
         // pending 清空 / statusText 覆盖）都不该落在已完成的会话上。
         if (!ev.sessionId && !turnIsLive(get())) break
         // 回合身份校验：done 的 `meta` = prompt-result `_meta`（agent 回显
-        // 客户端 mint 的 promptId）。带非空 pid 且与当前回合不符 → 上一
-        // 个回合的迟到 done（RPC 与 live 通道乱序 / hub 缓冲重放）——
+        // 客户端 mint 的 promptId）。v2 host 保证回显：pid 不符或缺失 →
+        // 上一个回合的迟到 done（RPC 与 live 通道乱序 / hub 缓冲重放），
         // 不能收口新回合：finalize 的清锚副作用会打断刚发送的回合。
-        // 无 pid（旧 host 丢弃 / 旧 shell）→ 退回 legacy 行为。
         if (promptIdMismatch((ev as { meta?: unknown }).meta, get().currentPromptId)) break
         // TUI TurnCompleted marker ("Worked for 2.0s") — the last scrollback
         // line above the composer, mirroring turn_completion.rs. Idempotent:
@@ -111,9 +110,9 @@ export function handleTurnEndEvent(
           // （没有 chunk/thought 可修正），在这里修正后再 finalize，
           // marker 才是真实时长而非 "Worked for 0.0s"。
           // 回合身份校验：live turn_completed 的 `meta` = params._meta
-          // （agent 在每个 SessionNotification 上回显 promptId）。带非空
-          // pid 且与当前回合不符 → 上一个回合的迟到收口（乱序 / hub 缓冲
-          // 重放）——绝不能收养/收口新回合（adoptLiveTurnStart 会把新
+          // （agent 在每个 SessionNotification 上回显 promptId）。v2 host
+          // 保证回显：pid 不符或缺失 → 上一个回合的迟到收口（乱序 / hub
+          // 缓冲重放）——绝不能收养/收口新回合（adoptLiveTurnStart 会把新
           // 回合的锚错改成旧回合的开始时间，时长虚高）。
           if (promptIdMismatch((ev as { meta?: unknown }).meta, get().currentPromptId)) break
           adoptLiveTurnStart(set, get, ev)
@@ -271,7 +270,7 @@ export function handleTurnEndEvent(
           const flushed = flushLiveStream(s)
           return {
             conn: 'ready',
-            statusText: '待处理',
+            phaseText: '待处理',
             awaitingNext: true,
             openAssistantId: undefined,
             openThoughtId: undefined,
@@ -284,6 +283,7 @@ export function handleTurnEndEvent(
             ),
             turnStartedAt: undefined,
             currentPromptId: undefined,
+            promptAcceptedAt: undefined,
             xaiRequests: [], // host answered every pending x.ai request already
             pending: [], // …and every pending permission request (turn cancelled)
             // flushLiveStream's liveStream: null rides on the entry merge —
@@ -360,6 +360,7 @@ export function handleTurnEndEvent(
                 : ev.message,
             turnStartedAt: undefined,
             currentPromptId: undefined,
+            promptAcceptedAt: undefined,
             entries: [
               ...sealed.entries,
               {
@@ -391,6 +392,7 @@ export function handleTurnEndEvent(
           statusText: '',
           turnStartedAt: undefined,
           currentPromptId: undefined,
+          promptAcceptedAt: undefined,
         })
         break
       }

@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HubPrefsDoc, PrefsEntries, SessionInfo, WorkspaceGroup } from '../api/types'
-import { PrefsConflictError } from '../api/transport'
 import { transport } from '../api/client'
 import { sortSessionsWithPins, sortWorkspacesWithPins, usePins } from './historyPins'
 import {
@@ -42,6 +41,7 @@ vi.mock('../api/client', () => ({
 }))
 
 const HUB_PUSH_DEBOUNCE_MS = 500
+const HUB_PUSH_RETRY_MS = 5000
 
 // ── 测试用 hub：与 internal/hub/prefs.go 同一套条目合并语义 ─────────────
 // Go 侧那份由 hub 自己的测试（internal/hub/prefs_test.go）保证；这里复用它
@@ -86,25 +86,10 @@ function wireHub(): void {
     if (!hub.online) throw new Error('仅 Hub 模式支持置顶/待办持久化')
     return { prefs: hubDoc(), version: hub.ver }
   })
-  vi.mocked(transport.putPrefs).mockImplementation(async (prefs, baseVersion) => {
+  vi.mocked(transport.putPrefs).mockImplementation(async (prefs) => {
     if (!hub.online) throw new Error('仅 Hub 模式支持置顶/待办持久化')
     hub.writes.push(JSON.parse(JSON.stringify(prefs)) as HubPrefsDoc)
-    const incoming = prefs.entries && Object.keys(prefs.entries).length > 0
-    if (!incoming && baseVersion != null && baseVersion !== hub.ver) {
-      throw new PrefsConflictError('conflict', hub.ver, hubDoc())
-    }
-    const next = incoming
-      ? mergeEntries(hub.entries, prefs.entries as PrefsEntries)
-      : entriesFromView(
-          {
-            pinnedWorkspaces: prefs.pinnedWorkspaces ?? [],
-            pinnedSessions: prefs.pinnedSessions ?? [],
-            todos: prefs.todos ?? {},
-            fePrefs: (prefs.fePrefs ?? {}) as Record<string, boolean>,
-          },
-          Date.now(),
-          'hub-legacy',
-        )
+    const next = mergeEntries(hub.entries, (prefs.entries ?? {}) as PrefsEntries)
     if (sameEntries(hub.entries, next)) return { version: hub.ver, prefs: hubDoc() }
     hub.entries = next
     hub.ver += 1
@@ -129,7 +114,7 @@ beforeEach(async () => {
     pinnedWorkspaces: new Set<string>(),
     pinnedSessions: new Set<string>(),
     todos: {},
-    fePrefs: { collapseToolGroups: true, liteReplay: false, autoTodoNewSession: false },
+    fePrefs: { liteReplay: false, autoTodoNewSession: false },
   })
   vi.mocked(transport.prefsOrigin).mockReturnValue('')
   vi.mocked(transport.getPrefs).mockRejectedValue(new Error('未编排'))
@@ -193,15 +178,15 @@ describe('本地置顶/待办', () => {
   })
 
   it('setFePrefs 局部合并，且 liteReplay 被显式选过后才进投影', () => {
-    usePins.getState().setFePrefs({ collapseToolGroups: false })
+    usePins.getState().setFePrefs({ liteReplay: false })
     expect(usePins.getState().fePrefs).toEqual({
-      collapseToolGroups: false,
       liteReplay: false,
       autoTodoNewSession: false,
     })
-    expect(liveKeys(localEntries())).toEqual([feKey('collapseToolGroups')])
+    expect(liveKeys(localEntries())).toEqual([feKey('liteReplay')])
 
     usePins.getState().setFePrefs({ liteReplay: true })
+    expect(usePins.getState().fePrefs.liteReplay).toBe(true)
     expect(aliveKey(localEntries(), feKey('liteReplay'))).toBe(true)
   })
 
@@ -214,7 +199,24 @@ describe('本地置顶/待办', () => {
     expect(usePins.getState().fePrefs.autoTodoNewSession).toBe(false)
   })
 
-  it('变更经 500ms 防抖合并为一次回写，文档同时带投影与条目', async () => {
+  it('hub 回 200 但没带 prefs 文档 → PENDING 保留，重试后才收口', async () => {
+    wireHub()
+    // 第一次写只回版本号（旧 hub / 代理截断）：不能据此清掉待推标记。
+    vi.mocked(transport.putPrefs).mockResolvedValueOnce({ version: hub.ver })
+    usePins.getState().toggleSessionPin('mine')
+    await vi.advanceTimersByTimeAsync(HUB_PUSH_DEBOUNCE_MS)
+    expect(transport.putPrefs).toHaveBeenCalledTimes(1)
+    expect(pending()).toBe(true)
+    expect(hubPinned()).toEqual([])
+
+    // 兜底重试拿到带 entries 的权威文档 → 本地改动确实落 hub，才清 PENDING。
+    await vi.advanceTimersByTimeAsync(HUB_PUSH_RETRY_MS)
+    expect(transport.putPrefs).toHaveBeenCalledTimes(2)
+    expect(pending()).toBe(false)
+    expect(hubPinned()).toEqual(['mine'])
+  })
+
+  it('变更经 500ms 防抖合并为一次回写，文档只带条目', async () => {
     wireHub()
     usePins.getState().toggleWorkspacePin('/w/1')
     usePins.getState().setTodoStatus('s1', 'todo')
@@ -222,8 +224,8 @@ describe('本地置顶/待办', () => {
     await vi.advanceTimersByTimeAsync(HUB_PUSH_DEBOUNCE_MS)
     expect(transport.putPrefs).toHaveBeenCalledTimes(1)
     const doc = vi.mocked(transport.putPrefs).mock.calls[0]?.[0]
-    expect(doc?.pinnedWorkspaces).toEqual(['/w/1'])
-    expect(doc?.todos).toEqual({ s1: 'todo' })
+    expect(doc?.pinnedWorkspaces).toBeUndefined()
+    expect(doc?.todos).toBeUndefined()
     expect(Object.keys(doc?.entries ?? {})).toHaveLength(2)
     expect(pending()).toBe(false)
   })
@@ -344,35 +346,31 @@ describe('syncPrefsFromHub', () => {
     expect(pending()).toBe(false)
   })
 
-  it('旧 hub（响应不带条目）仍能对齐：把投影物化进条目', async () => {
+  it('hub 回的条目直接对齐（响应始终带 entries）', async () => {
     vi.mocked(transport.prefsOrigin).mockReturnValue('http://hub')
     vi.mocked(transport.getPrefs).mockResolvedValue({
-      prefs: { pinnedWorkspaces: ['/x'], pinnedSessions: [], todos: { s1: 'todo' } },
+      prefs: {
+        entries: {
+          [wsKey('/x')]: { v: '1', at: 5, site: 'hub' },
+          [todoKey('s1')]: { v: 'todo', at: 5, site: 'hub' },
+        },
+      },
       version: 4,
     })
     await usePins.getState().syncPrefsFromHub()
     expect(wsPinned()).toEqual(['/x'])
     expect(usePins.getState().todos['s1']).toBe('todo')
-    expect(aliveKey(localEntries(), wsKey('/x'))).toBe(true)
     expect(transport.putPrefs).not.toHaveBeenCalled()
   })
 
-  it('旧 hub 的 409：吸收它的文档并保留待推状态', async () => {
+  it('写入失败保留待推标记与本地状态', async () => {
     vi.mocked(transport.prefsOrigin).mockReturnValue('http://hub')
     vi.mocked(transport.getPrefs).mockResolvedValue({ prefs: {}, version: 1 })
+    vi.mocked(transport.putPrefs).mockRejectedValue(new Error('网络断了'))
     usePins.getState().toggleSessionPin('mine')
-    await vi.advanceTimersByTimeAsync(HUB_PUSH_DEBOUNCE_MS) // 建 base 版本 = 1
-    vi.mocked(transport.putPrefs).mockRejectedValue(
-      new PrefsConflictError('conflict', 9, {
-        pinnedSessions: ['theirs'],
-        entries: { [sessionKey('theirs')]: { v: '1', at: 9, site: 'other' } },
-      }),
-    )
-    usePins.getState().toggleSessionPin('mine2')
     await vi.advanceTimersByTimeAsync(HUB_PUSH_DEBOUNCE_MS)
-    expect(pinned().sort()).toEqual(['mine', 'mine2', 'theirs'])
-    expect(pending()).toBe(true) // 没收口才不会自称已同步
-    expect(window.localStorage.getItem(KEY.historyPinsVer)).toBe('9')
+    expect(pinned()).toEqual(['mine'])
+    expect(pending()).toBe(true)
   })
 
   it('拉取失败绝不清空本地；未落地的写入照常再试一次', async () => {
@@ -382,7 +380,7 @@ describe('syncPrefsFromHub', () => {
     usePins.getState().toggleSessionPin('mine')
     await vi.advanceTimersByTimeAsync(HUB_PUSH_DEBOUNCE_MS) // 这一轮写失败
     expect(pending()).toBe(true)
-    vi.mocked(transport.putPrefs).mockResolvedValue({ version: 3 })
+    vi.mocked(transport.putPrefs).mockResolvedValue({ version: 3, prefs: hubDoc() })
     vi.mocked(transport.putPrefs).mockClear()
     await usePins.getState().syncPrefsFromHub() // 拉不动也要把待推的再试一次
     expect(pinned()).toEqual(['mine'])

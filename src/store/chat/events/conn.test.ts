@@ -63,7 +63,7 @@ describe('handleConnEvent — ready 的本地真相守卫', () => {
     handleConnEvent(set, get, ready({ sessionId: 's1' }))
     const s = state()
     expect(s.conn).toBe('ready')
-    expect(s.statusText).toBe('就绪')
+    expect(s.phaseText).toBe('就绪')
     expect(s.turnStartedAt).toBeUndefined()
   })
 
@@ -108,7 +108,7 @@ describe('handleConnEvent — ready 的本地真相守卫', () => {
     handleConnEvent(set, get, ready({ sessionId: 's1' }))
     const s = state()
     expect(s.conn).toBe('ready')
-    expect(s.statusText).toBe('就绪')
+    expect(s.phaseText).toBe('就绪')
     expect(s.turnStartedAt).toBeUndefined()
   })
 })

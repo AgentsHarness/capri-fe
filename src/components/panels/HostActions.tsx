@@ -5,6 +5,7 @@ import type { HostInfo } from '../../api/types'
 import { transport } from '../../api/client'
 import { useChatStore } from '../../store/chat'
 import { pushToast } from '../../store/toast'
+import { Spinner } from '../ui/Spinner'
 
 /**
  * Hub 多 Host 管理面板（TopBar 左上角 host 选择器配套）：
@@ -260,8 +261,9 @@ export function RenameHostModal({
             type="button"
             disabled={!value.trim() || submitting}
             onClick={submit}
-            className="rounded px-3 py-1.5 text-[12px] text-gn-cyan hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40"
+            className="inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-[12px] text-gn-cyan hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40"
           >
+            {submitting ? <Spinner size={11} /> : null}
             {submitting ? '保存中…' : '保存'}
           </button>
         </div>
@@ -310,8 +312,9 @@ export function DeleteHostModal({
             type="button"
             disabled={submitting}
             onClick={submit}
-            className="rounded px-3 py-1.5 text-[12px] text-gn-red hover:bg-gn-diff-del-bg disabled:cursor-not-allowed disabled:opacity-40"
+            className="inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-[12px] text-gn-red hover:bg-gn-diff-del-bg disabled:cursor-not-allowed disabled:opacity-40"
           >
+            {submitting ? <Spinner size={11} /> : null}
             {submitting ? '删除中…' : '删除'}
           </button>
         </div>
@@ -432,7 +435,11 @@ export function AddHostModal({ onClose }: { onClose: () => void }) {
           className="mb-3 inline-flex w-full items-center justify-center gap-1.5 rounded-md px-3 py-2 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40"
           title="轮换配对码：旧码立即失效（正在配对的机器需用新码）"
         >
-          <RefreshCw size={13} strokeWidth={2} aria-hidden className={rotating ? 'animate-spin' : ''} />
+          {rotating ? (
+            <Spinner size={13} />
+          ) : (
+            <RefreshCw size={13} strokeWidth={2} aria-hidden />
+          )}
           {rotating ? '生成中…' : '生成新配对码'}
         </button>
 
@@ -490,8 +497,9 @@ export function RestartAgentModal({
             type="button"
             disabled={submitting}
             onClick={submit}
-            className="rounded px-3 py-1.5 text-[12px] text-gn-cyan hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40"
+            className="inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-[12px] text-gn-cyan hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40"
           >
+            {submitting ? <Spinner size={11} /> : null}
             {submitting ? '重启中…' : '重启'}
           </button>
         </div>

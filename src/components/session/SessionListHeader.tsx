@@ -33,8 +33,7 @@ export function SessionListHeader({
   /** 提供时在刷新按钮右侧渲染搜索开关（桌面侧边栏与移动端下拉都传）。 */
   onToggleSearch?: () => void
 }) {
-  const refreshSessions = useChatStore((s) => s.refreshSessions)
-  const refreshWorkspaces = useChatStore((s) => s.refreshWorkspaces)
+  const refreshSessionLists = useChatStore((s) => s.refreshSessionLists)
   const workspaceLoading = useChatStore((s) => s.workspaceLoading)
 
   const mode = useHistoryView((s) => s.mode)
@@ -69,10 +68,10 @@ export function SessionListHeader({
     // 显式刷新是钉住顺序唯一的整体重排时机：先请求重锚，再拉数据，
     // 列表落地时按本次活跃度重写排序锚（见 store/historyOrder）。
     useHistoryOrder.getState().requestReanchor()
-    // refreshWorkspaces 同步置 workspaceLoading=true，effect 随即把按钮
+    // 统一刷新入口内部同步置 workspaceLoading=true，effect 随即把按钮
     // 切到转圈；这里不直接 setState，避免在已加载中点击时闪烁。
-    void refreshSessions()
-    void refreshWorkspaces()
+    // immediate：用户点的那一下要立刻发，不能被后台触发的节流窗口推后。
+    void refreshSessionLists(1, { immediate: true })
   }
   const spinnerFrame = useSessionSpinner(refreshState === 'refreshing')
 

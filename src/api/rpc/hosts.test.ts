@@ -90,6 +90,28 @@ describe('listHosts 注册表交接', () => {
   })
 })
 
+describe('prefs RPC', () => {
+  it('putPrefs 回包没有 prefs 文档 → 返回 undefined，而不是伪造空文档', async () => {
+    const fetchMock = vi.fn(() => json({ ok: true, version: 7 }))
+    const res = await hostsRpc.putPrefs.call(
+      core('https://hub.example', fetchMock),
+      { entries: {} },
+    )
+    expect(res.version).toBe(7)
+    expect(res.prefs).toBeUndefined()
+  })
+
+  it('putPrefs 回包带文档 → 原样返回，供调用方合并对账', async () => {
+    const doc = { entries: { 'ws:/w': { v: '1', at: 1, site: 'me' } } }
+    const fetchMock = vi.fn(() => json({ ok: true, version: 8, prefs: doc }))
+    const res = await hostsRpc.putPrefs.call(
+      core('https://hub.example', fetchMock),
+      { entries: {} },
+    )
+    expect(res).toEqual({ version: 8, prefs: doc })
+  })
+})
+
 describe('probeAccess 交出自己的注册表应答', () => {
   beforeEach(() => {
     clearHostRegistryHandoff()

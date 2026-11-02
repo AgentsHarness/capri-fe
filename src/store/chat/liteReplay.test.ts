@@ -146,7 +146,6 @@ function litePage(over: Partial<SessionHistoryPage> = {}): SessionHistoryPage {
     totalCount: 5,
     hasMore: false,
     projected: 'lite',
-    omittedBytes: 4096,
     ...over,
   }
 }
@@ -240,8 +239,6 @@ describe('detail 请求档位与 host 能力回显', () => {
     expect(e?.liteState).toBeUndefined()
     expect(toolEntryNeedsFill(e!)).toBe(true)
     expect(toolEntryLitePending(e!)).toBe(true)
-    expect(useChatStore.getState().historyProjected).toBe('lite')
-    expect(useChatStore.getState().historyOmittedBytes).toBe(4096)
   })
 
   it('旧 host 不回 projected：本次按 full 渲染、零占位残留，并停用该 host 的 lite', async () => {
@@ -395,7 +392,7 @@ describe('只填工具正文的补全', () => {
   it('首屏不自动拉 full：lite 页渲染完零请求，点顶部图标才按轮补全', async () => {
     const load = vi
       .mocked(transport.loadSessionHistory)
-      .mockResolvedValueOnce(litePage({ omittedBytes: 1200 }))
+      .mockResolvedValueOnce(litePage())
       .mockResolvedValue(fullPage())
     await useChatStore.getState().loadHistory(SID, CWD)
     const before = useChatStore.getState().entries
@@ -420,12 +417,20 @@ describe('只填工具正文的补全', () => {
   })
 
   // 预算闸门按需求去掉：被裁最多的正是带后台任务 / 长流式输出的会话，
-  // 拦下来只会让它们整轮退化成逐条手点。
-  it('被裁正文再大也照补：omittedBytes 超 2MB 仍发 detail=full', async () => {
+  // 拦下来只会让它们整轮退化成逐条手点。被裁量仍在信封的
+  // `_meta.lite.omitted` 上（条目 liteOmitted 的累计源），这里把它抬到 2MB 以上。
+  it('被裁正文再大也照补：lite.omitted 超 2MB 仍发 detail=full', async () => {
+    const updates = liteToolEnvelopes().map((u) => {
+      const update = (u as { params: { update: { _meta: { lite: { omitted: number } } } } }).params
+        .update
+      update._meta.lite.omitted = 6 * 1024 * 1024
+      return u
+    })
     vi.mocked(transport.loadSessionHistory)
-      .mockResolvedValueOnce(litePage({ omittedBytes: 6 * 1024 * 1024 }))
+      .mockResolvedValueOnce(litePage({ updates }))
       .mockResolvedValue(fullPage())
     await useChatStore.getState().loadHistory(SID, CWD)
+    expect(toolEntry()!.liteOmitted!).toBeGreaterThan(2 * 1024 * 1024)
     expect(toolEntryLitePending(toolEntry()!)).toBe(true)
 
     await fillAllLiteTurns()
@@ -658,7 +663,6 @@ describe('只填工具正文的补全', () => {
       .getState()
       .entries.find((e) => e.kind === 'tool') as Extract<ScrollEntry, { kind: 'tool' }>
     useChatStore.setState({
-      historyProjected: undefined,
       entries: [{ ...owed, liteState: undefined, liteOmitted: 4096 }],
     })
     expect(liteFillSummary(useChatStore.getState())).toBe('1.0.0')
@@ -676,7 +680,7 @@ describe('只填工具正文的补全', () => {
       }),
     })
     vi.mocked(transport.loadSessionHistory)
-      .mockResolvedValueOnce(dropSeq(litePage({ omittedBytes: 1200 })))
+      .mockResolvedValueOnce(dropSeq(litePage()))
       .mockResolvedValue(dropSeq(fullPage()))
     await useChatStore.getState().loadHistory(SID, CWD)
 
@@ -700,7 +704,7 @@ describe('只填工具正文的补全', () => {
 
   it('补全失败静默：不打 loading / error，也不改 UI', async () => {
     vi.mocked(transport.loadSessionHistory)
-      .mockResolvedValueOnce(litePage({ omittedBytes: 1200 }))
+      .mockResolvedValueOnce(litePage())
       .mockRejectedValueOnce(new Error('502'))
     await useChatStore.getState().loadHistory(SID, CWD)
     await fillAllLiteTurns()
@@ -1739,7 +1743,6 @@ describe('极致 lite：合成窗口与 thought 补全', () => {
         promptStarts: [0],
         totalCount: 5,
         projected: 'lite',
-        omittedBytes: 1700,
       })
       .mockResolvedValue({
         updates: [
@@ -1788,7 +1791,6 @@ describe('极致 lite：合成窗口与 thought 补全', () => {
         promptStarts: [0],
         totalCount: 3,
         projected: 'lite',
-        omittedBytes: 496,
       } as never)
       .mockResolvedValue({
         updates: [
@@ -1845,7 +1847,6 @@ describe('极致 lite：合成窗口与 thought 补全', () => {
         promptStarts: [0],
         totalCount: N + 2,
         projected: 'lite',
-        omittedBytes: 5000,
       })
       .mockResolvedValue({
         updates: [
@@ -1916,7 +1917,6 @@ describe('极致 lite：合成窗口与 thought 补全', () => {
         promptStarts: [0],
         totalCount: 7,
         projected: 'lite',
-        omittedBytes: 70,
       } as never)
       .mockResolvedValue({
         updates: fullUpdates,
@@ -1967,7 +1967,6 @@ describe('极致 lite：合成窗口与 thought 补全', () => {
         promptStarts: [0],
         totalCount: 5,
         projected: 'lite',
-        omittedBytes: 170,
       } as never)
       .mockResolvedValue({
         updates: [
@@ -1995,5 +1994,416 @@ describe('极致 lite：合成窗口与 thought 补全', () => {
     const filled = thoughts()[0]
     expect(filled.liteState).toBe('filled')
     expect(filled.text).toBe(fullA + fullB)
+  })
+})
+
+/**
+ * 子代理迷你时间线（BlockViewer 的 SubagentTimeline）的上滑分页游标。
+ *
+ * 游标不能用 `totalCount - 本页条数` 反推：lite 投影会把同 toolCallId 的
+ * tool_call/update、连续 thought 并成一封，本页条数因此远小于窗口宽度
+ * （真实会话实测 100 条只剩 60 条）。反推的起点会落在窗口中间，下一次
+ * 上滑的窗口与已加载区重叠 → 同一批内容重复上屏（用户看到整段 prompt
+ * 与同组 Run 行出现两遍）。
+ */
+describe('子代理迷你时间线的上滑分页游标', () => {
+  const CHILD = 'child-1'
+  /**
+   * 一段窗口在宿主 lite 投影后的返回形状：窗口宽 `width`，其中 `pairs`
+   * 个「tool_call + tool_call_update」对被并成一封，其余是独立信封。
+   * 返回条数因此少于窗口宽度——这正是 `totalCount - 条数` 反推会失准
+   * 的原因（真实会话实测 100 条窗口只剩 60 条）。
+   */
+  function coalescedPage(start: number, width: number, pairs: number): unknown[] {
+    const updates: unknown[] = []
+    let seq = start
+    for (let i = 0; i < pairs && seq < start + width; i++) {
+      updates.push(
+        env(seq, {
+          sessionUpdate: 'tool_call',
+          toolCallId: `c${start}-${i}`,
+          title: `run ${i}`,
+          status: 'completed',
+          _meta: { lite: { omitted: 10 } },
+        }),
+      )
+      // 同 toolCallId 的 update 被 host 并进上一封（msgSeq 跳过一位）。
+      seq += 2
+    }
+    for (; seq < start + width; seq++) {
+      updates.push(
+        env(seq, {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'x' },
+        }),
+      )
+    }
+    return updates
+  }
+
+  it('首拉 lite 页：游标按最老信封 msgSeq，不按本页条数反推', async () => {
+    const updates = [
+      env(0, {
+        sessionUpdate: 'user_message_chunk',
+        content: { type: 'text', text: '审一下' },
+      }),
+      ...coalescedPage(1, 99, 12),
+    ]
+    // 窗口 [0, 100) 被投影成 88 封（12 对合并，每对少一封）。
+    expect(updates).toHaveLength(100 - 12)
+    vi.mocked(transport.loadSessionHistory).mockResolvedValueOnce({
+      updates,
+      promptStarts: [0],
+      totalCount: 200,
+      hasMore: true,
+      projected: 'lite',
+    } as SessionHistoryPage)
+    useChatStore.setState({
+      subagentViews: { [CHILD]: { items: [], fetchState: 'idle' } },
+    })
+
+    await useChatStore.getState().fetchSubagentView(CHILD)
+
+    const view = useChatStore.getState().subagentViews[CHILD]
+    // 本页覆盖 [0, 100)：最老信封是 msgSeq 0。反推会得到 200-88=112。
+    expect(view?.loadedStart).toBe(0)
+  })
+
+  it('上滑翻页与本页严格相接：绝不请求已加载过的区间', async () => {
+    // 最新一页 = 窗口 [100, 200)，同样被投影压缩。
+    vi.mocked(transport.loadSessionHistory)
+      .mockResolvedValueOnce({
+        updates: coalescedPage(100, 100, 12),
+        promptStarts: [0],
+        totalCount: 200,
+        hasMore: true,
+        projected: 'lite',
+      } as SessionHistoryPage)
+      .mockResolvedValueOnce({
+        updates: [
+          env(0, {
+            sessionUpdate: 'user_message_chunk',
+            content: { type: 'text', text: '审一下' },
+          }),
+          ...coalescedPage(1, 99, 12),
+        ],
+        promptStarts: [0],
+        totalCount: 200,
+        hasMore: false,
+        projected: 'lite',
+      } as SessionHistoryPage)
+    useChatStore.setState({
+      subagentViews: { [CHILD]: { items: [], fetchState: 'idle' } },
+    })
+    const load = vi.mocked(transport.loadSessionHistory)
+
+    await useChatStore.getState().fetchSubagentView(CHILD)
+    expect(useChatStore.getState().subagentViews[CHILD]?.loadedStart).toBe(100)
+
+    await useChatStore.getState().loadMoreSubagentView(CHILD)
+
+    // 窗口必须是 [0, 100)，与已加载的 [100, 200) 相接。反推游标会得到
+    // 200-88=112，进而请求 [12, 112)——与已加载区重叠 88 行，同一批内容
+    // 再走一遍 subagentViewAppend，时间线上就是整段重复。
+    expect(load).toHaveBeenLastCalledWith(CHILD, CWD, {
+      offset: 0,
+      limit: 100,
+      detail: 'lite',
+    })
+    expect(useChatStore.getState().subagentViews[CHILD]?.loadedStart).toBe(0)
+  })
+
+  it('整页无 msgSeq（透传回退）：游标按请求窗口，不按返回条数', async () => {
+    // host 按父会话 cwd 找不到子代理会话文件时会把请求转给 agent，响应
+    // 不带 msgSeq；host 出口仍做 lite 投影。本页窗口是首拉的尾部窗口
+    // [100, 200)，投影后只剩 88 条——按条数反推会得到 112，下一次上滑的
+    // 窗口 [12, 112) 与已加载区重叠 88 行。
+    const updates = coalescedPage(0, 100, 12).map((u) => {
+      const { msgSeq: _drop, ...rest } = u as { msgSeq?: number }
+      return rest
+    })
+    vi.mocked(transport.loadSessionHistory)
+      .mockResolvedValueOnce({
+        updates,
+        promptStarts: [0],
+        totalCount: 200,
+        hasMore: true,
+        projected: 'lite',
+      } as SessionHistoryPage)
+      .mockResolvedValueOnce({
+        updates: updates.slice(0, 20),
+        promptStarts: [0],
+        totalCount: 200,
+        hasMore: false,
+        projected: 'lite',
+      } as SessionHistoryPage)
+    useChatStore.setState({
+      subagentViews: { [CHILD]: { items: [], fetchState: 'idle' } },
+    })
+    const load = vi.mocked(transport.loadSessionHistory)
+
+    await useChatStore.getState().fetchSubagentView(CHILD)
+    expect(useChatStore.getState().subagentViews[CHILD]?.loadedStart).toBe(100)
+
+    await useChatStore.getState().loadMoreSubagentView(CHILD)
+
+    // 窗口必须是 [0, 100)，与已加载的 [100, 200) 相接不重叠。
+    expect(load).toHaveBeenLastCalledWith(CHILD, CWD, {
+      offset: 0,
+      limit: 100,
+      detail: 'lite',
+    })
+  })
+
+  it('跨页工具调用：tool_call 在旧页、update 在新页 → 只留一行', async () => {
+    const CHILD2 = 'child-2'
+    // 最新一页 [100, 200)：页首是落在边界另一侧那次调用的 update。
+    const own = (raw: unknown): unknown => {
+      const e = raw as { params?: { sessionId?: string } }
+      if (e.params) e.params.sessionId = 'child-2'
+      return e
+    }
+    const tail: unknown[] = [
+      own(
+        env(100, {
+          sessionUpdate: 'tool_call_update',
+          toolCallId: 'split',
+          status: 'completed',
+          _meta: { lite: { omitted: 10 } },
+        }),
+      ),
+    ]
+    for (let seq = 101; seq < 200; seq++) {
+      tail.push(
+        own(
+          env(seq, {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: 'x' },
+          }),
+        ),
+      )
+    }
+    // 旧页 [0, 100)：页尾是同一个 toolCallId 的 tool_call。
+    const head: unknown[] = []
+    for (let seq = 0; seq < 99; seq++) {
+      head.push(
+        own(
+          env(seq, {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: 'y' },
+          }),
+        ),
+      )
+    }
+    head.push(
+      own(
+        env(99, {
+          sessionUpdate: 'tool_call',
+          toolCallId: 'split',
+          title: 'Read `a.ts`',
+          status: 'in_progress',
+          rawInput: { path: 'a.ts' },
+          _meta: { lite: { omitted: 10 } },
+        }),
+      ),
+    )
+    vi.mocked(transport.loadSessionHistory)
+      .mockResolvedValueOnce({
+        updates: tail,
+        promptStarts: [0],
+        totalCount: 200,
+        hasMore: true,
+        projected: 'lite',
+      } as SessionHistoryPage)
+      .mockResolvedValueOnce({
+        updates: head,
+        promptStarts: [0],
+        totalCount: 200,
+        hasMore: false,
+        projected: 'lite',
+      } as SessionHistoryPage)
+    useChatStore.setState({
+      subagentViews: { [CHILD2]: { items: [], fetchState: 'idle' } },
+    })
+
+    await useChatStore.getState().fetchSubagentView(CHILD2)
+    await useChatStore.getState().loadMoreSubagentView(CHILD2)
+
+    const rows = (useChatStore.getState().subagentViews[CHILD2]?.items ?? []).filter(
+      (e): e is Extract<ScrollEntry, { kind: 'tool' }> =>
+        e.kind === 'tool' && e.toolCallId === 'split',
+    )
+    expect(rows).toHaveLength(1)
+    // 标题取旧页 tool_call 的，状态取新页 update 的。
+    expect(rows[0]?.title).toContain('a.ts')
+    expect(rows[0]?.status).toBe('completed')
+  })
+})
+
+/**
+ * 子代理迷你视图的补全坐标：host lite 页把同 toolCallId 的 tool_call/update
+ * 合成一封，正文留在被合成掉的尾部信封里。窗口右端取幸存信封
+ * `_meta.lite.msgSeqEnd`；只取信封自身的 msgSeq 会算出单条窗口，展开装不上
+ * 正文——用户看到的就是「工具输出加载失败 · N KB [重试]」。
+ */
+describe('子代理迷你视图：合成信封的补全窗口', () => {
+  const CHILD = 'child-synth'
+
+  beforeEach(() => {
+    usePins.getState().setFePrefs({ liteReplay: true })
+  })
+
+  /** 信封的 params.sessionId 必须是子会话：错配包络会被 fetchSubagentView 丢弃。 */
+  const childEnv = (msgSeq: number, update: Record<string, unknown>) => {
+    const e = env(msgSeq, update) as {
+      params: { sessionId: string; update: Record<string, unknown>; _meta: object }
+      [k: string]: unknown
+    }
+    return { ...e, params: { ...e.params, sessionId: CHILD } }
+  }
+
+  it('工具行按 [msgSeq, msgSeqEnd] 拉 full，正文填回迷你视图', async () => {
+    const lite = [
+      childEnv(10, {
+        sessionUpdate: 'user_message_chunk',
+        content: { type: 'text', text: '审一下' },
+      }),
+      childEnv(11, {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'c-synth',
+        kind: 'read_file',
+        status: 'in_progress',
+        title: 'Read a.ts',
+        rawInput: { file_path: 'a.ts' },
+        content: [{ type: 'content', omitted: 4000 }],
+        _meta: { lite: { omitted: 4000, msgSeqEnd: 14 } },
+      }),
+    ]
+    const full = [
+      childEnv(11, {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'c-synth',
+        kind: 'read_file',
+        status: 'in_progress',
+        title: 'Read a.ts',
+        rawInput: { file_path: 'a.ts' },
+      }),
+      childEnv(12, { sessionUpdate: 'tool_call_update', toolCallId: 'c-synth', status: 'completed' }),
+      childEnv(13, {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'c-synth',
+        content: [{ type: 'content', content: { type: 'text', text: 'const a = 1' } }],
+      }),
+      childEnv(14, {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'c-synth',
+        rawOutput: { type: 'ReadFile', output: { FileContent: { content: 'const a = 1' } } },
+      }),
+    ]
+    vi.mocked(transport.loadSessionHistory)
+      .mockResolvedValueOnce({
+        updates: lite,
+        totalCount: 15,
+        hasMore: false,
+        projected: 'lite',
+      } as SessionHistoryPage)
+      .mockResolvedValueOnce({
+        updates: full,
+        totalCount: 15,
+        hasMore: false,
+      } as SessionHistoryPage)
+    useChatStore.setState({
+      subagentViews: { [CHILD]: { items: [], fetchState: 'idle' } },
+    })
+
+    await useChatStore.getState().fetchSubagentView(CHILD)
+    const child = useChatStore.getState().subagentViews[CHILD]
+    const row = child?.items.find((e) => e.kind === 'tool')
+    if (!row || row.kind !== 'tool') throw new Error('expected tool row')
+    expect(row.msgSeq).toBe(11)
+    expect(row.msgSeqEnd).toBe(14)
+    expect(toolEntryNeedsFill(row)).toBe(true)
+
+    await useChatStore.getState().fillToolEntryDetail(row.id)
+
+    // 窗口必须覆盖被合成掉的尾部（14），单条 11 里没有任何正文。
+    expect(vi.mocked(transport.loadSessionHistory)).toHaveBeenLastCalledWith(CHILD, CWD, {
+      offset: 11,
+      limit: 4,
+      detail: 'full',
+    })
+    const filled = useChatStore
+      .getState()
+      .subagentViews[CHILD]?.items.find((e) => e.kind === 'tool')
+    if (!filled || filled.kind !== 'tool') throw new Error('expected tool row')
+    expect(filled.liteState).toBe('filled')
+    expect(JSON.stringify(filled.raw?.rawOutput)).toContain('const a = 1')
+    // 零结构变化：仍是同一条行。
+    expect(filled.id).toBe(row.id)
+  })
+
+  it('思考行同样带坐标：展开时按合成窗口补回正文', async () => {
+    const lite = [
+      childEnv(20, {
+        sessionUpdate: 'user_message_chunk',
+        content: { type: 'text', text: '审一下' },
+      }),
+      childEnv(21, {
+        sessionUpdate: 'agent_thought_chunk',
+        content: { type: 'text', omitted: 900 },
+        _meta: { lite: { omitted: 900, msgSeqEnd: 23 } },
+      }),
+    ]
+    const full = [
+      childEnv(21, {
+        sessionUpdate: 'agent_thought_chunk',
+        content: { type: 'text', text: '先看 ' },
+      }),
+      childEnv(22, {
+        sessionUpdate: 'agent_thought_chunk',
+        content: { type: 'text', text: '再看 ' },
+      }),
+      childEnv(23, {
+        sessionUpdate: 'agent_thought_chunk',
+        content: { type: 'text', text: '再定' },
+      }),
+    ]
+    vi.mocked(transport.loadSessionHistory)
+      .mockResolvedValueOnce({
+        updates: lite,
+        totalCount: 24,
+        hasMore: false,
+        projected: 'lite',
+      } as SessionHistoryPage)
+      .mockResolvedValueOnce({
+        updates: full,
+        totalCount: 24,
+        hasMore: false,
+      } as SessionHistoryPage)
+    useChatStore.setState({
+      subagentViews: { [CHILD]: { items: [], fetchState: 'idle' } },
+    })
+
+    await useChatStore.getState().fetchSubagentView(CHILD)
+    const child = useChatStore.getState().subagentViews[CHILD]
+    const row = child?.items.find((e) => e.kind === 'thought')
+    if (!row || row.kind !== 'thought') throw new Error('expected thought row')
+    expect(row.msgSeq).toBe(21)
+    expect(row.msgSeqEnd).toBe(23)
+    expect(thoughtEntryNeedsFill(row)).toBe(true)
+
+    await useChatStore.getState().fillToolEntryDetail(row.id)
+
+    expect(vi.mocked(transport.loadSessionHistory)).toHaveBeenLastCalledWith(CHILD, CWD, {
+      offset: 21,
+      limit: 3,
+      detail: 'full',
+    })
+    const filled = useChatStore
+      .getState()
+      .subagentViews[CHILD]?.items.find((e) => e.kind === 'thought')
+    if (!filled || filled.kind !== 'thought') throw new Error('expected thought row')
+    expect(filled.liteState).toBe('filled')
+    expect(filled.text).toBe('先看 再看 再定')
   })
 })

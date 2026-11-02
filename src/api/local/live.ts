@@ -14,6 +14,19 @@ import { loadStr } from '../../lib/storage'
  * disconnect 顶掉就作废——否则 React StrictMode 的双挂载会开出两条连接。
  */
 
+/**
+ * hub WS 重连延迟：指数退避（上限 30s）+ ±20% 抖动。
+ *
+ * 抖动只加在等待时长上，不动 attempt 计数：多个标签页/客户端同时掉线时，
+ * 没有抖动会让它们在同一个毫秒一起重连（惊群）；±20% 足以把重连摊开，
+ * 又不至于让单页的重连明显变慢。
+ */
+export function reconnectDelayMs(attempt: number): number {
+  const base = Math.min(30_000, 1000 * 2 ** Math.min(attempt, 5))
+  const jitter = base * 0.2 * (Math.random() * 2 - 1) // ±20%
+  return Math.max(0, Math.round(base + jitter))
+}
+
 export const liveMixin = {
 
   /** Select the target host for API calls + event filtering (null = none). */
@@ -182,20 +195,16 @@ export const liveMixin = {
     u.pathname = '/ws/fe'
     const params = new URLSearchParams()
     if (ticket) {
-      // 首选单次短效 ticket：长期 FE_TOKEN 进 query 会落到 hub 与中间代理
-      // 的 access log 里。hub 侧 feAuth 的顺序是 Bearer 头 → ?ticket= →
-      // 兼容旧版 ?token=。
+      // 单次短效 ticket：长期 FE_TOKEN 进 query 会落到 hub 与中间代理的
+      // access log 里，hub 的 WS 入口只认 ticket。
       params.set('ticket', ticket)
-    } else if (this.doorToken()) {
-      params.set('token', this.doorToken())
     }
     // Ask the hub to flate-compress events frames; the browser
     // DecompressionStream API decodes them.
     if (typeof DecompressionStream !== 'undefined') params.set('c', '1')
     // 分流：告诉 hub 这个页面只关心选中 host 的事件。首帧之前 host 往往
     // 还没选定（宿主列表要一次跨网往返），落回上次选中的持久值，让建连即
-    // 起就是过滤态；选错了也会被随后的 subscribe 帧改正。旧 hub 不认这个
-    // 参数也照常工作（照样全推，客户端 emit 里那层过滤兜底）。
+    // 起就是过滤态；选错了也会被随后的 subscribe 帧改正。
     const scope = this.selectedHostId ?? loadStr(KEY.host)
     if (this.mode === 'hub' && scope) {
       params.set('host', scope)
@@ -211,9 +220,8 @@ export const liveMixin = {
 
 
   /**
-   * 向 hub 换一个单次使用的 WS ticket（TTL 2 分钟）。拿不到（老 hub 无此
-   * 端点、请求失败、被 disconnect 取消）就返回 null，调用方退回 ?token=，
-   * 所以不要求 hub 与 FE 同版本上线。
+   * 向 hub 换一个单次使用的 WS ticket（TTL 2 分钟）。拿不到（请求失败、被
+   * disconnect 取消）就返回 null——没有 ?token= 回退，下一轮重连会重新换。
    * hubLevel：ticket 属于 hub 级请求，不能被切 host 的 abort 风暴取消。
    */
   async wsTicket(this: TransportCtx): Promise<string | null> {
@@ -318,8 +326,7 @@ export const liveMixin = {
     if (gen !== this.gen) return
     // seq 计数器是 per-host 的，别的 host 的慢消费信号与本 host 毫无关系：
     // 拿 B 的 fromSeq 顶 A 的水位，会把 A 之后所有低于它的事件静默丢掉。
-    // 新 hub 的 resync 帧带 hostId，归属不符直接忽略；旧 hub 不带 hostId，
-    // 退回原语义（只能当作本 host 的信号）。
+    // hub 的 resync 帧带 hostId，归属不符直接忽略。
     if (typeof hostId === 'string' && hostId && hostId !== this.selectedHostId) return
     const seq =
       typeof fromSeq === 'number' && Number.isSafeInteger(fromSeq) && fromSeq > 0
@@ -400,10 +407,9 @@ export const liveMixin = {
           // 未选中 host 的事件一律不进排序引擎。它们最终也会在 emit 里被
           // 丢掉，但在那之前会先污染序号状态：本 tab 对该 host 水位是 0，
           // 第一条事件就会打一发 GET /api/events?host=X&after=0，把 hub
-          // 环形缓冲整段（上限 6000 条）拉回来再全部丢弃；非选中 host 的
-          // pending 也就此堆积。hub 侧分流后正常情况下收不到，但老 hub
-          // 不分流、以及首屏 host 选定之前的窗口（连接还不带 ?host=）都在
-          // 这条守卫的覆盖范围内。
+          // 环形缓冲整段拉回来再全部丢弃；非选中 host 的 pending 也就此
+          // 堆积。hub 侧分流后正常情况下收不到，但首屏 host 选定之前的
+          // 窗口（连接还不带 ?host=）在这条守卫的覆盖范围内。
           if (this.mode === 'hub' && evHost && evHost !== this.selectedHostId) continue
           // resync 是 hub 的控制标记（无 seq，新 hub 带 hostId），不能进 seq
           // 排序通路（会被当 flat event 原样透传），单独拦截处理。
@@ -470,7 +476,7 @@ export const liveMixin = {
     } catch {
       // 构造失败（非法 URL 等）：hub 模式没有 SSE 兜底，定时重试 WS。
       if (gen !== this.gen) return
-      const delay = Math.min(30_000, 1000 * 2 ** Math.min(this.reconnectAttempt, 5))
+      const delay = reconnectDelayMs(this.reconnectAttempt)
       this.reconnectAttempt += 1
       this.reconnectTimer = setTimeout(() => {
         this.reconnectTimer = null
@@ -488,8 +494,10 @@ export const liveMixin = {
       // hub 恢复在线：让 store 清掉"与 hub 连接断开"提示。
       this.emitLocal({ type: 'hub_conn', online: true })
       // 新连接上订阅者面板还看不到「在看哪个会话」：补报一次（hub 的
-      // 行是新建的，旧连接的台账不会跟过来）。
-      this.sendViewingFrame()
+      // 行是新建的，旧连接的台账不会跟过来）。这条帧同时是本页「已声明
+      // 会话」的标记——hub 据此把该页计入可裁剪的听众，空会话也必须发
+      // （否则 hub 只能按「可能显示任何会话」全量放行）。
+      this.sendViewingFrame(true)
     }
 
     ws.onmessage = (msg) => {
@@ -510,8 +518,8 @@ export const liveMixin = {
       // 非主动断线：提示"与 hub 断开"，重连成功由 onopen 清除。
       // 仅 hub 模式（connectWS 只在 hub 模式被调用）。
       this.emitLocal({ type: 'hub_conn', online: false })
-      // Hub 模式没有 SSE 兜底（hub 只提供 /ws/fe）：指数退避重连 WS。
-      const delay = Math.min(30_000, 1000 * 2 ** Math.min(this.reconnectAttempt, 5))
+      // Hub 模式没有 SSE 兜底（hub 只提供 /ws/fe）：指数退避 + 抖动重连 WS。
+      const delay = reconnectDelayMs(this.reconnectAttempt)
       this.reconnectAttempt += 1
       this.reconnectTimer = setTimeout(() => {
         this.reconnectTimer = null

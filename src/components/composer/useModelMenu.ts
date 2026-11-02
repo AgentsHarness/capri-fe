@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useChatStore } from '../../store/chat'
 import { contextWindowOptions } from '../../store/chat/model'
+import { useAnchoredMenu } from '../../hooks/useAnchoredMenu'
 
 /**
  * /model 模型菜单（composer 底部 caption 的模型槽）：开关、「设为默认」
@@ -22,72 +23,21 @@ export function useModelMenu() {
   const [setAsDefault, setSetAsDefault] = useState(false)
   const modelRef = useRef<HTMLSpanElement>(null)
   const modelBtnRef = useRef<HTMLButtonElement>(null)
+
   // Fixed-position menu rect so the picker stays inside the viewport on
   // mobile (absolute + max-h-[320px] was clipped by body { overflow:hidden }
   // when the composer sat at the bottom edge).
-  const [modelMenuPos, setModelMenuPos] = useState<{
-    bottom: number
-    right: number
-    maxH: number
-    width: number
-  } | null>(null)
-
-  // Model picker: close on outside click / Escape; pin to viewport.
-  useEffect(() => {
-    if (!modelOpen) {
-      setModelMenuPos(null)
-      return
-    }
-    const place = () => {
-      const btn = modelBtnRef.current
-      if (!btn) return
-      const r = btn.getBoundingClientRect()
-      const pad = 8
-      const gap = 6
-      const vw = window.innerWidth
-      const vh = window.innerHeight
-      // Open upward from the button; clamp height to free space above.
-      const bottom = Math.max(pad, vh - r.top + gap)
-      const maxH = Math.max(120, Math.min(320, r.top - pad))
-      const width = Math.min(288, vw - pad * 2)
-      // Prefer right-align to the button, then shift so left/right stay in view.
-      let left = r.right - width
-      left = Math.max(pad, Math.min(left, vw - pad - width))
-      const right = vw - left - width
-      setModelMenuPos({ bottom, right, maxH, width })
-    }
-    place()
-    const onDown = (e: MouseEvent) => {
-      if (modelRef.current && !modelRef.current.contains(e.target as Node)) {
-        setModelOpen(false)
-      }
-    }
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setModelOpen(false)
-    }
-    const onScroll = (e: Event) => {
-      // Ignore scroll events originating from inside the model menu itself.
-      if (
-        modelRef.current &&
-        e.target instanceof Node &&
-        modelRef.current.contains(e.target)
-      ) {
-        return
-      }
-      place()
-    }
-    window.addEventListener('resize', place)
-    // Capture scroll from nested scroll parents (scrollback).
-    window.addEventListener('scroll', onScroll, true)
-    window.addEventListener('mousedown', onDown)
-    window.addEventListener('keydown', onKey)
-    return () => {
-      window.removeEventListener('resize', place)
-      window.removeEventListener('scroll', onScroll, true)
-      window.removeEventListener('mousedown', onDown)
-      window.removeEventListener('keydown', onKey)
-    }
-  }, [modelOpen])
+  const modelMenuPos = useAnchoredMenu({
+    open: modelOpen,
+    anchorRef: modelBtnRef,
+    menuRef: modelRef,
+    setOpen: setModelOpen,
+    minHeight: 120,
+    maxHeight: 320,
+    maxWidth: 288,
+    gap: 6,
+    pad: 8,
+  })
 
   /**
    * 切换模型。`windowOverride` 只在用户点某一行自己的窗口 chip 时给出：

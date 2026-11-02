@@ -46,7 +46,10 @@ export function resetSessionState(
     // 新会话的消息也会被 turnIsLive 误判而错误排队。置 ready = 本端
     // 没有活跃回合，诚实的空闲状态；新会话的 ready 事件会再锚定。
     conn: 'ready',
-    statusText: '就绪',
+    phaseText: '就绪',
+    // 操作反馈是上一个会话的回执（切模式 / 重命名 / 删除…），idleStatusLine
+    // 优先读它；不随复位清空会让旧会话的回执永久顶掉新会话的相位文案。
+    statusText: '',
     // 复位作废在飞的建会话 POST（过期响应的 finally 有 generation 守卫，
     // 不会再把标志顶回）：composer 锁定随复位解除，避免残留卡死。
     newSessionPending: false,
@@ -115,8 +118,6 @@ export function resetSessionState(
     historyTurnIdx: 0,
     historyPrependedAt: undefined,
     historyAnchorId: undefined,
-    historyProjected: undefined,
-    historyOmittedBytes: undefined,
     liteFillBusy: 0,
     todoCounts: undefined,
     todos: undefined,
@@ -134,6 +135,7 @@ export function resetSessionState(
     runningHook: null,
     turnStartedAt: undefined,
     currentPromptId: undefined,
+    promptAcceptedAt: undefined,
     genRate: undefined,
     scheduledTasks: [],
     ...overrides,

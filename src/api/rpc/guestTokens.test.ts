@@ -132,7 +132,7 @@ describe('guestTokensRpc 契约', () => {
     expect(err).toBeInstanceOf(AccessTokenError)
   })
 
-  it('accessRole：admin / guest / 404（旧 hub 回落 admin）', async () => {
+  it('accessRole：admin / guest', async () => {
     const admin = core(async () => json({ ok: true, role: 'admin' }))
     expect(
       await call(function (this: TransportCore) {
@@ -157,12 +157,6 @@ describe('guestTokensRpc 契约', () => {
       sessions: [{ hostId: 'h1', sessionId: 's1', cwd: '/w', title: 't' }],
     })
 
-    const old = core(async () => json({ ok: false, error: 'not found' }, 404))
-    expect(
-      await call(function (this: TransportCore) {
-        return guestTokensRpc.accessRole.call(this)
-      }, old),
-    ).toEqual({ role: 'admin' })
   })
 
   it('hub 返回 sessions: null 时归一成空数组（列表渲染不崩）', async () => {

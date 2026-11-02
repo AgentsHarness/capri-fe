@@ -18,6 +18,15 @@ export function InlineAction({
   onRun,
   tone = 'danger',
   disabled = false,
+  /**
+   * 请求在飞：按钮换成转圈、禁止再次点击。
+   *
+   * 由调用方受控传入，而不是内部自己 await onRun——大量调用点是
+   * `void respond(...)` 的一次性触发，内部托管状态会与调用方自己的
+   * pending/终态交错（卡片被移除后 setState 落在已卸载组件上）。
+   */
+  busy = false,
+  busyLabel = '',
   className = '',
 }: {
   label: ReactNode
@@ -25,20 +34,28 @@ export function InlineAction({
   onRun: () => void
   tone?: keyof typeof TONE_CLASS
   disabled?: boolean
+  busy?: boolean
+  busyLabel?: string
   className?: string
 }) {
+  const inert = disabled || busy
   return (
     <button
       type="button"
-      disabled={disabled}
+      disabled={inert}
+      aria-busy={busy || undefined}
       onClick={(ev: MouseEvent) => {
         ev.stopPropagation()
+        if (inert) return
         onRun()
       }}
       title={title}
       className={`shrink-0 cursor-pointer whitespace-nowrap rounded px-0.5 font-mono text-[12px] min-h-6 sm:min-h-0 transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${TONE_CLASS[tone]} ${className}`}
     >
-      [{label}]
+      {/* 转圈用 braille 帧里的静止首帧：这里不做逐帧动画——按钮是瞬时
+          动作，动画会让同一屏里的多个 spinner 互相打架，静态帧足以表达
+          "请求在飞"。 */}
+      {busy ? `[⠋${busyLabel}]` : `[${label}]`}
     </button>
   )
 }

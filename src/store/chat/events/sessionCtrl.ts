@@ -39,13 +39,10 @@ export function handleSessionCtrlEvent(
       }
       case 'client_request': {
         const method = ev.method || ''
-        // Prefer the broadcast sessionId; fall back to params for hosts
-        // that only put it inside the agent params map.
+        // v2 host 在顶层带 sessionId（withSid 约定）；不再从 agent 的
+        // params 里找归属。无 sid 的行是 legacy 回放，照常放行。
         const evSid =
-          (typeof ev.sessionId === 'string' && ev.sessionId) ||
-          (typeof ev.params?.sessionId === 'string' && ev.params.sessionId) ||
-          (typeof ev.params?.session_id === 'string' && ev.params.session_id) ||
-          undefined
+          typeof ev.sessionId === 'string' && ev.sessionId ? ev.sessionId : undefined
         // 访客：卡片不挂载，但他的状态行要立刻改成「在等管理员应答」。
         // 事件本身已经在白名单里（hub 按会话过滤），这里只重拉一次状态。
         if (get().guestIdentity) {
@@ -60,9 +57,8 @@ export function handleSessionCtrlEvent(
           ...(typeof ev.receivedAt === 'number' ? { receivedAt: ev.receivedAt } : {}),
         }
         // 带明确会话归属的请求只属于那个会话。顶层 sid 已由 initChat 过滤，
-        // 这里补的是「host 只把 sid 放在 params 里」的那种形状（见
-        // continueSession 注释）——不拦就会把别的会话的权限/问题卡画到当前
-        // 视图。空状态（sessionId 未锚定）下带 sid 的行同样丢弃，与
+        // 这里再拦一次：不拦就会把别的会话的权限/问题卡画到当前视图。
+        // 空状态（sessionId 未锚定）下带 sid 的行同样丢弃，与
         // partitionPendingRequests 的语义一致；无 sid 的 legacy 行照常放行。
         if (evSid && evSid !== get().sessionId) break
         if (method.startsWith('x.ai/')) {
@@ -155,7 +151,7 @@ export function handleSessionCtrlEvent(
         // statusText so the peer tab shows a brief loading cue.
         set({
           historyLoading: true,
-          statusText: '另一窗口正在重放会话，同步中…',
+          phaseText: '另一窗口正在重放会话，同步中…',
         })
         break
       }
@@ -179,12 +175,12 @@ export function handleSessionCtrlEvent(
           // blocked live events but we did not clear entries).
           set({
             historyLoading: false,
-            statusText: '会话重放失败，保持当前视图',
+            phaseText: '会话重放失败，保持当前视图',
           })
           break
         }
         if (!cwd) {
-          set({ historyLoading: false, statusText: '会话重放完成' })
+          set({ historyLoading: false, phaseText: '会话重放完成' })
           break
         }
         // Rebuild from HTTP history (same path as continueSession). loadHistory

@@ -2,6 +2,7 @@ import type { AcpEvent } from '../../../api/types'
 import type { ChatState, McpServerInfo, SetState } from '../types'
 import { runtime } from '../globals'
 import { applyMcpInitProgress } from '../followUps'
+import { applyRosterPatch, parseRosterPatch } from '../rosterPatch'
 import { isForeignSession } from './wire'
 
 function strField(v: unknown): string | undefined {
@@ -114,10 +115,24 @@ export function handleExtSessionEvent(
         set({ mcpVersion: get().mcpVersion + 1 })
         void get().syncMcpServers()
         break
-      case 'sessions_changed':
-        void get().refreshSessions()
-        void get().refreshWorkspaces()
+      case 'sessions_changed': {
+        // 宿主对运行态翻转（busy ⇄ idle、待审批）发的是行级补丁：直接合并，
+        // 不整表重拉。名册结构变化（建 / 删 / 载入 / 改名 / rewind）仍然只有
+        // 空 params，那种情况必须重读列表。
+        const patch = parseRosterPatch(ev.params as Record<string, unknown> | undefined)
+        if (!patch) {
+          void get().refreshSessionLists()
+          break
+        }
+        const { unknown } = applyRosterPatch(set, get, patch)
+        // 补丁里有会话不在本地名册：另一台客户端刚建的，本地连 cwd / 摘要
+        // 都还没有，走一次整表拉。这是纠正而不是可合并的重复触发，绕过
+        // 节流窗口立刻发，别让侧边栏在旧名册上多停 400ms。
+        if (unknown > 0) {
+          void get().refreshSessionLists(1, { immediate: true })
+        }
         break
+      }
       case 'hosts_changed':
         // Hub-level: a host paired / came online / dropped off.
         void get().refreshHosts()

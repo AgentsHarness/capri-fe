@@ -16,9 +16,9 @@ export function noticeActions(set: SetState, get: () => ChatState) {
     set({ completedNotices: next })
   },
 
-  noteSessionCompleted: (sessionId) => {
+  noteSessionCompleted: (sessionId, opts?) => {
     const s = get()
-    if (!sessionId || sessionId === s.sessionId) return
+    if (!sessionId) return
     const now = Date.now()
     const last = s.completedNotices[sessionId]
     let next = { ...s.completedNotices, [sessionId]: now }
@@ -36,6 +36,9 @@ export function noticeActions(set: SetState, get: () => ChatState) {
       next = pruned
     }
     set({ completedNotices: next })
+    // 当前会话的完成只做数据层记录：用户就在这个会话里，完成已经是眼前
+    // 的输出；✓ 也会因「当前行不画对勾」而不显示。切走后该行恢复 ✓。
+    if (opts?.silent || sessionId === s.sessionId) return
     if (last && now - last < NOTICE_DEDUP_WINDOW_MS) return
     // TUI [ui.notifications] gate: condition/events decide whether the
     // completion surfaces (default "unfocused" — while the tab is visible

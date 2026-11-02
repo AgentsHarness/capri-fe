@@ -4,6 +4,7 @@ import {
   applyDetachedProbe,
   clearTopTaskTimer,
   detachedSignature,
+  hasLiveRunningWork,
   parseDetachedTask,
   setTopTaskTimer,
 } from './topTasks'
@@ -117,5 +118,49 @@ describe('timer 管理', () => {
     clearTopTaskTimer()
     setTopTaskTimer(42 as never)
     clearTopTaskTimer()
+  })
+})
+
+describe('hasLiveRunningWork（轮询收口判据）', () => {
+  const base = { topTasks: [], detachedTasks: [], entries: [] }
+
+  it('全空 → false：空闲会话不该继续每 10 秒问三个接口', () => {
+    expect(hasLiveRunningWork(base)).toBe(false)
+  })
+
+  it('顶部任务条非空 → true', () => {
+    expect(
+      hasLiveRunningWork({ ...base, topTasks: [{ taskId: 't1', title: 'dev' }] }),
+    ).toBe(true)
+  })
+
+  it('游离进程提示非空 → true', () => {
+    expect(
+      hasLiveRunningWork({ ...base, detachedTasks: [{ taskId: 'd1' }] }),
+    ).toBe(true)
+  })
+
+  it('滚动区里有在跑的子代理 / 后台任务行 → true', () => {
+    expect(
+      hasLiveRunningWork({
+        ...base,
+        entries: [{ kind: 'subagent', id: 'e1', running: true }],
+      } as never),
+    ).toBe(true)
+    expect(
+      hasLiveRunningWork({
+        ...base,
+        entries: [{ kind: 'bg_task', id: 'e2', running: true }],
+      } as never),
+    ).toBe(true)
+  })
+
+  it('行还在但已收口（running:false）→ false', () => {
+    expect(
+      hasLiveRunningWork({
+        ...base,
+        entries: [{ kind: 'bg_task', id: 'e2', running: false }],
+      } as never),
+    ).toBe(false)
   })
 })

@@ -25,8 +25,7 @@ import { SessionSearchBox } from './SessionSearchBox'
  * below lg — so the mount refresh also serves the mobile dropdown.
  */
 export function HistorySidebar() {
-  const refreshSessions = useChatStore((s) => s.refreshSessions)
-  const refreshWorkspaces = useChatStore((s) => s.refreshWorkspaces)
+  const refreshSessionLists = useChatStore((s) => s.refreshSessionLists)
   const resetToEmpty = useChatStore((s) => s.resetToEmpty)
   const sidebarCollapsed = useChatStore((s) => s.sidebarCollapsed)
   // 搜索按钮化：默认收起，点头部搜索按钮才挂载搜索框；命中打开后由
@@ -35,9 +34,8 @@ export function HistorySidebar() {
   const [searchActive, setSearchActive] = useState(false)
 
   useEffect(() => {
-    void refreshSessions()
-    void refreshWorkspaces()
-  }, [refreshSessions, refreshWorkspaces])
+    void refreshSessionLists()
+  }, [refreshSessionLists])
 
   return (
     <aside

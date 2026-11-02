@@ -36,33 +36,20 @@ function repoRootFrom(raw: unknown): string | undefined {
 }
 
 /**
- * 仓库根探测。专用端点 gitRepoRoot 优先；它**报错**时退到 git/branches ———
- * 后者的响应同样带 repoRoot，且一样不依赖活动会话。
+ * 仓库根探测。专用端点 gitRepoRoot 是唯一来源：它不依赖活动会话，非仓库
+ * 时直接报错，入口据此置灰。
  *
- * 兜底不是多余的：旧 host 的 /api/git/repo-root 发的是错的 wire 键（gitRoot
- * 而非 agent 侧必填的 currentWorkingDirectory），agent 判缺字段回 -32602
- * "Invalid params"——没有这条兜底，home 的「使用 Worktree」在任何
- * 未升级的 host 上都会永远灰着。
- *
- * 只有「拿到仓库根」才是肯定信号：非 git 目录下 git/branches 是报错而不是
- * 空列表，所以两个探针都没给出根时，不能据此断言「这里没有仓库」——只能
- * 报错原因，让入口保持置灰。
+ * 只有「拿到仓库根」才是肯定信号：探针报错时不能据此断言「这里没有仓库」
+ * ——只能带上错误原因，让入口保持置灰。
  */
 async function probeRepoRoot(cwd: string): Promise<{ root?: string; error?: string }> {
-  let error: string | undefined
   try {
     const root = repoRootFrom(await transport.gitRepoRoot({ cwd }))
     if (root) return { root }
   } catch (e) {
-    error = e instanceof Error && e.message ? e.message : String(e)
+    return { error: e instanceof Error && e.message ? e.message : String(e) }
   }
-  try {
-    const root = (await transport.gitBranches({ cwd })).repoRoot?.trim()
-    if (root) return { root }
-  } catch {
-    /* 非仓库或端点不可用：落到下面的结论 */
-  }
-  return error ? { error } : {}
+  return {}
 }
 
 async function probe(cwd: string): Promise<WorktreeGateState> {

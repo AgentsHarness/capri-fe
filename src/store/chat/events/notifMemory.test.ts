@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import type { AcpEvent, ScrollEntry } from '../../../api/types'
 import type { ChatState, SetState } from '../types'
 import { handleSessionNotification } from './sessionNotif'
+import { handleNotifMemory } from './notifMemory'
+import type { WireEvent } from './wire'
 import { entryExpanded, entryFoldable } from '../../../scrollback/entryState'
 
 function makeStore(initial: Partial<ChatState> = {}) {
@@ -14,10 +16,10 @@ function makeStore(initial: Partial<ChatState> = {}) {
   return { set: set as unknown as SetState, get: () => state, state: () => state }
 }
 
-const generic = (tag: string, extra: Record<string, unknown> = {}) =>
+const generic = (tag: string, extra: Record<string, unknown> = {}, sid = 's1') =>
   ({
     type: 'session_notification',
-    sessionId: 's1',
+    sessionId: sid,
     params: { sessionUpdate: tag, ...extra },
   }) as AcpEvent
 
@@ -126,7 +128,7 @@ describe('retry_state', () => {
   })
 
   it('retrying（非终态）不落行，只更新状态栏', () => {
-    const { set, get, state } = makeStore()
+    const { set, get, state } = makeStore({ statusText: '' })
     expect(
       handleSessionNotification(
         set,
@@ -135,7 +137,9 @@ describe('retry_state', () => {
       ),
     ).toBe(true)
     expect(state().entries).toHaveLength(0)
-    expect(state().statusText).toContain('2')
+    expect(state().phaseText).toContain('2')
+    // 相位文案走 phaseText，别占住操作反馈槽（idleStatusLine 优先读它）。
+    expect(state().statusText).toBe('')
   })
 })
 
@@ -207,5 +211,23 @@ describe('model_auto_switched', () => {
     )
     expect(texts(state())).toEqual(['模型 gone-model 不可用：Please start a new session.'])
     expect(state().modelName).toBe('Gone')
+  })
+})
+
+/**
+ * 标题 / 副行摘要已迁到 ./notifSessionMeta（业务写入只经 sessionIdentity
+ * 与新模块两个入口，见 sessionNotif.ts 的分发顺序）。
+ */
+describe('标题 / 摘要不再由记忆通知处理', () => {
+  it.each([
+    ['session_summary_generated', { session_summary: '新标题' }],
+    ['last_turn_summary', { summary: '新摘要' }],
+  ])('%s → handleNotifMemory 不认领，也不写状态', (tag, fields) => {
+    const { set, get, state } = makeStore({ sessions: [{ sessionId: 's1' }] })
+    expect(handleNotifMemory(set, get, generic(tag, fields) as unknown as WireEvent, tag, fields)).toBe(
+      false,
+    )
+    expect(state().sessions[0].title).toBeUndefined()
+    expect(state().sessions[0].lastTurnSummary).toBeUndefined()
   })
 })

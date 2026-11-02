@@ -11,7 +11,6 @@ import {
   nextToolFoldMode,
   toolDisplayMode,
 } from '../../../scrollback/entryState'
-import { currentCollapseToolGroups } from '../../historyPins'
 import { fillEntryRange } from '../historyFill'
 import type { ChatState, SetState } from '../types'
 import { selectableRowIds } from '../turn'
@@ -158,7 +157,6 @@ export function viewerNavActions(set: SetState, get: () => ChatState) {
     // ← on already-collapsed member inside an expanded group → fold the group
     if (!expanded && memberCollapsed) {
       const spans = scanGroups(entries, expandedGroups, {
-        defaultExpanded: !currentCollapseToolGroups(),
         scope: groupScopeForDensity(toolCallDensity()),
       })
       const span = spanContaining(spans, idx)
@@ -266,7 +264,6 @@ export function viewerNavActions(set: SetState, get: () => ChatState) {
     else {
       const idx = entries.findIndex((x) => x.id === selectedId)
       const spans = scanGroups(entries, expandedGroups, {
-        defaultExpanded: !currentCollapseToolGroups(),
         scope: groupScopeForDensity(toolCallDensity()),
       })
       const span = spanContaining(spans, idx)

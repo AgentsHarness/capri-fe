@@ -9,6 +9,7 @@ import {
 } from 'react'
 import { ChevronRight, X } from 'lucide-react'
 import { useChatStore } from '../../store/chat'
+import { Spinner } from '../ui/Spinner'
 import { transport, type SettingsPatch, type SettingsPayload } from '../../api/client'
 import { TOOL_CALL_DENSITY_CHOICES, TOOL_CALL_DENSITY_DEFAULT } from '../../api/transport'
 import {
@@ -32,13 +33,23 @@ import {
   type DefaultSelectedPermission,
 } from '../../lib/defaultSelectedPermission'
 
-/** host config.toml 的分组（GET /api/settings 的形状）——合并成一个只读分类展示。 */
-const GROUPS = [
-  { key: 'ui', label: '界面' },
-  { key: 'session', label: '会话' },
-  { key: 'models', label: '模型' },
-  { key: 'cli', label: 'CLI' },
-] as const
+/** 已知 config.toml 表的中文名；其余表按 TOML 路径原样展示。 */
+const SECTION_LABELS: Record<string, string> = {
+  ui: '界面',
+  session: '会话',
+  models: '模型',
+  cli: 'CLI',
+  features: '功能',
+  privacy: '隐私',
+  subagents: '子代理',
+  toolset: '工具',
+  compaction: '压缩',
+  marketplace: '插件市场',
+  mcp_servers: 'MCP',
+}
+
+/** 已知表先按 TUI 顺序，其余按路径字母序。 */
+const SECTION_ORDER = ['ui', 'session', 'models', 'cli']
 
 /** 左侧分类键：四个可编辑分类 + 一个只读的 Agent 配置（有内容才出现）。 */
 type CategoryKey = 'behavior' | 'ask' | 'fe' | 'custom' | 'share' | 'agent'
@@ -53,7 +64,9 @@ type Category = {
   desc: string
 }
 
-/** FE-consumed [ui] scalars — edited above, not dumped as raw keys. */
+/** FE-consumed [ui] scalars — edited above, not dumped as raw keys.
+ *  `collapsed_edit_blocks` 已退役（编辑行折叠由 tool_call_density 决定），
+ *  保留在这里只是为了不把它当只读键重复列出来。 */
 const CONSUMED_UI_KEYS = new Set([
   'permission_mode',
   'approval_mode',
@@ -98,7 +111,7 @@ const DEFAULT_SELECTED_PERMISSION_UI: {
 const BOOL_ROWS: {
   key: keyof Pick<
     SettingsPatch,
-    'page_flip_on_send' | 'collapsed_edit_blocks' | 'remember_tool_approvals'
+    'page_flip_on_send' | 'remember_tool_approvals'
   >
   label: string
   hint: string
@@ -111,12 +124,6 @@ const BOOL_ROWS: {
     dflt: true,
   },
   {
-    key: 'collapsed_edit_blocks',
-    label: '折叠编辑块',
-    hint: '开：diff 收成 +N/−M 一行。关：每条 diff 默认展开',
-    dflt: false,
-  },
-  {
     key: 'remember_tool_approvals',
     label: '记住工具审批',
     hint: '审批条显示「始终允许」选项',
@@ -127,13 +134,14 @@ const BOOL_ROWS: {
 /**
  * Settings modal — web counterpart of the TUI `/settings` modal (F2).
  *
- * Data comes from GET /api/settings (safe subset of config.toml).
+ * Data comes from GET /api/settings (every scalar config.toml table except
+ * custom-model definitions).
  * The four FE-consumed [ui] scalars are editable (POST /api/settings);
  * remaining keys stay read-only. Permission_mode / yolo / approval_mode
  * collapse to one effective default.
  *
  * Layout: a left category rail (行为偏好 / 问答超时 / 前端偏好 / 自定义模型
- * + 一个只读的「Agent 配置」，里面按 config.toml 分组分小节) and a right pane
+ * + 一个只读的「Agent 配置」，里面按 config.toml 表分小节) and a right pane
  * rendering ONLY the selected category — the whole config dump no longer
  * stacks into one long scroll.
  * Narrow viewports fold the rail into a horizontal strip above the pane.
@@ -208,17 +216,26 @@ export function SettingsModal() {
     return () => window.removeEventListener('keydown', onKey, true)
   }, [open, fetchSettings, close])
 
-  // 只读分组剩下的键（consumed 的 [ui] 标量在「行为偏好」分类里编辑）。
-  const dumpRows = useMemo(() => {
-    const out: Partial<Record<(typeof GROUPS)[number]['key'], [string, unknown][]>> = {}
-    for (const g of GROUPS) {
-      const group = data?.[g.key]
-      if (group == null) continue
-      const rows = Object.entries(group)
-        .filter(([k]) => g.key !== 'ui' || !CONSUMED_UI_KEYS.has(k))
+  // 只读分组：host 返回的每张 config.toml 表各成一节。已由「行为偏好」编辑的
+  // [ui] 标量和由「问答超时」编辑的 toolset.ask_user_question 不重复列出。
+  const dumpSections = useMemo(() => {
+    const out: { key: string; label?: string; rows: [string, unknown][] }[] = []
+    for (const [key, group] of Object.entries(data ?? {})) {
+      if (group == null || typeof group !== 'object' || Array.isArray(group)) continue
+      const rows = Object.entries(group as Record<string, unknown>)
+        .filter(
+          ([k]) =>
+            (key !== 'ui' || !CONSUMED_UI_KEYS.has(k)) &&
+            !(key === 'toolset' && k === 'ask_user_question'),
+        )
         .sort(([a], [b]) => a.localeCompare(b))
-      if (rows.length > 0) out[g.key] = rows
+      if (rows.length > 0) out.push({ key, label: SECTION_LABELS[key], rows })
     }
+    const rank = (k: string) => {
+      const i = SECTION_ORDER.indexOf(k)
+      return i === -1 ? SECTION_ORDER.length : i
+    }
+    out.sort((a, b) => rank(a.key) - rank(b.key) || a.key.localeCompare(b.key))
     return out
   }, [data])
 
@@ -257,7 +274,7 @@ export function SettingsModal() {
         desc: '访客令牌与会话白名单；右键会话 →「分享只读链接」可快速加入单个会话。',
       },
     ]
-    if (GROUPS.some((g) => dumpRows[g.key])) {
+    if (dumpSections.length > 0) {
       list.push({
         key: 'agent',
         label: 'Agent 配置',
@@ -266,7 +283,7 @@ export function SettingsModal() {
       })
     }
     return list
-  }, [dumpRows])
+  }, [dumpSections])
 
   // 分类固定四项恒在；选中项随数据消失（例如切到没有 [cli] 的 host）时落回首项。
   const current: Category = cats.find((c) => c.key === active) ?? cats[0]
@@ -345,19 +362,19 @@ export function SettingsModal() {
       case 'share':
         return <GuestTokensPanel />
       default:
-        // 「Agent 配置」：每个 config.toml 分组一小节，键按字母序，只读。
+        // 「Agent 配置」：每张 config.toml 表一小节，键按字母序，只读。
         return (
           <section className="pb-1">
-            {GROUPS.filter((g) => dumpRows[g.key]?.length).map((g) => (
+            {dumpSections.map((g) => (
               <div key={g.key} className="border-b border-gn-prompt-border/50 py-1 last:border-b-0">
                 <div className="px-4 pt-1.5 pb-0.5 font-mono text-[10.5px] tracking-wide text-gn-fg2">
                   [{g.key}]
-                  <span className="ml-1.5 font-ui text-gn-fg2">{g.label}</span>
-                  <span className="ml-1.5 tabular-nums text-gn-muted">
-                    {dumpRows[g.key]?.length}
-                  </span>
+                  {g.label ? (
+                    <span className="ml-1.5 font-ui text-gn-fg2">{g.label}</span>
+                  ) : null}
+                  <span className="ml-1.5 tabular-nums text-gn-muted">{g.rows.length}</span>
                 </div>
-                {(dumpRows[g.key] ?? []).map(([k, v]) => (
+                {g.rows.map(([k, v]) => (
                   <SettingRow key={k} label={k}>
                     <SettingValue value={v} />
                   </SettingRow>
@@ -458,8 +475,9 @@ export function SettingsModal() {
                 <button
                   type="button"
                   onClick={() => void fetchSettings()}
-                  className="mt-2 rounded px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                  className="mt-2 inline-flex items-center gap-1.5 rounded px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
                 >
+                  {loading ? <Spinner size={11} /> : null}
                   重试
                 </button>
               </div>
@@ -553,10 +571,14 @@ function TogglePill({
         on ? 'bg-gn-bg-highlight font-medium text-gn-green' : 'text-gn-muted hover:bg-gn-bg-highlight'
       } disabled:opacity-50`}
     >
-      <span
-        className={`h-1.5 w-1.5 rounded-full ${on ? 'bg-gn-green' : 'bg-gn-gutter'}`}
-      />
-      {busy ? '…' : on ? 'on' : 'off'}
+      {busy ? (
+        <Spinner size={11} />
+      ) : (
+        <span
+          className={`h-1.5 w-1.5 rounded-full ${on ? 'bg-gn-green' : 'bg-gn-gutter'}`}
+        />
+      )}
+      {on ? 'on' : 'off'}
     </button>
   )
 }
@@ -566,17 +588,21 @@ function ChoicePills<T extends string>({
   choices,
   value,
   disabled,
+  busyId,
   onPick,
 }: {
   choices: readonly { id: T; label: string }[]
   value: T
   disabled?: boolean
+  /** 正在提交的那一档：给它转圈，其余档位一起禁用。 */
+  busyId?: T
   onPick: (id: T) => void
 }) {
   return (
     <>
       {choices.map((c) => {
         const on = value === c.id
+        const busy = busyId === c.id
         return (
           <button
             key={c.id}
@@ -587,12 +613,13 @@ function ChoicePills<T extends string>({
               if (on) return
               onPick(c.id)
             }}
-            className={`rounded px-2.5 py-1 text-[11px] transition-colors sm:px-2 sm:py-px sm:text-[10.5px] ${
+            className={`inline-flex items-center gap-1 rounded px-2.5 py-1 text-[11px] transition-colors disabled:cursor-not-allowed sm:px-2 sm:py-px sm:text-[10.5px] ${
               on
                 ? 'bg-gn-bg-highlight font-medium text-gn-green cursor-default'
                 : 'text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
             } disabled:opacity-50`}
           >
+            {busy ? <Spinner size={10} /> : null}
             {c.label}
           </button>
         )
@@ -688,6 +715,7 @@ function ConsumedSettings({
           choices={PERM_CHOICES}
           value={perm}
           disabled={disabled}
+          busyId={savingKey === 'permission_mode' ? perm : undefined}
           onPick={(id) => void onPatch({ permission_mode: id })}
         />
       </SettingRow>
@@ -701,6 +729,7 @@ function ConsumedSettings({
           choices={FOLLOW_UP_CHOICES}
           value={followUp}
           disabled={disabled}
+          busyId={savingKey === 'follow_up_behavior' ? followUp : undefined}
           onPick={(id) => void onPatch({ follow_up_behavior: id })}
         />
       </SettingRow>
@@ -714,6 +743,7 @@ function ConsumedSettings({
           choices={DENSITY_CHOICES}
           value={density}
           disabled={disabled}
+          busyId={savingKey === 'tool_call_density' ? density : undefined}
           onPick={(id) => void onPatch({ tool_call_density: id })}
         />
       </SettingRow>
@@ -825,7 +855,6 @@ function AskTimeoutSection({
  * （localStorage 离线缓存 + hub 广播跨端同步），不走 host config.toml。
  */
 function FePrefsSection() {
-  const collapseToolGroups = useFePrefs((s) => s.fePrefs.collapseToolGroups)
   const liteReplay = useLiteReplay()
   const autoTodoNewSession = useFePrefs((s) => s.fePrefs.autoTodoNewSession)
   const viaRelay = historyViaHubRelay()
@@ -835,17 +864,6 @@ function FePrefsSection() {
   >(() => loadDefaultSelectedPermission())
   return (
     <section>
-      <SettingRow
-        label="折叠工具分组"
-        code="collapse_tool_groups"
-        hint="开：连续工具调用折叠成「Read 3 files」分组头，成员隐藏；关：分组默认展开、逐条显示。"
-      >
-        <TogglePill
-          on={collapseToolGroups}
-          title="控制滚动区里 toolcall 分组是否折叠，改动即时生效"
-          onClick={() => setFePrefs({ collapseToolGroups: !collapseToolGroups })}
-        />
-      </SettingRow>
       <SettingRow
         label="精简回放"
         code="lite_replay"

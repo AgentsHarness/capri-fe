@@ -67,6 +67,20 @@ export function ApprovalStrip() {
    *  glob grant (scope {commandParts: [pattern], isGlob: true}); Esc
    *  discards and returns to the option rows. */
   const [patternEdit, setPatternEdit] = useState<string | null>(null)
+  /**
+   * 已发出、等 host 回执的 optionId（转圈态）。
+   *
+   * 审批的应答是同步往返：点下去到拿到 200 之前，界面上什么都没变，
+   * 用户不知道点没点中，很容易再点一次（第二个请求会撞上「已过期」，
+   * 把一个成功的应答变成一次红色失败）。这个值同时提供转圈和重复点击
+   * 抑制；失败时清空，卡片保留可重试。
+   */
+  const [submitting, setSubmitting] = useState<string | null>(null)
+  /**
+   * 同一把锁的同步副本。键盘处理器注册在 window 上、依赖里没有
+   * submitting，闭包会读到旧的 null；重复提交的拦截必须走 ref。
+   */
+  const submittingRef = useRef(false)
 
   const req = pending[0]
   const rawOptions = (req?.params?.options as Option[] | undefined) || []
@@ -244,7 +258,49 @@ export function ApprovalStrip() {
     setFollowupText('')
     setRejectOption(undefined)
     setPatternEdit(null)
+    setSubmitting(null)
+    submittingRef.current = false
   }, [req?.requestId])
+
+  /**
+   * 提交一次审批应答（带转圈与重复点击抑制）。
+   *
+   * 成功路径由 store 的 respondPermission 清掉 pending（卡片随之消失），
+   * 所以这里正常不用清 submitting；失败时 store 已 toast 且卡片保留，
+   * 必须清掉转圈否则按钮永久卡在等待态。
+   */
+  const submit = useCallback(
+    async (
+      requestId: string,
+      optionId: string | undefined,
+      cancelled: boolean,
+      scope?: PermissionScope,
+      followupMessage?: string,
+      /**
+       * 调用形状：取消类应答在改动前就是三参（requestId, undefined, true），
+       * 选项类应答是四参。多传/少传不改变语义，但既有调用契约按原样断言，
+       * 这里保留原形状，避免为了加载态去改动一个正交的契约。
+       */
+      shape: 'cancel' | 'option' = 'option',
+    ) => {
+      if (submittingRef.current) return
+      submittingRef.current = true
+      setSubmitting(optionId ?? (cancelled ? '__cancel__' : '__respond__'))
+      try {
+        if (followupMessage !== undefined) {
+          await respond(requestId, optionId, cancelled, scope, followupMessage)
+        } else if (shape === 'cancel') {
+          await respond(requestId, optionId, cancelled)
+        } else {
+          await respond(requestId, optionId, cancelled, scope)
+        }
+      } finally {
+        submittingRef.current = false
+        setSubmitting(null)
+      }
+    },
+    [respond],
+  )
 
   // Keyboard ownership while a permission request is open. Capture phase +
   // stopImmediatePropagation so this card wins over the global scrollback
@@ -294,7 +350,7 @@ export function ApprovalStrip() {
         if (e.key === 'c' || e.key === 'C') {
           e.preventDefault()
           e.stopImmediatePropagation()
-          void respond(req.requestId, undefined, true)
+          void submit(req.requestId, undefined, true, undefined, undefined, 'cancel')
         } else if ((e.key === 'f' || e.key === 'F') && collapsible) {
           // TUI Ctrl-F: expand/collapse the bash command body. When the
           // body fits the collapsed budget, the chord falls through to the
@@ -329,12 +385,12 @@ export function ApprovalStrip() {
             opts.find(isAlwaysOption)
           setPatternEdit(null)
           if (target && isAlwaysOption(target)) {
-            void respond(req.requestId, target.optionId, false, {
+            void submit(req.requestId, target.optionId, false, {
               commandParts: [text],
               isGlob: true,
             })
           } else if (target) {
-            void respond(req.requestId, target.optionId, false, undefined)
+            void submit(req.requestId, target.optionId, false, undefined)
           }
         } else if (e.key === 'Escape') {
           e.preventDefault()
@@ -358,7 +414,7 @@ export function ApprovalStrip() {
           setRejectOption(undefined)
           // Empty text = plain reject; non-empty rides along as
           // followupMessage (host contract, TUI dispatch_permission_followup).
-          void respond(req.requestId, ro, true, undefined, text || undefined)
+          void submit(req.requestId, ro, true, undefined, text || undefined)
         } else if (e.key === 'Escape') {
           e.preventDefault()
           e.stopImmediatePropagation()
@@ -469,7 +525,7 @@ export function ApprovalStrip() {
             setFollowupText('')
             break
           }
-          void respond(
+          void submit(
             req.requestId,
             opt?.optionId,
             false,
@@ -507,7 +563,7 @@ export function ApprovalStrip() {
                 setFollowupText('')
                 break
               }
-              void respond(
+              void submit(
                 req.requestId,
                 opt.optionId,
                 false,
@@ -525,7 +581,7 @@ export function ApprovalStrip() {
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [req, respond, sel, parked, scopeIdx, followupOpen, followupText, rejectOption, patternEdit, expanded, collapsible, scopeForPreset, rememberApprovals])
+  }, [req, respond, submit, sel, parked, scopeIdx, followupOpen, followupText, rejectOption, patternEdit, expanded, collapsible, scopeForPreset, rememberApprovals])
 
   if (pending.length === 0) return null
 
@@ -586,7 +642,7 @@ export function ApprovalStrip() {
                     setFollowupOpen(true)
                     setFollowupText("")
                   } else {
-                    void respond(req.requestId, undefined, true)
+                    void submit(req.requestId, undefined, true, undefined, undefined, 'cancel')
                   }
                 }}
                 className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium transition-colors ${
@@ -689,7 +745,7 @@ export function ApprovalStrip() {
                       options.find(isAlwaysOption)
                     setPatternEdit(null)
                     if (!text || !target) return
-                    void respond(
+                    void submit(
                       req.requestId,
                       target.optionId,
                       false,
@@ -739,7 +795,7 @@ export function ApprovalStrip() {
                         setFollowupOpen(false)
                         setFollowupText("")
                         setRejectOption(undefined)
-                        void respond(req.requestId, ro, true, undefined, text || undefined)
+                        void submit(req.requestId, ro, true, undefined, text || undefined)
                       }}
                       className="shrink-0 rounded bg-gn-red/20 border border-gn-red/40 px-2.5 py-1 text-[11.5px] font-medium text-gn-red transition-colors hover:bg-gn-red/30"
                       title="Enter 确认 · Esc 关闭"
@@ -751,6 +807,9 @@ export function ApprovalStrip() {
                   <button
                     key={opt.optionId}
                     type="button"
+                    // 有应答在飞时全部选项禁用：第二次点击会撞上「已过期」，
+                    // 把一次成功的应答变成红色失败提示。
+                    disabled={submitting !== null}
                     onMouseEnter={() => setSel(i)}
                     onClick={() => {
                       // TUI RejectOnce: clicking a reject row opens the followup
@@ -761,7 +820,7 @@ export function ApprovalStrip() {
                         setFollowupText("")
                         return
                       }
-                      void respond(
+                      void submit(
                         req.requestId,
                         opt.optionId,
                         false,
@@ -775,7 +834,7 @@ export function ApprovalStrip() {
                     }`}
                   >
                     <span className="w-5 shrink-0 text-center font-mono text-[11px] text-gn-gutter">
-                      {i + 1}
+                      {submitting === opt.optionId ? "⠋" : i + 1}
                     </span>
                     {/* Radio marker: solid for always-allow rows AND the
                         selected row (TUI `1 (●) …` rows), hollow otherwise. */}

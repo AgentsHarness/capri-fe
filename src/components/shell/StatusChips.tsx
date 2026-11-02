@@ -701,9 +701,7 @@ export function GoalChip({
 }
 
 function kindLabel(e: RunningEntry): string {
-  if (e.kind === 'subagent') return 'Agent'
-  if (e.kind === 'bg_task') return 'Task'
-  return 'Workflow'
+  return e.kind === 'subagent' ? 'Agent' : 'Task'
 }
 
 /**
@@ -736,7 +734,7 @@ export function RunningChip({
       title={
         open
           ? '隐藏运行中的任务列表'
-          : '显示运行中的后台任务 / 子代理 / 工作流'
+          : '显示运行中的后台任务 / 子代理'
       }
     >
       <span className="mr-1 inline-block" aria-hidden>
@@ -860,7 +858,7 @@ export function DetachedChip({ readonly = false }: { readonly?: boolean }) {
  * Sticky task panel (TUI `tasks` pane under the status bar).
  *
  * Two sections:
- *  - 「运行中」— live bg_tasks / subagents / workflows (click opens the
+ *  - 「运行中」— live bg_tasks / subagents (click opens the
  *    block viewer, kill/cancel buttons) — the original strip, kept
  *    verbatim;
  *  - 「调度任务」— /loop scheduled tasks (prompt summary, interval,
@@ -890,6 +888,8 @@ export function RunningTasksBar({
   const spinnerFrame = useSessionSpinner(count > 0 && open)
   const cancelSubagent = useChatStore((s) => s.cancelSubagent)
   const killTask = useChatStore((s) => s.killTask)
+  /** 当前在飞的取消（子代理 id）：行内 `[cancel]` 自己的转圈。 */
+  const [cancellingId, setCancellingId] = useState<string | null>(null)
   const openViewer = useChatStore((s) => s.openViewer)
   const openTaskViewer = useChatStore((s) => s.openTaskViewer)
   if (!open || (count === 0 && scheduledTasks.length === 0)) return null
@@ -969,7 +969,10 @@ export function RunningTasksBar({
                   {e.title}
                 </span>
                 {e.kind === 'subagent' && (e.persona || e.role || e.model || e.reasoningEffort) && (
-                  <span className="shrink-0 font-mono text-[10px] text-gn-gutter">
+                  // 窄屏不显示模型串：它比标题长得多，shrink-0 会把
+                  // flex-1 的标题挤成 0 宽、再把 [cancel] 顶出屏幕。
+                  // 桌面端也封顶并省略，避免超长 persona/model 撑破行。
+                  <span className="hidden max-w-[55%] shrink-0 truncate font-mono text-[10px] text-gn-gutter sm:inline">
                     {subagentMeta(e.persona, e.role, e.model, e.reasoningEffort)}
                   </span>
                 )}
@@ -984,8 +987,23 @@ export function RunningTasksBar({
                 {e.kind === 'subagent' && e.subagentId && !readonly && (
                   <InlineAction
                     label="cancel"
+                    busyLabel="cancel"
                     title="x.ai/subagent/cancel"
-                    onRun={() => void cancelSubagent(e.subagentId!)}
+                    busy={cancellingId === e.subagentId}
+                    onRun={() => {
+                      const id = e.subagentId!
+                      if (cancellingId != null) return
+                      setCancellingId(id)
+                      const pending = cancelSubagent(id)
+                      if (pending && typeof pending.then === 'function') {
+                        void pending.then(
+                          () => setCancellingId(null),
+                          () => setCancellingId(null),
+                        )
+                        return
+                      }
+                      setCancellingId(null)
+                    }}
                   />
                 )}
                 {e.kind === 'bg_task' && e.taskId && (

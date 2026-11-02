@@ -163,25 +163,55 @@ export function applyThoughtHoist<T extends ScrollEntry>(entries: T[]): T[] {
 
 /**
  * 旧页（older，前插）与已加载区（newer）按 msgSeq 归并：两侧各自有序
- * （页内按回放序），两指针稳定归并，等值取前页。任一侧有条目缺 msgSeq
- * → 返回 null，调用方回退现有拼接行为（旧页整段在前）。
+ * （页内按回放序），两指针稳定归并，等值取前页。
+ *
+ * 少数条目缺 msgSeq 时不再整段放弃归并（旧实现返回 null → 旧页整段拼在
+ * 新页前，跨页的工具调用会出现「结果排在调用上面」）：缺号的行按邻居
+ * 推断位置 —— 页内已有序号的行保持原序，缺号行跟随它前面那条已编号的
+ * 行（页首缺号则跟随后一条）。两侧都完全没有序号（旧 host / 透传路径）
+ * 才返回 null，交由调用方按「旧页在前」拼接。
  */
 export function mergeEntriesByMsgSeq<T extends ScrollEntry>(
   older: T[],
   newer: T[],
 ): T[] | null {
-  for (const e of older) if (e.msgSeq == null) return null
-  for (const e of newer) if (e.msgSeq == null) return null
+  // 空页是合法的「没有更早内容」，归并成空数组（既有调用方按数组处理）。
+  if (older.length === 0 && newer.length === 0) return []
+  if (!older.some((e) => e.msgSeq != null) && !newer.some((e) => e.msgSeq != null)) {
+    return null
+  }
   const out: T[] = []
   let i = 0
   let j = 0
   while (i < older.length && j < newer.length) {
-    if (older[i]!.msgSeq! <= newer[j]!.msgSeq!) out.push(older[i++])
+    if (seqAt(older, i) <= seqAt(newer, j)) out.push(older[i++])
     else out.push(newer[j++])
   }
   while (i < older.length) out.push(older[i++])
   while (j < newer.length) out.push(newer[j++])
   return out
+}
+
+/**
+ * 条目在归并时的排序键。缺 msgSeq 的行继承「前一条已编号行的序号」，
+ * 从而紧跟在它原本的位置（页首缺号时用后一条，退到该页最前）。
+ *
+ * 整个列表都没有序号（旧 host / 透传路径）：这页无法定位，按「它就是
+ * 最早的一段」处理，返回 -Infinity 让整页排在另一侧之前 —— 这正是旧
+ * 实现「旧页整段在前」的回退语义。
+ */
+function seqAt<T extends ScrollEntry>(list: T[], idx: number): number {
+  const direct = list[idx]?.msgSeq
+  if (direct != null) return direct
+  for (let k = idx - 1; k >= 0; k--) {
+    const v = list[k]?.msgSeq
+    if (v != null) return v
+  }
+  for (let k = idx + 1; k < list.length; k++) {
+    const v = list[k]?.msgSeq
+    if (v != null) return v
+  }
+  return Number.NEGATIVE_INFINITY
 }
 
 /**

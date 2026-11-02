@@ -1,6 +1,6 @@
 import type { ScrollEntry } from '../../../api/types'
 import { toolHeaderExtra } from '../../../scrollback/toolHeaderExtra'
-import { toolDisplayMode } from '../../../scrollback/entryState'
+import { entryFailed, entryRunning, toolDisplayMode } from '../../../scrollback/entryState'
 import { Accents } from '../../../theme/accents'
 import { toolHeader } from '../../../theme/glyphs'
 import { ToolDetail } from '../../ui/ToolDetail'
@@ -39,8 +39,8 @@ export function ToolEntry({
   // 只在展开态显示：折叠卡本来就不画 body，每张都插一行提示纯属占地方；
   // 展开（toggleTool）与「查看」都会按需补全，占位到那时才有意义。
   const litePending = showBody && toolEntryLitePending(e)
-  const running = e.status === 'pending' || e.status === 'in_progress'
-  const failed = e.status === 'failed' || e.status === 'error'
+  const running = entryRunning(e)
+  const failed = entryFailed(e)
   const { verb } = toolHeader(e.kindName, running)
   const verbColor = failed
     ? Accents.error
@@ -112,15 +112,17 @@ export function ToolEntry({
             <span className="flex min-w-0 truncate font-mono text-[12.5px] leading-[1.35]">
               {head ? (
                 // 目录前缀先被压缩，末段（文件名）固定——TUI 的
-                // fit-to-width 规则在浏览器里的等价实现。
+                // fit-to-width 规则在浏览器里的等价实现。flexShrink 拉高让
+                // 前缀先让位；target 仍要在自身超长时省略，否则会在内容列
+                // 边缘被硬切（truncate 设在 flex 容器上不产生省略号）。
                 <span
                   className="min-w-0 shrink truncate"
-                  style={{ color: targetColor }}
+                  style={{ color: targetColor, flexShrink: 999 }}
                 >
                   {head}
                 </span>
               ) : null}
-              <span className="shrink-0" style={{ color: targetColor }}>
+              <span className="min-w-0 shrink truncate" style={{ color: targetColor }}>
                 {target}
               </span>
             </span>

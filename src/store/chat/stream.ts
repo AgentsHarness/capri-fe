@@ -111,7 +111,7 @@ export function flushStreamBuf(set: SetState, get: () => ChatState): void {
     }
     set({
       conn: 'busy',
-      statusText: 'Thinking…',
+      phaseText: 'Thinking…',
       awaitingNext: false,
       openThoughtId,
       // The assistant pointer stays open when this thought belongs to the
@@ -141,7 +141,7 @@ export function flushStreamBuf(set: SetState, get: () => ChatState): void {
   }
   set({
     conn: 'busy',
-    statusText: 'Responding…',
+    phaseText: 'Responding…',
     awaitingNext: false,
     openAssistantId,
     liveStream: {

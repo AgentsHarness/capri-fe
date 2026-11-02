@@ -16,6 +16,7 @@ import {
   sessionModesPatch,
 } from './modeFlags'
 import { applySessionModelState, parseConfigOptions } from './model'
+import { buildSessionRowIndex } from './sessionRows'
 export async function continueSession(
   set: SetState,
   get: () => ChatState,
@@ -35,6 +36,12 @@ export async function continueSession(
     // Invalidate in-flight async results from a previous switch.
     const myGen = ++runtime.sessionSwitchGen
     const scope = captureAsyncScope(get, sessionId, cwd)
+    // 先声明「本页正在看这个会话」，再发起 resume / 历史加载：宿主的上行
+    // 裁剪按 hub 下发的观看集合决定，声明早一拍，正在输出的会话就能尽早
+    // 从 trimmed 占位恢复成真实正文；晚到的这段由快照重建兜住。
+    if (get().mode === 'hub' && get().guestIdentity == null) {
+      transport.reportViewingSession(sessionId)
+    }
     // The prompt queue is per-session: swap the active queue to the
     // target session's NOW (stash the current session's queue under its
     // id, restore the target's) — before any async work, so neither the
@@ -78,8 +85,9 @@ export async function continueSession(
     // agent 的 session/load 会把会话持久化的模型 id 映射到当前 catalog 键
     // （如 deepseek-v4-flash → deepseek-v4-flash-go），响应 models 通常不带
     // reasoningEffort —— applySessionModelState 会回落到新模型的默认档（如
-    // low），静默覆盖用户原选的 max。wire 缺 effort 时从 workspace 列表
-    // （agent summary 的 reasoning_effort，持久化的是用户真实选择）恢复。
+    // low），静默覆盖用户原选的 max。wire 缺 effort 时从单行投影恢复：
+    // live 行带 effort 就用 live，否则回退 workspace 摘要（agent summary 的
+    // reasoning_effort，持久化的是用户真实选择）。
     const applyLoadedModels = (models: unknown) => {
       const raw = models as Record<string, unknown> | undefined
       const hasWireEffort =
@@ -91,9 +99,7 @@ export async function continueSession(
           raw.reasoning_effort.trim() !== '')
       const snap = applySessionModelState(models, undefined)
       if (!hasWireEffort) {
-        const row = get()
-          .workspaces.flatMap((g) => g.sessions)
-          .find((x) => x.sessionId === sessionId)
+        const row = buildSessionRowIndex(get().sessions, get().workspaces).get(sessionId)
         if (row?.reasoningEffort && row.reasoningEffort.trim()) {
           snap.reasoningEffort = row.reasoningEffort.trim()
         }
@@ -233,7 +239,7 @@ export async function continueSession(
           set({
             historyLoading: false,
             conn: 'busy',
-            statusText: hasLocalStreaming ? get().statusText : 'Waiting for host…',
+            phaseText: hasLocalStreaming ? get().phaseText : 'Waiting for host…',
             awaitingNext: false,
             sessionId,
             turnStartedAt: get().turnStartedAt ?? Date.now(),
@@ -283,7 +289,7 @@ export async function continueSession(
         historyLoading: false,
         historyLoadingMore: false,
         conn: 'ready',
-        statusText: '加载失败',
+        phaseText: '加载失败',
         historyLoadError: msg,
         entries: [],
         turnStartedAt: undefined,

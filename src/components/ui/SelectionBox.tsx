@@ -23,8 +23,6 @@ type Props = {
   variant?: SelectionVariant
   topClipped?: boolean
   bottomClipped?: boolean
-  /** @deprecated kept for call-site compat */
-  compact?: boolean
 }
 
 /** Rail width (slim frame). */

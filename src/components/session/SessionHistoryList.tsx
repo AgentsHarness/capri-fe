@@ -16,7 +16,7 @@ import {
   X,
 } from 'lucide-react'
 import { useChatStore } from '../../store/chat'
-import type { SessionInfo, WorkspaceSummary } from '../../api/types'
+import { buildSessionRowIndex, type SessionRow } from '../../store/chat/sessionRows'
 import {
   frozenSortRank,
   repoNameFromCwd,
@@ -26,6 +26,7 @@ import {
 } from '../../store/historyGroups'
 import { SPINNER_FRAMES } from '../../theme/glyphs'
 import { SessionStateIcon } from '../ui/SessionStateIcon'
+import { Spinner } from '../ui/Spinner'
 import { stateLabel, useSessionSpinner } from '../../hooks/sessionState'
 import {
   sortSessionsWithPins,
@@ -68,25 +69,11 @@ const LOAD_MORE_STEP = 10
 /** 工作区活跃窗口：最新活动在 6 小时内的默认展开，超过默认收起。 */
 const WORKSPACE_ACTIVE_WINDOW_MS = 6 * 60 * 60 * 1000
 
-/**
- * Workspace summary 行 merge 上 /api/sessions 的 live 状态（status /
- * bgRunning / bgCount / hasTasks / contextUsed / contextSize）——字段
- * 与 SessionInfo 兼容，可复用 sessionGroupKey / sessionContextPct。
- */
-type MergedRow = WorkspaceSummary & {
-  status?: SessionInfo['status']
-  bgRunning?: number
-  bgCount?: number
-  hasTasks?: boolean
-  contextUsed?: number
-  contextSize?: number
-}
-
-/** 工作区组：行已 merge 上 live 状态（MergedRow 兼容 SessionInfo）。 */
+/** 工作区组：行是单一行投影（live 事实源 + workspace 兜底），见 sessionRows。 */
 type MergedGroup = {
   cwd: string
   label: string
-  sessions: MergedRow[]
+  sessions: SessionRow[]
 }
 
 /**
@@ -97,7 +84,7 @@ type MergedGroup = {
 type ListSection = {
   key: string
   label: string
-  sessions: MergedRow[]
+  sessions: SessionRow[]
   /** 仅 workspace 形态：工作目录全路径（组菜单「新建会话」/ 置顶目录）。 */
   cwd?: string
   kind: 'workspace' | 'running' | 'pinned' | 'todo'
@@ -108,28 +95,13 @@ type ListSection = {
  * 无锚的首次出现退回活动时间（新会话照旧排最前），之后钉住不动；
  * 时间缺失（0）垫底，同分按 id，保证顺序可复现。
  */
-function byAnchoredDesc(anchors: Record<string, number>) {
-  return (a: WorkspaceSummary, b: WorkspaceSummary): number => {
+function byAnchoredDesc<T extends { sessionId: string; updatedAt?: string }>(
+  anchors: Record<string, number>,
+) {
+  return (a: T, b: T): number => {
     const d = rowOrderMs(anchors, b) - rowOrderMs(anchors, a)
     if (d !== 0) return d
     return a.sessionId.localeCompare(b.sessionId)
-  }
-}
-
-/** live SessionInfo → 摘要行（workspace-list 缺该会话时的兜底）。 */
-function liveToRow(s: SessionInfo, fallbackCwd = ''): MergedRow {
-  const ctx = s as SessionInfo & { contextUsed?: number; contextSize?: number }
-  return {
-    sessionId: s.sessionId,
-    cwd: s.cwd ?? fallbackCwd,
-    title: s.title,
-    updatedAt: s.updatedAt,
-    status: s.status,
-    bgRunning: s.bgRunning,
-    bgCount: s.bgCount,
-    hasTasks: s.hasTasks,
-    contextUsed: ctx.contextUsed,
-    contextSize: ctx.contextSize,
   }
 }
 
@@ -196,45 +168,31 @@ export function SessionHistoryList() {
   const collapseDefaultRef = useRef(new Map<string, boolean>())
 
   /**
-   * 把 live 状态 merge 到摘要行上（workspace-list + sessions 双源）。
+   * 单一行投影：`sessions` 是 live 事实源，`workspaces` 只补分组所需的
+   * 成员表和缺失字段（标题 / 副行摘要 / 活动时间 / 持久化档位）。
+   * 组件只读这份索引，不再逐处合并两份数据。
    */
-  const toRow = useMemo(() => {
-    const liveById = new Map<string, SessionInfo>()
-    for (const s of sessions) liveById.set(s.sessionId, s)
-    return (row: WorkspaceSummary): MergedRow => {
-      const live = liveById.get(row.sessionId)
-      if (!live) return row
-      const ctx = live as SessionInfo & { contextUsed?: number; contextSize?: number }
-      return {
-        ...row,
-        status: live.status,
-        bgRunning: live.bgRunning,
-        bgCount: live.bgCount,
-        hasTasks: live.hasTasks,
-        contextUsed: ctx.contextUsed,
-        contextSize: ctx.contextSize,
-      }
-    }
-  }, [sessions])
-
-  /** 组内最终比较器：比排序锚而不是每次响应的 updatedAt。 */
-  const byOrderKey = useMemo(
-    () => byAnchoredDesc(anchors),
-    [anchors],
+  const rowById = useMemo(
+    () => buildSessionRowIndex(sessions, workspaces),
+    [sessions, workspaces],
   )
 
+  /** 组内最终比较器：比排序锚而不是每次响应的 updatedAt。 */
+  const byOrderKey = useMemo(() => byAnchoredDesc<SessionRow>(anchors), [anchors])
+
   /**
-   * 工作区形态：按 sessionId 把 live 状态覆盖到 workspace 摘要行上；
-   * 当前会话的 cwd 不在列表里时用 sessions补一组；最后按
+   * 工作区形态：沿用 workspace 的分组与组内成员，每行取 rowById 的投影；
+   * 当前会话的 cwd 不在列表里时用 rowById 补一组；最后按
    * sortGroupsByOrderMs 排序（置顶工作区最前，其余按排序锚）。
    */
   const workspaceGroups = useMemo((): MergedGroup[] => {
     const merged: MergedGroup[] = workspaces.map((g) => ({
-      ...g,
+      cwd: g.cwd,
+      label: g.label,
       // 组内排序：置顶的会话永远最前，随后是待办（未完成），其余按
       // 状态优先级（待处理排最前），时间换成钉住的排序锚。
       sessions: sortSessionsWithPins(
-        g.sessions.map(toRow),
+        g.sessions.flatMap((summary) => rowById.get(summary.sessionId) ?? []),
         pinnedSessions,
         completedNotices,
         byOrderKey,
@@ -242,19 +200,10 @@ export function SessionHistoryList() {
         frozenSortRank,
       ),
     }))
-    // 兜底：当前会话的 cwd 不在 workspace-list 里时，用 live sessions
-    // 中该 cwd 的会话补一个组。
+    // 兜底：当前会话的 cwd 不在 workspace-list 里时，用投影中该 cwd 的
+    // 行补一个组。
     if (cwd && !merged.some((g) => g.cwd === cwd)) {
-      const rows = sessions
-        .filter((s) => s.cwd === cwd)
-        .map((s) =>
-          toRow({
-            sessionId: s.sessionId,
-            cwd: s.cwd ?? cwd,
-            title: s.title,
-            updatedAt: s.updatedAt,
-          }),
-        )
+      const rows = [...rowById.values()].filter((row) => row.cwd === cwd)
       if (rows.length > 0) {
         merged.push({
           cwd,
@@ -275,13 +224,12 @@ export function SessionHistoryList() {
     return sortWorkspacesWithPins(ordered, pinnedWorkspaces)
   }, [
     workspaces,
-    sessions,
+    rowById,
     cwd,
     pinnedWorkspaces,
     pinnedSessions,
     completedNotices,
     todos,
-    toRow,
     byOrderKey,
     anchors,
   ])
@@ -297,20 +245,10 @@ export function SessionHistoryList() {
    *   （右键仍可改回待办 / 取消）。
    */
   const markedSections = useMemo((): ListSection[] => {
-    const byId = new Map<string, MergedRow>()
-    for (const g of workspaces) {
-      for (const row of g.sessions) {
-        byId.set(row.sessionId, toRow(row))
-      }
-    }
-    for (const s of sessions) {
-      if (!byId.has(s.sessionId)) byId.set(s.sessionId, liveToRow(s))
-    }
-
-    const pinned: MergedRow[] = []
-    const todo: MergedRow[] = []
-    const running: MergedRow[] = []
-    for (const row of byId.values()) {
+    const pinned: SessionRow[] = []
+    const todo: SessionRow[] = []
+    const running: SessionRow[] = []
+    for (const row of rowById.values()) {
       if (sessionGroupKey(row, sessionId) !== 'idle') running.push(row)
     }
 
@@ -321,7 +259,7 @@ export function SessionHistoryList() {
       ...Object.keys(todos).filter((id) => todos[id] === 'todo'),
     ])
     for (const id of candidateIds) {
-      const row = byId.get(id)
+      const row = rowById.get(id)
       if (!row) continue
       if (pinnedSessions.has(id)) {
         pinned.push(row)
@@ -330,7 +268,7 @@ export function SessionHistoryList() {
       if (todos[id] === 'todo') todo.push(row)
     }
 
-    const sortMarked = (rows: MergedRow[]) =>
+    const sortMarked = (rows: SessionRow[]) =>
       sortSessionsWithPins(
         rows,
         pinnedSessions,
@@ -366,16 +304,7 @@ export function SessionHistoryList() {
       })
     }
     return sections
-  }, [
-    workspaces,
-    sessions,
-    pinnedSessions,
-    todos,
-    completedNotices,
-    toRow,
-    sessionId,
-    byOrderKey,
-  ])
+  }, [rowById, pinnedSessions, todos, completedNotices, sessionId, byOrderKey])
 
   /** 当前形态下的分区列表（统一渲染入口）。 */
   const sections = useMemo((): ListSection[] => {
@@ -603,16 +532,13 @@ export function SessionHistoryList() {
     setRenameText(s.title ?? '')
     requestAnimationFrame(() => renameInputRef.current?.select())
   }
-  const commitRename = async (s: MergedRow) => {
+  const commitRename = async (s: SessionRow) => {
     const title = sanitizeTitle(renameText).trim()
     setRenamingId(null)
     if (title && title !== (s.title ?? '')) {
       await renameSession(title)
       // Keep the list in sync even if the host sends no sessions_changed.
-      const refreshSessions = useChatStore.getState().refreshSessions
-      const refreshWorkspaces = useChatStore.getState().refreshWorkspaces
-      void refreshSessions()
-      void refreshWorkspaces()
+      void useChatStore.getState().refreshSessionLists()
     }
   }
   const cancelRename = () => setRenamingId(null)
@@ -626,14 +552,16 @@ export function SessionHistoryList() {
    *  菜单的下沿——右键两者同取光标，⋮ 取按钮的下沿 / 上沿（含 4px 间距）。 */
   type MenuAnchor = { x: number; y: number; flipY: number }
   type MenuState =
-    | ({ kind: 'row'; row: MergedRow } & MenuAnchor)
+    | ({ kind: 'row'; row: SessionRow } & MenuAnchor)
     | ({ kind: 'group'; cwd: string } & MenuAnchor)
   const [menu, setMenu] = useState<MenuState | null>(null)
   // 实测尺寸后的落位；null = 还没量到（先前按锚点渲染，布局副作用在绘制前
   // 纠正，不会闪）。
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
-  const [deleteTarget, setDeleteTarget] = useState<MergedRow | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<SessionRow | null>(null)
+  /** 删除请求在飞：确认按钮转圈并锁住重复点击。 */
+  const [deleting, setDeleting] = useState(false)
   const closeMenu = () => {
     setMenu(null)
     setMenuPos(null)
@@ -651,7 +579,7 @@ export function SessionHistoryList() {
     closeMenu()
   }
   const openMenu = (
-    m: { kind: 'row'; row: MergedRow } | { kind: 'group'; cwd: string },
+    m: { kind: 'row'; row: SessionRow } | { kind: 'group'; cwd: string },
     anchor: MenuAnchor,
   ) => {
     setMenuPos(null)
@@ -720,11 +648,16 @@ export function SessionHistoryList() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [deleteTarget])
-  const confirmDelete = () => {
-    if (!deleteTarget) return
+  const confirmDelete = async () => {
+    if (!deleteTarget || deleting) return
     const { sessionId, cwd } = deleteTarget
-    setDeleteTarget(null)
-    void deleteSession(sessionId, cwd || '')
+    setDeleting(true)
+    try {
+      await deleteSession(sessionId, cwd || '')
+      setDeleteTarget(null)
+    } finally {
+      setDeleting(false)
+    }
   }
 
   // 空列表且正在拉取：中央显示与 scrollback 一致的加载态（唯一加载
@@ -867,7 +800,10 @@ export function SessionHistoryList() {
                   const key = sessionGroupKey(s, sessionId)
                   const state = key === 'active' ? 'active' : 'idle'
                   const pending = key === 'awaiting'
-                  const completed = completedNotices[s.sessionId] != null
+                  // ✓ 只留给「别的会话跑完待查看」：当前正在看的会话即使
+                  // 记录了完成（数据层允许），也不在行首画对勾——用户就在
+                  // 这里，完成已经是眼前的输出。切走后该行恢复显示 ✓。
+                  const completed = completedNotices[s.sessionId] != null && !active
                   // 置顶/待办徽标默认占掉行首的状态列（原来空心菱形的位置）；
                   // 状态本身要占那一格时（spinner / 待处理菱形 / 完成 ✓）徽标
                   // 退回标题前，两者不同时挤一格。
@@ -1384,16 +1320,19 @@ export function SessionHistoryList() {
               <footer className="gn-modal-footer flex justify-end gap-2">
                 <button
                   type="button"
+                  disabled={deleting}
                   onClick={() => setDeleteTarget(null)}
-                  className="min-h-8 rounded bg-gn-bg-base px-3 py-1 text-[12px] text-gn-fg2 hover:bg-gn-bg-highlight"
+                  className="min-h-8 rounded bg-gn-bg-base px-3 py-1 text-[12px] text-gn-fg2 hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   取消
                 </button>
                 <button
                   type="button"
-                  onClick={confirmDelete}
-                  className="min-h-8 rounded bg-gn-diff-del-bg px-3 py-1 text-[12px] font-semibold text-gn-red hover:bg-gn-red/15"
+                  disabled={deleting}
+                  onClick={() => void confirmDelete()}
+                  className="inline-flex min-h-8 items-center gap-1.5 rounded bg-gn-diff-del-bg px-3 py-1 text-[12px] font-semibold text-gn-red hover:bg-gn-red/15 disabled:cursor-not-allowed disabled:opacity-40"
                 >
+                  {deleting ? <Spinner size={11} /> : null}
                   删除
                 </button>
               </footer>

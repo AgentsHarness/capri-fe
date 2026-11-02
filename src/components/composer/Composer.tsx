@@ -34,6 +34,7 @@ import {
 } from '../../theme/layout'
 import { IconGlyph } from '../ui/IconGlyph'
 import { ArrowDown, ArrowDownToLine, ImagePlus, ShieldQuestion, X } from 'lucide-react'
+import { Spinner } from '../ui/Spinner'
 import { guestWaitingLabel, guestWaitingSince as guestWaitingSinceOf } from './guestStatus'
 import { SlashMenu } from './SlashMenu'
 import { FilePickerMenu } from './FilePickerMenu'
@@ -61,6 +62,30 @@ import {
 } from './promptHistory'
 import { currentActivity, HOOK_REVEAL_DELAY_MS } from './activity'
 import { useEscLadder } from './useEscLadder'
+import {
+  SILENCE_PROBE_AFTER_MS,
+  probeHostHeartbeat,
+} from '../../store/chat/actions/hosts'
+
+/**
+ * 显示阈值：hub→host 这一跳可能静默死掉。hub 的 preflight/ack 应在
+ * 1.5–3 秒内失败，超过这个窗口仍没回执就把「等响应」改成「等确认」——
+ * 判定归 hub，这里只负责别让用户误以为模型在思考。
+ */
+const SEND_ACK_GRACE_MS = 3_000
+/** 静默期间的心跳复探间隔：跟随 busy 心跳一拍一次，误报能被尽快撤掉。
+ *  只在 probeDue（busy 且已静默）后生效，空闲时不会打 /api/hosts。 */
+const HEARTBEAT_REPROBE_MS = 1_000
+/**
+ * 本端发出的最近一条回合身份（promptId）。
+ *
+ * send() 在同步段锚定 currentPromptId；host 自己开跑的回合（队列收养
+ * adoptTurn / 历史回放）同样锚定 currentPromptId、同样没有
+ * promptAcceptedAt，只有这条模块级记录能区分「我发的」与「host 自己开
+ * 的」——等待受理回执的提示只对前者有意义。放在模块级而非 ref：Composer
+ * 重挂载（焦点模式等）后不该忘记刚发的那条。
+ */
+let lastLocalPromptId: string | undefined
 // 跨焦点 Esc 阶梯：scrollback 侧首个 idle Esc 的臂定时间戳（useScrollbackKeys）
 import { clearEscArm, escArmTimestamp } from '../../hooks/useScrollbackKeys'
 import { useModelMenu } from './useModelMenu'
@@ -130,6 +155,21 @@ export function Composer({ guest = false }: { guest?: boolean }) {
     useChatStore.setState({ composerDraftLen: text.length })
   }, [text])
   const send = useChatStore((s) => s.send)
+  /**
+   * 走 send() 并记下它同步锚定的回合身份。忙时 send 只入队、不锚定新
+   * 回合（currentPromptId 不变），此时不覆盖记录——它必须始终描述
+   * 「本端刚发出、还在等回执的那条」。
+   */
+  const sendLocal = useCallback(
+    (...args: Parameters<typeof send>) => {
+      const before = useChatStore.getState().currentPromptId
+      const pending = send(...args)
+      const after = useChatStore.getState().currentPromptId
+      if (after != null && after !== before) lastLocalPromptId = after
+      return pending
+    },
+    [send],
+  )
   const conn = useChatStore((s) => s.conn)
   // 会话切换加载中：turn status 整行显示「回放中…」，加载完毕再按
   // 真实状态渲染（busy 臂 / 已切换文案，见 Scrollback 的加载覆盖层）。
@@ -156,10 +196,14 @@ export function Composer({ guest = false }: { guest?: boolean }) {
     pendingSendsRef.current = []
     // 逐条补发：send 首条同步置 conn=busy，后续条目走忙分支进 agent
     // 权威队列（与 Enter 忙时行为一致），不会并行开回合。
-    for (const p of batch) void send(p.text, p.blocks)
-  }, [newSessionPending, send])
+    for (const p of batch) void sendLocal(p.text, p.blocks)
+  }, [newSessionPending, send, sendLocal])
   const genRate = useChatStore((s) => s.genRate)
-  const statusText = useChatStore((s) => s.statusText)
+  // 两条独立来源：phaseText 是连接/回合阶段（会被 idle 事件重写），
+  // statusText 是操作回执。busy 臂用 phaseText 兜底、空闲臂优先回执——
+  // 否则「已切换到 plan 模式」会被随后的 Responding… / 就绪 冲掉。
+  const phaseText = useChatStore((s) => s.phaseText)
+  const statusText = useChatStore((s) => s.idleStatusLine())
   /** /recap 等待指示：仅当发起会话仍是当前活动会话时显示（切换会话
    *  不残留——recapPendingFor 绑定发起会话 id）。 */
   const recapPending = useChatStore(
@@ -185,6 +229,8 @@ export function Composer({ guest = false }: { guest?: boolean }) {
   const reasoningEffort = useChatStore((s) => s.reasoningEffort)
   const focusMode = useChatStore((s) => s.focusMode)
   const turnStartedAt = useChatStore((s) => s.turnStartedAt)
+  const promptAcceptedAt = useChatStore((s) => s.promptAcceptedAt)
+  const currentPromptId = useChatStore((s) => s.currentPromptId)
   const openThoughtId = useChatStore((s) => s.openThoughtId)
   const openAssistantId = useChatStore((s) => s.openAssistantId)
   const runningHook = useChatStore((s) => s.runningHook)
@@ -192,6 +238,69 @@ export function Composer({ guest = false }: { guest?: boolean }) {
 
   const taRef = useRef<HTMLTextAreaElement>(null)
   const busy = conn === 'busy'
+  // 这条请求是否绕 hub 中继。直连本机（纯 local / 本机近路）没有
+  // hub→host 这一跳，host 按健康处理——「等回执」「等心跳」两件都只
+  // 对中继有意义。
+  const viaRelay =
+    transport.getConnectionMode() === 'hub' && transport.isLocalDirect() !== true
+
+  // 消息已发出但还没拿到 host 的受理回执（见 SEND_ACK_GRACE_MS）。
+  // 必须同时是本端发出的那条回合：host 自己开跑的回合（队列收养 / 历史
+  // 回放）没有 promptAcceptedAt，只看这一点会从宽限期起一直谎报在等回执。
+  // 静默期没有 live 事件触发渲染，用每秒一拍的 now 推动两个时间判断。
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!busy || !viaRelay) return
+    setNow(Date.now())
+    const t = window.setInterval(() => setNow(Date.now()), 1_000)
+    return () => window.clearInterval(t)
+  }, [busy, viaRelay])
+  const awaitingAck =
+    viaRelay &&
+    busy &&
+    promptAcceptedAt == null &&
+    turnStartedAt != null &&
+    currentPromptId != null &&
+    currentPromptId === lastLocalPromptId
+  const unconfirmedSend =
+    awaitingAck && now - (turnStartedAt ?? 0) > SEND_ACK_GRACE_MS
+
+  /**
+   * host 心跳探针（见 hosts.ts 的 SILENCE_PROBE_AFTER_MS）。
+   *
+   * 只在「busy 且已经很久没有 live 事件」时查 /api/hosts，用它区分
+   * 「host 在思考」与「host 已经不出声了」。静默期间按拍复探，结论只影响
+   * 提示文案，不改回合状态——判定归 hub，这里只是先于 host-offline 的
+   * 宣告把「连接中断」告诉用户。
+   */
+  const selectedHostId = useChatStore((s) => s.selectedHostId)
+  const lastLive = transport.lastLiveEventAt()
+  const silenceBase = Math.max(turnStartedAt ?? 0, lastLive ?? 0)
+  const silenceFor = busy && silenceBase > 0 ? now - silenceBase : 0
+  // 心跳是 hub 维护的（lastSeen），直连本机不看它：默认 host 没问题。
+  const probeDue = viaRelay && busy && silenceFor >= SILENCE_PROBE_AFTER_MS
+  const [hostSilent, setHostSilent] = useState(false)
+  const lastProbeAt = useRef(0)
+  const probeSeq = useRef(0)
+  useEffect(() => {
+    if (!probeDue) {
+      // 回合结束 / 事件恢复流动：下一次静默重新探。
+      lastProbeAt.current = 0
+      // 只在真有值时清，避免每次渲染都 setState 触发新一轮 effect。
+      setHostSilent((v) => (v ? false : v))
+      return
+    }
+    // 静默期间持续复探（跟随 busy 心跳一拍一次）：一次长 GC / 丢包 /
+    // 睡眠唤醒不能让「连接中断」钉死在本回合剩余时间里；新心跳一到，下一次
+    // 探针就翻回 alive 并撤掉提示。
+    if (Date.now() - lastProbeAt.current < HEARTBEAT_REPROBE_MS) return
+    lastProbeAt.current = Date.now()
+    // 只让最新一次探针写结论：晚到的旧探针不能覆盖新结论。
+    const seq = ++probeSeq.current
+    void probeHostHeartbeat(selectedHostId).then((verdict) => {
+      if (seq === probeSeq.current) setHostSilent(verdict === 'silent')
+    })
+  }, [probeDue, silenceBase, now, selectedHostId])
 
   // ── /model 模型菜单（开关/定位/切换）— composer/useModelMenu.ts ──
   const modelMenu = useModelMenu()
@@ -449,7 +558,7 @@ export function Composer({ guest = false }: { guest?: boolean }) {
     // 发给 agent 前去掉；未命中的 `/…` 行到这里已是纯文本，原样保留。
     const { expandedText, blocks } = buildBlocks(literalSlashPayload(text), chips)
     consumeDraftForSend()
-    await send(expandedText, blocks)
+    await sendLocal(expandedText, blocks)
     // Record history only when the host accepted the prompt (send
     // swallows transport errors into conn: 'error'). History keeps the
     // `\`, so recalling a literal `/…` prompt does not run a command.
@@ -488,7 +597,7 @@ export function Composer({ guest = false }: { guest?: boolean }) {
       pushToast('正在切换会话，请稍候再发送')
       return
     }
-    void st.send(label)
+    void sendLocal(label)
   }
 
   /**
@@ -512,21 +621,26 @@ export function Composer({ guest = false }: { guest?: boolean }) {
    * cancel→dequeue→send-start 窗口：send() 同步置 conn=busy 后立即释放，
    * 否则整回合（send 在回合完成时才 resolve）期间 onSubmit 的 sending
    * 守卫会把 Enter 静默吞掉。
+   *
+   * 返回 null = 这次点击没有接手（切换会话中 / 已有一条在发 / 需要二次
+   * 确认 / 队列属于别的会话 / 该行已不在），调用方据此决定要不要转圈；
+   * 接手则返回派发完成的 promise。判定全在同步段完成，所以「点了但
+   * 什么也没做」不会先转一圈再消失。
    */
-  const sendQueuedItem = async (id?: string, skipConfirm = false) => {
+  const sendQueuedItem = (id?: string, skipConfirm = false): Promise<void> | null => {
     const st = useChatStore.getState()
     if (st.sessionId && st.historyLoading) {
       pushToast('正在切换会话，请稍候再发送')
-      return
+      return null
     }
     const q = usePromptQueue.getState()
-    if (q.sending) return
+    if (q.sending) return null
 
     if (!skipConfirm) {
       const hasPendingReqs = st.xaiRequests.length > 0 || st.pending.length > 0
       if (hasPendingReqs) {
         setInterjectTarget({ id })
-        return
+        return null
       }
     }
 
@@ -538,70 +652,78 @@ export function Composer({ guest = false }: { guest?: boolean }) {
     const activeSession = useChatStore.getState().sessionId ?? ''
     if (q.sessionId != null && q.sessionId !== activeSession) {
       q.switchSession(activeSession || undefined)
-      return
+      return null
     }
     const item = id ? q.queue.find((x) => x.id === id) : q.queue[0]
-    if (!item) return
+    if (!item) return null
     q.setSending(true)
-    try {
-      if (!item.degraded) {
-        // agent-owned 行（乐观回显 / 已确认）→ send-now via interject
-        // （提升为下一个运行；运行中回合可能被 agent 取消、该行立即
-        // 开跑）。错误忽略：广播是校正通道，行保留在镜像。
-        try {
-          await transport.queueInterject(
-            {
-              id: item.id,
-              ...(item.version != null ? { expectedVersion: item.version } : {}),
-            },
-            activeSession,
-          )
-        } catch {
-          /* fire-and-forget 语义：agent no-op 或传输失败都靠重广播校正 */
-        }
-        return
-      }
-      // RPC 失败降级行（FE-owned，agent 从没见过）→ cancel-then-send
-      // 兜底：取消运行中回合（后台任务继续），然后发送该行。
-      if (useChatStore.getState().conn === 'busy') {
-        await useChatStore.getState().cancel()
-        for (
-          let i = 0;
-          i < 50 && useChatStore.getState().conn === 'busy';
-          i++
-        ) {
-          await new Promise((r) => setTimeout(r, 10))
-        }
-      }
-      if (!usePromptQueue.getState().queue.some((x) => x.id === item.id)) return
-      q.removeAt(item.id)
+    return (async () => {
       try {
-        // Resend the wire text from the blocks (an image-only row's text
-        // block is empty — the images ride along in blocks[1..]).
-        const firstBlock = item.blocks[0]
-        // ContentBlock has an open `{ type: string; … }` arm — cast after
-        // the discriminant check to get the string-typed text.
-        const resendText =
-          firstBlock && firstBlock.type === 'text'
-            ? (firstBlock as { type: 'text'; text: string }).text
-            : item.text
-        const sendPromise = useChatStore.getState().send(resendText, item.blocks, {
-          promptId: item.id,
-        })
-        q.setSending(false)
-        await sendPromise
-        // Re-arm the `\/` escape in history (queued text is already
-        // unescaped; a leading `/` here can only be a literal prompt).
-        if (useChatStore.getState().conn !== 'error') pushHistory(escapeSlash(item.text))
-      } catch {
-        const active = useChatStore.getState().sessionId
-        if (active) usePromptQueue.getState().requeueFront(active, item)
+        if (!item.degraded) {
+          // agent-owned 行（乐观回显 / 已确认）→ send-now via interject
+          // （提升为下一个运行；运行中回合可能被 agent 取消、该行立即
+          // 开跑）。
+          //
+          // 失败不能静默：正常情况下 queue_changed 广播会校正镜像，但链路
+          // 断了广播也来不了——行会一直显示"已发"，实际 agent 从没收到。
+          // 失败即标 degraded（FE-owned，带失败原因），用户可以手动重发。
+          try {
+            await transport.queueInterject(
+              {
+                id: item.id,
+                ...(item.version != null ? { expectedVersion: item.version } : {}),
+              },
+              activeSession,
+            )
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e)
+            usePromptQueue.getState().markDegraded(item.id, msg)
+            pushToast(`立即发送失败（未送达）：${msg}`)
+          }
+          return
+        }
+        // RPC 失败降级行（FE-owned，agent 从没见过）→ cancel-then-send
+        // 兜底：取消运行中回合（后台任务继续），然后发送该行。
+        if (useChatStore.getState().conn === 'busy') {
+          await useChatStore.getState().cancel()
+          for (
+            let i = 0;
+            i < 50 && useChatStore.getState().conn === 'busy';
+            i++
+          ) {
+            await new Promise((r) => setTimeout(r, 10))
+          }
+        }
+        if (!usePromptQueue.getState().queue.some((x) => x.id === item.id)) return
+        q.removeAt(item.id)
+        try {
+          // Resend the wire text from the blocks (an image-only row's text
+          // block is empty — the images ride along in blocks[1..]).
+          const firstBlock = item.blocks[0]
+          // ContentBlock has an open `{ type: string; … }` arm — cast after
+          // the discriminant check to get the string-typed text.
+          const resendText =
+            firstBlock && firstBlock.type === 'text'
+              ? (firstBlock as { type: 'text'; text: string }).text
+              : item.text
+          const sendPromise = sendLocal(resendText, item.blocks, {
+            promptId: item.id,
+          })
+          q.setSending(false)
+          await sendPromise
+          // Re-arm the `\/` escape in history (queued text is already
+          // unescaped; a leading `/` here can only be a literal prompt).
+          if (useChatStore.getState().conn !== 'error') pushHistory(escapeSlash(item.text))
+        } catch {
+          const active = useChatStore.getState().sessionId
+          if (active) usePromptQueue.getState().requeueFront(active, item)
+        } finally {
+          q.setSending(false)
+        }
       } finally {
         q.setSending(false)
       }
-    } finally {
-      q.setSending(false)
-    }
+    })()
   }
 
   /**
@@ -645,11 +767,9 @@ export function Composer({ guest = false }: { guest?: boolean }) {
     consumeDraftForSend()
     // 忙时（含上一回合未收口）走 send() 的权威队列分支，与 TUI 的
     // bash 排队语义一致；blocks 原样入队，出队收养时仍认得是 shell 行。
-    await useChatStore
-      .getState()
-      .send(cmd, [{ type: 'text', text: cmd, _meta: { bash_command: cmd } }], {
-        fromShell: true,
-      })
+    await sendLocal(cmd, [{ type: 'text', text: cmd, _meta: { bash_command: cmd } }], {
+      fromShell: true,
+    })
     // Record history only when the host accepted the command — shell
     // submissions are tagged so recalling them re-enters shell mode.
     if (useChatStore.getState().conn !== 'error') pushHistory(cmd, true)
@@ -709,7 +829,7 @@ export function Composer({ guest = false }: { guest?: boolean }) {
       // 队列行的正文就是真正文（纯图片 prompt 为空串）——图片由 blocks
       // 说话：队列条按每张图渲染一个可点的 `[image]` 标记（QueueStrip）。
       consumeDraftForSend()
-      void useChatStore.getState().send(expandedText, blocks)
+      void sendLocal(expandedText, blocks)
       if (isTouch) {
         taRef.current?.blur()
       } else {
@@ -1273,6 +1393,13 @@ export function Composer({ guest = false }: { guest?: boolean }) {
 
   // ── Inline queue strip：忙时 Enter 只入队，消息正文在 composer 上方。
   // 渲染归 composer/QueueStrip.tsx（状态归 useQueueNav）。
+  // 正在发送的那一行：store 的 `sending` 只是互斥锁，不知道是哪条，
+  // 行内按钮要自己的转圈就得在这里记住目标 id。
+  const [queueSendingId, setQueueSendingId] = useState<string | null>(null)
+  /** 「转入后台」请求在飞：图标换成转圈，避免重复发同一笔。 */
+  const [bgSending, setBgSending] = useState(false)
+  /** 取消回合请求在飞（状态行的 `[stop]`）：图标换转圈并锁住重复点击。 */
+  const [cancelling, setCancelling] = useState(false)
 
   // ── TUI Esc ladder hint (prompt.rs "press again to clear") ──
   // Transient row between the status area and the prompt; auto-expires
@@ -1425,14 +1552,28 @@ export function Composer({ guest = false }: { guest?: boolean }) {
                     <span
                       className="truncate"
                       style={{
-                        color:
-                          activity?.color ??
-                          (statusText === 'Cancelling…'
-                            ? 'var(--color-gn-red)'
-                            : 'var(--color-gn-gray-dim)'),
+                        color: hostSilent
+                          ? 'var(--color-gn-warning)'
+                          : activity?.color ??
+                            (phaseText === 'Cancelling…'
+                              ? 'var(--color-gn-red)'
+                              : 'var(--color-gn-gray-dim)'),
                       }}
                     >
-                      {activity?.label ?? (localLive && !busy ? '回合进行中' : statusText)}
+                      {hostSilent
+                        ? // 心跳停了：直播大概率已经断了，只是 hub 还没宣告。
+                          // 说清"没在等模型"，避免用户一直干等。
+                          'Host 连接中断，正在重连…'
+                        : activity?.label ??
+                          (localLive && !busy
+                            ? '回合进行中'
+                            : // 已发出但 host 还没回 200：hub 中继要等 host 受理，
+                              // 这一段没有 live 事件也没有 ack，与其显示
+                              // "Waiting for response…"（看着像模型在思考），
+                              // 不如直说在等确认。
+                              unconfirmedSend
+                              ? '等待 Host 确认送达…'
+                              : phaseText)}
                     </span>
                     {phaseStart != null && (
                       <span className="shrink-0 tabular-nums text-gn-gray">
@@ -1474,9 +1615,8 @@ export function Composer({ guest = false }: { guest?: boolean }) {
                     )}
                   </>
                 ) : (
-                  // 空闲臂：静态 statusText（连接中 / 会话操作反馈）。
-                  // error/offline 不在此渲染（错误只进顶栏 host 提示）——此
-                  // 分支可达时 conn 必为 connecting。
+                  // 空闲臂：操作回执优先，没有回执才显示连接/阶段文案。
+                  // error/offline 不在此渲染（错误只进顶栏 host 提示）。
                   <span className="truncate text-gn-muted">
                     {statusText}
                   </span>
@@ -1504,8 +1644,10 @@ export function Composer({ guest = false }: { guest?: boolean }) {
                   <button
                     type="button"
                     title="将当前命令转入后台继续运行（TUI [send to bg]）"
+                    disabled={bgSending}
                     onClick={() => {
                       const toolCallId = runningExecute.toolCallId!
+                      setBgSending(true)
                       void transport
                         .terminalBackground(toolCallId)
                         .then(() => {
@@ -1517,20 +1659,29 @@ export function Composer({ guest = false }: { guest?: boolean }) {
                             text: `转后台失败: ${e instanceof Error ? e.message : String(e)}`,
                           })
                         })
+                        .finally(() => setBgSending(false))
                     }}
-                    className="flex items-center rounded p-1 text-gn-gray hover:bg-gn-bg-highlight hover:text-gn-cyan min-h-6 sm:min-h-0"
+                    className="flex items-center rounded p-1 text-gn-gray hover:bg-gn-bg-highlight hover:text-gn-cyan min-h-6 sm:min-h-0 disabled:cursor-not-allowed disabled:opacity-40"
                     aria-label="将当前命令转入后台"
                   >
-                    <ArrowDownToLine size={12} aria-hidden />
+                    {bgSending ? <Spinner size={12} /> : <ArrowDownToLine size={12} aria-hidden />}
                   </button>
                 )}
                 {busy && !guest && (
                   <button
                     type="button"
-                    onClick={() => void useChatStore.getState().requestCancelTurn()}
-                    className="rounded px-1.5 py-[2px] text-gn-gray hover:bg-gn-bg-highlight hover:text-gn-red min-h-6 sm:min-h-0"
+                    disabled={cancelling}
+                    onClick={() => {
+                      setCancelling(true)
+                      // requestCancelTurn 在「有偏好 / 无子代理」时直接发
+                      // cancel 请求，有子代理时只打开面板——两种都等它返回。
+                      void Promise.resolve(useChatStore.getState().requestCancelTurn()).finally(
+                        () => setCancelling(false),
+                      )
+                    }}
+                    className="rounded px-1.5 py-[2px] text-gn-gray hover:bg-gn-bg-highlight hover:text-gn-red min-h-6 sm:min-h-0 disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    [stop]
+                    {cancelling ? <Spinner size={11} /> : '[stop]'}
                   </button>
                 )}
               </>
@@ -1543,7 +1694,19 @@ export function Composer({ guest = false }: { guest?: boolean }) {
             （顶栏 +N 芯片照常展开/收起这一块）。 */}
         <QueueStrip
           nav={queueNav}
-          sendQueuedItem={(id) => void sendQueuedItem(id)}
+          sendQueuedItem={(id) => {
+            const target = id ?? usePromptQueue.getState().queue[0]?.id
+            if (!target) return
+            // 没接手就别转圈：点击被早退路径（切换会话中 / 别的行在发 /
+            // 需要二次确认 / stale session）吞掉时不该先转再消。
+            const sent = sendQueuedItem(id)
+            if (!sent) return
+            setQueueSendingId(target)
+            void sent.finally(() =>
+              setQueueSendingId((cur) => (cur === target ? null : cur)),
+            )
+          }}
+          sendingId={queueSendingId ?? undefined}
           headSteer={headSteer}
           onToggleMode={() => void toggleFollowUpBehavior()}
           togglingMode={togglingFollowUp}

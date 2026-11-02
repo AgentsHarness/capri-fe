@@ -189,10 +189,16 @@ export const GLOBAL_TAGS: ReadonlySet<string> = new Set<string>([
  * 会话级、但处理器要**主动处理外来会话事件**的 kind：recap 按会话缓存
  * （跨会话到达时缓存下来，切回该会话时由 loadHistory 就近回填），所以
  * 不能按「非当前会话」丢弃。
+ *
+ * `session_summary_generated` / `last_turn_summary` 同理：标题与副行摘要
+ * 是按会话存的数据，别的会话生成后要写进它自己的 `sessions` 行（sidebar
+ * 的单一 live 事实源），而不是只有当前会话能更新。
  */
 export const FOREIGN_PROCESSED_TAGS: ReadonlySet<string> = new Set<string>([
   'session_recap',
   'session_recap_unavailable',
+  'session_summary_generated',
+  'last_turn_summary',
 ])
 
 /**
@@ -227,13 +233,12 @@ export const NOOP_TAGS: ReadonlySet<string> = new Set<string>([
 
 /**
  * 未消费（有意）：不注册 case、不产生状态。
- * 前三个是「仅持久化」语义；last_turn_summary 走另一条数据链。
+ * 前三个是「仅持久化」语义。
  */
 export const UNCONSUMED_KINDS: ReadonlyMap<string, string> = new Map([
   ['compaction_checkpoint', '仅写 updates.jsonl、不上 live 通道；回退 UI 走 session_rewound'],
   ['rewind_marker', '同上，宿主不建卡 → generic → 回放 default 直落'],
   ['unknown', 'serde(other) 前向兼容兜底，形状已在 agent 侧丢弃'],
-  ['last_turn_summary', 'send-only 不持久化；侧边栏副标题走 roster lastTurnSummary'],
   ['plan_kept', 'FE 的计划审阅卡走 x.ai/exit_plan_mode client_request；当前 shell 无生产者'],
   ['plan_cleared', '同上；计划模式进出由 current_mode_update 恢复'],
   ['plan_executing', '同上；接受计划走同一张审阅卡的 RPC 响应'],
@@ -278,6 +283,10 @@ export const GLOBAL_EVENT_TYPES: ReadonlySet<string> = new Set<string>([
   // 检索引擎状态流：host 用 agent 自报的 sessionId（模糊搜索是字面量
   // "agent"，非会话 UUID）打标签，按会话过滤必然全量丢弃。
   'search_fuzzy_status',
+  // 标题是按会话存的数据：外来会话的 typed session_info（含
+  // session_info_update 的归一形态）要写进它自己的 sessions 行，由
+  // applySessionTitle 认 sid，不会碰当前视图。
+  'session_info',
 ])
 
 /**
@@ -305,4 +314,7 @@ export const SILENT_HOST_EVENT_TYPES: ReadonlyMap<string, string> = new Map([
   ['git_worktree_status', 'git_head_changed 已带 worktree 字段'],
   ['config_changed', 'SettingsModal 打开时自拉 config，无需增量通知'],
   ['settings_update', '同上（宿主设置变更）'],
+  // 上行裁剪占位：宿主（capri-host）为无人查看的会话保序号而发的空事件，
+  // 正文一律从宿主历史重建（见 acp-host client.go 的 trimUnwatched）。
+  ['trimmed', '上行裁剪占位，仅用于保持 per-host seq 连续'],
 ])

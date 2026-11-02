@@ -74,11 +74,11 @@ describe('listLocalDirs', () => {
     })
   })
 
-  it('旧 host 没这条端点（404）→ 提示升级 host，而不是干巴的 404', async () => {
+  it('404 透出状态码文案', async () => {
     apiFetch.mockResolvedValue(reply({}, 404))
     const res = await listLocalDirs('/home/u')
     expect(res.ok).toBe(false)
-    if (!res.ok) expect(res.error).toContain('需要升级 host')
+    if (!res.ok) expect(res.error).toContain('404')
   })
 
   it('非 JSON 响应体降级成状态码文案；网络异常也变成人话', async () => {
@@ -113,10 +113,10 @@ describe('createLocalDir', () => {
     expect(res).toEqual({ ok: false, error: '同名目录或文件已存在：/home/u/proj' })
   })
 
-  it('旧 host 没这条端点（404）→ 提示升级 host', async () => {
+  it('404 透出状态码文案', async () => {
     apiFetch.mockResolvedValue(reply({}, 404))
     const res = await createLocalDir('/home/u', 'proj')
-    if (!res.ok) expect(res.error).toContain('需要升级 host')
+    if (!res.ok) expect(res.error).toContain('404')
     else throw new Error('want failure')
   })
 })

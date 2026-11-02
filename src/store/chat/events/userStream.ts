@@ -308,7 +308,7 @@ export function handleUserStreamEvent(
           set({
             ...sealed,
             conn: 'busy',
-            statusText: 'Responding…',
+            phaseText: 'Responding…',
             awaitingNext: false,
             entries: entries.map((e) =>
               e.id === openAssistantId && e.kind === 'assistant'
@@ -424,7 +424,7 @@ export function handleUserStreamEvent(
           set({
             ...base,
             conn: 'busy',
-            statusText: 'Responding…',
+            phaseText: 'Responding…',
             awaitingNext: false,
             openAssistantId: id,
             // Keep a same-stream thought alive across an interleaved assistant
@@ -509,7 +509,7 @@ export function handleUserStreamEvent(
           set({
             ...base,
             conn: 'busy',
-            statusText: 'Thinking…',
+            phaseText: 'Thinking…',
             awaitingNext: false,
             openThoughtId,
             // Preserve openAssistantId for assistant → thought → assistant

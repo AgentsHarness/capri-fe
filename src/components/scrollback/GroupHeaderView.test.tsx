@@ -23,7 +23,6 @@ function verbRow(over: Partial<GroupHeaderViewProps['row']> = {}): GroupHeaderVi
       anchorId: 'r1',
     },
     label: { text: 'Explored 2 files', running: false, failed: false },
-    family: 'verb',
     ...over,
   }
 }

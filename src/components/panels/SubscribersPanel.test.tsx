@@ -74,13 +74,11 @@ describe('SubscribersPanel', () => {
     expect(screen.getByText('2 个连接')).toBeInTheDocument()
   })
 
-  it('老 hub 没有 /api/subscribers：显示原因，数字仍留在标题', async () => {
-    transportMock.listSubscribers.mockRejectedValue(
-      new Error('Hub 不支持订阅者详情（请升级 hub）'),
-    )
+  it('拉取失败：显示原因，数字仍留在标题', async () => {
+    transportMock.listSubscribers.mockRejectedValue(new Error('仅管理员可查看订阅者'))
     render(<SubscribersPanel onClose={() => {}} />)
     await waitFor(() =>
-      expect(screen.getByText('Hub 不支持订阅者详情（请升级 hub）')).toBeInTheDocument(),
+      expect(screen.getByText('仅管理员可查看订阅者')).toBeInTheDocument(),
     )
     expect(screen.getByText('2 个连接')).toBeInTheDocument()
   })

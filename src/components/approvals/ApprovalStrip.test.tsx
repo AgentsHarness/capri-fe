@@ -56,6 +56,19 @@ function key(key: string, init: KeyboardEventInit = {}) {
   fireEvent.keyDown(window, { key, ...init })
 }
 
+/**
+ * 冲刷一次应答往返。
+ *
+ * 点击/按键提交后组件进入「等待回执」态（转圈 + 抑制重复提交），直到
+ * respondPermission 的 promise 结束才解除。测试要连按多个不同的选择，
+ * 必须等上一次回执落定——这与真实使用一致：现实中第一次应答就让卡片
+ * 消失，不会在同一张卡上连按。
+ */
+async function settle() {
+  await Promise.resolve()
+  await Promise.resolve()
+}
+
 describe('ApprovalStrip — 渲染', () => {
   it('无 pending → null', () => {
     const { container } = render(<ApprovalStrip />)
@@ -195,41 +208,48 @@ describe('ApprovalStrip — 鼠标操作', () => {
 })
 
 describe('ApprovalStrip — 键盘', () => {
-  it('Enter 确认当前选中；j/k、1-9、Tab 走动选择', () => {
+  it('Enter 确认当前选中；j/k、1-9、Tab 走动选择', async () => {
     setPending([
       req({ params: { options: [{ optionId: 'a', name: 'A' }, { optionId: 'b', name: 'B' }] } }),
     ])
     const { rerender } = render(<ApprovalStrip />)
     const flush = () => rerender(<ApprovalStrip />)
     key('Enter')
+    await settle()
     expect(respond).toHaveBeenLastCalledWith('r1', 'a', false, undefined)
     key('j')
     flush()
     key('Enter')
+    await settle()
     expect(respond).toHaveBeenLastCalledWith('r1', 'b', false, undefined)
     key('k')
     flush()
     key('Enter')
+    await settle()
     expect(respond).toHaveBeenLastCalledWith('r1', 'a', false, undefined)
     key('2')
+    await settle()
     flush()
     expect(respond).toHaveBeenLastCalledWith('r1', 'b', false, undefined)
     // sel 仍是 0（数字键不移动选择）→ Tab 走到 1 → Enter 'b'
     key('Tab')
     flush()
     key('Enter')
+    await settle()
     expect(respond).toHaveBeenLastCalledWith('r1', 'b', false, undefined)
     // 再 Tab 回卷到 0 → Enter 'a'
     key('Tab')
     flush()
     key('Enter')
+    await settle()
     expect(respond).toHaveBeenLastCalledWith('r1', 'a', false, undefined)
   })
 
-  it('Ctrl+C 取消请求；无选项时 Enter 被吞、Esc 可暂停', () => {
+  it('Ctrl+C 取消请求；无选项时 Enter 被吞、Esc 可暂停', async () => {
     setPending([req({ params: { options: bashOptions } })])
     render(<ApprovalStrip />)
     key('c', { ctrlKey: true })
+    await settle()
     expect(respond).toHaveBeenCalledWith('r1', undefined, true)
 
     respond.mockClear()
@@ -242,7 +262,7 @@ describe('ApprovalStrip — 键盘', () => {
     expect(screen.getByText(/返回权限卡/)).not.toBeNull()
   })
 
-  it('Esc 暂停 → Tab 返回；暂停态下其它键被吞', () => {
+  it('Esc 暂停 → Tab 返回；暂停态下其它键被吞', async () => {
     setPending([req({ params: { options: bashOptions } })])
     const { container } = render(<ApprovalStrip />)
     key('Escape')
@@ -252,6 +272,7 @@ describe('ApprovalStrip — 键盘', () => {
     key('Tab')
     expect(container.textContent).toContain('↑/↓ 或 j/k 选择')
     key('Enter')
+    await settle()
     expect(respond).toHaveBeenCalledWith('r1', 'allow', false, undefined)
   })
 
@@ -266,7 +287,7 @@ describe('ApprovalStrip — 键盘', () => {
     expect(respond).toHaveBeenCalledWith('r1', 'a', false, undefined)
   })
 
-  it('←/→ 循环 bash scope：精确 → 目录（含 cwd）→ 通配（打开编辑器）', () => {
+  it('←/→ 循环 bash scope：精确 → 目录（含 cwd）→ 通配（打开编辑器）', async () => {
     applyUiSettings({ remember_tool_approvals: true })
     Object.assign(h.chatState, { cwd: '/work' })
     setPending([
@@ -291,6 +312,8 @@ describe('ApprovalStrip — 键盘', () => {
       false,
       { commandParts: ['npm', '/work'], isGlob: false },
     )
+    // 等这次回执落定再继续：提交期间卡片处于等待态（转圈 + 抑制重复提交）。
+    await settle()
     key('ArrowRight') // 通配 → pattern editor
     flush()
     const input = screen.getByPlaceholderText(/glob 模式/) as HTMLInputElement
@@ -364,7 +387,7 @@ describe('ApprovalStrip — 作用域 preset 细节', () => {
     expect(screen.queryByPlaceholderText(/glob 模式/)).toBeNull()
   })
 
-  it('MCP：tool/server scope 切换 + 结构化 scope 响应', () => {
+  it('MCP：tool/server scope 切换 + 结构化 scope 响应', async () => {
     applyUiSettings({ remember_tool_approvals: true })
     setPending([
       req({
@@ -394,6 +417,7 @@ describe('ApprovalStrip — 作用域 preset 细节', () => {
     flush()
     expect(container.textContent).toContain('all tools from Linear')
     key('Enter')
+    await settle()
     expect(respond).toHaveBeenLastCalledWith(
       'r1',
       'allow-always-mcp',

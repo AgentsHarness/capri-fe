@@ -23,6 +23,7 @@ import {
   UploadCloud,
   X,
 } from 'lucide-react'
+import { Spinner } from '../ui/Spinner'
 import { useChatStore } from '../../store/chat'
 import { transport } from '../../api/client'
 import { KEY } from '../../lib/keys'
@@ -503,6 +504,7 @@ function FileRow({
   selected,
   armed,
   busy,
+  busyOp,
   onSelect,
   onStage,
   onUnstage,
@@ -512,6 +514,8 @@ function FileRow({
   selected: boolean
   armed: boolean
   busy: boolean
+  /** 当前在飞的操作名（`stage <path>` / `unstage <path>` / `discard <path>`）。 */
+  busyOp?: string
   onSelect: () => void
   onStage?: () => void
   onUnstage?: () => void
@@ -519,6 +523,7 @@ function FileRow({
 }) {
   const { fileName, dirPath } = splitPath(row.path)
   const statusConfig = statusBadge(row)
+  const op = busyOp === `stage ${row.path}` || busyOp === `unstage ${row.path}` || busyOp === `discard ${row.path}`
   return (
     <div
       className={`group flex items-center gap-1.5 border-b border-gn-prompt-border/20 px-2.5 py-1.5 min-h-10 sm:min-h-0 sm:py-1.5 transition-colors ${
@@ -563,7 +568,7 @@ function FileRow({
             className="flex h-7 w-7 items-center justify-center rounded text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-40 sm:h-6 sm:w-6"
             title="取消暂存 (unstage)"
           >
-            <Minus size={13} />
+            {op ? <Spinner size={12} /> : <Minus size={13} />}
           </button>
         ) : (
           <button
@@ -577,7 +582,7 @@ function FileRow({
             className="flex h-7 w-7 items-center justify-center rounded text-gn-green transition-colors hover:bg-gn-green/20 disabled:opacity-40 sm:h-6 sm:w-6"
             title="加入暂存 (stage)"
           >
-            <Plus size={13} />
+            {op ? <Spinner size={12} /> : <Plus size={13} />}
           </button>
         )}
         <button
@@ -592,7 +597,7 @@ function FileRow({
           }`}
           title={armed ? '再点一次确认丢弃更改（2 秒内）' : '丢弃该文件的更改 (discard)'}
         >
-          {armed ? '确认？' : <RotateCcw size={13} />}
+          {op ? <Spinner size={12} /> : armed ? '确认？' : <RotateCcw size={13} />}
         </button>
       </div>
     </div>
@@ -1202,6 +1207,9 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
     /notgitrepo/i.test(statusError ?? '') ||
     ((statusError === 'Internal error' || statusError?.includes('Internal error')) && !branch)
   const busy = busyOp != null
+  /** 操作按钮自己的转圈：busyOp 是当前在飞操作名（含动态后缀时按前缀匹配）。 */
+  const spin = (op: string, size = 11) =>
+    busyOp === op || (busyOp ?? '').startsWith(`${op} `) ? <Spinner size={size} /> : null
   const canCommit = Boolean(commitMsg.trim()) && !busy && (amend || stagedRows.length > 0)
   const selectedRow = selectedPath ? rows.find((r) => r.path === selectedPath) : undefined
 
@@ -1491,9 +1499,10 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                     await refresh()
                   })
                 }
-                className="flex items-center justify-center gap-1.5 rounded-lg bg-gn-green/20 border border-gn-green/40 px-4 py-2.5 text-[12.5px] font-medium text-gn-green hover:bg-gn-green/30 disabled:opacity-40 shadow-sm sm:py-2"
+                className="flex items-center justify-center gap-1.5 rounded-lg bg-gn-green/20 border border-gn-green/40 px-4 py-2.5 text-[12.5px] font-medium text-gn-green hover:bg-gn-green/30 disabled:cursor-not-allowed disabled:opacity-40 shadow-sm sm:py-2"
               >
-                <Plus size={15} /> 初始化 Git 仓库 (git init)
+                {busyOp === 'init' ? <Spinner size={15} /> : <Plus size={15} />}
+                初始化 Git 仓库 (git init)
               </button>
               <button
                 type="button"
@@ -1564,9 +1573,10 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                               type="button"
                               onClick={onStageAll}
                               disabled={busy}
-                              className="rounded bg-gn-bg-highlight px-2 py-1 text-[10.5px] text-gn-green hover:bg-gn-green/20 disabled:opacity-40 sm:px-1.5 sm:py-0.5 sm:text-[10px]"
+                              className="inline-flex items-center gap-1 rounded bg-gn-bg-highlight px-2 py-1 text-[10.5px] text-gn-green hover:bg-gn-green/20 disabled:cursor-not-allowed disabled:opacity-40 sm:px-1.5 sm:py-0.5 sm:text-[10px]"
                               title="一键暂存所有修改"
                             >
+                              {busyOp === 'stage all' ? <Spinner size={10} /> : null}
                               全部暂存
                             </button>
                           )}
@@ -1575,9 +1585,10 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                               type="button"
                               onClick={onUnstageAll}
                               disabled={busy}
-                              className="rounded bg-gn-bg-highlight px-2 py-1 text-[10.5px] text-gn-muted hover:bg-gn-bg-base disabled:opacity-40 sm:px-1.5 sm:py-0.5 sm:text-[10px]"
+                              className="inline-flex items-center gap-1 rounded bg-gn-bg-highlight px-2 py-1 text-[10.5px] text-gn-muted hover:bg-gn-bg-base disabled:cursor-not-allowed disabled:opacity-40 sm:px-1.5 sm:py-0.5 sm:text-[10px]"
                               title="一键取消暂存全部文件"
                             >
+                              {busyOp === 'unstage all' ? <Spinner size={10} /> : null}
                               全部取消
                             </button>
                           )}
@@ -1610,6 +1621,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                             selected={row.path === selectedPath}
                             armed={armedDiscard?.path === row.path}
                             busy={busy}
+                            busyOp={busyOp}
                             onSelect={() => setSelectedPath(row.path === selectedPath ? undefined : row.path)}
                             onUnstage={() =>
                               void runOp(`unstage ${row.path}`, () =>
@@ -1628,6 +1640,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                             selected={row.path === selectedPath}
                             armed={armedDiscard?.path === row.path}
                             busy={busy}
+                            busyOp={busyOp}
                             onSelect={() => setSelectedPath(row.path === selectedPath ? undefined : row.path)}
                             onStage={() =>
                               void runOp(`stage ${row.path}`, () =>
@@ -1646,6 +1659,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                             selected={row.path === selectedPath}
                             armed={armedDiscard?.path === row.path}
                             busy={busy}
+                            busyOp={busyOp}
                             onSelect={() => setSelectedPath(row.path === selectedPath ? undefined : row.path)}
                             onStage={() =>
                               void runOp(`stage ${row.path}`, () =>
@@ -2080,7 +2094,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                       }
                       className="flex min-h-8 items-center justify-center gap-1 rounded border border-gn-prompt-border bg-gn-bg-base px-2 py-1.5 text-[11.5px] text-gn-fg hover:bg-gn-bg-highlight disabled:opacity-40 sm:min-h-0 sm:px-2.5 sm:py-1"
                     >
-                      <RefreshCw size={11} />
+                      {busyOp === 'fetch' ? <Spinner size={11} /> : <RefreshCw size={11} />}
                       Fetch
                       <span className="hidden sm:inline"> (拉取状态)</span>
                     </button>
@@ -2094,7 +2108,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                       }
                       className="flex min-h-8 items-center justify-center gap-1 rounded border border-gn-prompt-border bg-gn-bg-base px-2 py-1.5 text-[11.5px] text-gn-fg hover:bg-gn-bg-highlight disabled:opacity-40 sm:min-h-0 sm:px-2.5 sm:py-1"
                     >
-                      <ArrowDown size={11} />
+                      {busyOp === 'pull' ? <Spinner size={11} /> : <ArrowDown size={11} />}
                       Pull
                       <span className="hidden sm:inline"> (拉取并合并)</span>
                     </button>
@@ -2108,7 +2122,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                       }
                       className="flex min-h-8 items-center justify-center gap-1 rounded border border-gn-green/40 bg-gn-green/20 px-2 py-1.5 text-[11.5px] font-medium text-gn-green hover:bg-gn-green/30 disabled:opacity-40 sm:min-h-0 sm:px-3 sm:py-1"
                     >
-                      <ArrowUp size={11} />
+                      {busyOp === 'push' ? <Spinner size={11} /> : <ArrowUp size={11} />}
                       Push
                       <span className="hidden sm:inline"> (推送到远程)</span>
                     </button>
@@ -2183,7 +2197,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                           }}
                           className="flex h-8 shrink-0 items-center gap-1 rounded bg-gn-bg-highlight px-2.5 text-[11.5px] text-gn-fg hover:bg-gn-prompt-border disabled:opacity-40 sm:h-7"
                         >
-                          <Plus size={12} /> 新建
+                          {spin('创建分支') ?? <Plus size={12} />} 新建
                         </button>
                       </div>
                     </div>
@@ -2240,7 +2254,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                                   }`}
                                   title={armed ? '再点一次确认切换' : '切换到此分支'}
                                 >
-                                  {armed ? '确认' : '切换'}
+                                  {spin('checkout', 10) ?? (armed ? '确认' : '切换')}
                                 </button>
                                 <button
                                   type="button"
@@ -2254,7 +2268,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                                   className="p-1.5 text-gn-muted transition-colors hover:text-gn-red sm:p-1"
                                   title="删除此分支"
                                 >
-                                  <Trash2 size={12} />
+                                  {spin('删除分支', 12) ?? <Trash2 size={12} />}
                                 </button>
                               </div>
                             )}
@@ -2300,8 +2314,9 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                                       await refreshStashes()
                                     })
                                   }
-                                  className="rounded bg-gn-green/10 px-2 py-1 text-[10px] text-gn-green hover:bg-gn-green/20 sm:px-1.5 sm:py-0.5"
+                                  className="inline-flex items-center gap-1 rounded bg-gn-green/10 px-2 py-1 text-[10px] text-gn-green hover:bg-gn-green/20 sm:px-1.5 sm:py-0.5"
                                 >
+                                  {spin('应用', 10)}
                                   Pop
                                 </button>
                                 <button
@@ -2403,13 +2418,14 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                       if (ok) setCommitMsg('')
                     })
                   }}
-                  className="min-h-8 shrink-0 rounded border border-gn-green/40 bg-gn-green/20 px-3 py-1 text-[12px] font-medium text-gn-green hover:bg-gn-green/30 disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-0"
+                  className="inline-flex min-h-8 shrink-0 items-center gap-1 rounded border border-gn-green/40 bg-gn-green/20 px-3 py-1 text-[12px] font-medium text-gn-green hover:bg-gn-green/30 disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-0"
                   title={
                     stagedRows.length === 0 && !amend
                       ? '请先暂存文件，或勾选 amend'
                       : '提交暂存区的更改（x.ai/git/commit）'
                   }
                 >
+                  {busyOp === 'commit' ? <Spinner size={11} /> : null}
                   commit
                 </button>
 
@@ -2420,7 +2436,7 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                   className="flex min-h-8 shrink-0 items-center gap-1 rounded border border-gn-prompt-border bg-gn-bg-base px-2.5 py-1 text-[12px] text-gn-fg hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-0"
                   title="提交并推送到远端"
                 >
-                  <GitCommit size={12} />
+                  {busy ? <Spinner size={12} /> : <GitCommit size={12} />}
                   <span className="sm:hidden">推送</span>
                   <span className="hidden sm:inline">commit & push</span>
                 </button>
@@ -2429,9 +2445,10 @@ export function GitPanel({ open, onClose }: { open: boolean; onClose: () => void
                   type="button"
                   disabled={busy}
                   onClick={onStashClick}
-                  className="min-h-8 shrink-0 rounded border border-gn-prompt-border bg-gn-bg-base px-2.5 py-1 text-[12px] text-gn-fg hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-0"
+                  className="inline-flex min-h-8 shrink-0 items-center gap-1 rounded border border-gn-prompt-border bg-gn-bg-base px-2.5 py-1 text-[12px] text-gn-fg hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-0"
                   title="git stash — 暂存全部未提交更改"
                 >
+                  {busyOp === 'stash' ? <Spinner size={11} /> : null}
                   stash
                 </button>
               </div>

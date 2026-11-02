@@ -4,6 +4,7 @@ import { extractSessionUpdate } from '../entries'
 import { handleNotifCore } from './notifCore'
 import { handleNotifHooks } from './notifHooks'
 import { handleNotifMemory } from './notifMemory'
+import { handleNotifSessionMeta } from './notifSessionMeta'
 import { handleNotifApps } from './notifApps'
 import type { WireEvent } from './wire'
 import { dropsForeignEvent } from './attribution'
@@ -38,6 +39,7 @@ export function handleSessionNotification(
   if (TYPED_PATH_KINDS.has(tag)) return false
   if (handleNotifCore(set, get, wire, tag, fields)) return true
   if (handleNotifHooks(set, get, wire, tag, fields)) return true
+  if (handleNotifSessionMeta(set, get, wire, tag, fields)) return true
   if (handleNotifMemory(set, get, wire, tag, fields)) return true
   if (handleNotifApps(set, get, wire, tag, fields)) return true
   maybeWarnUnconsumed(tag)

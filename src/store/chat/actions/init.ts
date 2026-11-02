@@ -34,39 +34,30 @@ import { handleResyncRebuild } from '../resync'
 import { dropsForeignEvent } from '../events/attribution'
 import { notifSessionId, type WireEvent } from '../events/wire'
 
-/** TUI `CWD_GIT_REFRESH_TTL`：状态栏读路径的懒探盘间隔。git_head_changed
- *  只在 HEAD 真的变了才发；外部 `git checkout` 若通知丢失/错标，FE 没有
- *  TUI 每帧 `cwd_git_info_lazy` 的退路，必须自己按这个 TTL 补拉。 */
-export const GIT_INFO_REFRESH_MS = 5_000
-
+/**
+ * 状态栏 git 分支的补拉触发：聚焦 / 回到前台。
+ *
+ * 这里刻意没有定时器。分支变化由 agent 的 fs-watch 自己盯 `.git`（`x.ai/
+ * fsnotify` 的 `GitMetaChanged` → `x.ai/git_head_changed`，host 在 initialize
+ * 里声明了 `x.ai/gitHeadChanged`），事件到达即上屏；TUI 那个 5 秒 TTL 是
+ * 进程内读路径的懒探盘，跨公网照抄只会变成每页每小时 720 次请求。
+ *
+ * 聚焦补一次覆盖真正会漏的场景：用户在外部终端 `git checkout` 后切回页面，
+ * 而通知因 watcher 未覆盖该目录 / 被去重吞掉。
+ */
 function watchGitInfo(get: () => ChatState): () => void {
-  let timer: ReturnType<typeof setInterval> | undefined
   const pull = () => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
     void get().refreshGitInfo?.()
   }
-  const start = () => {
-    if (timer != null) return
-    timer = setInterval(pull, GIT_INFO_REFRESH_MS)
-  }
-  const stop = () => {
-    if (timer == null) return
-    clearInterval(timer)
-    timer = undefined
-  }
   const onVis = () => {
-    if (document.visibilityState === 'visible') start()
-    else stop()
+    if (document.visibilityState === 'visible') pull()
   }
-  const onFocus = () => pull()
-  if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
-    start()
-  }
+  window.addEventListener('focus', pull)
   document.addEventListener('visibilitychange', onVis)
-  window.addEventListener('focus', onFocus)
   return () => {
-    stop()
+    window.removeEventListener('focus', pull)
     document.removeEventListener('visibilitychange', onVis)
-    window.removeEventListener('focus', onFocus)
   }
 }
 
@@ -194,11 +185,6 @@ export function initChat(
           // 非活跃普通会话的队列广播（切走期间 agent 已 pop 队首开跑）：
           // 喂给该会话的 stash——切回时镜像才是权威的，被收养的行绝不
           // 能仍显示 queued（收养渲染只发生在活跃会话，这里仅更新镜像）。
-          applyQueueChanged(ev.params, foreignSid ?? undefined)
-        } else if (
-          ev.type === 'ext_notification' &&
-          (ev as { method?: string }).method === 'x.ai/queue/changed'
-        ) {
           applyQueueChanged(ev.params, foreignSid ?? undefined)
         }
         return

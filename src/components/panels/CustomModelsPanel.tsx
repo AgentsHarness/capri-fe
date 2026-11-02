@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowRightLeft, Filter, Plus, Search, X, Zap } from 'lucide-react'
 import { transport } from '../../api/client'
 import type { CustomModelConfig, CustomModelFilters } from '../../api/types'
 import { compareCustomModels } from '../../lib/quickAddModels'
 import { pushToast } from '../../store/toast'
+import { Spinner } from '../ui/Spinner'
 import { useChatStore } from '../../store/chat'
 import { Glyphs } from '../../theme/glyphs'
 import { IconGlyph } from '../ui/IconGlyph'
@@ -60,6 +61,10 @@ export function CustomModelsPanel() {
   const [editing, setEditing] = useState<{ cfg: CustomModelConfig; asNew?: boolean } | null>(null)
   const [saving, setSaving] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  /** 正在删除的模型 id：按钮转圈并锁住重复点击。 */
+  const [deleting, setDeleting] = useState<string | null>(null)
+  // state 只用于渲染；同一 tick 内的第二次点击靠这个 ref 挡住。
+  const deletingRef = useRef<string | null>(null)
   const [quickAddOpen, setQuickAddOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
@@ -73,8 +78,8 @@ export function CustomModelsPanel() {
   const [filters, setFilters] = useState<CustomModelFilters>({ hidden: [], disabled: [] })
   const [filtersDirty, setFiltersDirty] = useState(false)
   const [filtersSaving, setFiltersSaving] = useState(false)
-  // 另一台 host（hub 模式）可能是旧版本，config.toml 里这两个键也可能写坏：
-  // 读不到就记下 host 的说法，整块降级成提示，而不是让「保存」打到 404 上。
+  // config.toml 里这两个键可能写坏：读不到就记下 host 的说法，整块降级成
+  // 提示，而不是让「保存」直接失败。
   const [filtersIssue, setFiltersIssue] = useState<string | null>(null)
   // 跨 host 导入（hub 模式 + 还有别的 host 才可能）：源/目标都按 host 区分。
   const selectedHostId = useChatStore((s) => s.selectedHostId)
@@ -100,7 +105,7 @@ export function CustomModelsPanel() {
   const refresh = useCallback(async () => {
     try {
       // 过滤名单与 [model.*] 同属一个 host 的配置：一次刷新同时读，
-      // 读不到（旧 host / 键写坏）只降级那一块，不影响模型列表。
+      // 读不到（键写坏）只降级那一块，不影响模型列表。
       const [list, hostFilters] = await Promise.all([
         transport.listCustomModels(),
         Promise.resolve()
@@ -204,6 +209,9 @@ export function CustomModelsPanel() {
   const savedFiltersCount = savedFilters.hidden.length + savedFilters.disabled.length
 
   const del = async (id: string) => {
+    if (deletingRef.current !== null) return
+    deletingRef.current = id
+    setDeleting(id)
     try {
       const r = await transport.deleteCustomModel(id)
       pushToast(
@@ -214,6 +222,8 @@ export function CustomModelsPanel() {
     } catch (e) {
       pushToast(e instanceof Error ? e.message : String(e))
     }
+    deletingRef.current = null
+    setDeleting(null)
     setConfirmDelete(null)
     void refresh()
   }
@@ -310,8 +320,9 @@ export function CustomModelsPanel() {
               <button
                 type="button"
                 onClick={() => void refresh()}
-                className="text-[11px] text-gn-muted underline hover:text-gn-fg"
+                className="inline-flex items-center gap-1 text-[11px] text-gn-muted underline hover:text-gn-fg"
               >
+                {loading ? <Spinner size={10} /> : null}
                 重试
               </button>
             </div>
@@ -393,9 +404,11 @@ export function CustomModelsPanel() {
                             <span className="text-[10px] text-gn-red">确定删除？</span>
                             <button
                               type="button"
+                              disabled={deleting !== null}
                               onClick={() => void del(m.id)}
-                              className="rounded bg-gn-diff-del-bg px-1.5 py-0.5 text-[10.5px] font-medium text-gn-red hover:bg-gn-red/20 focus:outline-none"
+                              className="inline-flex items-center gap-1 rounded bg-gn-diff-del-bg px-1.5 py-0.5 text-[10.5px] font-medium text-gn-red hover:bg-gn-red/20 focus:outline-none disabled:cursor-not-allowed disabled:opacity-40"
                             >
+                              {deleting === m.id ? <Spinner size={10} /> : null}
                               确定
                             </button>
                             <button
@@ -516,7 +529,7 @@ function CatalogFilters({
   onCancel,
 }: {
   filters: CustomModelFilters
-  /** host 读不出这两份名单时的原话（旧 host 没有该端点 / 键的写法有问题）。 */
+  /** host 读不出这两份名单时的原话（键的写法有问题）。 */
   issue: string | null
   dirty: boolean
   saving: boolean
@@ -529,7 +542,7 @@ function CatalogFilters({
       <div className="border-t border-gn-prompt-border/40 px-3 py-2 sm:px-4">
         <div className="rounded border border-gn-prompt-border/40 bg-gn-bg-dark/25 p-2.5 text-[11px] leading-snug text-gn-muted">
           目录过滤（[models] hidden_models / disabled_models）不可用：{issue}
-          ；host 需更新，或先修正 config.toml 里这两个键的写法。
+          ；请先修正 config.toml 里这两个键的写法。
         </div>
         <div className="mt-3 flex items-center gap-2">
           <button
@@ -577,8 +590,9 @@ function CatalogFilters({
           type="button"
           disabled={!dirty || saving}
           onClick={onSave}
-          className="rounded bg-gn-bg-highlight px-3 py-1 text-[12px] font-medium text-gn-fg hover:bg-gn-bg-hover disabled:cursor-not-allowed disabled:opacity-40"
+          className="inline-flex items-center gap-1.5 rounded bg-gn-bg-highlight px-3 py-1 text-[12px] font-medium text-gn-fg hover:bg-gn-bg-hover disabled:cursor-not-allowed disabled:opacity-40"
         >
+          {saving ? <Spinner size={11} /> : null}
           {saving ? '保存中…' : '保存目录过滤'}
         </button>
         <button
@@ -1003,8 +1017,9 @@ function ModelForm({
           type="button"
           disabled={saving || blocked || !trimmedId || !trimmedModel || !trimmedBaseUrl}
           onClick={() => void onSave({ ...d, id: trimmedId }, asNew ? undefined : (initial.id || undefined))}
-          className="rounded bg-gn-bg-highlight px-3 py-1 text-[12px] font-medium text-gn-fg hover:bg-gn-bg-hover disabled:cursor-not-allowed disabled:opacity-40"
+          className="inline-flex items-center gap-1.5 rounded bg-gn-bg-highlight px-3 py-1 text-[12px] font-medium text-gn-fg hover:bg-gn-bg-hover disabled:cursor-not-allowed disabled:opacity-40"
         >
+          {saving ? <Spinner size={11} /> : null}
           {saving ? '保存中…' : isNew ? '新增' : '保存修改'}
         </button>
         <button

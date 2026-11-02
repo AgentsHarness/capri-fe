@@ -24,9 +24,6 @@ export type ExtensionHook = {
 }
 
 /** GET /api/extensions — one plugin row. */
-
-
-/** GET /api/extensions — one plugin row. */
 export type ExtensionPlugin = {
   name: string
   source?: string
@@ -56,16 +53,6 @@ export type WorkflowInfo = {
   source: string
   path?: string
 }
-
-/**
- * Structured "always allow" scope sent on a permission response — mirrors
- * TUI `BashCommandSelectedTerms` (xai-grok-workspace permission/prompter.rs):
- * a literal command-prefix word list (`isGlob: false`, the ←/→ word-scope)
- * or a single free-form pattern (`isGlob: true`, the pattern editor).
- * Host contract (parallel): POST /api/permission-response `scope` field,
- * parsed verbatim — field names must match exactly.
- */
-
 
 /**
  * One `[model.<id>]` entry from config.toml — the custom BYOK model schema
@@ -124,9 +111,6 @@ export type CustomModelConfig = {
   env_http_headers?: Record<string, string>
 }
 
-/** One entry of agentInfo._meta.modelState.availableModels. */
-
-
 /**
  * POST /api/model-filters — config.toml `[models]` 下的两个目录过滤名单。
  * `hidden` 对应 `hidden_models`：命中的条目从模型列表/选择器消失，但仍能用
@@ -169,15 +153,6 @@ export type ModelOption = {
   contextWindowSelection?: number
 }
 
-/**
- * One agent-advertised slash command — ACP `AvailableCommand`
- * (agent-client-protocol-schema, `rename_all = "camelCase"`), forwarded
- * verbatim by capri-host as the `commands_update` SSE event's `commands`
- * array. Wire fields: `name`, `description`, `input: { hint }`, `_meta`.
- * The store normalizes it defensively (name required; the rest optional).
- */
-
-
 /** One effort row from model `_meta.reasoningEfforts` (or built-in fallback). */
 export type ReasoningEffortOption = {
   /** Menu id (may remap, e.g. "deep" → wire "xhigh"). */
@@ -188,10 +163,3 @@ export type ReasoningEffortOption = {
   value: string
   default?: boolean
 }
-
-/**
- * One `[model.<id>]` entry from config.toml — the custom BYOK model schema
- * (mirrors the TUI's `ConfigModelOverride` in
- * xai-grok-shell/src/agent/config.rs). All fields optional except the id
- * (section key), `model` (routing slug) and `base_url`.
- */

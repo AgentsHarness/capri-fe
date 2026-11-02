@@ -155,7 +155,7 @@ describe('jumpToPrompt', () => {
   })
 
   it('跳转期间 status 显示进度，结束后恢复原文案', async () => {
-    useChatStore.setState({ statusText: '历史已加载 (共 12 条更新)' })
+    useChatStore.setState({ phaseText: '历史已加载 (共 12 条更新)' })
     let resolvePage: ((v: ReturnType<typeof turn0Page>) => void) | undefined
     vi.mocked(transport.loadSessionHistory).mockImplementation(
       () =>
@@ -166,28 +166,28 @@ describe('jumpToPrompt', () => {
     const p = useChatStore.getState().jumpToPrompt(0)
     // 点击后立即可见（第一页在飞）：status 行 + 补全芯片同源进度。
     await Promise.resolve()
-    expect(useChatStore.getState().statusText).toContain('跳转中')
-    expect(useChatStore.getState().statusText).toMatch(/2\/2 轮/)
+    expect(useChatStore.getState().phaseText).toContain('跳转中')
+    expect(useChatStore.getState().phaseText).toMatch(/2\/2 轮/)
     expect(useChatStore.getState().historyJumpProgress).toEqual({ current: 2, total: 2 })
     resolvePage!(turn0Page() as ReturnType<typeof turn0Page>)
     const id = await p
     const target = useChatStore.getState().entries.find((e) => e.id === id)
     expect(target?.kind).toBe('user')
     expect(target?.msgSeq).toBe(0)
-    expect(useChatStore.getState().statusText).toBe('历史已加载 (共 12 条更新)')
+    expect(useChatStore.getState().phaseText).toBe('历史已加载 (共 12 条更新)')
     expect(useChatStore.getState().historyJumpProgress).toBeUndefined()
   })
 
   it('跳转失败：status 同样恢复原文案，不残留「跳转中」', async () => {
-    useChatStore.setState({ statusText: '就绪' })
+    useChatStore.setState({ phaseText: '就绪' })
     vi.mocked(transport.loadSessionHistory).mockRejectedValue(new Error('boom'))
     const id = await useChatStore.getState().jumpToPrompt(0)
     expect(id).toBeNull()
-    expect(useChatStore.getState().statusText).toBe('就绪')
+    expect(useChatStore.getState().phaseText).toBe('就绪')
   })
 
   it('跳转期间别的路径改过 status → 不覆盖对方的值', async () => {
-    useChatStore.setState({ statusText: '历史已加载 (共 12 条更新)' })
+    useChatStore.setState({ phaseText: '历史已加载 (共 12 条更新)' })
     let resolvePage: ((v: ReturnType<typeof turn0Page>) => void) | undefined
     vi.mocked(transport.loadSessionHistory).mockImplementation(
       () =>
@@ -197,13 +197,13 @@ describe('jumpToPrompt', () => {
     )
     const p = useChatStore.getState().jumpToPrompt(0)
     await Promise.resolve()
-    expect(useChatStore.getState().statusText).toContain('跳转中')
+    expect(useChatStore.getState().phaseText).toContain('跳转中')
     // 模拟循环期间发消息等其他路径写入。
-    useChatStore.setState({ statusText: '正在发送…' })
+    useChatStore.setState({ phaseText: '正在发送…' })
     resolvePage!(turn0Page() as ReturnType<typeof turn0Page>)
     await p
     // 别的路径写入后不得被恢复逻辑覆盖（回放自身还会再写 Responding…，
     // 只要不是「跳转中」残留即证明没有无脑恢复）。
-    expect(useChatStore.getState().statusText).not.toContain('跳转中')
+    expect(useChatStore.getState().phaseText).not.toContain('跳转中')
   })
 })

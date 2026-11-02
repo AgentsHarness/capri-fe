@@ -16,8 +16,7 @@ export function entryRunning(e: ScrollEntry): boolean {
   if (e.kind === 'thought') return !!e.streaming
   if (e.kind === 'tool')
     return e.status === 'pending' || e.status === 'in_progress'
-  if (e.kind === 'subagent' || e.kind === 'workflow' || e.kind === 'bg_task')
-    return !!e.running
+  if (e.kind === 'subagent' || e.kind === 'bg_task') return !!e.running
   if (e.kind === 'session_event') return !!e.streaming
   if (e.kind === 'btw') return !!e.streaming
   return false
@@ -29,7 +28,6 @@ export function entryFailed(e: ScrollEntry): boolean {
     return e.status === 'failed' || e.status === 'error'
   if (e.kind === 'subagent')
     return e.status === 'failed' || e.status === 'cancelled'
-  if (e.kind === 'workflow') return e.status === 'failed'
   if (e.kind === 'bg_task') return e.status === 'failed'
   if (e.kind === 'btw') return !!e.error
   return false
@@ -204,7 +202,6 @@ export function expandableGlyph(e: ScrollEntry, active: boolean): string | null 
     e.kind !== 'session_event' &&
     e.kind !== 'btw' &&
     e.kind !== 'subagent' &&
-    e.kind !== 'workflow' &&
     e.kind !== 'bg_task' &&
     e.kind !== 'group_header' &&
     e.kind !== 'user'

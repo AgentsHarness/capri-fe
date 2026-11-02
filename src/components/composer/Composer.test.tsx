@@ -20,7 +20,9 @@ vi.mock('../../api/client', () => ({
     status: vi.fn(),
     onEvent: vi.fn(() => () => {}),
     getConnectionMode: vi.fn(() => 'local'),
+    isLocalDirect: vi.fn(() => false),
     lastLiveEventAt: vi.fn(() => undefined),
+    listHosts: vi.fn(async () => ({ hosts: [] })),
     extensions: vi.fn(async () => ({ skills: [] })),
     queueInterject: vi.fn(async () => {}),
     interject: vi.fn(async () => {}),
@@ -398,6 +400,39 @@ describe('Composer 立即发送拦截确认', () => {
       'test-sess-1',
     )
   })
+
+  it('立即发送失败（链路断）→ 行标 degraded，不再是静默 no-op', async () => {
+    ;(transport.queueInterject as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('host mba 已断开'),
+    )
+    usePromptQueue.setState({
+      queue: [{ id: 'q1', text: '插队消息', blocks: [], version: 1, ts: Date.now() }],
+    })
+
+    render(<Composer />)
+    fireEvent.click(screen.getByTitle('立即发送这条'))
+
+    // 行留在镜像里，但被标成 FE-owned 失败行（可手动重发），并说明原因。
+    await waitFor(() => {
+      const row = usePromptQueue.getState().queue.find((q) => q.id === 'q1')
+      expect(row?.degraded).toBe(true)
+      expect(row?.errorText).toContain('已断开')
+    })
+    expect(pushToast).toHaveBeenCalledWith(expect.stringContaining('立即发送失败'))
+  })
+
+  it('队列属于别的会话（stale）→ 点击不发送，也不留下转圈', () => {
+    usePromptQueue.setState({
+      queue: [{ id: 'q1', text: '旧会话的排队', blocks: [], version: 1, ts: Date.now() }],
+      sessionId: 'gone-sess',
+    })
+
+    render(<Composer />)
+    fireEvent.click(screen.getByTitle('立即发送这条'))
+
+    expect(transport.queueInterject).not.toHaveBeenCalled()
+    expect(document.querySelector('svg.animate-spin')).toBeNull()
+  })
 })
 
 /**
@@ -521,6 +556,283 @@ describe('Composer prompt stash caption', () => {
   })
 })
 
+describe('Composer 状态行分层（操作回执 vs 连接/回合阶段）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useChatStore.setState({
+      sessionId: 's1',
+      cwd: '/test/cwd',
+      conn: 'ready',
+      phaseText: '就绪',
+      statusText: '',
+      historyLoading: false,
+      newSessionPending: false,
+      entries: [],
+      pending: [],
+      topTasks: [],
+      memoryCommandPending: undefined,
+      recapPendingFor: undefined,
+    })
+  })
+
+  /** 状态行只在「连接中 / busy / 有等待」时可见；用 connecting 让它现身。 */
+  const renderIdleLine = () => render(<Composer />)
+
+  it('连接中时优先显示操作回执', () => {
+    act(() =>
+      useChatStore.setState({
+        conn: 'connecting',
+        phaseText: '连接中…',
+        statusText: '已切换到 plan 模式',
+      }),
+    )
+    renderIdleLine()
+    expect(screen.getByText('已切换到 plan 模式')).toBeInTheDocument()
+    expect(screen.queryByText('连接中…')).toBeNull()
+  })
+
+  it('阶段事件改写 phaseText 后，回执仍留在状态行', () => {
+    act(() =>
+      useChatStore.setState({
+        conn: 'connecting',
+        phaseText: '连接中…',
+        statusText: '已切换到 plan 模式',
+      }),
+    )
+    renderIdleLine()
+    // 连接流程后续只写 phaseText（就绪 / 启动中…）：回执不能被冲掉。
+    act(() => useChatStore.setState({ phaseText: '启动中…' }))
+    expect(screen.getByText('已切换到 plan 模式')).toBeInTheDocument()
+  })
+
+  it('没有回执时才回落到阶段文案', () => {
+    act(() =>
+      useChatStore.setState({ conn: 'connecting', statusText: '', phaseText: '连接中…' }),
+    )
+    renderIdleLine()
+    expect(screen.getByText('连接中…')).toBeInTheDocument()
+  })
+
+  it('busy 臂没有活动条目时用 phaseText 兜底，不显示旧回执', () => {
+    act(() =>
+      useChatStore.setState({
+        conn: 'busy',
+        phaseText: 'Waiting for response…',
+        statusText: '已切换到 plan 模式',
+        turnStartedAt: Date.now(),
+      }),
+    )
+    renderIdleLine()
+    const text = document.body.textContent ?? ''
+    expect(text).toContain('Waiting for response…')
+    expect(text).not.toContain('已切换到 plan 模式')
+  })
+})
+
+/**
+ * 「等待 Host 确认送达…」只对绕 hub 的请求有意义：直连本机没有
+ * hub→host 那一跳，host 按健康处理，过了宽限期也照常显示阶段文案。
+ */
+describe('Composer 状态行：等回执提示只在中继时出现', () => {
+  // 已超过 SEND_ACK_GRACE_MS（3s），仍没有受理回执。
+  const ACK_OVERDUE_MS = 4_000
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useChatStore.setState({
+      sessionId: 's1',
+      cwd: '/test/cwd',
+      conn: 'busy',
+      phaseText: 'Waiting for response…',
+      statusText: '',
+      historyLoading: false,
+      newSessionPending: false,
+      entries: [],
+      pending: [],
+      topTasks: [],
+      memoryCommandPending: undefined,
+      recapPendingFor: undefined,
+      promptAcceptedAt: undefined,
+      currentPromptId: undefined,
+      // 已经超过 SEND_ACK_GRACE_MS，仍没有受理回执。
+      turnStartedAt: Date.now() - ACK_OVERDUE_MS,
+    })
+  })
+
+  afterEach(() => {
+    vi.mocked(transport.getConnectionMode).mockReturnValue('local')
+    vi.mocked(transport.isLocalDirect).mockReturnValue(false)
+  })
+
+  /** 本端真发一条：transport.prompt 永不 resolve，promptAcceptedAt 保持空
+   *  = 「还没拿到受理回执」的窗口。 */
+  function sendPendingPrompt() {
+    ;(transport.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise(() => {}),
+    )
+    useChatStore.setState({ conn: 'ready', turnStartedAt: undefined })
+    const input = screen.getByRole('textbox')
+    fireEvent.change(input, { target: { value: 'hi' } })
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' })
+    // 宽限期按回合起点算：把本端刚锚定的回合拨回过去。
+    act(() => useChatStore.setState({ turnStartedAt: Date.now() - ACK_OVERDUE_MS }))
+  }
+
+  it('hub 中继：本端发出、超时无回执 → 提示在等 Host 确认', () => {
+    vi.mocked(transport.getConnectionMode).mockReturnValue('hub')
+    vi.mocked(transport.isLocalDirect).mockReturnValue(false)
+    render(<Composer />)
+    sendPendingPrompt()
+    expect(screen.getByText('等待 Host 确认送达…')).toBeInTheDocument()
+  })
+
+  it('hub 模式本机近路：直连不提示，显示阶段文案', () => {
+    vi.mocked(transport.getConnectionMode).mockReturnValue('hub')
+    vi.mocked(transport.isLocalDirect).mockReturnValue(true)
+    render(<Composer />)
+    sendPendingPrompt()
+    expect(screen.queryByText('等待 Host 确认送达…')).toBeNull()
+    expect(screen.getByText('Waiting for response…')).toBeInTheDocument()
+  })
+
+  it('纯 local：直连不提示，显示阶段文案', () => {
+    vi.mocked(transport.getConnectionMode).mockReturnValue('local')
+    render(<Composer />)
+    sendPendingPrompt()
+    expect(screen.queryByText('等待 Host 确认送达…')).toBeNull()
+    expect(screen.getByText('Waiting for response…')).toBeInTheDocument()
+  })
+
+  it('host 自己开跑的回合（队列收养 / 回放）不提示在等回执', () => {
+    vi.mocked(transport.getConnectionMode).mockReturnValue('hub')
+    vi.mocked(transport.isLocalDirect).mockReturnValue(false)
+    // adoptTurn / 回放：currentPromptId 有值、promptAcceptedAt 空，但本端
+    // 从没发过这条——不许把 host 开的回合说成「等 Host 确认送达」。
+    useChatStore.setState({
+      conn: 'busy',
+      phaseText: 'Waiting for response…',
+      currentPromptId: 'adopted-q',
+      promptAcceptedAt: undefined,
+      turnStartedAt: Date.now() - ACK_OVERDUE_MS,
+    })
+    render(<Composer />)
+    expect(screen.queryByText('等待 Host 确认送达…')).toBeNull()
+    expect(screen.getByText('Waiting for response…')).toBeInTheDocument()
+  })
+})
+
+/**
+ * hub 的 busy 心跳是 1s 一拍；FE 静默 2s 后探一次 HostInfo.lastSeenAgeMs
+ * （hub 本机时钟算好的年龄）：新鲜 = host 在思考（不报警），超过 3.5s =
+ * 连接中断（状态行改文案）。
+ */
+describe('Composer 状态行：Host 心跳停了的重连提示', () => {
+  // 已超过 SILENCE_PROBE_AFTER_MS（2s），探针该跑了。
+  const SILENT_FOR_MS = 2_500
+  const hostSeen = (agoMs: number) => ({
+    hostId: 'h1',
+    hostName: 'H1',
+    online: true,
+    // hub computes the age on its own clock — never against the browser clock.
+    lastSeenAgeMs: agoMs,
+  })
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(transport.getConnectionMode).mockReturnValue('hub')
+    vi.mocked(transport.isLocalDirect).mockReturnValue(false)
+    vi.mocked(transport.lastLiveEventAt).mockReturnValue(null)
+    useChatStore.setState({
+      sessionId: 's1',
+      cwd: '/test/cwd',
+      selectedHostId: 'h1',
+      conn: 'busy',
+      phaseText: 'Waiting for response…',
+      statusText: '',
+      historyLoading: false,
+      newSessionPending: false,
+      entries: [],
+      pending: [],
+      topTasks: [],
+      memoryCommandPending: undefined,
+      recapPendingFor: undefined,
+      // 已受理：这条不是「等回执」，静默只归心跳探针判断。
+      promptAcceptedAt: Date.now(),
+      currentPromptId: 'p-1',
+      turnStartedAt: Date.now() - SILENT_FOR_MS,
+    })
+  })
+
+  afterEach(() => {
+    vi.mocked(transport.listHosts).mockResolvedValue({ hosts: [] })
+    vi.mocked(transport.lastLiveEventAt).mockReturnValue(null)
+    vi.mocked(transport.getConnectionMode).mockReturnValue('local')
+    vi.mocked(transport.isLocalDirect).mockReturnValue(false)
+  })
+
+  it('busy + 静默 + 心跳停住 → 状态行显示连接中断，正在重连', async () => {
+    vi.mocked(transport.listHosts).mockResolvedValue({
+      hosts: [hostSeen(5_000)],
+    })
+    render(<Composer />)
+    expect(
+      await screen.findByText('Host 连接中断，正在重连…'),
+    ).toBeInTheDocument()
+  })
+
+  it('有活动标签时仍优先显示连接中断（不能让 Thinking… 盖住）', async () => {
+    vi.mocked(transport.listHosts).mockResolvedValue({
+      hosts: [hostSeen(5_000)],
+    })
+    useChatStore.setState({
+      entries: [
+        {
+          id: 'th1',
+          kind: 'thought',
+          text: 'still thinking',
+          streaming: true,
+          startedAt: Date.now() - 1_000,
+        },
+      ],
+    })
+    render(<Composer />)
+    expect(
+      await screen.findByText('Host 连接中断，正在重连…'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('Thinking…')).toBeNull()
+  })
+
+  it('心跳 age 新鲜（长时间思考 / 工具调用）→ 不误报断线，保留真实活动', async () => {
+    vi.mocked(transport.listHosts).mockResolvedValue({
+      hosts: [hostSeen(500)],
+    })
+    useChatStore.setState({
+      entries: [
+        {
+          id: 'th2',
+          kind: 'thought',
+          text: 'still thinking',
+          streaming: true,
+          startedAt: Date.now() - 1_000,
+        },
+      ],
+    })
+    render(<Composer />)
+    await waitFor(() => expect(transport.listHosts).toHaveBeenCalled())
+    expect(screen.queryByText('Host 连接中断，正在重连…')).toBeNull()
+    expect(screen.getByText('Thinking…')).toBeInTheDocument()
+  })
+
+  it('年龄读数来自 hub 自己的时钟，与本机时间戳无关 → 不误报断线', async () => {
+    vi.mocked(transport.listHosts).mockResolvedValue({
+      hosts: [hostSeen(500)],
+    })
+    render(<Composer />)
+    await waitFor(() => expect(transport.listHosts).toHaveBeenCalled())
+    expect(screen.queryByText('Host 连接中断，正在重连…')).toBeNull()
+  })
+})
+
 describe('记忆命令状态行（TUI CommandRunning）', () => {
   const pending = (sessionId: string, label = 'Flushing memory…') => ({
     sessionId,
@@ -620,12 +932,13 @@ describe('Composer 访客只读态', () => {
     useChatStore.setState({
       guestSessionState: { sessionState: 'active', busy: true, awaitingInput: false },
       conn: 'busy',
-      statusText: 'Thinking…',
+      phaseText: 'Thinking…',
+      statusText: '',
       entries: [],
       refreshGuestStatus: vi.fn(async () => {}),
     } as never)
     const { unmount } = render(<Composer guest />)
-    // 活动臂与管理员同源：没有活动条目时回退到 statusText 本身
+    // 活动臂与管理员同源：没有活动条目时回退到阶段文案本身
     expect(screen.getByRole('status').textContent).toContain('Thinking…')
     unmount()
 
@@ -636,11 +949,12 @@ describe('Composer 访客只读态', () => {
         awaitingInput: false,
       },
       conn: 'connecting',
-      statusText: '只读 · 历史',
+      phaseText: '只读 · 历史',
+      statusText: '',
       refreshGuestStatus: vi.fn(async () => {}),
     } as never)
     render(<Composer guest />)
-    // 空闲 + connecting → 管理员的空闲臂同样走 statusText
+    // 空闲 + connecting → 管理员的空闲臂同样走阶段文案
     expect(screen.getByRole('status').textContent).toContain('只读 · 历史')
   })
 

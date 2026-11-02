@@ -4,6 +4,8 @@ import { transport } from '../../api/client'
 import { useChatStore } from '../../store/chat'
 import type { AgentRow, PersonaRow } from '../../api/rpc/agents'
 import { pushToast } from '../../store/toast'
+import { Spinner } from '../ui/Spinner'
+import { usePendingAction } from '../../hooks/usePendingAction'
 
 /**
  * /agents and /personas — the TUI agents modal, two tabs.
@@ -216,7 +218,7 @@ function DetailField({ label, children }: { label: string; children: React.React
   )
 }
 
-/** 详情字段来自列表接口，FE 与 host 各自发版：旧 host 没有的数组别炸在这里。 */
+/** 详情字段来自列表接口，payload 可能缺数组，别让渲染炸在这里。 */
 function list(v: string[] | undefined): string[] {
   return Array.isArray(v) ? v : []
 }
@@ -247,6 +249,8 @@ function AgentsPane({
   const [query, setQuery] = useState('')
   const [error, setError] = useState<string>()
   const [selected, setSelected] = useState<AgentRow | null>(null)
+  /** 写入 config.toml 的动作（设默认 / 启停）各自的等待态。 */
+  const { isPending, busy, run } = usePendingAction()
   const load = useCallback(async () => {
     try {
       const res = await transport.agentsList(cwd)
@@ -275,26 +279,28 @@ function AgentsPane({
     onDetailOpenChange(true)
   }
 
-  const setDefault = async (row: AgentRow) => {
-    try {
-      await transport.agentsSetDefault(row.isDefault ? '' : row.name)
-      pushToast(row.isDefault ? '已取消默认，新会话回到 grok-build' : `新会话将使用 ${row.name}`)
-      await load()
-      closeDetail()
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e))
-    }
-  }
-  const toggle = async (row: AgentRow) => {
-    try {
-      await transport.agentsToggle(row.name, !row.enabled)
-      pushToast(`${row.enabled ? '已停用' : '已启用'} ${row.name}，对新会话生效`)
-      await load()
-      closeDetail()
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e))
-    }
-  }
+  const setDefault = (row: AgentRow) =>
+    run('default', async () => {
+      try {
+        await transport.agentsSetDefault(row.isDefault ? '' : row.name)
+        pushToast(row.isDefault ? '已取消默认，新会话回到 grok-build' : `新会话将使用 ${row.name}`)
+        await load()
+        closeDetail()
+      } catch (e) {
+        pushToast(e instanceof Error ? e.message : String(e))
+      }
+    })
+  const toggle = (row: AgentRow) =>
+    run('toggle', async () => {
+      try {
+        await transport.agentsToggle(row.name, !row.enabled)
+        pushToast(`${row.enabled ? '已停用' : '已启用'} ${row.name}，对新会话生效`)
+        await load()
+        closeDetail()
+      } catch (e) {
+        pushToast(e instanceof Error ? e.message : String(e))
+      }
+    })
 
   return (
     <div className="flex flex-col gap-2">
@@ -336,16 +342,20 @@ function AgentsPane({
             <>
               <button
                 type="button"
-                className="text-[12px] text-gn-cyan hover:text-gn-fg"
+                disabled={busy}
+                className="inline-flex items-center gap-1 text-[12px] text-gn-cyan hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40"
                 onClick={() => void setDefault(selected)}
               >
+                {isPending('default') ? <Spinner size={11} /> : null}
                 {selected.isDefault ? '取消默认' : '设为默认'}
               </button>
               <button
                 type="button"
-                className="text-[12px] text-gn-fg2 hover:text-gn-fg"
+                disabled={busy}
+                className="inline-flex items-center gap-1 text-[12px] text-gn-fg2 hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40"
                 onClick={() => void toggle(selected)}
               >
+                {isPending('toggle') ? <Spinner size={11} /> : null}
                 {selected.enabled ? '停用' : '启用'}
               </button>
             </>
@@ -365,7 +375,7 @@ function AgentsPane({
                   : '（无）'
                 : selected.toolsDeclared === false
                   ? '未声明，继承默认工具集'
-                  : // 旧 host 这一行只有名字和描述，缺 toolsDeclared 时不做判断。
+                  : // payload 缺 toolsDeclared 时不做判断。
                     '-'}
           </DetailField>
           {list(selected.disallowedTools).length > 0 ? (
@@ -409,6 +419,8 @@ function PersonasPane({
   const [instructions, setInstructions] = useState('')
   const [scope, setScope] = useState<'user' | 'project'>('user')
   const [confirm, setConfirm] = useState(false)
+  /** 创建 / 删除人格的等待态（同一时刻只跑一个写请求）。 */
+  const { isPending, busy, run } = usePendingAction()
   const load = useCallback(async () => {
     try {
       setRows(await transport.personasList(cwd))
@@ -432,29 +444,33 @@ function PersonasPane({
     onDetailOpenChange(true)
   }
 
-  const create = async () => {
-    try {
-      await transport.personasCreate({ name, description, instructions, scope, cwd })
-      setCreating(false)
-      setName('')
-      setDescription('')
-      setInstructions('')
-      pushToast('已创建人格')
-      await load()
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e))
-    }
-  }
-  const remove = async (row: PersonaRow) => {
-    if (!row.path) return
-    try {
-      await transport.personasDelete(row.path)
-      pushToast(`已删除 ${row.name}`)
-      await load()
-      closeDetail()
-    } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e))
-    }
+  const create = () =>
+    run('create', async () => {
+      try {
+        await transport.personasCreate({ name, description, instructions, scope, cwd })
+        setCreating(false)
+        setName('')
+        setDescription('')
+        setInstructions('')
+        pushToast('已创建人格')
+        await load()
+      } catch (e) {
+        pushToast(e instanceof Error ? e.message : String(e))
+      }
+    })
+  const remove = (row: PersonaRow) => {
+    const path = row.path
+    if (!path) return
+    return run('delete', async () => {
+      try {
+        await transport.personasDelete(path)
+        pushToast(`已删除 ${row.name}`)
+        await load()
+        closeDetail()
+      } catch (e) {
+        pushToast(e instanceof Error ? e.message : String(e))
+      }
+    })
   }
 
   if (creating) {
@@ -491,8 +507,10 @@ function PersonasPane({
         <div className="flex gap-2">
           <button
             type="submit"
-            className="min-h-8 rounded bg-gn-bg-highlight px-3 py-1 text-[12.5px] font-semibold text-gn-fg hover:bg-gn-bg-hover"
+            disabled={busy}
+            className="inline-flex min-h-8 items-center gap-1.5 rounded bg-gn-bg-highlight px-3 py-1 text-[12.5px] font-semibold text-gn-fg hover:bg-gn-bg-hover disabled:cursor-not-allowed disabled:opacity-40"
           >
+            {isPending('create') ? <Spinner /> : null}
             创建
           </button>
           <button type="button" className="min-h-8 rounded px-2.5 py-1 text-[12px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg" onClick={() => setCreating(false)}>
@@ -537,14 +555,17 @@ function PersonasPane({
                   <span className="text-[12px] text-gn-fg2">确认删除？</span>
                   <button
                     type="button"
-                    className="text-[12px] text-gn-red"
+                    disabled={busy}
+                    className="inline-flex items-center gap-1 text-[12px] text-gn-red disabled:cursor-not-allowed disabled:opacity-40"
                     onClick={() => void remove(selected)}
                   >
+                    {isPending('delete') ? <Spinner size={11} /> : null}
                     删除
                   </button>
                   <button
                     type="button"
-                    className="text-[12px] text-gn-fg2 hover:text-gn-fg"
+                    disabled={busy}
+                    className="text-[12px] text-gn-fg2 hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40"
                     onClick={() => setConfirm(false)}
                   >
                     取消

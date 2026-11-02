@@ -42,20 +42,6 @@ export function formatTurnDuration(ms: number): string {
 }
 
 /**
- * TUI context_bar fmt_tokens: "500", "5.2K", "49K", "1.2M".
- * <10K 保留一位小数；≥10K 四舍五入到整 K；≥10M 同理到整 M。
- */
-export function fmtTokens(n: number): string {
-  if (n >= 1_000_000) {
-    return n >= 10_000_000 ? `${Math.round(n / 1_000_000)}M` : `${(n / 1_000_000).toFixed(1)}M`
-  }
-  if (n >= 1_000) {
-    return n >= 10_000 ? `${Math.round(n / 1_000)}K` : `${(n / 1_000).toFixed(1)}K`
-  }
-  return String(n)
-}
-
-/**
  * Map a `plan` event's entry list to todo items + counts (TUI
  * todo_item_from_plan_entry). Cancelled items (completed + meta.cancelled)
  * are excluded from `total`, matching the status-bar badge. Returns
@@ -121,7 +107,6 @@ export function stillRunningCue(
   let commands = 0
   let monitors = 0
   let subagents = 0
-  let workflows = 0
   for (const e of entries) {
     if (e.kind === 'bg_task') {
       if (!e.running) continue
@@ -129,8 +114,6 @@ export function stillRunningCue(
       else commands++
     } else if (e.kind === 'subagent' && e.running) {
       subagents++
-    } else if (e.kind === 'workflow' && e.running) {
-      workflows++
     }
   }
   for (const t of topTasks ?? []) {
@@ -144,7 +127,6 @@ export function stillRunningCue(
   push(commands, 'command')
   push(monitors, 'monitor')
   push(subagents, 'subagent')
-  push(workflows, 'workflow')
   if (parts.length === 0) return null
   return `${parts.join(' · ')} still running`
 }

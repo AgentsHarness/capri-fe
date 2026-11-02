@@ -16,7 +16,6 @@ import type {
   RewindPoint,
   ScheduledTask,
   ScrollEntry,
-  SessionHistoryProjected,
   SessionInfo,
   SubagentStatus,
   SubagentViewState,
@@ -99,7 +98,28 @@ export type LayerErr = {
 /** 连接与 host：连接状态、hub/local 模式、host 注册表、当前会话身份、分层错误。 */
 export interface ChatConnState {
   conn: ConnState
+  /**
+   * 连接 / 回合阶段文案（`就绪`、`Thinking…`、`Waiting for response…`、
+   * `Verifying…` 等）。与 `statusText` 分开是因为两者会互相覆盖：一条
+   * 「已切换到 plan 模式」的操作反馈曾经会被随后的 `Responding…` 冲掉。
+   *
+   * 渲染规则：
+   * - ConnPhaseLine（idle/连接中）优先读它；
+   * - busy 状态的兜底文案（没有 activity 时）也读它；
+   * - 操作反馈只写 `statusText`，并在空闲态覆盖显示。
+   */
+  phaseText: string
+  /**
+   * 操作反馈（命令回执、模式切换确认、MCP 增删、目标操作结果等）。
+   * 空闲态覆盖在 `phaseText` 之上显示；不参与回合阶段的判定。
+   */
   statusText: string
+  /**
+   * 状态行空闲态要显示的那一条：操作反馈优先（它是用户刚做的动作的
+   * 回执），没有回执才显示连接/阶段文案。busy 态不用它——那里由活动
+   * 标签与 `phaseText` 兜底。
+   */
+  idleStatusLine: () => string
   /** 连接模式：local（本机 capri-host，锁定本机，无 host 切换）/ hub（跨源 hub，可切换 host）。 */
   mode: 'local' | 'hub'
   /**
@@ -122,14 +142,14 @@ export interface ChatConnState {
   hosts: HostInfo[]
   /**
    * Hub 当前在线的 FE 订阅数（/ws/fe 连接总数，含本页）。来自 hub hello
-   * 与 hub 级 `subscribers_changed`；旧 hub 不下发时保持 undefined（顶栏
-   * 不显示，而不是显示一个假的 0）。
+   * 与 hub 级 `subscribers_changed`；访客的 hello 不带该字段，保持
+   * undefined（顶栏不显示，而不是显示一个假的 0）。
    */
   feSubscribers?: number
   /**
    * 本页在 hub 订阅者名单里的行号（hello 里回带的 `subscriberId`）。
    * 订阅者面板用它标出「本页」——同一台机器开两个标签页时地址与 UA 完全
-   * 相同，只有行号分得开。老 hub 不发送时保持 undefined。
+   * 相同，只有行号分得开。
    */
   feSubscriberId?: number
   /** Selected host (hub mode): API calls + event filtering target. */
@@ -193,6 +213,15 @@ export interface ChatTimelineState {
    * (Scrollback) scrolls this row to the top of the viewport.
    */
   lastSentPromptId?: string
+  /**
+   * 本回合 POST /api/prompt 拿到 200 的时刻（epoch ms）。
+   *
+   * hub 中继要等 host 的 respond 才回 HTTP 状态，而 host 是「受理即返回」
+   * ——所以这个字段一旦有值，就证明 **host 确实收到并受理了这条消息**。
+   * 它是「消息到底有没有出去」唯一确定的正面证据，状态行据此把
+   * 「已送达，等待响应」和「尚未确认送达」分开显示。回合收口/失败时清空。
+   */
+  promptAcceptedAt?: number
 }
 
 /** 会话列表与历史分页：workspace 摘要、历史时间线分页游标、空状态工作目录。 */
@@ -271,14 +300,6 @@ export interface ChatHistoryState {
   historyJumpProgress?: { current: number; total: number }
   /** historyPromptStarts 中「最老已加载轮次」的下标；每往前加载一轮减 1；0 = 无更早轮次。 */
   historyTurnIdx: number
-  /**
-   * 最新一页的 host 投影回显（契约 [B]）：'lite' = 本页工具正文被裁（条目
-   * 带 liteOmitted，展开时按需补全）；undefined = 本页是全量（开关关闭 /
-   * 旧 host / 无可裁内容）。
-   */
-  historyProjected?: SessionHistoryProjected
-  /** 本页被裁掉的总字节数（projected 生效时带）。 */
-  historyOmittedBytes?: number
   /**
    * 在途的 lite 正文批量补全请求数（TopBar 的 lite 进度图标用）。每个请求
    * 落地时自减，切会话时由 loadHistory 归零。
@@ -541,15 +562,20 @@ export interface ChatAgentExtState {
    */
   runningProbeTaskIds: string[]
   /**
-   * Sessions that finished a turn while the user was elsewhere
-   * (sessionId → completion epoch ms). Drives the sidebar ✓ badge and
-   * the completion notification; cleared when the session is opened.
+   * Sessions that finished a turn (sessionId → completion epoch ms). Written
+   * by the `sessions` busy→idle subscription; drives the sidebar ✓ badge and
+   * the completion notification (the session on screen records but does not
+   * notify, and its row hides the ✓). Cleared when the session is opened.
    */
   completedNotices: Record<string, number>
   /** Mark a session's completion notice as seen (opened/being viewed). */
   clearCompletedNotice: (sessionId: string) => void
-  /** Record a different session's turn completion: ✓ badge + notify. */
-  noteSessionCompleted: (sessionId: string) => void
+  /**
+   * Record a session's turn completion: ✓ badge, and a system notification /
+   * toast for OTHER sessions. Always records the data; the session currently
+   * on screen stays silent (`opts.silent` forces silence for any session).
+   */
+  noteSessionCompleted: (sessionId: string, opts?: { silent?: boolean }) => void
   /**
    * Scheduled tasks (/loop) of the active session — TUI tasks pane
    * "调度任务" section. Fed by scheduled_task_created / fired / deleted
@@ -738,8 +764,8 @@ export interface ChatUiState {
   selectEntry: (id: string | null) => void
   selectDelta: (delta: number) => void
   /**
-   * Manually expanded verb / truncation groups, keyed by the first entry id
-   * of the run (TUI expanded_groups).
+   * Manually expanded verb groups, keyed by the first entry id of the run
+   * (TUI expanded_groups).
    */
   expandedGroups: ReadonlySet<string>
   toggleGroupExpansion: (anchorId: string) => void
@@ -972,6 +998,11 @@ export interface ChatActions {
   dismissXai: (requestId: string) => Promise<void>
   /** 关闭顶栏的 hub/host 层错误提示（用户已确认该消息）。 */
   dismissNotice: () => void
+  /**
+   * 重发上一轮那条「未送达 host」的用户消息（沿用同一 promptId，host 侧
+   * 去重）。无可重发回合时返回 false。
+   */
+  resendUndeliveredPrompt: () => boolean
   /** x.ai/recap — fire-and-forget "where was I" summary. */
   requestRecap: () => Promise<void>
   /**
@@ -1043,14 +1074,27 @@ export interface ChatActions {
   ) => Promise<RunningSubagentRow[]>
   /** Fold an already-fetched registry result into the view (defer path). */
   applyRunningSubagents: (rows: RunningSubagentRow[]) => void
-  /** x.ai/sessions/changed — refresh the history list. retry: 启动窗口容错（agent 预热 boot 超时）重试次数。 */
-  refreshSessions: (retry?: number) => Promise<void>
+  /**
+   * x.ai/sessions/changed — refresh the history list.
+   *
+   * `retry`: 启动窗口容错（agent 预热 boot 超时）重试次数。
+   * `immediate`: 跳过节流窗口（用户显式点刷新时用）。
+   */
+  refreshSessions: (retry?: number, opts?: { immediate?: boolean }) => Promise<void>
   /**
    * 拉取最近会话摘要（workspace-list-recent，limit = workspaceRecentLimit）；
    * 失败降级为全量 workspace-list，再降级为 sessions 按 cwd 分组。
-   * retry 同 refreshSessions。
+   * retry / immediate 同 refreshSessions。
    */
-  refreshWorkspaces: (retry?: number) => Promise<void>
+  refreshWorkspaces: (retry?: number, opts?: { immediate?: boolean }) => Promise<void>
+  /**
+   * 两者一起刷新的统一入口：`refreshSessions` + `refreshWorkspaces`，
+   * `Promise.all` 等两者结束（参数语义与二者相同，各自仍走自己的闸门）。
+   * 只失效单个列表时仍用原 action（如 `workspaceLoadMore` 只刷 workspaces）。
+   */
+  refreshSessionLists: (retry?: number, opts?: { immediate?: boolean }) => Promise<void>
+  /** 切 host：丢弃两个列表闸门的节流历史，让新 host 的首轮刷新立刻发出。 */
+  resetListRefreshGates: () => void
   /**
    * 会话列表分页「加载更多」：limit +50 重拉 workspace-list-recent 并
    * 增量合并（已有行原位更新，新行 append 到对应分组末尾）。
@@ -1141,6 +1185,11 @@ export interface ChatActions {
   refreshRunningTasks: (sessionId: string, cwd: string) => Promise<void>
   /** Start the periodic running-task poll (one per active session). */
   startTopTaskPolling: (sessionId: string, cwd: string) => void
+  /**
+   * 有新活（后台任务 / 子代理）出现时把任务轮询重新点起来。轮询在无可盯
+   * 之活时会自行停止，这里负责恢复，幂等。
+   */
+  ensureTopTaskPolling: () => void
   /** Stop the periodic running-task poll. */
   stopTopTaskPolling: () => void
   /** Hide the detached-process hint until that set changes again. */

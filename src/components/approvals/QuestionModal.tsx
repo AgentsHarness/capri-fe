@@ -4,6 +4,7 @@ import { Check, Circle, CircleDot, Diamond, Timer, X } from 'lucide-react'
 import { useChatStore } from '../../store/chat'
 import type { AskQuestion, PendingReq } from '../../api/types'
 import { Markdown } from '../ui/Markdown'
+import { Spinner } from '../ui/Spinner'
 import {
   ensureToolsetSettings,
   onToolsetSettingsChange,
@@ -176,6 +177,19 @@ export function QuestionModal() {
   // Whether the freeform input owns the keyboard (TUI QuestionFocus::InputMode).
   const [inputActive, setInputActive] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+  /**
+   * 已发出、等 host 回执的出口（`submit` / `discuss` / `skip` / `cancel`）。
+   *
+   * 应答是同步往返：点下去到 200 之前界面没有任何变化，用户会再点一次，
+   * 第二个请求撞上「已过期」，把一次成功变成红色失败。这里同时给按钮
+   * 转圈并锁住所有出口；失败后 store 保留卡片并 toast，清掉后即可重试。
+   */
+  const [submitting, setSubmitting] = useState<string | null>(null)
+  /**
+   * 同一把锁的同步副本：键盘处理器注册在 window 上，effect 依赖不含
+   * submitting，闭包会一直读到初始的 null。拦截必须走 ref。
+   */
+  const submittingRef = useRef(false)
 
   // Toolset config for the countdown ([toolset.ask_user_question] —
   // host-safe subset). ensure = 冷缓存时补一次 GET；refresh = 每条新提问都
@@ -225,6 +239,8 @@ export function QuestionModal() {
     setActiveTab(0)
     setCursor({})
     setInputActive(false)
+    setSubmitting(null)
+    submittingRef.current = false
   }, [req?.requestId])
 
   /** Toggle (multi) / set (single) an option — pure, stable. */
@@ -279,11 +295,45 @@ export function QuestionModal() {
   const submitAccepted = (nextSelected?: Record<number, Set<number>>) => {
     const { answers, annotations } = buildAnswers(nextSelected ?? selected)
     if (Object.keys(answers).length === 0) return
-    void respondXai(req!.requestId, {
+    void submit('submit', {
       outcome: 'accepted',
       answers,
       ...(Object.keys(annotations).length ? { annotations } : {}),
     })
+  }
+
+  /**
+   * 发出一个应答出口并进入等待态。成功时 store 清掉请求、卡片消失；
+   * 失败时 store 保留卡片并 toast，这里必须清掉等待态让用户能重试。
+   */
+  const submit = async (key: string, result: Record<string, unknown>) => {
+    if (submittingRef.current || !req) return
+    submittingRef.current = true
+    setSubmitting(key)
+    try {
+      await respondXai(req.requestId, result)
+    } catch {
+      // store 正常路径不 reject（失败时自己 toast 并保留卡片）；这里兜住
+      // 传输层的意外抛出，别让它变成未处理 rejection。
+    } finally {
+      submittingRef.current = false
+      setSubmitting(null)
+    }
+  }
+
+  /** Escape / 关闭按钮：同样是往返请求，走同一把锁。 */
+  const cancel = async () => {
+    if (submittingRef.current || !req) return
+    submittingRef.current = true
+    setSubmitting('cancel')
+    try {
+      await dismissXai(req.requestId)
+    } catch {
+      // 同上：失败由 store 呈现，这里只负责收锁。
+    } finally {
+      submittingRef.current = false
+      setSubmitting(null)
+    }
   }
 
   /** Plan-mode paths: partial answers keyed by question text (label only). */
@@ -318,7 +368,7 @@ export function QuestionModal() {
           inputRef.current?.blur()
           setInputActive(false)
         } else {
-          void dismissXai(req.requestId)
+          void cancel()
         }
         return
       }
@@ -449,12 +499,13 @@ export function QuestionModal() {
           ) : null}
           <button
             type="button"
-            onClick={() => void dismissXai(req.requestId)}
-            className="rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+            onClick={() => void cancel()}
+            disabled={submitting !== null}
+            className="rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40"
             aria-label="关闭"
             title="关闭 (Esc)"
           >
-            <X size={14} aria-hidden />
+            {submitting === 'cancel' ? <Spinner /> : <X size={14} aria-hidden />}
           </button>
         </div>
       </header>
@@ -592,35 +643,41 @@ export function QuestionModal() {
             <>
               <button
                 type="button"
+                disabled={submitting !== null}
                 onClick={() =>
-                  void respondXai(req.requestId, {
+                  void submit('discuss', {
                     outcome: 'chat_about_this',
                     partial_answers: partialAnswers(),
                   })
                 }
-                className="min-h-8 rounded px-2.5 py-1 text-[12px] text-gn-fg2 transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+                className="inline-flex min-h-8 items-center gap-1.5 rounded px-2.5 py-1 text-[12px] text-gn-fg2 transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40"
               >
+                {submitting === 'discuss' ? <Spinner /> : null}
                 与 Agent 继续讨论
               </button>
               <button
                 type="button"
+                disabled={submitting !== null}
                 onClick={() =>
-                  void respondXai(req.requestId, {
+                  void submit('skip', {
                     outcome: 'skip_interview',
                     partial_answers: partialAnswers(),
                   })
                 }
-                className="min-h-8 rounded px-2.5 py-1 text-[12px] text-gn-fg2 transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+                className="inline-flex min-h-8 items-center gap-1.5 rounded px-2.5 py-1 text-[12px] text-gn-fg2 transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40"
               >
+                {submitting === 'skip' ? <Spinner /> : null}
                 跳过提问，直接规划
               </button>
             </>
           ) : null}
           <button
             type="button"
-            onClick={() => void dismissXai(req.requestId)}
-            className="min-h-8 rounded px-2.5 py-1 text-[12px] text-gn-red transition-colors hover:bg-gn-diff-del-bg"
+            onClick={() => void cancel()}
+            disabled={submitting !== null}
+            className="inline-flex min-h-8 items-center gap-1.5 rounded px-2.5 py-1 text-[12px] text-gn-red transition-colors hover:bg-gn-diff-del-bg disabled:cursor-not-allowed disabled:opacity-40"
           >
+            {submitting === 'cancel' ? <Spinner /> : null}
             取消
           </button>
         </div>
@@ -630,8 +687,10 @@ export function QuestionModal() {
             <button
               type="button"
               onClick={() => submitAccepted()}
-              className="min-h-8 rounded bg-gn-bg-highlight px-4 py-1 text-[12.5px] font-semibold text-gn-fg transition-colors hover:bg-gn-bg-hover"
+              disabled={submitting !== null}
+              className="inline-flex min-h-8 items-center gap-1.5 rounded bg-gn-bg-highlight px-4 py-1 text-[12.5px] font-semibold text-gn-fg transition-colors hover:bg-gn-bg-hover disabled:cursor-not-allowed disabled:opacity-40"
             >
+              {submitting === 'submit' ? <Spinner /> : null}
               提交
             </button>
           ) : (

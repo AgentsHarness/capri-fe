@@ -11,6 +11,7 @@ import {
 } from '../../api/rpc/guestTokens'
 import { pushToast } from '../../store/toast'
 import { CopyButton } from './ShareGuestModal'
+import { Spinner } from '../ui/Spinner'
 
 /**
  * 设置 → 分享：访客令牌管理。
@@ -88,11 +89,16 @@ export function GuestTokensPanel() {
         </button>
         <button
           type="button"
-          onClick={() => void load()}
-          className="inline-flex min-h-7 items-center gap-1 rounded px-2 py-1 text-[11.5px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+          disabled={busy === 'load'}
+          onClick={() => void run('load', load)}
+          className="inline-flex min-h-7 items-center gap-1 rounded px-2 py-1 text-[11.5px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40"
           title="重新读取令牌列表"
         >
-          <RefreshCw size={12} strokeWidth={2.5} aria-hidden />
+          {busy === 'load' ? (
+            <Spinner size={12} />
+          ) : (
+            <RefreshCw size={12} strokeWidth={2.5} aria-hidden />
+          )}
           刷新列表
         </button>
         <span className="ml-auto text-[10.5px] text-gn-gutter">
@@ -123,7 +129,7 @@ export function GuestTokensPanel() {
           </select>
           <button
             type="button"
-            disabled={busy === 'create'}
+            disabled={busy != null}
             onClick={() =>
               void run('create', async () => {
                 const secs = GUEST_EXPIRY_OPTIONS.find((o) => o.id === newExpiry)?.seconds ?? 0
@@ -138,8 +144,9 @@ export function GuestTokensPanel() {
                 pushToast('访客令牌已创建', { type: 'success' })
               })
             }
-            className="inline-flex min-h-7 items-center rounded bg-gn-bg-highlight px-2.5 py-1 text-[11.5px] font-medium text-gn-fg hover:bg-gn-bg-highlight/80 disabled:opacity-50"
+            className="inline-flex min-h-7 items-center gap-1 rounded bg-gn-bg-highlight px-2.5 py-1 text-[11.5px] font-medium text-gn-fg hover:bg-gn-bg-highlight/80 disabled:cursor-not-allowed disabled:opacity-50"
           >
+            {busy === 'create' ? <Spinner size={11} /> : null}
             创建
           </button>
         </div>
@@ -204,20 +211,21 @@ export function GuestTokensPanel() {
                   </button>
                   <button
                     type="button"
-                    disabled={busy === `revoke:${t.id}` || t.revoked}
+                    disabled={busy != null || t.revoked}
                     onClick={() =>
                       void run(`revoke:${t.id}`, async () => {
                         replaceToken(await transport.updateGuestToken({ id: t.id, revoked: true }))
                         pushToast('令牌已吊销', { type: 'success' })
                       })
                     }
-                    className="inline-flex min-h-7 items-center rounded px-2 py-1 text-[11px] text-gn-yellow hover:bg-gn-bg-highlight disabled:opacity-40"
+                    className="inline-flex min-h-7 items-center gap-1 rounded px-2 py-1 text-[11px] text-gn-yellow hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40"
                   >
+                    {busy === `revoke:${t.id}` ? <Spinner size={11} /> : null}
                     吊销
                   </button>
                   <button
                     type="button"
-                    disabled={busy === `delete:${t.id}`}
+                    disabled={busy != null}
                     onClick={() =>
                       void run(`delete:${t.id}`, async () => {
                         await transport.deleteGuestToken(t.id)
@@ -225,10 +233,14 @@ export function GuestTokensPanel() {
                         pushToast('令牌已删除', { type: 'success' })
                       })
                     }
-                    className="inline-flex min-h-7 items-center rounded px-2 py-1 text-[11px] text-gn-red hover:bg-gn-bg-highlight disabled:opacity-40"
+                    className="inline-flex min-h-7 items-center rounded px-2 py-1 text-[11px] text-gn-red hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40"
                     aria-label="删除令牌"
                   >
-                    <Trash2 size={12} strokeWidth={2.5} aria-hidden />
+                    {busy === `delete:${t.id}` ? (
+                      <Spinner size={12} />
+                    ) : (
+                      <Trash2 size={12} strokeWidth={2.5} aria-hidden />
+                    )}
                   </button>
                 </span>
               </div>
@@ -255,7 +267,7 @@ export function GuestTokensPanel() {
                   </select>
                   <button
                     type="button"
-                    disabled={busy === `edit:${t.id}`}
+                    disabled={busy != null}
                     onClick={() =>
                       void run(`edit:${t.id}`, async () => {
                         const secs =
@@ -271,8 +283,9 @@ export function GuestTokensPanel() {
                         pushToast('令牌已更新', { type: 'success' })
                       })
                     }
-                    className="inline-flex min-h-7 items-center rounded bg-gn-bg-highlight px-2.5 py-1 text-[11.5px] font-medium text-gn-fg hover:bg-gn-bg-highlight/80 disabled:opacity-50"
+                    className="inline-flex min-h-7 items-center gap-1 rounded bg-gn-bg-highlight px-2.5 py-1 text-[11.5px] font-medium text-gn-fg hover:bg-gn-bg-highlight/80 disabled:cursor-not-allowed disabled:opacity-50"
                   >
+                    {busy === `edit:${t.id}` ? <Spinner size={11} /> : null}
                     保存
                   </button>
                   <button
@@ -381,17 +394,21 @@ function TokenSessions({
         </button>
         <button
           type="button"
-          disabled={busy === `refresh:${token.id}`}
+          disabled={busy != null}
           onClick={() =>
             void run(`refresh:${token.id}`, async () => {
               onChange(await transport.refreshGuestToken(token.id))
               pushToast('已刷新会话标题', { type: 'success' })
             })
           }
-          className="inline-flex min-h-7 items-center gap-1 rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
+          className="inline-flex min-h-7 items-center gap-1 rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-50"
           title="按 Host 的会话列表回填标题，并标记已不存在的会话"
         >
-          <RefreshCw size={11} strokeWidth={2.5} aria-hidden />
+          {busy === `refresh:${token.id}` ? (
+            <Spinner size={11} />
+          ) : (
+            <RefreshCw size={11} strokeWidth={2.5} aria-hidden />
+          )}
           刷新
         </button>
         <span className="ml-auto font-mono text-[10px] text-gn-gutter">{token.id}</span>
@@ -438,6 +455,7 @@ function TokenSessions({
                   <td className="py-1 text-right">
                     <button
                       type="button"
+                      disabled={busy != null}
                       onClick={() =>
                         void run(`remove:${token.id}:${s.sessionId}`, async () => {
                           onChange(
@@ -447,8 +465,11 @@ function TokenSessions({
                           )
                         })
                       }
-                      className="inline-flex min-h-6 items-center rounded px-1.5 py-0.5 text-[10.5px] text-gn-red hover:bg-gn-bg-highlight"
+                      className="inline-flex min-h-6 items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] text-gn-red hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40"
                     >
+                      {busy === `remove:${token.id}:${s.sessionId}` ? (
+                        <Spinner size={10} />
+                      ) : null}
                       移除
                     </button>
                   </td>
@@ -479,7 +500,7 @@ function TokenSessions({
             </span>
             <button
               type="button"
-              disabled={picked.size === 0 || loadingSessions}
+              disabled={picked.size === 0 || loadingSessions || busy != null}
               onClick={() =>
                 void run(`add:${token.id}`, async () => {
                   const items: GuestSessionItem[] = sessions
@@ -496,8 +517,9 @@ function TokenSessions({
                   setAdding(false)
                 })
               }
-              className="ml-auto inline-flex min-h-7 items-center rounded bg-gn-bg-highlight px-2.5 py-1 text-[11px] font-medium text-gn-fg hover:bg-gn-bg-highlight/80 disabled:opacity-50"
+              className="ml-auto inline-flex min-h-7 items-center gap-1 rounded bg-gn-bg-highlight px-2.5 py-1 text-[11px] font-medium text-gn-fg hover:bg-gn-bg-highlight/80 disabled:cursor-not-allowed disabled:opacity-50"
             >
+              {busy === `add:${token.id}` ? <Spinner size={11} /> : null}
               加入 {picked.size > 0 ? `(${picked.size})` : ''}
             </button>
           </div>

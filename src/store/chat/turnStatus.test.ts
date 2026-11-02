@@ -95,10 +95,10 @@ describe('eventPromptId / promptIdMismatch', () => {
     expect(eventPromptId({})).toBeUndefined()
   })
 
-  it('pid 不匹配 → true；任一缺失 → false', () => {
+  it('pid 不匹配 / 事件缺 pid → true；本端无当前 pid → false', () => {
     expect(promptIdMismatch({ promptId: 'a' }, 'b')).toBe(true)
     expect(promptIdMismatch({ promptId: 'a' }, 'a')).toBe(false)
-    expect(promptIdMismatch({}, 'a')).toBe(false)
+    expect(promptIdMismatch({}, 'a')).toBe(true)
     expect(promptIdMismatch({ promptId: 'a' }, undefined)).toBe(false)
   })
 })

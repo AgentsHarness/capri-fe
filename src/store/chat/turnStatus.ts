@@ -4,7 +4,6 @@ import {
   projectDisplayRows,
   scanGroups,
 } from '../../scrollback/verbGroup'
-import { currentCollapseToolGroups } from '../historyPins'
 import { toolCallDensity } from '../settings'
 import type { ChatState, SetState } from './types'
 import { nid } from './ids'
@@ -16,7 +15,6 @@ export function selectableRowIds(
   expandedGroups: ReadonlySet<string>,
 ): string[] {
   const spans = scanGroups(entries, expandedGroups, {
-    defaultExpanded: !currentCollapseToolGroups(),
     scope: groupScopeForDensity(toolCallDensity()),
   })
   const rows = projectDisplayRows(entries, spans)
@@ -122,7 +120,7 @@ export function adoptLiveTurnStart(
  * - done：顶层 `meta` = prompt-result `_meta`（host 原样透传）
  * - prompt_complete：params 顶层 `promptId`/`prompt_id`，或 `_meta` 内
  * - live turn_completed：顶层 `meta` = params._meta
- * 空 / 缺失 = 旧 shell（lost-response fix 之前），无回合身份信息。
+ * 空 / 缺失 = 没有回合身份信息（v2 host 的终端事件恒带回显）。
  */
 export function eventPromptId(root: unknown): string | undefined {
   const read = (o: unknown): string | undefined => {
@@ -141,18 +139,19 @@ export function eventPromptId(root: unknown): string | undefined {
 
 /**
  * 回合身份校验（TUI finalize_turn_from_terminal / arm_driver_turn_end_reconcile
- * 的 exact-pid 匹配语义）：事件带非空 pid、本端也知道当前回合 pid、
- * 两者不符 → 上一个回合的迟到/错标终端事件，调用方必须忽略（否则会
- * 把刚锚定的新回合立即收口——finalize 的清锚副作用 + "Worked for 0.0s"
- * 假标记）。任一缺失 → 无法判定，放行 legacy 行为。
+ * 的 exact-pid 匹配语义）：本端知道当前回合 pid 时，事件必须带同一个 pid
+ * ——v2 host 在 PromptResponse / SessionNotification 上保证回显客户端 mint
+ * 的 promptId，缺 pid 或 pid 不符都是别的回合的迟到/错标终端事件，调用方
+ * 必须忽略（否则会把刚锚定的新回合立即收口——finalize 的清锚副作用 +
+ * "Worked for 0.0s" 假标记）。本端没有当前 pid（busy 事件锚定、其他客户端
+ * 发起的回合）时没有可比对象，放行。
  */
 export function promptIdMismatch(
   root: unknown,
   currentPid: string | undefined,
 ): boolean {
   if (!currentPid) return false
-  const evPid = eventPromptId(root)
-  return evPid != null && evPid !== '' && evPid !== currentPid
+  return eventPromptId(root) !== currentPid
 }
 
 /**

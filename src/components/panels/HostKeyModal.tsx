@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { KeyRound } from 'lucide-react'
+import { Spinner } from '../ui/Spinner'
 import { transport } from '../../api/client'
 import { useChatStore } from '../../store/chat'
 import { pushToast } from '../../store/toast'
@@ -143,8 +144,9 @@ function HostKeyForm({
             type="button"
             disabled={!value.trim() || busy}
             onClick={() => void submit()}
-            className="flex-1 rounded px-3 py-2 text-[13px] text-gn-cyan hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40"
+            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded px-3 py-2 text-[13px] text-gn-cyan hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40"
           >
+            {busy ? <Spinner size={12} /> : null}
             {busy ? '验证中…' : '直连这台'}
           </button>
         </div>

@@ -5,6 +5,7 @@ import type { PendingReq } from '../../api/types'
 import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS } from '../../theme/layout'
 import { Glyphs } from '../../theme/glyphs'
 import { IconGlyph } from '../ui/IconGlyph'
+import { Spinner } from '../ui/Spinner'
 import {
   contentFromDraft,
   initialDrafts,
@@ -42,9 +43,20 @@ function LiveCard({ req }: { req: PendingReq }) {
   )
   const [draft, setDraft] = useState<ElicitDraft>(() => initialDrafts(fields))
   const [error, setError] = useState<string>()
+  /**
+   * 出口在飞：点下去到 host 回执之前卡片不动，不锁的话第二次点击会撞上
+   * 「已过期」；失败时 respondXai 保留卡片并 toast，这里清掉让用户重试。
+   */
+  const [submitting, setSubmitting] = useState<'accept' | 'decline' | 'cancel' | null>(null)
 
-  const respond = (result: Record<string, unknown>) => {
-    void useChatStore.getState().respondXai(req.requestId, result)
+  const respond = async (key: 'accept' | 'decline' | 'cancel', result: Record<string, unknown>) => {
+    if (submitting !== null) return
+    setSubmitting(key)
+    try {
+      await useChatStore.getState().respondXai(req.requestId, result)
+    } finally {
+      setSubmitting(null)
+    }
   }
 
   const accept = () => {
@@ -58,7 +70,7 @@ function LiveCard({ req }: { req: PendingReq }) {
       const elicitationId = typeof params.elicitationId === 'string' ? params.elicitationId : ''
       window.open(url, '_blank', 'noopener,noreferrer')
       beginUrlWait({ elicitationId, serverName: server, url, message })
-      respond({ outcome: 'accept' })
+      void respond('accept', { outcome: 'accept' })
       return
     }
     const built = contentFromDraft(fields, draft)
@@ -66,7 +78,7 @@ function LiveCard({ req }: { req: PendingReq }) {
       setError(built.error)
       return
     }
-    respond({ outcome: 'accept', content: built.content })
+    void respond('accept', { outcome: 'accept', content: built.content })
   }
 
   return (
@@ -75,8 +87,12 @@ function LiveCard({ req }: { req: PendingReq }) {
       message={message}
       error={error}
       onAccept={accept}
-      onDecline={() => respond({ outcome: 'decline' })}
-      onCancel={() => respond({ outcome: 'cancel' })}
+      acceptBusy={submitting === 'accept'}
+      onDecline={() => void respond('decline', { outcome: 'decline' })}
+      declineBusy={submitting === 'decline'}
+      onCancel={() => void respond('cancel', { outcome: 'cancel' })}
+      cancelBusy={submitting === 'cancel'}
+      locked={submitting !== null}
     >
       {mode === 'url' ? (
         <p className="text-[12px] text-gn-muted">
@@ -210,9 +226,13 @@ function CardFrame({
   children,
   onAccept,
   acceptLabel = '接受',
+  acceptBusy = false,
   onDecline,
+  declineBusy = false,
   onCancel,
+  cancelBusy = false,
   cancelLabel = '取消',
+  locked = false,
 }: {
   title: string
   message: string
@@ -220,9 +240,14 @@ function CardFrame({
   children?: ReactNode
   onAccept: () => void
   acceptLabel?: string
+  acceptBusy?: boolean
   onDecline?: () => void
+  declineBusy?: boolean
   onCancel: () => void
+  cancelBusy?: boolean
   cancelLabel?: string
+  /** 任一出口在飞：其余出口一起禁用，避免第二笔应答撞上「已过期」。 */
+  locked?: boolean
 }) {
   return (
     <div className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} py-1.5`} data-testid="mcp-elicit">
@@ -235,11 +260,12 @@ function CardFrame({
           <button
             type="button"
             onClick={onCancel}
-            className="ml-auto rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+            disabled={locked}
+            className="ml-auto rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40"
             aria-label="关闭卡片"
             title="关闭"
           >
-            <X size={14} aria-hidden />
+            {cancelBusy ? <Spinner /> : <X size={14} aria-hidden />}
           </button>
         </header>
         <div className="bg-gn-bg-base p-3.5">
@@ -254,25 +280,31 @@ function CardFrame({
         <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-gn-prompt-border/70 bg-gn-bg-dark/60 px-3.5 py-2">
           <button
             type="button"
-            className="min-h-8 rounded px-2.5 py-1 text-[12px] text-gn-red transition-colors hover:bg-gn-diff-del-bg"
+            disabled={locked}
+            className="inline-flex min-h-8 items-center gap-1.5 rounded px-2.5 py-1 text-[12px] text-gn-red transition-colors hover:bg-gn-diff-del-bg disabled:cursor-not-allowed disabled:opacity-40"
             onClick={onCancel}
           >
+            {cancelBusy ? <Spinner /> : null}
             {cancelLabel}
           </button>
           {onDecline ? (
             <button
               type="button"
-              className="min-h-8 rounded px-2.5 py-1 text-[12px] text-gn-fg2 transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+              disabled={locked}
+              className="inline-flex min-h-8 items-center gap-1.5 rounded px-2.5 py-1 text-[12px] text-gn-fg2 transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40"
               onClick={onDecline}
             >
+              {declineBusy ? <Spinner /> : null}
               拒绝
             </button>
           ) : null}
           <button
             type="button"
-            className="min-h-8 rounded bg-gn-bg-highlight px-4 py-1 text-[12.5px] font-semibold text-gn-fg transition-colors hover:bg-gn-bg-hover"
+            disabled={locked}
+            className="inline-flex min-h-8 items-center gap-1.5 rounded bg-gn-bg-highlight px-4 py-1 text-[12.5px] font-semibold text-gn-fg transition-colors hover:bg-gn-bg-hover disabled:cursor-not-allowed disabled:opacity-40"
             onClick={onAccept}
           >
+            {acceptBusy ? <Spinner /> : null}
             {acceptLabel}
           </button>
         </footer>

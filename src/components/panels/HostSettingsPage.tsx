@@ -12,6 +12,7 @@ import {
   Shield,
   Unlink,
 } from 'lucide-react'
+import { Spinner } from '../ui/Spinner'
 import { transport } from '../../api/client'
 import { pushToast } from '../../store/toast'
 
@@ -26,6 +27,9 @@ interface HostConfig {
   grok_bin?: string
   proxy?: string
   no_proxy?: string
+  /** 代理的两个用途开关：本机 grok agent 与 Hub 中继。缺省为开启。 */
+  agent_proxy?: boolean
+  hub_proxy?: boolean
   start_host_on_launch?: boolean
   start_at_login?: boolean
   keep_awake?: boolean
@@ -53,6 +57,8 @@ export function saveNeedsRestart(before: HostConfig, after: HostConfig): boolean
     (before.fe_token ?? '') !== (after.fe_token ?? '') ||
     (before.proxy ?? '') !== (after.proxy ?? '') ||
     (before.no_proxy ?? '') !== (after.no_proxy ?? '') ||
+    (before.agent_proxy ?? true) !== (after.agent_proxy ?? true) ||
+    (before.hub_proxy ?? true) !== (after.hub_proxy ?? true) ||
     (before.grok_bin ?? '') !== (after.grok_bin ?? '')
   )
 }
@@ -68,6 +74,8 @@ export function configFingerprint(c: HostConfig): string {
     c.grok_bin ?? '',
     c.proxy ?? '',
     c.no_proxy ?? '',
+    c.agent_proxy ?? true,
+    c.hub_proxy ?? true,
     c.start_host_on_launch ?? true,
     c.start_at_login ?? false,
     c.keep_awake ?? false,
@@ -467,9 +475,9 @@ export function HostSettingsPage() {
                     type="button"
                     disabled={actionBusy}
                     onClick={() => void handleDisconnect()}
-                    className="flex items-center gap-1 rounded border border-gn-red/40 bg-gn-red/10 px-3 py-1.5 text-[12px] text-gn-red hover:bg-gn-red/20 disabled:opacity-50"
+                    className="flex items-center gap-1 rounded border border-gn-red/40 bg-gn-red/10 px-3 py-1.5 text-[12px] text-gn-red hover:bg-gn-red/20 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    <Unlink size={13} />
+                    {actionBusy ? <Spinner size={13} /> : <Unlink size={13} />}
                     <span>断开 Hub</span>
                   </button>
                 )}
@@ -492,8 +500,9 @@ export function HostSettingsPage() {
                       type="button"
                       disabled={actionBusy}
                       onClick={() => void handleReuse()}
-                      className="rounded bg-gn-green/20 px-3 py-1 text-[12px] font-medium text-gn-green hover:bg-gn-green/30 disabled:opacity-50"
+                      className="inline-flex items-center gap-1.5 rounded bg-gn-green/20 px-3 py-1 text-[12px] font-medium text-gn-green hover:bg-gn-green/30 disabled:cursor-not-allowed disabled:opacity-50"
                     >
+                      {actionBusy ? <Spinner size={11} /> : null}
                       立即连上 (直接复用凭证)
                     </button>
                   )}
@@ -522,8 +531,9 @@ export function HostSettingsPage() {
                     type="button"
                     disabled={actionBusy || !pairCode.trim()}
                     onClick={() => void handlePair()}
-                    className="flex items-center gap-1.5 rounded bg-gn-cyan px-4 py-1.5 text-[13px] font-medium text-gn-bg-dark hover:opacity-90 disabled:opacity-50"
+                    className="flex items-center gap-1.5 rounded bg-gn-cyan px-4 py-1.5 text-[13px] font-medium text-gn-bg-dark hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                   >
+                    {actionBusy ? <Spinner size={12} /> : null}
                     <span>立即配对</span>
                   </button>
                   {rePairExpanded && (
@@ -577,8 +587,38 @@ export function HostSettingsPage() {
               />
             </div>
           </div>
+          <div className="space-y-3.5 pt-1">
+            <label className="flex items-center justify-between cursor-pointer">
+              <div className="space-y-0.5">
+                <span className="text-[13px] text-gn-fg">Agent 代理</span>
+                <p className="text-[11px] text-gn-muted">
+                  本机拉起的 Grok Agent 走上面的代理。关闭后 Agent 直连。
+                </p>
+              </div>
+              <input
+                type="checkbox"
+                checked={config.agent_proxy ?? true}
+                onChange={(e) => setConfig({ ...config, agent_proxy: e.target.checked })}
+                className="h-4 w-4 rounded accent-gn-cyan cursor-pointer"
+              />
+            </label>
+            <label className="flex items-center justify-between cursor-pointer">
+              <div className="space-y-0.5">
+                <span className="text-[13px] text-gn-fg">Hub 代理</span>
+                <p className="text-[11px] text-gn-muted">
+                  与 Hub 的中继连接走上面的代理。关闭后 Host 直连 Hub。
+                </p>
+              </div>
+              <input
+                type="checkbox"
+                checked={config.hub_proxy ?? true}
+                onChange={(e) => setConfig({ ...config, hub_proxy: e.target.checked })}
+                className="h-4 w-4 rounded accent-gn-cyan cursor-pointer"
+              />
+            </label>
+          </div>
           <p className="text-[11px] text-gn-muted leading-relaxed">
-            设置后 Hub 中继与本机拉起的 Grok Agent 均会遵循此代理出网。留空时系统未开代理则直连。
+            地址留空时使用系统网络设置里的代理；系统未开代理则直连。两个开关相互独立。
           </p>
         </section>
 
@@ -645,7 +685,7 @@ export function HostSettingsPage() {
             onClick={() => void handleSave()}
             className="flex shrink-0 items-center gap-1.5 rounded bg-gn-bg-highlight px-3 py-1.5 text-[13px] font-medium text-gn-fg transition hover:bg-gn-bg-hover disabled:opacity-50"
           >
-            <Save size={14} />
+            {saving ? <Spinner size={14} /> : <Save size={14} />}
             <span>{saving ? '保存中…' : '保存'}</span>
           </button>
         </div>

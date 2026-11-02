@@ -53,13 +53,9 @@ export const SILENT_EXT_NOTIFICATIONS = new Set([
   // attributed at all: phases before the id is minted carry an explicit
   // null sessionId.
   'x.ai/session/setup',
-  // NOTE: x.ai/mcp/init_progress is intentionally NOT here — it is
-  // consumed into mcpInit state (McpPanel init progress), both as the
-  // typed `mcp_init_progress` event and via the ext_notification
-  // fallback in handleEvent.
-  // NOTE: x.ai/queue/changed is intentionally NOT here — it feeds the
-  // promptQueue sync layer (applyQueueChanged), both as the typed
-  // `queue_changed` event and via the ext_notification fallback.
+  // NOTE: x.ai/mcp/init_progress and x.ai/queue/changed are intentionally
+  // NOT here — v2 host delivers them as typed `mcp_init_progress` /
+  // `queue_changed` events, consumed by their dedicated handlers.
 ])
 
 /** TUI MAX_FOLLOW_UPS — max chips kept from one (server-controlled) delivery. */

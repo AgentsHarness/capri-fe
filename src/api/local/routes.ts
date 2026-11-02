@@ -1,7 +1,6 @@
 import type { TransportCtx } from './ctx'
 import type { LocalProbe, LocalRoute } from './types'
 import {
-  DEFAULT_LOCAL_PORT,
   LOCAL_PROBE_RETRY_MS,
   LOCAL_PROBE_TIMEOUT_MS,
   probeAllowsDirect,
@@ -273,8 +272,8 @@ export const routesMixin = {
         return
       }
       const port = this.knownPorts.get(hostId)
-      // hub 没报这台 host 的端口（旧版本 host 不上报）：无从定点探测，
-      // 已验证的身份继续用（那是它自己在 /api/hosts 里报的）。
+      // No registered port for this host: nothing to dial by address. A
+      // verified identity stays usable — it was reported by the responder.
       if (!port) {
         if (cur) await this.probeLocalRoute(hostId)
         return
@@ -478,16 +477,6 @@ export const routesMixin = {
     for (const port of new Set(registry.values())) {
       if (port > 0 && !covered.has(port) && !this.probeSkipped(port)) ports.push(port)
     }
-    // 整份注册表都没下发端口（旧 hub/host）：仍试默认端口一次，身份以应答者为准。
-    if (
-      ports.length === 0 &&
-      this.localRoutes.size === 0 &&
-      registry.size > 0 &&
-      !this.probeSkipped(DEFAULT_LOCAL_PORT)
-    ) {
-      ports.push(DEFAULT_LOCAL_PORT)
-    }
-
     let bound = 0
     for (const port of ports) {
       const hit = await this.probeLocalPort(port)

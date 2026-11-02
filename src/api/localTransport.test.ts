@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
 import { LocalTransport } from './localTransport'
+import { reconnectDelayMs } from './local/live'
 import { loadGuestToken } from './credentials'
 import { clearHostRegistryHandoff, rememberHostRegistry } from './rpc/hosts'
 
@@ -141,37 +142,22 @@ describe('detectMode 认模式', () => {
   })
 
   /**
-   * 降级路径：旧版本 host 的 /api/hosts 不带 mode，只能去问 status。
-   * 串行仍然必要（先 hosts 才知道这是台 host），且手里有密钥就带上。
+   * 不带 mode 的 200 应答是 hub 的注册表：没有 mode 就不再去问 status。
    */
-  it('旧 host（无 mode）：回退问一次 /api/status，并带上已有密钥', async () => {
+  it('无 mode 的注册表应答直接判 hub，不再问 status', async () => {
     const t = new LocalTransport('', 'secret-token')
-    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      if (String(url).includes('/api/status')) {
-        const h = new Headers(init?.headers)
-        expect(h.get('Authorization')).toBe('Bearer secret-token')
-        return new Response(
-          JSON.stringify({ mode: 'hub', hubUrl: 'https://hub.example', hostId: 'mba' }),
-          { status: 200 },
-        )
-      }
-      return new Response(
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
+      new Response(
         JSON.stringify({
           hosts: [{ hostId: 'mba', local: true }],
           authRequired: true,
         }),
         { status: 200 },
-      )
-    })
+      ),
+    )
     vi.stubGlobal('fetch', fetchMock)
-    const r = await t.detectMode()
-    expect(r).toEqual({
-      mode: 'hub',
-      hubUrl: 'https://hub.example',
-      localHostId: 'mba',
-      authRequired: true,
-    })
-    expect(fetchMock.mock.calls.map((c) => String(c[0]))).toEqual(['/api/hosts', '/api/status'])
+    expect(await t.detectMode()).toEqual({ mode: 'hub', hubUrl: '' })
+    expect(fetchMock.mock.calls.map((c) => String(c[0]))).toEqual(['/api/hosts'])
   })
 
   /**
@@ -239,21 +225,24 @@ describe('getPrefs (same-origin)', () => {
     expect(version).toBe(7)
   })
 
-  it('putPrefs 带 baseVersion 时写入请求体（条件写）', async () => {
+  it('putPrefs 只发文档本体（hub 按条目合并，无条件写）', async () => {
     const t = makeTransport()
     t.setConnectionMode('hub', 'https://hub.example')
     const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
-      new Response(JSON.stringify({ ok: true, version: 8 }), { status: 200 }),
+      new Response(
+        JSON.stringify({ ok: true, version: 8, prefs: { pinnedWorkspaces: [] } }),
+        { status: 200 },
+      ),
     )
     vi.stubGlobal('fetch', fetchMock)
     try {
-      const res = await t.putPrefs({ pinnedWorkspaces: [] }, 7)
+      const res = await t.putPrefs({ pinnedWorkspaces: [] })
       expect(res.version).toBe(8)
       const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as {
         prefs?: unknown
         baseVersion?: number
       }
-      expect(body.baseVersion).toBe(7)
+      expect(body.baseVersion).toBeUndefined()
       expect(body.prefs).toEqual({ pinnedWorkspaces: [] })
     } finally {
       vi.unstubAllGlobals()
@@ -641,13 +630,13 @@ describe('discoverLocalHost', () => {
     expect(t.getLocalHostId()).toBe('mba')
   })
 
-  it('hub 未下发端口时回退默认端口，身份仍以应答者为准', async () => {
+  it('hub 未下发端口时不探默认端口', async () => {
     const t = makeTransport()
     t.setConnectionMode('hub', 'https://hub.example')
     const probed = stubLocalPorts({ 8765: hostBody('old-host') })
     const id = await t.discoverLocalHost([{ hostId: 'old-host', online: true }])
-    expect(probed).toEqual([8765])
-    expect(id).toBe('old-host')
+    expect(probed).toEqual([])
+    expect(id).toBeNull()
   })
 
   it('host 换了端口：作废旧近路并重探新端口', async () => {
@@ -1389,15 +1378,19 @@ describe('订阅者面板的会话上报（viewing 帧）', () => {
     const frames = () =>
       ws.sent.map((s) => JSON.parse(s) as Record<string, unknown>)
 
-    // 连接刚开、还没锚会话：不发空帧（hub 的行本来就是空的）。
-    expect(frames().filter((f) => f.type === 'viewing')).toHaveLength(0)
+    // 连接刚开、还没锚会话：必须发一帧空 viewing。它同时是「本页支持
+    // viewing 协议」的声明——hub 据此把这页计入可裁剪的听众；不发只会
+    // 让 hub 当成旧 FE，对该 host 全量放行（上行裁剪直接失效）。
+    expect(frames().filter((f) => f.type === 'viewing')).toEqual([
+      { v: 1, type: 'viewing', host: 'A', session: '' },
+    ])
 
     t.reportViewingSession('s1')
     expect(frames()).toContainEqual({ v: 1, type: 'viewing', host: 'A', session: 's1' })
 
     // 重复上报同一会话是 no-op（store 的 sessionId 订阅会重复触发）。
     t.reportViewingSession('s1')
-    expect(frames().filter((f) => f.type === 'viewing')).toHaveLength(1)
+    expect(frames().filter((f) => f.type === 'viewing')).toHaveLength(2)
 
     // 切 host：同一帧里带新 host，旧会话名必须清掉（否则面板会把它
     // 显示成新 host 上的同名会话）。
@@ -1443,4 +1436,37 @@ describe('订阅者面板的会话上报（viewing 帧）', () => {
     expect(sent.filter((f) => f.type === 'viewing')).toEqual([])
   })
 })
+})
+
+/** hub WS 重连等待：指数退避（上限 30s）+ ±20% 抖动。抖动只为把同时掉线
+ * 的多个标签页/客户端摊开，不能让等待超出 base 的 ±20% 或跌破 0。 */
+describe('reconnectDelayMs（指数退避 + 抖动）', () => {
+  const base = (attempt: number) => Math.min(30_000, 1000 * 2 ** Math.min(attempt, 5))
+
+  it('指数退避：base 为 1s 起、2 的 min(attempt,5) 次方、上限 30s', () => {
+    expect(base(0)).toBe(1000)
+    expect(base(3)).toBe(8000)
+    expect(base(5)).toBe(30_000)
+    expect(base(9)).toBe(30_000)
+  })
+
+  it('同一 attempt 多次调用结果不完全相同，且都落在 base 的 0.8~1.2 倍', () => {
+    for (const attempt of [0, 1, 3, 5, 9]) {
+      const lo = base(attempt) * 0.8
+      const hi = base(attempt) * 1.2
+      const samples = Array.from({ length: 40 }, () => reconnectDelayMs(attempt))
+      for (const d of samples) {
+        expect(Number.isInteger(d)).toBe(true)
+        expect(d).toBeGreaterThanOrEqual(Math.round(lo))
+        expect(d).toBeLessThanOrEqual(Math.round(hi))
+      }
+      // 40 次都落回同一个毫秒值意味着抖动没生效（随机源被固定/被删掉）。
+      expect(new Set(samples).size).toBeGreaterThan(1)
+    }
+  })
+
+  it('上限仍是 30s：抖动之后也不超过 36s', () => {
+    const samples = Array.from({ length: 200 }, () => reconnectDelayMs(30))
+    expect(Math.max(...samples)).toBeLessThanOrEqual(36_000)
+  })
 })

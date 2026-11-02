@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, ChevronLeft, Copy, Diamond, FileText, RefreshCw, Search, Trash2, X } from 'lucide-react'
 import { transport } from '../../api/client'
 import { Markdown } from '../ui/Markdown'
+import { Spinner } from '../ui/Spinner'
 import { useChatStore } from '../../store/chat'
 import type { MemoryFileInfo } from '../../lib/memory'
 import {
@@ -169,15 +170,43 @@ export function MemoryModal() {
     listing && (listing.enabled || canEnableMemory(listing.disabledReason)),
   )
 
+  /** 记忆开关与删除各自的等待态（都是写请求）。state 只用于渲染，防重入走 ref。 */
+  const [toggling, setToggling] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const togglingRef = useRef(false)
+  const deletingRef = useRef(false)
+
+  const toggleMemory = useCallback(
+    async (on: boolean) => {
+      if (togglingRef.current) return
+      togglingRef.current = true
+      setToggling(true)
+      try {
+        await memoryToggle(on)
+      } finally {
+        togglingRef.current = false
+        setToggling(false)
+      }
+    },
+    [memoryToggle],
+  )
+
   const requestDelete = useCallback(async () => {
-    if (!selectedFile || !preview?.hash) return
+    if (!selectedFile || !preview?.hash || deletingRef.current) return
     setConfirming(undefined)
-    const res = await forgetMemoryNote(selectedFile.path, preview.hash)
-    // A successful delete drops the row; a refusal keeps it with the store's
-    // own explanation on the notice line.
-    if (res.ok) {
-      setPreview(undefined)
-      setSelected(undefined)
+    deletingRef.current = true
+    setDeleting(true)
+    try {
+      const res = await forgetMemoryNote(selectedFile.path, preview.hash)
+      // A successful delete drops the row; a refusal keeps it with the store's
+      // own explanation on the notice line.
+      if (res.ok) {
+        setPreview(undefined)
+        setSelected(undefined)
+      }
+    } finally {
+      deletingRef.current = false
+      setDeleting(false)
     }
   }, [selectedFile, preview?.hash, forgetMemoryNote])
 
@@ -216,7 +245,7 @@ export function MemoryModal() {
       }
       if (e.key === 't' && canToggle) {
         e.preventDefault()
-        void memoryToggle(!listing?.enabled)
+        void toggleMemory(!listing?.enabled)
         return
       }
       if (e.key === 'x' && deletable) {
@@ -247,7 +276,7 @@ export function MemoryModal() {
     activePath,
     canToggle,
     listing?.enabled,
-    memoryToggle,
+    toggleMemory,
     deletable,
     selectedFile,
   ])
@@ -297,11 +326,12 @@ export function MemoryModal() {
           {listing ? (
             <button
               type="button"
-              onClick={() => void memoryToggle(!listing.enabled)}
-              disabled={!canToggle}
+              onClick={() => void toggleMemory(!listing.enabled)}
+              disabled={!canToggle || toggling}
               title={listing.enabled ? '关闭本会话的记忆 (t)' : '开启本会话的记忆 (t)'}
-              className="ml-1 rounded border border-gn-prompt-border px-2 py-0.5 text-[10.5px] text-gn-fg2 transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40"
+              className="ml-1 inline-flex items-center gap-1 rounded border border-gn-prompt-border px-2 py-0.5 text-[10.5px] text-gn-fg2 transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40"
             >
+              {toggling ? <Spinner size={10} /> : null}
               {listing.enabled ? '关闭记忆' : '开启记忆'}
             </button>
           ) : null}
@@ -315,7 +345,11 @@ export function MemoryModal() {
             aria-label="刷新记忆列表"
             title="刷新列表"
           >
-            <RefreshCw size={13} aria-hidden />
+            {status === 'loading' ? (
+              <Spinner size={13} />
+            ) : (
+              <RefreshCw size={13} aria-hidden />
+            )}
           </button>
           <button
             type="button"
@@ -467,6 +501,7 @@ export function MemoryModal() {
                   onAskDelete={() => setConfirming(selectedFile?.path)}
                   onCancelDelete={() => setConfirming(undefined)}
                   onConfirmDelete={() => void requestDelete()}
+                  deleting={deleting}
                 />
               </div>
             </div>
@@ -571,6 +606,7 @@ function MemoryPreview({
   onAskDelete,
   onCancelDelete,
   onConfirmDelete,
+  deleting = false,
 }: {
   file?: MemoryFileInfo
   preview?: Preview
@@ -582,6 +618,8 @@ function MemoryPreview({
   onAskDelete: () => void
   onCancelDelete: () => void
   onConfirmDelete: () => void
+  /** 删除请求在飞：确认按钮转圈并锁住。 */
+  deleting?: boolean
 }) {
   const contentRef = useRef<HTMLDivElement>(null)
 
@@ -653,8 +691,10 @@ function MemoryPreview({
             <button
               type="button"
               onClick={onConfirmDelete}
-              className="rounded bg-gn-diff-del-bg px-2 py-0.5 text-[10.5px] font-medium text-gn-red hover:opacity-90 transition-opacity"
+              disabled={deleting}
+              className="inline-flex items-center gap-1 rounded bg-gn-diff-del-bg px-2 py-0.5 text-[10.5px] font-medium text-gn-red hover:opacity-90 transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
             >
+              {deleting ? <Spinner size={10} /> : null}
               确认删除
             </button>
             <button

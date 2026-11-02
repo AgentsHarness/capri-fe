@@ -5,19 +5,18 @@ import {
   collapseUserText,
 } from '../../scrollback/userText'
 import { Glyphs } from '../../theme/glyphs'
+import { ICON_COL_INSET_PX } from '../../theme/layout'
 import { Bullet } from './EntryShell'
 import { UserSteerTime } from './PromptTime'
 
 export function StickyPrompt({
   pinnedUser,
-  pinnedStore,
   wsBarH,
   stickyBandElRef,
   lastPushYRef,
   onJump,
 }: {
   pinnedUser: ScrollEntry | null
-  pinnedStore: boolean
   wsBarH: number
   stickyBandElRef: { current: HTMLDivElement | null }
   lastPushYRef: { current: number }
@@ -49,7 +48,10 @@ export function StickyPrompt({
               ev.stopPropagation()
               onJump(pinnedUser.id)
             }}
-            className="group relative flex w-full min-w-0 cursor-pointer items-start gap-1.5 px-2.5 py-[11px] text-left transition-colors hover:brightness-110"
+            className="group relative flex w-full min-w-0 cursor-pointer items-start gap-1.5 py-[11px] pr-2.5 text-left transition-colors hover:brightness-110"
+            /* 左内边距对齐行内用户消息的图标列（EntryShell 的 accent 条 +
+               间距，共 15px），让 ❯ 与文字落在同一条竖线上。 */
+            style={{ paddingLeft: ICON_COL_INSET_PX }}
             title="点击跳转到此消息开头"
           >
             <Bullet
@@ -65,8 +67,6 @@ export function StickyPrompt({
               }
             />
             <div className="min-w-0 flex-1 whitespace-pre-wrap break-words">
-              {/* store 回退：提示这条 prompt 在可见列表上方。 */}
-              {pinnedStore ? `${Glyphs.ellipsis} ` : ''}
               {collapseUserText(pinnedUser.text, USER_COLLAPSED_MAX_LINES).text}
             </div>
             <UserSteerTime

@@ -194,16 +194,16 @@ describe('handleTaskCompleted', () => {
       ...s0,
       conn: 'busy',
       awaitingNext: false,
-      statusText: TASK_KILL_STATUS_TEXT,
+      phaseText: TASK_KILL_STATUS_TEXT,
     }))
     const set = vi.fn()
     handleTaskCompleted(get as never, set as never, {
       task_snapshot: { task_id: 't1', explicitly_killed: true, signal: 'killed' },
     })
-    const statuses = set.mock.calls
-      .map((c) => (c[0] as { statusText?: string }).statusText)
+    const phases = set.mock.calls
+      .map((c) => (c[0] as { phaseText?: string }).phaseText)
       .filter((v): v is string => v !== undefined)
-    expect(statuses).toEqual(['Waiting for response…'])
+    expect(phases).toEqual(['Waiting for response…'])
   })
 
   it('空闲会话 kill 结算后回到空闲文案', () => {
@@ -215,28 +215,35 @@ describe('handleTaskCompleted', () => {
         ...s0,
         conn: 'ready',
         awaitingNext,
-        statusText: TASK_KILL_STATUS_TEXT,
+        phaseText: TASK_KILL_STATUS_TEXT,
       }))
       const set = vi.fn()
       handleTaskCompleted(get as never, set as never, {
         task_snapshot: { task_id: 't1', explicitly_killed: true },
       })
-      const statuses = set.mock.calls
-        .map((c) => (c[0] as { statusText?: string }).statusText)
+      const phases = set.mock.calls
+        .map((c) => (c[0] as { phaseText?: string }).phaseText)
         .filter((v): v is string => v !== undefined)
-      expect(statuses).toEqual([want])
+      expect(phases).toEqual([want])
     }
   })
 
   it('无关完成（非 kill）不动其它瞬态状态文案', () => {
-    const get = vi.fn(() => ({ ...s0, conn: 'busy', statusText: 'Compacting…' }))
+    const get = vi.fn(() => ({
+      ...s0,
+      conn: 'busy',
+      phaseText: 'Compacting…',
+      statusText: 'Compacting…',
+    }))
     const set = vi.fn()
     handleTaskCompleted(get as never, set as never, {
       task_snapshot: { task_id: 't1', exit_code: 0 },
     })
     expect(
       set.mock.calls.every(
-        (c) => !('statusText' in ((c[0] ?? {}) as Record<string, unknown>)),
+        (c) =>
+          !('statusText' in ((c[0] ?? {}) as Record<string, unknown>)) &&
+          !('phaseText' in ((c[0] ?? {}) as Record<string, unknown>)),
       ),
     ).toBe(true)
   })

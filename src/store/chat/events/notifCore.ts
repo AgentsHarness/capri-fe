@@ -4,7 +4,7 @@ import {
   applyModeFlags,
   sessionModesPatch,
 } from '../modeFlags'
-import { fmtTokens } from '../format'
+import { fmtTok } from '../../../format'
 import {
   sealThought,
 } from '../stream'
@@ -28,6 +28,9 @@ export function handleNotifCore(
           case 'subagent_spawned':
           case 'subagent_finished':
             handleSubagentEvent(get, set, tag, fields)
+            // 收口归轮询（finish 事件可能丢）；新行出现时确保它在跑。
+            // 可选调用：事件分发在部分测试里跑在精简 store 上。
+            if (tag === 'subagent_spawned') get().ensureTopTaskPolling?.()
             break
           // Permission/plan mode arrives via the standalone yolo_mode_changed
           // SSE event OR the session_notification tag (the x.ai carrier
@@ -49,10 +52,13 @@ export function handleNotifCore(
           }
           case 'task_backgrounded':
             handleTaskBackgrounded(get, set, fields)
+            // 后台任务行出现 → 让轮询跑起来，否则它的终态没有收口来源。
+            get().ensureTopTaskPolling?.()
             break
           case 'background_tasks':
             // 多会话归属已由分发层统一处理（events/sessionNotif.ts）。
             handleBackgroundTasks(get, set, fields)
+            get().ensureTopTaskPolling?.()
             break
           case 'task_completed':
             handleTaskCompleted(get, set, fields)
@@ -96,16 +102,16 @@ export function handleNotifCore(
             // First token hasn't arrived yet: wait window (TUI
             // Waiting(Model) until stream_start).
             const sealed = sealThought(get())
-            set({ ...sealed, statusText: 'Waiting for response…' })
+            set({ ...sealed, phaseText: 'Waiting for response…' })
             break
           }
           case 'reasoning_completed':
-            set({ statusText: 'Waiting for response…' })
+            set({ phaseText: 'Waiting for response…' })
             break
           case 'auto_compact_started': {
             const pct = fields.percentage as number | undefined
             // TUI turn_status.rs: AutoCompacting → "Compacting…".
-            set({ statusText: 'Compacting…' })
+            set({ phaseText: 'Compacting…' })
             appendEntry(set, {
               kind: 'session_event',
               text: `自动压缩上下文… (${pct ?? '?'}%)`,
@@ -124,9 +130,9 @@ export function handleNotifCore(
             if (typeof after === 'number' && after > 0) {
               const beforePart =
                 typeof before === 'number' && before > 0
-                  ? `${fmtTokens(before)} → `
+                  ? `${fmtTok(before)} → `
                   : ''
-              text = `自动压缩完成: ${beforePart}${fmtTokens(after)} tokens`
+              text = `自动压缩完成: ${beforePart}${fmtTok(after)} tokens`
               if (typeof elapsedMs === 'number' && elapsedMs >= 0) {
                 text += ` (${(elapsedMs / 1000).toFixed(1)}s)`
               }
@@ -134,7 +140,7 @@ export function handleNotifCore(
             appendEntry(set, { kind: 'session_event', text })
             // Compact finished → back to the wait-for-token window (the
             // turn resumes streaming after compaction).
-            set({ statusText: 'Waiting for response…' })
+            set({ phaseText: 'Waiting for response…' })
             break
           }
           case 'auto_compact_failed': {
@@ -143,12 +149,12 @@ export function handleNotifCore(
               text: `自动压缩失败: ${String(fields.error ?? '未知错误')}`,
               warning: true,
             })
-            set({ statusText: 'Waiting for response…' })
+            set({ phaseText: 'Waiting for response…' })
             break
           }
           case 'auto_compact_cancelled':
             appendEntry(set, { kind: 'session_event', text: '自动压缩已取消' })
-            set({ statusText: 'Waiting for response…' })
+            set({ phaseText: 'Waiting for response…' })
             break
           case 'auto_continue_completed': {
             const tokens = fields.total_tokens as number | undefined

@@ -711,7 +711,11 @@ function envelopeToEventsRaw(e: RawEnvelope): AcpEvent[] {
   }
   const up = e.params?.update
   if (!up) return []
-  const ts = envelopeTimestamp(e)
+  // 行时间戳统一用 agent 的毫秒时间：写盘 timestamp 是秒级取整，同一条
+  // prompt 在 live（Date.now / agentTimestampMs）与刷新后回放会差到 1 秒。
+  // _meta.agentTimestampMs 与 live 的 agentTimestampMs 是同一个时钟，
+  // 缺失（旧日志）时才回退写盘戳。
+  const ts = envelopeAgentTimestampMs(e) ?? envelopeTimestamp(e)
   const meta = envelopeMeta(e)
   if (e.method === '_x.ai/session/update') {
     if (up.sessionUpdate === 'turn_completed' || up.sessionUpdate === 'response_completed') {

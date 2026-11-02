@@ -1,4 +1,4 @@
-import type { AcpEvent, HubPrefsDoc } from './types'
+import type { AcpEvent } from './types'
 import type { ExtensionHook, ExtensionPlugin, ExtensionSkill } from './types'
 
 
@@ -42,25 +42,6 @@ export class AccessTokenError extends Error {
     this.name = 'AccessTokenError'
   }
 }
-
-/**
- * PUT /api/prefs 409 — 条件写入（baseVersion）版本过旧被 hub 拒绝。
- * 冲突响应体带回 hub 当前文档与版本（免去一次 GET），调用方把本地
- * 待推操作重放到该文档上再以新版本重试。
- */
-export class PrefsConflictError extends Error {
-  /** hub 当前文档版本（重试的 baseVersion）。 */
-  version?: number
-  /** hub 当前文档。 */
-  prefs?: HubPrefsDoc
-  constructor(message: string, version?: number, prefs?: HubPrefsDoc) {
-    super(message)
-    this.name = 'PrefsConflictError'
-    this.version = version
-    this.prefs = prefs
-  }
-}
-
 
 /** 连接模式：local = 同源 capri-host（SSE /events，无 ?host=，锁定本机）；hub = 跨源直连 hub（WS /ws/fe + ?host= + token）。 */
 export type TransportMode = 'local' | 'hub'
@@ -145,7 +126,7 @@ export const TOOL_CALL_DENSITY_CHOICES: {
 }[] = [
   {
     id: 'detailed',
-    label: '详细',
+    label: 'detail',
     desc: '编辑带 diff，命令带输出',
   },
   {
@@ -171,11 +152,15 @@ export const TOOL_CALL_DENSITY_CHOICES: {
 ]
 
 /**
- * GET / POST /api/settings — safe config.toml subset. `toolset` carries
- * ONLY [toolset.ask_user_question].timeout_enabled / timeout_secs (the
- * host filters the rest of the [toolset] subtree out of the payload).
+ * GET / POST /api/settings — every scalar config.toml table, keyed by its
+ * TOML path (e.g. `subagents.toggle`). The host filters custom-model
+ * definitions (`[model]` / `[model.<id>]`) out of the payload. `toolset`
+ * carries [toolset.ask_user_question].timeout_enabled / timeout_secs (the
+ * 问答超时 pane's editable pair) plus any raw [toolset] scalars.
  */
 export type SettingsPayload = {
+  /** Any other config.toml table, keyed by its TOML path. */
+  [section: string]: unknown
   ui?: Record<string, unknown>
   session?: Record<string, unknown>
   models?: Record<string, unknown>
@@ -186,14 +171,16 @@ export type SettingsPayload = {
       timeout_enabled?: boolean
       /** 超时秒数（正整数，host 校验 1–86400）；缺省 = 1800。 */
       timeout_secs?: number
+      [key: string]: unknown
     }
+    [key: string]: unknown
   }
 }
 
 /** POST /api/settings body — FE-consumed [ui] + [toolset.ask_user_question]
- *  scalars (host allowlists both). */
+ *  scalars (host allowlists both). `collapsed_edit_blocks` 已退役：编辑行
+ *  是否折成一行由 `tool_call_density` 档位决定。 */
 export type SettingsPatch = {
-  collapsed_edit_blocks?: boolean
   page_flip_on_send?: boolean
   remember_tool_approvals?: boolean
   permission_mode?: 'ask' | 'auto' | 'always-approve'

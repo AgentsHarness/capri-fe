@@ -1,13 +1,7 @@
+import type { McpToolInfo } from '../../api/transport'
+
 export type ConnState = 'connecting' | 'ready' | 'busy' | 'error' | 'offline'
 export type FocusMode = 'prompt' | 'scrollback'
-
-/** One MCP tool row (mcps_modal.rs McpToolDetail — camelCase wire). */
-export type McpToolInfo = {
-  name: string
-  displayName?: string
-  description?: string
-  enabled?: boolean
-}
 
 /**
  * One MCP server row for the MCP panel (x.ai/mcp/server_status).

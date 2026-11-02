@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { X } from 'lucide-react'
 import { useChatStore } from '../../store/chat'
 import { transport } from '../../api/client'
 import type { SessionInfoExt } from '../../api/types'
 import { fmtTok, fmtTokBig } from '../../format'
 import { contextUrgencyColor } from '../../theme/contextColor'
-import { UsageInfoTabs } from './UsageInfoTabs'
+import { InfoModalFrame, InfoModalState } from './InfoModalShell'
 
 /**
  * /context modal — web counterpart of the TUI `/context` command
@@ -186,141 +185,108 @@ export function ContextModal() {
   ].filter((r) => r.tokens > 0)
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center gn-modal-dim p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-label="context usage"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) close()
-      }}
+    <InfoModalFrame
+      open={open}
+      ariaLabel="context usage"
+      title="/context"
+      maxWidth={480}
+      panelRef={panelRef}
+      tab="context"
+      onClose={close}
     >
-      <div
-        ref={panelRef}
-        tabIndex={-1}
-        className="mt-8 w-full max-w-[480px] gn-modal-panel"
+      <InfoModalState
+        loading={loading}
+        error={error}
+        empty={!hasCtx}
+        emptyText="暂无上下文明细（会话未就绪或宿主未返回 context）"
+        onRetry={() => void fetchInfo()}
       >
-        <header className="gn-modal-header">
-          <span className="font-mono text-[13px] font-bold text-gn-fg">/context</span>
-          <button
-            type="button"
-            onClick={close}
-            className="ml-auto rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
-            aria-label="关闭"
-            title="关闭 (Esc)"
-          >
-            <X size={14} aria-hidden />
-          </button>
-        </header>
-        <UsageInfoTabs active="context" />
-
-        <div className="py-1">
-          {loading ? (
-            <div className="px-4 py-6 text-center text-[12px] text-gn-muted">
-              加载中…
+        {hasCtx && (
+          <div className="space-y-3 px-4 py-3">
+            {/* At-a-glance totals: fmt_tok_big + two-decimal percent. */}
+            <div
+              className="font-mono text-[12.5px] leading-none tabular-nums"
+              style={{ color: contextUrgencyColor(pct2 ?? 0) }}
+            >
+              {fmtTokBig(used)} / {fmtTokBig(total)} tokens (
+              {(pct2 ?? 0).toFixed(2)}%)
             </div>
-          ) : error ? (
-            <div className="px-4 py-5 text-center">
-              <div className="text-[12px] text-gn-red">{error}</div>
-              <button
-                type="button"
-                onClick={() => void fetchInfo()}
-                className="mt-2 rounded px-3 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
-              >
-                重试
-              </button>
+            <div className="font-mono text-[10.5px] leading-none text-gn-gray-dim">
+              {modelLabel}
+              {ctx.compactionCount > 0 ? ` · compacted ×${ctx.compactionCount}` : ''}
             </div>
-          ) : !hasCtx ? (
-            <div className="px-4 py-6 text-center text-[12px] text-gn-muted">
-              暂无上下文明细（会话未就绪或宿主未返回 context）
-            </div>
-          ) : (
-            <div className="space-y-3 px-4 py-3">
-              {/* At-a-glance totals: fmt_tok_big + two-decimal percent. */}
-              <div
-                className="font-mono text-[12.5px] leading-none tabular-nums"
-                style={{ color: contextUrgencyColor(pct2 ?? 0) }}
-              >
-                {fmtTokBig(used)} / {fmtTokBig(total)} tokens (
-                {(pct2 ?? 0).toFixed(2)}%)
-              </div>
-              <div className="font-mono text-[10.5px] leading-none text-gn-gray-dim">
-                {modelLabel}
-                {ctx.compactionCount > 0 ? ` · compacted ×${ctx.compactionCount}` : ''}
-              </div>
 
-              {/* Categorical bar: system · messages · overhead · free. */}
-              <div
-                aria-hidden
-                className="flex h-2 w-full overflow-hidden rounded-sm bg-gn-bg-highlight"
-              >
-                {seg(systemTokens).show && (
-                  <span style={{ width: `${seg(systemTokens).w}%`, background: 'var(--color-gn-gray)' }} />
-                )}
-                {seg(messageTokens).show && (
-                  <span style={{ width: `${seg(messageTokens).w}%`, background: 'var(--color-gn-fg)' }} />
-                )}
-                {seg(overheadTokens).show && (
-                  <span
-                    style={{
-                      width: `${seg(overheadTokens).w}%`,
-                      background: 'var(--color-gn-accent-verify)',
-                    }}
-                  />
-                )}
-                {seg(freeTokens).show && (
-                  <span
-                    style={{
-                      width: `${seg(freeTokens).w}%`,
-                      background: 'var(--color-gn-gray-dim)',
-                    }}
-                  />
-                )}
-              </div>
-
-              {/* Legend rows (bar categories) + info rows (tools/categories). */}
-              {[...legendRows, ...infoRows].map((r) => (
-                <div
-                  key={r.label}
-                  className="flex items-baseline gap-2 font-mono text-[11px] leading-snug"
-                >
-                  <span
-                    aria-hidden
-                    className="inline-block h-[7px] w-[7px] shrink-0 translate-y-[-1px] rounded-[1px]"
-                    style={{ background: r.color }}
-                  />
-                  <span className="min-w-0 flex-1 truncate text-gn-fg2">{r.label}</span>
-                  {r.detail && (
-                    <span className="shrink-0 text-[10px] text-gn-gutter">{r.detail}</span>
-                  )}
-                  <span className="shrink-0 tabular-nums text-gn-muted">
-                    {fmtTok(r.tokens)} tokens · {pctOf(r.tokens).toFixed(1)}%
-                  </span>
-                </div>
-              ))}
-
-              {/* Auto-compact estimate (TUI ContextInfoBlock footer). */}
-              {autoCompact && (
-                <div
-                  className={`border-t border-gn-prompt-border/50 pt-2 font-mono text-[11px] leading-snug ${
- autoCompact.triggered ? 'text-gn-warning' : 'text-gn-muted'
-                  }`}
-                >
-                  {autoCompact.triggered
-                    ? `Auto-compact triggers next turn (at ${autoCompact.threshold}%)`
-                    : `Auto-compact at ${autoCompact.threshold}% · ~${fmtTokBig(autoCompact.remaining)} tokens remaining`}
-                </div>
+            {/* Categorical bar: system · messages · overhead · free. */}
+            <div
+              aria-hidden
+              className="flex h-2 w-full overflow-hidden rounded-sm bg-gn-bg-highlight"
+            >
+              {seg(systemTokens).show && (
+                <span style={{ width: `${seg(systemTokens).w}%`, background: 'var(--color-gn-gray)' }} />
               )}
-
-              {/* Footer stats — TUI ContextInfoBlock's last line. */}
-              <div className="font-mono text-[11px] leading-snug text-gn-gutter">
-                Turns: {ctx.turnCount} · Tool calls: {ctx.toolCallCount} · Compactions:{' '}
-                {ctx.compactionCount}
-              </div>
+              {seg(messageTokens).show && (
+                <span style={{ width: `${seg(messageTokens).w}%`, background: 'var(--color-gn-fg)' }} />
+              )}
+              {seg(overheadTokens).show && (
+                <span
+                  style={{
+                    width: `${seg(overheadTokens).w}%`,
+                    background: 'var(--color-gn-accent-verify)',
+                  }}
+                />
+              )}
+              {seg(freeTokens).show && (
+                <span
+                  style={{
+                    width: `${seg(freeTokens).w}%`,
+                    background: 'var(--color-gn-gray-dim)',
+                  }}
+                />
+              )}
             </div>
-          )}
-        </div>
-      </div>
-    </div>
+
+            {/* Legend rows (bar categories) + info rows (tools/categories). */}
+            {[...legendRows, ...infoRows].map((r) => (
+              <div
+                key={r.label}
+                className="flex items-baseline gap-2 font-mono text-[11px] leading-snug"
+              >
+                <span
+                  aria-hidden
+                  className="inline-block h-[7px] w-[7px] shrink-0 translate-y-[-1px] rounded-[1px]"
+                  style={{ background: r.color }}
+                />
+                <span className="min-w-0 flex-1 truncate text-gn-fg2">{r.label}</span>
+                {r.detail && (
+                  <span className="shrink-0 text-[10px] text-gn-gutter">{r.detail}</span>
+                )}
+                <span className="shrink-0 tabular-nums text-gn-muted">
+                  {fmtTok(r.tokens)} tokens · {pctOf(r.tokens).toFixed(1)}%
+                </span>
+              </div>
+            ))}
+
+            {/* Auto-compact estimate (TUI ContextInfoBlock footer). */}
+            {autoCompact && (
+              <div
+                className={`border-t border-gn-prompt-border/50 pt-2 font-mono text-[11px] leading-snug ${
+     autoCompact.triggered ? 'text-gn-warning' : 'text-gn-muted'
+                }`}
+              >
+                {autoCompact.triggered
+                  ? `Auto-compact triggers next turn (at ${autoCompact.threshold}%)`
+                  : `Auto-compact at ${autoCompact.threshold}% · ~${fmtTokBig(autoCompact.remaining)} tokens remaining`}
+              </div>
+            )}
+
+            {/* Footer stats — TUI ContextInfoBlock's last line. */}
+            <div className="font-mono text-[11px] leading-snug text-gn-gutter">
+              Turns: {ctx.turnCount} · Tool calls: {ctx.toolCallCount} · Compactions:{' '}
+              {ctx.compactionCount}
+            </div>
+            </div>
+        )}
+      </InfoModalState>
+    </InfoModalFrame>
   )
 }

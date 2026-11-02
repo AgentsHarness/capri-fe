@@ -66,6 +66,10 @@ export function handleChatEvent(
   // resync 由 transport/init 层处理（全量重建，见 store/chat/resync.ts），
   // 不是聊天事件；任何其他路径漏到这里都直接忽略，绝不参与流缓冲/分发。
   if (ev.type === 'resync') return
+  // 上行裁剪占位（宿主 trimUnwatched）：正文被宿主省掉了，只剩 seq 保序。
+  // 必须在 flushStreamBufBeforeEvent 之前返回——否则它会误当成一次流边界
+  // 把正在流式的文本切段。目标会话的正文由 loadHistory 从宿主历史重建。
+  if (ev.type === 'trimmed') return
   // Page refresh of a completed turn: hello → loadHistory paints the
   // snapshot, then hub gap-pull replays the same last-turn live events
   // after historyLoading drops. Those frames carry sessionId + the

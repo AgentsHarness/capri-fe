@@ -19,6 +19,7 @@ import {
 import { useChatStore, type McpServerInfo } from '../../store/chat'
 import { mcpTone } from '../../store/chat/mcpStatus'
 import { transport, type McpListServer, type McpToolInfo } from '../../api/client'
+import { Spinner } from '../ui/Spinner'
 
 /**
  * MCP server panel (x.ai/mcp/server_status + host /api/mcp/*) — web
@@ -269,6 +270,26 @@ export function McpPanel({
       setAuthResult({ name, ...r, url })
     })
 
+  /**
+   * HTTP / stdio 两个分支共同的收尾：成功写状态、关闭弹窗、清空表单并刷新
+   * 列表，失败写 formError，finally 结束 adding。
+   */
+  const finishAdd = async (payload: Parameters<typeof mcpAdd>[0]) => {
+    setFormError(undefined)
+    setAdding(true)
+    try {
+      await mcpAdd(payload)
+      useChatStore.setState({ statusText: `已添加 MCP 服务器 ${payload.name}` })
+      setAddOpen(false)
+      setForm({ name: '', command: '', args: '', env: '', url: '', type: 'http', headers: '' })
+      void refreshList()
+    } catch (e) {
+      setFormError(`添加失败: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setAdding(false)
+    }
+  }
+
   const submitAdd = async () => {
     const name = form.name.trim()
     if (!name) {
@@ -286,24 +307,12 @@ export function McpPanel({
         setFormError(headers)
         return
       }
-      setFormError(undefined)
-      setAdding(true)
-      try {
-        await mcpAdd({
-          name,
-          url,
-          ...(form.type.trim() && form.type.trim() !== 'http' ? { type: form.type.trim() } : {}),
-          ...(headers && Object.keys(headers).length > 0 ? { headers } : {}),
-        })
-        useChatStore.setState({ statusText: `已添加 MCP 服务器 ${name}` })
-        setAddOpen(false)
-        setForm({ name: '', command: '', args: '', env: '', url: '', type: 'http', headers: '' })
-        void refreshList()
-      } catch (e) {
-        setFormError(`添加失败: ${e instanceof Error ? e.message : String(e)}`)
-      } finally {
-        setAdding(false)
-      }
+      await finishAdd({
+        name,
+        url,
+        ...(form.type.trim() && form.type.trim() !== 'http' ? { type: form.type.trim() } : {}),
+        ...(headers && Object.keys(headers).length > 0 ? { headers } : {}),
+      })
       return
     }
     const command = form.command.trim()
@@ -321,19 +330,7 @@ export function McpPanel({
       setFormError(env)
       return
     }
-    setFormError(undefined)
-    setAdding(true)
-    try {
-      await mcpAdd({ name, command, args, env })
-      useChatStore.setState({ statusText: `已添加 MCP 服务器 ${name}` })
-      setAddOpen(false)
-      setForm({ name: '', command: '', args: '', env: '', url: '', type: 'http', headers: '' })
-      void refreshList()
-    } catch (e) {
-      setFormError(`添加失败: ${e instanceof Error ? e.message : String(e)}`)
-    } finally {
-      setAdding(false)
-    }
+    await finishAdd({ name, command, args, env })
   }
 
   const submitCall = async () => {
@@ -1101,8 +1098,9 @@ export function McpPanel({
                   type="button"
                   disabled={adding}
                   onClick={() => void submitAdd()}
-                  className="rounded border border-gn-prompt-border bg-gn-bg-highlight px-3 py-1 text-[11px] font-medium text-gn-fg hover:bg-gn-bg-hover hover:border-gn-prompt-border-active disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 rounded border border-gn-prompt-border bg-gn-bg-highlight px-3 py-1 text-[11px] font-medium text-gn-fg hover:bg-gn-bg-hover hover:border-gn-prompt-border-active disabled:cursor-not-allowed disabled:opacity-50"
                 >
+                  {adding ? <Spinner size={11} /> : null}
                   {adding ? '添加中…' : '添加'}
                 </button>
               </div>
@@ -1198,8 +1196,9 @@ export function McpPanel({
                   type="button"
                   disabled={calling}
                   onClick={() => void submitCall()}
-                  className="rounded border border-gn-prompt-border bg-gn-bg-highlight px-3 py-1 text-[11px] font-medium text-gn-fg hover:bg-gn-bg-hover hover:border-gn-prompt-border-active disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 rounded border border-gn-prompt-border bg-gn-bg-highlight px-3 py-1 text-[11px] font-medium text-gn-fg hover:bg-gn-bg-hover hover:border-gn-prompt-border-active disabled:cursor-not-allowed disabled:opacity-50"
                 >
+                  {calling ? <Spinner size={11} /> : null}
                   {calling ? '调用中…' : '调用'}
                 </button>
               </div>
@@ -1298,8 +1297,9 @@ export function McpPanel({
                   type="button"
                   disabled={reading}
                   onClick={() => void submitRead()}
-                  className="rounded border border-gn-prompt-border bg-gn-bg-highlight px-3 py-1 text-[11px] font-medium text-gn-fg hover:bg-gn-bg-hover hover:border-gn-prompt-border-active disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 rounded border border-gn-prompt-border bg-gn-bg-highlight px-3 py-1 text-[11px] font-medium text-gn-fg hover:bg-gn-bg-hover hover:border-gn-prompt-border-active disabled:cursor-not-allowed disabled:opacity-50"
                 >
+                  {reading ? <Spinner size={11} /> : null}
                   {reading ? '读取中…' : '读取'}
                 </button>
               </div>

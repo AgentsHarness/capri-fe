@@ -88,7 +88,6 @@ export type {
   ScrollEntry,
   SubagentStatus,
   SubagentViewState,
-  WorkflowStatus,
 } from './types/scroll'
 export type { HookRun, HookRunStatus } from './types/hooks'
 export type {

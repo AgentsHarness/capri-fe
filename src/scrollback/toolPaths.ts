@@ -9,6 +9,8 @@
  * row / inline expansion / fullscreen viewer match the TUI surfaces 1:1.
  */
 
+import { charWidth, strWidth } from '../lib/displayWidth'
+
 /** TUI ToolPathSurface: where a tool-path is being painted. */
 export type ToolPathSurface = 'collapsed' | 'expanded' | 'fullscreen'
 
@@ -18,49 +20,8 @@ export type ToolPathSurface = 'collapsed' | 'expanded' | 'fullscreen'
  */
 export type ToolPathPaint = ToolPathSurface | 'raw'
 
-/**
- * Display width of one code point — an approximation of `unicode_width`
- * (zero for combining marks, two for East Asian Wide/Fullwidth blocks).
- * Paths are mostly ASCII, so this only affects width-budget rounding.
- */
-export function charWidth(ch: string): number {
-  const cp = ch.codePointAt(0)
-  if (cp == null) return 0
-  // C0/C1 controls and zero-width format characters.
-  if (cp < 0x20 || (cp >= 0x7f && cp <= 0x9f)) return 0
-  if (cp === 0x200b || cp === 0x200c || cp === 0x200d || cp === 0xfeff) return 0
-  // Combining marks (Mn/Me blocks commonly seen in paths and names).
-  if (
-    (cp >= 0x300 && cp <= 0x36f) ||
-    (cp >= 0x1ab0 && cp <= 0x1aff) ||
-    (cp >= 0x20d0 && cp <= 0x20f0) ||
-    (cp >= 0xfe20 && cp <= 0xfe2f)
-  ) {
-    return 0
-  }
-  // East Asian Wide + Fullwidth blocks.
-  if (
-    (cp >= 0x1100 && cp <= 0x115f) ||
-    (cp >= 0x2e80 && cp <= 0xa4cf) ||
-    (cp >= 0xac00 && cp <= 0xd7a3) ||
-    (cp >= 0xf900 && cp <= 0xfaff) ||
-    (cp >= 0xfe30 && cp <= 0xfe6f) ||
-    (cp >= 0xff00 && cp <= 0xff60) ||
-    (cp >= 0xffe0 && cp <= 0xffe6) ||
-    (cp >= 0x1f300 && cp <= 0x1f64f) ||
-    (cp >= 0x20000 && cp <= 0x3fffd)
-  ) {
-    return 2
-  }
-  return 1
-}
-
-/** Display width of a string (TUI `UnicodeWidthStr::width`). */
-export function strWidth(s: string): number {
-  let w = 0
-  for (const ch of s) w += charWidth(ch)
-  return w
-}
+/** Display width of one code point / of a string (TUI `unicode_width`). */
+export { charWidth, strWidth }
 
 /**
  * Truncate to `maxWidth` display columns, appending `…` when cut
@@ -231,15 +192,6 @@ export function makeRelativePath(path: string, cwd?: string): string {
     return rel === '' ? '.' : rel
   }
   return path
-}
-
-/** Convenience: paint according to the chosen surface, no-op on empty. */
-export function paintToolPath(
-  path: string,
-  paint: ToolPathPaint,
-  opts: { cwd?: string; home?: string } = {},
-): string {
-  return pathForSurface(path, paint, opts)
 }
 
 /**

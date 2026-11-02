@@ -15,6 +15,7 @@ import { formatTurnDuration } from './format'
 import { clearSuppressedTools } from './tools'
 import { clearStreamBuf, flushLiveStream, sealThought } from './stream'
 import { settleTurnEntries } from './turn'
+import { hasLiveRunningWork } from './topTasks'
 import { spliceBtwEntries } from './btwReplay'
 import {
   INITIAL_TURN_LIMIT,
@@ -154,8 +155,6 @@ export async function loadHistory(
       historyLoadError: undefined,
       historyPrependedAt: undefined,
       historyAnchorId: undefined,
-      historyProjected: undefined,
-      historyOmittedBytes: undefined,
       liteFillBusy: 0,
       entries: [],
       liveStream: null,
@@ -166,9 +165,7 @@ export async function loadHistory(
       pendingOptimisticUserId: undefined,
       toolIndex: {},
       // Live approvals come from hello/status, not replayed history.
-      ...partitionPendingRequests([...get().pending, ...get().xaiRequests], sessionId, {
-        includeUntagged: true,
-      }),
+      ...partitionPendingRequests([...get().pending, ...get().xaiRequests], sessionId),
       diffReview: undefined,
       diffReviewOpen: false,
       memoryListing: undefined,
@@ -400,8 +397,6 @@ export async function loadHistory(
         historyPromptStarts: promptStarts,
         historyPromptPreviews: r.promptPreviews,
         historyTurnIdx: turnIdx,
-        historyProjected: r.projected,
-        historyOmittedBytes: r.omittedBytes,
         conn: 'ready',
         entries,
         liveStream: null,
@@ -428,7 +423,7 @@ export async function loadHistory(
           ? {
               turnStartedAt: replayMeta.turnStartedAt,
               currentPromptId: undefined,
-              statusText: replayMeta.turnStartedAt
+              phaseText: replayMeta.turnStartedAt
                 ? `回合进行中（已进行 ${formatTurnDuration(
                     Date.now() - replayMeta.turnStartedAt,
                   )}）`
@@ -437,7 +432,7 @@ export async function loadHistory(
           : {
               turnStartedAt: undefined,
               currentPromptId: undefined,
-              statusText: `历史已加载 (共 ${get().historyTotalCount ?? '?'} 条更新)`,
+              phaseText: `历史已加载 (共 ${get().historyTotalCount ?? '?'} 条更新)`,
             }),
         historyLoadedAt: Date.now(),
         // 权限徽标是进程级、只信 agent 回声，历史回放不覆盖。
@@ -539,7 +534,7 @@ export async function loadHistory(
       set({
         historyLoading: false,
         conn: 'ready',
-        statusText: '历史加载失败',
+        phaseText: '历史加载失败',
         historyLoadError: msg,
         ...restorePlanMode(sessionId),
         // 已加载出内容时保留内容 + 内联错误行（就地重试语义）；完全没
@@ -600,19 +595,4 @@ export function loadHistoryWithTaskProbe(
     }
   })
   return historyP
-}
-
-/**
- * 是否还有值得继续轮询的活：本会话在跑的后台任务、游离进程提示，或
- * 回放/注册表补出来的在跑子代理 / 工作流条目。轮询是这两类运行态的
- * 唯一收口来源（子代理 finish 与 task_completed 都可能丢），所以只要有
- * 一类非空就要继续盯。
- */
-export function hasLiveRunningWork(s: Pick<ChatState, 'topTasks' | 'detachedTasks' | 'entries'>): boolean {
-  if (s.topTasks.length > 0 || s.detachedTasks.length > 0) return true
-  return s.entries.some(
-    (e) =>
-      (e.kind === 'subagent' || e.kind === 'bg_task' || e.kind === 'workflow') &&
-      e.running === true,
-  )
 }

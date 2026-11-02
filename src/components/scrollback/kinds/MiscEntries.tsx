@@ -65,12 +65,27 @@ export function ErrorEntry({
   const { shell, openViewer, readonly = false } = chrome
   const showView = shell.selected
   const restartAgent = useChatStore((s) => s.restartAgent)
+  const resend = useChatStore((s) => s.resendUndeliveredPrompt)
   const [restarting, setRestarting] = useState(false)
+  /** 重发在飞：行内 `[重发]` 自己转圈（沿用原 promptId，不会重复执行）。 */
+  const [resending, setResending] = useState(false)
   const onRestart = async () => {
     if (restarting) return
     setRestarting(true)
-    await restartAgent()
-    setRestarting(false)
+    try {
+      await restartAgent()
+    } finally {
+      setRestarting(false)
+    }
+  }
+  const onResend = async () => {
+    if (resending) return
+    setResending(true)
+    try {
+      await resend()
+    } finally {
+      setResending(false)
+    }
   }
   return (
     <EntryShell {...shell}>
@@ -83,10 +98,23 @@ export function ErrorEntry({
         {e.action === 'restart-agent' && !readonly && (
           // 传输级失败：agent 不可达，唯一恢复动作是重启——行内直接可点。
           <InlineAction
-            label={restarting ? '重启中…' : '重启'}
+            label="重启"
+            busyLabel="重启"
+            busy={restarting}
             title="杀掉当前 agent 进程并重新启动（恢复上次会话）"
             disabled={restarting}
             onRun={() => void onRestart()}
+          />
+        )}
+        {e.action === 'resend' && !readonly && (
+          // 上行链路断开、消息停在 hub 中继表里：原样重发，沿用同一
+          // promptId（host 侧去重，已受理也不会跑第二遍）。
+          <InlineAction
+            label="重发"
+            busyLabel="重发"
+            busy={resending}
+            title="重新发送这条消息（沿用原 promptId，已受理时不会重复执行）"
+            onRun={() => void onResend()}
           />
         )}
       </div>
@@ -327,23 +355,6 @@ export function SessionEventEntry({
         ) : (
           <SessionEventText text={e.text} warning={e.warning} />
         )}
-      </div>
-    </EntryShell>
-  )
-}
-
-export function CreditLimitEntry({
-  e,
-  chrome,
-}: {
-  e: Extract<ScrollEntry, { kind: 'credit_limit' }>
-  chrome: EntryChrome
-}) {
-  const { shell } = chrome
-  return (
-    <EntryShell {...shell}>
-      <div className="break-words text-[13px] font-bold py-1" style={{ color: Accents.warning }}>
-        {e.text}
       </div>
     </EntryShell>
   )

@@ -24,7 +24,7 @@ export function cancelActions(set: SetState, get: () => ChatState) {
     // TUI turn_status.rs: (TurnCancelling | CommandCancelling, _) →
     // "Cancelling…" in accent_error — shown until the host's `done`
     // / `cancelled` event seals the turn.
-    set({ statusText: 'Cancelling…' })
+    set({ phaseText: 'Cancelling…' })
     try {
       // Always send the flag explicitly: absent ⇒ agent default TRUE
       // (stops every running subagent), which would contradict the

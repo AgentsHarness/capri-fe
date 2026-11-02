@@ -6,8 +6,7 @@ import { SessionListHeader } from './SessionListHeader'
 
 beforeEach(() => {
   useChatStore.setState({
-    refreshSessions: vi.fn(),
-    refreshWorkspaces: vi.fn(),
+    refreshSessionLists: vi.fn(),
     workspaceLoading: false,
   })
   useHistoryView.setState({ mode: 'workspace' })
@@ -31,12 +30,13 @@ describe('SessionListHeader', () => {
     expect(useHistoryView.getState().mode).toBe('workspace')
   })
 
-  it('点击刷新 → 触发两个 refresh；加载中显示 spinner', () => {
+  it('点击刷新 → 走统一刷新入口（immediate）；加载中显示 spinner', () => {
     render(<SessionListHeader />)
     fireEvent.click(screen.getByRole('button', { name: '刷新会话列表' }))
     const st = useChatStore.getState()
-    expect(st.refreshSessions).toHaveBeenCalledTimes(1)
-    expect(st.refreshWorkspaces).toHaveBeenCalledTimes(1)
+    expect(st.refreshSessionLists).toHaveBeenCalledTimes(1)
+    // 用户点的那一下要立刻发，不能被后台触发的节流窗口推后。
+    expect(st.refreshSessionLists).toHaveBeenCalledWith(1, { immediate: true })
 
     // 置 workspaceLoading=true → 转圈状态（跟随用户点击）
     act(() => useChatStore.setState({ workspaceLoading: true }))
@@ -98,7 +98,7 @@ describe('SessionListHeader', () => {
     expect(refresh).toHaveClass('min-h-6')
     expect(refresh.textContent).toContain('刷新')
     fireEvent.click(refresh)
-    expect(useChatStore.getState().refreshSessions).toHaveBeenCalledTimes(1)
+    expect(useChatStore.getState().refreshSessionLists).toHaveBeenCalledTimes(1)
     // 搜索：可见文字，展开后文字切换为「收起」。
     const search = screen.getByRole('button', { name: '搜索历史会话' })
     expect(search).toHaveClass('min-h-6')

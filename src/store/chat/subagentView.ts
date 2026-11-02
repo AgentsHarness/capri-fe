@@ -176,6 +176,7 @@ export function subagentViewAppend(
           // 耗时随流增长：最后一个 chunk 的 elapsedMs 生效（主 scrollback
           // streamBufElapsedMs 同款"last chunk wins"）。
           ...(ev.elapsedMs != null ? { elapsedMs: ev.elapsedMs } : {}),
+          ...thoughtLiteCoord(ev, last),
         }
         return next
       }
@@ -191,6 +192,7 @@ export function subagentViewAppend(
         ...(ev.elapsedMs != null
           ? { elapsedMs: ev.elapsedMs }
           : { startedAt: Date.now() }),
+        ...thoughtLiteCoord(ev),
       })
     }
     case 'tool_call': {
@@ -340,9 +342,37 @@ export function subagentViewAppend(
 }
 
 /**
+ * lite 投影下迷你视图思考行的补全坐标（主滚动区 envelopeReplay.stampThoughtLite
+ * 同款）：`_meta.lite.omitted` 记下被裁的字节，`msgSeqEnd` 给合成窗口右端。
+ * 没有这些字段，展开只会停在「思考已省略」而不会去拉正文。
+ */
+function thoughtLiteCoord(
+  ev: Extract<AcpEvent, { type: 'thought' }>,
+  prev?: Extract<ScrollEntry, { kind: 'thought' }>,
+): Partial<Extract<ScrollEntry, { kind: 'thought' }>> {
+  const seq = ev.msgSeq
+  const liteEnd = ev.msgSeqEnd
+  const touch = seq != null && liteEnd != null ? Math.max(seq, liteEnd) : (seq ?? liteEnd)
+  const end = prev?.msgSeqEnd
+  const msgSeqEnd = touch != null && (end == null || touch > end) ? touch : end
+  const msgSeq = prev?.msgSeq ?? seq
+  const omitted = (prev?.liteOmitted ?? 0) + (ev.liteOmitted ?? 0)
+  return {
+    ...(msgSeq != null ? { msgSeq } : {}),
+    ...(msgSeqEnd != null ? { msgSeqEnd } : {}),
+    ...(omitted > 0 ? { liteOmitted: omitted } : {}),
+  }
+}
+
+/**
  * lite 投影下迷你视图工具行的补全坐标：msgSeq = 产生该行的首条信封行号，
  * msgSeqEnd = 本页最后一条碰到它的信封行号，liteOmitted = 本页为它裁掉的
  * 字节。live 事件不带 msgSeq（也没有 lite 标记）→ 不参与补全。
+ *
+ * lite 页把同 toolCallId 的 tool_call/update 合成一封：正文在后到的被合成
+ * 信封里，幸存信封的 `_meta.lite.msgSeqEnd` 才是区间右端（主滚动区
+ * envelopeReplay.stampToolTouch 同款）。只看幸存信封自身的 msgSeq 会算出
+ * 单条窗口，补全永远拿不到正文。
  */
 function stampLiteSeq(
   item: Extract<ScrollEntry, { kind: 'tool' }>,
@@ -356,10 +386,13 @@ function stampLiteSeq(
         ? ev.toolCallUpdate
         : undefined
   const lite = liteMark(tc)
+  // 合成掉的尾部信封可能比本体更晚：区间右端取两者的较大者。
   const seq = ev.msgSeq
+  const liteEnd = lite?.msgSeqEnd
+  const touch = seq != null && liteEnd != null ? Math.max(seq, liteEnd) : (seq ?? liteEnd)
   const msgSeq = item.msgSeq ?? prev?.msgSeq ?? seq
   const end = prev?.msgSeqEnd
-  const msgSeqEnd = seq != null && (end == null || seq > end) ? seq : end
+  const msgSeqEnd = touch != null && (end == null || touch > end) ? touch : end
   const omitted = (prev?.liteOmitted ?? 0) + (lite ? lite.omitted : 0)
   return {
     ...item,

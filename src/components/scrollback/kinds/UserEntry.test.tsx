@@ -66,4 +66,39 @@ describe('UserEntry', () => {
     const button = screen.getByRole('button')
     expect(button.getAttribute('title')).toContain('引导 (steer)')
   })
+
+  it('未送达的用户行带重试按钮，普通行没有', () => {
+    const undelivered: Extract<ScrollEntry, { kind: 'user' }> = {
+      id: 'u3',
+      kind: 'user',
+      text: '没发出去的那条',
+      undelivered: true,
+    }
+    const { unmount } = render(
+      <UserEntry e={undelivered} chrome={makeChrome(undelivered)} />,
+    )
+    expect(screen.getByText('[重试]')).toBeTruthy()
+    unmount()
+
+    const normal: Extract<ScrollEntry, { kind: 'user' }> = {
+      id: 'u4',
+      kind: 'user',
+      text: '正常的那条',
+    }
+    render(<UserEntry e={normal} chrome={makeChrome(normal)} />)
+    expect(screen.queryByText('[重试]')).toBeNull()
+  })
+
+  it('访客只读视图不渲染重试按钮', () => {
+    const e: Extract<ScrollEntry, { kind: 'user' }> = {
+      id: 'u5',
+      kind: 'user',
+      text: '只读会话',
+      undelivered: true,
+    }
+    render(
+      <UserEntry e={e} chrome={{ ...makeChrome(e), readonly: true }} />,
+    )
+    expect(screen.queryByText('[重试]')).toBeNull()
+  })
 })

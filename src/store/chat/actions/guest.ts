@@ -21,38 +21,32 @@ export { isGuestState, blockGuestWrite } from '../guestMode'
  * 从 /api/status 里取出访客可用的那部分会话状态。
  *
  * hub 给访客的 status 已经删掉了 pendingRequests / roster，只把「你正在看
- * 的这个会话」压成 sessionState + busy + awaitingInput + pendingInput。
- * 老 hub（没有这几个字段）返回 undefined：访客状态行就当没有状态可显示，
- * 而不是猜一个。
+ * 的这个会话」压成 sessionState + busy + awaitingInput + pendingInput；
+ * v2 hub 固定提供这几个字段。status 没覆盖当前会话时返回 undefined，
+ * 访客状态行就当没有状态可显示，而不是猜一个。
  */
 function readGuestStatus(status: HostStatus, sessionId: string): GuestSessionState | undefined {
-  const root = status as unknown as Record<string, unknown>
-  if (root.sessionId !== sessionId) return undefined
-  const state = root.sessionState
-  if (state !== 'active' && state !== 'awaiting' && state !== 'idle') return undefined
-  const pi = root.pendingInput as Record<string, unknown> | undefined
-  const kind =
-    pi && typeof pi.kind === 'string'
-      ? (pi.kind as NonNullable<GuestSessionState['pendingInput']>['kind'])
-      : undefined
-  const count = pi && typeof pi.count === 'number' ? pi.count : 0
+  if (status.sessionId !== sessionId) return undefined
+  const state = status.sessionState
+  if (state == null) return undefined
+  const pi = status.pendingInput
   return {
     sessionState: state,
-    busy: root.busy === true,
-    awaitingInput: root.awaitingInput === true,
-    ...(kind && count > 0
+    busy: status.busy === true,
+    awaitingInput: status.awaitingInput === true,
+    ...(pi && pi.count > 0
       ? {
           pendingInput: {
-            kind,
-            count,
-            ...(typeof pi?.receivedAt === 'number' ? { receivedAt: pi.receivedAt } : {}),
+            kind: pi.kind,
+            count: pi.count,
+            ...(pi.receivedAt != null ? { receivedAt: pi.receivedAt } : {}),
           },
         }
       : {}),
   }
 }
 
-/** 写入访客状态；老 hub 缺字段时清掉，不保留上一次的过期读数。 */
+/** 写入访客状态；status 未覆盖当前会话时清掉，不保留上一次的过期读数。 */
 function applyGuestStatus(set: SetState, status: HostStatus, sessionId: string): void {
   set({ guestSessionState: readGuestStatus(status, sessionId) })
 }
@@ -85,7 +79,7 @@ export function guestActions(set: SetState, get: () => ChatState) {
         guestIdentity: identity,
         guestSessions: identity.sessions,
         conn: 'ready',
-        statusText: '只读 · 历史',
+        phaseText: '只读 · 历史',
         ...(first?.hostId
           ? {
               selectedHostId: first.hostId,
@@ -139,7 +133,7 @@ export function guestActions(set: SetState, get: () => ChatState) {
         sessionId: sid,
         cwd: cwd || undefined,
         conn: 'ready',
-        statusText: '只读 · 历史',
+        phaseText: '只读 · 历史',
         historyLoading: true,
       })
       transport.sendGuestSubscribe(item.hostId, sid)
@@ -162,7 +156,7 @@ export function guestActions(set: SetState, get: () => ChatState) {
         })
         applyGuestStatus(set, status, sid)
       }
-      set({ statusText: '只读 · 历史' })
+      set({ phaseText: '只读 · 历史' })
     },
 
     /**

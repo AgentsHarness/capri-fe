@@ -11,8 +11,9 @@ import {
  * every FE-side replica of TUI behavior (page_flip_on_send,
  * collapsed_edit_blocks, remember_tool_approvals, [ui.notifications] …).
  *
- * config.toml stays the source of truth. GET is the full safe subset;
- * POST /api/settings patches the four FE-consumed [ui] scalars. A FAILED
+ * config.toml stays the source of truth. GET carries every config.toml
+ * table except custom-model definitions; POST /api/settings patches the
+ * four FE-consumed [ui] scalars. A FAILED
  * fetch is not cached — the abort window during host-switch / reconnect
  * must not permanently lose the config, so the next caller retries.
  *
@@ -217,12 +218,9 @@ type ToolsetSection = {
 
 let cachedToolset: ToolsetSection | undefined
 let cachedToolsetUrl = ''
-const toolsetReadyCallbacks = new Set<() => void>()
 const toolsetChangeListeners = new Set<() => void>()
 
 function notifyToolsetSettings(): void {
-  toolsetReadyCallbacks.forEach((cb) => cb())
-  toolsetReadyCallbacks.clear()
   toolsetChangeListeners.forEach((cb) => cb())
 }
 
@@ -266,15 +264,6 @@ export function refreshToolsetSettings(): Promise<ToolsetSection | null> {
 /** Sync accessor — `undefined` until ensureToolsetSettings resolves. */
 export function toolsetSettings(): ToolsetSection | undefined {
   return cachedToolset
-}
-
-/** Run cb once the toolset settings are available (immediately if already). */
-export function onToolsetSettingsReady(cb: () => void): void {
-  if (cachedToolset !== undefined) {
-    cb()
-    return
-  }
-  toolsetReadyCallbacks.add(cb)
 }
 
 /** Replace the cached `toolset` section (after GET/POST /api/settings). */

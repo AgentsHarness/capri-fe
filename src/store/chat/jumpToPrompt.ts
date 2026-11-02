@@ -8,7 +8,7 @@ import type { ChatState, SetState } from './types'
  */
 const MAX_JUMP_PAGES = 300
 
-/** 跳转状态的 statusText 前缀（恢复判断用：期间被别的路径改写则不覆盖）。 */
+/** 跳转状态的 phaseText 前缀（恢复判断用：期间被别的路径改写则不覆盖）。 */
 const JUMP_STATUS_PREFIX = '跳转中'
 
 /** 跳转进度文案：轮序号从 1 计（与目录序号一致），钳到总数。 */
@@ -63,13 +63,13 @@ export async function jumpToPrompt(
     get().historyCwd === cwd
   // 循环期间竖起跳转旗帜：翻页的位置恢复（锚点捕捉 / prepend settle）整体
   // 让路——跳转的终点是目标轮，恢复会在跳转滚动落地后把视口拉回原处。
-  // 进度同时写 statusText（status · 行）与 historyJumpProgress（TopBar 的
+  // 进度同时写 phaseText（status · 行）与 historyJumpProgress（TopBar 的
   // lite 补全芯片：跳转中显示「跳转 N/M」，落地后同芯片无缝接「◇N 待补全」）。
   const total = s0.historyTurnIdx + 1 // 计划加载到的轮序号（从 1 计）
-  const prevStatus = s0.statusText
+  const prevStatus = s0.phaseText
   const applyProgress = (current: number) => {
     set({
-      statusText: jumpStatusText(current, total),
+      phaseText: jumpStatusText(current, total),
       historyJumpProgress: { current: Math.min(Math.max(current, 1), total), total },
     })
   }
@@ -87,7 +87,7 @@ export async function jumpToPrompt(
       const before = loadedStart
       await s.loadMoreHistory(undefined)
       if (!isCurrent()) return null
-      // 回放期间把 statusText 写成 Responding… 之类，重写进度拿回所有权
+      // 回放期间把 phaseText 写成 Responding… 之类，重写进度拿回所有权
       // （否则收尾的前缀判断会把状态停在回放残留上）。
       applyProgress(get().historyTurnIdx + 1)
       const after = get().historyLoadedStart
@@ -113,8 +113,8 @@ export async function jumpToPrompt(
     }
     // 只恢复我们自己写的文案；循环期间别的路径改过（发消息 / live 状态）
     // 就保留对方的值。
-    if (get().statusText?.startsWith(JUMP_STATUS_PREFIX)) {
-      set({ statusText: prevStatus })
+    if (get().phaseText?.startsWith(JUMP_STATUS_PREFIX)) {
+      set({ phaseText: prevStatus })
     }
   }
 }

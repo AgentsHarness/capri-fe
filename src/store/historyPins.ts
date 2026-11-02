@@ -1,7 +1,6 @@
 import { loadJSON, loadStr, removeKey, saveJSON, saveStr } from '../lib/storage'
 import { create } from 'zustand'
-import type { FePrefsDoc, HubPrefsDoc, SessionInfo, TodoStatus, WorkspaceGroup } from '../api/types'
-import { PrefsConflictError } from '../api/transport'
+import type { HubPrefsDoc, SessionInfo, TodoStatus, WorkspaceGroup } from '../api/types'
 import { sessionSortRank } from './historyGroups'
 import { transport } from '../api/client'
 import { isGuestActive } from './chat/guestMode'
@@ -50,14 +49,14 @@ import {
  *   是陈旧的，给 0 等于承认它说的话不作数——只补齐 hub 没有的条目，绝不
  *   覆盖 hub 上任何一次真实写入（含删除）。
  * - hub（持久层 + 合并者）：PUT /api/prefs 带 entries → hub 按条目合并，
- *   回合并后的权威文档 + 新版本；广播 prefs_changed 带同一份。本端收到
- *   就合并，不整份替换、也不因「本地可能没推完」而忽略。
+ *   回合并后的权威文档；广播 prefs_changed 带同一份。本端收到就合并，
+ *   不整份替换、也不因「本地可能没推完」而忽略。
  * - hub 地址取 prefsOrigin()：跨源直连 / host 报的 HUB_URL / 同源部署回退
  *   页面 origin；local 模式无 hub 地址，仅走 localStorage（改动留在本地，
  *   等回到 hub 模式再按条目合并上推）。
- * - 遇到不认 entries 的旧 hub：它的响应不带条目 → 退化成今天的全量覆盖
- *   语义（仍是后写覆盖，但不会像旧协议那样把陈旧快照静默写回——写前总是
- *   先 GET 一次，把 hub 现状并进本地）。
+ * - 文档只认 entries：上推只带 entries，读入也只读 entries——响应/广播里
+ *   没有 entries 的旧 hub 文档按空条目处理，不合并任何东西（快照字段不再
+ *   参与往返）。
  *
  * 未落地的写入由 PENDING 标记记住（离线 / 缺密钥 / 重试未成），在下一次
  * 本地变更、WS 上线（hub_conn）或一次延迟重试时再推。它只安排「还要再推」，
@@ -67,8 +66,6 @@ import {
 const PIN_KEY = KEY.historyPins
 /** 有尚未确认被 hub 接受的本地写入（跨刷新保留，仅用于安排重试）。 */
 const PENDING_KEY = KEY.historyPinsDirty
-/** hub 文档版本：条目合并用不上，旧 hub 的条件写与排障用。 */
-const VER_KEY = KEY.historyPinsVer
 /** 本浏览器源的身份（同 at 时的定序裁决），持久化以跨刷新稳定。 */
 const SITE_KEY = KEY.historyPinsSite
 /** 变更后延迟多久统一回写 hub（合并连续点击）。 */
@@ -80,8 +77,6 @@ const HUB_PUSH_RETRY_MS = 5000
 
 /** FE 前端偏好默认值；改动经 hub prefs 同步到所有在线浏览器。 */
 export type FePrefs = {
-  /** scrollback 中 toolcall 分组默认折叠（false = 分组默认展开）。 */
-  collapseToolGroups: boolean
   /**
    * 精简回放：历史分页请求带 detail=lite，idle 后再拉 full 填正文。
    * 只在走 hub 中转时生效（见 historyViaHubRelay）；直连本机 / 纯 local
@@ -130,20 +125,11 @@ function project(entries: PrefsEntries): PrefsView {
     pinnedSessions: new Set(v.pinnedSessions),
     todos,
     fePrefs: {
-      collapseToolGroups: v.fePrefs.collapseToolGroups !== false,
       liteReplay:
         typeof v.fePrefs.liteReplay === 'boolean' ? v.fePrefs.liteReplay : defaultLiteReplay(),
       autoTodoNewSession: v.fePrefs.autoTodoNewSession === true,
     },
   }
-}
-
-/** 内存态 → 文档里的 fePrefs 快照：没被显式选过的 liteReplay 不写出去。 */
-function fePrefsView(entries: PrefsEntries, fePrefs: FePrefs): FePrefsDoc {
-  const out: FePrefsDoc = { collapseToolGroups: fePrefs.collapseToolGroups }
-  if (alive(entries, feKey('liteReplay'))) out.liteReplay = fePrefs.liteReplay
-  if (alive(entries, feKey('autoTodoNewSession'))) out.autoTodoNewSession = fePrefs.autoTodoNewSession
-  return out
 }
 
 function toStringList(v: unknown): string[] {
@@ -227,39 +213,14 @@ function persist(entries: PrefsEntries): void {
 
 // ── hub 文档 ↔ 条目 ──────────────────────────────────────────────────
 
-/** 内存态 → 上推的 hub 文档（投影 + 条目一起给，旧 hub 只看得懂投影）。 */
-function toWire(view: PrefsView, entries: PrefsEntries): HubPrefsDoc {
-  return {
-    pinnedWorkspaces: [...view.pinnedWorkspaces].sort(),
-    pinnedSessions: [...view.pinnedSessions].sort(),
-    todos: view.todos,
-    fePrefs: fePrefsView(entries, view.fePrefs),
-    entries: pruneTombstones(entries),
-  }
+/** 内存态 → 上推的 hub 文档。 */
+function toWire(entries: PrefsEntries): HubPrefsDoc {
+  return { entries: pruneTombstones(entries) }
 }
 
-/** 文档是否带条目（带 = hub 会按条目合并；不带 = 旧 hub / 旧 FE）。 */
-function docHasEntries(doc?: HubPrefsDoc): boolean {
-  return !!doc?.entries && Object.keys(doc.entries).length > 0
-}
-
-/**
- * hub 文档 → 条目。带 entries 就原样收下；只给投影（旧 hub、或 hub 刚升级
- * 还没有条目）就按快照物化，时间戳用 `at`（调用方给一个「晚于本地已知一切」
- * 的值，让 hub 现状压过本地陈旧缓存，符合「以 hub 为准」的方向）。
- */
-function entriesFromDoc(doc: HubPrefsDoc, snapshotAt: number, site: string): PrefsEntries {
-  if (docHasEntries(doc)) return sanitizeEntries(doc.entries)
-  return entriesFromView(
-    {
-      pinnedWorkspaces: toStringList(doc.pinnedWorkspaces),
-      pinnedSessions: toStringList(doc.pinnedSessions),
-      todos: toTodoMap(doc.todos),
-      fePrefs: toBoolMap(doc.fePrefs),
-    },
-    snapshotAt,
-    site,
-  )
+/** hub 文档 → 条目。entries 是文档的真相源。 */
+function entriesFromDoc(doc: HubPrefsDoc): PrefsEntries {
+  return sanitizeEntries(doc.entries)
 }
 
 // ── store ────────────────────────────────────────────────────────────
@@ -279,7 +240,7 @@ export type HubPrefsState = PrefsView & {
   /** 更新 FE 前端偏好（与置顶/待办同一 hub prefs 文档同步）。 */
   setFePrefs: (patch: Partial<FePrefs>) => void
   /** 把一份 hub 文档按条目并进本地（广播 / GET / PUT 响应共用）。 */
-  absorb: (doc: HubPrefsDoc | undefined, siteTag?: string) => void
+  absorb: (doc: HubPrefsDoc | undefined) => void
   /** 从 hub 拉取并对齐（启动 / WS 重连时）。 */
   syncPrefsFromHub: () => Promise<void>
 }
@@ -288,10 +249,10 @@ export const usePins = create<HubPrefsState>((set, get) => {
   const { entries: initial, site } = load()
 
   /** 收到一份外部文档并按条目合并；返回合并后本地是否还领先于该文档。 */
-  const mergeDoc = (doc: HubPrefsDoc | undefined, siteTag: string): boolean => {
+  const mergeDoc = (doc: HubPrefsDoc | undefined): boolean => {
     if (!doc) return false
     const cur = get().entries
-    const incoming = entriesFromDoc(doc, maxAt(cur) + 1, siteTag)
+    const incoming = entriesFromDoc(doc)
     const merged = pruneTombstones(mergeEntries(cur, incoming))
     if (!sameEntries(merged, cur)) {
       persist(merged)
@@ -338,8 +299,8 @@ export const usePins = create<HubPrefsState>((set, get) => {
         return next
       }),
 
-    absorb: (doc, siteTag = 'hub') => {
-      mergeDoc(doc, siteTag)
+    absorb: (doc) => {
+      mergeDoc(doc)
     },
 
     syncPrefsFromHub: async () => {
@@ -406,31 +367,19 @@ function setPending(v: boolean): void {
   else removeKey(PENDING_KEY)
 }
 
-/** hub 文档版本；null = 未知 / hub 不支持版本 → 不发 baseVersion。 */
-function hubBaseVersion(): number | null {
-  const raw = loadStr(VER_KEY)
-  if (raw == null || raw === '') return null
-  const n = Number(raw)
-  return Number.isSafeInteger(n) && n >= 0 ? n : null
-}
-
-function setHubBaseVersion(v: number | null): void {
-  if (v == null) removeKey(VER_KEY)
-  else saveStr(VER_KEY, String(v))
+/** hub 回包里的文档是否带回条目（合并后的权威文档）。 */
+function docHasEntries(doc: HubPrefsDoc | undefined): doc is HubPrefsDoc & { entries: PrefsEntries } {
+  return !!doc?.entries && typeof doc.entries === 'object' && Object.keys(doc.entries).length > 0
 }
 
 /**
  * 回写 hub（推「当前」文档，串行执行）。
  *
- * 带 entries 的写入在 hub 侧是**合并**而非覆盖，收敛不再依赖条件写；仍把
- * 已知版本当 base 带上——新 hub 对带条目的写忽略它（合并就好），旧 hub 用
- * 它做今天的 409 保护。
+ * 带 entries 的写入在 hub 侧是**合并**而非覆盖，收敛不依赖任何条件写。
  *
- * 收口判据（决定要不要清 PENDING）：
- * - hub 回了带条目的文档 → 它是合并后的权威状态，本端的写入必然已在其中，
- *   收口；
- * - hub 没回条目（旧版，整份覆盖语义）→ 只有「这一轮在飞期间本地没再改」
- *   才算收口，否则落盘的是旧内容，保留 PENDING 等下一轮。
+ * 收口判据（决定要不要清 PENDING）：只有回包确实带回 entries 文档才算落地
+ * ——那是 hub 合并后的权威状态，本端的写入必然已在其中。200 但没带文档
+ * （旧 hub / 代理截断）保持 PENDING，等下一次同步或重试再推。
  */
 function pushToHub(): Promise<void> {
   if (hubPushRunning) {
@@ -448,25 +397,11 @@ function pushToHub(): Promise<void> {
           // 模式的启动同步或下一次变更再按条目合并上推（不空转重试）。
           break
         }
-        const before = usePins.getState().entries
-        let res: { version?: number; prefs?: HubPrefsDoc }
-        try {
-          const s = usePins.getState()
-          res = await transport.putPrefs(toWire(s, s.entries), hubBaseVersion() ?? undefined)
-        } catch (err) {
-          if (!(err instanceof PrefsConflictError)) throw err
-          // 旧 hub 的条件写拒绝：把它的文档并进本地（按条目，谁新听谁的），
-          // 下一轮带新 base 再推。
-          if (typeof err.version === 'number') setHubBaseVersion(err.version)
-          usePins.getState().absorb(err.prefs, 'hub')
-          settled = false
-          continue
-        }
-        if (typeof res?.version === 'number') setHubBaseVersion(res.version)
+        const s = usePins.getState()
+        const res = await transport.putPrefs(toWire(s.entries))
         const echoed = res?.prefs
-        const authoritative = docHasEntries(echoed)
-        if (echoed) usePins.getState().absorb(echoed, 'hub')
-        settled = authoritative || sameEntries(before, usePins.getState().entries)
+        if (docHasEntries(echoed)) usePins.getState().absorb(echoed)
+        settled = docHasEntries(echoed)
       } while (hubPushAgain)
     } catch (err) {
       // 写失败（网络 / 缺密钥 / 旧 hub 持续冲突）：本地状态与 PENDING 都保留。
@@ -486,13 +421,12 @@ function pushToHub(): Promise<void> {
  * 合并而不是替换，是这套协议不再需要「本地干净与否」判定的根本原因：
  * 拉到的文档再新，也只是它在那些 key 上更晚的一条记录而已。
  */
-async function runHubSync(mergeDoc: (doc: HubPrefsDoc | undefined, site: string) => boolean): Promise<void> {
+async function runHubSync(mergeDoc: (doc: HubPrefsDoc | undefined) => boolean): Promise<void> {
   if (syncInFlight) return syncInFlight
   syncInFlight = (async () => {
     try {
       const pull = await transport.getPrefs()
-      if (typeof pull.version === 'number') setHubBaseVersion(pull.version)
-      const localAhead = mergeDoc(pull.prefs, docHasEntries(pull.prefs) ? 'hub' : 'hub-snapshot')
+      const localAhead = mergeDoc(pull.prefs)
       if (localAhead) {
         setPending(true)
         await pushToHub()
@@ -523,11 +457,10 @@ transport.onEvent((ev) => {
     return
   }
   if (ev.type !== 'prefs_changed') return
-  const params = (ev as { params?: { prefs?: HubPrefsDoc; version?: number } }).params
+  const params = (ev as { params?: { prefs?: HubPrefsDoc } }).params
   const raw = params?.prefs
   if (!raw) return
-  if (typeof params?.version === 'number') setHubBaseVersion(params.version)
-  usePins.getState().absorb(raw, 'hub')
+  usePins.getState().absorb(raw)
 })
 
 // 多 Tab 本地同步：Local 直连模式无 hub 广播，监听 storage 事件让同源标签页即时同步
@@ -551,25 +484,10 @@ if (typeof window !== 'undefined') {
 
 /**
  * FE 前端偏好选择器钩子（zustand 订阅，跨端同步后即时重渲染）。
- * 用法：useFePrefs((s) => s.fePrefs.collapseToolGroups)
+ * 用法：useFePrefs((s) => s.fePrefs.autoTodoNewSession)
  */
 export function useFePrefs<T>(selector: (s: HubPrefsState) => T): T {
   return usePins(selector)
-}
-
-/** 非 hook 同步读取（store action / 纯函数路径，选中态计算等）。 */
-export function currentCollapseToolGroups(): boolean {
-  return usePins.getState().fePrefs.collapseToolGroups
-}
-
-/** liteReplay 是否被任一端的条目记录显式选过（没选过按部署模式取默认）。 */
-export function isLiteReplayChosen(): boolean {
-  return alive(usePins.getState().entries, feKey('liteReplay'))
-}
-
-/** 非 hook 同步读取「新对话自动待办」开关。 */
-export function currentAutoTodoNewSession(): boolean {
-  return usePins.getState().fePrefs.autoTodoNewSession
 }
 
 /**

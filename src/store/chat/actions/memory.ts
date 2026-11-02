@@ -1,7 +1,7 @@
 import { transport } from '../../../api/client'
 import type { ChatState, SetState } from '../types'
 import type { MemoryListing } from '../../../lib/memory'
-import { canEnableMemory, disabledReasonLabel, memoryDreamOutcome } from '../../../lib/memory'
+import { memoryDreamOutcome } from '../../../lib/memory'
 import { formatTurnDuration } from '../format'
 import { appendEntry } from '../entries'
 
@@ -169,15 +169,4 @@ export function memoryActions(set: SetState, get: () => ChatState) {
       }
     },
   } satisfies Partial<ChatState>
-}
-
-/** Status text for the modal header: enabled flag plus the off reason. */
-export function memoryStatusLabel(listing: MemoryListing): string {
-  if (listing.enabled) return '记忆已启用'
-  return `记忆已关闭（${disabledReasonLabel(listing.disabledReason)}）`
-}
-
-/** Whether the header toggle should offer to turn memory back on. */
-export function memoryToggleEnabled(listing: MemoryListing): boolean {
-  return listing.enabled || canEnableMemory(listing.disabledReason)
 }

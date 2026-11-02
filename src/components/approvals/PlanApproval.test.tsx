@@ -32,6 +32,11 @@ function key(key: string, init: KeyboardEventInit = {}) {
   fireEvent.keyDown(window, { key, ...init })
 }
 
+/** 冲刷一次应答往返（提交后卡片进入等待回执态）。 */
+async function settle() {
+  await act(async () => {})
+}
+
 describe('PlanApproval', () => {
   it('无 exit_plan_mode 请求 → 不渲染', () => {
     const { container } = render(<PlanApproval />)
@@ -52,15 +57,19 @@ describe('PlanApproval', () => {
     expect(screen.getByRole('button', { name: '稍后再说' })).toBeInTheDocument()
   })
 
-  it('批准按钮 → approved；退出 → abandoned；稍后再说 → dismiss', () => {
+  it('批准按钮 → approved；退出 → abandoned；稍后再说 → dismiss', async () => {
     setRequest({ planContent: PLAN })
     render(<PlanApproval />)
     fireEvent.click(screen.getByRole('button', { name: /批准并开始实施/ }))
     expect(actions().respondXai).toHaveBeenCalledWith('r1', { outcome: 'approved' })
 
+    // 每个出口提交后都进入等待回执态（转圈并锁住其余按钮）；现实中
+    // 回执一到卡片就被 store 摘掉，这里逐次冲刷一帧再点下一个出口。
+    await settle()
     fireEvent.click(screen.getByRole('button', { name: '退出计划模式' }))
     expect(actions().respondXai).toHaveBeenCalledWith('r1', { outcome: 'abandoned' })
 
+    await settle()
     fireEvent.click(screen.getByRole('button', { name: '稍后再说' }))
     expect(actions().dismissXai).toHaveBeenCalledWith('r1')
   })
@@ -124,7 +133,7 @@ describe('PlanApproval', () => {
     expect(actions().respondXai).toHaveBeenLastCalledWith('r1', { outcome: 'approved' })
   })
 
-  it('键盘：无选区 Enter 有文本 → cancelled；选中行 Enter 先保存批注，再按 Enter 提交请求修改；Escape 阶梯', () => {
+  it('键盘：无选区 Enter 有文本 → cancelled；选中行 Enter 先保存批注，再按 Enter 提交请求修改；Escape 阶梯', async () => {
     setRequest({ planContent: PLAN })
     render(<PlanApproval />)
     fireEvent.change(screen.getByPlaceholderText('修改意见（留空时 Enter 直接批准）'), {
@@ -135,6 +144,7 @@ describe('PlanApproval', () => {
       outcome: 'cancelled',
       feedback: '意见',
     })
+    await settle()
 
     actions().respondXai.mockClear()
     fireEvent.mouseDown(screen.getByText('第一行'))
@@ -153,6 +163,7 @@ describe('PlanApproval', () => {
       outcome: 'cancelled',
       feedback: 'Proposed plan line 1:\n> 第一行\n\nComment:\n行评论',
     })
+    await settle()
 
     // 选中行时第一次 Escape 只取消选区，第二次 Escape 才关闭卡片
     fireEvent.mouseDown(screen.getByText('第二行'))
@@ -162,6 +173,7 @@ describe('PlanApproval', () => {
     expect(actions().dismissXai).not.toHaveBeenCalled()
 
     key('Escape')
+    await settle()
     expect(actions().dismissXai).toHaveBeenCalledWith('r1')
   })
 

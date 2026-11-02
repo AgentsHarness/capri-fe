@@ -6,7 +6,6 @@ import { runtime } from '../globals'
 import { extractModeFlags, savePlanMode, sessionModesPatch } from '../modeFlags'
 import {
   adoptTurn,
-  busyPlausibleForView,
   finalizeTurn,
   promptIdMismatch,
   turnEndMarkerText,
@@ -18,11 +17,11 @@ import { applySessionModelState, parseConfigOptions } from '../model'
 import { appendEntry } from '../entries'
 import { flushLiveStream, sealThought } from '../stream'
 import { nid } from '../ids'
-import { applyFollowUps, applyMcpInitProgress, SILENT_EXT_NOTIFICATIONS } from '../followUps'
+import { SILENT_EXT_NOTIFICATIONS } from '../followUps'
 import { dismissUrlWait } from '../../../lib/mcpElicitWait'
-import { applyGitHeadChanged } from './extSession'
 import { truncateEntriesTo, waitRewindAligned } from '../actions/xai'
-import { applyModelIdentity, applySessionTitle } from '../sessionIdentity'
+import { applyModelIdentity } from '../sessionIdentity'
+import { applySessionInfoTitle } from './notifSessionMeta'
 import { loadHistoryWithTaskProbe } from '../loadHistory'
 
 /**
@@ -112,12 +111,11 @@ export function handleExtMiscEvent(
         // scheduled injections end with only this.
         //
         // 回合身份校验（TUI finalize_turn_from_terminal exact-pid 匹配）：
-        // payload 带 promptId（lost-response fix 后的 shell）且与当前回合
-        // 不符 → 上一个回合的迟到广播（RPC 与 live 通道乱序、hub 缓冲
-        // 重放、队列收养窗口）——绝不能收口新回合：新回合刚锚定
+        // payload 带 promptId（v2 host 保证回显）且与当前回合不符或缺失
+        // → 上一个回合的迟到广播（RPC 与 live 通道乱序、hub 缓冲重放、
+        // 队列收养窗口）——绝不能收口新回合：新回合刚锚定
         // （conn=busy、turnStartedAt=现在），被它收口会渲染
-        // "Worked for 0.0s" 假标记并清掉新回合的锚。无 pid（旧 shell）
-        // → 退回 conn busy 守卫的 legacy 行为。
+        // "Worked for 0.0s" 假标记并清掉新回合的锚。
         const s = get()
         if (s.conn !== 'busy') break
         if (promptIdMismatch(ev.params, s.currentPromptId)) break
@@ -176,6 +174,10 @@ export function handleExtMiscEvent(
         break
       }
       case 'ext_notification': {
+        // v2 host 只把「未知方法」放进 generic ext_notification：已 typed 化
+        // 的通知（mcp_init_progress / git_head_changed / queue_changed /
+        // follow_ups）走各自的 typed 分支，这里不再兜底。
+        //
         // Status-type notifications with no scrollback UI value — drop
         // silently. Aligned with the TUI: these are panel-local status
         // feeds the TUI shows ONLY inside their dedicated surfaces
@@ -189,15 +191,8 @@ export function handleExtMiscEvent(
         // - x.ai/config_changed — config reload notice (TUI settings
         //   modal; FE has no config editor).
         // - x.ai/settings/update — pre-existing silence, same rationale.
-        // x.ai/mcp/init_progress is NOT silent: the current host forwards
-        // it as the typed `mcp_init_progress` event (consumed above); an
-        // older host that falls back to ext_notification is consumed here
-        // the same way — never rendered as a status line.
-        if (ev.method === 'x.ai/mcp/init_progress') {
-          applyMcpInitProgress(set, ev.params)
-          break
-        }
-        // URL 征询在接受之后还留着等待卡，服务器完成时用这条通知关掉。
+        // x.ai/mcp/elicit_complete 没有 typed 事件：URL 征询在接受之后还
+        // 留着等待卡，服务器完成时用这条通知关掉。
         if (ev.method === 'x.ai/mcp/elicit_complete') {
           const p = ev.params ?? {}
           const id = typeof p.elicitationId === 'string' ? p.elicitationId : ''
@@ -205,44 +200,7 @@ export function handleExtMiscEvent(
           if (id) dismissUrlWait(id, server)
           break
         }
-        // x.ai/git_head_changed — 旧 host 未打成 typed `git_head_changed`
-        // 时走 generic 兜底；消费与 typed 入口同一套会话归属。
-        if (ev.method === 'x.ai/git_head_changed') {
-          applyGitHeadChanged(
-            set,
-            get,
-            ev.params as Record<string, unknown> | undefined,
-            (ev as { sessionId?: string }).sessionId,
-          )
-          break
-        }
-        // x.ai/queue/changed — agent's authoritative queue snapshot.
-        // Older hosts forward it as ext_notification instead of the
-        // typed `queue_changed` event; both rails feed the promptQueue
-        // sync layer (guard on session id like the typed carrier — the
-        // ext_notification AcpEvent type omits sessionId, but the host
-        // attaches it via withSid).
-        if (ev.method === 'x.ai/queue/changed') {
-          const sid = (ev as { sessionId?: string }).sessionId
-          if (!sid || sid === get().sessionId) {
-            runtime.lastLiveQueueChangedAt = Date.now()
-            const adopted = applyQueueChanged(ev.params)
-            if (adopted) adoptTurn(set, get, adopted)
-          }
-          break
-        }
         if (SILENT_EXT_NOTIFICATIONS.has(ev.method ?? '')) break
-        // x.ai/follow_ups — turn-end suggestion chips (TUI follow_ups.rs):
-        // parsed into store state for the Composer's chip row; NO
-        // scrollback line (the TUI renders them as a transient row above
-        // the prompt). Newest-wins by response_id.
-        if (ev.method === 'x.ai/follow_ups') {
-          // 同 typed 入口的防线：ext_notification 的 sid 由 host 附加
-          // （可能错标/缺省）——不是当前视图的回合就别画 chips。
-          if (!busyPlausibleForView(get())) break
-          applyFollowUps(get, set, ev.params)
-          break
-        }
         // Unknown x.ai/* notification — render a dim status line so nothing
         // is silently dropped (matches the host's generic forwarding).
         appendEntry(set, {
@@ -321,13 +279,10 @@ export function handleExtMiscEvent(
         break
       }
       case 'session_info':
-        // 多会话广播（host withSid 约定）：非当前会话的会话信息忽略
-        // （别的会话的 session_info_update 不能改写本会话的标题）。
-        if (ev.sessionId && ev.sessionId !== get().sessionId) break
-        // 标题写入收敛到唯一入口（sessionIdentity.ts，与
-        // session_summary_generated 共用同一套覆盖规则）：titleIsManual
-        // 的事件不改写本端标题。
-        applySessionTitle(set, get, ev.title, { isManual: ev.titleIsManual === true })
+        // 标题写入在 notifSessionMeta.applySessionInfoTitle（规则本身在
+        // sessionIdentity.ts，与 session_summary_generated 共用同一套
+        // 覆盖规则）。
+        applySessionInfoTitle(set, get, ev)
         break
       case 'model': {
         const sid = ev.sessionId
@@ -392,8 +347,7 @@ export function handleExtMiscEvent(
             }
           })
         }
-        void get().refreshSessions()
-        void get().refreshWorkspaces()
+        void get().refreshSessionLists()
         break
       }
       case 'permissions_reset':

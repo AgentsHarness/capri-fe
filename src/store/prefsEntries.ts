@@ -22,8 +22,8 @@
  *   site : 每浏览器源一个随机串，at 相同时的定序裁决
  *   d    : 墓碑（删除）
  *
- * `pinnedSessions` 等快照字段继续随文档往返：它只是 entries 的**投影**，
- * 供旧 FE / 旧 hub 读取（hub 升级前也能正常工作，退化为今天的后写覆盖）。
+ * 文档往返只带 entries：上推与读入都以条目为准；`pinnedSessions` 等快照
+ * 字段只是本端由 entries 算出的**投影**，不再随文档往返，也不再被读入。
  */
 
 // 条目与线格式的类型定义在 api/types/core.ts（hub 侧对应 internal/hub 的

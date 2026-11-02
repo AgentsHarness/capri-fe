@@ -15,6 +15,23 @@ import { pushToast } from '../toast'
 import { captureAsyncScope, isAsyncScopeCurrent } from './globals'
 import { blockGuestWrite } from './guestMode'
 
+/** 未送达错误行的固定前缀：重发时按它识别并清掉旧行。 */
+export const UNDELIVERED_PREFIX = '消息未送达'
+
+/**
+ * 把一条用户行标成「未送达」。重发入口（行内按钮 / 错误行）都靠这个标记
+ * 判断回收哪一条；send() 重发时会重新画行，标记自然消失。
+ */
+export function markUndelivered(
+  entries: ChatState['entries'],
+  userId: string | undefined,
+): ChatState['entries'] {
+  if (!userId) return entries
+  return entries.map((e) =>
+    e.kind === 'user' && e.id === userId ? { ...e, undelivered: true } : e,
+  )
+}
+
 export async function sendPrompt(
   set: SetState,
   get: () => ChatState,
@@ -149,8 +166,8 @@ export async function sendPrompt(
     // PromptResponse / SessionNotification 的 `_meta` 上回显），终端事件
     // 按它做 exact-pid 匹配，杜绝上一回合的迟到 prompt_complete/done
     // 收口新回合（"Worked for 0.0s" 假标记）。降级行重发沿用原 id
-    // （agent queue_meta 身份一致）；旧 host 忽略该字段 → 事件无 pid，
-    // 匹配退回 legacy。与队列 promptId 同源（promptQueue 的 qid）。
+    // （agent queue_meta 身份一致）；v2 host 保证回显该字段（缺失按不匹配
+    // 处理）。与队列 promptId 同源（promptQueue 的 qid）。
     const promptId = opts?.promptId ?? qid()
     // Shell-mode submissions (Composer `!` mode → prompt path) mark the
     // user row so the scrollback renders it with the TUI `$ ` prefix.
@@ -179,7 +196,7 @@ export async function sendPrompt(
       pendingOptimisticUserId: userId,
       lastSentPromptId: userId,
       conn: 'busy',
-      statusText: 'Waiting for response…',
+      phaseText: 'Waiting for response…',
       awaitingNext: false,
       turnStartedAt: Date.now(),
       currentPromptId: promptId,
@@ -203,6 +220,13 @@ export async function sendPrompt(
         // 避免 host 活动会话与 FE 列表选中会话在竞态窗口内不一致时发错会话。
         { promptId, sessionId: get().sessionId },
       )
+      // 200 = host 已受理（hub 等的是 host 的 respond，host 又受理即返回）。
+      // 这是「消息确实出去了」的正面证据：断线时前端可以据此判断回合是
+      // 真的在跑（等输出即可），而不是发不出去。只在同一回合仍有效时写，
+      // 换会话/换 host 后的迟到响应不能污染新视图。
+      if (isAsyncScopeCurrent(get, sendScope) && get().currentPromptId === promptId) {
+        set({ promptAcceptedAt: Date.now() })
+      }
     } catch (e) {
       if (!isAsyncScopeCurrent(get, sendScope)) return
       const msg = e instanceof Error ? e.message : String(e)
@@ -247,54 +271,68 @@ export async function sendPrompt(
         })
         set({
           ...after,
+          // 保留回合身份并标记用户行：这条 prompt 谁都没收到，重发入口
+          // 按同一个 promptId 复用身份（host 侧同号去重）。清掉的话用户
+          // 只剩顶部一条「host 已离线」，没有任何可点的恢复动作。
+          currentPromptId: promptId,
+          entries: markUndelivered(after.entries, userId),
           pendingOptimisticUserId: undefined,
           conn: 'error',
           statusText: '',
           awaitingNext: false,
           turnStartedAt: undefined,
-          currentPromptId: undefined,
+          promptAcceptedAt: undefined,
         })
-        return
-      }
-      // 代理超时（524 Cloudflare / 504 nginx / 408）≠ agent 拒绝：这是
-      // 反代等不到源站响应头（Cloudflare ~100s）主动掐断阻塞的 POST。
-      // 新 host 已改为受理即返回，不会再触发；此分支是旧 host（阻塞到
-      // 回合结束）的防御——host 的 handler 早已 detach（ctx.Done()）、
-      // 回合在后台照常跑、输出继续走 live 通道，回合结果由 live 通道
-      // 收口（成功或 SSE 错误事件）。渲染 "prompt failed (524)" 只会
-      // 污染已正常完成的回合。与网络瞬断同构：不渲染错误行，武装看门狗
-      // 兜底——仅当回合卡死且 live 通道断开才补错误态。turnStartedAt
-      // 已清说明 live 通道已收口过（结果已渲染），静默返回。
-      if (
-        e instanceof AgentTurnError &&
-        (e.status === 524 || e.status === 504 || e.status === 408 || e.status === 599)
-      ) {
-        if (s.turnStartedAt == null) return
-        armTurnBlipWatchdog(set, get, msg)
         return
       }
       // host 的 SSE error 事件（同文本）通常先于 HTTP 响应到达、已滚过
       // 一行——按文本去重，避免同一回合错误出现两行。
       const last = after.entries[after.entries.length - 1]
       const dup = last && last.kind === 'error' && last.text === msg
+      // hub 中继的快速失败：host 正在重连 / 不可达时，hub 不等回合结束
+      // 就直接回 503（AgentTurnError.status）。这条 prompt 根本没离开
+      // hub——判定只看状态码，不依赖错误文案（hub 可能换措辞）。
+      const offline503 =
+        e instanceof AgentTurnError && e.status === 503
+      const undeliveredMsg = offline503
+        ? `${UNDELIVERED_PREFIX}：${msg}`
+        : msg
       set({
         ...after,
         pendingOptimisticUserId: undefined,
         conn: s.conn === 'busy' ? 'ready' : s.conn,
         // unreachable（502/传输断）：agent 可能不可达——host 不再自动
         // 重启，给恢复提示；rejected：agent 报错，直接显示错误文本。
-        statusText:
-          e instanceof AgentTurnError && e.kind === 'unreachable'
+        // 503 是 hub 层的中继失败，状态行说清「未送达 + hub 的原话」。
+        statusText: offline503
+          ? undeliveredMsg
+          : e instanceof AgentTurnError && e.kind === 'unreachable'
             ? 'agent 连接异常，可重启 agent'
             : msg,
-        // 新回合开始：清空分层错误栈。
-        layerErrors: {},
+        // 503 是 hub 层失败：host-offline 横幅正是这条错误的来源，别清掉
+        // （恢复在线时 refreshHosts 会按 id 清除）。其余回合级错误说明
+        // host 活着，清空分层错误栈。
+        layerErrors: offline503 ? s.layerErrors : {},
         awaitingNext: false,
         turnStartedAt: undefined,
-        currentPromptId: undefined,
-        entries: dup
-          ? after.entries
-          : [...after.entries, { id: nid(), kind: 'error', text: msg }],
+        // hub 回 503 说明这条 prompt 根本没离开 hub：回合身份留着，用户行
+        // 与错误行都挂重试，两条入口都指回 resendUndeliveredPrompt（同
+        // promptId，host 侧同号去重）。
+        ...(offline503 ? { currentPromptId: promptId } : { currentPromptId: undefined }),
+        promptAcceptedAt: undefined,
+        entries: offline503
+          ? [
+              ...markUndelivered(after.entries, userId),
+              {
+                id: nid(),
+                kind: 'error',
+                text: undeliveredMsg,
+                action: 'resend' as const,
+              },
+            ]
+          : dup
+            ? after.entries
+            : [...after.entries, { id: nid(), kind: 'error', text: msg }],
       })
     }
   }

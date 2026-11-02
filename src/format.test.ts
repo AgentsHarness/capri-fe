@@ -128,18 +128,17 @@ describe('fmtBytes', () => {
 })
 
 describe('filterRunningEntries', () => {
-  it('只保留 running 的 subagent / bg_task / workflow', () => {
+  it('只保留 running 的 subagent / bg_task', () => {
     const entries: ScrollEntry[] = [
       { id: '1', kind: 'subagent', title: 's1', status: 'started', running: true },
       { id: '2', kind: 'subagent', title: 's2', status: 'completed' },
       { id: '3', kind: 'bg_task', title: 'b1', status: 'started', running: true },
       { id: '4', kind: 'bg_task', title: 'b2', status: 'failed' },
-      { id: '5', kind: 'workflow', title: 'w1', status: 'running', running: true },
       { id: '6', kind: 'user', text: 'hi' },
       { id: '7', kind: 'assistant', text: 'yo' },
     ]
     const running = filterRunningEntries(entries)
-    expect(running.map((e) => e.id)).toEqual(['1', '3', '5'])
+    expect(running.map((e) => e.id)).toEqual(['1', '3'])
   })
 })
 

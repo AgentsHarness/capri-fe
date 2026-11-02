@@ -80,16 +80,10 @@ export const modeMixin = {
       data.hosts?.length === 1 && data.hosts[0]?.local === true ? data.hosts[0] : null
     const hostLocalId = typeof data.hostId === 'string' ? data.hostId : hostRow?.hostId
     const localHostName = hostRow?.hostName
-    const isHostShape =
-      typeof data.mode === 'string' ||
-      (!data.defaultHostId && data.hosts?.length === 1 && hostRow?.local === true)
 
-    if (isHostShape && hostLocalId) {
-      // 应答者自报 hostId，且形状像 host。`mode` 缺失 = 旧版本 capri-host
-      // （只在 /api/status 里报模式）：走降级，仍按今天那样试一次 status。
-      if (typeof data.mode !== 'string') {
-        return this.detectModeLegacy(hostLocalId, authRequired, localHostName)
-      }
+    // capri-host answers its own registry with `mode`; the hub's does not (it
+    // publishes a host list + defaultHostId instead).
+    if (typeof data.mode === 'string' && hostLocalId) {
       if (data.mode === 'hub') {
         return {
           mode: 'hub',
@@ -108,58 +102,9 @@ export const modeMixin = {
       }
     }
 
-    // 没有 mode 字段、又不是「单台 local:true」的形状 → hub 的注册表。
-    // 不带 authRequired：hub 的「要不要钥匙」就是这里的 200/401，
-    // 且升 hub 时页面那台 host 的身份也无从谈起。
-    if (!isHostShape) {
-      return { mode: 'hub', hubUrl: this.base }
-    }
-    // 形状像 host 但认不出它的 hostId（极旧的 host）：本机锁定，无近路可认。
-    return { mode: 'local', hubUrl: '', authRequired }
-  },
-
-
-  /**
-   * 旧版本 capri-host 的降级路径（/api/hosts 不带 mode）：只能去问需要
-   * 钥匙的 /api/status。拿不到就锁本机——比从前多带一层保护：**不因失败
-   * 抹密钥**，也不谎报 hub。
-   */
-  async detectModeLegacy(
-    this: TransportCtx,
-    hostId: string,
-    authRequired: boolean,
-    localHostName?: string,
-  ): Promise<DetectModeResult> {
-    try {
-      const stRes = await this.fetch(
-        `${this.base}/api/status`,
-        {},
-        {
-          auth: this.allowDetectAuth || this.probeKey() !== '' || authRequired,
-          hubLevel: true,
-          authProbe: true,
-        },
-      )
-      if (stRes.ok) {
-        const st = (await stRes.json().catch(() => ({}))) as {
-          mode?: string
-          hubUrl?: string
-          hostId?: string
-        }
-        if (st.mode === 'hub') {
-          return {
-            mode: 'hub',
-            hubUrl: st.hubUrl || this.base,
-            localHostId: st.hostId || hostId,
-            localHostName,
-            authRequired,
-          }
-        }
-      }
-    } catch {
-      /* 保持 local */
-    }
-    return { mode: 'local', hubUrl: '', localHostId: hostId, localHostName, authRequired }
+    // No `mode` field: this is the hub's registry. authRequired is left off —
+    // the hub's "needs a key" answer was the 200/401 of this very probe.
+    return { mode: 'hub', hubUrl: this.base }
   },
 
 

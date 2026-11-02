@@ -15,6 +15,7 @@ import {
   registerShareGuestOpener,
   type ShareTarget,
 } from '../../lib/shareGuestTarget'
+import { Spinner } from '../ui/Spinner'
 
 export type { ShareTarget }
 
@@ -342,9 +343,13 @@ export function ShareGuestModal({
                 type="button"
                 disabled={busy || tokens == null}
                 onClick={() => void confirm()}
-                className="inline-flex min-h-8 items-center gap-1 rounded bg-gn-cyan/15 px-3 py-1 text-[12px] font-semibold text-gn-cyan hover:bg-gn-cyan/25 disabled:opacity-50"
+                className="inline-flex min-h-8 items-center gap-1 rounded bg-gn-cyan/15 px-3 py-1 text-[12px] font-semibold text-gn-cyan hover:bg-gn-cyan/25 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <Link2 size={12} strokeWidth={2.5} aria-hidden />
+                {busy ? (
+                  <Spinner size={12} />
+                ) : (
+                  <Link2 size={12} strokeWidth={2.5} aria-hidden />
+                )}
                 {alreadyIncluded ? '查看链接' : '确认并生成链接'}
               </button>
             </>

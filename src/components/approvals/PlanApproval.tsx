@@ -5,6 +5,7 @@ import { Glyphs } from '../../theme/glyphs'
 import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS } from '../../theme/layout'
 import { IconGlyph } from '../ui/IconGlyph'
 import { Markdown } from '../ui/Markdown'
+import { Spinner } from '../ui/Spinner'
 
 /**
  * x.ai/exit_plan_mode approval card — web counterpart of the TUI plan
@@ -100,6 +101,13 @@ export function PlanApproval() {
   const [comments, setComments] = useState<PlanLineComment[]>([])
   const [editingCommentId, setEditingCommentId] = useState<number | null>(null)
   const nextCommentIdRef = useRef(1)
+  /**
+   * 已发出、等 host 回执的出口（`approve` / `revise` / `abandon` / `dismiss`）。
+   * 应答往返期间卡片不动，不锁会被重复点击撞成「已过期」。
+   */
+  const [submitting, setSubmitting] = useState<string | null>(null)
+  /** 键盘处理器注册在 window 上，闭包读不到最新的 submitting，用 ref 拦截。 */
+  const submittingRef = useRef(false)
 
   // Pure derivations — memoized so the keydown effect's deps stay stable
   // across renders (planLines/selection recompute only when their inputs
@@ -137,6 +145,8 @@ export function PlanApproval() {
     setComments([])
     setEditingCommentId(null)
     nextCommentIdRef.current = 1
+    setSubmitting(null)
+    submittingRef.current = false
   }, [req?.requestId])
 
   // End line-drag selection even if the pointer is released outside the card.
@@ -212,10 +222,41 @@ export function PlanApproval() {
       }
     }
     const body = formatPlanFeedback(planLines, effectiveComments, freeform)
-    void respondXai(req.requestId, {
+    void submit('revise', {
       outcome: 'cancelled',
       ...(body ? { feedback: body } : {}),
     })
+  }
+
+  /**
+   * 发出一个应答出口并进入等待态。成功时 store 收掉请求、卡片消失；
+   * 失败时 store 保留卡片并 toast，这里清掉让用户能重试。
+   */
+  const submit = async (key: string, result: Record<string, unknown>) => {
+    if (submittingRef.current || !req) return
+    submittingRef.current = true
+    setSubmitting(key)
+    // 回执一到就解锁（含同步 resolve 的 store）：卡片去留由 store 决定，
+    // 这把锁只负责挡住同一次点击派发里的重复提交。
+    const pending = Promise.resolve(respondXai(req.requestId, result))
+    void pending.finally(() => {
+      submittingRef.current = false
+      setSubmitting(null)
+    })
+    await pending
+  }
+
+  /** 关闭（Esc / 稍后再说）：同样是往返请求，与应答共用一把锁。 */
+  const dismiss = async () => {
+    if (submittingRef.current || !req) return
+    submittingRef.current = true
+    setSubmitting('dismiss')
+    const pending = Promise.resolve(dismissXai(req.requestId))
+    void pending.finally(() => {
+      submittingRef.current = false
+      setSubmitting(null)
+    })
+    await pending
   }
 
   useEffect(() => {
@@ -236,7 +277,7 @@ export function PlanApproval() {
         if (selection) {
           clearSelection()
         } else {
-          void dismissXai(req.requestId)
+          void dismiss()
         }
         return
       }
@@ -260,7 +301,7 @@ export function PlanApproval() {
         if (fb || comments.length > 0) {
           sendRevision()
         } else {
-          void respondXai(req.requestId, { outcome: 'approved' })
+          void submit('approve', { outcome: 'approved' })
         }
         return
       }
@@ -320,7 +361,8 @@ export function PlanApproval() {
           <div className="ml-auto flex shrink-0 items-center gap-1.5">
             <button
               type="button"
-              onClick={() => void dismissXai(req.requestId)}
+              onClick={() => void dismiss()}
+              disabled={submitting !== null}
               className="rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
               aria-label="关闭"
               title="稍后再说 (Esc)"
@@ -593,16 +635,20 @@ export function PlanApproval() {
           <div className="flex items-center gap-1.5">
             <button
               type="button"
-              onClick={() => void respondXai(req.requestId, { outcome: 'abandoned' })}
-              className="min-h-8 rounded px-2.5 py-1 text-[12px] text-gn-red transition-colors hover:bg-gn-diff-del-bg"
+              onClick={() => void submit('abandon', { outcome: 'abandoned' })}
+              disabled={submitting !== null}
+              className="inline-flex min-h-8 items-center gap-1.5 rounded px-2.5 py-1 text-[12px] text-gn-red transition-colors hover:bg-gn-diff-del-bg disabled:cursor-not-allowed disabled:opacity-40"
             >
+              {submitting === 'abandon' ? <Spinner /> : null}
               退出计划模式
             </button>
             <button
               type="button"
-              onClick={() => void dismissXai(req.requestId)}
-              className="min-h-8 rounded px-2.5 py-1 text-[12px] text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg"
+              onClick={() => void dismiss()}
+              disabled={submitting !== null}
+              className="inline-flex min-h-8 items-center gap-1.5 rounded px-2.5 py-1 text-[12px] text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40"
             >
+              {submitting === 'dismiss' ? <Spinner /> : null}
               稍后再说
             </button>
           </div>
@@ -610,6 +656,7 @@ export function PlanApproval() {
           <div className="ml-auto flex items-center gap-2">
             <button
               type="button"
+              disabled={submitting !== null}
               onClick={() => {
                 if (hasPendingRevision) {
                   sendRevision()
@@ -617,7 +664,7 @@ export function PlanApproval() {
                   feedbackRef.current?.focus()
                 }
               }}
-              className={`inline-flex min-h-8 items-center gap-1.5 rounded border px-3 py-1 text-[12.5px] transition-colors ${
+              className={`inline-flex min-h-8 items-center gap-1.5 rounded border px-3 py-1 text-[12.5px] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
                 hasPendingRevision
                   ? 'border-gn-yellow/50 bg-gn-bg-highlight font-semibold text-gn-fg ring-1 ring-gn-yellow/30 hover:bg-gn-bg-hover'
                   : 'border-gn-prompt-border/80 bg-gn-bg-base text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg'
@@ -629,16 +676,19 @@ export function PlanApproval() {
               }
             >
               <span>请求修改</span>
+              {submitting === 'revise' ? <Spinner /> : null}
             </button>
             <button
               type="button"
-              onClick={() => void respondXai(req.requestId, { outcome: 'approved' })}
-              className={`inline-flex min-h-8 items-center rounded border px-3.5 py-1 text-[12.5px] transition-colors ${
+              onClick={() => void submit('approve', { outcome: 'approved' })}
+              disabled={submitting !== null}
+              className={`inline-flex min-h-8 items-center gap-1.5 rounded border px-3.5 py-1 text-[12.5px] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
                 hasPendingRevision
                   ? 'border-gn-prompt-border/80 bg-gn-bg-base text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg'
                   : 'border-gn-yellow/50 bg-gn-bg-highlight font-semibold text-gn-fg ring-1 ring-gn-yellow/30 hover:bg-gn-bg-hover'
               }`}
             >
+              {submitting === 'approve' ? <Spinner /> : null}
               批准并开始实施
             </button>
           </div>

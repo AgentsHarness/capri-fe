@@ -231,7 +231,7 @@ export const guestMixin = {
    * 「切到访客」必须能在验证失败时原样留在管理员那边，不能先把令牌槽换掉、
    * 把在途请求全 abort 一遍再退回来。
    *
-   * 返回身份对象，或 'invalid'（401 / 404 / 不是访客令牌）、'error'（网络等）。
+   * 返回身份对象，或 'invalid'（401 / 不是访客令牌）、'error'（网络等）。
    */
   async probeGuestRole(this: TransportCtx, token: string): Promise<GuestIdentity | 'invalid' | 'error'> {
     if (this.mode !== 'hub') return 'error'
@@ -246,8 +246,7 @@ export const guestMixin = {
           forceToken: token,
         },
       )
-      // 旧 hub 没有访客功能：404 当「不是访客令牌」处理。
-      if (res.status === 401 || res.status === 404) return 'invalid'
+      if (res.status === 401) return 'invalid'
       if (!res.ok) return 'error'
       const data = (await res.json().catch(() => null)) as {
         role?: string

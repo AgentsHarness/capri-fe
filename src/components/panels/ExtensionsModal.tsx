@@ -12,6 +12,7 @@ import type { AgentSkill, WorkflowInfo } from '../../api/types'
 import { setCachedWorkflows } from '../../commands/workflows'
 import { Glyphs } from '../../theme/glyphs'
 import { IconGlyph } from '../ui/IconGlyph'
+import { Spinner } from '../ui/Spinner'
 
 const TABS = [
   { id: 'hooks', label: 'hooks' },
@@ -514,9 +515,10 @@ export function ExtensionsModal() {
                   type="button"
                   onClick={() => void reloadHooks()}
                   disabled={reloadBusy}
-                  className="shrink-0 rounded px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
+                  className="inline-flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-50"
                   title="x.ai/hooks/action reload — 重新扫描 ~/.grok/hooks，无需重启"
                 >
+                  {reloadBusy ? <Spinner size={10} /> : null}
                   {reloadBusy ? '重载中…' : '重载 hooks（热加载）'}
                 </button>
               </span>
@@ -625,7 +627,8 @@ function HookItem({
         className="shrink-0 rounded px-2 py-0.5 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:opacity-50"
         title={h.pinned === true ? '托管策略强制，不可停用' : `x.ai/hooks/action ${isOff ? 'enable' : 'disable'}`}
       >
-        {busy ? '…' : isOff ? '启用' : '停用'}
+        {busy ? <Spinner size={10} /> : null}
+        {isOff ? '启用' : '停用'}
       </button>
     </div>
   )
@@ -848,7 +851,8 @@ function SkillItem({
           }`}
           title="x.ai/skills/toggle — 启用/禁用该 skill（agent 注册表）"
         >
-          {busy === s.name ? '…' : s.enabled === false ? '启用' : '禁用'}
+          {busy === s.name ? <Spinner size={10} /> : null}
+          {s.enabled === false ? '启用' : '禁用'}
         </button>
       )}
     </div>

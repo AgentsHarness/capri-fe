@@ -495,7 +495,8 @@ export function TopBar({
                   : [{ hostId: hostId || 'local', hostName: hostName || 'Local Host', online: true }]
                 ).map((h) => {
                   const current = h.hostId === selectedHostId
-                  const state = hostState(h)
+                  // 空列表时的合成行只是渲染占位，没有实时数据；别把它标成「空闲」。
+                  const state = hosts.length ? hostState(h) : undefined
                   const stateLabel = hostStateLabel(state)
                   // 每次渲染读 transport：discoverLocalHost / refreshHosts 后
                   // hosts 更新会带动重绘，通路标记随之刷新。近路是按 hostId 逐台
@@ -687,8 +688,8 @@ export function TopBar({
         </div>
 
         {/* Hub 在线 FE 订阅数：紧跟 host 块右侧。数字来自 hub 的 hello /
-            subscribers_changed（/ws/fe 连接总数，含本页）；老 hub 不下发时
-            不渲染，避免显示一个假的 0。人物图标把裸数字读成「在线订阅者」，
+            subscribers_changed（/ws/fe 连接总数，含本页）；访客的 hello
+            不带该字段，因此不渲染，避免显示一个假的 0。人物图标把裸数字读成「在线订阅者」，
             与左右两侧的纯按钮区分开。点开 = 订阅者详情（地址 / 设备 /
             哪把令牌 / 正在看哪个会话），数据来自 GET /api/subscribers。 */}
         {mode === 'hub' && feSubscribers != null && (

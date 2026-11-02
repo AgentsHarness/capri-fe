@@ -1,4 +1,4 @@
-import type { HostInfo } from './sessions'
+import type { GuestSessionState, HostInfo } from './sessions'
 import type { HubPrefsDoc } from './core'
 import type { ToolCall } from './tools'
 
@@ -545,6 +545,12 @@ export type AcpEvent =
   | { type: 'leader_reconnected'; sessionId?: string; params?: Record<string, unknown> }
   /** Fallback: any other x.ai/* notification, forwarded verbatim. */
   | { type: 'ext_notification'; method?: string; params?: Record<string, unknown> }
+  /**
+   * Host uplink占位：capri-host 对「没有页面在查看」的会话不发正文，只发
+   * 这条保序号的空事件（见 acp-host client.go 的 trimUnwatched）。FE 不
+   * 消费它——切到该会话时正文从宿主持久化历史重建。
+   */
+  | { type: 'trimmed'; sessionId?: string; seq?: number }
 
 /**
  * GET /api/status 响应（capri-host Status struct 镜像）。字段全 optional：
@@ -574,16 +580,18 @@ export type HostStatus = {
   models?: unknown
   /** 启动失败错误信息。 */
   bootError?: string
-  /**
-   * 启动失败错误信息（旧 host 版本以 `error` 字段返回——chat.ts 的
-   * hello 快照归一化路径同时读 bootError/error）。
-   */
-  error?: string
   /** 挂起的客户端请求（x.ai/* 与权限请求）。 */
   pendingRequests?: PendingReq[]
   capabilities?: unknown
   /** 各会话实时状态（SessionState[]）。 */
   roster?: unknown
+  /**
+   * 访客 /api/status 的当前会话摘要：hub 对访客身份把 pendingRequests /
+   * roster 换成这几个字段（v2 hub 固定下发）。
+   */
+  sessionState?: GuestSessionState['sessionState']
+  awaitingInput?: boolean
+  pendingInput?: GuestSessionState['pendingInput']
   /** 当前 agent 进程启动时间戳（Unix ms）。 */
   agentStartedAt?: number
   /** host 记录的 agent 权威权限模式（ask / auto / always-approve）。 */
@@ -628,18 +636,12 @@ export type AskQuestion = {
 }
 
 /** x.ai/ask_user_question ext request params. */
-
-
-/** x.ai/ask_user_question ext request params. */
 export type AskUserQuestionReq = {
   sessionId?: string
   toolCallId?: string
   mode?: 'default' | 'plan'
   questions: AskQuestion[]
 }
-
-/** x.ai/exit_plan_mode ext request params. */
-
 
 /** x.ai/exit_plan_mode ext request params. */
 export type ExitPlanModeReq = {

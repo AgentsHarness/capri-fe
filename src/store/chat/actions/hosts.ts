@@ -17,6 +17,175 @@ import { pushToast } from '../../toast'
 import { refreshDefaultModeFlags } from '../modePersist'
 import { KEY } from '../../../lib/keys'
 import { blockGuestWrite, isGuestState } from '../guestMode'
+import { turnIsLive } from '../turnStatus'
+import { markUndelivered, UNDELIVERED_PREFIX } from '../send'
+import { sealThought } from '../stream'
+import { nid } from '../ids'
+
+/**
+ * 直播静默探针：busy 且这么久没有任何 live 事件，就去查一次 host 心跳。
+ *
+ * 为什么需要它：host↔hub 的上行断掉时，FE↔hub 的 /ws/fe 仍然好着——界面上
+ * 只是"不再更新"，与"模型在长时间思考"完全同形。hub 的快速 503 只覆盖
+ * 用户动作，靠 hub 自己广播 host-offline 又太慢；静默两秒先探一次心跳，
+ * 用户不必盯着不动的界面猜。
+ *
+ * 而 hub 每收到一个 host 上行帧就刷新 HostInfo.LastSeen（busy 时心跳 1s
+ * 一拍、空闲 5s 一拍），并按自己的时钟算出 lastSeenAgeMs 一起下发。查一次
+ * 就能把「host 活着只是在思考」和「host 已经不出声了」分开——前者 age
+ * 是新鲜的，后者停住了。
+ */
+export const SILENCE_PROBE_AFTER_MS = 2_000
+
+/**
+ * lastSeen 超过这个年龄就认为心跳停了。busy 心跳 1 秒一拍，这里留三拍
+ * 余量（3.5s）：心跳是可丢的非关键入队，事件爆发时的队列压力、长 GC、
+ * 笔记本睡眠唤醒都可能连丢一两拍，太紧会把「忙」误判成「断」。
+ *
+ * 这只是 UI 的暂定结论：真正判定归 hub（host-offline / 快速 503），
+ * 探针只负责提前把「连接中断」说给用户听。
+ */
+export const HOST_HEARTBEAT_STALE_MS = 3_500
+
+export type HostSilenceVerdict = 'alive' | 'silent' | 'unknown'
+
+/**
+ * 读一次注册表，判断选中 host 的心跳是否还在更新。
+ *
+ * 纯读：不改任何回合状态、不发提示。判定归 hub（host-offline / 中继快速
+ * 失败），这里只为 UI 提供"该不该说一声"的依据。
+ *
+ * 只看 hub 算好的 lastSeenAgeMs，绝不拿 lastSeen 减浏览器时钟：两个时间戳
+ * 来自两台机器，时钟差几秒就会把一条健康心跳算成 "停了"，长工具调用期间
+ * 会直接误报「Host 连接中断」。v2 hub 每帧都算出该字段，缺失按刚收到
+ * 心跳处理。
+ */
+export async function probeHostHeartbeat(
+  selectedHostId: string | undefined,
+): Promise<HostSilenceVerdict> {
+  if (!selectedHostId) return 'unknown'
+  let hosts: HostInfo[]
+  try {
+    ;({ hosts } = await transport.listHosts())
+  } catch {
+    // 连注册表都拿不到：那是 FE↔hub 的问题，由 hub-ws 提示负责，不在这里
+    // 下结论（误报成 host 断线会更糟）。
+    return 'unknown'
+  }
+  const sel = hosts.find((h) => h.hostId === selectedHostId)
+  if (!sel || !sel.online) return 'silent'
+  // v2 hub 总会算好 age；真缺了就当刚收到（不拿 lastSeen 减本机时钟）。
+  const ageMs = sel.lastSeenAgeMs ?? 0
+  return ageMs >= HOST_HEARTBEAT_STALE_MS ? 'silent' : 'alive'
+}
+
+/**
+ * host 被判离线时，收掉一个「已经上屏、但可能从未送达」的回合。
+ *
+ * 这个洞的形状：POST /api/prompt 经 hub 中继，上行链路静默死掉时请求会
+ * 停在 hub 的 pending 表里，前端既不抛错也没有回音；而乐观用户行在发出
+ * 请求之前就已经画好，于是界面看起来像个正常进行中的回合。等到 hub 把
+ * host 标离线（心跳静默 / 传输层 drop），才第一次拿到"对方没了"的证据。
+ *
+ * 三档判定，按证据强弱排列：
+ * 1) 收到过本回合的 live 事件 → 回合确实在 host 上跑过，什么都不做
+ *    （重连的 gap-pull 会补齐输出）。
+ * 2) 拿到过 200（promptAcceptedAt）→ host 已受理，回合在跑，只是输出
+ *    回不来。不改回合状态，只在状态行提示"已送达，等待 Host 恢复连接…"。
+ * 3) 两者都没有 → 消息很可能根本没到 host。收掉假 busy，给可重发的错误行。
+ */
+function handleHostOfflineTurn(
+  set: SetState,
+  get: () => ChatState,
+  hostName: string,
+) {
+  const s = get()
+  const started = s.turnStartedAt
+  const accepted = s.promptAcceptedAt
+  const lastLive = transport.lastLiveEventAt()
+  const sawLive = started != null && lastLive != null && lastLive >= started
+  if (sawLive) return
+
+  // 已受理：回合在 host 上跑着，本端只是收不到输出。保持 busy，别把用户
+  // 引向"重发"——重发会被 host 判为重号而静默丢弃，看起来像又发失败了。
+  if (accepted != null) {
+    if (s.conn === 'busy' || s.conn === 'ready') {
+      // 空闲态的 idleStatusLine 优先读 statusText；不清掉上一次操作回执，
+      // 「已送达，等待 Host 恢复连接…」会被它遮住。
+      set({ phaseText: '已送达，等待 Host 恢复连接…', statusText: '' })
+    }
+    return
+  }
+
+  if (!turnIsLive(s) || started == null) return
+  const msg = `消息未送达 Host「${hostName}」（连接已断开）`
+  const after = sealThought(s)
+  clearStreamBuf()
+  // 用户行本身也要能重试：错误行在时间线末尾，用户回头看的是自己那条
+  // prompt。标记跟随 lastSentPromptId（send() 写的是同一条），重发成功后
+  // send() 重新画行，标记自然消失。
+  const marked = markUndelivered(after.entries, s.lastSentPromptId)
+  set({
+    ...after,
+    // 用户行与 currentPromptId 保留：线上那条"我发的没出去"还在，重发入口
+    // 按 currentPromptId 复用同一身份。pendingOptimisticUserId 必须清掉：
+    // turnLiveLocally / busyPlausibleForView 把它当作"回合在飞"，下一个
+    // ready/hello 会据此把刚判死的回合又顶回 busy（重发时 send() 会重新
+    // 点亮它，见 send.ts 的 pendingOptimisticUserId: userId）。
+    conn: 'error',
+    statusText: '',
+    pendingOptimisticUserId: undefined,
+    awaitingNext: false,
+    turnStartedAt: undefined,
+    entries: [
+      ...marked,
+      { id: nid(), kind: 'error', text: msg, action: 'resend' },
+    ],
+  })
+}
+
+/**
+ * 重发上一轮那条「未送达」的用户消息：把它原样再发一次，并沿用同一个
+ * promptId。host 侧按 promptId 去重（见 capri-host PromptWithOpts 的
+ * claimPromptIDLocked），所以万一原请求其实已经受理，重发也不会跑出
+ * 第二个回合。
+ *
+ * 没有可重发的回合（已送达 / 已收口）时返回 false。
+ */
+export function resendUndeliveredPrompt(
+  set: SetState,
+  get: () => ChatState,
+): boolean {
+  const s = get()
+  const promptId = s.currentPromptId
+  const row = s.entries.find((e) => e.id === s.lastSentPromptId)
+  if (!promptId || !row || row.kind !== 'user') return false
+  // 两个入口共用：时间线末尾的错误行（conn 已翻成 error）与用户行上的
+  // 行内重试。后者在 host 恢复 ready 之后仍要可用——用户行上的按钮是
+  // 「这条没送到」的持久标记，不随连接状态被清掉。
+  if (s.conn !== 'error' && row.undelivered !== true) return false
+  // 把失败回合的痕迹一起收走（用户行 + 未送达错误行）：重发会重新画出
+  // 用户行，否则时间线上会留下两遍同样的内容。
+  const kept = s.entries.filter(
+    (e) =>
+      e.id !== row.id &&
+      !(e.kind === 'error' && e.text.startsWith(UNDELIVERED_PREFIX)),
+  )
+  const blocks =
+    row.kind === 'user' && row.images?.length
+      ? [
+          ...(row.text ? [{ type: 'text' as const, text: row.text }] : []),
+          ...row.images.map((img) => ({
+            type: 'image' as const,
+            data: img.data,
+            mimeType: img.mimeType ?? 'image/png',
+          })),
+        ]
+      : undefined
+  set({ ...sealThought({ ...s, entries: kept }), layerErrors: {} })
+  void get().send(row.text, blocks, { promptId })
+  return true
+}
 
 export function hostActions(set: SetState, get: () => ChatState) {
   // 注册表应用（含首次自动选 host）：set 列表 + 离线/删除提示 + 挑选
@@ -37,10 +206,11 @@ export function hostActions(set: SetState, get: () => ChatState) {
         const sel = hosts.find((h) => h.hostId === hostId)
         const err = get().layerErrors.hub
         if (sel && !sel.online && err?.id !== 'host-offline') {
+          // 访客只读，没有本端在途回合要收口，提示照旧就地设置。
           get().setLayerError('hub', {
             id: 'host-offline',
             level: 'error',
-            message: `Host「${sel.hostName}」已离线`,
+            message: `Host「${sel.hostName}」连接中断，正在重连…`,
             at: Date.now(),
           })
         } else if (sel && sel.online && err?.id === 'host-offline') {
@@ -70,12 +240,15 @@ export function hostActions(set: SetState, get: () => ChatState) {
       const sel = hosts.find((h) => h.hostId === s.selectedHostId)
       const cur = s.layerErrors.hub
       if (sel && !sel.online && cur?.id !== 'host-offline') {
-        get().setLayerError('hub', {
-          id: 'host-offline',
-          level: 'error',
-          message: `Host「${sel.hostName}」已离线`,
-          at: Date.now(),
-        })
+        handleHostOfflineTurn(set, get, sel.hostName)
+        if (!get().layerErrors.hub) {
+          get().setLayerError('hub', {
+            id: 'host-offline',
+            level: 'error',
+            message: `Host「${sel.hostName}」连接中断，正在重连…`,
+            at: Date.now(),
+          })
+        }
       } else if (sel && sel.online && cur?.id === 'host-offline') {
         get().setLayerError('hub', undefined)
       }
@@ -177,7 +350,7 @@ export function hostActions(set: SetState, get: () => ChatState) {
       // 重新驱动。
       layerErrors: {},
       conn: 'connecting',
-      statusText: host ? '连接中…' : 'Host 未配对',
+      phaseText: host ? '连接中…' : 'Host 未配对',
       cancelPanelOpen: false,
       queuePanelOpen: false,
     })
@@ -192,8 +365,10 @@ export function hostActions(set: SetState, get: () => ChatState) {
     // 白等一趟）。需要 sessionId/cwd 的（历史快照、git-info、队列、统计条）
     // 由下面的 hello 驱动——统计条不在这里预拉：hello 锚定会话的瞬间
     // SessionStatsBar 的 keyed effect 就会拉，一次切换问两遍没有意义。
-    void get().refreshSessions()
-    void get().refreshWorkspaces()
+    // 先清掉两台列表的节流窗口：新 host 的数据是另一份，不能因为上一台
+    // 刚刷过就把这一台的首轮推迟到 400ms 后。
+    get().resetListRefreshGates()
+    void get().refreshSessionLists()
     // `[ui]` 设置同样是 host 级的：init 那次预取跑在 host 选定之前，hub
     // 模式下必然被 setHost 的 abort 风暴取消，而且旧 host 的缓存不能跟着
     // 切过来——这里以新 host 为准重读一次。
@@ -207,14 +382,9 @@ export function hostActions(set: SetState, get: () => ChatState) {
       // boot failure arrives as `bootError` — while the SSE hello event
       // (http.go handleSSE) maps the same field to `error`. Normalize so
       // a failed boot surfaces the error instead of hanging on "启动中…"
-      // (the hello handler reads ev.error). Never clobber an `error` that
-      // the snapshot itself already carried.
+      // (the hello handler reads ev.error).
       const snapError: string | undefined =
-        typeof st.bootError === 'string' && st.bootError
-          ? st.bootError
-          : typeof st.error === 'string'
-            ? st.error
-            : undefined
+        typeof st.bootError === 'string' && st.bootError ? st.bootError : undefined
       transport.emitLocal({
         type: 'hello',
         ...st,
@@ -225,7 +395,7 @@ export function hostActions(set: SetState, get: () => ChatState) {
       // Host 不可达：丢弃未落库的流式缓冲并取消 rAF，避免残留 flush
       // 在错误态之后把 conn 重新顶回 busy。
       clearStreamBuf()
-      set({ conn: 'error', statusText: 'Host 不可达' })
+      set({ conn: 'error', phaseText: 'Host 不可达' })
       get().setLayerError('hub', {
         level: 'error',
         message: `Host「${host?.hostName ?? hostId}」不可达`,

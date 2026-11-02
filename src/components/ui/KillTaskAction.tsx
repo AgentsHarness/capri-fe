@@ -36,12 +36,15 @@ export function KillTaskAction({
   className = '',
   hidden = false,
 }: {
-  onKill: (notifyAgent: boolean) => void
+  /** 可返回 Promise：返回时按钮保持转圈直到终止请求有结果。 */
+  onKill: (notifyAgent: boolean) => void | Promise<unknown>
   className?: string
   /** 访客只读：终止是写操作，整块不渲染（含浮层）。 */
   hidden?: boolean
 }) {
   const [open, setOpen] = useState(false)
+  /** 终止请求在飞：`[kill]` 转圈，浮层已关，避免重复发同一笔。 */
+  const [killing, setKilling] = useState(false)
   const anchorRef = useRef<HTMLSpanElement>(null)
 
   // 面板是行内的 fixed 浮层，Esc 关掉它不该同时把所在回合的快捷键吃掉，
@@ -59,8 +62,24 @@ export function KillTaskAction({
   }, [open])
 
   const run = (notifyAgent: boolean) => {
+    if (killing) return
     setOpen(false)
-    onKill(notifyAgent)
+    setKilling(true)
+    // 调用方多数返回 `void killTask(...)` 的 promise，也有同步回调；两种都
+    // 接住，转圈覆盖到请求有结果（行结算由 task_completed 事件负责）。
+    try {
+      const pending = onKill(notifyAgent)
+      if (pending && typeof pending.then === 'function') {
+        void pending.then(
+          () => setKilling(false),
+          () => setKilling(false),
+        )
+        return
+      }
+    } catch {
+      /* 失败已由调用方 toast / 落行 */
+    }
+    setKilling(false)
   }
 
   if (hidden) return null
@@ -70,7 +89,13 @@ export function KillTaskAction({
       {/* InlineAction 不转发 ref，浮层的落点靠这层 span 量出来。
           stopPropagation 在 InlineAction 内部已有，展开面板不会顺带打开查看器。 */}
       <span ref={anchorRef} className={`inline-flex shrink-0 items-center ${className}`}>
-        <InlineAction label="kill" title="x.ai/task/kill" onRun={() => setOpen((v) => !v)} />
+        <InlineAction
+          label="kill"
+          busyLabel="kill"
+          busy={killing}
+          title="x.ai/task/kill"
+          onRun={() => setOpen((v) => !v)}
+        />
       </span>
       <ChipDropdown
         open={open}

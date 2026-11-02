@@ -7,7 +7,20 @@ vi.mock('./turn', () => ({
   clearTurnBlipTimer: vi.fn(),
 }))
 
+vi.mock('../../api/client', () => ({
+  transport: {
+    onEvent: vi.fn(() => () => {}),
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+    getConnectionMode: vi.fn(() => 'local'),
+    prefsOrigin: vi.fn(() => ''),
+    getPrefs: vi.fn(),
+    putPrefs: vi.fn(),
+  },
+}))
+
 import { clearSubagentSettleTimer, clearTurnBlipTimer } from './turn'
+import { useChatStore } from '../chat'
 
 describe('resetSessionState', () => {
   beforeEach(() => {
@@ -28,7 +41,9 @@ describe('resetSessionState', () => {
     expect(partial.currentStreamStartMs).toBeUndefined()
     expect(partial.lastCompletedTurn).toBeUndefined()
     expect(partial.conn).toBe('ready')
-    expect(partial.statusText).toBe('就绪')
+    expect(partial.phaseText).toBe('就绪')
+    // 操作反馈属于上一个会话，复位必须清掉（idleStatusLine 优先读它）。
+    expect(partial.statusText).toBe('')
     expect(partial.newSessionPending).toBe(false)
     expect(partial.awaitingNext).toBe(false)
     expect(partial.planMode).toBe(false)
@@ -74,5 +89,13 @@ describe('resetSessionState', () => {
     runtime.historyWindowBuffer.push({ type: 'chunk', text: 'x' } as never)
     resetSessionState(vi.fn() as never)
     expect(runtime.historyWindowBuffer).toHaveLength(0)
+  })
+
+  it('重置后 idleStatusLine 不再返回上一个会话的操作反馈', () => {
+    useChatStore.setState({ statusText: '已切换到 plan 模式', phaseText: '就绪' })
+    useChatStore.getState().resetToEmpty()
+    expect(useChatStore.getState().statusText).toBe('')
+    expect(useChatStore.getState().idleStatusLine()).not.toBe('已切换到 plan 模式')
+    expect(useChatStore.getState().idleStatusLine()).toBe('就绪')
   })
 })

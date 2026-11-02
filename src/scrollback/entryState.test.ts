@@ -37,10 +37,9 @@ describe('entryRunning', () => {
     expect(entryRunning(tool('completed'))).toBe(false)
   })
 
-  it('subagent / workflow / bg_task 看 running', () => {
+  it('subagent / bg_task 看 running', () => {
     expect(entryRunning({ id: 's', kind: 'subagent', title: 's', status: 'started', running: true })).toBe(true)
     expect(entryRunning({ id: 's', kind: 'subagent', title: 's', status: 'completed' })).toBe(false)
-    expect(entryRunning({ id: 'w', kind: 'workflow', title: 'w', status: 'running', running: true })).toBe(true)
     expect(entryRunning({ id: 'b', kind: 'bg_task', title: 'b', status: 'started', running: true })).toBe(true)
   })
 
@@ -65,10 +64,9 @@ describe('entryFailed', () => {
     expect(entryFailed(tool('completed'))).toBe(false)
   })
 
-  it('subagent failed/cancelled、workflow failed、bg_task failed', () => {
+  it('subagent failed/cancelled、bg_task failed', () => {
     expect(entryFailed({ id: 's', kind: 'subagent', title: 's', status: 'failed' })).toBe(true)
     expect(entryFailed({ id: 's', kind: 'subagent', title: 's', status: 'cancelled' })).toBe(true)
-    expect(entryFailed({ id: 'w', kind: 'workflow', title: 'w', status: 'failed' })).toBe(true)
     expect(entryFailed({ id: 'b', kind: 'bg_task', title: 'b', status: 'failed' })).toBe(true)
     expect(entryFailed({ id: 'a', kind: 'assistant', text: 'x' })).toBe(false)
   })

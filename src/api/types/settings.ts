@@ -18,22 +18,12 @@ export type BillingConfig = {
 }
 
 /** x.ai/billing top-level response (BillingConfigResponse). */
-
-
-/** x.ai/billing top-level response (BillingConfigResponse). */
 export type BillingConfigResponse = {
   config?: BillingConfig | null
   onDemandEnabled?: boolean
   subscriptionTier?: string
   [k: string]: unknown
 }
-
-/**
- * 宿主侧 /api/usage-report 的单个统计行（总计或一个模型）。字段与 agent
- * 的 usage 对象一一对应；cacheHitRate 为派生命中率（cachedRead/input，
- * 0–1）。全部 optional —— 旧宿主没有该端点时前端防御性降级。
- */
-
 
 /**
  * 宿主侧 /api/usage-report 的单个统计行（总计或一个模型）。字段与 agent
@@ -59,13 +49,6 @@ export type TokenUsageStat = {
  * 归一化后的 unix 秒窗口；total 为总计，byModel 按模型分组（无分组数据
  * 归 "unknown"）。
  */
-
-
-/**
- * POST /api/usage-report 响应（宿主侧聚合，非 x.ai 直通）。from/to 为
- * 归一化后的 unix 秒窗口；total 为总计，byModel 按模型分组（无分组数据
- * 归 "unknown"）。
- */
 export type UsageReportData = {
   from?: number
   to?: number
@@ -81,5 +64,3 @@ export type UsageReportData = {
   total?: TokenUsageStat
   byModel?: Record<string, TokenUsageStat>
 }
-
-/** GET /api/extensions — one hook row. */

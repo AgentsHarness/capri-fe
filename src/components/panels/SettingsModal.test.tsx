@@ -133,6 +133,7 @@ describe('SettingsModal', () => {
       session: { some_value: 'hello' },
       models: { key1: { nested: true } },
       cli: { flag: true },
+      features: { telemetry: false },
     })
     openModal()
     render(<SettingsModal />)
@@ -159,12 +160,34 @@ describe('SettingsModal', () => {
     expect(screen.getByText(/^\[session\]/)).toBeInTheDocument()
     expect(screen.getByText(/^\[models\]/)).toBeInTheDocument()
     expect(screen.getByText(/^\[cli\]/)).toBeInTheDocument()
+    // host 返回的所有 config.toml 表都展示，不再只认四个白名单分组
+    expect(screen.getByText(/^\[features\]/)).toBeInTheDocument()
+    expect(screen.getByText('telemetry')).toBeInTheDocument()
     expect(screen.getByText('extra_ui_key')).toBeInTheDocument()
     expect(screen.getByText('hello')).toBeInTheDocument()
     expect(screen.getByText('{"nested":true}')).toBeInTheDocument()
     expect(screen.getByTitle('on（只读）')).toBeInTheDocument()
     // consumed 的 [ui] 标量不在这里重复出现（它们在「行为偏好」里编辑）
     expect(screen.queryByText('page_flip_on_send')).toBeNull()
+  })
+
+  it('Agent 配置展示任意表路径，且不重复列可编辑的 toolset.ask_user_question', async () => {
+    vi.mocked(transport.settings).mockResolvedValue({
+      ui: { extra_ui_key: 'x' },
+      features: { telemetry: false },
+      'subagents.toggle': { minimal: true },
+      'mcp_servers.demo': { url: 'https://example.test' },
+      toolset: { ask_user_question: { timeout_secs: 42 }, shell: 'bash' },
+    })
+    await openAt('Agent 配置')
+    expect(screen.getByText(/^\[features\]/)).toBeInTheDocument()
+    expect(screen.getByText('telemetry')).toBeInTheDocument()
+    expect(screen.getByText(/^\[subagents\.toggle\]/)).toBeInTheDocument()
+    expect(screen.getByText(/^\[mcp_servers\.demo\]/)).toBeInTheDocument()
+    expect(screen.getByText('https://example.test')).toBeInTheDocument()
+    // [toolset] 的原始标量照常展示，ask_user_question 交给「问答超时」分类。
+    expect(screen.getByText('shell')).toBeInTheDocument()
+    expect(screen.queryByText('timeout_secs')).toBeNull()
   })
 
   it('只读键一个都没有时，「Agent 配置」分类不出现', async () => {
@@ -250,21 +273,21 @@ describe('SettingsModal', () => {
   it('bool 行切换 patch 并写入 settings 缓存', async () => {
     openModal()
     render(<SettingsModal />)
-    await waitFor(() => expect(screen.getByTitle('collapsed_edit_blocks')).not.toBeNull())
-    fireEvent.click(screen.getByTitle(/diff 收成/))
+    await waitFor(() => expect(screen.getByTitle('remember_tool_approvals')).not.toBeNull())
+    fireEvent.click(screen.getByTitle(/审批条显示/))
     await waitFor(() => {
-      expect(transport.updateSettings).toHaveBeenCalledWith({ collapsed_edit_blocks: true })
+      expect(transport.updateSettings).toHaveBeenCalledWith({ remember_tool_approvals: false })
     })
-    // 按钮标 busy 后恢复 on
-    expect(screen.getByTitle(/diff 收成/).textContent).toContain('on')
+    // 按钮标 busy 后恢复 off
+    expect(screen.getByTitle(/审批条显示/).textContent).toContain('off')
   })
 
   it('updateSettings 失败 → toast', async () => {
     vi.mocked(transport.updateSettings).mockRejectedValue(new Error('patch failed'))
     openModal()
     render(<SettingsModal />)
-    await waitFor(() => expect(screen.getByTitle('collapsed_edit_blocks')).not.toBeNull())
-    fireEvent.click(screen.getByTitle(/diff 收成/))
+    await waitFor(() => expect(screen.getByTitle('remember_tool_approvals')).not.toBeNull())
+    fireEvent.click(screen.getByTitle(/审批条显示/))
     await waitFor(() => {
       expect(useToastStore.getState().toasts[0]?.text).toBe('patch failed')
     })
@@ -313,7 +336,7 @@ describe('SettingsModal', () => {
     render(<SettingsModal />)
     await waitFor(() => expect(screen.getByText('工具调用密度')).not.toBeNull())
     const compact = () => screen.getByText('compact（默认）')
-    const detailed = () => screen.getByText('详细')
+    const detailed = () => screen.getByText('detail')
     // 未配置 → 默认档 compact-all-grouped 高亮
     expect(compact().className).toContain('text-gn-green')
     expect(detailed().className).not.toContain('text-gn-green')
@@ -368,15 +391,6 @@ describe('SettingsModal', () => {
     const panel = c2.querySelector('[tabindex="-1"]') as Element
     fireEvent.mouseDown(panel)
     expect(useChatStore.getState().settingsOpen).toBe(true)
-  })
-
-  it('前端偏好：collapse_tool_groups 切换', async () => {
-    await openAt('前端偏好')
-    const btn = () => screen.getByTitle('控制滚动区里 toolcall 分组是否折叠，改动即时生效')
-    // 默认 on；点击关闭
-    expect(btn().textContent).toContain('on')
-    fireEvent.click(btn())
-    expect(btn().textContent).toContain('off')
   })
 
   it('前端偏好：auto_todo_new_session 切换', async () => {

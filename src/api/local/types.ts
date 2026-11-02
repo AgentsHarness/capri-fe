@@ -91,8 +91,6 @@ export type HubWsFrame =
  */
 export const DEFAULT_FETCH_TIMEOUT_MS = 30_000
 
-/** 旧 hub/host 不下发 port 时试的本机默认端口（与 capri-host 的 PORT 默认一致）。 */
-export const DEFAULT_LOCAL_PORT = 8765
 /** 单个 127.0.0.1 探测的超时：本机要么毫秒级应答，要么根本没服务。 */
 export const LOCAL_PROBE_TIMEOUT_MS = 800
 /** 探不到的端口多久内不再重复探测（hosts_changed 会频繁驱动 discoverLocalHost）。 */

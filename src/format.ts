@@ -97,22 +97,21 @@ export function fmtBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`
 }
 
-/** Running subagent / bg_task / workflow entry (shared by chip + strip). */
+/** Running subagent / bg_task entry (shared by chip + strip). */
 export type RunningEntry = Extract<
   ScrollEntry,
-  { kind: 'subagent' | 'bg_task' | 'workflow' }
+  { kind: 'subagent' | 'bg_task' }
 >
 
 /**
- * Count of live bg_tasks / subagents / workflows — shared by chip + strip.
+ * Count of live bg_tasks / subagents — shared by chip + strip.
  * Restored top-strip tasks are counted separately (topTasks) — the host
  * only surfaces liveness-probed tasks, so they are genuinely running.
  */
 export function filterRunningEntries(entries: ScrollEntry[]): RunningEntry[] {
   return entries.filter(
     (e): e is RunningEntry =>
-      (e.kind === 'subagent' || e.kind === 'bg_task' || e.kind === 'workflow') &&
-      !!e.running,
+      (e.kind === 'subagent' || e.kind === 'bg_task') && !!e.running,
   )
 }
 

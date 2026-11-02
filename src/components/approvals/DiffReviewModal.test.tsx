@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, act } from '@testing-library/react'
 import { useChatStore } from '../../store/chat'
 import { DiffReviewModal } from './DiffReviewModal'
 
@@ -190,5 +190,22 @@ describe('DiffReviewModal', () => {
     const overlay = screen.getByRole('dialog', { name: 'diff review' })
     fireEvent.mouseDown(overlay)
     expect(dismissXaiMock).toHaveBeenCalledWith('r1')
+  })
+
+  it('回执在飞时连按两次 Esc 只发一次 dismissXai', async () => {
+    reqWith([{ path: '/a.ts', diff: '+x' }])
+    let release!: () => void
+    dismissXaiMock.mockImplementationOnce(
+      () => new Promise<void>((r) => { release = r }),
+    )
+    render(<DiffReviewModal />)
+    fireEvent.keyDown(window, { key: 'Escape' })
+    // 第一笔 dismissXai 还没回来：第二次 Esc 必须是 no-op（第二笔应答会
+    // 撞上「已过期」）。
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(dismissXaiMock).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      release()
+    })
   })
 })

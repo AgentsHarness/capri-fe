@@ -1,7 +1,7 @@
 import type { ChatState, SetState } from '../types'
 import type { WireEvent } from './wire'
 import { appendEntry } from '../entries'
-import { applyModelIdentity, applySessionTitle } from '../sessionIdentity'
+import { applyModelIdentity } from '../sessionIdentity'
 import { memoryCaptureEntry, normalizeMemoryListing } from '../../../lib/memory'
 import { modelDisplayName } from '../model'
 export function handleNotifMemory(
@@ -150,11 +150,11 @@ export function handleNotifMemory(
               })
             } else {
               // TUI turn_status.rs: Retrying → "Retrying (attempt N)…".
-              // 重试中状态由 composer busy 行（statusText fallback）展示，
+              // 重试中状态由 composer busy 行（phaseText fallback）展示，
               // 不往 scrollback 追加条目——transient 状态只在 busy 框出现；
               // 终态（failed / exhausted）仍保留在 scrollback。
               set({
-                statusText:
+                phaseText:
                   attempt != null
                     ? `Retrying (attempt ${String(attempt)})…`
                     : 'Retrying…',
@@ -210,12 +210,8 @@ export function handleNotifMemory(
             })
             break
           }
-          // ── session title ────────────────────────────────────────────
-          case 'session_summary_generated':
-            // 标题写入收敛到唯一入口（sessionIdentity.ts，与 session_info /
-            // session_info_update 共用同一套覆盖规则）。
-            applySessionTitle(set, get, fields.session_summary)
-            break
+          // session_summary_generated / last_turn_summary 由
+          // ./notifSessionMeta 处理（标题 / 副行摘要的唯一写入口）。
           // ── model switches (TUI ModelUnavailable block / remote switch) ─
           // 恢复会话时 agent 发现持久化模型已下线：同族兜底成功时 new_model_id
           // 是落点；同族也没有可用模型时 new_model_id 为空、之后每条 prompt

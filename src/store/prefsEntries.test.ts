@@ -98,20 +98,20 @@ describe('投影与物化', () => {
       [wsKey('/a')]: { v: '1', at: 2, site: 'A' },
       [sessionKey('s1')]: { v: '1', at: 3, site: 'A' },
       [todoKey('s2')]: { v: 'completed', at: 4, site: 'A' },
-      [feKey('collapseToolGroups')]: { v: 'false', at: 5, site: 'A' },
+      [feKey('liteReplay')]: { v: 'false', at: 5, site: 'A' },
     }
     const view = projectEntries(entries)
     expect(view.pinnedWorkspaces).toEqual(['/a', '/z']) // 稳定排序
     expect(view.pinnedSessions).toEqual(['s1'])
     expect(view.todos).toEqual({ s2: 'completed' })
-    expect(view.fePrefs).toEqual({ collapseToolGroups: false })
+    expect(view.fePrefs).toEqual({ liteReplay: false })
     // 快照再物化回去，投影结果不变
     expect(projectEntries(entriesFromView(view, 0, 'x'))).toEqual(view)
   })
 
   it('fe 条目只认布尔字面量，其它值不进投影', () => {
-    const view = entriesFromView({ fePrefs: { collapseToolGroups: true } }, 0, 'x')
-    expect(view[feKey('collapseToolGroups')]).toEqual({ v: 'true', at: 0, site: 'x' })
+    const view = entriesFromView({ fePrefs: { liteReplay: true } }, 0, 'x')
+    expect(view[feKey('liteReplay')]).toEqual({ v: 'true', at: 0, site: 'x' })
   })
 
   it('物化不猜测删除：快照里没有的 key 不生成墓碑', () => {

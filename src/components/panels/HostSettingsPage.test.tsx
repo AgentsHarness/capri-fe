@@ -15,6 +15,14 @@ describe('Host 设置保存', () => {
     expect(saveNeedsRestart({ grok_bin: '' }, { grok_bin: '/usr/bin/grok' })).toBe(true)
   })
 
+  it('两个代理开关各自变更都要重启，缺省视为开启', () => {
+    expect(saveNeedsRestart({ agent_proxy: true }, { agent_proxy: false })).toBe(true)
+    expect(saveNeedsRestart({ hub_proxy: true }, { hub_proxy: false })).toBe(true)
+    // 未写过该键与显式 true 等价：不因为「缺省 vs 显式」误判成需要重启。
+    expect(saveNeedsRestart({}, { agent_proxy: true })).toBe(false)
+    expect(saveNeedsRestart({}, { hub_proxy: true })).toBe(false)
+  })
+
   it('不写协议的地址和已存的 https 地址算同一个 Hub', () => {
     expect(normalizeHubURL('hub.example.com')).toBe('https://hub.example.com')
     expect(credentialMatchesField('hub.example.com', 'https://hub.example.com')).toBe(true)

@@ -60,8 +60,8 @@ async function postJson(
 }
 
 /**
- * hub 的 JSON 可能把空白名单写成 `sessions: null`（老版本 hub / 手改
- * guests.json）；FE 内部一律按数组处理，否则渲染层读 `.length` 会崩。
+ * hub 的 JSON 可能把空白名单写成 `sessions: null`（手改 guests.json）；
+ * FE 内部一律按数组处理，否则渲染层读 `.length` 会崩。
  */
 function normalizeToken(raw: GuestTokenRecord): GuestTokenRecord {
   return Array.isArray(raw.sessions) ? raw : { ...raw, sessions: [] }
@@ -190,12 +190,10 @@ export const guestTokensRpc = {
   },
 
   /**
-   * GET /api/access-role —— 当前凭据的角色。404 表示 hub 太旧（没有访客
-   * 功能）：按 admin 处理，分享入口随后会因 404 而不可用。
+   * GET /api/access-role —— 当前凭据的角色。
    */
   async accessRole(this: TransportCore): Promise<AccessRole> {
     const res = await this.fetch(`${apiBase(this)}/api/access-role`, {}, { hubLevel: true })
-    if (res.status === 404) return { role: 'admin' }
     if (res.status === 401) throw new AccessTokenError()
     if (!res.ok) throw new Error(`access role failed (${res.status})`)
     const data = (await res.json().catch(() => ({}))) as {
@@ -219,13 +217,11 @@ export const guestTokensRpc = {
    * GET /api/subscribers —— 在线浏览器订阅者名单（admin-only）。
    *
    * 顶栏那个数字是这个名单的条数；面板点开就是逐行详情（地址、浏览器、
-   * 身份、当前在看哪个会话）。老 hub 没有这个端点 → 404 归一成一句
-   * 「Hub 不支持订阅者详情」，面板据此只显示数字。
+   * 身份、当前在看哪个会话）。
    */
   async listSubscribers(this: TransportCore): Promise<SubscriberRow[]> {
     if (this.mode !== 'hub') throw new Error('仅 Hub 模式支持查看订阅者')
     const res = await this.fetch(`${apiBase(this)}/api/subscribers`, {}, { hubLevel: true })
-    if (res.status === 404) throw new Error('Hub 不支持订阅者详情（请升级 hub）')
     if (res.status === 401) throw new AccessTokenError()
     if (res.status === 403) throw new Error('仅管理员可查看订阅者')
     const data = (await res.json().catch(() => ({}))) as ErrorBody & {

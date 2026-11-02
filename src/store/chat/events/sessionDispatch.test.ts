@@ -121,6 +121,34 @@ describe('归属守卫（分发层统一）', () => {
     expect(state().entries).toHaveLength(0)
   })
 
+  it('标题 / 摘要例外：外来会话的 title 事件写它自己的 sessions 行', () => {
+    const { set, get, state } = makeStore({
+      sessionId: 's1',
+      sessionTitle: '本会话',
+      sessions: [
+        { sessionId: 's1', title: '本会话' },
+        { sessionId: 'other', title: '别的会话' },
+      ],
+    })
+    handleSessionNotification(
+      set,
+      get,
+      generic('session_summary_generated', { session_summary: '那边的新标题' }, 'other'),
+    )
+    handleSessionNotification(
+      set,
+      get,
+      generic('last_turn_summary', { summary: '那边跑完了' }, 'other'),
+    )
+    expect(state().sessions[1]).toMatchObject({
+      title: '那边的新标题',
+      lastTurnSummary: '那边跑完了',
+    })
+    expect(state().sessions[0].title).toBe('本会话')
+    expect(state().sessionTitle).toBe('本会话')
+    expect(state().entries).toHaveLength(0)
+  })
+
   it('外来会话的 hook_execution 不落生命周期条目', () => {
     const { set, get, state } = makeStore({
       sessionId: 's1',
@@ -150,6 +178,17 @@ describe('归属守卫（分发层统一）', () => {
     expect(dropsForeignEvent(generic('yolo_mode_changed', {}, 'other'), 's1')).toBe(false)
     expect(dropsForeignEvent(generic('hook_run_started', {}, 's1'), 's1')).toBe(false)
   })
+
+  it('typed 载体的 kind 标签同样参与归属判定', () => {
+    const typed = (type: string, sid: string) =>
+      ({ type, sessionId: sid, update: { sessionUpdate: type } }) as AcpEvent
+    // 标题 / 摘要写各自会话的行：订阅层不能当成外来未知广播丢掉。
+    expect(dropsForeignEvent(typed('session_info', 'other'), 's1')).toBe(false)
+    expect(dropsForeignEvent(typed('session_summary_generated', 'other'), 's1')).toBe(false)
+    expect(dropsForeignEvent(typed('last_turn_summary', 'other'), 's1')).toBe(false)
+    // 其余会话级 typed 事件仍按外来丢弃。
+    expect(dropsForeignEvent(typed('hook_run_started', 'other'), 's1')).toBe(true)
+  })
 })
 
 describe('显式空操作与未消费清单', () => {
@@ -165,7 +204,7 @@ describe('显式空操作与未消费清单', () => {
   it('未消费 kind 不触发告警（已登记决策）；真正没人认领的新 kind 才告警且只打一次', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const { set, get } = makeStore({ sessionId: 's1' })
-    expect(handleSessionNotification(set, get, generic('last_turn_summary', {}, 's1'))).toBe(true)
+    expect(handleSessionNotification(set, get, generic('rewind_marker', {}, 's1'))).toBe(true)
     expect(warn).not.toHaveBeenCalled()
 
     // host 未来新增建模的 kind：归一后无人认领 → DEV 告警（一次）
@@ -236,6 +275,36 @@ describe('归一入口（handleChatEvent 全链路）', () => {
     expect(get().entries).toMatchObject([
       { kind: 'bg_task', taskId: 't9', isMonitor: true, title: 'watch log' },
     ])
+  })
+
+  it('typed last_turn_summary（宿主主通道）写对应会话行', () => {
+    const { get, set } = makeStore({
+      sessionId: 's1',
+      sessions: [{ sessionId: 's1' }, { sessionId: 'other' }],
+    })
+    handleChatEvent(set, get, {
+      type: 'last_turn_summary',
+      sessionId: 'other',
+      update: { sessionUpdate: 'last_turn_summary', summary: '宿主 typed 摘要', prompt_id: 'p9' },
+    } as unknown as AcpEvent)
+    expect(get().sessions[1].lastTurnSummary).toBe('宿主 typed 摘要')
+    expect(get().sessions[0].lastTurnSummary).toBeUndefined()
+  })
+
+  it('typed session_info（外来会话）写那一行标题，不碰当前标题', () => {
+    const { get, set } = makeStore({
+      sessionId: 's1',
+      sessionTitle: '本会话',
+      sessions: [{ sessionId: 's1', title: '本会话' }, { sessionId: 'other', title: '旧标题' }],
+    })
+    handleChatEvent(set, get, {
+      type: 'session_info',
+      sessionId: 'other',
+      title: '那边的新标题',
+    } as AcpEvent)
+    expect(get().sessions[1].title).toBe('那边的新标题')
+    expect(get().sessions[0].title).toBe('本会话')
+    expect(get().sessionTitle).toBe('本会话')
   })
 })
 

@@ -1,4 +1,5 @@
 import { useChatStore } from './chat'
+import { completedSessionIds } from './chat/sessionCompletion'
 import { transport } from '../api/client'
 import { pushToast } from './toast'
 import { ensureUiSettings, notificationsSettings, onUiSettingsReady } from './settings'
@@ -7,9 +8,9 @@ import { shouldNotify, systemNotify } from './notifyConfig'
 /**
  * FE-side replica of the TUI notification + title rails:
  *
- *  - events approval_required / task_complete fire system notifications
- *    (turn_complete stays in chat.ts noteSessionCompleted, gated by the
- *    same config).
+ *  - events approval_required / task_complete fire system notifications;
+ *    turn_complete fires from the `sessions` busy→idle subscription below
+ *    (data layer: noteSessionCompleted), gated by the same config.
  *  - document.title is a fixed state badge + "Agents Harness" suffix,
  *    derived from the session-list states (same buckets as the sidebar):
  *    [N 待处理] / [N 思考中] / [N 已完成] / [空闲] — highest-priority
@@ -62,6 +63,22 @@ export function initUiNotifications(): void {
       if (!systemNotify('Grok 需要审批', body)) {
         pushToast(`🔔 需要审批：${method}`)
       }
+    })
+  })
+
+  // ── turn completion: sessions 行的 busy true → false ──────────────
+  // 完成提醒的唯一订阅点：任何写 `sessions` 的路径（roster 行级补丁 /
+  // 会话列表全量刷新 / 轮询）都会换一个新数组，这里统一判定"跑完了"。
+  // 数据层记录由 noteSessionCompleted 负责（当前会话只记不弹）。
+  useChatStore.subscribe((s, prev) => {
+    if (s.sessions === prev.sessions) return
+    const ids = completedSessionIds(prev.sessions, s.sessions)
+    if (ids.length === 0) return
+    // 通知会写 completedNotices（同一次 set 的后续状态），不能在 store
+    // 派发过程中同步重入——推到微任务里执行。
+    queueMicrotask(() => {
+      const st = useChatStore.getState()
+      for (const id of ids) st.noteSessionCompleted(id)
     })
   })
 
@@ -140,7 +157,12 @@ function startTitleManager(): void {
       )
       if (!selfActive) thinking++
     }
-    const completed = Object.keys(st.completedNotices).length
+    // 当前会话的完成记录是数据层（切走后 sidebar 行显示 ✓），不算"待
+    // 查看"：不计入浏览器标题，否则自己这边的隐藏通知会让标题显示
+    // "[1 已完成]"。
+    const completed = Object.keys(st.completedNotices).filter(
+      (id) => id !== st.sessionId,
+    ).length
 
     const prefix =
       pending > 0

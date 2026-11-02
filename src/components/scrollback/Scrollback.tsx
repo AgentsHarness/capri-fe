@@ -67,6 +67,8 @@ export function Scrollback({
 
   const bottomRef = useRef<HTMLDivElement>(null)
   const boxRef = useRef<HTMLDivElement>(null)
+  /** page-flip 底部留白（TUI pin_reserve）：滚到钉住的那一页时文档尾。 */
+  const pinPadRef = useRef<HTMLDivElement>(null)
   /** Fade wrapper around history rows — ResizeObserver target for stick-to-bottom. */
   const contentRef = useRef<HTMLDivElement>(null)
   /** Dissolve band over the scrollback's bottom edge (composer junction). */
@@ -87,7 +89,6 @@ export function Scrollback({
     cancelScrollSettle,
     isProgrammaticScroll,
     settleScrollAnchor,
-    restoreScrollAfterPrepend,
     settleFitOrKeep,
     revealPrependedTurn,
   } = useScrollRestore(
@@ -107,11 +108,6 @@ export function Scrollback({
       entries.length,
     )
 
-  const [expandAnchorId, setExpandAnchorId] = useState<string | null>(null)
-  useEffect(() => {
-    setExpandAnchorId(null)
-  }, [historyLoadedAt])
-
   const userById = useMemo(() => {
     const m = new Map<string, ScrollEntry>()
     for (const e of entries) if (e.kind === 'user') m.set(e.id, e)
@@ -125,7 +121,6 @@ export function Scrollback({
     stickyBandElRef,
     lastPushYRef,
     updatePinned,
-    updateNavActive,
     scheduleUpdatePinned,
     jumpToUserEntry,
   } = useStickyPin(
@@ -160,6 +155,9 @@ export function Scrollback({
     settleScrollAnchor,
     entries,
     displayRows.length,
+    pinPadRef,
+    wsBarElRef,
+    wsBarH,
   )
 
   // 交界处溶解带（composer junction）——滚动位置翻转只改 band 的
@@ -192,7 +190,6 @@ export function Scrollback({
   //
   // Host path (historyPrependedAt): 按手势来源落位 —— 'keep'（滚轮/触摸拉
   //   出来的）只把视口钉回原行，'reveal'（点击）才短轮顶对齐 / 长轮不跳。
-  // Local path (expandAnchorId): 强制 height-delta（本地溢出分支）。
   // pendingRevealRef: DOM 齐了再 settleFitOrKeep。
   // historyLoadedAt: 贴底后立刻量钉选（与 scroll 同帧，避免 rAF 读到旧 scrollTop）。
   const handledPrependedAtRef = useRef(0)
@@ -210,9 +207,6 @@ export function Scrollback({
       const mode = pagingModeRef.current
       pagingModeRef.current = 'keep'
       revealPrependedTurn(historyAnchorId, mode)
-    } else if (expandAnchorId) {
-      restoreScrollAfterPrepend(expandAnchorId)
-      setExpandAnchorId(null)
     } else if (pendingRevealRef.current) {
       const box = boxRef.current
       const pending = pendingRevealRef.current
@@ -245,27 +239,21 @@ export function Scrollback({
     }
     userEls.current = map
     updatePinned()
-    updateNavActive()
   }, [
     userById,
     updatePinned,
-    updateNavActive,
     historyPrependedAt,
     historyAnchorId,
     historyLoadedAt,
-    expandAnchorId,
     cancelScrollSettle,
     pagingModeRef,
-    restoreScrollAfterPrepend,
     revealPrependedTurn,
     settleFitOrKeep,
     pendingRevealRef,
     userEls,
   ])
 
-  // store 为 true：未挂载，文案来自 store（工具空隙回退）；false：已挂载行。
-  const pinnedUser = pinned?.entry ?? null
-  const pinnedStore = pinned?.store ?? false
+  const pinnedUser = pinned
 
   /** 目录 jump 已对齐过视口：跳过随后的 selectedId→scrollIntoView。 */
   const skipSelectScrollRef = useRef(false)
@@ -283,8 +271,8 @@ export function Scrollback({
     el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
   }, [selectedId, focusMode])
 
-  // User-message directory rail (TUI timeline). Active tick is independent
-  // of sticky pin (updateNavActive): nearest user at the readable top.
+  // User-message directory rail (TUI timeline). Active tick is computed by
+  // useStickyPin alongside the pin: same geometry, same turn.
   // 全量目录：host 的 promptStarts+promptPreviews 补齐未加载轮（序号与渲染
   // 行一致）；缺省（旧 host / 透传路径）退回只列已加载轮。
   const historyPromptStarts = useChatStore((s) => s.historyPromptStarts)
@@ -367,6 +355,19 @@ export function Scrollback({
           if (t.scrollHeight - t.scrollTop - t.clientHeight <= 1) {
             followRef.current = true
           }
+        }
+      }}
+      // 键盘滚动与拖滚动条不经过 wheel/touch 入口，必须在这里显式让看门狗
+      // 让路：5000ms 的锚点窗口里，用户用 PgUp / 拖动滚动条之后内容晚到撑高，
+      // 视口会被拉回原行（wheel/touch 已由 useHistoryPaging 取消）。
+      onKeyDown={cancelScrollSettle}
+      onPointerDown={(e) => {
+        // 只认落在滚动条上的按下（clientX 在内容宽右侧的 gutter 内）：
+        // 条目内的点选不该终止翻页锚点。
+        const t = e.currentTarget
+        const gutter = t.offsetWidth - t.clientWidth
+        if (gutter > 0 && e.clientX >= t.getBoundingClientRect().left + t.clientWidth) {
+          cancelScrollSettle()
         }
       }}
       onTouchStart={onPagingTouchStart}
@@ -476,7 +477,6 @@ export function Scrollback({
             */}
         <StickyPrompt
           pinnedUser={pinnedUser}
-          pinnedStore={pinnedStore}
           wsBarH={wsBarH}
           stickyBandElRef={stickyBandElRef}
           lastPushYRef={lastPushYRef}
@@ -663,6 +663,11 @@ export function Scrollback({
         })()}
         </div>
       </div>
+      {/* page-flip 底部留白（TUI `pin_reserve`）：让「刚发的 prompt 顶 ==
+          滚动底」成立。高度由 useFollowScroll 直接写在元素上（钉住期间
+          = 钉位 + 视口高 − 内容高，回答长高时收缩到 0）；放在淡入包装
+          之外，改高度不会触发内容 ResizeObserver。 */}
+      <div ref={pinPadRef} data-pin-pad="" aria-hidden />
       <div ref={bottomRef} />
     </div>
     {/* 交界处溶解带：视口底缘的转录尾不再被硬切一刀，化进底色。

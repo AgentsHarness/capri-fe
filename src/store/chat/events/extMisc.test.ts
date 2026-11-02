@@ -16,20 +16,6 @@ function makeStore(initial: Partial<ChatState> = {}) {
   return { set: set as unknown as SetState, get, state: () => state }
 }
 
-describe('handleExtMiscEvent — git_head_changed 兜底', () => {
-  it('旧 host 的 ext_notification x.ai/git_head_changed 写入状态栏分支', () => {
-    const { set, get, state } = makeStore({ sessionId: 's1' })
-    const handled = handleExtMiscEvent(set, get, {
-      type: 'ext_notification',
-      method: 'x.ai/git_head_changed',
-      sessionId: 's1',
-      params: { sessionId: 's1', branch: 'feat/ext' },
-    } as AcpEvent)
-    expect(handled).toBe(true)
-    expect(state().gitInfo?.branch).toBe('feat/ext')
-  })
-})
-
 describe('handleExtMiscEvent — ext_notification 渲染边界', () => {
   it('未知 x.ai/* 通知落到灰色状态行', () => {
     const { set, get, state } = makeStore({ sessionId: 's1' })
@@ -217,8 +203,7 @@ describe('handleExtMiscEvent — model 与 session_rewound 跨会话同步', () 
   })
 
   it('session_rewound 事件：刷新会话列表并对当前会话执行截断', () => {
-    const refreshSessions = vi.fn()
-    const refreshWorkspaces = vi.fn()
+    const refreshSessionLists = vi.fn()
     const entries = [
       { id: 'u0', kind: 'user' as const, text: 'q0' },
       { id: 'a0', kind: 'assistant' as const, text: 'a0' },
@@ -229,8 +214,7 @@ describe('handleExtMiscEvent — model 与 session_rewound 跨会话同步', () 
       sessionId: 's1',
       cwd: '/work',
       entries,
-      refreshSessions,
-      refreshWorkspaces,
+      refreshSessionLists,
     })
 
     const ev: AcpEvent = {
@@ -241,8 +225,7 @@ describe('handleExtMiscEvent — model 与 session_rewound 跨会话同步', () 
 
     handleExtMiscEvent(set, get, ev)
 
-    expect(refreshSessions).toHaveBeenCalled()
-    expect(refreshWorkspaces).toHaveBeenCalled()
+    expect(refreshSessionLists).toHaveBeenCalled()
     // 截断到 targetPromptIndex 1：保留 u0/a0，切除 u1/a1
     expect(state().entries.map((e) => e.id)).toEqual(['u0', 'a0'])
   })

@@ -59,10 +59,10 @@ import { pushToast } from './toast'
  * agent 已收养开跑的行绝不会仍显示 queued）。
  *
  * ── 广播 rails（chat.ts 路由）──────────────────────────────────────
- * x.ai/queue/changed 以 typed `queue_changed` 事件或 ext_notification
- * 兜底到达，统一进 applyQueueChanged()：防御性解析（envelope 走查 +
- * 多键名兼容），解析成功即用权威快照替换本地镜像。drainedIds 只防
- * "已发送/已删除"行的 stale 广播复活（TUI retire_optimistic_echo 语义）。
+ * x.ai/queue/changed 在 v2 host 以 typed `queue_changed` 事件到达，统一
+ * 进 applyQueueChanged()：防御性解析（envelope 走查 + 多键名兼容），解析
+ * 成功即用权威快照替换本地镜像。drainedIds 只防 "已发送/已删除"行的 stale
+ * 广播复活（TUI retire_optimistic_echo 语义）。
  */
 
 export type QueuedPrompt = {
@@ -277,46 +277,27 @@ function settleDeletedRunning(id: string, text: string): void {
 }
 
 /**
- * 结算一条在途 prompt 的 RPC 结果（enqueue 的 fire-and-forget 链）：
- * - `ran`：旧 host 下 RPC 在回合完成时 resolve（响应带 stopReason）=
- *   该 prompt 已经作为回合跑完——从显示镜像移除（正常流程收养广播先
- *   移除；这里是漏广播兜底），并记入 drainedIds 防 stale 广播复活。
- *   新 host 受理即返回（无 stopReason）不得走这条：行仍在权威队列里，
- *   过早 drained 会让后续 queue_changed 快照把该行滤掉，queued 闪一下
- *   就再也回不来。
- * - `failed`：RPC 被拒（网络失败 / agent 拒绝 / 竞态 409）——行保留为
- *   degraded（FE-owned，附带失败原因 errorText），用户手动重发；不再
- *   渲染 scrollback 错误行（队列行徽标即提示，主输出流不被打断）。
+ * 结算一条在途 prompt 的 RPC 失败（enqueue 的 fire-and-forget 链）：RPC 被
+ * 拒（网络失败 / agent 拒绝 / 竞态 409）时行保留为 degraded（FE-owned，
+ * 附带失败原因 errorText），用户手动重发；不向 scrollback 渲染错误行（队列
+ * 行徽标即提示，主输出流不被打断）。
+ *
+ * 成功不受理任何清理：POST 受理即返回，行仍在权威队列里，等 queue_changed
+ * 确认 / 收养 / 完成广播。过早从显示镜像移除会让后续快照把该行滤掉，
+ * queued 闪一下就再也回不来。
  */
-function settlePromptRow(
-  promptId: string,
-  sessionId: string,
-  outcome: 'ran' | 'failed',
-  errorText?: string,
-): void {
+function failPromptRow(promptId: string, sessionId: string, errorText: string): void {
   usePromptQueue.setState((s) => {
     const active = s.sessionId === sessionId
     const list = active ? s.queue : s.queues[sessionId]
     if (!list) return s
     const idx = list.findIndex((q) => q.id === promptId)
     if (idx === -1) return s
-    if (outcome === 'ran') {
-      return {
-        ...(active
-          ? { queue: list.filter((q) => q.id !== promptId) }
-          : { queues: { ...s.queues, [sessionId]: list.filter((q) => q.id !== promptId) } }),
-        drainedIds: new Set(s.drainedIds).add(promptId),
-      }
-    }
     const nextList = list.map((q) =>
-      q.id === promptId
-        ? { ...q, optimistic: false, degraded: true, ...(errorText ? { errorText } : {}) }
-        : q,
+      q.id === promptId ? { ...q, optimistic: false, degraded: true, errorText } : q,
     )
     return {
-      ...(active
-        ? { queue: nextList }
-        : { queues: { ...s.queues, [sessionId]: nextList } }),
+      ...(active ? { queue: nextList } : { queues: { ...s.queues, [sessionId]: nextList } }),
     }
   })
 }
@@ -386,6 +367,12 @@ type PromptQueueState = {
   ) => void
   /** Put an item back at the front of a session's stash (send rejected). */
   requeueFront: (sessionId: string, item: QueuedPrompt) => void
+  /**
+   * 把一行标成 degraded（FE-owned、agent 从未收到），并记下失败原因。
+   * 用于「立即发送 / 插话」这类 fire-and-forget 调用失败：正常靠
+   * queue_changed 广播校正，但断链时广播也停了，必须就地留痕。
+   */
+  markDegraded: (id: string, errorText?: string) => void
   removeAt: (id: string) => void
   clear: () => void
   /**
@@ -439,31 +426,33 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
     // `_meta.promptId` 提取 queue_meta 插进 pending_inputs；busy 排队、
     // idle 直接运行）。fire-and-forget：不 await 回合完成。
     //
-    // 新 host：POST 受理即返回 {ok:true}，无 stopReason。行保持乐观回显，
-    // 等 queue_changed 确认（清 optimistic + 补 version）或收养
-    // （running_prompt_id）。绝不能在此处按 'ran' 移除并写入 drainedIds
-    // ——否则权威快照会被 drainedIds 滤掉，UI 上 queued 闪一下就消失，
-    // 但 agent 侧已经入队。
+    // POST 受理即返回 {ok:true}：行保持乐观回显，等 queue_changed 确认
+    // （清 optimistic + 补 version）或收养（running_prompt_id）。绝不能
+    // 在此处按「已跑完」移除并写入 drainedIds——否则权威快照会被
+    // drainedIds 滤掉，UI 上 queued 闪一下就消失，但 agent 侧已经入队。
     //
-    // 旧 host：POST 阻塞到该 prompt 作为回合跑完，响应带 stopReason，
-    // 才走漏广播兜底（收养广播通常已先移除该行，settle 是 no-op）。
     // reject（网络 / agent 拒绝 / 409）→ 行标记 degraded，手动重发。
-    void transport
-      .prompt(item.blocks, { sessionId, promptId })
-      .then(
-        (result) => {
-          if (result?.stopReason) {
-            settlePromptRow(promptId, sessionId, 'ran')
-          }
-        },
-        (e: unknown) => {
-          // 任何失败（网络 / agent 拒绝 / 竞态 409）→ 行标记 degraded
-          // （FE-owned，不丢用户意图，手动重发）并记录失败原因（队列
-          // 行红色徽标 + tooltip）。不再向 scrollback 渲染错误行。
-          const msg = e instanceof Error ? e.message : String(e)
-          settlePromptRow(promptId, sessionId, 'failed', msg)
-        },
+    void transport.prompt(item.blocks, { sessionId, promptId }).catch((e: unknown) => {
+      // 任何失败（网络 / agent 拒绝 / 竞态 409）→ 行标记 degraded
+      // （FE-owned，不丢用户意图，手动重发）并记录失败原因（队列
+      // 行红色徽标 + tooltip）。不再向 scrollback 渲染错误行。
+      failPromptRow(promptId, sessionId, e instanceof Error ? e.message : String(e))
+    })
+  },
+  markDegraded: (id, errorText) => {
+    const patch = (list: QueuedPrompt[]) =>
+      list.map((q) =>
+        q.id === id
+          ? { ...q, optimistic: false, degraded: true, ...(errorText ? { errorText } : {}) }
+          : q,
       )
+    set((s) => ({
+      queue: patch(s.queue),
+      // 非活跃会话的 stash 镜像也一并标：切回去时不至于看起来还"已发"。
+      queues: Object.fromEntries(
+        Object.entries(s.queues).map(([sid, list]) => [sid, patch(list)]),
+      ),
+    }))
   },
   requeueFront: (sessionId, item) => {
     set((s) => {

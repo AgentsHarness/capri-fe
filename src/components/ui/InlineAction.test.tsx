@@ -47,6 +47,16 @@ describe('InlineAction', () => {
     expect(onRun).not.toHaveBeenCalled()
   })
 
+  it('busy：换成转圈帧、标记 aria-busy，且不再触发 onRun', () => {
+    const onRun = vi.fn()
+    const btn = renderAction({ label: 'kill', onRun, busy: true })
+    expect(btn.textContent).toBe('[⠋]')
+    expect(btn).toBeDisabled()
+    expect(btn.getAttribute('aria-busy')).toBe('true')
+    fireEvent.click(btn)
+    expect(onRun).not.toHaveBeenCalled()
+  })
+
   it('tone 决定配色：danger 红、neutral 常规、plan 计划色', () => {
     const clsOf = (tone?: 'danger' | 'neutral' | 'plan') => {
       const { container, unmount } = render(

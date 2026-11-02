@@ -1,4 +1,4 @@
-import type { TransportCore } from '../transport'
+import { AccessTokenError, type TransportCore } from '../transport'
 
 type JsonObject = Record<string, unknown>
 
@@ -6,7 +6,7 @@ function isJsonObject(value: unknown): value is JsonObject {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
-function responseError(data: unknown): string | undefined {
+export function responseError(data: unknown): string | undefined {
   if (!isJsonObject(data)) return undefined
   const value = data.error ?? data.message
   if (typeof value === 'string' && value.trim()) return value
@@ -32,6 +32,18 @@ export function assertRpcOk(res: Response, data: unknown, fallback: string): voi
   if (!res.ok || (isJsonObject(data) && data.ok === false)) {
     throw new Error(responseError(data) || `${fallback} (${res.status})`)
   }
+}
+
+/**
+ * Hub 管理端点（host 注册表 / 配对码 / prefs）的公用判断：401 抛
+ * {@link AccessTokenError} 交给上层重新授权，其余状态码与 `ok:false`
+ * 走 {@link assertRpcOk}，保留 host 的 error 文案与调用方的 fallback。
+ */
+export function assertHubOk(res: Response, data: unknown, fallback: string): void {
+  if (res.status === 401) {
+    throw new AccessTokenError(responseError(data) || '需要有效的访问 token')
+  }
+  assertRpcOk(res, data, fallback)
 }
 
 export function requireRpcObject(

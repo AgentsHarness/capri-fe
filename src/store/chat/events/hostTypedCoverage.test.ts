@@ -94,6 +94,8 @@ const HOST_TYPED_EVENTS = [
   'git_worktree_status',
   'config_changed',
   'settings_update',
+  // 上行裁剪占位（宿主 trimUnwatched）：只保 seq 连续，正文走历史重建。
+  'trimmed',
 ] as const
 
 /**

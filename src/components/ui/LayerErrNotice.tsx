@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { X } from 'lucide-react'
+import { LoaderCircle, X } from 'lucide-react'
 import { useChatStore } from '../../store/chat'
 import type { LayerErr } from '../../store/chat/types'
 
@@ -71,9 +71,10 @@ export function LayerErrNotice({
           type="button"
           onClick={() => void onRestart()}
           disabled={restarting}
-          className={`shrink-0 rounded px-2 py-1 hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-50 lg:px-1.5 lg:py-0.5 ${tone}`}
+          className={`inline-flex shrink-0 items-center gap-1 rounded px-2 py-1 hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-50 lg:px-1.5 lg:py-0.5 ${tone}`}
           title="杀掉当前 agent 进程并重新启动（恢复上次会话）"
         >
+          {restarting ? <LoaderCircle size={11} className="animate-spin" aria-hidden /> : null}
           {restarting ? '重启中…' : '重启'}
         </button>
       )}

@@ -129,6 +129,64 @@ describe('行首状态列', () => {
     expect(badge?.getAttribute('aria-label')).toBe('已完成待查看')
     expect(badge?.querySelector('svg')).not.toBeNull()
   })
+
+  it('当前正在看的会话跑完不画对勾，切走后恢复', () => {
+    useChatStore.setState({
+      sessionId: 'idle',
+      completedNotices: { idle: Date.now() },
+    } as never)
+    render(<SessionHistoryList />)
+    expect(row('空闲会话').querySelector('[aria-label="已完成待查看"]')).toBeNull()
+    cleanup()
+    // 切到别的会话：上一行变成"跑完待查看"，✓ 出现。
+    useChatStore.setState({ sessionId: 'run' } as never)
+    render(<SessionHistoryList />)
+    expect(row('空闲会话').querySelector('[aria-label="已完成待查看"]')).not.toBeNull()
+  })
+})
+
+describe('live 行字段覆盖 workspace 摘要', () => {
+  it('sessions 行的标题与副行摘要覆盖 workspace 列表的持久化摘要', () => {
+    useChatStore.setState({
+      sessions: [
+        {
+          sessionId: 'idle',
+          cwd: '/x',
+          title: 'live 标题',
+          lastTurnSummary: 'live 副行',
+          status: { state: 'idle' },
+        },
+      ],
+    } as never)
+    render(<SessionHistoryList />)
+    expect(screen.getByText('live 标题')).toBeInTheDocument()
+    expect(screen.queryByText('空闲会话')).toBeNull()
+    expect(screen.getByText('live 副行')).toBeInTheDocument()
+  })
+
+  it('live 标题 / 摘要为空白时回退 workspace 的摘要', () => {
+    useChatStore.setState({
+      workspaces: [
+        {
+          cwd: '/x',
+          label: '/x',
+          sessions: [
+            {
+              sessionId: 'idle',
+              cwd: '/x',
+              title: 'workspace 标题',
+              lastTurnSummary: 'workspace 副行',
+              updatedAt: T_NEW,
+            },
+          ],
+        },
+      ],
+      sessions: [{ sessionId: 'idle', cwd: '/x', title: '   ', lastTurnSummary: '  ' }],
+    } as never)
+    render(<SessionHistoryList />)
+    expect(screen.getByText('workspace 标题')).toBeInTheDocument()
+    expect(screen.getByText('workspace 副行')).toBeInTheDocument()
+  })
 })
 
 describe('标记视角', () => {

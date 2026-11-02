@@ -71,13 +71,13 @@ export function handleConnEvent(
         // Hub-level hello (capri-hub): registry info, no session state —
         // the selected host's snapshot is applied by switchHost.
         if (ev.service === 'hub') {
-          set({ conn: 'ready', statusText: '就绪' })
+          set({ conn: 'ready', phaseText: '就绪' })
           if (ev.hosts) set({ hosts: ev.hosts })
-          // 在线 FE 订阅数（旧 hub 不带 → 保留旧值，不写 undefined）。
+          // 在线 FE 订阅数（访客的 hello 不带该字段 → 保留旧值，不写 undefined）。
           if (typeof ev.feSubscribers === 'number') {
             set({ feSubscribers: ev.feSubscribers })
           }
-          // 本页在订阅者名单里的行号（旧 hub 不带 → 保持 undefined）。
+          // 本页在订阅者名单里的行号。
           if (typeof ev.subscriberId === 'number' && ev.subscriberId > 0) {
             set({ feSubscriberId: ev.subscriberId })
           }
@@ -109,8 +109,8 @@ export function handleConnEvent(
               ev.error ? 'error' : ev.ready && liveTurn ? 'busy' : ev.ready ? 'ready' : 'connecting',
             // boot 错误只进顶栏提示（下方 setLayerError），statusText 不写
             // 错误文本（stat/composer 不参与）——清空防残留旧文案。
-            statusText:
-              ev.error ? '' : ev.ready ? (liveTurn ? get().statusText : '就绪') : '启动中…',
+            phaseText:
+              ev.error ? '' : ev.ready ? (liveTurn ? get().phaseText : '就绪') : '启动中…',
             homeDir: ev.homeDir,
             hostId: ev.hostId,
             hostName: ev.hostName,
@@ -143,13 +143,10 @@ export function handleConnEvent(
               runtime.newSessionInFlightGeneration === runtime.sessionSwitchGen))
         // Pending is host-global (all sessions' clientReqs). Scope to the
         // session this hello is announcing so another conversation's
-        // permission / question never paints on the active view. Untagged
-        // rows (old host) are attributed to the announced active session.
+        // permission / question never paints on the active view.
         const pendingSnap = suppressAnchor
           ? { pending: [] as PendingReq[], xaiRequests: [] as PendingReq[] }
-          : partitionPendingRequests(reqs, ev.sessionId, {
-              includeUntagged: true,
-            })
+          : partitionPendingRequests(reqs, ev.sessionId)
         const { saved: permSaved } = consumeAgentInstance(ev.agentStartedAt)
         const permSnap = permissionModeFromSnapshot(ev.permissionMode)
         // ACP configOptions (host Status snapshot) carry the authoritative
@@ -166,8 +163,8 @@ export function handleConnEvent(
             ev.error ? 'error' : ev.ready && liveTurn ? 'busy' : ev.ready ? 'ready' : 'connecting',
           // boot 错误只进顶栏提示（下方 setLayerError），statusText 不写
           // 错误文本（stat/composer 不参与）——清空防残留旧文案。
-          statusText:
-            ev.error ? '' : ev.ready ? (liveTurn ? get().statusText : '就绪') : '启动中…',
+          phaseText:
+            ev.error ? '' : ev.ready ? (liveTurn ? get().phaseText : '就绪') : '启动中…',
           ...(suppressAnchor
             ? {}
             : { sessionId: ev.sessionId, cwd: ev.cwd }),
@@ -224,11 +221,11 @@ export function handleConnEvent(
               get().openThoughtId != null || get().openAssistantId != null
             set({
               conn: 'busy',
-              statusText: hasLocalStreaming ? get().statusText : 'Waiting for host…',
+              phaseText: hasLocalStreaming ? get().phaseText : 'Waiting for host…',
               awaitingNext: false,
               turnStartedAt: busyTurn,
-              // 新回合由 busy 锚定（非本端发送/收养）——回合身份未知，
-              // pid 置空走 legacy 匹配；reconnect mid-turn（newTurn=false）
+              // 新回合由 busy 锚定（非本端发送/收养）——本端不知道 pid，
+              // 回合身份校验放行；reconnect mid-turn（newTurn=false）
               // 保留原 pid。
               ...(newTurn ? { genRate: undefined, currentPromptId: undefined } : {}),
               // 系统恢复（busy/ready/新回合）：清空分层错误栈。
@@ -297,7 +294,7 @@ export function handleConnEvent(
           }
           set({
             conn: 'ready',
-            statusText: s.awaitingNext ? '待处理' : '就绪',
+            phaseText: s.awaitingNext ? '待处理' : '就绪',
             hostId: ev.hostId,
             hostName: ev.hostName,
             // 系统恢复（busy/ready/新回合）：清空分层错误栈。
@@ -332,7 +329,7 @@ export function handleConnEvent(
             : {
                 conn: 'ready' as const,
                 // Keep "待处理" if a turn just finished; otherwise plain idle.
-                statusText: s.awaitingNext ? '待处理' : '就绪',
+                phaseText: s.awaitingNext ? '待处理' : '就绪',
               }),
           sessionId: ev.sessionId,
           cwd: ev.cwd,
@@ -387,11 +384,11 @@ export function handleConnEvent(
           s.openThoughtId != null || s.openAssistantId != null
         set({
           conn: 'busy',
-          statusText: hasLocalStreaming ? s.statusText : 'Waiting for response…',
+          phaseText: hasLocalStreaming ? s.phaseText : 'Waiting for response…',
           awaitingNext: false,
           turnStartedAt,
-          // 新回合由 busy 锚定（非本端发送/收养）——回合身份未知，pid
-          // 置空走 legacy 匹配；mid-turn re-busy 保留原 pid。
+          // 新回合由 busy 锚定（非本端发送/收养）——本端不知道 pid，
+          // 回合身份校验放行；mid-turn re-busy 保留原 pid。
           ...(newTurn ? { genRate: undefined, currentPromptId: undefined } : {}),
           // A turn starting means the system recovered — clear stale
           // layer banners.

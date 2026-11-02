@@ -31,7 +31,7 @@ type LiveReplayState = Pick<
   | 'currentStreamStartMs'
   | 'lastCompletedTurn'
   | 'conn'
-  | 'statusText'
+  | 'phaseText'
   | 'awaitingNext'
   | 'turnStartedAt'
   | 'currentPromptId'
@@ -58,7 +58,7 @@ function captureLiveReplayState(s: ChatState): LiveReplayState {
     currentStreamStartMs: s.currentStreamStartMs,
     lastCompletedTurn: s.lastCompletedTurn,
     conn: s.conn,
-    statusText: s.statusText,
+    phaseText: s.phaseText,
     awaitingNext: s.awaitingNext,
     turnStartedAt: s.turnStartedAt,
     currentPromptId: s.currentPromptId,
@@ -180,7 +180,7 @@ export async function loadMoreHistory(
           lastCompletedTurn: undefined,
           pendingOptimisticUserId: undefined,
           conn: 'ready',
-          statusText: '历史回放中',
+          phaseText: '历史回放中',
           awaitingNext: false,
           turnStartedAt: undefined,
           currentPromptId: undefined,

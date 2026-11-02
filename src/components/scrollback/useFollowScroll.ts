@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   type MutableRefObject,
   type RefObject,
@@ -8,6 +9,12 @@ import {
 import type { ScrollEntry } from '../../api/types'
 import { useChatStore } from '../../store/chat'
 import { uiBool } from '../../store/settings'
+import {
+  PIN_RELEASE_EVENT,
+  pinReserveConsumed,
+  pinReservePad,
+  pinScrollTarget,
+} from '../../scrollback/pinReserve'
 
 export function useFollowScroll(
   boxRef: RefObject<HTMLDivElement | null>,
@@ -20,6 +27,11 @@ export function useFollowScroll(
   settleScrollAnchor: () => void,
   entries: ScrollEntry[],
   displayRowCount: number,
+  /** page-flip 的底部留白宿主（TUI `pin_reserve` 的 DOM 对应物）。 */
+  pinPadRef: RefObject<HTMLDivElement | null>,
+  /** workspace bar：可读区顶 = bar 下沿（page-flip 与 sticky 共用这条线）。 */
+  wsBarElRef: MutableRefObject<HTMLDivElement | null>,
+  wsBarH: number,
 ) {
   // Auto-follow only when near bottom (every mounted row is at real
   // height — full entry list mounted, no content-visibility
@@ -42,16 +54,87 @@ export function useFollowScroll(
   // assistant can grow for several frames (markdown / images / mermaid);
   // stick-to-bottom would re-pin the tail while sticky still thought the
   // user prompt was on-screen (first-frame short height → no pin).
+  const barHeight = useCallback(
+    () => wsBarElRef.current?.getBoundingClientRect().height ?? wsBarH,
+    [wsBarElRef, wsBarH],
+  )
+
+  const setPadHeight = useCallback(
+    (px: number) => {
+      const el = pinPadRef.current
+      if (!el) return
+      const next = `${Math.max(0, Math.round(px))}px`
+      if (el.style.height !== next) el.style.height = next
+    },
+    [pinPadRef],
+  )
+
+  /** 已钉到可读区顶的 prompt 行 id；null = 没有留白。 */
+  const pinIdRef = useRef<string | null>(null)
+
+  const releasePin = useCallback(() => {
+    pinIdRef.current = null
+    setPadHeight(0)
+  }, [setPadHeight])
+
+  /**
+   * 重算 page-flip 留白，返回 prompt 的顶对齐 scrollTop（未钉住 = null）。
+   *
+   * 留白 = 钉位 + 视口高 − 内容高，让「prompt 顶 == 滚动底」成立。TUI
+   * page_flip_to_entry 靠 pin_reserve 底垫把顶对齐撑成真正的滚动底；没有
+   * 这段留白，刚发完消息时 prompt 就是末条，顶对齐写入必被浏览器钳到底，
+   * 于是「发送后翻页」看起来完全没生效。回答长高时留白同步收缩；写满
+   * 一页（内容已越过钉位）即解除，回到贴底跟随。
+   *
+   * 内容高取留白块的 `offsetTop`（它紧跟转录，且自己的高度不影响该值）：
+   * 转录比视口短时 `scrollHeight` 会被撑到视口高，用它算会把留白算多。
+   */
+  const syncPinPad = useCallback((): number | null => {
+    const box = boxRef.current
+    const id = pinIdRef.current
+    const padEl = pinPadRef.current
+    if (!box || !id) return null
+    const el = box.querySelector(
+      `[data-entry-id="${id}"]`,
+    ) as HTMLElement | null
+    if (!el || !padEl) {
+      // 行已不在（会话切换 / 回放替换）：留白没有落点。
+      releasePin()
+      return null
+    }
+    const target = pinScrollTarget(
+      box.scrollTop,
+      el.getBoundingClientRect().top,
+      box.getBoundingClientRect().top,
+      barHeight(),
+    )
+    const contentH = padEl.offsetTop
+    if (pinReserveConsumed(target, box.clientHeight, contentH)) {
+      releasePin()
+      return null
+    }
+    setPadHeight(pinReservePad(target, box.clientHeight, contentH))
+    return target
+  }, [barHeight, boxRef, pinPadRef, releasePin, setPadHeight])
+
   const scrollToBottom = useCallback(
     (force = false) => {
       const box = boxRef.current
       if (!box) return
       if (!force && !followRef.current) return
-      box.scrollTop = box.scrollHeight
+      // 钉住期间「滚动底」就是 prompt 顶：留白先同步，再写落点。
+      const pinTarget = syncPinPad()
+      box.scrollTop = pinTarget ?? box.scrollHeight
       lastScrollTopRef.current = box.scrollTop
       scheduleUpdatePinned()
     },
-    [boxRef, followRef, lastScrollTopRef, scheduleUpdatePinned],
+    [
+      boxRef,
+      followRef,
+      lastScrollTopRef,
+      scheduleUpdatePinned,
+      syncPinPad,
+    ],
   )
   const pinStreamScroll = useCallback(() => {
     scrollToBottom(false)
@@ -64,13 +147,16 @@ export function useFollowScroll(
   // - always → recompute sticky pin (RO scrollTop writes may not fire onScroll;
   //   late growth past the user row must flip pinned without a user gesture)
   // Sticky overlay is out-of-flow so it does not feed this observer
-  // (no pin↔height loop).
+  // (no pin↔height loop). The page-flip pad lives OUTSIDE this wrapper so
+  // resizing it never re-enters here.
   useEffect(() => {
     const content = contentRef.current
     if (!content || typeof ResizeObserver === 'undefined') return
     const ro = new ResizeObserver(() => {
       if (followRef.current) scrollToBottom(true)
       else {
+        // 阅读历史时留白也要跟着内容高走：滚回底部才落得回同一页。
+        syncPinPad()
         // prepend 后晚到的撑高（图片解码 / mermaid / 长 markdown）会二次挪
         // 动视口；看门狗窗口内按同一行锚点拉回，窗口外什么都不做。
         settleScrollAnchor()
@@ -85,79 +171,92 @@ export function useFollowScroll(
     scheduleUpdatePinned,
     scrollToBottom,
     settleScrollAnchor,
+    syncPinPad,
   ])
+  // 视口尺寸变化（窗口 / 移动端键盘 / composer 长高）会改可读区高度，
+  // 钉住的落点随之变化：重算留白并落回 prompt 顶。
+  useEffect(() => {
+    const onResize = () => {
+      if (pinIdRef.current == null) return
+      if (followRef.current) scrollToBottom(true)
+      else syncPinPad()
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [followRef, scrollToBottom, syncPinPad])
+  // 显式回底手势（G）：TUI goto_bottom 先释放 pin_reserve 再落真实尾部，
+  // 否则「回底」只会回到钉住的那一页。
+  useEffect(() => {
+    const onRelease = () => releasePin()
+    window.addEventListener(PIN_RELEASE_EVENT, onRelease)
+    return () => window.removeEventListener(PIN_RELEASE_EVENT, onRelease)
+  }, [releasePin])
   // 发送消息（新的 user 行落到末尾，含 `!` 直执行）→ 视口跳回最新位置。
-  // TUI [ui] page_flip_on_send（默认 true）：把刚发的 prompt 钉到视口
-  // 顶部，响应从新的一页开始；false 时直接回到底部。只看 id 变化，历史
-  // prepend / 流式 flush 不触发；回放追加的 user 行（id ≠ lastSentPromptId）
-  // 走普通回底。
+  // TUI [ui] page_flip_on_send（默认 true）：把刚发的 prompt 钉到可读区
+  // 顶部（workspace bar 下沿），响应从新的一页开始；false 时直接回到底部。
+  // 只看 id 变化，历史 prepend / 流式 flush 不触发；回放追加的 user 行
+  // （id ≠ lastSentPromptId）走普通回底。`!` 直执行在 TUI 里是 synthetic
+  // 回合（follow_new_turn 不带 prompt），只回底、不翻页。
   //
-  // page-flip 后 follow **不**立即 re-arm（TUI pin_reserve 语义）：保持
-  // 顶对齐位置，等首个流式内容真正到达（entries 增长 / liveStream 增长）
-  // 才重新跟随回底——否则响应一 stream 就被拽回底部，page-flip 形同虚设。
-  // 前提是顶对齐真的钉住了（下方还有余地）；写入被钳到底则视为已回底，
-  // 照常跟随（见下方分支注释）。
+  // layout effect：留白必须在首帧前就位，否则顶对齐先被钳到底、下一帧
+  // 再跳回顶部，视觉上就是一次闪烁。
   const lastSentPromptId = useChatStore((s) => s.lastSentPromptId)
   const lastUserEntryIdRef = useRef<string | null>(null)
-  // pin_reserve：>=0 表示 page-flip 已钉顶、等待首个流式内容。值 = flip
-  // 时刻的 entries.length（发送那次 commit 里 entries effect 也会跑——
-  // 只认「条目数超过 flip 基线」的增长，避免自己把自己解除）。
-  const flipBaseRef = useRef(-1)
-  useEffect(() => {
+  useLayoutEffect(() => {
+    // 钉住的行被移除（会话切换 / 回放替换）→ 留白没有落点。
+    if (
+      pinIdRef.current != null &&
+      !entries.some((e) => e.id === pinIdRef.current)
+    ) {
+      releasePin()
+    }
     const last = entries[entries.length - 1]
     if (last?.kind !== 'user') return
     if (lastUserEntryIdRef.current === last.id) return
     lastUserEntryIdRef.current = last.id
-    if (last.id === lastSentPromptId && uiBool('page_flip_on_send', true)) {
-      const box = boxRef.current
-      const el = box?.querySelector(
+    const flip =
+      !last.isShell &&
+      last.id === lastSentPromptId &&
+      uiBool('page_flip_on_send', true)
+    const box = boxRef.current
+    if (flip && box) {
+      const el = box.querySelector(
         `[data-entry-id="${last.id}"]`,
       ) as HTMLElement | null
-      if (box && el) {
-        // Prompt top aligns with the viewport top; hold here until the
-        // first stream content arrives (flipBase release below).
-        const target =
-          box.scrollTop +
-          el.getBoundingClientRect().top -
-          box.getBoundingClientRect().top
-        box.scrollTop = target
-        lastScrollTopRef.current = box.scrollTop
-        // TUI 的 page_flip_to_entry 靠 pin_reserve 底垫把「prompt 顶对齐」
-        // 撑成真正的滚动底；FE 没有底垫，刚发完消息时 prompt 就是末条 →
-        // 写入必被钳到底。此时钉顶并不成立（视口已在尾部），必须继续跟随：
-        // 否则发送后一次晚到的排版增高（组尾行 / 补渲染的 markdown / 字体
-        // 回退）会把视口留在半路，直到首个流式内容到达才回底——用户看到的
-        // 就是「发送后滚动区没到最低」。真有下方余地时才保持钉顶。
-        if (box.scrollHeight - box.scrollTop - box.clientHeight > 1) {
-          followRef.current = false
-          flipBaseRef.current = entries.length
-          return
-        }
+      if (el) {
+        pinIdRef.current = last.id
+        followRef.current = true
+        scrollToBottom(true)
+        return
       }
     }
-    flipBaseRef.current = -1
+    releasePin()
     followRef.current = true
     scrollToBottom(true)
-  }, [boxRef, entries, followRef, lastScrollTopRef, lastSentPromptId, scrollToBottom])
-  // Entries 增长（首个回答/工具行落地）→ 解除 pin_reserve，恢复跟随；
-  // 条目缩水（会话切换清场）同样解除。
-  useEffect(() => {
-    if (flipBaseRef.current >= 0 && entries.length !== flipBaseRef.current) {
-      flipBaseRef.current = -1
-      followRef.current = true
+  }, [boxRef, entries, followRef, lastSentPromptId, releasePin, scrollToBottom])
+  // 条目增长（工具行落地 / 分组重排）→ 同步落点：跟随时仍停在这一页
+  // （钉住）或尾部；阅读历史时只重算留白，视口不动。
+  useLayoutEffect(() => {
+    if (pinIdRef.current != null && !entries.some((e) => e.id === pinIdRef.current)) {
+      releasePin()
     }
     pinStreamScroll()
-  }, [entries, displayRowCount, followRef, pinStreamScroll])
+    if (pinIdRef.current != null && !followRef.current) syncPinPad()
+  }, [
+    entries,
+    displayRowCount,
+    followRef,
+    pinStreamScroll,
+    releasePin,
+    syncPinPad,
+  ])
+  // 流式正文增长（不新增条目）→ 同一套跟随/留白收口。
   useEffect(() => {
     return useChatStore.subscribe((s, prev) => {
       if (s.liveStream?.text === prev.liveStream?.text) return
-      if (flipBaseRef.current >= 0) {
-        flipBaseRef.current = -1
-        followRef.current = true
-      }
       pinStreamScroll()
     })
-  }, [followRef, pinStreamScroll])
+  }, [pinStreamScroll])
 
   return { scrollToBottom, pinStreamScroll }
 }

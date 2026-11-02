@@ -11,8 +11,12 @@ export type HostInfo = {
   /** Hub registry realtime count: pending client requests (permits / questions). */
   pendingCount?: number
   local?: boolean
-  /** Hub registry liveness timestamp (hub mode). */
-  lastSeen?: string
+  /**
+   * How long ago the hub last received a frame from this host, measured on
+   * the hub clock. Use this for heartbeat freshness; comparing any host
+   * timestamp with the browser clock misreads clock skew as a dead host.
+   */
+  lastSeenAgeMs?: number
   /**
    * Host's local HTTP listen port (hub registry). Remote FE probes
    * `http://127.0.0.1:<port>` for a same-machine shortcut.
@@ -27,6 +31,13 @@ export type SessionInfo = {
   sessionId: string
   cwd?: string
   title?: string
+  /**
+   * 最后一轮动作摘要（与 `WorkspaceSummary.lastTurnSummary` 同义）：
+   * roster 行在会话摘要刷新后带上，live 更新走 `last_turn_summary`
+   * 事件写进本行（见 store/chat/sessionIdentity.ts）。缺失时侧边栏
+   * 副行不显示。
+   */
+  lastTurnSummary?: string
   updatedAt?: string
   meta?: unknown
   /**
@@ -48,15 +59,13 @@ export type SessionInfo = {
   hasTasks?: boolean
   bgCount?: number
   bgRunning?: number
+  /**
+   * Persisted reasoning effort when the roster row carries it (agent
+   * `session/list` rows usually don't — the workspace summary does; the
+   * sidebar projection fills it from there).
+   */
+  reasoningEffort?: string
 }
-
-/**
- * One session summary row from POST /api/session-summaries/workspace-list
- * (x.ai/session_summaries/workspace_list). The wire is snake_case
- * (info.id / info.cwd / session_summary / last_active_at / updated_at /
- * num_messages / current_model_id) — normalized to camelCase by LocalTransport.
- */
-
 
 /**
  * One session summary row from POST /api/session-summaries/workspace-list
@@ -95,23 +104,12 @@ export type WorkspaceSummary = {
 }
 
 /** One workspace bucket: full cwd path → its session summaries. */
-
-
-/** One workspace bucket: full cwd path → its session summaries. */
 export type WorkspaceGroup = {
   cwd: string
   /** Display label (full cwd from the wire; short name via repoNameFromCwd). */
   label: string
   sessions: WorkspaceSummary[]
 }
-
-/**
- * One still-running task event (POST /api/session-running-tasks) — the
- * host scan of updates.jsonl, liveness-probed (task_backgrounded orphans
- * whose output log is held open by a live process). Mirrors the wire
- * update fields so the FE can reuse its live task handler for replay.
- */
-
 
 /**
  * One still-running task event (POST /api/session-running-tasks) — the
@@ -171,13 +169,6 @@ export type DetachedTask = {
  * scheduled_task_created / fired / deleted (both the session_notification
  * tag carrier and the standalone SSE event path).
  */
-
-
-/**
- * One scheduled task (/loop) — TUI tasks pane "调度任务" section. Fed by
- * scheduled_task_created / fired / deleted (both the session_notification
- * tag carrier and the standalone SSE event path).
- */
 export type ScheduledTask = {
   taskId: string
   prompt: string
@@ -186,9 +177,6 @@ export type ScheduledTask = {
   /** Next fire time (ISO string or epoch seconds/ms — normalized at render). */
   nextFireAt?: string
 }
-
-/** One /rewind candidate (POST /api/rewind-points → points[]). */
-
 
 /** One /rewind candidate (POST /api/rewind-points → points[]). */
 export type RewindPoint = {
@@ -206,25 +194,10 @@ export type RewindPoint = {
  *   deleted_externally  — 磁盘上文件缺失但 agent 留下过内容（外部删除，已从快照恢复）
  *   created_externally  — 磁盘存在文件但 agent 最后状态没有（外部新建，已按快照处理）
  */
-
-
-/**
- * One conflicted file reported by x.ai/rewind/execute (agent
- * RewindConflictInfo — snake_case `conflict_type` on the wire):
- *   modified_externally — 磁盘内容 ≠ agent 最后写入的样子（外部改动，回退已覆盖）
- *   deleted_externally  — 磁盘上文件缺失但 agent 留下过内容（外部删除，已从快照恢复）
- *   created_externally  — 磁盘存在文件但 agent 最后状态没有（外部新建，已按快照处理）
- */
 export type RewindConflict = {
   path: string
   conflictType: string
 }
-
-/**
- * Successful rewind outcome details (agent RewindResponse — snake_case
- * wire: reverted_files / clean_files / conflicts / prompt_text).
- */
-
 
 /**
  * Successful rewind outcome details (agent RewindResponse — snake_case
@@ -252,20 +225,7 @@ export type RewindExecuteResult = {
  * "conversation_only" rolls back the conversation only (TUI /rewind
  * default); "all" also reverts the point's file snapshots.
  */
-
-
-/**
- * Rewind scope (POST /api/rewind-execute `mode`, TUI RewindExecute mode):
- * "conversation_only" rolls back the conversation only (TUI /rewind
- * default); "all" also reverts the point's file snapshots.
- */
 export type RewindMode = 'conversation_only' | 'all'
-
-/**
- * POST /api/session-info response — authoritative live details of the
- * active session, served by the host on demand (TUI /session-info analog).
- */
-
 
 /**
  * POST /api/session-info response — authoritative live details of the
@@ -348,14 +308,6 @@ export type ContextUsageCategory = {
  * (TUI ContextInfoBlock): category bar, legend rows and the
  * auto-compact estimate.
  */
-
-
-/**
- * Context usage breakdown — `x.ai/session/info` `data.context`
- * (ContextInfo, camelCase on the wire). Feeds the `/context` detail view
- * (TUI ContextInfoBlock): category bar, legend rows and the
- * auto-compact estimate.
- */
 export type ContextInfoDetail = {
   used: number
   total: number
@@ -375,14 +327,6 @@ export type ContextInfoDetail = {
   autoCompactThresholdPercent: number
   usageCategories: ContextUsageCategory[]
 }
-
-/**
- * `x.ai/session/info` response (agent-side SessionInfoResponse, camelCase,
- * `data` flattened) — the FULL session snapshot the TUI /session-info and
- * /context are built from. Distinct from the host's thinner
- * POST /api/session-info (SessionInfoDetail).
- */
-
 
 /**
  * `x.ai/session/info` response (agent-side SessionInfoResponse, camelCase,

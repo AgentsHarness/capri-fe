@@ -33,7 +33,7 @@ export function EntryShell({
   onSelect,
   pendingFreeze,
   now,
-  /** Row sits inside a group span (expanded verb / truncation tail). */
+  /** Row sits inside a group span (expanded verb group). */
   inGroup = false,
   /** This row is dense-packable (collapsed groupable). */
   dense = false,

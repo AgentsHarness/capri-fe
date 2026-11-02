@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { useChatStore } from '../store/chat'
 import { selectableRowIds } from '../store/chat/turn'
+import { PIN_RELEASE_EVENT } from '../scrollback/pinReserve'
 
 const NAV_KEYS = new Set([
   'j',
@@ -419,8 +420,11 @@ export function useScrollbackKeys(opts: { guest?: boolean } = {}) {
           // TUI GotoBottom: jump to the bottom; landing near the bottom
           // re-engages the existing bottom-follow. Also selects the LAST
           // selectable entry (nav.rs goto_bottom →
-          // find_last_selectable_in_range).
+          // find_last_selectable_in_range). TUI goto_bottom releases the
+          // page-flip pin reserve first — otherwise "bottom" only returns
+          // to the pinned page.
           e.preventDefault()
+          window.dispatchEvent(new Event(PIN_RELEASE_EVENT))
           const box = scrollBox()
           if (box) box.scrollTop = box.scrollHeight
           const st = useChatStore.getState()

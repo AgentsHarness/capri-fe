@@ -173,7 +173,9 @@ describe('switchGuestSession', () => {
     // 视图锚到新会话，状态行如实标注只读
     expect(s.sessionId).toBe('s2')
     expect(s.cwd).toBe('/w2')
-    expect(s.statusText).toBe('只读 · 历史')
+    expect(s.phaseText).toBe('只读 · 历史')
+    // 访客视图标注是相位文案，不写操作反馈槽。
+    expect(s.statusText).toBe('')
     expect(s.selectedHostId).toBe('h2')
     // 状态快照走既有的 ready 路径（不触发 session/load），并钉到切换后的会话
     expect(transport.status).toHaveBeenCalled()
@@ -223,7 +225,7 @@ describe('guestSessionState（只读状态）', () => {
     expect(s.guestSessionState).toBeUndefined()
   })
 
-  it('老 hub 没有 sessionState → 清空，不沿用上一次读数', async () => {
+  it('status 没带 sessionState → 清空，不沿用上一次读数', async () => {
     const s = state({
       sessionId: 's1',
       guestSessionState: {
@@ -258,7 +260,7 @@ describe('guestSessionState（只读状态）', () => {
     })
   })
 
-  it('倒计时起点缺省时仍然报出等待（老 host 没有 receivedAt）', async () => {
+  it('倒计时起点缺省时仍然报出等待（receivedAt 缺省）', async () => {
     const s = state({ sessionId: 's1' })
     const set = bind(s)
     vi.mocked(transport.status).mockResolvedValueOnce({

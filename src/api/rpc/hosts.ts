@@ -1,5 +1,5 @@
 import type { TransportCore } from '../transport'
-import { AccessTokenError, PrefsConflictError } from '../transport'
+import { assertHubOk, readRpcJson, responseError } from './core'
 import type { HostInfo, HubPrefsDoc } from '../types'
 
 /**
@@ -53,31 +53,14 @@ export const hostsRpc = {
     const handed = freshHostRegistry(url)
     if (handed) return { hosts: handed.hosts, defaultHostId: handed.defaultHostId }
     const res = await this.fetch(url, {}, { hubLevel: true })
-    const data = (await res.json().catch(() => ({}))) as {
-      hosts?: HostInfo[]
-      defaultHostId?: string
-      authRequired?: boolean
-      error?: string
-      ok?: boolean
-    }
-    if (res.status === 401) {
-      throw new AccessTokenError(
-        typeof data.error === 'string' && data.error
-          ? data.error
-          : '需要有效的访问 token',
-      )
-    }
-    if (!res.ok) {
-      throw new Error(
-        typeof data.error === 'string' && data.error
-          ? data.error
-          : `hosts failed (${res.status})`,
-      )
-    }
+    const data = (await readRpcJson(res)) as
+      | { hosts?: HostInfo[]; defaultHostId?: string; authRequired?: boolean }
+      | undefined
+    assertHubOk(res, data, 'hosts failed')
     const snap: HostRegistrySnapshot = {
-      hosts: data.hosts ?? [],
-      defaultHostId: data.defaultHostId,
-      authRequired: data.authRequired,
+      hosts: data?.hosts ?? [],
+      defaultHostId: data?.defaultHostId,
+      authRequired: data?.authRequired,
     }
     rememberHostRegistry(url, snap)
     return { hosts: snap.hosts, defaultHostId: snap.defaultHostId }
@@ -86,24 +69,12 @@ export const hostsRpc = {
   async pairingCode(this: TransportCore): Promise<{ code: string; expiresAt?: string; ttl?: number }> {
     if (this.mode !== 'hub') throw new Error('仅 Hub 模式支持查看配对码')
     const res = await this.fetch(`${this.apiBase()}/api/pairing`)
-    const data = (await res.json().catch(() => ({}))) as {
-      code?: string
-      expiresAt?: string
-      ttl?: number
-      error?: string
-      ok?: boolean
-    }
-    if (res.status === 401) {
-      throw new AccessTokenError(
-        typeof data.error === 'string' && data.error ? data.error : '需要有效的访问 token',
-      )
-    }
-    if (!res.ok || !data.code) {
-      throw new Error(
-        typeof data.error === 'string' && data.error
-          ? data.error
-          : `pairing failed (${res.status})`,
-      )
+    const data = (await readRpcJson(res)) as
+      | { code?: string; expiresAt?: string; ttl?: number }
+      | undefined
+    assertHubOk(res, data, 'pairing failed')
+    if (!data?.code) {
+      throw new Error(responseError(data) || `pairing failed (${res.status})`)
     }
     return { code: data.code, expiresAt: data.expiresAt, ttl: data.ttl }
   },
@@ -111,23 +82,12 @@ export const hostsRpc = {
   async rotatePairingCode(this: TransportCore): Promise<{ code: string; expiresAt?: string }> {
     if (this.mode !== 'hub') throw new Error('仅 Hub 模式支持轮换配对码')
     const res = await this.fetch(`${this.apiBase()}/api/pairing/rotate`, { method: 'POST' })
-    const data = (await res.json().catch(() => ({}))) as {
-      code?: string
-      expiresAt?: string
-      error?: string
-      ok?: boolean
-    }
-    if (res.status === 401) {
-      throw new AccessTokenError(
-        typeof data.error === 'string' && data.error ? data.error : '需要有效的访问 token',
-      )
-    }
-    if (!res.ok || !data.code) {
-      throw new Error(
-        typeof data.error === 'string' && data.error
-          ? data.error
-          : `rotate failed (${res.status})`,
-      )
+    const data = (await readRpcJson(res)) as
+      | { code?: string; expiresAt?: string }
+      | undefined
+    assertHubOk(res, data, 'rotate failed')
+    if (!data?.code) {
+      throw new Error(responseError(data) || `rotate failed (${res.status})`)
     }
     return { code: data.code, expiresAt: data.expiresAt }
   },
@@ -139,19 +99,7 @@ export const hostsRpc = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ hostName }),
     })
-    const data = (await res.json().catch(() => ({}))) as { error?: string; ok?: boolean }
-    if (res.status === 401) {
-      throw new AccessTokenError(
-        typeof data.error === 'string' && data.error ? data.error : '需要有效的访问 token',
-      )
-    }
-    if (!res.ok || data.ok === false) {
-      throw new Error(
-        typeof data.error === 'string' && data.error
-          ? data.error
-          : `rename failed (${res.status})`,
-      )
-    }
+    assertHubOk(res, await readRpcJson(res), 'rename failed')
     // 注册表刚被写：交接快照作废，随后的 refreshHosts 必须问真实数据。
     clearHostRegistryHandoff()
   },
@@ -161,19 +109,7 @@ export const hostsRpc = {
     const res = await this.fetch(`${this.apiBase()}/api/hosts/${encodeURIComponent(hostId)}`, {
       method: 'DELETE',
     })
-    const data = (await res.json().catch(() => ({}))) as { error?: string; ok?: boolean }
-    if (res.status === 401) {
-      throw new AccessTokenError(
-        typeof data.error === 'string' && data.error ? data.error : '需要有效的访问 token',
-      )
-    }
-    if (!res.ok || data.ok === false) {
-      throw new Error(
-        typeof data.error === 'string' && data.error
-          ? data.error
-          : `unpair failed (${res.status})`,
-      )
-    }
+    assertHubOk(res, await readRpcJson(res), 'unpair failed')
     // 注册表刚被写：同 renameHost，作废交接快照。
     clearHostRegistryHandoff()
   },
@@ -197,109 +133,59 @@ export const hostsRpc = {
       },
       { timeoutMs: 120_000 },
     )
-    const data = (await res.json().catch(() => ({}))) as { error?: string; ok?: boolean }
-    if (res.status === 401) {
-      throw new AccessTokenError(
-        typeof data.error === 'string' && data.error ? data.error : '需要有效的访问 token',
-      )
-    }
-    if (!res.ok || data.ok === false) {
-      throw new Error(
-        typeof data.error === 'string' && data.error
-          ? data.error
-          : `agent restart failed (${res.status})`,
-      )
-    }
+    assertHubOk(res, await readRpcJson(res), 'agent restart failed')
   },
 
   /**
-   * GET /api/prefs — 拉取置顶/待办文档 + 当前版本（版本是 PUT 条件
-   * 写入的 base；旧 hub 不带 version 字段 → undefined，调用方退回
-   * 无条件写）。
+   * GET /api/prefs — 拉取置顶/待办文档 + 当前版本（版本用于排障与对账）。
    */
-  async getPrefs(this: TransportCore): Promise<{ prefs: HubPrefsDoc; version?: number }> {
+  async getPrefs(this: TransportCore): Promise<{ prefs: HubPrefsDoc; version: number }> {
     const origin = this.prefsOrigin()
     if (!origin) throw new Error('仅 Hub 模式支持置顶/待办持久化')
     // hubLevel：hub 级请求，不参与 host 切换的 abortInflight 风暴——
     // 否则启动时与 refreshHosts（自动选中 host → setHost → abort）并发
     // 的 prefs 拉取每次都被中止，置顶/待办永远同步不过来。
     const res = await this.fetch(`${origin}/api/prefs`, {}, { hubLevel: true })
-    const data = (await res.json().catch(() => ({}))) as {
-      prefs?: HubPrefsDoc
-      version?: number
-      error?: string
-      ok?: boolean
-    }
-    if (res.status === 401) {
-      throw new AccessTokenError(
-        typeof data.error === 'string' && data.error ? data.error : '需要有效的访问 token',
-      )
-    }
-    if (!res.ok || data.ok === false) {
-      throw new Error(
-        typeof data.error === 'string' && data.error ? data.error : `prefs read failed (${res.status})`,
-      )
-    }
+    const data = (await readRpcJson(res)) as
+      | { prefs?: HubPrefsDoc; version?: number }
+      | undefined
+    assertHubOk(res, data, 'prefs read failed')
     return {
-      prefs: data.prefs ?? {},
-      version: typeof data.version === 'number' ? data.version : undefined,
+      prefs: data?.prefs ?? {},
+      version: typeof data?.version === 'number' ? data.version : 0,
     }
   },
 
   /**
-   * PUT /api/prefs {prefs, baseVersion?} — 全量替换置顶/待办文档。
-   * baseVersion（新 hub）使写入成为条件写：版本过旧时 hub 回 409 +
-   * 当前文档（抛 PrefsConflictError，调用方重放待推操作后重试）；
-   * 不带 baseVersion 为无条件写（旧 hub / 旧 FE 兼容）。成功响应带
-   * 新版本；prefs 文档带 entries 时 hub 按条目**合并**（不比对 base，回
-   * 合并后的权威文档），不带 entries 时仍是整份替换 —— 旧 FE 与旧 hub
-   * 都不受影响。响应里的 prefs 即合并后的权威文档（旧 hub 不回）。
+   * PUT /api/prefs {prefs} — hub 按条目**合并**并回合并后的权威文档。
+   * 合并不需要条件写：陈旧端只贡献自己真正改过的条目，不可能覆盖别端
+   * 更新的记录。
    */
   async putPrefs(
     this: TransportCore,
     prefs: HubPrefsDoc,
-    baseVersion?: number,
-  ): Promise<{ version?: number; prefs?: HubPrefsDoc }> {
+  ): Promise<{ version: number; prefs?: HubPrefsDoc }> {
     const origin = this.prefsOrigin()
     if (!origin) throw new Error('仅 Hub 模式支持置顶/待办持久化')
-    const body: Record<string, unknown> = { prefs }
-    if (baseVersion != null) body.baseVersion = baseVersion
     const res = await this.fetch(
       `${origin}/api/prefs`,
       {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ prefs }),
       },
       // hubLevel：同上，回写不被 host 切换的 abort 风暴打断。
       { hubLevel: true },
     )
-    const data = (await res.json().catch(() => ({}))) as {
-      error?: string
-      ok?: boolean
-      version?: number
-      prefs?: HubPrefsDoc
-    }
-    if (res.status === 401) {
-      throw new AccessTokenError(
-        typeof data.error === 'string' && data.error ? data.error : '需要有效的访问 token',
-      )
-    }
-    if (res.status === 409) {
-      throw new PrefsConflictError(
-        typeof data.error === 'string' && data.error ? data.error : '置顶/待办版本冲突',
-        typeof data.version === 'number' ? data.version : undefined,
-        data.prefs,
-      )
-    }
-    if (!res.ok || data.ok === false) {
-      throw new Error(
-        typeof data.error === 'string' && data.error ? data.error : `prefs write failed (${res.status})`,
-      )
-    }
+    const data = (await readRpcJson(res)) as
+      | { version?: number; prefs?: HubPrefsDoc }
+      | undefined
+    assertHubOk(res, data, 'prefs write failed')
     return {
-      version: typeof data.version === 'number' ? data.version : undefined,
-      prefs: data.prefs && typeof data.prefs === 'object' ? data.prefs : undefined,
+      version: typeof data?.version === 'number' ? data.version : 0,
+      // 没有文档 ≠ 空文档：保留 undefined，让调用方区分「hub 确认了合并结果」
+      // 与「只回了 200、没有权威文档可对账」。
+      ...(data?.prefs && typeof data.prefs === 'object' ? { prefs: data.prefs } : {}),
     }
   },
 }

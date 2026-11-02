@@ -339,7 +339,6 @@ describe('TopBar', () => {
         { hostId: 'h3', hostName: 'H3', online: true, booting: true },
         { hostId: 'h4', hostName: 'H4', online: true, busy: false, pendingCount: 0 },
         { hostId: 'h5', hostName: 'H5', online: false, busy: true },
-        { hostId: 'h6', hostName: 'H6', online: true }, // 旧 hub 无状态字段
       ],
       conn: 'ready',
     })
@@ -349,13 +348,19 @@ describe('TopBar', () => {
     expect(screen.getByText('待处理')).not.toBeNull()
     expect(screen.getByText('启动中')).not.toBeNull()
     expect(screen.getByText('空闲')).not.toBeNull()
-    // 离线 host 与旧 hub host 不显示状态文字（also title 不带状态）
+    // 离线 host 不显示状态文字（also title 不带状态）
     expect(container.textContent).not.toContain('h5 · 思考中')
-    expect(container.textContent).not.toContain('h6 · 空闲')
     // 思考中行：蓝色呼吸点
     const dots = container.querySelectorAll('span.h-1\\.5')
     expect(dots[0]?.className).toContain('bg-gn-blue')
     expect(dots[0]?.className).toContain('animate-pulse')
+  })
+
+  it('hosts 为空时的合成兜底行不标实时状态（没有数据，别假装「空闲」）', () => {
+    resetChat({ mode: 'hub', conn: 'ready', hosts: [], hostId: 'local', hostName: 'Local Host' })
+    render(<TopBar />)
+    fireEvent.click(screen.getByTitle(/右键可管理/))
+    expect(screen.queryByText('空闲')).toBeNull()
   })
 
   it('conn error → error 标签；layerErrors → host 名保持不变 + 前置告警图标 + 顶栏内联消息', () => {

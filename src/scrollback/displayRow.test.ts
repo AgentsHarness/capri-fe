@@ -12,7 +12,6 @@ describe('displayRowToEntry', () => {
     const row: DisplayRow = {
       type: 'group_header',
       id: 'gh_a',
-      family: 'verb',
       span: {
         range: { start: 0, end: 3 },
         kind: { type: 'verb', members: 3 },
@@ -36,7 +35,6 @@ describe('displayRowToEntry', () => {
     const row: DisplayRow = {
       type: 'group_header',
       id: 'gh_b',
-      family: 'verb',
       span: {
         range: { start: 0, end: 2 },
         kind: { type: 'verb', members: 2 },
@@ -54,11 +52,10 @@ describe('displayRowToEntry', () => {
     })
   })
 
-  it('单成员 verb 组头：count = members，无 group_header 的 truncation 分支', () => {
+  it('单成员 verb 组头：count = members，verbRun 照常透传', () => {
     const row: DisplayRow = {
       type: 'group_header',
       id: 'gh_c',
-      family: 'verb',
       span: {
         range: { start: 0, end: 1 },
         kind: { type: 'verb', members: 1 },
