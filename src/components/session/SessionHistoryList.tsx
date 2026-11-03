@@ -800,9 +800,9 @@ export function SessionHistoryList() {
                   const key = sessionGroupKey(s, sessionId)
                   const state = key === 'active' ? 'active' : 'idle'
                   const pending = key === 'awaiting'
-                  // ✓ 只留给「别的会话跑完待查看」：当前正在看的会话即使
-                  // 记录了完成（数据层允许），也不在行首画对勾——用户就在
-                  // 这里，完成已经是眼前的输出。切走后该行恢复显示 ✓。
+                  // ✓ 只留给「别的会话跑完待查看」：当前正在看的会话完成
+                  // 时不写 completedNotices（用户就在现场），这里再按
+                  // active 兜底，保证当前行永远不画对勾。
                   const completed = completedNotices[s.sessionId] != null && !active
                   // 置顶/待办徽标默认占掉行首的状态列（原来空心菱形的位置）；
                   // 状态本身要占那一格时（spinner / 待处理菱形 / 完成 ✓）徽标

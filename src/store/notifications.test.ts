@@ -24,7 +24,7 @@ const row = (sessionId: string, busy: boolean) => ({
 beforeAll(() => initUiNotifications())
 
 describe('完成提醒：sessions 状态转移的统一订阅', () => {
-  it('busy true → false 的会话各记一次完成（含当前会话的数据层记录）', async () => {
+  it('busy true → false 的会话各记一次完成（当前会话除外）', async () => {
     useChatStore.setState({
       sessionId: 'cur',
       completedNotices: {},
@@ -37,7 +37,7 @@ describe('完成提醒：sessions 状态转移的统一订阅', () => {
     await Promise.resolve()
 
     const notices = useChatStore.getState().completedNotices
-    expect(Object.keys(notices).sort()).toEqual(['cur', 'other'])
+    expect(Object.keys(notices)).toEqual(['other'])
   })
 
   it('没有 busy → idle 转移时不再新增提醒', async () => {
@@ -66,7 +66,7 @@ describe('完成提醒：sessions 状态转移的统一订阅', () => {
 })
 
 describe('浏览器标题的已完成计数', () => {
-  it('当前会话的完成记录不算"待查看"，切走后计入', async () => {
+  it('当前会话跑完不留"待查看"记录，切走后标题仍是空闲', async () => {
     useChatStore.setState({
       sessionId: 'cur',
       completedNotices: {},
@@ -74,12 +74,12 @@ describe('浏览器标题的已完成计数', () => {
     } as never)
     useChatStore.setState({ sessions: [row('cur', false)] } as never)
     await Promise.resolve()
-    // 当前会话的完成：数据层记了，标题不显示"已完成"。
-    expect(useChatStore.getState().completedNotices.cur).toBeTypeOf('number')
+    // 当前会话的完成：用户已经看到，不记完成记录。
+    expect(useChatStore.getState().completedNotices.cur).toBeUndefined()
     expect(document.title).toBe('[空闲] Agents Harness')
 
-    // 切到别的会话后，这条记录变成"跑完待查看"。
+    // 切到别的会话后，不应凭空出现"已完成"。
     useChatStore.setState({ sessionId: 'other' } as never)
-    expect(document.title).toBe('[1 已完成] Agents Harness')
+    expect(document.title).toBe('[空闲] Agents Harness')
   })
 })

@@ -130,18 +130,13 @@ describe('行首状态列', () => {
     expect(badge?.querySelector('svg')).not.toBeNull()
   })
 
-  it('当前正在看的会话跑完不画对勾，切走后恢复', () => {
+  it('当前正在看的会话即使有完成记录也不画对勾', () => {
     useChatStore.setState({
       sessionId: 'idle',
       completedNotices: { idle: Date.now() },
     } as never)
     render(<SessionHistoryList />)
     expect(row('空闲会话').querySelector('[aria-label="已完成待查看"]')).toBeNull()
-    cleanup()
-    // 切到别的会话：上一行变成"跑完待查看"，✓ 出现。
-    useChatStore.setState({ sessionId: 'run' } as never)
-    render(<SessionHistoryList />)
-    expect(row('空闲会话').querySelector('[aria-label="已完成待查看"]')).not.toBeNull()
   })
 })
 

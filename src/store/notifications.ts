@@ -69,7 +69,7 @@ export function initUiNotifications(): void {
   // ── turn completion: sessions 行的 busy true → false ──────────────
   // 完成提醒的唯一订阅点：任何写 `sessions` 的路径（roster 行级补丁 /
   // 会话列表全量刷新 / 轮询）都会换一个新数组，这里统一判定"跑完了"。
-  // 数据层记录由 noteSessionCompleted 负责（当前会话只记不弹）。
+  // 数据层记录由 noteSessionCompleted 负责（当前会话不记录）。
   useChatStore.subscribe((s, prev) => {
     if (s.sessions === prev.sessions) return
     const ids = completedSessionIds(prev.sessions, s.sessions)
@@ -157,9 +157,8 @@ function startTitleManager(): void {
       )
       if (!selfActive) thinking++
     }
-    // 当前会话的完成记录是数据层（切走后 sidebar 行显示 ✓），不算"待
-    // 查看"：不计入浏览器标题，否则自己这边的隐藏通知会让标题显示
-    // "[1 已完成]"。
+    // 当前会话完成时不写记录；这里排除 st.sessionId 只是兜底，避免旧
+    // 状态或竞态让标题显示 "[1 已完成]"。
     const completed = Object.keys(st.completedNotices).filter(
       (id) => id !== st.sessionId,
     ).length

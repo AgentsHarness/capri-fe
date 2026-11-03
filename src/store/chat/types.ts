@@ -562,18 +562,20 @@ export interface ChatAgentExtState {
    */
   runningProbeTaskIds: string[]
   /**
-   * Sessions that finished a turn (sessionId → completion epoch ms). Written
-   * by the `sessions` busy→idle subscription; drives the sidebar ✓ badge and
-   * the completion notification (the session on screen records but does not
-   * notify, and its row hides the ✓). Cleared when the session is opened.
+   * Sessions that finished a turn while the user was viewing something else
+   * (sessionId → completion epoch ms). Written by the `sessions` busy→idle
+   * subscription; drives the sidebar ✓ badge and the completion notification.
+   * A turn that finishes in the session on screen is not recorded — the user
+   * already saw it — so switching away later does not surface a ✓.
+   * Cleared when the session is opened.
    */
   completedNotices: Record<string, number>
   /** Mark a session's completion notice as seen (opened/being viewed). */
   clearCompletedNotice: (sessionId: string) => void
   /**
    * Record a session's turn completion: ✓ badge, and a system notification /
-   * toast for OTHER sessions. Always records the data; the session currently
-   * on screen stays silent (`opts.silent` forces silence for any session).
+   * toast. The session currently on screen is ignored (its completion is
+   * already visible); `opts.silent` records another session without a toast.
    */
   noteSessionCompleted: (sessionId: string, opts?: { silent?: boolean }) => void
   /**

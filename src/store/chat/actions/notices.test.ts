@@ -38,11 +38,11 @@ describe('noteSessionCompleted', () => {
     expect(mockToast).toHaveBeenCalledWith('「别的会话」已完成', expect.any(String))
   })
 
-  it('当前会话跑完：只记数据（切走后可从 ✓ 看到），不弹提醒', () => {
+  it('当前会话跑完：不记完成记录，也不弹提醒', () => {
     const { set, get, state } = makeStore()
     mockToast.mockClear()
     noticeActions(set, get).noteSessionCompleted('cur')
-    expect(typeof state().completedNotices.cur).toBe('number')
+    expect(state().completedNotices.cur).toBeUndefined()
     expect(mockToast).not.toHaveBeenCalled()
   })
 
