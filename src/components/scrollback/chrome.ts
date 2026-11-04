@@ -48,6 +48,8 @@ export type EntryViewProps = {
   onOpenImage?: (entryId: string) => void
   /** 关闭本行的 hover/选中框（图片画廊组：框由组容器统一绘制）。 */
   noFrame?: boolean
+  /** 新出现的块播放半透明淡入（主 scrollback 的实时 append；mini 不传）。 */
+  enter?: boolean
   /**
    * 本行是主 scrollback 画廊组的一员：缩略图按条目盒宽度铺满并裁切
    * （cover），而不是按内容比例缩小留白。缺省（迷你 scrollback 等）
@@ -84,6 +86,8 @@ export type EntryChrome = {
     inGroup: boolean
     /** 关闭本行的 hover/选中框（图片画廊组：框由组容器统一绘制）。 */
     noFrame?: boolean
+    /** 新出现的块播放半透明淡入（主 scrollback 的实时 append）。 */
+    enter?: boolean
     /** 整块单击折叠；缺省则单击只选中。 */
     onFold?: () => void
   }

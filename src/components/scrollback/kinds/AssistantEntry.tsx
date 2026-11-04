@@ -3,6 +3,7 @@ import { Check, Copy, GitFork } from 'lucide-react'
 import { Spinner } from '../../ui/Spinner'
 import type { ScrollEntry } from '../../../api/types'
 import { useChatStore } from '../../../store/chat'
+import { useFePrefs } from '../../../store/historyPins'
 import { mergeLiveText } from '../../../scrollback/liveText'
 import { Markdown } from '../../ui/Markdown'
 import { EntryShell } from '../EntryShell'
@@ -43,6 +44,7 @@ export function AssistantEntry({
   chrome: EntryChrome
 }) {
   const { shell, liveText, openViewer, inMini, readonly = false } = chrome
+  const smoothStream = useFePrefs((s) => s.fePrefs.streamTextSmooth)
   // liveText = liveStream delta/suffix for this entry only (not a full
   // replacement). Additive merge works for both store shapes:
   // entry.text '' + live full stream, or base + later chunks in liveStream.
@@ -157,7 +159,11 @@ export function AssistantEntry({
           under it; the hover expansion still overlays content by design. */}
       <div className="group relative min-w-0 sm:pr-9">
         <div ref={mdBoxRef} className="min-w-0">
-          <Markdown source={displayText} streaming={streamActive} />
+          <Markdown
+            source={displayText}
+            streaming={streamActive}
+            smoothStream={smoothStream}
+          />
         </div>
         {/* Agent-embedded images render below the text. */}
         {e.images?.length ? (

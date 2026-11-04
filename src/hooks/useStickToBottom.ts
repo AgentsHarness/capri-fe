@@ -4,10 +4,14 @@ import {
   useRef,
   type RefObject,
 } from 'react'
+import { cancelSmoothScroll, smoothScrollTop } from '../lib/smoothScroll'
 
 /** Tail zone treated as "the user is at the bottom" (matches the subagent
  *  timeline viewer's follow rule in BlockViewer). */
 const BOTTOM_THRESHOLD_PX = 48
+/** A real upward scroll (not a programmatic chase) must clear the tail by
+ *  this many px before it disarms follow — same 4px rule as Scrollback. */
+const USER_SCROLL_UP_UNFOLLOW_PX = 4
 
 /**
  * Stick-to-bottom follow for a scroll box whose content keeps growing.
@@ -33,10 +37,15 @@ export function useStickToBottom(
     initialFollowing?: boolean
     /** Changing this re-arms the state — pass the viewed item's identity. */
     resetKey?: unknown
+    /** Smoothly chase content growth instead of jumping by whole lines. */
+    smooth?: boolean
   } = {},
 ) {
-  const { enabled = true, initialFollowing = false, resetKey } = opts
+  const { enabled = true, initialFollowing = false, resetKey, smooth = false } = opts
   const followingRef = useRef(initialFollowing)
+  /** Previous scrollTop, to tell a real upward gesture from our own smooth
+   *  chase (the latter only ever moves the box downward). */
+  const lastTopRef = useRef(0)
   const roRef = useRef<ResizeObserver | null>(null)
   const observedRef = useRef<Element | null>(null)
   const pinRef = useRef<() => void>(() => {})
@@ -45,10 +54,20 @@ export function useStickToBottom(
   const measure = useCallback(() => {
     if (!enabled) return
     const el = boxRef.current
-    if (!el || el.scrollHeight <= el.clientHeight + 1) return
-    const atBottom =
-      el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_THRESHOLD_PX
-    followingRef.current = atBottom
+    if (!el) return
+    const top = el.scrollTop
+    const prevTop = lastTopRef.current
+    lastTopRef.current = top
+    if (el.scrollHeight <= el.clientHeight + 1) return
+    const dist = el.scrollHeight - top - el.clientHeight
+    // 平滑追底自身只会让 scrollTop 变大；若按绝对距离判定，会在追底
+    // 途中把 follow 误关。只有真实上滑（scrollTop 变小且离开底部）才
+    // 解除跟随；滑回底部附近重新武装。
+    if (top < prevTop && dist >= USER_SCROLL_UP_UNFOLLOW_PX) {
+      followingRef.current = false
+    } else if (dist <= BOTTOM_THRESHOLD_PX) {
+      followingRef.current = true
+    }
   }, [boxRef, enabled])
 
   /** Pin the tail while following; a no-op once the user scrolled up. */
@@ -56,8 +75,15 @@ export function useStickToBottom(
     if (!enabled || !followingRef.current) return
     const el = boxRef.current
     if (!el) return
+    if (smooth) {
+      smoothScrollTop(el, el.scrollHeight, {
+        isActive: () => followingRef.current,
+      })
+      return
+    }
+    cancelSmoothScroll(el)
     el.scrollTop = el.scrollHeight
-  }, [boxRef, enabled])
+  }, [boxRef, enabled, smooth])
   pinRef.current = pin
 
   // Open / item switch: seed the follow state, and for live logs land on the
@@ -65,9 +91,12 @@ export function useStickToBottom(
   // the head of a long log, not its newest line).
   useEffect(() => {
     followingRef.current = enabled && initialFollowing
-    if (!followingRef.current) return
     const el = boxRef.current
-    if (el) el.scrollTop = el.scrollHeight
+    if (!el) return
+    lastTopRef.current = el.scrollTop
+    if (!followingRef.current) return
+    el.scrollTop = el.scrollHeight
+    lastTopRef.current = el.scrollTop
   }, [boxRef, enabled, initialFollowing, resetKey])
 
   // Content growth is what needs following — observe the content element, not
@@ -89,7 +118,13 @@ export function useStickToBottom(
     ro.observe(next)
     roRef.current = ro
   })
-  useEffect(() => () => roRef.current?.disconnect(), [])
+  useEffect(
+    () => () => {
+      roRef.current?.disconnect()
+      cancelSmoothScroll(boxRef.current)
+    },
+    [boxRef],
+  )
 
   return {
     onScroll: measure,

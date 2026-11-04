@@ -10,7 +10,7 @@ import {
   noteLiveStreamSeen,
   runtime,
 } from './globals'
-import { TURN_TERMINAL_TYPES } from './turn'
+import { flushPendingRunningAdoption, TURN_TERMINAL_TYPES } from './turn'
 import { pushToast } from '../toast'
 import { flushStreamBufBeforeEvent } from './stream'
 import { handleConnEvent } from './events/conn'
@@ -95,17 +95,24 @@ export function handleChatEvent(
   // update 的事件会被当成同类流跳过 flush，随后却走 session_notification
   // 分支落一行非流式内容——缓冲文本的顺序就错到它后面去了。
   flushStreamBufBeforeEvent(set, get, ev)
-  if (handleConnEvent(set, get, ev)) return
-  if (handleUserStreamEvent(set, get, ev)) return
-  if (handleToolEvent(set, get, ev)) return
-  if (handleTurnEndEvent(set, get, ev)) return
-  if (handleSessionCtrlEvent(set, get, ev)) return
-  if (ev.type === 'session_notification') {
-    handleSessionNotification(set, get, ev)
-    return
+  try {
+    if (handleConnEvent(set, get, ev)) return
+    if (handleUserStreamEvent(set, get, ev)) return
+    if (handleToolEvent(set, get, ev)) return
+    if (handleTurnEndEvent(set, get, ev)) return
+    if (handleSessionCtrlEvent(set, get, ev)) return
+    if (ev.type === 'session_notification') {
+      handleSessionNotification(set, get, ev)
+      return
+    }
+    if (handleExtEvent(set, get, ev)) return
+    maybeWarnUnhandledTyped(String(ev.type))
+  } finally {
+    // 任一终态 rail（done / turn_completed / cancelled / prompt_complete）
+    // 处理完都可能已收口旧回合：接上 FIFO 交接暂存的新回合。queue_changed
+    // 自身处理时旧回合仍 live，这里天然是 no-op。
+    flushPendingRunningAdoption(set, get)
   }
-  if (handleExtEvent(set, get, ev)) return
-  maybeWarnUnhandledTyped(String(ev.type))
 }
 
 /**

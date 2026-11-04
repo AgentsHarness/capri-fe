@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import { ArrowUp } from 'lucide-react'
 import type { ScrollEntry } from '../../api/types'
 import { useChatStore } from '../../store/chat'
+import { useFePrefs } from '../../store/historyPins'
 import {
   displayRowKey,
   isDensePackableRow,
@@ -21,6 +22,7 @@ import { GroupHeaderView } from './GroupHeaderView'
 import { ImageLightbox, type InlineImage } from './InlineImages'
 import { StickyPrompt } from './StickyPrompt'
 import { useDisplayRows, useStreamingThoughtId } from './useDisplayRows'
+import { useEnteringEntries } from './useEnteringEntries'
 import { useFinishFlash } from './useFinishFlash'
 import { useFollowScroll } from './useFollowScroll'
 import { useHistoryPaging } from './useHistoryPaging'
@@ -53,6 +55,12 @@ export function Scrollback({
   const selectedId = useChatStore((s) => s.selectedId)
   const focusMode = useChatStore((s) => s.focusMode)
   const pending = useChatStore((s) => s.pending)
+  // 选派生 boolean：liveStream 对象每帧都变，但只有「是否在输出」翻转时
+  // 才触发整棵树重渲（streaming 正文仍由各行自行订阅）。
+  const liveTurn = useChatStore(
+    (s) => s.conn === 'busy' || s.liveStream != null || s.pending.length > 0,
+  )
+  const entryFadeIn = useFePrefs((s) => s.fePrefs.entryFadeIn)
   const expandedGroups = useChatStore((s) => s.expandedGroups)
   const historyLoadedAt = useChatStore((s) => s.historyLoadedAt)
   const historyHasMore = useChatStore((s) => s.historyHasMore)
@@ -136,6 +144,20 @@ export function Scrollback({
   const streamingThoughtId = useStreamingThoughtId(entries)
   const now = useFinishFlash(entries)
   const pendingFreeze = pending.length > 0
+  // 实时回合里新 append 的块播放半透明淡入（纯呈现，历史整批加载不播）。
+  const enteringIds = useEnteringEntries(entries, {
+    enabled: entryFadeIn && liveTurn,
+    historyLoadedAt,
+    historyLoading,
+    historyLoadingMore,
+  })
+  /** 聚合头没有对应 entry：段内任一成员是本帧新块就让它入场。 */
+  const groupEnter = (span: { range: { start: number; end: number } }) => {
+    for (let i = span.range.start; i < span.range.end; i++) {
+      if (enteringIds.has(entries[i].id)) return true
+    }
+    return false
+  }
   // 图片画廊预览（组级 lightbox）：key 定位打开的组，index 为该组内偏移。
   const [imgPreview, setImgPreview] = useState<{
     key: string
@@ -568,6 +590,7 @@ export function Scrollback({
                     dense={dense}
                     densePrev={densePrev}
                     denseNext={denseNext}
+                    enter={groupEnter(row.span)}
                   />
                 )
               }
@@ -583,6 +606,7 @@ export function Scrollback({
                   densePrev={densePrev}
                   denseNext={denseNext}
                   readonly={guest}
+                  enter={enteringIds.has(row.entry.id)}
                   streamBodyRef={
                     row.entry.kind === 'thought' &&
                     row.entry.id === streamingThoughtId
@@ -645,6 +669,7 @@ export function Scrollback({
                           noFrame
                           galleryItem
                           readonly={guest}
+                          enter={enteringIds.has(row.entry.id)}
                         />
                       </div>
                     )

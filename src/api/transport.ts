@@ -156,7 +156,7 @@ export const TOOL_CALL_DENSITY_CHOICES: {
  * TOML path (e.g. `subagents.toggle`). The host filters custom-model
  * definitions (`[model]` / `[model.<id>]`) out of the payload. `toolset`
  * carries [toolset.ask_user_question].timeout_enabled / timeout_secs (the
- * 问答超时 pane's editable pair) plus any raw [toolset] scalars.
+ * 「会话与权限」pane's editable pair) plus any raw [toolset] scalars.
  */
 export type SettingsPayload = {
   /** Any other config.toml table, keyed by its TOML path. */

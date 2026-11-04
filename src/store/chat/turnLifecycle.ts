@@ -131,14 +131,14 @@ export function finalizeTurn(
 // prompt 的用户行（与 send() 的用户行渲染同款：seal 旧流、append user
 // entry、conn busy、pendingOptimisticUserId 供 user_chunk echo 吸收）。
 // 绝不调 transport.prompt —— 回合已经在 agent 侧运行，本端只收养显示。
-// turnIsLive 守卫：若广播晚于第一批 chunk 到达（回合已在本端流式），
-// 跳过渲染，避免双锚定 / 用户行顺序错乱。
+// turnIsLive 守卫：上一回合仍在本端 live 时返回 false（由调用方暂存，
+// 等收口后再收养），避免截断在飞回合 / 双锚定 / 用户行顺序错乱。
 export function adoptTurn(
   set: SetState,
   get: () => ChatState,
   adopted: { id: string; text: string; blocks?: ContentBlock[] },
-): void {
-  if (turnIsLive(get())) return
+): boolean {
+  if (turnIsLive(get())) return false
   flushStreamBuf(set, get)
   // Seal any leftover thought from prior turn, then append the user row.
   const sealedAsst = sealAssistantStream(get())
@@ -178,6 +178,22 @@ export function adoptTurn(
     followUpsResponseId: undefined,
     genRate: undefined,
   })
+  return true
+}
+
+/**
+ * 消费 FIFO 交接的暂存收养：上一回合已收口（turnIsLive 为 false）时
+ * 立即按收养渲染新回合。没有暂存或旧回合仍 live 时无事发生。
+ */
+export function flushPendingRunningAdoption(
+  set: SetState,
+  get: () => ChatState,
+): boolean {
+  const pending = get().pendingRunningAdoption
+  if (!pending || turnIsLive(get())) return false
+  set({ pendingRunningAdoption: undefined })
+  adoptTurn(set, get, pending)
+  return true
 }
 
 // ── 子代理回合收口兜底（任务 2）────────────────────────────────────

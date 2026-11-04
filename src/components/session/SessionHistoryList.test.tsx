@@ -21,7 +21,18 @@ const T_OLD = new Date(Date.now() - 60_000).toISOString()
 const T_NEW = new Date(Date.now() - 1_000).toISOString()
 
 function seed() {
-  usePins.setState({ pinnedSessions: new Set(['pinned-idle', 'pinned-run']), todos: {} })
+  usePins.setState({
+    pinnedSessions: new Set(['pinned-idle', 'pinned-run']),
+    todos: {},
+    fePrefs: {
+      liteReplay: false,
+      autoTodoNewSession: false,
+      workspaceFullPath: false,
+      entryFadeIn: true,
+      streamTextSmooth: true,
+      thoughtLines: 4,
+    },
+  })
   useChatStore.setState({
     sessionId: undefined,
     cwd: '/x',
@@ -201,6 +212,42 @@ describe('标记视角', () => {
     render(<SessionHistoryList />)
     const section = row('置顶空闲会话')
     expect(leading(section)?.querySelector('[aria-label="已置顶"]')).not.toBeNull()
+  })
+})
+
+describe('目录分组名显示偏好', () => {
+  const cwd = 'C:\\Users\\benin\\ccwork\\acp-host'
+
+  function seedWindowsPath() {
+    useChatStore.setState({
+      cwd,
+      workspaces: [
+        {
+          cwd,
+          label: cwd,
+          sessions: [
+            { sessionId: 'win', cwd, title: 'Windows 会话', updatedAt: T_NEW },
+          ],
+        },
+      ],
+      sessions: [{ sessionId: 'win', cwd, status: { state: 'idle' } }],
+    } as never)
+  }
+
+  it('默认显示短名，Windows 反斜杠路径取最后两段', () => {
+    seedWindowsPath()
+    render(<SessionHistoryList />)
+    expect(screen.getByText('ccwork-acp-host')).toBeInTheDocument()
+  })
+
+  it('workspaceFullPath 开启后显示完整路径', () => {
+    seedWindowsPath()
+    usePins.setState((s) => ({
+      fePrefs: { ...s.fePrefs, workspaceFullPath: true },
+    }))
+    render(<SessionHistoryList />)
+    expect(screen.getByText(cwd)).toBeInTheDocument()
+    expect(screen.queryByText('ccwork-acp-host')).toBeNull()
   })
 })
 

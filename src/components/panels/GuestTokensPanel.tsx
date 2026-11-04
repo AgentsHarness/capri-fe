@@ -82,7 +82,7 @@ export function GuestTokensPanel() {
         <button
           type="button"
           onClick={() => setCreating((v) => !v)}
-          className="inline-flex min-h-7 items-center gap-1 rounded bg-gn-cyan/15 px-2 py-1 text-[11.5px] font-medium text-gn-cyan hover:bg-gn-cyan/25"
+          className="inline-flex min-h-9 items-center gap-1 rounded bg-gn-cyan/15 px-2.5 py-1.5 text-[12px] font-medium text-gn-cyan hover:bg-gn-cyan/25 sm:min-h-7 sm:px-2 sm:py-1 sm:text-[11.5px]"
         >
           <Plus size={12} strokeWidth={2.5} aria-hidden />
           新建令牌
@@ -91,7 +91,7 @@ export function GuestTokensPanel() {
           type="button"
           disabled={busy === 'load'}
           onClick={() => void run('load', load)}
-          className="inline-flex min-h-7 items-center gap-1 rounded px-2 py-1 text-[11.5px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40"
+          className="inline-flex min-h-9 items-center gap-1 rounded px-2.5 py-1.5 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-7 sm:px-2 sm:py-1 sm:text-[11.5px]"
           title="重新读取令牌列表"
         >
           {busy === 'load' ? (
@@ -101,7 +101,7 @@ export function GuestTokensPanel() {
           )}
           刷新列表
         </button>
-        <span className="ml-auto text-[10.5px] text-gn-gutter">
+        <span className="ml-auto text-[11px] text-gn-gutter sm:text-[10.5px]">
           {tokens ? `${tokens.length} 个令牌` : ''}
         </span>
       </div>
@@ -144,7 +144,7 @@ export function GuestTokensPanel() {
                 pushToast('访客令牌已创建', { type: 'success' })
               })
             }
-            className="inline-flex min-h-7 items-center gap-1 rounded bg-gn-bg-highlight px-2.5 py-1 text-[11.5px] font-medium text-gn-fg hover:bg-gn-bg-highlight/80 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex min-h-9 items-center gap-1 rounded bg-gn-bg-highlight px-3 py-1 text-[12.5px] font-medium text-gn-fg hover:bg-gn-bg-highlight/80 disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-7 sm:px-2.5 sm:text-[11.5px]"
           >
             {busy === 'create' ? <Spinner size={11} /> : null}
             创建
@@ -168,19 +168,19 @@ export function GuestTokensPanel() {
           const open = expanded === t.id
           return (
             <div key={t.id} className="border-b border-gn-prompt-border/40 last:border-b-0">
-              <div className="flex flex-wrap items-center gap-2 px-3 py-2 sm:px-4">
+              <div className="flex flex-col gap-1.5 px-3 py-2.5 sm:flex-row sm:flex-wrap sm:items-center sm:gap-2 sm:px-4 sm:py-2">
                 <button
                   type="button"
                   onClick={() => setExpanded(open ? null : t.id)}
                   aria-expanded={open}
-                  className="inline-flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                  className="flex min-h-9 w-full min-w-0 items-center gap-1.5 text-left sm:min-h-0 sm:w-auto sm:flex-1"
                 >
                   {open ? (
-                    <ChevronDown size={12} strokeWidth={2.5} className="shrink-0 text-gn-gutter" aria-hidden />
+                    <ChevronDown size={14} strokeWidth={2.5} className="shrink-0 text-gn-gutter sm:h-3 sm:w-3" aria-hidden />
                   ) : (
-                    <ChevronRight size={12} strokeWidth={2.5} className="shrink-0 text-gn-gutter" aria-hidden />
+                    <ChevronRight size={14} strokeWidth={2.5} className="shrink-0 text-gn-gutter sm:h-3 sm:w-3" aria-hidden />
                   )}
-                  <span className="min-w-0 truncate text-[12px] font-medium text-gn-fg">
+                  <span className="min-w-0 truncate text-[13px] font-medium text-gn-fg sm:text-[12px]">
                     {t.label}
                   </span>
                   {t.revoked ? (
@@ -189,60 +189,70 @@ export function GuestTokensPanel() {
                     </span>
                   ) : null}
                 </button>
-                <span className="shrink-0 text-[10.5px] text-gn-muted">
-                  {t.sessions.length} 个会话 · {formatGuestExpiry(t.expiresAt)}
-                </span>
-                <span className="flex shrink-0 items-center gap-1">
-                  <CopyButton text={guestShareLink(t.token)} label="链接" />
-                  <CopyButton text={t.token} label="密钥" />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditing(editing === t.id ? null : t.id)
-                      setEditLabel(t.label)
-                      setEditExpiry(
-                        GUEST_EXPIRY_OPTIONS.find((o) => o.seconds === t.expiresAt)?.id ??
-                          'forever',
-                      )
-                    }}
-                    className="inline-flex min-h-7 items-center rounded px-2 py-1 text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg"
-                  >
-                    编辑
-                  </button>
-                  <button
-                    type="button"
-                    disabled={busy != null || t.revoked}
-                    onClick={() =>
-                      void run(`revoke:${t.id}`, async () => {
-                        replaceToken(await transport.updateGuestToken({ id: t.id, revoked: true }))
-                        pushToast('令牌已吊销', { type: 'success' })
-                      })
-                    }
-                    className="inline-flex min-h-7 items-center gap-1 rounded px-2 py-1 text-[11px] text-gn-yellow hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    {busy === `revoke:${t.id}` ? <Spinner size={11} /> : null}
-                    吊销
-                  </button>
-                  <button
-                    type="button"
-                    disabled={busy != null}
-                    onClick={() =>
-                      void run(`delete:${t.id}`, async () => {
-                        await transport.deleteGuestToken(t.id)
-                        setTokens((prev) => (prev ?? []).filter((x) => x.id !== t.id))
-                        pushToast('令牌已删除', { type: 'success' })
-                      })
-                    }
-                    className="inline-flex min-h-7 items-center rounded px-2 py-1 text-[11px] text-gn-red hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40"
-                    aria-label="删除令牌"
-                  >
-                    {busy === `delete:${t.id}` ? (
-                      <Spinner size={12} />
-                    ) : (
-                      <Trash2 size={12} strokeWidth={2.5} aria-hidden />
-                    )}
-                  </button>
-                </span>
+                <div className="flex w-full flex-wrap items-center justify-between gap-x-3 gap-y-1.5 sm:contents">
+                  <span className="shrink-0 text-[11px] text-gn-muted sm:text-[10.5px]">
+                    {t.sessions.length} 个会话 · {formatGuestExpiry(t.expiresAt)}
+                  </span>
+                  <span className="flex shrink-0 flex-wrap items-center gap-1">
+                    <CopyButton
+                      text={guestShareLink(t.token)}
+                      label="链接"
+                      className="min-h-9 px-2.5 text-[12px] sm:min-h-7 sm:px-2 sm:text-[11px]"
+                    />
+                    <CopyButton
+                      text={t.token}
+                      label="密钥"
+                      className="min-h-9 px-2.5 text-[12px] sm:min-h-7 sm:px-2 sm:text-[11px]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditing(editing === t.id ? null : t.id)
+                        setEditLabel(t.label)
+                        setEditExpiry(
+                          GUEST_EXPIRY_OPTIONS.find((o) => o.seconds === t.expiresAt)?.id ??
+                            'forever',
+                        )
+                      }}
+                      className="inline-flex min-h-9 items-center rounded px-2.5 py-1 text-[12px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg sm:min-h-7 sm:px-2 sm:text-[11px]"
+                    >
+                      编辑
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy != null || t.revoked}
+                      onClick={() =>
+                        void run(`revoke:${t.id}`, async () => {
+                          replaceToken(await transport.updateGuestToken({ id: t.id, revoked: true }))
+                          pushToast('令牌已吊销', { type: 'success' })
+                        })
+                      }
+                      className="inline-flex min-h-9 items-center gap-1 rounded px-2.5 py-1 text-[12px] text-gn-yellow hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-7 sm:px-2 sm:text-[11px]"
+                    >
+                      {busy === `revoke:${t.id}` ? <Spinner size={11} /> : null}
+                      吊销
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy != null}
+                      onClick={() =>
+                        void run(`delete:${t.id}`, async () => {
+                          await transport.deleteGuestToken(t.id)
+                          setTokens((prev) => (prev ?? []).filter((x) => x.id !== t.id))
+                          pushToast('令牌已删除', { type: 'success' })
+                        })
+                      }
+                      className="inline-flex min-h-9 min-w-9 items-center justify-center rounded px-2 py-1 text-[12px] text-gn-red hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-7 sm:min-w-0 sm:text-[11px]"
+                      aria-label="删除令牌"
+                    >
+                      {busy === `delete:${t.id}` ? (
+                        <Spinner size={12} />
+                      ) : (
+                        <Trash2 size={14} strokeWidth={2.5} className="sm:h-3 sm:w-3" aria-hidden />
+                      )}
+                    </button>
+                  </span>
+                </div>
               </div>
 
               {editing === t.id && (
@@ -283,7 +293,7 @@ export function GuestTokensPanel() {
                         pushToast('令牌已更新', { type: 'success' })
                       })
                     }
-                    className="inline-flex min-h-7 items-center gap-1 rounded bg-gn-bg-highlight px-2.5 py-1 text-[11.5px] font-medium text-gn-fg hover:bg-gn-bg-highlight/80 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="inline-flex min-h-9 items-center gap-1 rounded bg-gn-bg-highlight px-3 py-1 text-[12.5px] font-medium text-gn-fg hover:bg-gn-bg-highlight/80 disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-7 sm:px-2.5 sm:text-[11.5px]"
                   >
                     {busy === `edit:${t.id}` ? <Spinner size={11} /> : null}
                     保存
@@ -291,7 +301,7 @@ export function GuestTokensPanel() {
                   <button
                     type="button"
                     onClick={() => setEditing(null)}
-                    className="inline-flex min-h-7 items-center rounded px-2 py-1 text-[11.5px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg"
+                    className="inline-flex min-h-9 items-center rounded px-3 py-1 text-[12.5px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg sm:min-h-7 sm:px-2 sm:text-[11.5px]"
                   >
                     取消
                   </button>
@@ -387,7 +397,7 @@ function TokenSessions({
         <button
           type="button"
           onClick={() => setAdding((v) => !v)}
-          className="inline-flex min-h-7 items-center gap-1 rounded bg-gn-bg-base px-2 py-1 text-[11px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg"
+          className="inline-flex min-h-9 items-center gap-1 rounded bg-gn-bg-base px-2.5 py-1 text-[12px] text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg sm:min-h-7 sm:px-2 sm:text-[11px]"
         >
           <Plus size={11} strokeWidth={2.5} aria-hidden />
           添加会话
@@ -401,7 +411,7 @@ function TokenSessions({
               pushToast('已刷新会话标题', { type: 'success' })
             })
           }
-          className="inline-flex min-h-7 items-center gap-1 rounded px-2 py-1 text-[11px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex min-h-9 items-center gap-1 rounded px-2.5 py-1 text-[12px] text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-7 sm:px-2 sm:text-[11px]"
           title="按 Host 的会话列表回填标题，并标记已不存在的会话"
         >
           {busy === `refresh:${token.id}` ? (
@@ -418,13 +428,13 @@ function TokenSessions({
         <div className="py-1 text-[11px] text-gn-muted">该令牌没有任何会话。</div>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[420px] border-collapse text-left">
+          <table className="w-full border-collapse text-left sm:min-w-[420px]">
             <thead>
               <tr className="text-[10px] tracking-wide text-gn-gutter">
                 <th className="py-1 pr-2 font-normal">Host</th>
                 <th className="py-1 pr-2 font-normal">标题</th>
-                <th className="py-1 pr-2 font-normal">cwd</th>
-                <th className="py-1 pr-2 font-normal">加入时间</th>
+                <th className="hidden py-1 pr-2 font-normal sm:table-cell">cwd</th>
+                <th className="hidden py-1 pr-2 font-normal sm:table-cell">加入时间</th>
                 <th className="py-1 font-normal" />
               </tr>
             </thead>
@@ -446,10 +456,10 @@ function TokenSessions({
                     {s.title || s.sessionId.slice(0, 12)}
                     {s.stale && <span className="ml-1 text-[10px] text-gn-yellow">已失效</span>}
                   </td>
-                  <td className="max-w-[12rem] truncate py-1 pr-2 font-mono text-[10.5px]" title={s.cwd}>
+                  <td className="hidden max-w-[12rem] truncate py-1 pr-2 font-mono text-[10.5px] sm:table-cell" title={s.cwd}>
                     {s.cwd || '—'}
                   </td>
-                  <td className="whitespace-nowrap py-1 pr-2 text-[10.5px]">
+                  <td className="hidden whitespace-nowrap py-1 pr-2 text-[10.5px] sm:table-cell">
                     {s.addedAt ? formatGuestExpiry(s.addedAt) : '—'}
                   </td>
                   <td className="py-1 text-right">
@@ -517,7 +527,7 @@ function TokenSessions({
                   setAdding(false)
                 })
               }
-              className="ml-auto inline-flex min-h-7 items-center gap-1 rounded bg-gn-bg-highlight px-2.5 py-1 text-[11px] font-medium text-gn-fg hover:bg-gn-bg-highlight/80 disabled:cursor-not-allowed disabled:opacity-50"
+              className="ml-auto inline-flex min-h-9 items-center gap-1 rounded bg-gn-bg-highlight px-3 py-1 text-[12px] font-medium text-gn-fg hover:bg-gn-bg-highlight/80 disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-7 sm:px-2.5 sm:text-[11px]"
             >
               {busy === `add:${token.id}` ? <Spinner size={11} /> : null}
               加入 {picked.size > 0 ? `(${picked.size})` : ''}
@@ -534,7 +544,7 @@ function TokenSessions({
               return (
                 <label
                   key={s.sessionId}
-                  className={`flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 hover:bg-gn-bg-highlight/60 ${
+                  className={`flex min-h-9 cursor-pointer items-center gap-2 rounded px-1 py-0.5 hover:bg-gn-bg-highlight/60 sm:min-h-0 ${
                     dup ? 'opacity-50' : ''
                   }`}
                 >

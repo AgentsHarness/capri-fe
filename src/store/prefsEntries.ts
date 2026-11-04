@@ -17,7 +17,7 @@
  * 线格式（hub 侧对应 internal/hub 的 PrefsEntry）：
  *   entries: { "se:<sessionId>": {v:"1", at:1735..., site:"a1b2", d?:true} }
  *   key  : ws:<cwd> | se:<sessionId> | todo:<sessionId> | fe:<field>
- *   v    : 引脚 "1"；待办 "todo"|"completed"；fe 偏好 "true"|"false"
+ *   v    : 引脚 "1"；待办 "todo"|"completed"；fe 偏好 "true"|"false" 或数字
  *   at   : 写入时刻（epoch ms；写入方按 maxAt+1 兜住时钟回退）
  *   site : 每浏览器源一个随机串，at 相同时的定序裁决
  *   d    : 墓碑（删除）
@@ -114,7 +114,17 @@ export type PrefsSnapshot = {
   pinnedWorkspaces: string[]
   pinnedSessions: string[]
   todos: Record<string, string>
-  fePrefs: Record<string, boolean>
+  /** 布尔偏好与数值偏好（如 thoughtLines）。 */
+  fePrefs: Record<string, boolean | number>
+}
+
+/** FE 偏好条目的字符串值 → 投影值；非法值不进投影。 */
+function parseFeValue(v: string): boolean | number | undefined {
+  if (v === 'true') return true
+  if (v === 'false') return false
+  if (v.trim() === '') return undefined
+  const n = Number(v)
+  return Number.isFinite(n) ? n : undefined
 }
 
 export function projectEntries(entries: PrefsEntries): PrefsSnapshot {
@@ -133,7 +143,8 @@ export function projectEntries(entries: PrefsEntries): PrefsSnapshot {
     } else if (k.startsWith(PREFS_KEY.todo)) {
       view.todos[k.slice(PREFS_KEY.todo.length)] = e.v
     } else if (k.startsWith(PREFS_KEY.fe)) {
-      view.fePrefs[k.slice(PREFS_KEY.fe.length)] = e.v === 'true'
+      const value = parseFeValue(e.v)
+      if (value !== undefined) view.fePrefs[k.slice(PREFS_KEY.fe.length)] = value
     }
   }
   view.pinnedWorkspaces.sort()

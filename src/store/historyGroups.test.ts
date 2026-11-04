@@ -7,6 +7,7 @@ import {
   sessionContextPct,
   sessionGroupKey,
   sessionSortRank,
+  workspaceGroupLabel,
 } from './historyGroups'
 
 const session = (over: Partial<SessionInfo> & { sessionId: string }): SessionInfo => over
@@ -79,6 +80,29 @@ describe('repoNameFromCwd', () => {
   it('过滤 . / .. 组件（仅过滤、不做词法解析）', () => {
     // '/a/./b/../c' → 组件 [a,b,c]（.. 不回抵上级）→ 取尾两个
     expect(repoNameFromCwd('/a/./b/../c')).toBe('b-c')
+  })
+
+  it('Windows 反斜杠 / 正斜杠 / 盘符都按目录边界切分', () => {
+    expect(repoNameFromCwd('C:\\Users\\benin\\ccwork\\acp-host')).toBe('ccwork-acp-host')
+    expect(repoNameFromCwd('C:/Users/benin/ccwork/acp-host')).toBe('ccwork-acp-host')
+    expect(repoNameFromCwd('C:\\Users')).toBe('Users')
+    expect(repoNameFromCwd('C:\\')).toBe('C:')
+    expect(repoNameFromCwd('\\\\server\\share\\repo')).toBe('share-repo')
+    expect(repoNameFromCwd('\\\\?\\C:\\Users\\benin\\ccwork\\acp-host')).toBe('ccwork-acp-host')
+  })
+})
+
+describe('workspaceGroupLabel', () => {
+  it('短名沿用 repoNameFromCwd，全路径原样显示 cwd', () => {
+    expect(workspaceGroupLabel('/home/user/xai', false)).toBe('user-xai')
+    expect(workspaceGroupLabel('/home/user/xai', true)).toBe('/home/user/xai')
+    expect(workspaceGroupLabel('C:\\Users\\benin\\ccwork\\acp-host', false)).toBe(
+      'ccwork-acp-host',
+    )
+    expect(workspaceGroupLabel('C:\\Users\\benin\\ccwork\\acp-host', true)).toBe(
+      'C:\\Users\\benin\\ccwork\\acp-host',
+    )
+    expect(workspaceGroupLabel('', true)).toBe('unknown')
   })
 })
 

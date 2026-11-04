@@ -195,6 +195,18 @@ body.gn-queue-dragging {
   outline: none;
   overflow: hidden;
 }
+/* SettingsModal: on phones the dialog is a full-bleed sheet with a taller
+   header/touch row; sm+ keeps the framed floating dialog. */
+@media (max-width: 639px) {
+  .gn-settings-panel {
+    border: 0;
+    border-radius: 0;
+  }
+  .gn-settings-panel .gn-modal-header {
+    min-height: 48px;
+    padding-inline: 14px;
+  }
+}
 .gn-modal-header {
   display: flex;
   align-items: center;
@@ -251,6 +263,27 @@ body.gn-queue-dragging {
 }
 .gn-no-scrollbar::-webkit-scrollbar {
   display: none;
+}
+
+/* 思考活动区：正文向上滚出顶边时渐隐，而不是硬裁切。mask 跟随元素自身
+   盒子，滚动中的行会在顶部 1.4em 内平滑变透明；未滚动（data-top-fade
+   缺席）时保持完全不透明。 */
+.gn-thought-scroll {
+  /* 预览正文会滚动替换/裁剪文本，禁止浏览器原生滚动锚定和手写 scrollTop
+     互相拉扯。 */
+  overflow-anchor: none;
+}
+.gn-thought-scroll[data-top-fade] {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.15),
+    #000 1.4em
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.15),
+    #000 1.4em
+  );
 }
 
 /* Composer 浮层（斜杠命令 / @ 文件）选中行底色。裸 gn-selection 在弹层里
@@ -437,10 +470,39 @@ body.gn-queue-dragging {
   .animate-pulse,
   .animate-spin,
   .gn-card-rise,
+  .gn-entry-enter,
+  .gn-stream-fade,
   .gn-toast-card,
   .gn-toast-progress {
     animation: none !important;
   }
+}
+
+/* ── 滚动区新 entry 块入场：半透明平滑淡入 ──────────────────────── */
+@keyframes gn-entry-enter {
+  from {
+    opacity: 0.2;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.gn-entry-enter {
+  animation: gn-entry-enter 0.24s ease-out;
+}
+
+/* 流式正文新增片段：从半透明渐显到不透明（SmoothStreamText）。大首包
+   按行切成多个片段，靠 inline animation-delay 错峰，看起来更像逐行铺开。 */
+@keyframes gn-stream-fade {
+  from {
+    opacity: 0.12;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.gn-stream-fade {
+  animation: gn-stream-fade 0.16s ease-out both;
 }
 
 /* ── 等待输入卡片（权限条 / 提问卡）入场：轻微上浮 + 淡入 ───────────── */

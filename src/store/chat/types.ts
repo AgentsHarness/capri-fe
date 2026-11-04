@@ -24,6 +24,7 @@ import type {
 } from '../../api/types'
 import type { McpListServer } from '../../api/client'
 import type { MemoryListing } from '../../lib/memory'
+import type { QueueAdoption } from '../promptQueue'
 import type { RunningSubagentRow } from './subagentRegistry'
 
 import type {
@@ -348,6 +349,12 @@ export interface ChatTurnState {
    * 的 exact-pid 匹配同款）。无 pid（旧 shell）→ 退回 legacy 行为。
    */
   currentPromptId?: string
+  /**
+   * FIFO 交接暂存：`queue_changed` 已宣布下一条 running prompt，但上一回合
+   * 在本端仍 live（终态事件还没收口）。此刻收养会打断在飞回合，先存这里，
+   * 等回合终态事件处理完由 handleChatEvent 统一收养。
+   */
+  pendingRunningAdoption?: QueueAdoption
   /**
    * Identity of the most recently completed turn. It remains after history
    * resume even when the UI status rail is reset to idle, so a late agent

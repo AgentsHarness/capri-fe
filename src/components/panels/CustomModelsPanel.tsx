@@ -230,11 +230,11 @@ export function CustomModelsPanel() {
 
   return (
     <section className="py-1">
-      <div className="flex items-center justify-between px-3 pt-2 pb-1 sm:px-4">
-        <span className="text-[10px] uppercase tracking-wider text-gn-gutter">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 px-3 pt-2 pb-1.5 sm:flex-nowrap sm:justify-between sm:px-4 sm:pb-1">
+        <span className="w-full min-w-0 text-[10px] uppercase tracking-wider text-gn-gutter sm:w-auto sm:flex-1">
           [model.*] 自定义模型<span className="hidden sm:inline">（BYOK）</span>
         </span>
-        <div className="flex shrink-0 items-center gap-1.5">
+        <div className="flex w-full flex-wrap items-center gap-1 sm:w-auto sm:shrink-0 sm:flex-nowrap sm:gap-1.5">
           <button
             type="button"
             onClick={() => {
@@ -548,7 +548,7 @@ function CatalogFilters({
           <button
             type="button"
             onClick={onCancel}
-            className="rounded px-3 py-1 text-[12px] text-gn-muted hover:text-gn-fg"
+            className="shrink-0 whitespace-nowrap rounded px-3 py-1 text-[12px] text-gn-muted hover:text-gn-fg"
           >
             返回
           </button>
@@ -590,7 +590,7 @@ function CatalogFilters({
           type="button"
           disabled={!dirty || saving}
           onClick={onSave}
-          className="inline-flex items-center gap-1.5 rounded bg-gn-bg-highlight px-3 py-1 text-[12px] font-medium text-gn-fg hover:bg-gn-bg-hover disabled:cursor-not-allowed disabled:opacity-40"
+          className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded bg-gn-bg-highlight px-3 py-1 text-[12px] font-medium text-gn-fg hover:bg-gn-bg-hover disabled:cursor-not-allowed disabled:opacity-40"
         >
           {saving ? <Spinner size={11} /> : null}
           {saving ? '保存中…' : '保存目录过滤'}
@@ -598,7 +598,7 @@ function CatalogFilters({
         <button
           type="button"
           onClick={onCancel}
-          className="rounded px-3 py-1 text-[12px] text-gn-muted hover:text-gn-fg"
+          className="shrink-0 whitespace-nowrap rounded px-3 py-1 text-[12px] text-gn-muted hover:text-gn-fg"
         >
           返回
         </button>
@@ -1017,7 +1017,7 @@ function ModelForm({
           type="button"
           disabled={saving || blocked || !trimmedId || !trimmedModel || !trimmedBaseUrl}
           onClick={() => void onSave({ ...d, id: trimmedId }, asNew ? undefined : (initial.id || undefined))}
-          className="inline-flex items-center gap-1.5 rounded bg-gn-bg-highlight px-3 py-1 text-[12px] font-medium text-gn-fg hover:bg-gn-bg-hover disabled:cursor-not-allowed disabled:opacity-40"
+          className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded bg-gn-bg-highlight px-3 py-1 text-[12px] font-medium text-gn-fg hover:bg-gn-bg-hover disabled:cursor-not-allowed disabled:opacity-40"
         >
           {saving ? <Spinner size={11} /> : null}
           {saving ? '保存中…' : isNew ? '新增' : '保存修改'}
@@ -1025,7 +1025,7 @@ function ModelForm({
         <button
           type="button"
           onClick={onCancel}
-          className="rounded px-3 py-1 text-[12px] text-gn-muted hover:text-gn-fg"
+          className="shrink-0 whitespace-nowrap rounded px-3 py-1 text-[12px] text-gn-muted hover:text-gn-fg"
         >
           取消
         </button>

@@ -7,6 +7,7 @@ import type { Components } from 'react-markdown'
 import type { Mermaid } from 'mermaid'
 import { useThemeStore } from '../../store/theme'
 import { remarkMathPlugin, normalizeMathDelimiters } from '../../lib/latexMath'
+import { SmoothStreamText } from './SmoothStreamText'
 
 /* ------------------------------------------------------------------------
  * Mermaid diagrams — TUI parity (`◇ mermaid` + `[Open Image] [Copy Source]`,
@@ -312,6 +313,8 @@ type Props = {
   className?: string
   /** 流式输出中:纯文本渲染(零解析),收口后分块渐进格式化。 */
   streaming?: boolean
+  /** 流式正文按帧平滑铺开（FE 偏好 streamTextSmooth；静态实例不涉及）。 */
+  smoothStream?: boolean
 }
 
 /** 收口后开始格式化的延迟毫秒数(让"完成"先呈现,解析落在空闲帧)。 */
@@ -515,7 +518,12 @@ function SettleBody({
  * frame via SettleBody), so the one-time full-format cost is spread over
  * several frames instead of one multi-second main-thread stall.
  */
-export const Markdown = memo(function Markdown({ source, className = '', streaming = false }: Props) {
+export const Markdown = memo(function Markdown({
+  source,
+  className = '',
+  streaming = false,
+  smoothStream = false,
+}: Props) {
   // 收口延迟一拍再开始格式化:流式期间零解析;流结束后 60ms + idle 起分块
   // 渐进格式化。静态实例(查看器/弹窗,从未 streaming)不经过 settle——
   // 直接全文格式化。不在 settle 期间滚动(由 Scrollback 收口时 pin)。
@@ -544,7 +552,11 @@ export const Markdown = memo(function Markdown({ source, className = '', streami
   if (streaming || (wasStreaming.current && settledSource == null)) {
     return (
       <div className={`gn-md ${className}`}>
-        <div className="whitespace-pre-wrap break-words">{source}</div>
+        <SmoothStreamText
+          text={source}
+          enabled={streaming && smoothStream}
+          className="whitespace-pre-wrap break-words"
+        />
       </div>
     )
   }

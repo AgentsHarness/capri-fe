@@ -9,6 +9,7 @@ import {
 import type { ScrollEntry } from '../../api/types'
 import { useChatStore } from '../../store/chat'
 import { uiBool } from '../../store/settings'
+import { cancelSmoothScroll, smoothScrollTop } from '../../lib/smoothScroll'
 import {
   PIN_RELEASE_EVENT,
   pinReserveConsumed,
@@ -117,14 +118,34 @@ export function useFollowScroll(
     return target
   }, [barHeight, boxRef, pinPadRef, releasePin, setPadHeight])
 
+  /** liveStream 挂着的这段时间里，换行撑高走逐帧缓动；其余滚动照旧瞬时。 */
+  const smoothFollowRef = useRef(false)
+  useEffect(
+    () => () => {
+      cancelSmoothScroll(boxRef.current)
+      cancelSmoothScroll(streamBodyRef.current)
+    },
+    [boxRef, streamBodyRef],
+  )
+
   const scrollToBottom = useCallback(
-    (force = false) => {
+    (force = false, smooth = false) => {
       const box = boxRef.current
       if (!box) return
       if (!force && !followRef.current) return
       // 钉住期间「滚动底」就是 prompt 顶：留白先同步，再写落点。
       const pinTarget = syncPinPad()
-      box.scrollTop = pinTarget ?? box.scrollHeight
+      const target = pinTarget ?? Math.max(0, box.scrollHeight - box.clientHeight)
+      // 小步增长（换行撑高）逐帧滑过去；其余（切会话 / 翻页 / 恢复）
+      // 仍瞬时落位，避免把本来要一次到位的历史恢复拖成慢动画。
+      if (smooth && Math.abs(target - box.scrollTop) <= 160) {
+        smoothScrollTop(box, target, {
+          isActive: () => followRef.current,
+        })
+      } else {
+        cancelSmoothScroll(box)
+        box.scrollTop = target
+      }
       lastScrollTopRef.current = box.scrollTop
       scheduleUpdatePinned()
     },
@@ -136,11 +157,20 @@ export function useFollowScroll(
       syncPinPad,
     ],
   )
-  const pinStreamScroll = useCallback(() => {
-    scrollToBottom(false)
-    const bodyEl = streamBodyRef.current
-    if (bodyEl) bodyEl.scrollTop = bodyEl.scrollHeight
-  }, [scrollToBottom, streamBodyRef])
+  const pinStreamScroll = useCallback(
+    (smooth = false) => {
+      scrollToBottom(false, smooth)
+      const bodyEl = streamBodyRef.current
+      if (bodyEl && smooth) {
+        // 思考预览体自己有一个 ResizeObserver 在提交后钉底；这里只在
+        // liveStream 增长时补一次平滑目标，不能再 write scrollTop，否则
+        // 会和正文实际提交的时序打架，造成跳变。
+        const target = Math.max(0, bodyEl.scrollHeight - bodyEl.clientHeight)
+        smoothScrollTop(bodyEl, target, { isActive: () => followRef.current })
+      }
+    },
+    [followRef, scrollToBottom, streamBodyRef],
+  )
   // Content height changes:
   // - while following → re-pin bottom (session-switch after historyLoadedAt,
   //   late markdown/mermaid/image paint, streaming growth without entry churn)
@@ -153,7 +183,7 @@ export function useFollowScroll(
     const content = contentRef.current
     if (!content || typeof ResizeObserver === 'undefined') return
     const ro = new ResizeObserver(() => {
-      if (followRef.current) scrollToBottom(true)
+      if (followRef.current) scrollToBottom(true, smoothFollowRef.current)
       else {
         // 阅读历史时留白也要跟着内容高走：滚回底部才落得回同一页。
         syncPinPad()
@@ -253,8 +283,13 @@ export function useFollowScroll(
   // 流式正文增长（不新增条目）→ 同一套跟随/留白收口。
   useEffect(() => {
     return useChatStore.subscribe((s, prev) => {
-      if (s.liveStream?.text === prev.liveStream?.text) return
-      pinStreamScroll()
+      if (s.liveStream === prev.liveStream) return
+      smoothFollowRef.current = s.liveStream != null
+      if (s.liveStream?.text === prev.liveStream?.text) {
+        if (s.liveStream == null) pinStreamScroll(false)
+        return
+      }
+      pinStreamScroll(s.liveStream != null)
     })
   }, [pinStreamScroll])
 

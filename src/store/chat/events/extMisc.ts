@@ -8,9 +8,11 @@ import {
   adoptTurn,
   finalizeTurn,
   promptIdMismatch,
+  turnIsLive,
   turnEndMarkerText,
   turnFailureMarkerSuppressed,
   cancellationContextText,
+  cancelTriggerOf,
   tailHasCancellationDetail,
 } from '../turn'
 import { applySessionModelState, parseConfigOptions } from '../model'
@@ -140,12 +142,16 @@ export function handleExtMiscEvent(
         // 去重补渲染（TUI viewer 的 stop_reason 映射同款）。
         // cancellationContext（1.0.9+ agent 顶层新增）：hook/tool 级取消
         // 原因，取消标记后补一行细节；旧 agent 无该键，静默跳过。
+        // send_now 是「取消并立即发送」，TUI terminal_marker 的
+        // send_now_cancel 臂不画任何取消行——这里同样全抑制。
+        const sendNowCancel = cancelTriggerOf(p) === 'send_now'
         const railEndTs = s.turnStartedAt
         finalizeTurn(set, get, stopReason)
         if (
           (stopReason === 'error' ||
             stopReason === 'rate_limit' ||
             stopReason === 'cancelled') &&
+          !sendNowCancel &&
           // 失败回合若 retry 横幅已报过 reason，标记让位（TUI 抑制臂；
           // cancelled 走 tailAlreadyTurnEnded 那一半，不受横幅影响）。
           !turnFailureMarkerSuppressed(get().entries, stopReason)
@@ -164,7 +170,7 @@ export function handleExtMiscEvent(
         // cancellationContext（1.0.9+ agent 顶层新增）：hook/tool 级取消
         // 原因，取消标记后补一行细节；旧 agent 无该键，静默跳过。
         // turn_completed rail 同回合也会渲染同文本行，按尾部去重。
-        const cancelDetail = cancellationContextText(p)
+        const cancelDetail = sendNowCancel ? undefined : cancellationContextText(p)
         if (
           cancelDetail &&
           !tailHasCancellationDetail(get().entries, cancelDetail)
@@ -523,7 +529,18 @@ export function handleExtMiscEvent(
         if (!ev.sessionId || ev.sessionId === get().sessionId) {
           runtime.lastLiveQueueChangedAt = Date.now()
           const adopted = applyQueueChanged(ev.params, ev.sessionId)
-          if (adopted) adoptTurn(set, get, adopted)
+          if (adopted) {
+            const s = get()
+            // FIFO 交接：新 running prompt 广播可能先于上一回合的终态
+            // 到达（旧回合在本端仍 live）。此刻收养会截断在飞回合，先
+            // 暂存；handleChatEvent 在终态处理完后 flush。
+            if (turnIsLive(s) && s.currentPromptId !== adopted.id) {
+              set({ pendingRunningAdoption: adopted })
+            } else {
+              if (s.pendingRunningAdoption) set({ pendingRunningAdoption: undefined })
+              adoptTurn(set, get, adopted)
+            }
+          }
         }
         break
       }

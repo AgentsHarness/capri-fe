@@ -49,6 +49,8 @@ export function EntryShell({
   onFold,
   /** 关闭本行的 hover/选中框（图片画廊组：框由组容器统一绘制，横跨滚动区宽度）。 */
   noFrame = false,
+  /** 新出现的块播放半透明淡入（主 scrollback 的实时 append）。 */
+  enter = false,
 }: {
   e: ScrollEntry
   selected: boolean
@@ -67,6 +69,8 @@ export function EntryShell({
   onFold?: () => void
   /** 关闭本行的 hover/选中框（图片画廊组：框由组容器统一绘制）。 */
   noFrame?: boolean
+  /** 新出现的块播放半透明淡入（主 scrollback 的实时 append）。 */
+  enter?: boolean
 }) {
   // Accent color follows hover/selected; height follows content only.
   const opts = accentOpts(e, selected, pendingFreeze, now, hovered, inGroup)
@@ -124,7 +128,7 @@ export function EntryShell({
       onMouseLeave={() => onHover(false)}
       // Tracks: accent + gap + content. Selection compact height === entry;
       // accent is self-stretch max-h-full so it never exceeds the frame.
-      className={`relative grid ${mt} ${mb} ${py}`}
+      className={`relative grid ${mt} ${mb} ${py}${enter ? ' gn-entry-enter' : ''}`}
       style={{
         gridTemplateColumns: `${ACCENT_W_PX}px 1fr`,
         columnGap: ACCENT_GAP_PX,

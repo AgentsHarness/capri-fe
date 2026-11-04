@@ -65,6 +65,8 @@ export async function continueSession(
       entries: [],
       pending: [],
       xaiRequests: [],
+      // 交接暂存属于上一个会话的在飞回合，切走即弃。
+      pendingRunningAdoption: undefined,
       // 状态栏分支属会话态：换会话即清，旧会话的 ⎇ 不能挂在新会话视图上
       // （下方 refreshGitInfo 回来后由本会话的 git-info 重新填充）。
       gitInfo: undefined,
@@ -294,6 +296,7 @@ export async function continueSession(
         entries: [],
         turnStartedAt: undefined,
         currentPromptId: undefined,
+        pendingRunningAdoption: undefined,
         genRate: undefined,
         awaitingNext: false,
         openAssistantId: undefined,

@@ -98,6 +98,41 @@ describe('useStickToBottom', () => {
     expect(box.el.scrollTop).toBe(1800)
   })
 
+  it('smooth chase 自身向下的 scroll 事件不会解除跟随', () => {
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      frames.push(cb)
+      return frames.length
+    })
+    vi.stubGlobal('cancelAnimationFrame', vi.fn())
+    const box = makeBox(1000, 400)
+    const { result } = setup(box, {
+      initialFollowing: true,
+      resetKey: 'a',
+      smooth: true,
+    })
+    expect(box.el.scrollTop).toBe(1000)
+
+    // 内容变高 → ResizeObserver 触发平滑追底。
+    box.size.scrollHeight = 1600
+    act(() => observers[0].trigger())
+    const first = frames.shift()
+    act(() => first?.(0))
+    const afterFirst = box.el.scrollTop
+    expect(afterFirst).toBeGreaterThan(1000)
+
+    // 平滑动画自身产生的 scroll 事件（scrollTop 变大）不能当作上滑。
+    act(() => result.current.onScroll())
+    expect(result.current.isFollowing()).toBe(true)
+
+    // 后续内容继续增长时仍然追底。
+    box.size.scrollHeight = 2000
+    act(() => observers[0].trigger())
+    const next = frames.shift()
+    act(() => next?.(0))
+    expect(box.el.scrollTop).toBeGreaterThan(afterFirst)
+  })
+
   it('does not arm follow just because a short block has no scrollbar', () => {
     const box = makeBox(400, 400) // fits the viewport exactly
     const { result } = setup(box, { resetKey: 'a' })

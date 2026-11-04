@@ -25,7 +25,9 @@ import { LiteToolFill } from '../scrollback/LiteToolFill'
 import { toolEntryLitePending } from '../../store/chat/historyFill'
 import { ToolDetail } from '../ui/ToolDetail'
 import { Markdown } from '../ui/Markdown'
+import { SmoothStreamText } from '../ui/SmoothStreamText'
 import { Ansi } from '../ui/Ansi'
+import { useFePrefs } from '../../store/historyPins'
 import { Glyphs, SPINNER_FRAMES, toolHeader } from '../../theme/glyphs'
 import { IconGlyph } from '../ui/IconGlyph'
 import { TodoMark } from '../ui/todoMark'
@@ -187,12 +189,14 @@ export function BlockViewer() {
   const bodyKind = active?.kind
   const bodyScrollable = bodyKind !== undefined && bodyKind !== 'subagent'
   const liveLogTail = active?.kind === 'bg_task' && !!active.running
+  // 思考全文弹窗默认打开在最新处（长思考先看尾部），并继续跟随流式增长；
+  // 运行中的 bg_task 同理。其他条目保持从顶部开始。
+  const openAtTail = liveLogTail || active?.kind === 'thought'
   const { onScroll: onBodyScroll } = useStickToBottom(bodyScrollRef, {
     enabled: bodyScrollable,
-    // A running bg_task is a live log — open on its tail, then follow the
-    // user's lead. Everything else opens at the top, disarmed.
-    initialFollowing: liveLogTail,
+    initialFollowing: openAtTail,
     resetKey: viewerId ?? taskView?.taskId ?? null,
+    smooth: active?.kind === 'thought',
   })
 
   if ((!viewerId || !entry) && !taskView) return null
@@ -350,8 +354,14 @@ const MINI_VIEWABLE_KINDS = new Set([
  */
 function BlockBodyDialog({ entry, onClose }: { entry: ScrollEntry; onClose: () => void }) {
   const panelRef = useRef<HTMLDivElement>(null)
+  const bodyRef = useRef<HTMLDivElement>(null)
   const sessionCwd = useChatStore((s) => s.historyCwd ?? s.cwd)
   const { title, subtitle } = viewerChrome(entry, sessionCwd)
+  const { onScroll: onBodyScroll } = useStickToBottom(bodyRef, {
+    initialFollowing: entry.kind === 'thought',
+    resetKey: entry.id,
+    smooth: entry.kind === 'thought',
+  })
 
   useEffect(() => {
     panelRef.current?.focus()
@@ -402,7 +412,11 @@ function BlockBodyDialog({ entry, onClose }: { entry: ScrollEntry; onClose: () =
         </header>
 
         {/* Full content — no truncation (mini 条目不含 subagent，外层滚动)。 */}
-        <div className="gn-scroll min-h-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4">
+        <div
+          ref={bodyRef}
+          onScroll={onBodyScroll}
+          className="gn-scroll min-h-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4"
+        >
           <ViewerBody entry={entry} />
         </div>
       </div>
@@ -635,6 +649,7 @@ function ViewerBody({
   entry: ScrollEntry
   now?: number
 }) {
+  const smoothStream = useFePrefs((s) => s.fePrefs.streamTextSmooth)
   if (entry.kind === 'tool' && entry.raw) {
     if (toolEntryLitePending(entry)) {
       // 正文被 lite 裁掉：全文视图同样只给占位行（打开查看器已触发按需
@@ -675,7 +690,23 @@ function ViewerBody({
       </div>
     )
   }
-  if (entry.kind === 'thought' || entry.kind === 'error') {
+  if (entry.kind === 'thought') {
+    return (
+      <div className="whitespace-pre-wrap break-words text-[13.5px] leading-relaxed text-gn-fg font-ui">
+        {entry.text ? (
+          <SmoothStreamText
+            text={entry.text}
+            enabled={smoothStream && !!entry.streaming}
+            revealInitial={false}
+            className="whitespace-pre-wrap break-words"
+          />
+        ) : (
+          <span className="text-gn-muted">(empty)</span>
+        )}
+      </div>
+    )
+  }
+  if (entry.kind === 'error') {
     return (
       <div className="whitespace-pre-wrap break-words text-[13.5px] leading-relaxed text-gn-fg font-ui">
         {entry.text || <span className="text-gn-muted">(empty)</span>}

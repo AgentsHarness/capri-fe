@@ -19,10 +19,10 @@ import { useChatStore } from '../../store/chat'
 import { buildSessionRowIndex, type SessionRow } from '../../store/chat/sessionRows'
 import {
   frozenSortRank,
-  repoNameFromCwd,
   sanitizeTitle,
   sessionContextPct,
   sessionGroupKey,
+  workspaceGroupLabel,
 } from '../../store/historyGroups'
 import { SPINNER_FRAMES } from '../../theme/glyphs'
 import { SessionStateIcon } from '../ui/SessionStateIcon'
@@ -31,6 +31,7 @@ import { stateLabel, useSessionSpinner } from '../../hooks/sessionState'
 import {
   sortSessionsWithPins,
   sortWorkspacesWithPins,
+  useFePrefs,
   usePins,
 } from '../../store/historyPins'
 import { useHistoryView } from '../../store/historyView'
@@ -135,6 +136,8 @@ export function SessionHistoryList() {
   const pinnedWorkspaces = usePins((s) => s.pinnedWorkspaces)
   const pinnedSessions = usePins((s) => s.pinnedSessions)
   const todos = usePins((s) => s.todos)
+  /** 目录分组名显示方式：短名 / 完整路径（FE 偏好，跨浏览器同步）。 */
+  const workspaceFullPath = useFePrefs((s) => s.fePrefs.workspaceFullPath)
   const toggleWorkspacePin = usePins((s) => s.toggleWorkspacePin)
   const toggleSessionPin = usePins((s) => s.toggleSessionPin)
   const setTodoStatus = usePins((s) => s.setTodoStatus)
@@ -188,7 +191,7 @@ export function SessionHistoryList() {
   const workspaceGroups = useMemo((): MergedGroup[] => {
     const merged: MergedGroup[] = workspaces.map((g) => ({
       cwd: g.cwd,
-      label: g.label,
+      label: workspaceGroupLabel(g.cwd, workspaceFullPath),
       // 组内排序：置顶的会话永远最前，随后是待办（未完成），其余按
       // 状态优先级（待处理排最前），时间换成钉住的排序锚。
       sessions: sortSessionsWithPins(
@@ -207,7 +210,7 @@ export function SessionHistoryList() {
       if (rows.length > 0) {
         merged.push({
           cwd,
-          label: repoNameFromCwd(cwd),
+          label: workspaceGroupLabel(cwd, workspaceFullPath),
           sessions: sortSessionsWithPins(
             rows,
             pinnedSessions,
@@ -232,6 +235,7 @@ export function SessionHistoryList() {
     todos,
     byOrderKey,
     anchors,
+    workspaceFullPath,
   ])
 
   /**
@@ -311,7 +315,7 @@ export function SessionHistoryList() {
     if (listMode === 'marked') return markedSections
     return workspaceGroups.map((g) => ({
       key: g.cwd,
-      label: repoNameFromCwd(g.cwd),
+      label: g.label,
       cwd: g.cwd,
       kind: 'workspace' as const,
       sessions: g.sessions,

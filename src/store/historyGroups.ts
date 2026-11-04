@@ -69,18 +69,36 @@ export function frozenSortRank(s: SessionInfo): number {
   return s.status?.state === 'awaiting' || s.status?.awaitingInput === true ? 0 : 1
 }
 
+const WINDOWS_DRIVE = /^[A-Za-z]:$/
+
+/** 路径组件：同时接受 `/` 与 Windows `\`，忽略空段、`.`、`..`；
+ *  Windows 盘符（含 `\\?\C:` 长路径前缀）只用于定位，不算目录名。 */
+function pathComponents(cwd: string): string[] {
+  const comps = cwd.split(/[\\/]+/).filter((c) => c !== '' && c !== '.' && c !== '..')
+  if (comps[0] === '?' && WINDOWS_DRIVE.test(comps[1] ?? '')) return comps.slice(2)
+  if (WINDOWS_DRIVE.test(comps[0] ?? '')) return comps.slice(1)
+  return comps
+}
+
 /**
  * TUI repo_name_from_cwd — 路径最后两个 Normal 组件以 '-' 连接；
  * 只有一个组件时取本身。空字符串 → 'unknown'，根 '/' → '/'。
  * 例：/home/user/fw/1 → "fw-1"，/home/user/xai → "user-xai"，
- * /xai → "xai"。
+ * /xai → "xai"，C:\Users\benin\ccwork\acp-host → "ccwork-acp-host"。
  */
 export function repoNameFromCwd(cwd: string): string {
   if (!cwd) return 'unknown'
-  const comps = cwd.split('/').filter((c) => c !== '' && c !== '.' && c !== '..')
-  if (comps.length === 0) return '/'
+  if (/^[A-Za-z]:[\\/]*$/.test(cwd)) return cwd.slice(0, 2)
+  const comps = pathComponents(cwd)
+  if (comps.length === 0) return cwd.includes('\\') ? cwd : '/'
   if (comps.length === 1) return comps[0]
   return comps.slice(-2).join('-')
+}
+
+/** 侧栏工作区分组名：fullPath = 完整 cwd；否则沿用 TUI 风格的短名。 */
+export function workspaceGroupLabel(cwd: string, fullPath: boolean): string {
+  if (fullPath) return cwd || 'unknown'
+  return repoNameFromCwd(cwd)
 }
 
 /** 工作区最新活动时间（组内 max updatedAt，epoch ms；无时间戳返回 0）。 */

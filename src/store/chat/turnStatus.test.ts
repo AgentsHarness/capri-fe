@@ -4,6 +4,7 @@ import {
   adoptLiveTurnStart,
   busyPlausibleForView,
   cancellationContextText,
+  cancelTriggerOf,
   eventPromptId,
   isTurnEndLine,
   liveTurnStartMs,
@@ -87,11 +88,14 @@ describe('liveTurnStartMs / adoptLiveTurnStart', () => {
 })
 
 describe('eventPromptId / promptIdMismatch', () => {
-  it('顶层 / _meta / meta 提取', () => {
+  it('顶层 / _meta / meta / update / params 提取', () => {
     expect(eventPromptId({ promptId: 'p1' })).toBe('p1')
     expect(eventPromptId({ prompt_id: 'p2' })).toBe('p2')
     expect(eventPromptId({ _meta: { promptId: 'p3' } })).toBe('p3')
     expect(eventPromptId({ meta: { prompt_id: 'p4' } })).toBe('p4')
+    // typed x.ai turn_completed：pid 只在 update 顶层
+    expect(eventPromptId({ type: 'turn_completed', update: { prompt_id: 'p5' } })).toBe('p5')
+    expect(eventPromptId({ params: { promptId: 'p6' } })).toBe('p6')
     expect(eventPromptId({})).toBeUndefined()
   })
 
@@ -100,6 +104,17 @@ describe('eventPromptId / promptIdMismatch', () => {
     expect(promptIdMismatch({ promptId: 'a' }, 'a')).toBe(false)
     expect(promptIdMismatch({}, 'a')).toBe(true)
     expect(promptIdMismatch({ promptId: 'a' }, undefined)).toBe(false)
+  })
+})
+
+describe('cancelTriggerOf', () => {
+  it('顶层 / meta / update / params 均可提取，camel 与 snake 兼容', () => {
+    expect(cancelTriggerOf({ cancelTrigger: 'send_now' })).toBe('send_now')
+    expect(cancelTriggerOf({ meta: { cancel_trigger: 'esc' } })).toBe('esc')
+    expect(cancelTriggerOf({ update: { cancelTrigger: 'send_now' } })).toBe('send_now')
+    expect(cancelTriggerOf({ params: { cancelTrigger: 'send_now' } })).toBe('send_now')
+    expect(cancelTriggerOf({ cancellationContext: { trigger: 'send_now' } })).toBe('send_now')
+    expect(cancelTriggerOf({})).toBeUndefined()
   })
 })
 

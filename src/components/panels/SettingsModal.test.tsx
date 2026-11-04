@@ -1,7 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { SettingsModal } from './SettingsModal'
 import { useChatStore } from '../../store/chat'
+import { usePins } from '../../store/historyPins'
 import { useToastStore } from '../../store/toast'
 import { loadDefaultSelectedPermission } from '../../lib/defaultSelectedPermission'
 
@@ -57,6 +58,16 @@ beforeEach(() => {
     permissionMode: undefined,
   })
   useToastStore.setState({ toasts: [] })
+  usePins.setState({
+    fePrefs: {
+      liteReplay: false,
+      autoTodoNewSession: false,
+      workspaceFullPath: false,
+      entryFadeIn: true,
+      streamTextSmooth: true,
+      thoughtLines: 4,
+    },
+  })
   vi.mocked(transport.settings).mockReset()
   vi.mocked(transport.updateSettings).mockReset()
   vi.mocked(transport.setMode).mockReset()
@@ -113,7 +124,7 @@ describe('SettingsModal', () => {
   it('顶栏全宽，分类栏在 header 之下左右分区', async () => {
     openModal()
     const { container } = render(<SettingsModal />)
-    await waitFor(() => expect(tab('行为偏好')).not.toBeNull())
+    await waitFor(() => expect(tab('会话与权限')).not.toBeNull())
     const dialog = container.querySelector('[role="dialog"]')!
     const header = dialog.querySelector('header')
     const tabs = dialog.querySelector('[role="tablist"]')
@@ -127,7 +138,7 @@ describe('SettingsModal', () => {
     expect(pos(tabs!)).toBeLessThan(pos(panel!))
   })
 
-  it('左侧分类：只渲染选中分类，只读分组汇总进「Agent 配置」一栏', async () => {
+  it('左侧分类：只渲染选中分类，只读分组汇总进「高级」一栏', async () => {
     vi.mocked(transport.settings).mockResolvedValue({
       ui: { ...uiData },
       session: { some_value: 'hello' },
@@ -137,25 +148,26 @@ describe('SettingsModal', () => {
     })
     openModal()
     render(<SettingsModal />)
-    await waitFor(() => expect(tab('Agent 配置')).not.toBeNull())
-    // 四个可编辑分类 + 一个只读的 Agent 配置（不再按分组拆成多栏）
+    await waitFor(() => expect(tab('会话与权限')).not.toBeNull())
+    // 五个分类：偏好 / 管理 / 高级
     expect(
       screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label')),
-    ).toEqual(['行为偏好', '问答超时', '前端偏好', '自定义模型', '分享', 'Agent 配置'])
+    ).toEqual(['会话与权限', '外观与显示', '模型', '访问与分享', '高级'])
     // 移动端短标签（均分 Tab，无需横向滑动）与桌面端长标签并存
     expect(
       screen.getAllByRole('tab').map((t) => t.querySelector('.sm\\:hidden')?.textContent),
-    ).toEqual(['行为', '问答', '前端', '模型', '分享', 'Agent'])
+    ).toEqual(['会话', '外观', '模型', '分享', '高级'])
     expect(
       screen.getAllByRole('tab').map((t) => t.querySelector('.hidden.sm\\:inline')?.textContent),
-    ).toEqual(['行为偏好', '问答超时', '前端偏好', '自定义模型', '分享', 'Agent 配置'])
-    // 默认分类 = 行为偏好：可编辑行在，只读 dump 不在同一屏
+    ).toEqual(['会话与权限', '外观与显示', '模型', '访问与分享', '高级'])
+    // 默认分类 = 会话与权限：可编辑行在，只读 dump 不在同一屏
     expect(screen.getByText('权限默认')).toBeInTheDocument()
     expect(screen.queryByText('extra_ui_key')).toBeNull()
-    fireEvent.click(tab('Agent 配置'))
+    fireEvent.click(tab('高级'))
     // 切走后上一分类的内容不再渲染
     expect(screen.queryByText('权限默认')).toBeNull()
-    // 四个分组在同一栏里各自成节，值都看得见
+    // Host 配置分组各自成节，值都看得见
+    expect(screen.getByText('Host 配置（只读）')).toBeInTheDocument()
     expect(screen.getByText(/^\[ui\]/)).toBeInTheDocument()
     expect(screen.getByText(/^\[session\]/)).toBeInTheDocument()
     expect(screen.getByText(/^\[models\]/)).toBeInTheDocument()
@@ -167,11 +179,28 @@ describe('SettingsModal', () => {
     expect(screen.getByText('hello')).toBeInTheDocument()
     expect(screen.getByText('{"nested":true}')).toBeInTheDocument()
     expect(screen.getByTitle('on（只读）')).toBeInTheDocument()
-    // consumed 的 [ui] 标量不在这里重复出现（它们在「行为偏好」里编辑）
+    // consumed 的 [ui] 标量不在这里重复出现（它们在「会话与权限 / 外观与显示」里编辑）
     expect(screen.queryByText('page_flip_on_send')).toBeNull()
   })
 
-  it('Agent 配置展示任意表路径，且不重复列可编辑的 toolset.ask_user_question', async () => {
+  it('分类内按小节分组：会话 / 外观 / 高级', async () => {
+    openModal()
+    render(<SettingsModal />)
+    await waitFor(() => expect(tab('会话与权限')).not.toBeNull())
+    for (const title of ['权限与审批', '会话行为', '提问卡片']) {
+      expect(screen.getByText(title)).toBeInTheDocument()
+    }
+    fireEvent.click(tab('外观与显示'))
+    for (const title of ['侧边栏', '滚动区']) {
+      expect(screen.getByText(title)).toBeInTheDocument()
+    }
+    expect(screen.getByText('精简回放')).toBeInTheDocument()
+    fireEvent.click(tab('高级'))
+    expect(screen.queryByText('历史加载')).toBeNull()
+    expect(screen.getByText('Host 配置（只读）')).toBeInTheDocument()
+  })
+
+  it('高级展示任意表路径，且不重复列可编辑的 toolset.ask_user_question', async () => {
     vi.mocked(transport.settings).mockResolvedValue({
       ui: { extra_ui_key: 'x' },
       features: { telemetry: false },
@@ -179,19 +208,20 @@ describe('SettingsModal', () => {
       'mcp_servers.demo': { url: 'https://example.test' },
       toolset: { ask_user_question: { timeout_secs: 42 }, shell: 'bash' },
     })
-    await openAt('Agent 配置')
+    await openAt('高级')
+    expect(screen.getByText('Host 配置（只读）')).toBeInTheDocument()
     expect(screen.getByText(/^\[features\]/)).toBeInTheDocument()
     expect(screen.getByText('telemetry')).toBeInTheDocument()
     expect(screen.getByText(/^\[subagents\.toggle\]/)).toBeInTheDocument()
     expect(screen.getByText(/^\[mcp_servers\.demo\]/)).toBeInTheDocument()
     expect(screen.getByText('https://example.test')).toBeInTheDocument()
-    // [toolset] 的原始标量照常展示，ask_user_question 交给「问答超时」分类。
+    // [toolset] 的原始标量照常展示，ask_user_question 交给「会话与权限」分类。
     expect(screen.getByText('shell')).toBeInTheDocument()
     expect(screen.queryByText('timeout_secs')).toBeNull()
   })
 
-  it('只读键一个都没有时，「Agent 配置」分类不出现', async () => {
-    // [ui] 全是 consumed 键（在「行为偏好」里编辑）、[session] 空 → 整栏不出现
+  it('只读键一个都没有时，「高级」分类不出现，精简回放在外观与显示里', async () => {
+    // [ui] 全是 consumed 键（在「会话与权限 / 外观与显示」里编辑）、[session] 空
     vi.mocked(transport.settings).mockResolvedValue({
       ui: {
         permission_mode: 'ask',
@@ -206,19 +236,21 @@ describe('SettingsModal', () => {
     openModal()
     render(<SettingsModal />)
     await waitFor(() => expect(screen.getByText('权限默认')).not.toBeNull())
-    expect(screen.queryByRole('tab', { name: 'Agent 配置' })).toBeNull()
-    expect(tab('行为偏好')).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: '高级' })).toBeNull()
+    fireEvent.click(tab('外观与显示'))
+    expect(screen.getByText('精简回放')).toBeInTheDocument()
+    expect(screen.queryByText('Host 配置（只读）')).toBeNull()
   })
 
   it('左栏 ↑↓ 切换分类', async () => {
     openModal()
     render(<SettingsModal />)
-    await waitFor(() => expect(tab('行为偏好')).not.toBeNull())
-    fireEvent.keyDown(tab('行为偏好'), { key: 'ArrowDown' })
-    expect(tab('问答超时')).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByTitle(/提问卡片超时是否武装/)).toBeInTheDocument()
-    fireEvent.keyDown(tab('问答超时'), { key: 'ArrowUp' })
-    expect(tab('行为偏好')).toHaveAttribute('aria-selected', 'true')
+    await waitFor(() => expect(tab('会话与权限')).not.toBeNull())
+    fireEvent.keyDown(tab('会话与权限'), { key: 'ArrowDown' })
+    expect(tab('外观与显示')).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByText('目录分组名')).toBeInTheDocument()
+    fireEvent.keyDown(tab('外观与显示'), { key: 'ArrowUp' })
+    expect(tab('会话与权限')).toHaveAttribute('aria-selected', 'true')
   })
 
   it('权限 pills：当前态高亮 + 点击 patch permission_mode', async () => {
@@ -274,12 +306,17 @@ describe('SettingsModal', () => {
     openModal()
     render(<SettingsModal />)
     await waitFor(() => expect(screen.getByTitle('remember_tool_approvals')).not.toBeNull())
-    fireEvent.click(screen.getByTitle(/审批条显示/))
+    const group = () => screen.getByRole('radiogroup', { name: /审批条显示/ })
+    const onTab = () => within(group()).getByRole('radio', { name: 'on' })
+    const offTab = () => within(group()).getByRole('radio', { name: 'off' })
+    expect(onTab().getAttribute('aria-checked')).toBe('true')
+    expect(offTab().getAttribute('aria-checked')).toBe('false')
+    fireEvent.click(offTab())
     await waitFor(() => {
       expect(transport.updateSettings).toHaveBeenCalledWith({ remember_tool_approvals: false })
     })
-    // 按钮标 busy 后恢复 off
-    expect(screen.getByTitle(/审批条显示/).textContent).toContain('off')
+    // mock 回显 → 选中态切到 off
+    await waitFor(() => expect(offTab().getAttribute('aria-checked')).toBe('true'))
   })
 
   it('updateSettings 失败 → toast', async () => {
@@ -287,7 +324,8 @@ describe('SettingsModal', () => {
     openModal()
     render(<SettingsModal />)
     await waitFor(() => expect(screen.getByTitle('remember_tool_approvals')).not.toBeNull())
-    fireEvent.click(screen.getByTitle(/审批条显示/))
+    const group = screen.getByRole('radiogroup', { name: /审批条显示/ })
+    fireEvent.click(within(group).getByRole('radio', { name: 'off' }))
     await waitFor(() => {
       expect(useToastStore.getState().toasts[0]?.text).toBe('patch failed')
     })
@@ -331,9 +369,8 @@ describe('SettingsModal', () => {
     expect(queueBtn().className).toContain('text-gn-green')
   })
 
-  it('工具调用密度：默认档高亮；点选其他档 patch tool_call_density 并回显', async () => {
-    openModal()
-    render(<SettingsModal />)
+  it('工具调用密度：在外观与显示；默认档高亮，点选其他档 patch 并回显', async () => {
+    await openAt('外观与显示')
     await waitFor(() => expect(screen.getByText('工具调用密度')).not.toBeNull())
     const compact = () => screen.getByText('compact（默认）')
     const detailed = () => screen.getByText('detail')
@@ -350,6 +387,83 @@ describe('SettingsModal', () => {
     await waitFor(() => expect(detailed().className).toContain('text-gn-green'))
     // hint 跟着选中档位的说明走
     expect(screen.getByText(/编辑带 diff，命令带输出/)).toBeInTheDocument()
+  })
+
+  it('会话与权限不再渲染工具调用密度与发送后翻页', async () => {
+    openModal()
+    render(<SettingsModal />)
+    await waitFor(() => expect(screen.getByText('权限默认')).not.toBeNull())
+    expect(screen.queryByText('工具调用密度')).toBeNull()
+    expect(screen.queryByTitle('发出 prompt 后把它钉到视口顶部')).toBeNull()
+  })
+
+  it('外观与显示：发送后翻页在分类内并可 patch page_flip_on_send', async () => {
+    await openAt('外观与显示')
+    const group = () => screen.getByRole('radiogroup', { name: '发出 prompt 后把它钉到视口顶部' })
+    const onTab = () => within(group()).getByRole('radio', { name: 'on' })
+    const offTab = () => within(group()).getByRole('radio', { name: 'off' })
+    expect(onTab().getAttribute('aria-checked')).toBe('true')
+    fireEvent.click(offTab())
+    await waitFor(() => {
+      expect(transport.updateSettings).toHaveBeenCalledWith({ page_flip_on_send: false })
+    })
+    await waitFor(() => expect(offTab().getAttribute('aria-checked')).toBe('true'))
+  })
+
+  it('外观与显示：目录分组名默认短名，切到全路径写入 FE 偏好', async () => {
+    await openAt('外观与显示')
+    const short = () => screen.getByText('短名')
+    const full = () => screen.getByText('全路径')
+    expect(short().className).toContain('text-gn-green')
+    expect(full().className).not.toContain('text-gn-green')
+    fireEvent.click(full())
+    await waitFor(() => expect(usePins.getState().fePrefs.workspaceFullPath).toBe(true))
+    expect(full().className).toContain('text-gn-green')
+    expect(short().className).not.toContain('text-gn-green')
+  })
+
+  it('外观与显示：新块淡入默认开，切到 off 写入 FE 偏好', async () => {
+    await openAt('外观与显示')
+    const group = () =>
+      screen.getByRole('radiogroup', { name: '新出现的滚动区块是否播放半透明淡入' })
+    expect(within(group()).getByRole('radio', { name: 'on' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+    fireEvent.click(within(group()).getByRole('radio', { name: 'off' }))
+    await waitFor(() => expect(usePins.getState().fePrefs.entryFadeIn).toBe(false))
+    expect(within(group()).getByRole('radio', { name: 'off' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+  })
+
+  it('外观与显示：出字平滑默认开，切到 off 写入 FE 偏好', async () => {
+    await openAt('外观与显示')
+    const group = () =>
+      screen.getByRole('radiogroup', { name: '流式思考和回答的新增文字是否半透明淡入' })
+    expect(within(group()).getByRole('radio', { name: 'on' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+    fireEvent.click(within(group()).getByRole('radio', { name: 'off' }))
+    await waitFor(() => expect(usePins.getState().fePrefs.streamTextSmooth).toBe(false))
+    expect(within(group()).getByRole('radio', { name: 'off' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+  })
+
+  it('外观与显示：思考活动区行数提供 1–20，默认 4，切换写入 FE 偏好', async () => {
+    await openAt('外观与显示')
+    const select = screen.getByRole('combobox', {
+      name: '思考活动区显示行数',
+    }) as HTMLSelectElement
+    expect(select.value).toBe('4')
+    expect(within(select).getAllByRole('option')).toHaveLength(20)
+    fireEvent.change(select, { target: { value: '20' } })
+    await waitFor(() => expect(usePins.getState().fePrefs.thoughtLines).toBe(20))
+    expect(select.value).toBe('20')
   })
 
   it('加载失败 → 错误 + 重试', async () => {
@@ -393,21 +507,24 @@ describe('SettingsModal', () => {
     expect(useChatStore.getState().settingsOpen).toBe(true)
   })
 
-  it('前端偏好：auto_todo_new_session 切换', async () => {
-    await openAt('前端偏好')
-    const btn = () => screen.getByTitle('发起新对话时自动将其设为待办，改动即时生效')
+  it('会话与权限：auto_todo_new_session 切换', async () => {
+    await openAt('会话与权限')
+    const group = () =>
+      screen.getByRole('radiogroup', { name: '发起新对话时自动将其设为待办，改动即时生效' })
+    const onTab = () => within(group()).getByRole('radio', { name: 'on' })
+    const offTab = () => within(group()).getByRole('radio', { name: 'off' })
     // 默认 off；点击开启
-    expect(btn().textContent).toContain('off')
-    fireEvent.click(btn())
-    expect(btn().textContent).toContain('on')
+    expect(offTab().getAttribute('aria-checked')).toBe('true')
+    fireEvent.click(onTab())
+    expect(onTab().getAttribute('aria-checked')).toBe('true')
     // 再次点击关闭
-    fireEvent.click(btn())
-    expect(btn().textContent).toContain('off')
+    fireEvent.click(offTab())
+    expect(offTab().getAttribute('aria-checked')).toBe('true')
   })
 
-  it('前端偏好：default_selected_permission 默认高亮 + 点击持久化', async () => {
-    await openAt('前端偏好')
-    const pill = (label: string) => screen.getByRole('button', { name: label })
+  it('会话与权限：default_selected_permission 默认高亮 + 点击持久化', async () => {
+    await openAt('会话与权限')
+    const pill = (label: string) => screen.getByText(label)
     // 未设置 → 默认 always_allow_all_sessions 高亮
     expect(pill('始终允许（所有会话）').className).toContain('text-gn-green')
     expect(loadDefaultSelectedPermission()).toBe('always_allow_all_sessions')
@@ -430,18 +547,20 @@ describe('SettingsModal', () => {
     })
     openModal()
     render(<SettingsModal />)
-    const toggle = () => screen.getByTitle(/提问卡片超时是否武装/)
-    await waitFor(() => expect(tab('问答超时')).not.toBeNull())
-    fireEvent.click(tab('问答超时'))
-    expect(toggle().textContent).toContain('on')
-    fireEvent.click(toggle())
+    const group = () => screen.getByRole('radiogroup', { name: /提问卡片超时是否武装/ })
+    const onTab = () => within(group()).getByRole('radio', { name: 'on' })
+    const offTab = () => within(group()).getByRole('radio', { name: 'off' })
+    await waitFor(() => expect(tab('会话与权限')).not.toBeNull())
+    fireEvent.click(tab('会话与权限'))
+    expect(onTab().getAttribute('aria-checked')).toBe('true')
+    fireEvent.click(offTab())
     await waitFor(() => {
       expect(transport.updateSettings).toHaveBeenCalledWith({
         toolset: { ask_user_question: { timeout_enabled: false } },
       })
     })
-    // mock 回显 → 开关落到 off
-    await waitFor(() => expect(toggle().textContent).toContain('off'))
+    // mock 回显 → 选中态落到 off
+    await waitFor(() => expect(offTab().getAttribute('aria-checked')).toBe('true'))
   })
 
   it('timeout_secs 输入 Enter 提交；非法值不提交', async () => {
@@ -451,8 +570,8 @@ describe('SettingsModal', () => {
     })
     openModal()
     render(<SettingsModal />)
-    await waitFor(() => expect(tab('问答超时')).not.toBeNull())
-    fireEvent.click(tab('问答超时'))
+    await waitFor(() => expect(tab('会话与权限')).not.toBeNull())
+    fireEvent.click(tab('会话与权限'))
     const inputEl = (await screen.findByPlaceholderText('1800')) as HTMLInputElement
     expect(inputEl.value).toBe('60')
     fireEvent.change(inputEl, { target: { value: '123' } })
@@ -482,7 +601,7 @@ describe('SettingsModal', () => {
   it('移动端分类做成 tab：满宽等分短文案，避免横向滑动', async () => {
     openModal()
     const { container } = render(<SettingsModal />)
-    await waitFor(() => expect(tab('行为偏好')).not.toBeNull())
+    await waitFor(() => expect(tab('会话与权限')).not.toBeNull())
 
     const tablist = container.querySelector('[role="tablist"]')!
     const tabsContainer = tablist.firstElementChild as HTMLElement

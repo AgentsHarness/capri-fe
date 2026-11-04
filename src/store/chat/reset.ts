@@ -135,6 +135,7 @@ export function resetSessionState(
     runningHook: null,
     turnStartedAt: undefined,
     currentPromptId: undefined,
+    pendingRunningAdoption: undefined,
     promptAcceptedAt: undefined,
     genRate: undefined,
     scheduledTasks: [],

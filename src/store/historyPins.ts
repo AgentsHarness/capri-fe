@@ -5,6 +5,7 @@ import { sessionSortRank } from './historyGroups'
 import { transport } from '../api/client'
 import { isGuestActive } from './chat/guestMode'
 import { KEY } from '../lib/keys'
+import { clampThoughtLines } from '../scrollback/thoughtText'
 import {
   alive,
   createSiteId,
@@ -85,6 +86,14 @@ export type FePrefs = {
   liteReplay: boolean
   /** 发起新对话自动设置为待办。 */
   autoTodoNewSession: boolean
+  /** 侧栏目录分组名显示完整 cwd（默认 false = 最后两段短名）。 */
+  workspaceFullPath: boolean
+  /** 滚动区新 entry 块淡入（默认 true = 半透明平滑出现）。 */
+  entryFadeIn: boolean
+  /** 流式思考和回答正文的新增文本半透明淡入（默认 true）。 */
+  streamTextSmooth: boolean
+  /** 思考活动区可见行数（1–20，默认 4）。 */
+  thoughtLines: number
 }
 
 /** entries 投影出的内存态（组件只认这份，不感知条目模型）。 */
@@ -128,6 +137,10 @@ function project(entries: PrefsEntries): PrefsView {
       liteReplay:
         typeof v.fePrefs.liteReplay === 'boolean' ? v.fePrefs.liteReplay : defaultLiteReplay(),
       autoTodoNewSession: v.fePrefs.autoTodoNewSession === true,
+      workspaceFullPath: v.fePrefs.workspaceFullPath === true,
+      entryFadeIn: v.fePrefs.entryFadeIn !== false,
+      streamTextSmooth: v.fePrefs.streamTextSmooth !== false,
+      thoughtLines: clampThoughtLines(v.fePrefs.thoughtLines),
     },
   }
 }
@@ -294,7 +307,9 @@ export const usePins = create<HubPrefsState>((set, get) => {
       write((entries, stamp) => {
         let next = entries
         for (const [field, val] of Object.entries(patch)) {
-          if (typeof val === 'boolean') next = putEntry(next, feKey(field), String(val), stamp)
+          const scalar =
+            typeof val === 'boolean' || (typeof val === 'number' && Number.isFinite(val))
+          if (scalar) next = putEntry(next, feKey(field), String(val), stamp)
         }
         return next
       }),

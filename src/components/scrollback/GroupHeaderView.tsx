@@ -16,6 +16,8 @@ export type GroupHeaderViewProps = {
   dense?: boolean
   denseNext?: boolean
   densePrev?: boolean
+  /** 新出现的块播放半透明淡入（主 scrollback 的实时 append）。 */
+  enter?: boolean
   /** 迷你 scrollback 局部选中（缺省主 store selectEntry）。 */
   selectRow?: (id: string) => void
 }
@@ -46,12 +48,16 @@ export const GroupHeaderView = memo(function GroupHeaderView({
   dense = true,
   denseNext = false,
   densePrev = false,
+  enter = false,
   selectRow,
 }: GroupHeaderViewProps) {
   const storeSelectEntry = useChatStore((s) => s.selectEntry)
   const selectEntry = selectRow ?? storeSelectEntry
   const e = displayRowToEntry(row)
   const [hovered, setHovered] = useState(false)
+  // 聚合头只在首次挂载时入场：后续新成员并入同一段时标签会更新，
+  // 但整行不该反复播淡入（成员自己会淡入或被折叠）。
+  const [enterOnce] = useState(enter ?? false)
   const toggle = () => {
     selectEntry(row.id)
     onToggle()
@@ -68,6 +74,7 @@ export const GroupHeaderView = memo(function GroupHeaderView({
     dense,
     denseNext,
     densePrev,
+    enter: enterOnce,
   }
   const opts = accentOpts(e, selected, pendingFreeze, now, hovered)
   const bullet = resolveBullet(opts)

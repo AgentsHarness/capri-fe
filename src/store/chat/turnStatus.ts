@@ -119,22 +119,62 @@ export function adoptLiveTurnStart(
  * SessionNotification 的 `_meta` 上回显客户端 mint 的 promptId）：
  * - done：顶层 `meta` = prompt-result `_meta`（host 原样透传）
  * - prompt_complete：params 顶层 `promptId`/`prompt_id`，或 `_meta` 内
- * - live turn_completed：顶层 `meta` = params._meta
+ * - live turn_completed：typed 事件的 `update.prompt_id`（x.ai 载体），
+ *   或 `meta` / `update._meta`
  * 空 / 缺失 = 没有回合身份信息（v2 host 的终端事件恒带回显）。
  */
-export function eventPromptId(root: unknown): string | undefined {
+function eventCarrierString(root: unknown, keys: readonly string[]): string | undefined {
   const read = (o: unknown): string | undefined => {
     if (!o || typeof o !== 'object' || Array.isArray(o)) return undefined
     const rec = o as Record<string, unknown>
-    for (const k of ['promptId', 'prompt_id']) {
+    for (const k of keys) {
       const v = rec[k]
       if (typeof v === 'string' && v) return v
     }
     return undefined
   }
-  if (!root || typeof root !== 'object') return undefined
+  // 每个容器（事件本身 / update / params）都可能把字段放在顶层、
+  // `_meta` 或 `meta`；typed turn_completed 的 pid 只在 update 顶层。
+  const readCarrier = (o: unknown): string | undefined => {
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return undefined
+    const rec = o as Record<string, unknown>
+    return read(rec) ?? read(rec._meta) ?? read(rec.meta)
+  }
+  if (!root || typeof root !== 'object' || Array.isArray(root)) return undefined
   const o = root as Record<string, unknown>
-  return read(o) ?? read(o._meta) ?? read(o.meta)
+  return readCarrier(o) ?? readCarrier(o.update) ?? readCarrier(o.params)
+}
+
+export function eventPromptId(root: unknown): string | undefined {
+  return eventCarrierString(root, ['promptId', 'prompt_id'])
+}
+
+/**
+ * 取消触发器（wire `cancelTrigger` / `cancel_trigger`）。`"send_now"` 是
+ * 用户主动「取消并立即发送」——TUI 把它当继续而非中断，不画
+ * Turn cancelled / 取消原因行（terminal_marker 的 send_now_cancel 臂）。
+ */
+export function cancelTriggerOf(root: unknown): string | undefined {
+  const direct = eventCarrierString(root, ['cancelTrigger', 'cancel_trigger'])
+  if (direct) return direct
+  // 旧载体可能只在 cancellationContext.trigger 上写触发器（与
+  // cancellationContextText 的读取口径一致）。
+  const readContextTrigger = (o: unknown): string | undefined => {
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return undefined
+    const rec = o as Record<string, unknown>
+    for (const holder of [rec, rec._meta, rec.meta, rec.update, rec.params]) {
+      if (!holder || typeof holder !== 'object' || Array.isArray(holder)) continue
+      const h = holder as Record<string, unknown>
+      for (const key of ['cancellationContext', 'cancellation_context']) {
+        const ctx = h[key]
+        if (!ctx || typeof ctx !== 'object' || Array.isArray(ctx)) continue
+        const trigger = (ctx as Record<string, unknown>).trigger
+        if (typeof trigger === 'string' && trigger) return trigger
+      }
+    }
+    return undefined
+  }
+  return readContextTrigger(root)
 }
 
 /**

@@ -114,7 +114,14 @@ beforeEach(async () => {
     pinnedWorkspaces: new Set<string>(),
     pinnedSessions: new Set<string>(),
     todos: {},
-    fePrefs: { liteReplay: false, autoTodoNewSession: false },
+    fePrefs: {
+      liteReplay: false,
+      autoTodoNewSession: false,
+      workspaceFullPath: false,
+      entryFadeIn: true,
+      streamTextSmooth: true,
+      thoughtLines: 4,
+    },
   })
   vi.mocked(transport.prefsOrigin).mockReturnValue('')
   vi.mocked(transport.getPrefs).mockRejectedValue(new Error('未编排'))
@@ -182,6 +189,10 @@ describe('本地置顶/待办', () => {
     expect(usePins.getState().fePrefs).toEqual({
       liteReplay: false,
       autoTodoNewSession: false,
+      workspaceFullPath: false,
+      entryFadeIn: true,
+      streamTextSmooth: true,
+      thoughtLines: 4,
     })
     expect(liveKeys(localEntries())).toEqual([feKey('liteReplay')])
 
@@ -197,6 +208,34 @@ describe('本地置顶/待办', () => {
     expect(aliveKey(localEntries(), feKey('autoTodoNewSession'))).toBe(true)
     usePins.getState().setFePrefs({ autoTodoNewSession: false })
     expect(usePins.getState().fePrefs.autoTodoNewSession).toBe(false)
+  })
+
+  it('setFePrefs workspaceFullPath 默认关，开启后进条目并投影', () => {
+    expect(usePins.getState().fePrefs.workspaceFullPath).toBe(false)
+    usePins.getState().setFePrefs({ workspaceFullPath: true })
+    expect(usePins.getState().fePrefs.workspaceFullPath).toBe(true)
+    expect(localEntries()[feKey('workspaceFullPath')].v).toBe('true')
+  })
+
+  it('setFePrefs entryFadeIn 默认开，关闭后进条目并投影', () => {
+    expect(usePins.getState().fePrefs.entryFadeIn).toBe(true)
+    usePins.getState().setFePrefs({ entryFadeIn: false })
+    expect(usePins.getState().fePrefs.entryFadeIn).toBe(false)
+    expect(localEntries()[feKey('entryFadeIn')].v).toBe('false')
+  })
+
+  it('setFePrefs streamTextSmooth 默认开，关闭后进条目并投影', () => {
+    expect(usePins.getState().fePrefs.streamTextSmooth).toBe(true)
+    usePins.getState().setFePrefs({ streamTextSmooth: false })
+    expect(usePins.getState().fePrefs.streamTextSmooth).toBe(false)
+    expect(localEntries()[feKey('streamTextSmooth')].v).toBe('false')
+  })
+
+  it('setFePrefs thoughtLines 默认 4，数值偏好进条目并投影', () => {
+    expect(usePins.getState().fePrefs.thoughtLines).toBe(4)
+    usePins.getState().setFePrefs({ thoughtLines: 20 })
+    expect(usePins.getState().fePrefs.thoughtLines).toBe(20)
+    expect(localEntries()[feKey('thoughtLines')].v).toBe('20')
   })
 
   it('hub 回 200 但没带 prefs 文档 → PENDING 保留，重试后才收口', async () => {

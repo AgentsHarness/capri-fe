@@ -66,6 +66,14 @@ export type FePrefsDoc = {
   liteReplay?: boolean
   /** 发起新对话自动设置为待办（默认 false）。 */
   autoTodoNewSession?: boolean
+  /** 侧栏目录分组名显示完整 cwd；缺省 false = 最后两段短名。 */
+  workspaceFullPath?: boolean
+  /** 滚动区新 entry 块淡入；缺省 true = 半透明平滑出现。 */
+  entryFadeIn?: boolean
+  /** 流式思考和回答正文的新增文本半透明淡入；缺省 true。 */
+  streamTextSmooth?: boolean
+  /** 思考活动区可见行数（1–20）；缺省 4。 */
+  thoughtLines?: number
 }
 
 

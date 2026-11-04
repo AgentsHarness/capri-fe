@@ -12,6 +12,7 @@ import {
 import {
   adoptLiveTurnStart,
   cancellationContextText,
+  cancelTriggerOf,
   completedTurnStamp,
   finalizeTurn,
   promptIdMismatch,
@@ -49,7 +50,7 @@ export function handleTurnEndEvent(
         // 客户端 mint 的 promptId）。v2 host 保证回显：pid 不符或缺失 →
         // 上一个回合的迟到 done（RPC 与 live 通道乱序 / hub 缓冲重放），
         // 不能收口新回合：finalize 的清锚副作用会打断刚发送的回合。
-        if (promptIdMismatch((ev as { meta?: unknown }).meta, get().currentPromptId)) break
+        if (promptIdMismatch(ev, get().currentPromptId)) break
         // TUI TurnCompleted marker ("Worked for 2.0s") — the last scrollback
         // line above the composer, mirroring turn_completion.rs. Idempotent:
         // prompt_complete may race ahead and finalize the turn first.
@@ -109,12 +110,12 @@ export function handleTurnEndEvent(
           // 盖章的 turnStartMs —— 队列收养的回合若在收养后立即完成
           // （没有 chunk/thought 可修正），在这里修正后再 finalize，
           // marker 才是真实时长而非 "Worked for 0.0s"。
-          // 回合身份校验：live turn_completed 的 `meta` = params._meta
-          // （agent 在每个 SessionNotification 上回显 promptId）。v2 host
+          // 回合身份校验：live turn_completed 的 pid 在 typed `update.prompt_id`
+          // 上（x.ai 载体；params._meta 只带时间戳与取消字段）。v2 host
           // 保证回显：pid 不符或缺失 → 上一个回合的迟到收口（乱序 / hub
           // 缓冲重放）——绝不能收养/收口新回合（adoptLiveTurnStart 会把新
           // 回合的锚错改成旧回合的开始时间，时长虚高）。
-          if (promptIdMismatch((ev as { meta?: unknown }).meta, get().currentPromptId)) break
+          if (promptIdMismatch(ev, get().currentPromptId)) break
           adoptLiveTurnStart(set, get, ev)
           // Agent 墙钟权威时长（1.0.9+ 的 update.elapsed_ms）——"Worked
           // for" 标记优先用它；缺省回落 finalizeTurn 的本地推导。
@@ -147,9 +148,12 @@ export function handleTurnEndEvent(
           // 取消回合的标记行之后补一行细节——没有它 hook 拒绝只会静默
           // 消失成一句 "Turn cancelled"。无上下文（旧 agent / 用户取消）
           // 不追加；prompt_complete rail 可能已渲染同文本行，去重。
-          const cancelDetail = cancellationContextText(
-            (ev as { meta?: unknown }).meta ?? upd,
-          )
+          // send_now 是「取消并立即发送」，与 TUI terminal_marker 的
+          // send_now_cancel 臂一致：不画取消原因行。
+          const cancelDetail =
+            cancelTriggerOf(ev) === 'send_now'
+              ? undefined
+              : cancellationContextText((ev as { meta?: unknown }).meta ?? upd)
           if (
             cancelDetail &&
             !tailHasCancellationDetail(get().entries, cancelDetail)
@@ -211,7 +215,9 @@ export function handleTurnEndEvent(
         // 持久化的取消上下文（信封 _meta.cancellationContext）随历史回放
         // 一并可见；无该键（旧日志）不追加。response_completed +
         // turn_completed 同回合双信封时按尾部同文本去重。
-        const cancelDetail = cancellationContextText(ev.meta)
+        // send_now 的取消不产生任何可见收口行（TUI terminal_marker 同款）。
+        const sendNowCancel = cancelTriggerOf(ev.meta) === 'send_now'
+        const cancelDetail = sendNowCancel ? undefined : cancellationContextText(ev.meta)
         const appendCancelDetail =
           cancelDetail != null &&
           !tailHasCancellationDetail(settled, cancelDetail)
@@ -230,7 +236,7 @@ export function handleTurnEndEvent(
         // 回放同一抑制：日志里 retry_state 横幅先于收口信封落盘，重开会话
         // 时不能再补一条 "Turn failed: <同一原因>"（TUI 回放的
         // synthesize_replay_turn_marker 同样传 error_banner_present）。
-        if (!turnFailureMarkerSuppressed(settled, stopReason)) {
+        if (!sendNowCancel && !turnFailureMarkerSuppressed(settled, stopReason)) {
           appendTurnMarker(set, get, {
             id: nid(),
             kind: 'session_event',

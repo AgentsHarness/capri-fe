@@ -42,7 +42,14 @@ describe('发起新对话自动设置为待办', () => {
       pinnedWorkspaces: new Set<string>(),
       pinnedSessions: new Set<string>(),
       todos: {},
-      fePrefs: { liteReplay: false, autoTodoNewSession: false },
+      fePrefs: {
+        liteReplay: false,
+        autoTodoNewSession: false,
+        workspaceFullPath: false,
+        entryFadeIn: true,
+        streamTextSmooth: true,
+        thoughtLines: 4,
+      },
     })
     vi.mocked(transport.newSession).mockResolvedValue({ sessionId: NEW_SID } as never)
     vi.mocked(transport.gitInfo).mockResolvedValue({

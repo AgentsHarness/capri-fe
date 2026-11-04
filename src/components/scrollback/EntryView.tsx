@@ -47,6 +47,7 @@ function entryViewEqual(prev: EntryViewProps, next: EntryViewProps): boolean {
     prev.noFrame === next.noFrame &&
     prev.galleryItem === next.galleryItem &&
     prev.readonly === next.readonly &&
+    prev.enter === next.enter &&
     (prev.now === next.now ||
       (!entryFlashActive(prev.e, prev.now) && !entryFlashActive(next.e, next.now)))
   )
@@ -68,6 +69,7 @@ export const EntryView = memo(function EntryView({
   noFrame = false,
   galleryItem = false,
   readonly = false,
+  enter = false,
 }: EntryViewProps) {
   // 迷你 scrollback 折叠覆盖：patch 合并进渲染条目（不写回 store）。
   const e = patch ? ({ ...eProp, ...patch } as ScrollEntry) : eProp
@@ -128,9 +130,9 @@ export const EntryView = memo(function EntryView({
   const caret = expandableGlyph(e, selected || hovered)
   const bulletGlyph = caret ?? undefined
 
-  // Thought body preview: cap at 4 lines (max-h 6.5em == 4 lines @
-  // leading-relaxed), overflow clipped — no internal scroll (the full
-  // text lives in the viewer).
+  // Thought body preview: cap follows fePrefs.thoughtLines (default 4).
+  // Streaming bodies are pinned to the tail by useFollowScroll; the full
+  // text lives in the viewer.
   const localBodyRef = useRef<HTMLDivElement>(null)
   const bodyRef = streamBodyRef ?? localBodyRef
   const thoughtStreaming = e.kind === 'thought' ? e.streaming : false
@@ -156,6 +158,7 @@ export const EntryView = memo(function EntryView({
     densePrev,
     inGroup,
     noFrame,
+    enter,
     onFold: foldAction,
   }
   // One-line tool/thought chrome: center bullet with text (not baseline — ⌄/◆).

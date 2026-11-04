@@ -109,9 +109,23 @@ describe('投影与物化', () => {
     expect(projectEntries(entriesFromView(view, 0, 'x'))).toEqual(view)
   })
 
-  it('fe 条目只认布尔字面量，其它值不进投影', () => {
-    const view = entriesFromView({ fePrefs: { liteReplay: true } }, 0, 'x')
+  it('fe 条目接受布尔与数值，非法值不进投影', () => {
+    const view = entriesFromView(
+      { fePrefs: { liteReplay: true, thoughtLines: 20 } },
+      0,
+      'x',
+    )
     expect(view[feKey('liteReplay')]).toEqual({ v: 'true', at: 0, site: 'x' })
+    expect(view[feKey('thoughtLines')]).toEqual({ v: '20', at: 0, site: 'x' })
+    expect(projectEntries(view).fePrefs).toEqual({
+      liteReplay: true,
+      thoughtLines: 20,
+    })
+    expect(
+      projectEntries({
+        [feKey('bad')]: { v: 'not-a-value', at: 0, site: 'x' },
+      }).fePrefs,
+    ).toEqual({})
   })
 
   it('物化不猜测删除：快照里没有的 key 不生成墓碑', () => {
