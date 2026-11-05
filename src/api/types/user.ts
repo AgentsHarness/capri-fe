@@ -4,6 +4,8 @@ export type UserHostRecord = {
   hostName: string
   online: boolean
   lastSeenAgeMs?: number
+  /** Host 二进制的构建版本（acp.Version）；老 host 不上报时缺省。 */
+  version?: string
 }
 
 /** 用户令牌（hub 侧 users.json 的浏览器视图）。token 明文只在创建/重置/自助修改的响应里出现一次。 */

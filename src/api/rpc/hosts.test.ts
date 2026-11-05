@@ -90,6 +90,19 @@ describe('listHosts 注册表交接', () => {
   })
 })
 
+describe('hubInfo', () => {
+  it('GET /api/info → 解析 service/version，且走 hub origin', async () => {
+    const fetchMock = vi.fn(() => json({ service: 'capri-hub', version: 'v0.5.0' }))
+    const info = await hostsRpc.hubInfo.call(core('https://hub.example', fetchMock))
+    expect(info).toEqual({ service: 'capri-hub', version: 'v0.5.0' })
+    expect(fetchMock).toHaveBeenCalledWith('https://hub.example/api/info')
+  })
+
+  it('local 模式没有 hub origin → 直接拒绝', async () => {
+    await expect(hostsRpc.hubInfo.call(core('', vi.fn()))).rejects.toThrow('仅 Hub 模式')
+  })
+})
+
 describe('prefs RPC', () => {
   it('putPrefs 回包没有 prefs 文档 → 返回 undefined，而不是伪造空文档', async () => {
     const fetchMock = vi.fn(() => json({ ok: true, version: 7 }))

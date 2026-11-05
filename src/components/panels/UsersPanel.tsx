@@ -152,12 +152,15 @@ export function UsersPanel() {
                     <span
                       key={host.hostId}
                       className="inline-flex max-w-full items-center gap-1 rounded bg-gn-bg-dark/40 px-1.5 py-0.5 text-[10.5px] text-gn-fg2"
-                      title={host.hostId}
+                      title={host.version ? `${host.hostId} · ${host.version}` : host.hostId}
                     >
                       <span className="truncate">{host.hostName || host.hostId}</span>
                       <span className={host.online ? 'text-gn-green' : 'text-gn-gutter'}>
                         {host.online ? '在线' : '离线'}
                       </span>
+                      {host.version ? (
+                        <span className="font-mono text-gn-gutter">{host.version}</span>
+                      ) : null}
                     </span>
                   ))}
                 </div>

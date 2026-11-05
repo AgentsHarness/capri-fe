@@ -42,8 +42,28 @@ export function clearHostRegistryHandoff(): void {
   registryHandoff.clear()
 }
 
+export type HubInfo = {
+  service?: string
+  version?: string
+}
+
 /** host/hub 管理：host 注册表、配对码、agent 重启、置顶/待办偏好文档。 */
 export const hostsRpc = {
+  /**
+   * GET /api/info — hub 自报的服务名与构建版本。公开端点；local 模式没有
+   * hub 可问，调用方先用 prefsOrigin() 判断。
+   */
+  async hubInfo(this: TransportCore): Promise<HubInfo> {
+    const origin = this.prefsOrigin()
+    if (!origin) throw new Error('仅 Hub 模式支持读取 Hub 版本')
+    const res = await this.fetch(`${origin}/api/info`, {}, { hubLevel: true })
+    const data = (await readRpcJson(res)) as
+      | { service?: string; version?: string }
+      | undefined
+    assertHubOk(res, data, 'hub info failed')
+    return { service: data?.service, version: data?.version }
+  },
+
   async listHosts(this: TransportCore): Promise<{ hosts: HostInfo[]; defaultHostId?: string }> {
     // hubLevel：host 列表是 hub 级数据（不带 ?host=），与选中 host
     // 无关——host 切换的 abort 风暴（setHost → abortInflight）不能打断

@@ -15,7 +15,8 @@ const settingsMock = vi.hoisted(() => ({
   deleteCustomModel: vi.fn(async () => ({ defaultCleared: false })),
   onEvent: () => () => {},
   getHubUrl: () => '',
-  prefsOrigin: () => '',
+  prefsOrigin: vi.fn(() => ''),
+  hubInfo: vi.fn(async () => ({ service: 'capri-hub', version: 'dev' })),
 }))
 
 vi.mock('../../api/client', () => ({ transport: settingsMock }))
@@ -71,6 +72,9 @@ beforeEach(() => {
   })
   vi.mocked(transport.settings).mockReset()
   vi.mocked(transport.updateSettings).mockReset()
+  vi.mocked(transport.prefsOrigin).mockReturnValue('')
+  vi.mocked(transport.hubInfo).mockReset()
+  vi.mocked(transport.hubInfo).mockResolvedValue({ service: 'capri-hub', version: 'dev' })
   vi.mocked(transport.setMode).mockReset()
   vi.mocked(transport.listCustomModels).mockReset()
   vi.mocked(transport.settings).mockResolvedValue({
@@ -614,6 +618,23 @@ describe('SettingsModal', () => {
     // vitest.config 把 __APP_VERSION__ 注入为 'test'，这条断言钉住徽标读的
     // 是这个构建期常量——换成运行期数据源（如 host 上报）就会红。vite 侧
     // 的取值口径（APP_VERSION ?? package.json）由构建产物校验覆盖。
+    expect(screen.getByText('vtest')).toBeInTheDocument()
+  })
+
+  it('hub 模式在版本徽标里追加 Hub 版本；local 模式不请求', async () => {
+    vi.mocked(transport.prefsOrigin).mockReturnValue('https://hub.example')
+    vi.mocked(transport.hubInfo).mockResolvedValue({ service: 'capri-hub', version: 'v0.5.0' })
+    openModal()
+    render(<SettingsModal />)
+    await waitFor(() => expect(screen.getByText('Hub v0.5.0')).toBeInTheDocument())
+    expect(transport.hubInfo).toHaveBeenCalledTimes(1)
+  })
+
+  it('local 模式没有 hub：不请求 /api/info，只显示 FE 版本', async () => {
+    openModal()
+    render(<SettingsModal />)
+    await waitFor(() => expect(screen.getByRole('dialog')).not.toBeNull())
+    expect(transport.hubInfo).not.toHaveBeenCalled()
     expect(screen.getByText('vtest')).toBeInTheDocument()
   })
 

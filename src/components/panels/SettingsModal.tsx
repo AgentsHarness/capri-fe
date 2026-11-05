@@ -171,6 +171,9 @@ export function SettingsModal({ role = 'admin' }: { role?: 'admin' | 'user' }) {
   const [error, setError] = useState<string>()
   const [data, setData] = useState<SettingsPayload>()
   const [savingKey, setSavingKey] = useState<string>()
+  // Hub 版本是 hub 级信息，和当前 host 的 settings 应答无关：local 模式
+  // 没有 hub 可问，取不到时徽标只显示 FE 版本。
+  const [hubVersion, setHubVersion] = useState<string>()
   // 选中分类跨开关保留（组件常驻挂载，Modal 关闭时只 return null）。
   const [active, setActive] = useState<CategoryKey>('session')
   const panelRef = useRef<HTMLDivElement>(null)
@@ -213,6 +216,25 @@ export function SettingsModal({ role = 'admin' }: { role?: 'admin' | 'user' }) {
       if (seq === reqSeq.current) setLoading(false)
     }
   }, [])
+
+  useEffect(() => {
+    if (!open || !transport.prefsOrigin()) {
+      setHubVersion(undefined)
+      return
+    }
+    let alive = true
+    void transport
+      .hubInfo()
+      .then((info) => {
+        if (alive) setHubVersion(info.version)
+      })
+      .catch(() => {
+        if (alive) setHubVersion(undefined)
+      })
+    return () => {
+      alive = false
+    }
+  }, [open])
 
   useEffect(() => {
     if (!open) return
@@ -414,8 +436,15 @@ export function SettingsModal({ role = 'admin' }: { role?: 'admin' | 'user' }) {
           <span className="hidden truncate text-[12px] text-gn-fg2 sm:inline">
             {current.label}
           </span>
-          <span className="ml-auto hidden font-mono text-[10.5px] text-gn-gutter sm:inline">
-            v{__APP_VERSION__}
+          <span className="ml-auto hidden items-center gap-1 font-mono text-[10.5px] text-gn-gutter sm:inline-flex">
+            <span>FE</span>
+            <span>v{__APP_VERSION__}</span>
+            {hubVersion ? (
+              <>
+                <span aria-hidden>·</span>
+                <span>Hub {hubVersion}</span>
+              </>
+            ) : null}
           </span>
           <button
             type="button"
