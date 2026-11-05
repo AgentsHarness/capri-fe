@@ -72,6 +72,8 @@ export type FePrefsDoc = {
   entryFadeIn?: boolean
   /** 流式思考和回答正文的新增文本半透明淡入；缺省 true。 */
   streamTextSmooth?: boolean
+  /** 条目正文展开/收起、弹窗入场过渡；缺省 true。 */
+  uiMotion?: boolean
   /** 思考活动区可见行数（1–20）；缺省 4。 */
   thoughtLines?: number
 }

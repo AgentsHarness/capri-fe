@@ -65,6 +65,7 @@ beforeEach(() => {
       workspaceFullPath: false,
       entryFadeIn: true,
       streamTextSmooth: true,
+      uiMotion: true,
       thoughtLines: 4,
     },
   })
@@ -191,7 +192,7 @@ describe('SettingsModal', () => {
       expect(screen.getByText(title)).toBeInTheDocument()
     }
     fireEvent.click(tab('外观与显示'))
-    for (const title of ['侧边栏', '滚动区']) {
+    for (const title of ['侧边栏', '滚动区与动画']) {
       expect(screen.getByText(title)).toBeInTheDocument()
     }
     expect(screen.getByText('精简回放')).toBeInTheDocument()
@@ -448,6 +449,24 @@ describe('SettingsModal', () => {
     )
     fireEvent.click(within(group()).getByRole('radio', { name: 'off' }))
     await waitFor(() => expect(usePins.getState().fePrefs.streamTextSmooth).toBe(false))
+    expect(within(group()).getByRole('radio', { name: 'off' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+  })
+
+  it('外观与显示：展开/弹窗动画默认开，切到 off 写入 FE 偏好', async () => {
+    await openAt('外观与显示')
+    const group = () =>
+      screen.getByRole('radiogroup', {
+        name: '条目展开/收起与弹窗打开时是否播放过渡动画',
+      })
+    expect(within(group()).getByRole('radio', { name: 'on' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+    fireEvent.click(within(group()).getByRole('radio', { name: 'off' }))
+    await waitFor(() => expect(usePins.getState().fePrefs.uiMotion).toBe(false))
     expect(within(group()).getByRole('radio', { name: 'off' })).toHaveAttribute(
       'aria-checked',
       'true',

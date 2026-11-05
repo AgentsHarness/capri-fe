@@ -4,8 +4,8 @@ import { KeyRound, ShieldQuestion } from 'lucide-react'
 /**
  * 全屏门禁：进应用前必须先通过这一道门。
  *
- * 这里问的**永远是「当前门禁那把」**——hub 模式是 Hub 的 `FE_TOKEN`，
- * 纯 local（Host 没配 `HUB_URL`）就是页面这台 Host 自己的钥匙。两者存在
+ * 这里问的**永远是「当前门禁那把」**——hub 模式是管理员 `FE_TOKEN` 或
+ * 用户 token，纯 local（Host 没配 `HUB_URL`）就是页面这台 Host 自己的钥匙。两者存在
  * 不同的槽里（见 api/credentials.ts），所以文案跟着 `local` 标志走，别在
  * 本机部署里跟用户提一个根本不存在的 Hub。
  * 密钥只保存在本机浏览器（`capri-fe-token` / `capri-fe.hostTokens`），
@@ -76,9 +76,10 @@ export function AccessTokenGate({
             </>
           ) : (
             <>
-              此 Hub 已启用访问控制。请输入部署时配置的密钥（
+              此 Hub 已启用访问控制。请输入管理员分配给你的访问令牌（用户 token
+              以 <code className="text-gn-fg2">u_</code> 开头；管理员使用部署时配置的{' '}
               <code className="text-gn-fg2">FE_TOKEN</code>
-              ）。密钥只保存在本机浏览器，不会写入服务器静态文件。
+              ）。令牌只保存在本机浏览器，不会写入服务器静态文件。
             </>
           )}
         </p>
@@ -100,7 +101,7 @@ export function AccessTokenGate({
               submit()
             }
           }}
-          placeholder={guest ? '粘贴访客令牌…' : '粘贴 FE_TOKEN…'}
+          placeholder={guest ? '粘贴访客令牌…' : '粘贴访问令牌…'}
           className="mb-3 w-full rounded-md border border-gn-prompt-border bg-gn-bg-base px-3 py-2 font-mono text-[13px] text-gn-fg outline-none placeholder:text-gn-gray-dim focus:border-gn-prompt-border-active"
         />
         {error ? (

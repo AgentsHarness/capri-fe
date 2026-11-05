@@ -2,10 +2,12 @@ import { useState } from 'react'
 import { CornerDownLeft, TriangleAlert } from 'lucide-react'
 import type { ScrollEntry } from '../../../api/types'
 import { planTodos, useChatStore } from '../../../store/chat'
+import { useFePrefs } from '../../../store/historyPins'
 import { entryExpanded } from '../../../scrollback/entryState'
 import { splitHookAnnotation } from '../../../scrollback/hookRuns'
 import { Accents } from '../../../theme/accents'
 import { Glyphs } from '../../../theme/glyphs'
+import { AnimatedCollapse } from '../../ui/AnimatedCollapse'
 import { Ansi } from '../../ui/Ansi'
 import { InlineAction } from '../../ui/InlineAction'
 import { Markdown } from '../../ui/Markdown'
@@ -255,31 +257,33 @@ export function SessionEventEntry({
         <div className="flex items-start gap-1.5 py-[2px] text-[13px] leading-[1.35]">
           <Bullet color={bullet.color} animated={bullet.animated} />
           <div className="min-w-0">
-            {expanded && e.text ? (
-              <>
-                <div
-                  className="text-[12.5px] font-bold leading-[1.35]"
-                  style={{ color: Accents.gray }}
-                >
-                  Recap
-                </div>
-                <div className="mt-0.5 text-[12.5px] leading-[1.45] whitespace-pre-wrap break-words text-gn-muted">
-                  {e.text}
-                </div>
-              </>
-            ) : (
-              <div className="flex min-w-0 items-baseline gap-0 text-[12.5px] leading-[1.35]">
-                <span className="shrink-0 font-bold" style={{ color: Accents.gray }}>
-                  Recap
-                </span>
-                {e.text.trim() ? (
-                  <span className="min-w-0 truncate text-gn-muted">
-                    {' '}
-                    {e.text.split('\n')[0].trim()}
+            <AnimatedCollapse open animate={!e.streaming}>
+              {expanded && e.text ? (
+                <>
+                  <div
+                    className="text-[12.5px] font-bold leading-[1.35]"
+                    style={{ color: Accents.gray }}
+                  >
+                    Recap
+                  </div>
+                  <div className="mt-0.5 text-[12.5px] leading-[1.45] whitespace-pre-wrap break-words text-gn-muted">
+                    {e.text}
+                  </div>
+                </>
+              ) : (
+                <div className="flex min-w-0 items-baseline gap-0 text-[12.5px] leading-[1.35]">
+                  <span className="shrink-0 font-bold" style={{ color: Accents.gray }}>
+                    Recap
                   </span>
-                ) : null}
-              </div>
-            )}
+                  {e.text.trim() ? (
+                    <span className="min-w-0 truncate text-gn-muted">
+                      {' '}
+                      {e.text.split('\n')[0].trim()}
+                    </span>
+                  ) : null}
+                </div>
+              )}
+            </AnimatedCollapse>
           </div>
         </div>
       </EntryShell>
@@ -297,38 +301,40 @@ export function SessionEventEntry({
         <div className="flex items-start gap-1.5 py-[2px] text-[13px] leading-[1.35]">
           <Bullet color={bullet.color} animated={bullet.animated} />
           <div className="min-w-0">
-            <div
-              className={`text-[12.5px] font-bold leading-[1.35] ${
-                expanded ? 'text-gn-fg' : 'text-gn-muted'
-              }`}
-            >
-              {e.text}
-            </div>
-            {expanded ? (
-              <div className="mt-1 space-y-1.5">
-                {block.observations.map((o, i) => (
-                  <div
-                    key={`${o.path}-${i}`}
-                    className="border-t border-gn-prompt-border/50 pt-1.5"
-                  >
-                    <div className="text-[11.5px] font-bold text-gn-muted">
-                      不可信模型生成观察 {i + 1}
-                    </div>
-                    <div className="mt-0.5 whitespace-pre-wrap break-words text-[12.5px] leading-[1.45] text-gn-fg">
-                      {o.statement}
-                    </div>
-                    {o.body ? (
-                      <div className="mt-0.5 whitespace-pre-wrap break-words text-[12.5px] leading-[1.45] text-gn-muted">
-                        {o.body}
-                      </div>
-                    ) : null}
-                    <div className="mt-0.5 font-mono text-[11.5px] text-gn-muted">
-                      {o.path}
-                    </div>
-                  </div>
-                ))}
+            <AnimatedCollapse open>
+              <div
+                className={`text-[12.5px] font-bold leading-[1.35] ${
+                  expanded ? 'text-gn-fg' : 'text-gn-muted'
+                }`}
+              >
+                {e.text}
               </div>
-            ) : null}
+              {expanded ? (
+                <div className="mt-1 space-y-1.5">
+                  {block.observations.map((o, i) => (
+                    <div
+                      key={`${o.path}-${i}`}
+                      className="border-t border-gn-prompt-border/50 pt-1.5"
+                    >
+                      <div className="text-[11.5px] font-bold text-gn-muted">
+                        不可信模型生成观察 {i + 1}
+                      </div>
+                      <div className="mt-0.5 whitespace-pre-wrap break-words text-[12.5px] leading-[1.45] text-gn-fg">
+                        {o.statement}
+                      </div>
+                      {o.body ? (
+                        <div className="mt-0.5 whitespace-pre-wrap break-words text-[12.5px] leading-[1.45] text-gn-muted">
+                          {o.body}
+                        </div>
+                      ) : null}
+                      <div className="mt-0.5 font-mono text-[11.5px] text-gn-muted">
+                        {o.path}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </AnimatedCollapse>
           </div>
         </div>
       </EntryShell>
@@ -368,6 +374,7 @@ export function BtwEntry({
   chrome: EntryChrome
 }) {
   const { shell, bullet, openViewer } = chrome
+  const smoothStream = useFePrefs((s) => s.fePrefs.streamTextSmooth)
   const expanded = entryExpanded(e)
   const showView = expanded
   return (
@@ -379,42 +386,53 @@ export function BtwEntry({
         >
           <Bullet color={bullet.color} animated={bullet.animated} />
           <div className="min-w-0 flex-1">
-            {expanded ? (
-              <>
-                {/* 头部一行 /btw <问题>（TUI btw.rs header，金色粗体）；长问题可环绕，不断行外溢。 */}
-                <div className="font-bold leading-[1.35] break-words" style={{ color: Accents.plan }}>
-                  /btw {e.question}
-                </div>
-                {/* 错误态直接可见；答案走 markdown（TUI BtwBlock 同款）。 */}
-                {e.error ? (
-                  <div
-                    className="mt-0.5 text-[12.5px] leading-[1.45] whitespace-pre-wrap break-words"
-                    style={{ color: Accents.error }}
-                  >
-                    {e.error}
+            <AnimatedCollapse open animate={!e.streaming}>
+              {expanded ? (
+                <>
+                  {/* 头部一行 /btw <问题>（TUI btw.rs header，金色粗体）；长问题可环绕，不断行外溢。 */}
+                  <div className="font-bold leading-[1.35] break-words" style={{ color: Accents.plan }}>
+                    /btw {e.question}
                   </div>
-                ) : e.answer ? (
-                  <Markdown source={e.answer} />
-                ) : e.streaming ? (
-                  <div className="mt-0.5 text-[12px] text-gn-muted">等待回答…</div>
-                ) : null}
-              </>
-            ) : (
-              // 折叠态只有一行（TUI Collapsed）：muted 头部；问题过长行内
-              // 截断（shrink-0 会顶破块边界），错误时行内截断露出错误摘要，
-              // 折叠中也能直接看到失败。
-              <div className="flex min-w-0 items-baseline gap-1 font-bold text-gn-muted">
-                <span className="min-w-0 truncate">/btw {e.question}</span>
-                {e.error ? (
-                  <span
-                    className="min-w-0 truncate text-[12px] font-normal"
-                    style={{ color: Accents.error }}
-                  >
-                    {e.error}
-                  </span>
-                ) : null}
-              </div>
-            )}
+                  {/* 错误态直接可见；答案走 markdown（TUI BtwBlock 同款）。 */}
+                  {e.error ? (
+                    <div
+                      className="mt-0.5 text-[12.5px] leading-[1.45] whitespace-pre-wrap break-words"
+                      style={{ color: Accents.error }}
+                    >
+                      {e.error}
+                    </div>
+                  ) : e.answer ? (
+                    <div
+                      key={e.answer}
+                      className={smoothStream ? 'gn-stream-fade' : undefined}
+                    >
+                      <Markdown
+                        source={e.answer}
+                        streaming={!!e.streaming}
+                        smoothStream={smoothStream}
+                      />
+                    </div>
+                  ) : e.streaming ? (
+                    <div className="mt-0.5 text-[12px] text-gn-muted">等待回答…</div>
+                  ) : null}
+                </>
+              ) : (
+                // 折叠态只有一行（TUI Collapsed）：muted 头部；问题过长行内
+                // 截断（shrink-0 会顶破块边界），错误时行内截断露出错误摘要，
+                // 折叠中也能直接看到失败。
+                <div className="flex min-w-0 items-baseline gap-1 font-bold text-gn-muted">
+                  <span className="min-w-0 truncate">/btw {e.question}</span>
+                  {e.error ? (
+                    <span
+                      className="min-w-0 truncate text-[12px] font-normal"
+                      style={{ color: Accents.error }}
+                    >
+                      {e.error}
+                    </span>
+                  ) : null}
+                </div>
+              )}
+            </AnimatedCollapse>
           </div>
         </div>
         <ViewButton visible={showView} onOpen={() => openViewer(e.id)} />

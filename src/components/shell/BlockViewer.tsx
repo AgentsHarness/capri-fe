@@ -49,13 +49,11 @@ import {
 } from '../../scrollback/userText'
 import {
   displayRowKey,
-  groupScopeForDensity,
   isDensePackableRow,
-  projectDisplayRows,
-  scanGroups,
   spanContaining,
 } from '../../scrollback/verbGroup'
-import { toolCallDensity } from '../../store/settings'
+import { useDisplayRows } from '../scrollback/useDisplayRows'
+import { useEnteringEntries } from '../scrollback/useEnteringEntries'
 import { useJunctionDissolve } from '../scrollback/useJunctionDissolve'
 import { useScrollbarGutter } from '../../hooks/useScrollbarGutter'
 import {
@@ -716,7 +714,11 @@ function ViewerBody({
   if (entry.kind === 'assistant') {
     return (
       <div className="space-y-3">
-        <Markdown source={entry.text} />
+        <Markdown
+          source={entry.text}
+          streaming={!!entry.streaming}
+          smoothStream={smoothStream}
+        />
         {entry.images?.length ? <ViewerImages images={entry.images} /> : null}
       </div>
     )
@@ -743,7 +745,16 @@ function ViewerBody({
             {entry.error}
           </div>
         ) : entry.answer ? (
-          <Markdown source={entry.answer} />
+          <div
+            key={entry.answer}
+            className={smoothStream ? 'gn-stream-fade' : undefined}
+          >
+            <Markdown
+              source={entry.answer}
+              streaming={!!entry.streaming}
+              smoothStream={smoothStream}
+            />
+          </div>
         ) : entry.streaming ? (
           <div className="text-[12.5px] text-gn-muted">等待回答…</div>
         ) : null}
@@ -1032,7 +1043,7 @@ export function SubagentComposer({
  * 子代理会话 updates 拉取——动作内部有 loading/loaded 去重。
  *
  * 渲染直接复用主 scrollback 的体系（任务 1）：条目已是主模型 ScrollEntry，
- * 这里走同一条管线——scanGroups + projectDisplayRows → EntryView /
+ * 这里走同一条管线——useDisplayRows（scanGroups + projectDisplayRows）→ EntryView /
  * GroupHeaderView（内部即 EntryShell + AccentRail(resolveAccent) +
  * Bullet(resolveBullet)，accent 竖条/动词分组头/折叠展开/字体配色全部
  * 与主 scrollback 一致）。选中/折叠/双击全文弹窗用组件内局部状态
@@ -1073,6 +1084,7 @@ function SubagentTimeline({
 
   // DOM 全量挂载 items（与主 scrollback 一致，无渲染窗口上限）。
   const renderItems = items
+  const entryFadeIn = useFePrefs((s) => s.fePrefs.entryFadeIn)
 
   // 打开时若尚未回放过（idle），按 child_session_id 拉取该子代理会话的更新
   // 回放（TUI replay_inherited_updates 同款）。不看 items 是否为空——即使
@@ -1206,13 +1218,21 @@ function SubagentTimeline({
     if (bodyEl && timelineFollowsTail()) bodyEl.scrollTop = bodyEl.scrollHeight
   }, [running, items, pinTimelineTail, timelineFollowsTail])
 
-  // 主 scrollback 同款分组管线：scanGroups → projectDisplayRows。
+  // 主 scrollback 同款分组管线，并跟随 tool_call_density 设置。
   // 只用渲染窗口内的条目（renderItems），DOM 保持扁平。
-  const { rows, spans } = useMemo(() => {
-    const scope = groupScopeForDensity(toolCallDensity())
-    const spans = scanGroups(renderItems, expandedGroups, { scope })
-    return { rows: projectDisplayRows(renderItems, spans, true, undefined, scope), spans }
-  }, [renderItems, expandedGroups])
+  const { rows, spans } = useDisplayRows(renderItems, expandedGroups)
+  const enteringIds = useEnteringEntries(renderItems, {
+    enabled: entryFadeIn && running,
+    historyLoadedAt: view?.loadedStart,
+    historyLoading: view?.fetchState === 'loading',
+    historyLoadingMore: loadingMore,
+  })
+  const groupEnter = (span: { range: { start: number; end: number } }) => {
+    for (let i = span.range.start; i < span.range.end; i++) {
+      if (enteringIds.has(renderItems[i].id)) return true
+    }
+    return false
+  }
 
   // 折叠覆盖（按条目 id）：工具/用户折叠与思考 displayMode 本地化——
   // 不写回 store，渲染时以 patch 合并进条目（EntryView 的 patch 语义）。
@@ -1428,6 +1448,7 @@ function SubagentTimeline({
                       dense={dense}
                       densePrev={densePrev}
                       denseNext={denseNext}
+                      enter={groupEnter(row.span)}
                       selectRow={setSelectedId}
                     />
                   )
@@ -1448,6 +1469,7 @@ function SubagentTimeline({
                     patch={foldPatch(e)}
                     streamBodyRef={miniStreamBodyRef}
                     readonly={guest}
+                    enter={enteringIds.has(e.id)}
                   />
                 )
               })}

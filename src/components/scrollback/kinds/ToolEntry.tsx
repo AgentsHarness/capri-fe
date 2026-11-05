@@ -3,6 +3,7 @@ import { toolHeaderExtra } from '../../../scrollback/toolHeaderExtra'
 import { entryFailed, entryRunning, toolDisplayMode } from '../../../scrollback/entryState'
 import { Accents } from '../../../theme/accents'
 import { toolHeader } from '../../../theme/glyphs'
+import { AnimatedCollapse } from '../../ui/AnimatedCollapse'
 import { ToolDetail } from '../../ui/ToolDetail'
 import { Bullet, EntryShell } from '../EntryShell'
 import { LiteToolFill } from '../LiteToolFill'
@@ -141,23 +142,28 @@ export function ToolEntry({
       </HeaderWithView>
       {/* Inline expand = TUI Truncated preview; TUI Expanded = 全量正文
           （full=true，仅视口预算截断）。full body via Enter / 查看。 */}
-      {litePending ? (
-        // lite 裁掉的正文：占位行报出省略规模；展开已经触发补全，这里
-        // 只在失败时给 [重试]。补全完成后这条自动让位给下面的正文。
-        <LiteToolFill
-          bytes={e.liteOmitted!}
-          state={e.liteState}
-          onFill={fillToolBodies ? () => fillToolBodies(e.id) : undefined}
-          className="pl-1"
-        />
-      ) : showBody && e.raw ? (
-        <ToolDetail
-          raw={e.raw}
-          kindName={e.kindName}
-          full={mode === 'expanded'}
-          mergedRaws={e.mergedRaws}
-        />
-      ) : null}
+      <AnimatedCollapse
+        open={showBody && (litePending || !!e.raw)}
+        animate={!running}
+      >
+        {litePending ? (
+          // lite 裁掉的正文：占位行报出省略规模；展开已经触发补全，这里
+          // 只在失败时给 [重试]。补全完成后这条自动让位给下面的正文。
+          <LiteToolFill
+            bytes={e.liteOmitted!}
+            state={e.liteState}
+            onFill={fillToolBodies ? () => fillToolBodies(e.id) : undefined}
+            className="pl-1"
+          />
+        ) : e.raw ? (
+          <ToolDetail
+            raw={e.raw}
+            kindName={e.kindName}
+            full={mode === 'expanded'}
+            mergedRaws={e.mergedRaws}
+          />
+        ) : null}
+      </AnimatedCollapse>
     </EntryShell>
   )
 }

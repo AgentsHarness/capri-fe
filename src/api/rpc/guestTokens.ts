@@ -198,8 +198,15 @@ export const guestTokensRpc = {
     if (!res.ok) throw new Error(`access role failed (${res.status})`)
     const data = (await res.json().catch(() => ({}))) as {
       role?: string
+      user?: { id?: string; label?: string }
       guest?: { id?: string; label?: string; expiresAt?: number }
       sessions?: GuestSessionItem[]
+    }
+    if (data.role === 'user') {
+      return {
+        role: 'user',
+        user: { id: data.user?.id ?? '', label: data.user?.label ?? '' },
+      }
     }
     if (data.role !== 'guest') return { role: 'admin' }
     return {

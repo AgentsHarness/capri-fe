@@ -92,6 +92,8 @@ export type FePrefs = {
   entryFadeIn: boolean
   /** 流式思考和回答正文的新增文本半透明淡入（默认 true）。 */
   streamTextSmooth: boolean
+  /** 条目正文展开/收起、弹窗入场过渡（默认 true）。 */
+  uiMotion: boolean
   /** 思考活动区可见行数（1–20，默认 4）。 */
   thoughtLines: number
 }
@@ -140,6 +142,7 @@ function project(entries: PrefsEntries): PrefsView {
       workspaceFullPath: v.fePrefs.workspaceFullPath === true,
       entryFadeIn: v.fePrefs.entryFadeIn !== false,
       streamTextSmooth: v.fePrefs.streamTextSmooth !== false,
+      uiMotion: v.fePrefs.uiMotion !== false,
       thoughtLines: clampThoughtLines(v.fePrefs.thoughtLines),
     },
   }

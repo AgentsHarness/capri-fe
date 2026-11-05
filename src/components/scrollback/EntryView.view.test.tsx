@@ -153,6 +153,37 @@ describe('标题单击立刻折叠 / 展开后「查看」弹窗', () => {
     expect(useChatStore.getState().openViewer).toHaveBeenCalledWith('th1')
   })
 
+  it('思考收口折叠后正文保留到收起过渡结束再卸载', () => {
+    const e = {
+      id: 'th-anim',
+      kind: 'thought',
+      text: 'reasoning about the thing',
+      streaming: true,
+    } as ScrollEntry
+    useChatStore.setState({ entries: [e] })
+    const r = render(
+      <EntryView e={e} selected={false} pendingFreeze={false} now={0} />,
+    )
+    expect(screen.getByText('reasoning about the thing')).toBeInTheDocument()
+
+    const sealed = {
+      ...e,
+      streaming: false,
+      displayMode: 'collapsed',
+    } as ScrollEntry
+    r.rerender(
+      <EntryView e={sealed} selected={false} pendingFreeze={false} now={0} />,
+    )
+    expect(screen.getByText('reasoning about the thing')).toBeInTheDocument()
+
+    fireEvent.transitionEnd(r.container.querySelector('.gn-collapse')!, {
+      propertyName: 'height',
+    })
+    expect(
+      screen.queryByText('reasoning about the thing'),
+    ).not.toBeInTheDocument()
+  })
+
   it('btw 展开显示「查看」且点击打开弹窗', () => {
     const e = {
       id: 'b1',

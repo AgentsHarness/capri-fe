@@ -13,6 +13,7 @@ import { memoryRpc } from './memory'
 import { usageRpc } from './usage'
 import { agentsRpc } from './agents'
 import { guestTokensRpc } from './guestTokens'
+import { usersRpc } from './users'
 
 export const rpcMixins = {
   ...sessionsRpc,
@@ -30,6 +31,7 @@ export const rpcMixins = {
   ...usageRpc,
   ...agentsRpc,
   ...guestTokensRpc,
+  ...usersRpc,
 }
 
 export type RpcApi = {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useChatStore } from './store/chat'
 import { initUiNotifications } from './store/notifications'
 import { useThemeStore } from './store/theme'
+import { useFePrefs } from './store/historyPins'
 import { transport } from './api/client'
 import { AccessTokenGate } from './components/shell/AccessTokenGate'
 import { TopBar } from './components/shell/TopBar'
@@ -47,7 +48,7 @@ type AccessPhase = 'checking' | 'gate' | 'unreachable' | 'ready'
  * - guest   —— 访客令牌（只读壳 + 会话白名单）；
  * - unknown —— hub 太旧或探测失败：按 admin 处理（老行为不变）。
  */
-type AccessRole = 'admin' | 'guest'
+type AccessRole = 'admin' | 'user' | 'guest'
 
 /**
  * detectMode 去重缓存：React StrictMode 双挂载会让两个 effect 并发
@@ -64,19 +65,14 @@ function detectModeOnce(): ReturnType<typeof transport.detectMode> {
 }
 
 /**
- * 角色探测：hub 的 access-role。返回访客身份（null = 管理员 / 探测失败）。
+ * 角色探测：hub 的 access-role。返回 admin / user / guest 完整身份；
+ * null = 探测失败（按 admin 处理，老 hub 没有 access-role 时 rpc 层也回落 admin）。
  *
- * 只回答「出示的这把是谁」——不写 store，身份的进场由调用方走
- * `enterGuestSession`（它要连带复位会话视图）。
- *
- * 放在 boot 的 ready 之前：访客要渲染的是只读壳，不该先闪一下完整界面。
- * 探测失败按管理员处理（默认行为不变），hub 太旧返回 404 时 rpc 层已经
- * 回落成 admin。
+ * 只回答「出示的这把是谁」——不写 store，身份进场由调用方决定。
  */
-async function detectGuestRole(): Promise<import('./api/types').GuestIdentity | null> {
+async function detectAccessRole(): Promise<import('./api/types').AccessRole | null> {
   try {
-    const role = await transport.accessRole()
-    return role.role === 'guest' ? role : null
+    return await transport.accessRole()
   } catch {
     return null
   }
@@ -101,6 +97,7 @@ let bootGen = 0
  */
 export default function App() {
   const initTheme = useThemeStore((s) => s.init)
+  const uiMotion = useFePrefs((s) => s.fePrefs.uiMotion)
   const [phase, setPhase] = useState<AccessPhase>('checking')
   const [gateError, setGateError] = useState<string>()
   const [submitting, setSubmitting] = useState(false)
@@ -121,6 +118,15 @@ export default function App() {
   }, [])
 
   useEffect(() => initTheme(), [initTheme])
+
+  // 弹窗入场动画的 CSS 开关：AnimatedCollapse 直接读 store，弹窗走根节点属性。
+  useEffect(() => {
+    const root = document.documentElement
+    root.dataset.gnMotion = uiMotion === false ? 'off' : 'on'
+    return () => {
+      delete root.dataset.gnMotion
+    }
+  }, [uiMotion])
 
   // 开机三步，顺序要紧：① 认模式（只看免鉴权的 /api/hosts）② 过 hub 门
   // （**只问 hub 那把**）③ 门后才去探本机近路。近路探测放在门禁之前会把
@@ -170,29 +176,27 @@ export default function App() {
       setPhase('gate')
       return
     }
-    // 角色探测只在 hub 模式有意义（local 没有白名单承载）。放在进入主
-    // 界面之前：访客要渲染的是只读壳，不该先闪一下完整界面。
-    let guestIdentity: import('./api/types').GuestIdentity | null = null
+    // 角色探测只在 hub 模式有意义（local 没有用户体系）。放在进入主
+    // 界面之前：访客要渲染的是只读壳，普通用户渲染完整壳但受 hub 数据
+    // 范围限制，任何人都不该先闪一下错误的界面。
+    let accessIdentity: import('./api/types').AccessRole | null = null
     if (mode === 'hub') {
-      guestIdentity = await detectGuestRole()
+      accessIdentity = await detectAccessRole()
       if (myGen !== bootGen) return
     }
-    const guest = guestIdentity != null
-    setRole(guest ? 'guest' : 'admin')
-    // 访客身份进场：enterGuestSession 会写 transport 的访客身份并复位会话
-    // 视图（上一身份的内容不能留在新壳里）。
-    if (guest && guestIdentity) {
-      useChatStore.getState().enterGuestSession(guestIdentity)
+    if (accessIdentity?.role === 'guest') {
+      setRole('guest')
+      useChatStore.getState().enterGuestSession(accessIdentity)
     } else {
-      // hub 说这把不是访客令牌（或是分享链接里贴错的管理员密钥 / 探测失败）：
-      // 把出示的那把归到管理员槽，别让访客槽占着门禁位置。
+      // 普通用户与管理员走同一个完整壳；hub 仍按 token 过滤 host。
+      setRole(accessIdentity?.role === 'user' ? 'user' : 'admin')
       transport.settleAdminCredential()
     }
     // ok or network error → enter app (top-bar host notice covers offline)
     setPhase('ready')
     // 门已经过了（hub 或本机），才去找近路：默认直连本机，探不过再问一把。
     // 访客不探：白名单只在 hub 上，本机直连等于绕过它。
-    if (mode === 'hub' && !guest) void transport.discoverLocalHost()
+    if (mode === 'hub' && accessIdentity?.role !== 'guest') void transport.discoverLocalHost()
   }, [])
 
   useEffect(() => {
@@ -240,17 +244,16 @@ export default function App() {
       transport.setLocalHostId(next.localHostId ?? null, next.authRequired === true)
       const r = await transport.probeAccess()
       if (r === 'ok') {
-        const identity = next.mode === 'hub' ? await detectGuestRole() : null
-        setRole(identity ? 'guest' : 'admin')
-        if (identity) {
+        const identity = next.mode === 'hub' ? await detectAccessRole() : null
+        if (identity?.role === 'guest') {
+          setRole('guest')
           useChatStore.getState().enterGuestSession(identity)
         } else {
-          // hub 说这不是访客令牌（或是分享链接里贴错的管理员密钥 / 探测失败）：
-          // 把出示的那把归到管理员槽，别让访客槽占着门禁位置。
+          setRole(identity?.role === 'user' ? 'user' : 'admin')
           transport.settleAdminCredential()
         }
         setPhase('ready')
-        if (next.mode === 'hub' && !identity) void transport.discoverLocalHost()
+        if (next.mode === 'hub' && identity?.role !== 'guest') void transport.discoverLocalHost()
         return
       }
       if (r === 'need_token') {
@@ -379,6 +382,7 @@ export default function App() {
   return (
     <>
       <AppShell
+        role={role}
         onLogout={() => {
           transport.logout()
           setGateError(undefined)
@@ -478,9 +482,11 @@ export function GuestShell({ onExit }: { onExit: () => void }) {
 }
 
 function AppShell({
+  role,
   onLogout,
   onEnterGuest,
 }: {
+  role: Exclude<AccessRole, 'guest'>
   onLogout: () => void
   /** 左上角 host 列表里「切换到访客模式」。 */
   onEnterGuest: () => void
@@ -540,7 +546,7 @@ function AppShell({
       <AgentsModal />
       <McpPanel open={mcpOpen} onClose={() => setMcpOpen(false)} />
       <ExtensionsModal />
-      <SettingsModal />
+      <SettingsModal role={role} />
       <GitPanel open={gitOpen} onClose={() => setGitOpen(false)} />
       <SessionInfoModal />
       <ContextModal />

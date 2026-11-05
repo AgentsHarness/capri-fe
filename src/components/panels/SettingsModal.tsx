@@ -28,6 +28,8 @@ import { historyViaHubRelay, useFePrefs, useLiteReplay } from '../../store/histo
 import { THOUGHT_LINES_MAX, THOUGHT_LINES_MIN } from '../../scrollback/thoughtText'
 import { CustomModelsPanel } from './CustomModelsPanel'
 import { GuestTokensPanel } from './GuestTokensPanel'
+import { UsersPanel } from './UsersPanel'
+import { AccountPanel } from './AccountPanel'
 import {
   loadDefaultSelectedPermission,
   saveDefaultSelectedPermission,
@@ -52,8 +54,8 @@ const SECTION_LABELS: Record<string, string> = {
 /** 已知表先按 TUI 顺序，其余按路径字母序。 */
 const SECTION_ORDER = ['ui', 'session', 'models', 'cli']
 
-/** 左侧分类键：会话与权限 / 外观与显示 / 模型 / 访问与分享 / 高级。 */
-type CategoryKey = 'session' | 'display' | 'custom' | 'share' | 'advanced'
+/** 左侧分类键：会话与权限 / 外观与显示 / 模型 / 账号 / 访问与分享 / 高级。 */
+type CategoryKey = 'session' | 'display' | 'custom' | 'account' | 'share' | 'advanced'
 
 type Category = {
   key: CategoryKey
@@ -161,7 +163,7 @@ const WORKSPACE_GROUP_NAME_CHOICES: { id: 'short' | 'full'; label: string }[] = 
  * is shared); the binding is ignored while an input/textarea is focused.
  * Esc / backdrop click close it.
  */
-export function SettingsModal() {
+export function SettingsModal({ role = 'admin' }: { role?: 'admin' | 'user' }) {
   const open = useChatStore((s) => s.settingsOpen)
   const openSettings = useChatStore((s) => s.openSettings)
   const close = useChatStore((s) => s.closeSettings)
@@ -268,12 +270,20 @@ export function SettingsModal() {
         label: '模型',
         shortLabel: '模型',
       },
-      {
+    ]
+    if (role === 'admin') {
+      list.push({
         key: 'share',
         label: '访问与分享',
         shortLabel: '分享',
-      },
-    ]
+      })
+    } else {
+      list.push({
+        key: 'account',
+        label: '账号',
+        shortLabel: '账号',
+      })
+    }
     if (dumpSections.length > 0) {
       list.push({
         key: 'advanced',
@@ -282,7 +292,7 @@ export function SettingsModal() {
       })
     }
     return list
-  }, [dumpSections.length])
+  }, [dumpSections.length, role])
 
   // 分类按数据动态增减；选中项找不到时落回首项。
   const current: Category = cats.find((c) => c.key === active) ?? cats[0]
@@ -334,6 +344,11 @@ export function SettingsModal() {
     }
   }
 
+  // 用户管理与账号面板是 hub 级数据，不依赖当前 host 的 settings 应答。
+  // hub 还没配对任何 host 时，管理员仍必须能创建第一个用户。
+  const needsHostSettings =
+    current.key === 'session' || current.key === 'display' || current.key === 'custom' || current.key === 'advanced'
+
   const pane = () => {
     switch (current.key) {
       case 'session':
@@ -357,8 +372,15 @@ export function SettingsModal() {
         )
       case 'custom':
         return <CustomModelsPanel />
+      case 'account':
+        return <AccountPanel />
       case 'share':
-        return <GuestTokensPanel />
+        return (
+          <div>
+            <UsersPanel />
+            <GuestTokensPanel />
+          </div>
+        )
       case 'advanced':
         return <AdvancedSettings dumpSections={dumpSections} />
     }
@@ -448,11 +470,11 @@ export function SettingsModal() {
             aria-label={current.label}
             className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-3 touch-pan-y sm:pb-0"
           >
-            {loading && !data ? (
+            {needsHostSettings && loading && !data ? (
               <div className="px-4 py-6 text-center text-[12px] text-gn-muted">
                 加载设置…
               </div>
-            ) : error ? (
+            ) : needsHostSettings && error ? (
               <div className="px-4 py-5 text-center">
                 <div className="text-[12px] text-gn-red">{error}</div>
                 <button
@@ -922,6 +944,7 @@ function DisplaySettings({
   const workspaceFullPath = useFePrefs((s) => s.fePrefs.workspaceFullPath)
   const entryFadeIn = useFePrefs((s) => s.fePrefs.entryFadeIn)
   const streamTextSmooth = useFePrefs((s) => s.fePrefs.streamTextSmooth)
+  const uiMotion = useFePrefs((s) => s.fePrefs.uiMotion) !== false
   const thoughtLines = useFePrefs((s) => s.fePrefs.thoughtLines)
   const liteReplay = useLiteReplay()
   const viaRelay = historyViaHubRelay()
@@ -948,7 +971,7 @@ function DisplaySettings({
           />
         </SettingRow>
       </SettingsGroup>
-      <SettingsGroup title="滚动区">
+      <SettingsGroup title="滚动区与动画">
         <SettingRow
           label="工具调用密度"
           code="tool_call_density"
@@ -983,6 +1006,17 @@ function DisplaySettings({
             on={streamTextSmooth}
             title="流式思考和回答的新增文字是否半透明淡入"
             onClick={() => setFePrefs({ streamTextSmooth: !streamTextSmooth })}
+          />
+        </SettingRow>
+        <SettingRow
+          label="展开/弹窗动画"
+          code="ui_motion"
+          hint="滚动区条目的展开/收起、弹窗打开时播放过渡动画；关 = 直接切换或出现。子代理滚动区同样生效。"
+        >
+          <ToggleTabs
+            on={uiMotion}
+            title="条目展开/收起与弹窗打开时是否播放过渡动画"
+            onClick={() => setFePrefs({ uiMotion: !uiMotion })}
           />
         </SettingRow>
         <SettingRow

@@ -120,6 +120,7 @@ beforeEach(async () => {
       workspaceFullPath: false,
       entryFadeIn: true,
       streamTextSmooth: true,
+      uiMotion: true,
       thoughtLines: 4,
     },
   })
@@ -192,6 +193,7 @@ describe('本地置顶/待办', () => {
       workspaceFullPath: false,
       entryFadeIn: true,
       streamTextSmooth: true,
+      uiMotion: true,
       thoughtLines: 4,
     })
     expect(liveKeys(localEntries())).toEqual([feKey('liteReplay')])
@@ -229,6 +231,13 @@ describe('本地置顶/待办', () => {
     usePins.getState().setFePrefs({ streamTextSmooth: false })
     expect(usePins.getState().fePrefs.streamTextSmooth).toBe(false)
     expect(localEntries()[feKey('streamTextSmooth')].v).toBe('false')
+  })
+
+  it('setFePrefs uiMotion 默认开，关闭后进条目并投影', () => {
+    expect(usePins.getState().fePrefs.uiMotion).toBe(true)
+    usePins.getState().setFePrefs({ uiMotion: false })
+    expect(usePins.getState().fePrefs.uiMotion).toBe(false)
+    expect(localEntries()[feKey('uiMotion')].v).toBe('false')
   })
 
   it('setFePrefs thoughtLines 默认 4，数值偏好进条目并投影', () => {

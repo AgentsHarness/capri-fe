@@ -12,6 +12,7 @@ import { Bullet, EntryShell } from '../EntryShell'
 import { InlineImages } from '../InlineImages'
 import { UserSteerTime } from '../PromptTime'
 import { ViewButton } from '../ViewButton'
+import { AnimatedCollapse } from '../../ui/AnimatedCollapse'
 import { InlineAction } from '../../ui/InlineAction'
 import { useChatStore } from '../../../store/chat'
 import type { EntryChrome } from '../chrome'
@@ -95,17 +96,19 @@ export function UserEntry({
           className={`mt-[1.5px] ${isShell ? 'font-mono' : ''}`}
         />
         <div className="min-w-0 flex-1 text-gn-fg">
-          {lines.map((line, i) => (
-            <div key={i} className="whitespace-pre-wrap break-words">
-              {/* Icon sits in a sibling column (flex gap); continuations already
-                  share the first line's text start — no extra indent (TUI uses
-                  prefix-width spaces only when prefix is inline on each line). */}
-              {line || (i < lines.length - 1 ? '\u00A0' : '')}
-            </div>
-          ))}
-          {truncated && foldable && (
-            <span className="sr-only"> (collapsed, expand with →)</span>
-          )}
+          <AnimatedCollapse open>
+            {lines.map((line, i) => (
+              <div key={i} className="whitespace-pre-wrap break-words">
+                {/* Icon sits in a sibling column (flex gap); continuations already
+                    share the first line's text start — no extra indent (TUI uses
+                    prefix-width spaces only when prefix is inline on each line). */}
+                {line || (i < lines.length - 1 ? '\u00A0' : '')}
+              </div>
+            ))}
+            {truncated && foldable && (
+              <span className="sr-only"> (collapsed, expand with →)</span>
+            )}
+          </AnimatedCollapse>
         </div>
         <UserSteerTime ts={e.ts} steer={isInterjection} className="top-[14.5px]" />
       </button>

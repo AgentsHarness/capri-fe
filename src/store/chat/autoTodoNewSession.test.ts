@@ -48,6 +48,7 @@ describe('发起新对话自动设置为待办', () => {
         workspaceFullPath: false,
         entryFadeIn: true,
         streamTextSmooth: true,
+        uiMotion: true,
         thoughtLines: 4,
       },
     })

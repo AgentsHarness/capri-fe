@@ -36,6 +36,10 @@ export type GuestTokenRecord = {
 export type AccessRole =
   | { role: 'admin' }
   | {
+      role: 'user'
+      user: { id: string; label: string }
+    }
+  | {
       role: 'guest'
       guest: { id: string; label: string; expiresAt: number }
       sessions: GuestSessionItem[]
@@ -57,7 +61,9 @@ export type SubscriberRow = {
   /** 客户端地址（hub 走反代时取 X-Real-IP，否则是 TCP peer，均去掉端口）。 */
   ip?: string
   userAgent?: string
-  role: 'admin' | 'guest'
+  role: 'admin' | 'user' | 'guest'
+  userId?: string
+  userLabel?: string
   guestId?: string
   guestLabel?: string
   /** 该页当前过滤到的 host（切 host 即变）。 */

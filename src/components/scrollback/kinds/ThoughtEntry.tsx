@@ -7,6 +7,7 @@ import { thoughtDisplayMode } from '../../../scrollback/thoughtMode'
 import { thoughtStreamWindow, truncatedThoughtLines } from '../../../scrollback/thoughtText'
 import { Accents } from '../../../theme/accents'
 import { Glyphs } from '../../../theme/glyphs'
+import { AnimatedCollapse } from '../../ui/AnimatedCollapse'
 import { SmoothStreamText } from '../../ui/SmoothStreamText'
 import { Bullet, EntryShell } from '../EntryShell'
 import { HeaderWithView } from '../ViewButton'
@@ -33,14 +34,6 @@ export function ThoughtEntry({
   const smoothStream = useFePrefs((s) => s.fePrefs.streamTextSmooth)
   const thoughtLines = useFePrefs((s) => s.fePrefs.thoughtLines)
   const mode = thoughtDisplayMode(e)
-  // 流式正文用滚动缓冲窗口，而不是每个 chunk 替换固定行数尾窗：
-  // 窗口先增长，攒够一个 block 才裁一次，正文才有真实的滚动高度增长
-  // 可供平滑追尾。省略号单独静态渲染，避免干扰 commonOverlap。
-  // 窗口上限随「思考活动区行数」缩放，避免默认 4 行时也把整段长文铺进 DOM。
-  const streamWindow = e.streaming
-    ? thoughtStreamWindow(thoughtText ?? '', thoughtLines)
-    : null
-  const streamText = streamWindow?.text ?? thoughtText
   // 流式（未收口）也出「查看」——正文只渲染有界滚动窗口，全文在查看器里 live 滚动。
   const showView = e.streaming || mode !== 'collapsed'
   // 流式思考展开正文（live 可见），收口后按 displayMode 折叠/展开——
@@ -52,6 +45,14 @@ export function ThoughtEntry({
   // line, so the configured line count maps directly to max-height.
   const truncated = mode === 'truncated' && !e.streaming
   const bodyMaxHeight = truncated ? undefined : `${thoughtLines * 1.625}em`
+  // 流式正文用滚动缓冲窗口，而不是每个 chunk 替换固定行数尾窗：
+  // 窗口先增长，攒够一个 block 才裁一次，正文才有真实的滚动高度增长
+  // 可供平滑追尾。省略号单独静态渲染，避免干扰 commonOverlap。
+  // 窗口上限随「思考活动区行数」缩放，避免默认 4 行时也把整段长文铺进 DOM。
+  const streamWindow = e.streaming
+    ? thoughtStreamWindow(thoughtText ?? '', thoughtLines)
+    : null
+  const streamText = streamWindow?.text ?? thoughtText
   const contentRef = useRef<HTMLDivElement>(null)
   const hasThoughtText = !!thoughtText
 
@@ -197,7 +198,7 @@ export function ThoughtEntry({
           </>
         )}
       </HeaderWithView>
-      {showBody && (
+      <AnimatedCollapse open={showBody} animate={!e.streaming}>
         <div
           ref={bodyRef}
           className={
@@ -257,7 +258,7 @@ export function ThoughtEntry({
             />
           )}
         </div>
-      )}
+      </AnimatedCollapse>
     </EntryShell>
   )
 }

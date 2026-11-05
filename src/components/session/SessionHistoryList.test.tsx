@@ -30,6 +30,7 @@ function seed() {
       workspaceFullPath: false,
       entryFadeIn: true,
       streamTextSmooth: true,
+      uiMotion: true,
       thoughtLines: 4,
     },
   })

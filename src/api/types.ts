@@ -97,4 +97,5 @@ export type {
   GuestTokenRecord,
   SubscriberRow,
 } from './types/guest'
+export type { UserHostRecord, UserRecord, UserTokenIssue } from './types/user'
 export type { GuestSessionState } from './types/sessions'

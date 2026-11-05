@@ -184,9 +184,22 @@ body.gn-queue-dragging {
    no elevation, no glass. Corners are a slight 4px radius so the
    panel doesn't look cut from cardboard. Overlay dim has no blur so
    the chrome behind still reads as the same terminal surface. */
+/* 弹窗入场：遮罩淡入，面板轻微上浮 + 缩放。 */
+@keyframes gn-modal-dim-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes gn-modal-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
+}
 .gn-modal-dim {
   /* Light veil only — keep scrollback / sidebar readable behind the dialog. */
   background: rgb(0 0 0 / 16%);
+  animation: gn-modal-dim-in 0.16s ease-out;
 }
 .gn-modal-panel {
   background: var(--color-gn-bg-base);
@@ -194,6 +207,12 @@ body.gn-queue-dragging {
   border-radius: 4px;
   outline: none;
   overflow: hidden;
+  animation: gn-modal-panel-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+/* 设置里的「展开/弹窗动画」关闭：弹窗直接出现。 */
+:root[data-gn-motion='off'] .gn-modal-dim,
+:root[data-gn-motion='off'] .gn-modal-panel {
+  animation: none !important;
 }
 /* SettingsModal: on phones the dialog is a full-bleed sheet with a taller
    header/touch row; sm+ keeps the framed floating dialog. */
@@ -286,6 +305,26 @@ body.gn-queue-dragging {
 }
 .gn-thought-scroll[data-top-fade] .gn-thought-fade {
   opacity: 1;
+}
+
+/* 条目正文展开/收起：高度由 AnimatedCollapse 用 ResizeObserver 同步到
+   --gn-collapse-h，外层 height 从 0 过渡到内容高（或反向）。收起期间正文
+   仍留在 DOM 里，过渡结束后才卸载。 */
+.gn-collapse {
+  overflow: hidden;
+  height: 0;
+  opacity: 0;
+  transition:
+    height 0.2s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.14s ease;
+}
+.gn-collapse[data-open='1'] {
+  height: var(--gn-collapse-h, auto);
+  opacity: 1;
+}
+/* 流式内容自己管高度时不叠加过渡，避免两层动画互相拉扯。 */
+.gn-collapse-instant {
+  transition: none;
 }
 
 /* Composer 浮层（斜杠命令 / @ 文件）选中行底色。裸 gn-selection 在弹层里
@@ -474,9 +513,14 @@ body.gn-queue-dragging {
   .gn-card-rise,
   .gn-entry-enter,
   .gn-stream-fade,
+  .gn-modal-dim,
+  .gn-modal-panel,
   .gn-toast-card,
   .gn-toast-progress {
     animation: none !important;
+  }
+  .gn-collapse {
+    transition: none !important;
   }
 }
 
