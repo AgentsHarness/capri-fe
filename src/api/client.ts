@@ -48,6 +48,8 @@ export type Transport = {
   prefsOrigin(): string
   setLocalHostId(hostId: string | null, authRequired?: boolean): void
   getLocalHostId(): string | null
+  /** 页面 origin 本身就是某台 capri-host 时返回它的 hostId；否则 null。 */
+  pageHostId(): string | null
   getLocalBase(): string
   /** 某台 host 已验证的本机近路（null = 还没探到候选，只能走 hub 中继）。 */
   getLocalRoute(hostId: string | null | undefined): LocalRoute | null

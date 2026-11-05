@@ -316,6 +316,41 @@ describe('urlForHost（跨 host 读别的 host）', () => {
   })
 })
 
+describe('url：未选 host 时以页面自身的 host 兜底', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    localStorage.clear()
+  })
+
+  /**
+   * tray 打开的 /settings 是 Host 自己提供的页面：App 启动只认出了
+   * 本机 hostId，没有走会话初始化，selectedHostId 为空。此时请求若不带
+   * ?host=，hub 会转给「最近心跳的那台」——多台在线时状态徽标每次轮询
+   * 都可能来自不同机器。页面 origin 就是这台时必须固定指向它。
+   */
+  it('hub 模式 + 页面自身是某台 host + 未选 host → 固定 ?host=页面这台', () => {
+    const t = makeTransport()
+    t.setConnectionMode('hub', 'https://hub.example')
+    t.setLocalHostId('mba', false)
+    expect(t.getHost()).toBeNull()
+    expect(t.apiUrl('/api/hub/state')).toBe('https://hub.example/api/hub/state?host=mba')
+  })
+
+  it('显式选中的 host 优先于页面自身这台', () => {
+    const t = makeTransport()
+    t.setConnectionMode('hub', 'https://hub.example')
+    t.setLocalHostId('mba', false)
+    t.setHost('vps')
+    expect(t.apiUrl('/api/hub/state')).toBe('https://hub.example/api/hub/state?host=vps')
+  })
+
+  it('页面不是 capri-host（部署版前端）→ 维持 hub 默认 host 的旧行为', () => {
+    const t = makeTransport()
+    t.setConnectionMode('hub', 'https://hub.example')
+    expect(t.apiUrl('/api/hub/state')).toBe('https://hub.example/api/hub/state')
+  })
+})
+
 describe('forceRelay（跨 host 请求的钥匙与 401 归因）', () => {
   afterEach(() => {
     vi.unstubAllGlobals()

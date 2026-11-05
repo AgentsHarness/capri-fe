@@ -5,15 +5,18 @@ import {
   Eye,
   EyeOff,
   Globe,
+  Info,
   Power,
   Radio,
   RefreshCw,
   Save,
+  Search,
   Shield,
   Unlink,
 } from 'lucide-react'
 import { Spinner } from '../ui/Spinner'
 import { transport } from '../../api/client'
+import { settingsHostTarget } from '../../lib/settingsHost'
 import { pushToast } from '../../store/toast'
 
 interface HostConfig {
@@ -33,6 +36,13 @@ interface HostConfig {
   start_host_on_launch?: boolean
   start_at_login?: boolean
   keep_awake?: boolean
+}
+
+interface RunningHost {
+  port?: number
+  bind?: string
+  hostId?: string
+  hostName?: string
 }
 
 interface HubState {
@@ -128,26 +138,53 @@ export function HostSettingsPage() {
   const [initialConfig, setInitialConfig] = useState<HostConfig>({})
   const [config, setConfig] = useState<HostConfig>({})
   const [hubState, setHubState] = useState<HubState | null>(null)
+  const [hostVersion, setHostVersion] = useState('')
 
   // 表单临时编辑字段
   const [pairCode, setPairCode] = useState('')
   const [rePairExpanded, setRePairExpanded] = useState(false)
   const [showToken, setShowToken] = useState(false)
+  const [detectBusy, setDetectBusy] = useState(false)
+
+  // `/settings` 是托盘打开的「这台 Host 自己的设置页」：页面由哪台 host
+  // 提供，所有请求就必须固定发给这台。该页不初始化会话列表，没有
+  // selectedHostId；不钉的话 hub 模式会把请求交给它自己的默认 host
+  // （最近心跳的那台），状态轮询和保存配置都可能落到别的机器上。
+  // 这个 effect 必须排在下面的取数 effect 之前，保证首个请求前已经钉好。
+  const pinnedHostId = settingsHostTarget(window.location.search, transport.pageHostId())
+  useEffect(() => {
+    if (pinnedHostId && transport.getHost() !== pinnedHostId) {
+      transport.setHost(pinnedHostId)
+    }
+  }, [pinnedHostId])
 
   // 读取配置与 Hub 状态
   const fetchData = useCallback(async () => {
     try {
-      const [cfgRes, hubRes] = await Promise.all([
+      const [cfgRes, hubRes, probeRes] = await Promise.all([
         transport.apiFetch('/api/host/config').then((r) => r.json()),
         transport.apiFetch('/api/hub/state').then((r) => r.json()),
+        // 版本是附加信息，读不到不影响设置页主流程（老 host / hub 代理）。
+        transport.apiFetch('/api/probe').then((r) => r.json()).catch(() => null),
       ])
 
       if (cfgRes.ok && cfgRes.config) {
-        setConfig(cfgRes.config)
-        setInitialConfig(cfgRes.config)
+        // 配置文件没写 host_name/host_id/port/bind 时，显示进程实际使用的值，
+        // 避免新装机器看到一片空白。
+        const running: RunningHost = cfgRes.running ?? {}
+        const cfg: HostConfig = { ...cfgRes.config }
+        if (!cfg.host_name && running.hostName) cfg.host_name = running.hostName
+        if (!cfg.host_id && running.hostId) cfg.host_id = running.hostId
+        if (!cfg.port && running.port) cfg.port = running.port
+        if (!cfg.bind && running.bind) cfg.bind = running.bind
+        setConfig(cfg)
+        setInitialConfig(cfg)
       }
       if (hubRes.ok && hubRes.hub) {
         setHubState(hubRes.hub)
+      }
+      if (probeRes?.ok && typeof probeRes.version === 'string') {
+        setHostVersion(probeRes.version)
       }
     } catch (e) {
       pushToast('读取设置失败: ' + (e instanceof Error ? e.message : String(e)))
@@ -300,6 +337,30 @@ export function HostSettingsPage() {
       pushToast('断开失败: ' + (e instanceof Error ? e.message : String(e)))
     } finally {
       setActionBusy(false)
+    }
+  }
+
+  // 探测本机 grok 可执行文件
+  const handleDetectGrok = async () => {
+    setDetectBusy(true)
+    try {
+      const res = await transport
+        .apiFetch('/api/host/detect-grok', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        })
+        .then((r) => r.json())
+
+      if (!res.ok) {
+        throw new Error(res.error || '没有找到 grok')
+      }
+      setConfig((prev) => ({ ...prev, grok_bin: res.path }))
+      pushToast(`找到 grok：${res.path}`)
+    } catch (e) {
+      pushToast('探测失败: ' + (e instanceof Error ? e.message : String(e)))
+    } finally {
+      setDetectBusy(false)
     }
   }
 
@@ -633,13 +694,24 @@ export function HostSettingsPage() {
             <label className="block text-[12px] text-gn-muted mb-1.5">
               Grok 可执行文件路径 (grok_bin)
             </label>
-            <input
-              type="text"
-              value={config.grok_bin ?? ''}
-              onChange={(e) => setConfig({ ...config, grok_bin: e.target.value })}
-              placeholder="留空自动探测 (~/.local/bin/grok 等)"
-              className="w-full rounded border border-gn-prompt-border bg-gn-bg-base px-3 py-1.5 text-[13px] font-mono text-gn-fg outline-none focus:border-gn-cyan"
-            />
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={config.grok_bin ?? ''}
+                onChange={(e) => setConfig({ ...config, grok_bin: e.target.value })}
+                placeholder="留空自动探测 (~/.local/bin/grok 等)"
+                className="flex-1 rounded border border-gn-prompt-border bg-gn-bg-base px-3 py-1.5 text-[13px] font-mono text-gn-fg outline-none focus:border-gn-cyan"
+              />
+              <button
+                type="button"
+                disabled={detectBusy}
+                onClick={() => void handleDetectGrok()}
+                className="flex items-center gap-1 rounded border border-gn-prompt-border px-3 py-1.5 text-[12px] text-gn-fg hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {detectBusy ? <Spinner size={13} /> : <Search size={13} />}
+                <span>探测 grok</span>
+              </button>
+            </div>
             <p className="mt-1 text-[11px] text-gn-muted">
               指定 Grok CLI 二进制文件的绝对路径。留空则在启动时自动寻找。
             </p>
@@ -666,6 +738,41 @@ export function HostSettingsPage() {
                 className="h-4 w-4 rounded accent-gn-cyan cursor-pointer"
               />
             </label>
+            <label className="flex items-center justify-between cursor-pointer">
+              <div className="space-y-0.5">
+                <span className="text-[13px] text-gn-fg">登录时启动 Capri</span>
+                <p className="text-[11px] text-gn-muted">登录系统后自动启动托盘/菜单栏应用。</p>
+              </div>
+              <input
+                type="checkbox"
+                checked={config.start_at_login ?? false}
+                onChange={(e) => setConfig({ ...config, start_at_login: e.target.checked })}
+                className="h-4 w-4 rounded accent-gn-cyan cursor-pointer"
+              />
+            </label>
+            <label className="flex items-center justify-between cursor-pointer">
+              <div className="space-y-0.5">
+                <span className="text-[13px] text-gn-fg">阻止电脑休眠</span>
+                <p className="text-[11px] text-gn-muted">Host 运行期间阻止系统休眠，屏幕仍可正常息屏。</p>
+              </div>
+              <input
+                type="checkbox"
+                checked={config.keep_awake ?? false}
+                onChange={(e) => setConfig({ ...config, keep_awake: e.target.checked })}
+                className="h-4 w-4 rounded accent-gn-cyan cursor-pointer"
+              />
+            </label>
+          </div>
+        </section>
+
+        {/* 6. 版本 */}
+        <section className="rounded-lg border border-gn-prompt-border bg-gn-bg-dark/40 p-5">
+          <div className="flex items-center justify-between text-[12px]">
+            <div className="flex items-center gap-2 text-gn-muted">
+              <Info size={16} className="text-gn-cyan" />
+              <span>版本</span>
+            </div>
+            <span className="text-gn-fg font-mono">{hostVersion || '—'}</span>
           </div>
         </section>
       </main>

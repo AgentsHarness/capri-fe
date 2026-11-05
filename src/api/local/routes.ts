@@ -211,8 +211,13 @@ export const routesMixin = {
 
   /** 有没有「页面 origin 就是这台 host」的近路。 */
   hasPageOriginRoute(this: TransportCtx): boolean {
-    for (const r of this.localRoutes.values()) if (r.port === 0) return true
-    return false
+    return this.pageHostId() !== null
+  },
+
+  /** 页面 origin 对应的 hostId；仅「页面由 capri-host 自己提供」时有值。 */
+  pageHostId(this: TransportCtx): string | null {
+    for (const [id, r] of this.localRoutes) if (r.port === 0) return id
+    return null
   },
 
 

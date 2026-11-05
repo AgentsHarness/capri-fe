@@ -109,6 +109,7 @@ export interface TransportCtx {
   directBase(): string
   pageIsLoopback(): boolean
   hasPageOriginRoute(): boolean
+  pageHostId(): string | null
   probeSkipped(port: number): boolean
   probeLocalPort(port: number): Promise<{ hostId: string; authRequired: boolean } | null>
   verifyLocalRoute(hostId: string): Promise<void>
@@ -196,6 +197,7 @@ export interface TransportApi extends RpcApi {
   setRouteChoice(hostId: string, choice: RouteChoice): void
   hasLocalCandidate(hostId: string | null | undefined): boolean
   getLocalHostId(): string | null
+  pageHostId(): string | null
   getLocalBase(): string
   getLocalRoute(hostId: string | null | undefined): LocalRoute | null
   activeRouteFor(hostId: string | null | undefined): 'direct' | 'pending' | 'relay'

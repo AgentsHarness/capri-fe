@@ -30,9 +30,14 @@ export const netMixin = {
     // local 模式：同源本机，绝不带 ?host=（避免 hostId=local 混淆）。
     const local = this.isLocalDirect()
     const base = local ? this.directBase() : this.apiBase()
+    // 没选 host 不等于「交给 hub 的默认 host」：hub 的默认 host 是最近
+    // 心跳的那台，多台在线时会随心跳漂移。页面由某台 capri-host 自己
+    // 提供时（内嵌前端 / tray 打开的 /settings），请求必须钉死在这台，
+    // 否则同一个设置页每次轮询都可能读到另一台机器的状态。
+    const hostId = this.selectedHostId ?? this.pageHostId()
     const qs =
-      !local && this.mode === 'hub' && this.selectedHostId
-        ? `?host=${encodeURIComponent(this.selectedHostId)}`
+      !local && this.mode === 'hub' && hostId
+        ? `?host=${encodeURIComponent(hostId)}`
         : ''
     return `${base}${path}${qs}`
   },
