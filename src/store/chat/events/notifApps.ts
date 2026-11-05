@@ -20,6 +20,7 @@ import {
 import { wireTaskId } from '../util'
 import { isForeignSession } from './wire'
 import { applyModelIdentity } from '../sessionIdentity'
+import { isModelSwitchInFlight } from '../modelSwitchEcho'
 import type { SessionStatusSnapshot } from '../types'
 
 /** 非负有限数，其余（含负值 / NaN / 字符串）视为缺失。 */
@@ -101,14 +102,18 @@ export function handleNotifApps(
                 : undefined
             const changed = applyModelIdentity(set, get, { name, effort: wireEffort })
             // A model_changed broadcast marks a switch point: print the
-            // "模型已从 xx(effort) 切换到 xx(effort)" line. The echo of
-            // our own optimistic setModel usually arrives after modelName
-            // was already updated (prevName === name) — nothing switched
-            // from this store's perspective, so it stays silent (the
-            // setModel line already recorded it). The host never persists
-            // model_changed, so replay shows switches via the
-            // user_message_chunk modelId diff in replayUpdates instead.
-            if (changed && prevName) {
+            // "模型已从 xx(effort) 切换到 xx(effort)" line. When this tab
+            // initiated the switch, setModel's optimistic line is the
+            // record: the host broadcasts model_changed BEFORE answering
+            // /api/set-model, so at this point modelName is still the old
+            // one and the name guard alone would not dedupe.
+            // modelSwitchEcho tracks the in-flight target and suppresses
+            // this line; other tabs (no marker) still print it. The host
+            // never persists model_changed, so replay shows switches via
+            // the user_message_chunk modelId diff in replayUpdates instead.
+            const sid = get().sessionId
+            const ownSwitch = sid ? isModelSwitchInFlight(sid, id) : false
+            if (changed && prevName && !ownSwitch) {
               appendEntry(set, {
                 kind: 'session_event',
                 text: `模型已从 ${modelLabel(prevName, prevEffort)} 切换到 ${modelLabel(name, wireEffort)}`,

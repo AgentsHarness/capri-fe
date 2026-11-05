@@ -12,6 +12,7 @@ import { clearSuppressedTools } from '../tools'
 import { resetToolFillCache } from '../historyFill'
 import { resetSessionState } from '../reset'
 import { modelLabel, formatContextWindow } from '../model'
+import { beginModelSwitch, endModelSwitch } from '../modelSwitchEcho'
 import { appendEntry } from '../entries'
 import { pushToast } from '../../toast'
 import { refreshDefaultModeFlags } from '../modePersist'
@@ -553,11 +554,14 @@ export function hostActions(set: SetState, get: () => ChatState) {
     }
     const prevName = get().modelName
     const prevEffort = get().reasoningEffort
+    const sid = get().sessionId
+    // host 先广播 model_changed 再回 HTTP 响应：登记本次目标，广播处理只
+    // 更新身份、不落行，切换记录留给下面的乐观行（见 modelSwitchEcho）。
+    if (sid) beginModelSwitch(sid, modelId)
     try {
       // 档位被 agent 拒绝（模型已切换）：caption 不能留在那个 agent 根本没
       // 采用的档位上，回滚成切换前会话实际生效的档位，并把 host 的话弹成
       // toast——静默成功会让用户以为档位生效了。
-      const sid = get().sessionId
       const warning = (
         await (ctxWin
           ? transport.setModel(modelId, reasoningEffort, sid, ctxWin)
@@ -610,6 +614,11 @@ export function hostActions(set: SetState, get: () => ChatState) {
         text: `切换模型失败: ${msg}`,
         warning: true,
       })
+    } finally {
+      // 无论成功/失败都释放：请求结束后同目标的广播要么已被乐观行覆盖
+      // （名称已相同），要么本来就该按广播落行（比如切换失败后 agent 自己
+      // 回滚触发的 model_changed）。
+      if (sid) endModelSwitch(sid, modelId)
     }
     // 「设为默认」勾选：写在切换之后（TUI /model 的偏好副作用）。host 的
     // set-default-model 同样要求 sessionId（它内部先切会话再落盘），所以

@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { hostActions, probeHostHeartbeat, resendUndeliveredPrompt, HOST_HEARTBEAT_STALE_MS } from './hosts'
 import { handleConnEvent } from '../events/conn'
-import type { HostInfo } from '../../../api/types'
+import { handleSessionNotification } from '../events/sessionNotif'
+import { resetModelSwitchEcho } from '../modelSwitchEcho'
+import type { AcpEvent, HostInfo } from '../../../api/types'
 import type { ChatState, SetState } from '../types'
 
 vi.mock('../../../api/client', () => ({
@@ -211,6 +213,7 @@ describe('首次自动选 host：本机近路 vs 记忆选择', () => {
 describe('setModel 空状态（无会话）与已锚定两条路径', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    resetModelSwitchEcho()
   })
 
   function bindWith(state: ChatState) {
@@ -267,6 +270,42 @@ describe('setModel 空状态（无会话）与已锚定两条路径', () => {
     expect(state.entries).toHaveLength(1)
     expect(state.entries[0].kind).toBe('session_event')
     expect(state.pendingModel).toBeUndefined()
+  })
+
+  // 复刻真实时序：host 的 typed model_changed 广播先于 /api/set-model 的
+  // HTTP 响应到达。此时 store 里 modelName 还是旧值，广播侧「名称没变」的
+  // 守卫不成立；必须靠 in-flight 登记把这一行留给 setModel 的乐观行。
+  it('host 广播先于 HTTP 响应到达 → 只留一行（乐观行），不重复', async () => {
+    const state = makeState({
+      sessionId: 'sess-1',
+      modelName: 'Grok 3',
+      reasoningEffort: 'low',
+      entries: [],
+      models: CATALOG,
+    })
+    const set: SetState = (partial) => {
+      Object.assign(state, typeof partial === 'function' ? partial(state) : partial)
+    }
+    const get = () => state
+    ;(transport.setModel as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
+      handleSessionNotification(set, get, {
+        type: 'session_notification',
+        sessionId: 'sess-1',
+        params: {
+          sessionUpdate: 'model_changed',
+          model_id: 'grok-4',
+          reasoning_effort: 'high',
+        },
+      } as AcpEvent)
+      return {}
+    })
+    await hostActions(set, get).setModel('grok-4', 'high')
+    const lines = state.entries
+      .map((e) => (e.kind === 'session_event' ? e.text : ''))
+      .filter((t) => t.includes('模型已从'))
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toContain('Grok 3(low)')
+    expect(lines[0]).toContain('Grok 4(high)')
   })
 
   it('已锚定 + 设为默认 → 落盘 config.toml 默认，失败只提示', async () => {
