@@ -111,7 +111,7 @@ export function EmptyStatePicker() {
         </div>
       </div>
       <div className="mt-6 select-none text-[13px] font-normal tracking-wide text-gn-muted/80">
-        for Grok Build <span className="text-gn-gutter/60">1.0.41</span>
+        for Grok Build <span className="text-gn-gutter/60">1.0.70</span>
       </div>
       <div className="mt-6 flex flex-col items-center text-center">
         <div ref={cwdRef} className="relative inline-flex">
