@@ -35,33 +35,50 @@ export const THOUGHT_STREAM_TAIL_MAX_LINES = 6
 const THOUGHT_STREAM_TAIL_SNAP_PAD = 400
 
 /**
- * Inline streaming preview keeps a much larger rolling buffer than the old
- * fixed-line tail. The buffer grows for a while, then trims in coarse
- * blocks. This gives the scroll container real height changes to animate
- * (a fixed-size tail was replaced every chunk, which looked like a jump).
+ * Inline streaming preview keeps a bounded rolling buffer: it grows for a
+ * while, then trims in coarse blocks. The cap scales with the visible line
+ * budget — the old flat 8000-char window kept dozens of off-screen lines in
+ * the DOM and made every chunk's layout expensive. Full text still lives in
+ * the store / block viewer.
  */
 export const THOUGHT_STREAM_WINDOW_MAX_CHARS = 8000
-export const THOUGHT_STREAM_WINDOW_KEEP_CHARS = 4000
-export const THOUGHT_STREAM_WINDOW_BLOCK_CHARS = 2000
+export const THOUGHT_STREAM_WINDOW_MIN_CHARS = 1600
+export const THOUGHT_STREAM_WINDOW_CHARS_PER_LINE = 400
+const THOUGHT_STREAM_WINDOW_KEEP_RATIO = 0.7
+const THOUGHT_STREAM_WINDOW_BLOCK_RATIO = 0.15
 
 /**
  * Rolling text window for the inline preview. The start advances only on
- * `BLOCK`-sized boundaries, so most chunks stay inside the same window and
+ * block-sized boundaries, so most chunks stay inside the same window and
  * scroll with the browser; a trim happens once per block instead of once
- * per line.
+ * per line. `maxLines` is the user's visible-line setting (default: max).
  */
-export function thoughtStreamWindow(text: string): {
+export function thoughtStreamWindow(
+  text: string,
+  maxLines = THOUGHT_LINES_MAX,
+): {
   text: string
   start: number
 } {
-  if (text.length <= THOUGHT_STREAM_WINDOW_MAX_CHARS) {
+  const lines = Number.isFinite(maxLines)
+    ? Math.max(1, Math.floor(maxLines))
+    : THOUGHT_LINES_MAX
+  const maxChars = Math.min(
+    THOUGHT_STREAM_WINDOW_MAX_CHARS,
+    Math.max(
+      THOUGHT_STREAM_WINDOW_MIN_CHARS,
+      lines * THOUGHT_STREAM_WINDOW_CHARS_PER_LINE,
+    ),
+  )
+  if (text.length <= maxChars) {
     return { text, start: 0 }
   }
-  const rawStart =
-    Math.floor(
-      (text.length - THOUGHT_STREAM_WINDOW_KEEP_CHARS) /
-        THOUGHT_STREAM_WINDOW_BLOCK_CHARS,
-    ) * THOUGHT_STREAM_WINDOW_BLOCK_CHARS
+  const keepChars = Math.floor(maxChars * THOUGHT_STREAM_WINDOW_KEEP_RATIO)
+  const blockChars = Math.max(
+    240,
+    Math.floor(maxChars * THOUGHT_STREAM_WINDOW_BLOCK_RATIO),
+  )
+  const rawStart = Math.floor((text.length - keepChars) / blockChars) * blockChars
   if (rawStart <= 0) return { text, start: 0 }
   const nl = text.indexOf('\n', rawStart)
   const start = nl >= 0 ? nl + 1 : rawStart

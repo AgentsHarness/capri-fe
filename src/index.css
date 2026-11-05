@@ -265,25 +265,27 @@ body.gn-queue-dragging {
   display: none;
 }
 
-/* 思考活动区：正文向上滚出顶边时渐隐，而不是硬裁切。mask 跟随元素自身
-   盒子，滚动中的行会在顶部 1.4em 内平滑变透明；未滚动（data-top-fade
-   缺席）时保持完全不透明。 */
+/* 思考活动区：正文向上滚出顶边时渐隐，而不是硬裁切。渐隐用静态叠层
+   实现——mask-image 直接挂在滚动容器上会让浏览器丢掉合成器快速滚动
+   路径，流式追底时逐帧重绘整块正文。容器本身只隔离内部布局/绘制，
+   不让长正文的 reflow 波及滚动区其余行。 */
 .gn-thought-scroll {
   /* 预览正文会滚动替换/裁剪文本，禁止浏览器原生滚动锚定和手写 scrollTop
      互相拉扯。 */
   overflow-anchor: none;
+  contain: layout paint;
 }
-.gn-thought-scroll[data-top-fade] {
-  -webkit-mask-image: linear-gradient(
+.gn-thought-fade {
+  background: linear-gradient(
     to bottom,
-    rgba(0, 0, 0, 0.15),
-    #000 1.4em
+    var(--color-gn-bg-base),
+    color-mix(in srgb, var(--color-gn-bg-base) 0%, transparent)
   );
-  mask-image: linear-gradient(
-    to bottom,
-    rgba(0, 0, 0, 0.15),
-    #000 1.4em
-  );
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+.gn-thought-scroll[data-top-fade] .gn-thought-fade {
+  opacity: 1;
 }
 
 /* Composer 浮层（斜杠命令 / @ 文件）选中行底色。裸 gn-selection 在弹层里

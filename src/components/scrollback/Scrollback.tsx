@@ -21,7 +21,7 @@ import { EntryView } from './EntryView'
 import { GroupHeaderView } from './GroupHeaderView'
 import { ImageLightbox, type InlineImage } from './InlineImages'
 import { StickyPrompt } from './StickyPrompt'
-import { useDisplayRows, useStreamingThoughtId } from './useDisplayRows'
+import { useDisplayRows } from './useDisplayRows'
 import { useEnteringEntries } from './useEnteringEntries'
 import { useFinishFlash } from './useFinishFlash'
 import { useFollowScroll } from './useFollowScroll'
@@ -86,8 +86,6 @@ export function Scrollback({
   // how small the distance — a sub-80px scroll must not keep following)
   // from "scrolled to the bottom" (re-follow).
   const lastScrollTopRef = useRef(0)
-  // 流式滚动固定（合并 effect）：流式思考 body 由 EntryView 注册到这里。
-  const streamBodyRef = useRef<HTMLDivElement | null>(null)
 
   const { wsBarH, wsBarElRef, workspaceRef } = useWorkspaceBar()
   const {
@@ -141,7 +139,6 @@ export function Scrollback({
   )
 
   const { rows: displayRows, spans } = useDisplayRows(entries, expandedGroups)
-  const streamingThoughtId = useStreamingThoughtId(entries)
   const now = useFinishFlash(entries)
   const pendingFreeze = pending.length > 0
   // 实时回合里新 append 的块播放半透明淡入（纯呈现，历史整批加载不播）。
@@ -172,7 +169,6 @@ export function Scrollback({
     contentRef,
     followRef,
     lastScrollTopRef,
-    streamBodyRef,
     scheduleUpdatePinned,
     settleScrollAnchor,
     entries,
@@ -607,12 +603,6 @@ export function Scrollback({
                   denseNext={denseNext}
                   readonly={guest}
                   enter={enteringIds.has(row.entry.id)}
-                  streamBodyRef={
-                    row.entry.kind === 'thought' &&
-                    row.entry.id === streamingThoughtId
-                      ? streamBodyRef
-                      : undefined
-                  }
                 />
               )
             }

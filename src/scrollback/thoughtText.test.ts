@@ -51,6 +51,15 @@ describe('thoughtStreamWindow', () => {
     expect(w2.start).toBe(w1.start)
     expect(w3.start).toBeGreaterThan(w2.start)
   })
+
+  it('窗口上限随可见行数缩放（默认 4 行不再保留 8000 字符）', () => {
+    const text = 'x'.repeat(12000)
+    const four = thoughtStreamWindow(text, 4)
+    const twenty = thoughtStreamWindow(text, 20)
+    expect(four.text.length).toBeLessThanOrEqual(1600)
+    expect(twenty.text.length).toBeLessThanOrEqual(THOUGHT_STREAM_WINDOW_MAX_CHARS)
+    expect(four.start).toBeGreaterThan(twenty.start)
+  })
 })
 
 describe('truncatedThoughtLines', () => {

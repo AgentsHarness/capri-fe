@@ -70,14 +70,3 @@ export function useDisplayRows(
     return { rows, spans }
   }, [entries, expandedGroups, scope])
 }
-
-/** 流式思考条目的 id（合并滚动固定需要把它指给父组件的 streamBodyRef）。 */
-export function useStreamingThoughtId(entries: ScrollEntry[]): string | null {
-  return useMemo(() => {
-    for (let i = entries.length - 1; i >= 0; i--) {
-      const e = entries[i]
-      if (e.kind === 'thought' && e.streaming) return e.id
-    }
-    return null
-  }, [entries])
-}

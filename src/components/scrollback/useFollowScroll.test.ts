@@ -87,7 +87,6 @@ function setup(p: Parameters<typeof makeBox>[0]) {
   const contentRef = { current: null }
   const followRef = { current: true }
   const lastScrollTopRef = { current: 0 }
-  const streamBodyRef = { current: null }
   const pinPadRef = { current: box.pad }
   const wsBarElRef = {
     current: {
@@ -103,7 +102,6 @@ function setup(p: Parameters<typeof makeBox>[0]) {
         contentRef as never,
         followRef,
         lastScrollTopRef,
-        streamBodyRef,
         scheduleUpdatePinned,
         settleScrollAnchor,
         pp.entries,

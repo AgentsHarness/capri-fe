@@ -22,7 +22,6 @@ export function useFollowScroll(
   contentRef: RefObject<HTMLDivElement | null>,
   followRef: MutableRefObject<boolean>,
   lastScrollTopRef: MutableRefObject<number>,
-  streamBodyRef: MutableRefObject<HTMLDivElement | null>,
   scheduleUpdatePinned: () => void,
   /** 历史翻页锚点看门狗：内容变高时把视口拉回正在读的那一行。 */
   settleScrollAnchor: () => void,
@@ -123,9 +122,8 @@ export function useFollowScroll(
   useEffect(
     () => () => {
       cancelSmoothScroll(boxRef.current)
-      cancelSmoothScroll(streamBodyRef.current)
     },
-    [boxRef, streamBodyRef],
+    [boxRef],
   )
 
   const scrollToBottom = useCallback(
@@ -160,16 +158,8 @@ export function useFollowScroll(
   const pinStreamScroll = useCallback(
     (smooth = false) => {
       scrollToBottom(false, smooth)
-      const bodyEl = streamBodyRef.current
-      if (bodyEl && smooth) {
-        // 思考预览体自己有一个 ResizeObserver 在提交后钉底；这里只在
-        // liveStream 增长时补一次平滑目标，不能再 write scrollTop，否则
-        // 会和正文实际提交的时序打架，造成跳变。
-        const target = Math.max(0, bodyEl.scrollHeight - bodyEl.clientHeight)
-        smoothScrollTop(bodyEl, target, { isActive: () => followRef.current })
-      }
     },
-    [followRef, scrollToBottom, streamBodyRef],
+    [scrollToBottom],
   )
   // Content height changes:
   // - while following → re-pin bottom (session-switch after historyLoadedAt,
