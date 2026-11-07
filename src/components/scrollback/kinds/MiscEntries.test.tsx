@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import type { ScrollEntry } from '../../../api/types'
 import type { EntryChrome } from '../chrome'
 import { ImageEntry } from './MiscEntries'
@@ -73,7 +73,7 @@ describe('ImageEntry', () => {
     expect(onOpenImage).toHaveBeenCalledWith('im1')
   })
 
-  it('非画廊（迷你 scrollback）：保持按比例缩略图，点击回退 openViewer', () => {
+  it('非画廊（迷你 scrollback）：保持按比例缩略图，点击打开单图放大预览', () => {
     const openViewer = vi.fn()
     const { container } = render(
       <ImageEntry e={img} chrome={makeChrome(img, { openViewer })} />,
@@ -85,6 +85,10 @@ describe('ImageEntry', () => {
     expect(el.className).not.toContain('w-full')
     expect(el.className).not.toContain('object-cover')
     fireEvent.click(el)
-    expect(openViewer).toHaveBeenCalledWith('im1')
+    expect(openViewer).not.toHaveBeenCalled()
+    const dialog = screen.getByRole('dialog', { name: '图片预览 1/1' })
+    expect(dialog.querySelector('img')!.getAttribute('src')).toBe(img.data)
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 })

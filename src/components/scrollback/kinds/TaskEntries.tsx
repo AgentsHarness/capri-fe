@@ -2,7 +2,7 @@ import { useState } from 'react'
 import type { ScrollEntry } from '../../../api/types'
 import { subagentMeta } from '../../../format'
 import { InlineAction } from '../../ui/InlineAction'
-import { KillTaskAction } from '../../ui/KillTaskAction'
+import { KillTaskAction } from '../KillTaskAction'
 import { Bullet, EntryShell } from '../EntryShell'
 import type { EntryChrome } from '../chrome'
 

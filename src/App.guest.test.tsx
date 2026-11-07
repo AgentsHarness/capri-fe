@@ -47,13 +47,13 @@ vi.mock('./components/composer/Composer', () => ({
 vi.mock('./components/session/HistorySidebar', () => ({
   HistorySidebar: () => <div>sidebar-should-not-mount</div>,
 }))
-vi.mock('./components/panels/SettingsModal', () => ({
+vi.mock('./components/panels/settings/SettingsModal', () => ({
   SettingsModal: () => <div>settings-should-not-mount</div>,
 }))
-vi.mock('./components/panels/McpPanel', () => ({
+vi.mock('./components/panels/tools/McpPanel', () => ({
   McpPanel: () => <div>mcp-should-not-mount</div>,
 }))
-vi.mock('./components/panels/GitPanel', () => ({
+vi.mock('./components/panels/git/GitPanel', () => ({
   GitPanel: () => <div>git-should-not-mount</div>,
 }))
 vi.mock('./components/approvals/ApprovalStrip', () => ({

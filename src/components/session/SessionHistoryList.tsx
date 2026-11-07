@@ -1,120 +1,35 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
-import {
-  Check,
-  ChevronDown,
-  ChevronRight,
-  Circle,
-  CircleCheck,
-  CircleOff,
-  MoreVertical,
-  Pencil,
-  Pin,
-  Plus,
-  Share2,
-  Trash2,
-  X,
-} from 'lucide-react'
 import { useChatStore } from '../../store/chat'
 import { buildSessionRowIndex, type SessionRow } from '../../store/chat/sessionRows'
 import {
-  frozenSortRank,
-  sanitizeTitle,
-  sessionContextPct,
-  sessionGroupKey,
-  workspaceGroupLabel,
-} from '../../store/historyGroups'
-import { SPINNER_FRAMES } from '../../theme/glyphs'
-import { SessionStateIcon } from '../ui/SessionStateIcon'
-import { Spinner } from '../ui/Spinner'
-import { stateLabel, useSessionSpinner } from '../../hooks/sessionState'
-import {
-  sortSessionsWithPins,
-  sortWorkspacesWithPins,
-  useFePrefs,
-  usePins,
-} from '../../store/historyPins'
-import { useHistoryView } from '../../store/historyView'
-import {
   activityMs,
-  rowOrderMs,
   sortGroupsByOrderMs,
   useHistoryOrder,
   type OrderSeed,
 } from '../../store/historyOrder'
-import { scrollAncestor, useScrollAnchor } from '../../hooks/useScrollAnchor'
+import {
+  frozenSortRank,
+  sessionGroupKey,
+  workspaceGroupLabel,
+} from '../../store/historyGroups'
+import { sortSessionsWithPins, sortWorkspacesWithPins, useFePrefs, usePins } from '../../store/historyPins'
+import { useHistoryView } from '../../store/historyView'
 import { transport } from '../../api/client'
-import { openShareGuest } from '../../lib/shareGuestTarget'
+import { byAnchoredDesc, findGroupEl } from '../../lib/sessionList'
+import { scrollAncestor, useScrollAnchor } from '../../hooks/useScrollAnchor'
+import { useSessionSpinner } from '../../hooks/sessionState'
+import { SPINNER_FRAMES } from '../../theme/glyphs'
+import {
+  LOAD_MORE_STEP,
+  WORKSPACE_ACTIVE_WINDOW_MS,
+  WORKSPACE_ROWS_LIMIT,
+  type ListSection,
+  type MergedGroup,
+} from './sessionListShared'
+import { SessionSection } from './SessionSection'
+import { SessionListMenu } from './SessionListMenu'
+import { useSessionListMenu } from './useSessionListMenu'
 
-/** 根据 data-gkey 属性在根容器下查找指定工作区分组元素。 */
-function findGroupEl(root: HTMLElement | null, key: string): HTMLElement | null {
-  if (!root) return null
-  const all = root.querySelectorAll<HTMLElement>('[data-gkey]')
-  for (let i = 0; i < all.length; i++) {
-    if (all[i].getAttribute('data-gkey') === key) return all[i]
-  }
-  return null
-}
-
-/** 组内默认显示的普通会话行数（置顶/待办不占名额，超出折叠为"加载更多"）。 */
-const WORKSPACE_ROWS_LIMIT = 4
-
-/** 行/分组操作菜单的宽度：⋮ 按它左移对齐按钮右缘，菜单本身也按它渲染。 */
-const MENU_W = 176
-
-/** 点击"加载更多"每次追加的行数，循环直到组内会话全部显示；
- *  展开超过默认基准（WORKSPACE_ROWS_LIMIT + 置顶/待办数）后出现
- *  "收起"，点击回到默认基准。 */
-const LOAD_MORE_STEP = 10
-
-/** 工作区活跃窗口：最新活动在 6 小时内的默认展开，超过默认收起。 */
-const WORKSPACE_ACTIVE_WINDOW_MS = 6 * 60 * 60 * 1000
-
-/** 工作区组：行是单一行投影（live 事实源 + workspace 兜底），见 sessionRows。 */
-type MergedGroup = {
-  cwd: string
-  label: string
-  sessions: SessionRow[]
-}
-
-/**
- * 列表分区（两种展示形态共用渲染）：
- * - workspace：按 cwd 分组，key = cwd
- * - marked：按类型分组（思考中 / 置顶 / 待办），key = 类型
- */
-type ListSection = {
-  key: string
-  label: string
-  sessions: SessionRow[]
-  /** 仅 workspace 形态：工作目录全路径（组菜单「新建会话」/ 置顶目录）。 */
-  cwd?: string
-  kind: 'workspace' | 'running' | 'pinned' | 'todo'
-}
-
-/**
- * 组内比较器：比「排序锚」而不是本次响应的 updatedAt。
- * 无锚的首次出现退回活动时间（新会话照旧排最前），之后钉住不动；
- * 时间缺失（0）垫底，同分按 id，保证顺序可复现。
- */
-function byAnchoredDesc<T extends { sessionId: string; updatedAt?: string }>(
-  anchors: Record<string, number>,
-) {
-  return (a: T, b: T): number => {
-    const d = rowOrderMs(anchors, b) - rowOrderMs(anchors, a)
-    if (d !== 0) return d
-    return a.sessionId.localeCompare(b.sessionId)
-  }
-}
-
-/**
- * 历史会话列表 — 两种展示形态共用：
- * 1. workspace：按工作区（cwd）分组（桌面侧边栏 / 移动端 history 下拉）
- * 2. marked：分类视图（思考中 / 置顶 / 待办）
- *
- * 交互：分组折叠 / "加载更多"+"收起" / 行内重命名 / 行操作菜单
- * （桌面右键、移动端 ⋮）/ 上下文进度条。数据由宿主 sessions_changed
- * + 挂载 refresh 保持新鲜（本组件不负责拉取）。
- */
 export function SessionHistoryList() {
   const sessions = useChatStore((s) => s.sessions)
   const workspaces = useChatStore((s) => s.workspaces)
@@ -126,11 +41,6 @@ export function SessionHistoryList() {
   const switchWorkspaceListMode = useChatStore((s) => s.switchWorkspaceListMode)
   const sessionId = useChatStore((s) => s.sessionId)
   const cwd = useChatStore((s) => s.cwd)
-  const historyLoading = useChatStore((s) => s.historyLoading)
-  const continueSession = useChatStore((s) => s.continueSession)
-  const renameSession = useChatStore((s) => s.renameSession)
-  const deleteSession = useChatStore((s) => s.deleteSession)
-  const newSession = useChatStore((s) => s.newSession)
   const completedNotices = useChatStore((s) => s.completedNotices)
   // 浏览器本地置顶偏好（工作目录 / 会话），见 historyPins.ts。
   const pinnedWorkspaces = usePins((s) => s.pinnedWorkspaces)
@@ -138,9 +48,6 @@ export function SessionHistoryList() {
   const todos = usePins((s) => s.todos)
   /** 目录分组名显示方式：短名 / 完整路径（FE 偏好，跨浏览器同步）。 */
   const workspaceFullPath = useFePrefs((s) => s.fePrefs.workspaceFullPath)
-  const toggleWorkspacePin = usePins((s) => s.toggleWorkspacePin)
-  const toggleSessionPin = usePins((s) => s.toggleSessionPin)
-  const setTodoStatus = usePins((s) => s.setTodoStatus)
   // 展示形态：工作区分组 vs 分类视图（见 historyView.ts）。
   const listMode = useHistoryView((s) => s.mode)
   const anchors = useHistoryOrder((s) => s.anchors)
@@ -149,7 +56,6 @@ export function SessionHistoryList() {
   const setCollapsePref = useHistoryOrder((s) => s.setCollapse)
   // 锚点只在同一台 host 内有意义：换 host 即整表重锚（见 historyOrder）。
   const selectedHostId = useChatStore((s) => s.selectedHostId)
-  const hostName = useChatStore((s) => s.hostName)
   const hostScope = selectedHostId ?? 'local'
   /**
    * 「分享只读链接」的可用条件：hub 模式 + 已登录（有门禁令牌）+ 选中了
@@ -528,144 +434,9 @@ export function SessionHistoryList() {
   // ── inline rename (TUI Ctrl+R RenameDraft) ─────────────────────────
   // The wire rename API (POST /api/session-rename) only targets the
   // CURRENT session, so the row editor is offered on the active row.
-  const [renamingId, setRenamingId] = useState<string | null>(null)
-  const [renameText, setRenameText] = useState('')
-  const renameInputRef = useRef<HTMLInputElement>(null)
-  const startRename = (s: { sessionId: string; title?: string }) => {
-    setRenamingId(s.sessionId)
-    setRenameText(s.title ?? '')
-    requestAnimationFrame(() => renameInputRef.current?.select())
-  }
-  const commitRename = async (s: SessionRow) => {
-    const title = sanitizeTitle(renameText).trim()
-    setRenamingId(null)
-    if (title && title !== (s.title ?? '')) {
-      await renameSession(title)
-      // Keep the list in sync even if the host sends no sessions_changed.
-      void useChatStore.getState().refreshSessionLists()
-    }
-  }
-  const cancelRename = () => setRenamingId(null)
-
   // ── row / group action menu (desktop right-click / mobile ⋮) ───────
-  // One shared floating menu with two targets:
-  //  - row   : 打开会话 / 重命名(仅当前) / 删除(非运行中，含当前会话 —
-  //            删当前会话落到空状态)；删除走确认弹窗。
-  //  - group : 右键工作区分组头 → "在此目录新建会话"。
-  /** 菜单锚点（视口坐标）：`y` 是向下开时菜单的上沿，`flipY` 是向上翻时
-   *  菜单的下沿——右键两者同取光标，⋮ 取按钮的下沿 / 上沿（含 4px 间距）。 */
-  type MenuAnchor = { x: number; y: number; flipY: number }
-  type MenuState =
-    | ({ kind: 'row'; row: SessionRow } & MenuAnchor)
-    | ({ kind: 'group'; cwd: string } & MenuAnchor)
-  const [menu, setMenu] = useState<MenuState | null>(null)
-  // 实测尺寸后的落位；null = 还没量到（先前按锚点渲染，布局副作用在绘制前
-  // 纠正，不会闪）。
-  const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
-  const menuRef = useRef<HTMLDivElement>(null)
-  const [deleteTarget, setDeleteTarget] = useState<SessionRow | null>(null)
-  /** 删除请求在飞：确认按钮转圈并锁住重复点击。 */
-  const [deleting, setDeleting] = useState(false)
-  const closeMenu = () => {
-    setMenu(null)
-    setMenuPos(null)
-  }
-  /**
-   * 「标记」类操作统一入口（待办三态 / 置顶会话 / 置顶目录）：这些都是
-   * 排序主键，改完该行或该组在列表里换位，整张列表重排，组的默认展示
-   * 名额也跟着变（见 defaultShownCount）。这类操作由用户主动发起，视口
-   * 应原地不动：置 skip 让 useScrollAnchor 只重选锚点、不做 delta 补偿
-   * （滚动容器已关原生锚定，见 HistorySidebar / TopBar）。
-   */
-  const applyMark = (mutate: () => void) => {
-    skipAnchorRef.current = true
-    mutate()
-    closeMenu()
-  }
-  const openMenu = (
-    m: { kind: 'row'; row: SessionRow } | { kind: 'group'; cwd: string },
-    anchor: MenuAnchor,
-  ) => {
-    setMenuPos(null)
-    setMenu(
-      m.kind === 'row'
-        ? { kind: 'row', row: m.row, ...anchor }
-        : { kind: 'group', cwd: m.cwd, ...anchor },
-    )
-  }
-  // 落位按实测尺寸算：菜单高度随条目数在 ~64px（分组两项）到 ~190px（行菜单
-  // 六项 + 两条分隔线）之间变，"按行菜单起草"的固定估值夹取会把分组菜单顶到
-  // 离光标一百多像素的地方（右键视口底部的分组头时最明显）。
-  useLayoutEffect(() => {
-    if (!menu) return
-    const place = () => {
-      const el = menuRef.current
-      if (!el) return
-      const pad = 8
-      const r = el.getBoundingClientRect()
-      const vw = window.innerWidth
-      const vh = window.innerHeight
-      const x = Math.max(pad, Math.min(menu.x, vw - r.width - pad))
-      const yDown = menu.y
-      const yUp = menu.flipY - r.height
-      const y =
-        yDown + r.height <= vh - pad ? yDown : yUp >= pad ? yUp : Math.max(pad, vh - r.height - pad)
-      setMenuPos({ x, y })
-    }
-    place()
-    window.addEventListener('resize', place)
-    return () => window.removeEventListener('resize', place)
-  }, [menu])
-  // Esc closes the menu; scrolling the list while the menu floats over a
-  // row would strand it on the wrong row, so the list scrolling dismisses
-  // it too. Scoped to the LIST only: the main scrollback auto-scrolls
-  // during streaming output (scrollTop writes as content grows), and that
-  // must not close the menu — the scroll container is an ancestor of the
-  // list root, inner scrollables are descendants; anything else is ignored.
-  useEffect(() => {
-    if (!menu) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') closeMenu()
-    }
-    const onScroll = (e: Event) => {
-      const list = listRootRef.current
-      if (list && e.target instanceof Node) {
-        const t = e.target
-        const related = t === list || list.contains(t) || t.contains(list)
-        if (!related) return
-      }
-      closeMenu()
-    }
-    window.addEventListener('keydown', onKey)
-    window.addEventListener('scroll', onScroll, true)
-    return () => {
-      window.removeEventListener('keydown', onKey)
-      window.removeEventListener('scroll', onScroll, true)
-    }
-  }, [menu])
-  // Esc also closes the delete-confirm dialog.
-  useEffect(() => {
-    if (!deleteTarget) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setDeleteTarget(null)
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [deleteTarget])
-  const confirmDelete = async () => {
-    if (!deleteTarget || deleting) return
-    const { sessionId, cwd } = deleteTarget
-    setDeleting(true)
-    try {
-      await deleteSession(sessionId, cwd || '')
-      setDeleteTarget(null)
-    } finally {
-      setDeleting(false)
-    }
-  }
+  const menuState = useSessionListMenu(skipAnchorRef, listRootRef)
 
-  // 空列表且正在拉取：中央显示与 scrollback 一致的加载态（唯一加载
-  // 指示；旧数据仍在时列表直接保留，刷新无提示）。标记形态下 sections
   // 空是正常的空态（置顶/待办本就少），不显示"加载会话…"。
   const centeredLoading =
     listMode === 'workspace' && sections.length === 0 && workspaceLoading
@@ -695,335 +466,25 @@ export function SessionHistoryList() {
         </div>
       )}
       {sections.map((g) => {
-        const isCollapsed = isGroupCollapsed(g.key)
         const defaultShown = defaultShownCount(g)
-        const shown = visibleCount.get(g.key) ?? defaultShown
-        const rows = g.sessions.slice(0, shown)
-        const isWorkspace = g.kind === 'workspace'
-        // 钉住形态下在跑的会话不会自己浮上来，组头带一个在跑数量：既保住
-        // 「哪个目录在干活」一眼可见，也不因状态翻转挪动任何一行。
-        const busyCount = isWorkspace
-          ? g.sessions.filter((s) => sessionGroupKey(s, sessionId) !== 'idle').length
-          : 0
-        const sectionAccent =
-          g.kind === 'running'
-            ? 'text-gn-cyan'
-            : g.kind === 'pinned' || g.kind === 'todo'
-              ? 'text-gn-yellow'
-              : 'text-gn-fg'
         return (
-          <div key={g.key} data-gkey={g.key} className="relative">
-            {/* Group header — sticky opaque bar so list rows scroll under
-                it cleanly (no bleed-through). Wrapper owns sticky + solid
-                fill; button only handles interaction. */}
-            <div
-              className="sticky top-0 z-20 flex items-center border-b border-gn-prompt-border bg-gn-bg-base"
-              style={{ backgroundColor: 'var(--color-gn-bg-base)' }}
-            >
-              <button
-                type="button"
-                onClick={() => toggleGroup(g.key)}
-                onContextMenu={(e) => {
-                  // Right-click a workspace group → "新建会话在此目录".
-                  // Marked sections have no group-level actions.
-                  if (!isWorkspace || !g.cwd) return
-                  e.preventDefault()
-                  e.stopPropagation()
-                  openMenu(
-                    { kind: 'group', cwd: g.cwd },
-                    { x: e.clientX, y: e.clientY, flipY: e.clientY },
-                  )
-                }}
-                className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 px-3 py-1 text-left hover:bg-gn-bg-highlight"
-                title={isWorkspace ? g.cwd : g.label}
-              >
-                {/* flex + items-center：图标与文字同轴。 */}
-                <span className="flex shrink-0 items-center text-gn-gutter" aria-hidden>
-                  {isCollapsed ? (
-                    <ChevronRight size={12} strokeWidth={2.5} />
-                  ) : (
-                    <ChevronDown size={12} strokeWidth={2.5} />
-                  )}
-                </span>
-                <span
-                  className={`flex min-w-0 items-center gap-1 text-[10.5px] font-medium tracking-wide ${sectionAccent}`}
-                >
-                  {isWorkspace && g.cwd && pinnedWorkspaces.has(g.cwd) && (
-                    <span
-                      className="shrink-0 text-gn-yellow"
-                      title="已置顶此工作目录"
-                      aria-label="已置顶"
-                    >
-                      <Pin size={12} strokeWidth={2.5} />
-                    </span>
-                  )}
-                  {/* 标记视角的三个分组不再带图标——组名（思考中 / 置顶 /
-                      待办）本身就是分类，行内也各有状态与标记图标。 */}
-                  <span className="min-w-0 truncate">{g.label}</span>
-                </span>
-                {busyCount > 0 && (
-                  <span
-                    className="inline-flex shrink-0 items-center gap-1 text-[10px] tabular-nums text-gn-cyan"
-                    title={`${busyCount} 个会话有进行中的回合 / 后台任务`}
-                    aria-label={`${busyCount} 个会话在运行`}
-                  >
-                    <SessionStateIcon state="active" pending={false} />
-                    {busyCount}
-                  </span>
-                )}
-                <span className="shrink-0 text-[10px] tabular-nums text-gn-gutter">
-                  {g.sessions.length}
-                </span>
-              </button>
-              {/* Mobile/touch group actions — only for workspace groups. */}
-              {isWorkspace && g.cwd && (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    const r = e.currentTarget.getBoundingClientRect()
-                    openMenu(
-                      { kind: 'group', cwd: g.cwd! },
-                      { x: r.right - MENU_W, y: r.bottom + 4, flipY: r.top - 4 },
-                    )
-                  }}
-                  className="mr-3 flex shrink-0 items-center justify-center rounded px-1.5 py-1 text-gn-muted hover:text-gn-fg lg:hidden"
-                  title="更多操作"
-                  aria-label="更多操作"
-                >
-                  <MoreVertical size={13} strokeWidth={2.5} />
-                </button>
-              )}
-            </div>
-            {!isCollapsed && (
-              <>
-                {rows.map((s) => {
-                  const active = s.sessionId === sessionId
-                  // Row icon follows live state: 处理中 spinner / 待处理
-                  // blue diamond / 后台任务 bg 徽标；空闲与仅 bg 的行留空位。
-                  const key = sessionGroupKey(s, sessionId)
-                  const state = key === 'active' ? 'active' : 'idle'
-                  const pending = key === 'awaiting'
-                  // ✓ 只留给「别的会话跑完待查看」：当前正在看的会话完成
-                  // 时不写 completedNotices（用户就在现场），这里再按
-                  // active 兜底，保证当前行永远不画对勾。
-                  const completed = completedNotices[s.sessionId] != null && !active
-                  // 置顶/待办徽标默认占掉行首的状态列（原来空心菱形的位置）；
-                  // 状态本身要占那一格时（spinner / 待处理菱形 / 完成 ✓）徽标
-                  // 退回标题前，两者不同时挤一格。
-                  const markIcons = (
-                    <>
-                      {pinnedSessions.has(s.sessionId) && (
-                        <span
-                          className="shrink-0 text-gn-yellow"
-                          title="已置顶此会话"
-                          aria-label="已置顶"
-                        >
-                          <Pin size={12} strokeWidth={2.5} />
-                        </span>
-                      )}
-                      {todos[s.sessionId] === 'todo' && (
-                        <span
-                          className="shrink-0 text-gn-yellow"
-                          title="待办：还有事没做完"
-                          aria-label="待办"
-                        >
-                          <Circle size={12} strokeWidth={2.5} />
-                        </span>
-                      )}
-                      {todos[s.sessionId] === 'completed' && (
-                        <span
-                          className="shrink-0 text-gn-green"
-                          title="待办已完成"
-                          aria-label="已完成"
-                        >
-                          <CircleCheck size={12} strokeWidth={2.5} />
-                        </span>
-                      )}
-                    </>
-                  )
-                  const stateInLeading = completed || state === 'active' || pending
-                  const renaming = renamingId === s.sessionId
-                  const contextPct = sessionContextPct(s)
-                  return (
-                    <div
-                      key={s.sessionId}
-                      data-hkey={s.sessionId}
-                      role="button"
-                      tabIndex={0}
-                      aria-disabled={historyLoading}
-                      onClick={() => {
-                        if (!historyLoading) void continueSession(s.sessionId, s.cwd || '')
-                      }}
-                      onContextMenu={(e) => {
-                        e.preventDefault()
-                        e.stopPropagation()
-                        openMenu(
-                          { kind: 'row', row: s },
-                          { x: e.clientX, y: e.clientY, flipY: e.clientY },
-                        )
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault()
-                          if (!historyLoading) void continueSession(s.sessionId, s.cwd || '')
-                        }
-                      }}
-                      className={`group flex w-full cursor-pointer select-none items-center gap-2 px-3 py-2 text-left hover:bg-gn-bg-highlight ${active ? 'bg-gn-bg-highlight' : ''}`}
-                      title={`${s.title || 'New Chat'} · ${stateLabel(key)}${s.cwd ? ` · ${s.cwd}` : ''}`}
-                    >
-                      {stateInLeading ? (
-                        completed ? (
-                          // 完成提醒替换状态图标：Check 取代菱形/spinner
-                          // （该会话跑完待查看，状态本身已无新意）。
-                          <span
-                            className="inline-flex w-[1.25em] shrink-0 items-center justify-center text-gn-green"
-                            title="该会话已完成，等待查看"
-                            aria-label="已完成待查看"
-                          >
-                            <Check size={12} strokeWidth={2.5} />
-                          </span>
-                        ) : (
-                          <SessionStateIcon
-                            state={state}
-                            pending={pending}
-                          />
-                        )
-                      ) : (
-                        <span className="inline-flex min-w-[1.25em] shrink-0 items-center justify-center gap-0.5">
-                          {markIcons}
-                        </span>
-                      )}
-                      <span className="min-w-0 flex-1">
-                        {renaming ? (
-                          <input
-                            ref={renameInputRef}
-                            value={renameText}
-                            onChange={(e) => setRenameText(sanitizeTitle(e.target.value))}
-                            onClick={(e) => e.stopPropagation()}
-                            onDoubleClick={(e) => e.stopPropagation()}
-                            onKeyDown={(e) => {
-                              e.stopPropagation()
-                              // 输入法组字中的 Enter 是上屏候选词：中文
-                              // 标题按回车选词会把半截标题存进去。
-                              if (e.nativeEvent.isComposing) return
-                              if (e.key === 'Enter') {
-                                e.preventDefault()
-                                void commitRename(s)
-                              } else if (e.key === 'Escape') {
-                                e.preventDefault()
-                                cancelRename()
-                              }
-                            }}
-                            onBlur={() => cancelRename()}
-                            maxLength={100}
-                            className="w-full rounded border border-gn-cyan/60 bg-gn-bg-dark px-1 py-0 text-[12px] text-gn-fg outline-none"
-                            aria-label="重命名会话"
-                          />
-                        ) : (
-                          <span className="flex min-w-0 items-center gap-1">
-                            {stateInLeading ? markIcons : null}
-                            <span
-                              className={`block min-w-0 flex-1 truncate text-[12px] ${s.title ? (active ? 'text-gn-cyan' : 'text-gn-fg') : 'text-gn-muted'}`}
-                            >
-                              {s.title || 'New Chat'}
-                            </span>
-                          </span>
-                        )}
-                        {/* 副行：最后一轮动作摘要（workspace-list 的
-                            last_turn_summary，agent 生成）——比标题具体，
-                            一眼看出上次干了什么；缺失时不显示。 */}
-                        {s.lastTurnSummary && (
-                          <span
-                            className="block truncate font-mono text-[10px] text-gn-muted"
-                            title={s.lastTurnSummary}
-                          >
-                            {s.lastTurnSummary}
-                          </span>
-                        )}
-                      </span>
-                      {((s.bgRunning ?? 0) > 0) && (
-                        <span
-                          className="shrink-0 rounded border border-gn-gutter/70 px-1 font-mono text-[9px] leading-[13px] text-gn-muted"
-                          title={`该会话有 ${s.bgRunning} 个仍在运行的后台任务（历史共 ${s.bgCount ?? 0} 个）`}
-                        >
-                          bg
-                        </span>
-                      )}
-                      {!s.title && (
-                        <span
-                          className="shrink-0 font-mono text-[10px] leading-none text-gn-muted"
-                          title={`会话 ID 前缀：${s.sessionId}`}
-                        >
-                          {s.sessionId.slice(0, 12)}
-                        </span>
-                      )}
-                      {active && (
-                        <span className="shrink-0 text-[11px] text-gn-cyan">当前</span>
-                      )}
-                      {/* Context-window mini gauge (TUI context_pct), when the
-                          session list carries contextUsed/contextSize. */}
-                      {contextPct != null && (
-                        <span
-                          className="block h-[3px] w-10 shrink-0 overflow-hidden rounded-sm bg-gn-bg-highlight"
-                          title={`上下文占用 ${contextPct}%`}
-                          aria-label={`上下文占用 ${contextPct}%`}
-                        >
-                          <span
-                            className={`block h-full ${contextPct > 90 ? 'bg-gn-red' : contextPct >= 70 ? 'bg-gn-yellow' : 'bg-gn-cyan'}`}
-                            style={{ width: `${contextPct}%` }}
-                          />
-                        </span>
-                      )}
-                      {/* Row action trigger — mobile/touch: MoreVertical opens the same
-                          menu desktop right-click shows (lg+ rows rely on
-                          onContextMenu, so the trigger hides there). */}
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          const r = e.currentTarget.getBoundingClientRect()
-                          openMenu(
-                            { kind: 'row', row: s },
-                            { x: r.right - MENU_W, y: r.bottom + 4, flipY: r.top - 4 },
-                          )
-                        }}
-                        className="flex shrink-0 items-center justify-center rounded px-1 text-gn-muted hover:text-gn-fg lg:hidden"
-                        title="更多操作"
-                        aria-label="更多操作"
-                      >
-                        <MoreVertical size={13} strokeWidth={2.5} />
-                      </button>
-                    </div>
-                  )
-                })}
-                {g.sessions.length > defaultShown && (
-                  <div className="flex">
-                    {shown > defaultShown && (
-                      <button
-                        type="button"
-                        onClick={() => collapseMore(g.key)}
-                        className="flex flex-1 cursor-pointer items-center justify-center gap-2 px-3 py-1 text-center text-[10.5px] text-gn-muted hover:bg-gn-bg-highlight"
-                        title={`收起为最近 ${defaultShown} 个会话`}
-                      >
-                        收起
-                      </button>
-                    )}
-                    {g.sessions.length > shown && (
-                      <button
-                        type="button"
-                        onClick={() => expandMore(g.key)}
-                        className="flex flex-1 cursor-pointer items-center justify-center gap-2 px-3 py-1 text-center text-[10.5px] text-gn-cyan hover:bg-gn-bg-highlight"
-                        title={`显示更多 ${Math.min(LOAD_MORE_STEP, g.sessions.length - shown)} 个会话`}
-                      >
-                        显示更多 {Math.min(LOAD_MORE_STEP, g.sessions.length - shown)} 个
-                      </button>
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
+          <SessionSection
+            key={g.key}
+            g={g}
+            isCollapsed={isGroupCollapsed(g.key)}
+            defaultShown={defaultShown}
+            shown={visibleCount.get(g.key) ?? defaultShown}
+            renamingId={menuState.renamingId}
+            renameText={menuState.renameText}
+            setRenameText={menuState.setRenameText}
+            renameInputRef={menuState.renameInputRef}
+            commitRename={menuState.commitRename}
+            cancelRename={menuState.cancelRename}
+            onToggleGroup={toggleGroup}
+            onExpandMore={expandMore}
+            onCollapseMore={collapseMore}
+            onOpenMenu={menuState.openMenu}
+          />
         )
       })}
       {/* 底部展示模式条（两行）：第一行「已加载最近/全部 N 条会话」
@@ -1091,287 +552,20 @@ export function SessionHistoryList() {
 
       {/* ── row action menu (portaled; desktop right-click / mobile ⋮) ── */}
       {/* ── row / group action menu (portaled; right-click / mobile ⋮) ── */}
-      {menu &&
-        createPortal(
-          <div
-            className="fixed inset-0 z-50"
-            onMouseDown={(e) => {
-              e.stopPropagation()
-              closeMenu()
-            }}
-          >
-            <div
-              ref={menuRef}
-              className="absolute overflow-hidden gn-menu"
-              style={{ left: menuPos?.x ?? menu.x, top: menuPos?.y ?? menu.y, width: MENU_W }}
-              onMouseDown={(e) => e.stopPropagation()}
-              role="menu"
-              aria-label="会话操作"
-            >
-              {menu.kind === 'row' ? (
-                <>
-                  <MenuItem
-                    disabled={menu.row.sessionId === sessionId}
-                    disabledTitle="当前会话"
-                    onClick={() => {
-                      void continueSession(menu.row.sessionId, menu.row.cwd || '')
-                      closeMenu()
-                    }}
-                  >
-                    <span aria-hidden className="inline-block w-4 shrink-0 text-center">
-                      <ChevronRight size={14} strokeWidth={2.5} />
-                    </span>{' '}
-                    打开会话
-                  </MenuItem>
-                  <MenuItem
-                    disabled={menu.row.sessionId !== sessionId}
-                    disabledTitle="重命名仅支持当前会话"
-                    onClick={() => {
-                      startRename(menu.row)
-                      closeMenu()
-                    }}
-                  >
-                    <span aria-hidden className="inline-block w-4 shrink-0 text-center">
-                      <Pencil size={14} strokeWidth={2.5} />
-                    </span>{' '}
-                    重命名
-                  </MenuItem>
-                  <MenuItem
-                    disabled={!canShare}
-                    disabledTitle={shareHint}
-                    onClick={() => {
-                      const host = useChatStore
-                        .getState()
-                        .hosts.find((h) => h.hostId === selectedHostId)
-                      openShareGuest({
-                        hostId: selectedHostId ?? '',
-                        hostName: host?.hostName || hostName || 'Host',
-                        sessionId: menu.row.sessionId,
-                        cwd: menu.row.cwd || '',
-                        ...(menu.row.title ? { title: menu.row.title } : {}),
-                      })
-                      closeMenu()
-                    }}
-                  >
-                    <span aria-hidden className="inline-block w-4 shrink-0 text-center">
-                      <Share2 size={14} strokeWidth={2.5} />
-                    </span>{' '}
-                    分享只读链接
-                  </MenuItem>
-                  <MenuItem
-                    onClick={() => applyMark(() => toggleSessionPin(menu.row.sessionId))}
-                  >
-                    <span aria-hidden className="inline-block w-4 shrink-0 text-center text-gn-yellow">
-                      <Pin size={14} strokeWidth={2.5} />
-                    </span>{' '}
-                    {pinnedSessions.has(menu.row.sessionId) ? '取消置顶' : '置顶此会话'}
-                  </MenuItem>
-                  <div className="border-t border-gn-prompt-border/60" />
-                  {/* 待办操作：待办是独立于置顶的追踪状态——设为待办后
-                      该会话升到列表前部，做完可标记已完成（✓ 徽标）。 */}
-                  {(() => {
-                    const st = todos[menu.row.sessionId]
-                    if (st === 'todo') {
-                      return (
-                        <>
-                          <MenuItem
-                            onClick={() => {
-                              applyMark(() => setTodoStatus(menu.row.sessionId, 'completed'))
-                            }}
-                          >
-                            <span aria-hidden className="inline-block w-4 shrink-0 text-center text-gn-green">
-                              <CircleCheck size={14} strokeWidth={2.5} />
-                            </span>{' '}
-                            标记已完成
-                          </MenuItem>
-                          <MenuItem
-                            onClick={() => {
-                              applyMark(() => setTodoStatus(menu.row.sessionId, null))
-                            }}
-                          >
-                            <span aria-hidden className="inline-block w-4 shrink-0 text-center">
-                              <CircleOff size={14} strokeWidth={2.5} />
-                            </span>{' '}
-                            取消待办
-                          </MenuItem>
-                        </>
-                      )
-                    }
-                    if (st === 'completed') {
-                      return (
-                        <>
-                          <MenuItem
-                            onClick={() => {
-                              applyMark(() => setTodoStatus(menu.row.sessionId, 'todo'))
-                            }}
-                          >
-                            <span aria-hidden className="inline-block w-4 shrink-0 text-center text-gn-yellow">
-                              <Circle size={14} strokeWidth={2.5} />
-                            </span>{' '}
-                            标记为待办
-                          </MenuItem>
-                          <MenuItem
-                            onClick={() => {
-                              applyMark(() => setTodoStatus(menu.row.sessionId, null))
-                            }}
-                          >
-                            <span aria-hidden className="inline-block w-4 shrink-0 text-center">
-                              <CircleOff size={14} strokeWidth={2.5} />
-                            </span>{' '}
-                            取消待办
-                          </MenuItem>
-                        </>
-                      )
-                    }
-                    return (
-                      <>
-                        <MenuItem
-                          onClick={() => {
-                            applyMark(() => setTodoStatus(menu.row.sessionId, 'todo'))
-                          }}
-                        >
-                          <span aria-hidden className="inline-block w-4 shrink-0 text-center text-gn-yellow">
-                            <Circle size={14} strokeWidth={2.5} />
-                          </span>{' '}
-                          设为待办
-                        </MenuItem>
-                        <MenuItem
-                          onClick={() => {
-                            applyMark(() => setTodoStatus(menu.row.sessionId, 'completed'))
-                          }}
-                        >
-                          <span aria-hidden className="inline-block w-4 shrink-0 text-center text-gn-green">
-                            <CircleCheck size={14} strokeWidth={2.5} />
-                          </span>{' '}
-                          标记已完成
-                        </MenuItem>
-                      </>
-                    )
-                  })()}
-                  <div className="border-t border-gn-prompt-border/60" />
-                  <MenuItem
-                    danger
-                    disabled={
-                      sessionGroupKey(menu.row, sessionId) === 'active' ||
-                      (menu.row.bgRunning ?? 0) > 0
-                    }
-                    disabledTitle="运行中会话不可删除"
-                    onClick={() => {
-                      setDeleteTarget(menu.row)
-                      closeMenu()
-                    }}
-                  >
-                    <span aria-hidden className="inline-block w-4 shrink-0 text-center">
-                      <Trash2 size={14} strokeWidth={2.5} />
-                    </span>{' '}
-                    删除
-                  </MenuItem>
-                </>
-              ) : (
-                <>
-                  <MenuItem
-                    onClick={() => applyMark(() => toggleWorkspacePin(menu.cwd))}
-                  >
-                    <span aria-hidden className="inline-block w-4 shrink-0 text-center text-gn-yellow">
-                      <Pin size={14} strokeWidth={2.5} />
-                    </span>{' '}
-                    {pinnedWorkspaces.has(menu.cwd) ? '取消置顶' : '置顶此目录'}
-                  </MenuItem>
-                  <MenuItem
-                    onClick={() => {
-                      void newSession(menu.cwd)
-                      closeMenu()
-                    }}
-                  >
-                    <span aria-hidden className="inline-block w-4 shrink-0 text-center">
-                      <Plus size={14} strokeWidth={2.5} />
-                    </span>{' '}
-                    在此目录新建会话
-                  </MenuItem>
-                </>
-              )}
-            </div>
-          </div>,
-          document.body,
-        )}
-
-      {/* ── delete confirmation dialog ─────────────────────────────── */}
-      {deleteTarget &&
-        createPortal(
-          <div
-            className="fixed inset-0 z-[60] flex items-center justify-center gn-modal-dim p-4"
-            onMouseDown={(e) => {
-              if (e.target === e.currentTarget) setDeleteTarget(null)
-            }}
-          >
-            <div
-              className="w-full max-w-[360px] gn-modal-panel"
-              role="dialog"
-              aria-modal="true"
-              aria-label="删除会话"
-            >
-              <header className="gn-modal-header">
-                <X size={12} className="shrink-0 text-gn-red" aria-hidden />
-                <span className="text-[13px] font-bold text-gn-fg">删除会话</span>
-              </header>
-              <div className="px-4 py-3 text-[12.5px] leading-relaxed text-gn-fg2">
-                确定删除会话
-                <span className="mx-1 font-semibold text-gn-fg">
-                  「{deleteTarget.title || deleteTarget.sessionId.slice(0, 12)}」
-                </span>
-                ？删除后不可恢复。
-              </div>
-              <footer className="gn-modal-footer flex justify-end gap-2">
-                <button
-                  type="button"
-                  disabled={deleting}
-                  onClick={() => setDeleteTarget(null)}
-                  className="min-h-8 rounded bg-gn-bg-base px-3 py-1 text-[12px] text-gn-fg2 hover:bg-gn-bg-highlight disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  取消
-                </button>
-                <button
-                  type="button"
-                  disabled={deleting}
-                  onClick={() => void confirmDelete()}
-                  className="inline-flex min-h-8 items-center gap-1.5 rounded bg-gn-diff-del-bg px-3 py-1 text-[12px] font-semibold text-gn-red hover:bg-gn-red/15 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {deleting ? <Spinner size={11} /> : null}
-                  删除
-                </button>
-              </footer>
-            </div>
-          </div>,
-          document.body,
-        )}
+      <SessionListMenu
+        menu={menuState.menu}
+        menuPos={menuState.menuPos}
+        menuRef={menuState.menuRef}
+        closeMenu={menuState.closeMenu}
+        startRename={menuState.startRename}
+        applyMark={menuState.applyMark}
+        canShare={canShare}
+        shareHint={shareHint}
+        deleteTarget={menuState.deleteTarget}
+        setDeleteTarget={menuState.setDeleteTarget}
+        deleting={menuState.deleting}
+        confirmDelete={menuState.confirmDelete}
+      />
     </div>
   )
 }
-
-/** 行操作菜单的单个菜单项（禁用态灰色 + tooltip，danger 红色）。 */
-function MenuItem({
-  onClick,
-  disabled,
-  disabledTitle,
-  danger,
-  children,
-}: {
-  onClick: () => void
-  disabled?: boolean
-  disabledTitle?: string
-  danger?: boolean
-  children: React.ReactNode
-}) {
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onClick}
-      title={disabled ? disabledTitle : undefined}
-      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] ${ disabled ? 'cursor-not-allowed text-gn-gutter opacity-50' : danger ? 'text-gn-red hover:bg-gn-diff-del-bg' : 'text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg' }`}
-    >
-      {children}
-    </button>
-  )
-}
-

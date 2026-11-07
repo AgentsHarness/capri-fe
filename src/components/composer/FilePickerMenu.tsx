@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { FileSearch } from 'lucide-react'
 import type { FileSearchMatch } from '../../store/chat'
-import { menuRowClass } from './menuRow'
+import { menuRowClass } from '../ui/menuRow'
 
 /**
  * TUI @ file picker popover — floats above the composer while an `@`

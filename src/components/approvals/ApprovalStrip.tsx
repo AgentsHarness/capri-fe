@@ -775,7 +775,7 @@ export function ApprovalStrip() {
                 isRejectOption(opt) && followupOpen && rejectOption === opt.optionId ? (
                   <div
                     key={opt.optionId}
-                    className="flex min-h-10 w-full items-center gap-2 rounded-md border border-gn-red/60 bg-gn-red/10 px-3 py-1.5 ring-1 ring-gn-red/30 transition-all"
+                    className="flex min-h-10 w-full items-center gap-2 rounded-md border border-gn-red/60 bg-gn-red/10 px-3 py-1.5 ring-1 ring-inset ring-gn-red/30 transition-all"
                   >
                     <span className="w-5 shrink-0 text-center font-mono text-[11px] font-medium text-gn-red">
                       {i + 1}
@@ -829,7 +829,7 @@ export function ApprovalStrip() {
                     }}
                     className={`flex min-h-10 w-full items-center gap-2.5 rounded-md border px-3 py-1.5 text-left text-[12.5px] transition-all outline-none ${
                       i === sel
-                        ? "bg-gn-bg-highlight border-gn-yellow/50 text-gn-fg ring-1 ring-gn-yellow/30 shadow-sm"
+                        ? "bg-gn-bg-highlight border-gn-yellow/50 text-gn-fg ring-1 ring-inset ring-gn-yellow/30 shadow-sm"
                         : "bg-gn-bg-base border-gn-prompt-border/60 text-gn-fg2 hover:bg-gn-bg-highlight/60 hover:border-gn-prompt-border"
                     }`}
                   >

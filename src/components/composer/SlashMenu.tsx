@@ -2,7 +2,7 @@ import { Fragment, useEffect, useRef } from 'react'
 import { ChevronRight } from 'lucide-react'
 import type { SlashArgMatch, SlashCommand, SlashMatch } from '../../commands/registry'
 import type { SlashPhase } from './useSlashMenu'
-import { menuActionClass, menuRowClass } from './menuRow'
+import { menuActionClass, menuRowClass } from '../ui/menuRow'
 
 /**
  * TUI slash command menu — floats above the composer while the input

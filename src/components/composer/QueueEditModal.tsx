@@ -11,7 +11,7 @@ import {
 import type { ContentBlock } from '../../api/types'
 import { IMAGE_THUMB_CLASS } from '../../theme/layout'
 import { fileToDataUrl } from './pasteChips'
-import { ImageLightbox } from '../scrollback/InlineImages'
+import { ImageLightbox } from '../ui/ImageLightbox'
 
 /**
  * 队列行编辑弹窗（TUI PromptMode::EditingQueued 的 web 对应）。

@@ -4,7 +4,8 @@ import { transport } from '../../api/client'
 import { useChatStore } from '../../store/chat'
 import { planDocFromEntries, planDocFromRequests } from '../../scrollback/planDoc'
 import { Markdown } from '../ui/Markdown'
-import { CheckMarkIcon, TodoMark } from '../ui/todoMark'
+import { hasOpenLightbox } from '../../lib/lightboxState'
+import { CheckMarkIcon, TodoMark } from '../scrollback/todoMark'
 
 /**
  * /view-plan modal — web counterpart of the TUI `/view-plan` command
@@ -40,6 +41,7 @@ export function PlanViewerModal() {
     if (!open) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        if (hasOpenLightbox()) return
         e.preventDefault()
         e.stopPropagation()
         close()

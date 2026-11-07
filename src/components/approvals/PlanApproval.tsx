@@ -5,6 +5,7 @@ import { Glyphs } from '../../theme/glyphs'
 import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS } from '../../theme/layout'
 import { IconGlyph } from '../ui/IconGlyph'
 import { Markdown } from '../ui/Markdown'
+import { hasOpenLightbox } from '../../lib/lightboxState'
 import { Spinner } from '../ui/Spinner'
 
 /**
@@ -272,6 +273,7 @@ export function PlanApproval() {
       const onButton = t instanceof Element && t.closest('button') != null
 
       if (e.key === 'Escape') {
+        if (hasOpenLightbox()) return
         e.preventDefault()
         e.stopImmediatePropagation()
         if (selection) {

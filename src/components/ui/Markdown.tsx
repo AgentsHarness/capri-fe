@@ -7,6 +7,7 @@ import type { Components } from 'react-markdown'
 import type { Mermaid } from 'mermaid'
 import { useThemeStore } from '../../store/theme'
 import { remarkMathPlugin, normalizeMathDelimiters } from '../../lib/latexMath'
+import { ZoomableImage } from './ImageLightbox'
 import { SmoothStreamText } from './SmoothStreamText'
 
 /* ------------------------------------------------------------------------
@@ -272,16 +273,16 @@ const baseComponents: Components = {
       {children}
     </a>
   ),
-  // react-markdown renders images by default; this only adds the
-  // rounded/bordered chrome so inline markdown images match the
-  // conversation's image entries.
-  img: ({ src, alt }) => (
-    <img
-      src={src}
-      alt={alt || ''}
-      className="my-1.5 max-w-full rounded border border-gn-prompt-border"
-    />
-  ),
+  // Inline markdown images match the conversation's image entries: same
+  // rounded/bordered chrome, and clicking opens the shared lightbox.
+  img: ({ src, alt }) =>
+    typeof src === 'string' ? (
+      <ZoomableImage
+        src={src}
+        alt={alt || ''}
+        className="my-1.5 max-w-full rounded border border-gn-prompt-border"
+      />
+    ) : null,
   strong: ({ children }) => <strong className="font-bold text-gn-fg">{children}</strong>,
   em: ({ children }) => <em className="italic">{children}</em>,
   ul: ({ children }) => <ul className="my-1.5 list-disc pl-5 marker:text-gn-muted">{children}</ul>,

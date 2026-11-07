@@ -30,7 +30,7 @@ import {
 } from './imagine'
 import { slashRecencyScore } from './recency'
 import { cachedSkills } from './skills'
-import { openAgentsModal } from '../components/panels/AgentsModal'
+import { openAgentsModal } from '../components/panels/settings/AgentsModal'
 import { cachedWorkflows } from './workflows'
 import { fmtBytes } from '../format'
 import { renderTranscript, safeExportFilename } from '../lib/exportTranscript'

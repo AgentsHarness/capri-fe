@@ -1,0 +1,18 @@
+{
+  "src/commands/registry.ts": 1533,
+  "src/components/approvals/ApprovalStrip.tsx": 1152,
+  "src/components/panels/host/HostSettingsPage.tsx": 802,
+  "src/components/panels/models/CustomModelsPanel.tsx": 1290,
+  "src/components/panels/settings/MemoryModal.tsx": 810,
+  "src/components/panels/settings/SettingsModal.tsx": 1185,
+  "src/components/panels/tools/ExtensionsModal.tsx": 1040,
+  "src/components/scrollback/StatusChips.tsx": 1158,
+  "src/components/scrollback/ToolDetail.tsx": 914,
+  "src/components/shell/TopBar.tsx": 811,
+  "src/lib/latexMath.ts": 1431,
+  "src/scrollback/toolDetail.ts": 1683,
+  "src/store/chat/envelopeParse.ts": 895,
+  "src/store/chat/historyFill.ts": 972,
+  "src/store/chat/types.ts": 1256,
+  "src/store/promptQueue.ts": 998
+}

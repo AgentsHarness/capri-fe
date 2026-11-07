@@ -15,8 +15,9 @@ src/
 ```
 
 - `components/` 只放视图与和该视图绑定的 hook；纯逻辑放 `src/scrollback/`、`src/lib/`。新逻辑文件不要落在 `components/` 下。
-- 组件分组：`shell/`（App 外壳：TopBar / Scrollback 容器 / BlockViewer / 状态芯片）、`session/`（会话列表、历史、统计与各类信息弹窗）、`approvals/`（审批与应答卡片）、`panels/`（设置类面板与 host 管理，`panels/git/` 是 Git 面板的图与单元格）、`ui/`（无领域语义的原子组件）、`composer/`、`scrollback/`。
+- 组件分组：`shell/`（App 外壳：TopBar / GuestTopBar / BlockViewer / 主题与层错误提示）、`session/`（会话列表、历史、统计与各类信息弹窗，含会话状态图标）、`approvals/`（审批与应答卡片）、`panels/`（按领域分二级目录：`host/` host 与访客/用户管理、`models/` 自定义模型、`tools/` MCP/扩展/工作流、`git/` Git 面板、`settings/` 设置类面板）、`ui/`（无领域语义的原子组件：图标、Markdown/ANSI 渲染、图片预览、通用菜单行样式）、`composer/`、`scrollback/`（滚动区：WorkspaceBar 状态栏与状态芯片、条目渲染、工具详情与目录选择）。
 - 依赖方向单向：`api → store → components`。`api` 不 import `store`/`components`，`store` 不 import `components`。类型可以反向引用（`import type`），值不行。
+- 组件分组之间：`scrollback/` 不 import `shell/`；`ui/` 不 import 任何其它组件分组（`composer/`、`shell/`、`scrollback/`、`session/`、`panels/`、`approvals/`）。
 - 用完整相对路径，不建 barrel：`from '../ui/IconGlyph'`，不要为了缩短而加 `index.ts` 再导出。`src/api/types.ts` 与 `src/store/chat.ts` 是历史入口，新增模块直接引具体文件。
 - 传输层按职责拆在 `src/api/local/`：`guest`（访客身份与令牌槽）、`auth`（门禁与近路钥匙）、`routes`（近路发现与验证）、`mode`（连接模式判定）、`net`（HTTP / 鉴权头 / abort 分桶）、`live`（WS / SSE / 事件扇出）。各模块导出 mixin 对象，由 `localTransport.ts` 在模块尾部 `Object.assign` 挂到 `LocalTransportImpl.prototype`。
 - mixin 方法一律写成 `method(this: TransportCtx, …)`，`TransportCtx`（`src/api/local/ctx.ts`）是实例的编译期契约。**字段声明在 `LocalTransportImpl`，契约写在 `TransportCtx`，新增 public 方法还要补进 `TransportApi`**——三处齐全才不会在 `tsc` 阶段掉队。
@@ -64,3 +65,10 @@ expect(fake.askBtw).toHaveBeenCalled()
 - 模板串里 `` `\\${cmd}` `` 会得到字面 `\hat`。用 `'\\' + cmd` 拼接。
 
 评估一批测试有没有用，用 `python3 scripts/mutate.py`（一次性审计，不是每条新测试的必做步骤）。用法见脚本头注释。
+
+## 单文件行数上限 800 行
+
+- `src/` 下每个 `.ts` / `.tsx` 文件不得超过 800 行（按文件总行数，`*.test.ts` / `*.test.tsx` / `*.d.ts` 不计）。`pnpm run lint` 里已经带上这项检查，`pnpm run check:size` 单独跑。
+- `scripts/file-size-baseline.json` 记录拆分前就已超标的存量文件及当时行数，是棘轮：**基线项只能下降或持平**，行数涨了即失败；不在基线里的新文件一旦超过 800 行也失败。
+- 基线项降到 800 行以内（或文件已删除）不算失败，普通运行只提示「可清理」。
+- 拆分或重构后跑 `node scripts/check-file-size.mjs --update-baseline` 重写基线：只收录当前 >800 行的文件，顺带清掉可清理项。不要为了让检查变绿去手工调大基线行数。

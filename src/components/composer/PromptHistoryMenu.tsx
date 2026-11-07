@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { HistoryItem } from './promptHistory'
-import { menuRowClass } from './menuRow'
+import { menuRowClass } from '../ui/menuRow'
 
 /**
  * TUI prompt history recall panel (↑ on empty input) — 交互与斜杠/文件

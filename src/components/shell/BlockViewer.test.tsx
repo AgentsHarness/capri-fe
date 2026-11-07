@@ -209,4 +209,32 @@ describe('BlockViewer 任务视图与条目视图的取舍', () => {
     render(<BlockViewer />)
     expect(useChatStore.getState().refreshTaskOutput).not.toHaveBeenCalled()
   })
+
+  it('条目图片：点击放大，Esc 先关预览、再关查看器', () => {
+    useChatStore.setState({
+      entries: [
+        {
+          id: 'e-img',
+          kind: 'image',
+          data: 'data:image/png;base64,AAA',
+          mimeType: 'image/png',
+        } as ScrollEntry,
+      ],
+      viewerEntryId: 'e-img',
+      viewerTask: undefined,
+    } as never)
+    render(<BlockViewer />)
+    fireEvent.click(document.querySelector('img')!)
+    expect(
+      screen.getByRole('dialog', { name: '图片预览 1/1' }),
+    ).toBeInTheDocument()
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.queryByRole('dialog', { name: '图片预览 1/1' })).toBeNull()
+    expect(screen.getByRole('dialog', { name: 'Image' })).toBeInTheDocument()
+    expect(closeViewer()).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(closeViewer()).toHaveBeenCalledTimes(1)
+  })
 })

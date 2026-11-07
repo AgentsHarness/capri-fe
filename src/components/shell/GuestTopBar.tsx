@@ -2,10 +2,10 @@ import { useMemo, useState } from 'react'
 import { ChevronDown, LogOut, ShieldQuestion, TriangleAlert } from 'lucide-react'
 import { useChatStore } from '../../store/chat'
 import type { GuestSessionItem } from '../../api/types'
-import { ThemePicker } from '../ui/ThemePicker'
+import { ThemePicker } from './ThemePicker'
 import { formatGuestExpiry } from '../../api/rpc/guestTokens'
 import { pickLayerError } from '../../lib/layerErr'
-import { LayerErrNotice } from '../ui/LayerErrNotice'
+import { LayerErrNotice } from './LayerErrNotice'
 
 /**
  * 访客顶栏：只显示当前 Host（静态标签，不给 host 切换器）+ 会话 +

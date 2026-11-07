@@ -3,7 +3,7 @@ import { Check, ChevronDown, Folder, FolderOpen, FolderPlus } from 'lucide-react
 import { useChatStore } from '../../store/chat'
 import { recentWorkspaceDirs } from '../../store/workspaceDirs'
 import { repoNameFromCwd } from '../../store/historyGroups'
-import { DirectoryPickerModal } from '../ui/DirectoryPickerModal'
+import { DirectoryPickerModal } from './DirectoryPickerModal'
 import { ChipDropdown } from '../ui/ChipDropdown'
 import { useWorktreeGate } from './useWorktreeGate'
 

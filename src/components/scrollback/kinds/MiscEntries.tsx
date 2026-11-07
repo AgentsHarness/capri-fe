@@ -9,9 +9,10 @@ import { Accents } from '../../../theme/accents'
 import { Glyphs } from '../../../theme/glyphs'
 import { AnimatedCollapse } from '../../ui/AnimatedCollapse'
 import { Ansi } from '../../ui/Ansi'
+import { ZoomableImage } from '../../ui/ImageLightbox'
 import { InlineAction } from '../../ui/InlineAction'
 import { Markdown } from '../../ui/Markdown'
-import { TodoMark } from '../../ui/todoMark'
+import { TodoMark } from '../todoMark'
 import { Bullet, EntryShell, RowIcon } from '../EntryShell'
 import { ViewButton } from '../ViewButton'
 import type { EntryChrome } from '../chrome'
@@ -23,13 +24,14 @@ export function ImageEntry({
   e: Extract<ScrollEntry, { kind: 'image' }>
   chrome: EntryChrome
 }) {
-  const { shell, openViewer, onOpenImage, galleryItem } = chrome
+  const { shell, onOpenImage, galleryItem } = chrome
   // Standalone image entry (no open assistant / user row to attach to):
   // uniform thumbnail (h-24) — consecutive image rows are wrapped by
   // Scrollback in one bottom-aligned gallery. Hover/selected frame is the
   // entry's SelectionBox (scrollback-column width, constant) — no
   // thumbnail-level outline. Click opens the group lightbox via
-  // onOpenImage (‹ › navigation), or the block viewer as fallback (mini).
+  // onOpenImage (‹ › navigation); without a group (mini scrollback) the
+  // shared lightbox previews this image alone.
   //
   // 画廊行（galleryItem）：缩略图固定 96×96、cover 裁切——同组每张同宽同高，
   // 不随原图比例变化。百分比上限在这里不可用——条目本身是 shrink-to-fit
@@ -38,18 +40,11 @@ export function ImageEntry({
   // scrollback）父级宽度确定，保持按比例的缩略图。
   return (
     <EntryShell {...shell}>
-      <img
+      <ZoomableImage
         src={e.data}
-        alt={e.mimeType ? `image (${e.mimeType})` : 'image'}
-        loading="lazy"
-        data-no-fold
-        onClick={(ev) => {
-          ev.stopPropagation()
-          if (onOpenImage) onOpenImage(e.id)
-          else openViewer(e.id)
-        }}
-        title="点击放大查看"
-        className={`h-24 cursor-zoom-in rounded border border-gn-prompt-border ${
+        mimeType={e.mimeType}
+        onOpen={onOpenImage ? () => onOpenImage(e.id) : undefined}
+        className={`h-24 rounded border border-gn-prompt-border ${
           galleryItem ? 'w-24 object-cover' : 'max-w-[45%] object-contain'
         }`}
       />

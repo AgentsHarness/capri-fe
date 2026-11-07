@@ -4,7 +4,7 @@ import { entryFailed, entryRunning, toolDisplayMode } from '../../../scrollback/
 import { Accents } from '../../../theme/accents'
 import { toolHeader } from '../../../theme/glyphs'
 import { AnimatedCollapse } from '../../ui/AnimatedCollapse'
-import { ToolDetail } from '../../ui/ToolDetail'
+import { ToolDetail } from '../ToolDetail'
 import { Bullet, EntryShell } from '../EntryShell'
 import { LiteToolFill } from '../LiteToolFill'
 import { toolEntryLitePending } from '../../../store/chat/historyFill'

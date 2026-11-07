@@ -4,6 +4,7 @@ import { Check, Circle, CircleDot, Diamond, Timer, X } from 'lucide-react'
 import { useChatStore } from '../../store/chat'
 import type { AskQuestion, PendingReq } from '../../api/types'
 import { Markdown } from '../ui/Markdown'
+import { hasOpenLightbox } from '../../lib/lightboxState'
 import { Spinner } from '../ui/Spinner'
 import {
   ensureToolsetSettings,
@@ -362,6 +363,7 @@ export function QuestionModal() {
 
       // Esc ladder: freeform input state → option navigation → close.
       if (e.key === 'Escape') {
+        if (hasOpenLightbox()) return
         e.preventDefault()
         e.stopImmediatePropagation()
         if (inputActive) {
@@ -518,7 +520,7 @@ export function QuestionModal() {
             </legend>
             {/* 选项区（含自由输入行）内部滚动；当存在预览时限制高度以容纳预览窗 */}
             <div
-              className={`gn-no-scrollbar flex flex-col gap-1.5 overflow-y-auto pr-0.5 ${
+              className={`gn-no-scrollbar flex flex-col gap-1.5 overflow-y-auto ${
                 hasAnyPreview ? 'max-h-[36vh]' : 'max-h-[48vh]'
               }`}
             >
@@ -538,10 +540,10 @@ export function QuestionModal() {
                     className={`flex min-h-9 items-start gap-2.5 rounded-md border px-3 py-2 text-left text-[12.5px] leading-snug transition-all outline-none ${
                       active
                         ? focused
-                          ? 'border-gn-magenta bg-gn-magenta/15 text-gn-fg ring-1 ring-gn-magenta/50'
+                          ? 'border-gn-magenta bg-gn-magenta/15 text-gn-fg ring-1 ring-inset ring-gn-magenta/50'
                           : 'border-gn-magenta/50 bg-gn-magenta/10 text-gn-fg'
                         : focused
-                          ? 'border-gn-prompt-border bg-gn-bg-highlight text-gn-fg ring-1 ring-gn-prompt-border'
+                          ? 'border-gn-prompt-border bg-gn-bg-highlight text-gn-fg ring-1 ring-inset ring-gn-prompt-border'
                           : 'border-gn-prompt-border/60 bg-gn-bg-base text-gn-fg2 hover:border-gn-prompt-border hover:bg-gn-bg-highlight/60'
                     }`}
                   >
@@ -575,7 +577,7 @@ export function QuestionModal() {
               <div
                 className={`flex items-center gap-2.5 rounded-md border px-3 py-1.5 transition-all ${
                   inputActive
-                    ? 'border-gn-magenta bg-gn-bg-dark ring-1 ring-gn-magenta/50'
+                    ? 'border-gn-magenta bg-gn-bg-dark ring-1 ring-inset ring-gn-magenta/50'
                     : 'border-gn-prompt-border/60 bg-gn-bg-base hover:border-gn-prompt-border'
                 }`}
               >
