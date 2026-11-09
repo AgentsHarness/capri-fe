@@ -284,6 +284,16 @@ describe('toolHeaderExtra — TUI 路径 surface', () => {
     })
   })
 
+  it('Windows 绝对路径展开 = 盘符只出现一次', () => {
+    expect(
+      hep(
+        { rawInput: { path: 'C:\\Users\\brows\\docs\\readme.md' } },
+        'read',
+        { surface: 'expanded', cwd: 'D:\\studio\\semester\\os' },
+      ),
+    ).toEqual({ head: 'C:/Users/brows/docs/', target: 'readme.md' })
+  })
+
   it('edit 的 diffstat 只在折叠面出现，展开/全屏行头是裸路径', () => {
     const edit = {
       rawInput: { path: '/x/y/z.ts' },

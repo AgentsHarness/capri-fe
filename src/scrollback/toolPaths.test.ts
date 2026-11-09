@@ -43,6 +43,14 @@ describe('normalizeLexically', () => {
     expect(normalizeLexically('../outside.rs')).toBe('../outside.rs')
     expect(normalizeLexically('')).toBe('.')
   })
+
+  it('Windows 盘符只出现一次（不把盘符段再拼回前缀）', () => {
+    expect(normalizeLexically('C:\\Users\\me\\project\\..\\outside.rs')).toBe(
+      'C:/Users/me/outside.rs',
+    )
+    expect(normalizeLexically('D:/studio/semester/os')).toBe('D:/studio/semester/os')
+    expect(normalizeLexically('C:/a/../../b')).toBe('C:/b')
+  })
 })
 
 describe('resolveToolPathTarget', () => {
@@ -115,6 +123,16 @@ describe('pathForSurface', () => {
     )
     expect(pathForSurface('src/./nested/../main.rs', 'expanded', { cwd })).toBe('src/main.rs')
     expect(pathForSurface('../outside.rs', 'expanded', { cwd })).toBe('/Users/me/outside.rs')
+  })
+
+  it('expanded = Windows cwd 相对，盘符不重复', () => {
+    const cwd = 'D:\\studio\\semester\\os'
+    expect(pathForSurface('D:\\studio\\semester\\os\\src\\main.rs', 'expanded', { cwd })).toBe(
+      'src/main.rs',
+    )
+    expect(pathForSurface('C:\\Users\\me\\outside.rs', 'expanded', { cwd })).toBe(
+      'C:/Users/me/outside.rs',
+    )
   })
 
   it('fullscreen = 规范化绝对路径；raw = 原样（导出用）', () => {
