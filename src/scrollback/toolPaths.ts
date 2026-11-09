@@ -60,9 +60,13 @@ function isAbsolute(path: string): boolean {
  */
 export function normalizeLexically(path: string): string {
   const absolute = isAbsolute(path)
-  const root = path.startsWith('/') ? '/' : /^[A-Za-z]:[/\\]/.test(path) ? path.slice(0, 2) : ''
+  const drive = /^[A-Za-z]:[/\\]/.test(path) ? path.slice(0, 2) : ''
+  const root = path.startsWith('/') ? '/' : drive
+  // The drive is the root, not a path component; leaving it in `path` would
+  // make the loop emit it and the joined result repeat it (`C:/C:/…`).
+  const body = drive ? path.slice(2) : path
   const out: string[] = []
-  for (const comp of splitComponents(path)) {
+  for (const comp of splitComponents(body)) {
     if (comp === '' || comp === '.') continue
     if (comp === '..') {
       const last = out[out.length - 1]

@@ -2621,7 +2621,10 @@ export function Composer({ guest = false }: { guest?: boolean }) {
             >
               {currentModeShortLabel}
             </span>
-            <span ref={modelRef} className="relative z-30 inline-flex shrink-0">
+            {/* min-w-0 + shrink：整行超过 max-w-[75%] 时才由 flex 收缩
+                模型槽；不做固定 max-w 限制，空间足够时模型名完整显示。
+                收缩时只截断名字，思考强度后缀保持可见。 */}
+            <span ref={modelRef} className="relative z-30 inline-flex min-w-0 shrink">
               <button
                 ref={modelBtnRef}
                 type="button"
@@ -2631,7 +2634,7 @@ export function Composer({ guest = false }: { guest?: boolean }) {
                   if (!modelOpen) setModeOpen(false)
                   setModelOpen((v) => !v)
                 }}
-                className="pointer-events-auto inline-flex max-w-[220px] min-w-0 items-center gap-1 rounded px-0.5 transition-colors hover:bg-gn-bg-highlight disabled:cursor-default disabled:hover:bg-transparent"
+                className="pointer-events-auto inline-flex min-w-0 items-center gap-1 rounded px-0.5 transition-colors hover:bg-gn-bg-highlight disabled:cursor-default disabled:hover:bg-transparent"
                 style={{ color: captionColor }}
                 title={guest ? `${modelLabel} · 访客只读` : `${modelLabel} · 点击切换模型`}
               >

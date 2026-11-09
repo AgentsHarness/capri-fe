@@ -990,3 +990,38 @@ describe('Composer 访客只读态', () => {
     expect(refresh).not.toHaveBeenCalled()
   })
 })
+
+describe('Composer 底栏窄屏布局', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useChatStore.setState({
+      sessionId: 'session-A',
+      cwd: '/test/cwd',
+      conn: 'busy',
+      historyLoading: false,
+      newSessionPending: false,
+      entries: [],
+      pending: [],
+      permissionMode: 'always-approve',
+    })
+    usePromptQueue.setState({ queue: [], sending: false })
+  })
+
+  it('模型槽不设固定宽度，空间不足时才收缩；权限模式标签保持不收缩', () => {
+    useChatStore.setState({ modelName: 'grok-4.5', reasoningEffort: 'high' } as never)
+    render(<Composer />)
+    const modelBtn = screen.getByTitle(/grok-4\.5 \(high\) · 点击切换模型/)
+    const modelSlot = modelBtn.parentElement
+    expect(modelSlot?.className).toContain('min-w-0')
+    expect(modelSlot?.className).toContain('shrink')
+    expect(modelSlot?.className).not.toContain('shrink-0')
+    expect(modelBtn.className).not.toContain('max-w-[220px]')
+
+    // 压缩时名字单独截断，思考强度后缀保持完整渲染。
+    expect(modelBtn.textContent).toContain('grok-4.5')
+    expect(modelBtn.textContent).toContain('(high)')
+
+    const modeBtn = screen.getByTitle(/当前模式: always-approve/)
+    expect(modeBtn.parentElement?.className).toContain('shrink-0')
+  })
+})

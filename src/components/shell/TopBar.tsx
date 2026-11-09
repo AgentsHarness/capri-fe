@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import { useChatStore } from '../../store/chat'
 import { activeContextWindow } from '../../store/chat/model'
+import { useAnchoredPanel } from '../../hooks/useAnchoredPanel'
 import { ThemeOptions, ThemePicker } from '../ui/ThemePicker'
 import { CONTENT_COLUMN_CLASS, COLUMN_PAD_X_CLASS, chromeBtnClass } from '../../theme/layout'
 import { SessionHistoryList } from '../session/SessionHistoryList'
@@ -343,6 +344,22 @@ export function TopBar({
   // Mobile (lg:hidden) "更多" menu — the secondary action buttons fold
   // into one ⋮ trigger; clicking expands them vertically.
   const [moreOpen, setMoreOpen] = useState(false)
+  // 窄屏时顶栏控件会换行，锚点可能落到屏幕左侧；两个下拉都按实测锚点夹取，
+  // 避免 fixed/absolute 面板整体跑出视口。
+  const historyAnchorRef = useRef<HTMLDivElement>(null)
+  const moreAnchorRef = useRef<HTMLDivElement>(null)
+  const historyPanel = useAnchoredPanel({
+    open: historyOpen,
+    anchorRef: historyAnchorRef,
+    maxWidth: 320,
+    vwFraction: 0.84,
+  })
+  const morePanel = useAnchoredPanel({
+    open: moreOpen,
+    anchorRef: moreAnchorRef,
+    maxWidth: 256,
+    vwFraction: 0.9,
+  })
   // history 下拉的会话搜索（与桌面侧边栏同一套 SessionSearchBox：按钮
   // 展开 → 命中接管列表；打开命中或收起下拉后归位）。
   const [historySearchOpen, setHistorySearchOpen] = useState(false)
@@ -806,7 +823,7 @@ export function TopBar({
           </button>
         </div>
         {/* Mobile-only history trigger — desktop history lives in the persistent left sidebar. */}
-        <div className="relative lg:hidden">
+        <div ref={historyAnchorRef} className="relative lg:hidden">
           <button
             type="button"
             onClick={() => (historyOpen ? closeMobileHistory() : void openHistory())}
@@ -833,14 +850,22 @@ export function TopBar({
                   sidebar: button → SessionSearchBox replaces the grouped
                   list while a query is active; opening a hit also closes
                   the dropdown.
-                  Width is viewport-capped: right-anchored to the history
-                  button, a fixed w-80 would poke past the LEFT edge on
-                  narrow phones (320px). Header is outside the scroll area
-                  (flex-col) so the list's sticky group headers stick below
-                  it instead of sliding underneath. */}
+                  Placed from the measured trigger rect and clamped to the
+                  viewport: on a narrow phone the top-bar controls wrap and
+                  the history button can land near the LEFT edge, where a
+                  plain right-0 anchor pushed most of the panel off-screen.
+                  Header is outside the scroll area (flex-col) so the list's
+                  sticky group headers stick below it instead of sliding
+                  underneath. */}
+              {historyPanel && (
               <div
-                className="absolute right-0 top-full z-40 mt-1 flex max-h-[70vh] w-[min(84vw,20rem)] flex-col overflow-hidden gn-menu isolate"
-                style={{ backgroundColor: 'var(--color-gn-bg-base)' }}
+                className="fixed z-40 flex max-h-[70vh] flex-col overflow-hidden gn-menu isolate"
+                style={{
+                  left: historyPanel.left,
+                  top: historyPanel.top,
+                  width: historyPanel.width,
+                  backgroundColor: 'var(--color-gn-bg-base)',
+                }}
               >
                 {/* py-1.5（非 py-2）：给 labeled 大按钮留高度的同时，
                     头部总高保持 37px 不变。 */}
@@ -872,13 +897,14 @@ export function TopBar({
                   {historySearchOpen && historySearchActive ? null : <SessionHistoryList />}
                 </div>
               </div>
+              )}
             </>
           )}
         </div>
 
         {/* Mobile-only "更多" — the secondary action buttons fold into one ⋮
             trigger; clicking expands them vertically under the button. */}
-        <div className="relative lg:hidden">
+        <div ref={moreAnchorRef} className="relative lg:hidden">
           <button
             type="button"
             onClick={() => setMoreOpen((v) => !v)}
@@ -897,7 +923,11 @@ export function TopBar({
                 aria-label="close"
                 onClick={() => setMoreOpen(false)}
               />
-              <div className="absolute right-0 top-full z-40 mt-1 max-h-[70vh] w-64 max-w-[90vw] overflow-y-auto gn-menu touch-pan-y overscroll-contain">
+              {morePanel && (
+              <div
+                className="fixed z-40 max-h-[70vh] overflow-y-auto gn-menu touch-pan-y overscroll-contain"
+                style={{ left: morePanel.left, top: morePanel.top, width: morePanel.width }}
+              >
                 <div className="px-3 pb-1 pt-1.5 text-[10px] uppercase tracking-wider text-gn-gutter">
                   more
                 </div>
@@ -1007,6 +1037,7 @@ export function TopBar({
                   </button>
                 )}
               </div>
+              )}
             </>
           )}
         </div>

@@ -93,6 +93,26 @@ describe('useFittedModeLabel', () => {
     expect(render(0, 0).result.current).toBe('always-approve')
   })
 
+  it('窄视口但内容放得下 → 完整名（不按屏幕宽度一刀切）', () => {
+    const original = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 390 })
+    try {
+      expect(render(200, 300).result.current).toBe('always-approve')
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: original })
+    }
+  })
+
+  it('窄视口且内容溢出 → 才退到短名', () => {
+    const original = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 390 })
+    try {
+      expect(render(400, 300).result.current).toBe('always')
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: original })
+    }
+  })
+
   it('data-probe 探针不计入内容宽度', () => {
     const r = refs(292, 675, 28)
     const probe = document.createElement('span')
