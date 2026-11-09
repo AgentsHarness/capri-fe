@@ -4,15 +4,6 @@ import { useLayoutEffect, useRef, useState, type RefObject } from 'react'
 const FIT_SLACK_PX = 1
 
 /**
- * 手机宽度固定用短名。
- *
- * 窄屏底栏的可用宽度很小，完整名 always-approve 即使靠截断模型名勉强塞进
- * 盒子，也会把模型名挤到只剩几个字符。这里按视口宽度先退回短名，把宽度
- * 留给模型名；宽屏仍按实测宽度决定是否显示完整名。
- */
-export const MOBILE_SHORT_MAX_PX = 640
-
-/**
  * 投影：把当前渲染换成完整标签后，这行的内容宽度。
  *
  * 显示的标签越短，就得把两段文本的宽度差补回去；否则判定会抖：换成短名后
@@ -52,12 +43,12 @@ function rowContentWidth(row: HTMLElement): number {
 /**
  * composer 底栏模式标签该显示完整名还是短名。
  *
- * 手机宽度（< MOBILE_SHORT_MAX_PX）固定用短名，把宽度留给模型名；更宽的
- * 窗口按实测决定——宽裕时用 TUI 全名（'always-approve'），放不下才退到
- * 短名（'always'）。模型名长度同样占这行的宽度，所以两边都实测——可用
- * 宽度取行的 clientWidth（被 max-w-[75%] 钉住），内容宽度取参与布局的子元素
- * 右边界；完整/短名的文本宽度由调用方在同一行内渲染的两个绝对定位探针量出
- * （探针打 data-probe，既不影响布局也不计入内容宽度）。
+ * 按实测宽度决定：宽裕时用 TUI 全名（'always-approve'），放不下才退到
+ * 短名（'always'）。不按视口宽度一刀切——窗口很窄但底栏实际放得下时仍显示
+ * 完整名。模型名长度同样占这行的宽度，所以两边都实测——可用宽度取行的
+ * clientWidth（被 max-w-[75%] 钉住），内容宽度取参与布局的子元素右边界；
+ * 完整/短名的文本宽度由调用方在同一行内渲染的两个绝对定位探针量出（探针
+ * 打 data-probe，既不影响布局也不计入内容宽度）。
  *
  * contentKey：内容宽度还取决于模型名 / token 数 / 其它 flag，而这些变化不
  * 一定改变行盒子尺寸（内容溢出时盒子被上限钉住，ResizeObserver 看不到），
@@ -85,10 +76,7 @@ export function useFittedModeLabel(args: {
         (fullProbeRef.current?.getBoundingClientRect().width ?? 0) -
         (shortProbeRef.current?.getBoundingClientRect().width ?? 0)
       const contentW = projectFullWidth(rowContentWidth(row), showingFull, delta)
-      const next =
-        window.innerWidth < MOBILE_SHORT_MAX_PX
-          ? false
-          : fitsFullWidth(contentW, row.clientWidth)
+      const next = fitsFullWidth(contentW, row.clientWidth)
       setShowFull((prev) => (prev === next ? prev : next))
     }
     measure()

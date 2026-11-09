@@ -93,21 +93,21 @@ describe('useFittedModeLabel', () => {
     expect(render(0, 0).result.current).toBe('always-approve')
   })
 
-  it('手机宽度固定短名，即使内容量得下', () => {
+  it('窄视口但内容放得下 → 完整名（不按屏幕宽度一刀切）', () => {
     const original = window.innerWidth
     Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 390 })
     try {
-      expect(render(200, 300).result.current).toBe('always')
+      expect(render(200, 300).result.current).toBe('always-approve')
     } finally {
       Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: original })
     }
   })
 
-  it('达到 640px 后回到实测判定，放得下则完整名', () => {
+  it('窄视口且内容溢出 → 才退到短名', () => {
     const original = window.innerWidth
-    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 640 })
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 390 })
     try {
-      expect(render(200, 300).result.current).toBe('always-approve')
+      expect(render(400, 300).result.current).toBe('always')
     } finally {
       Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: original })
     }
