@@ -6,8 +6,9 @@ export type PermId = 'normal' | 'auto' | 'always-approve'
 
 /**
  * 底栏模式标签的两种写法：TUI 全名（'always-approve'）与窄屏短名（'always'）。
- * 底栏是 max-w-[75%] 的绝对定位 flex，模型名一长、再叠上全名就会顶出 prompt
- * 边框，所以由 composer/useFittedModeLabel.ts 按实测宽度挑一个。
+ * 底栏是 right-2、max-w-[calc(100%-0.5rem)] 的绝对定位 flex，模型名一长、
+ * 再叠上全名就会顶出 prompt 边框，所以由 composer/useFittedModeLabel.ts
+ * 按实测宽度挑一个。
  * 模式菜单的 PERMISSION 列表始终用全名 'Always-Approve'。
  */
 const PERM_LABEL: Record<PermId, { full: string; short: string }> = {

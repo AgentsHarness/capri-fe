@@ -99,13 +99,15 @@ export function ComposerFooter({
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [statusText])
 
-  // 底栏（模型名 · token 数 · 模式 · 其它 flag）是 max-w-[75%] 的绝对
-  // 定位 flex：模型名一长、再叠上完整模式名 always-approve 就会顶出
-  // prompt 边框，所以按实测宽度在完整名与短名之间选（composer/
-  // useFittedModeLabel.ts）。探针只在行内量文本宽度，不参与布局。
+  // 底栏（模型名 · 模式 · 其它 flag）是 right-2、max-w-[calc(100%-0.5rem)]
+  // 的绝对定位 flex。
+  // 模型名不再有固定像素上限：整行放得下就用完整名，只在整个行宽不够时
+  // 由 flex 收缩并截断。模式名继续按实测宽度在完整名与短名之间选
+  // （composer/useFittedModeLabel.ts）。探针只在行内量文本宽度，不参与布局。
   const footerRowRef = useRef<HTMLDivElement | null>(null)
   const modeFullProbeRef = useRef<HTMLSpanElement | null>(null)
   const modeShortProbeRef = useRef<HTMLSpanElement | null>(null)
+  const modelNameRef = useRef<HTMLSpanElement | null>(null)
   const footerContentKey = [modelLabel, ...otherFlags.map((f) => f.text)].join(
     '\u0001',
   )
@@ -113,6 +115,7 @@ export function ComposerFooter({
     rowRef: footerRowRef,
     fullProbeRef: modeFullProbeRef,
     shortProbeRef: modeShortProbeRef,
+    modelNameRef,
     full: currentModeLabel,
     short: currentModeShortLabel,
     contentKey: footerContentKey,
@@ -121,7 +124,7 @@ export function ComposerFooter({
   return (
           <div
             ref={footerRowRef}
-            className="pointer-events-none absolute -bottom-[5px] right-2 flex max-w-[75%] items-center gap-0 text-[11px] leading-none"
+            className="pointer-events-none absolute -bottom-[5px] right-2 flex max-w-[calc(100%_-_0.5rem)] items-center gap-0 text-[11px] leading-none"
             style={{
               background: 'var(--color-gn-bg-base)',
             }}
@@ -145,7 +148,10 @@ export function ComposerFooter({
             >
               {currentModeShortLabel}
             </span>
-            <span ref={modelRef} className="relative z-30 inline-flex shrink-0">
+            {/* 模型槽不再设固定上限：让它按行内剩余空间展开，只有整行真的
+                放不下时才由 flex 收缩、名字 span 才截断。effort 后缀保持
+                shrink-0，永远完整显示。 */}
+            <span ref={modelRef} className="relative z-30 flex min-w-0 shrink">
               <button
                 ref={modelBtnRef}
                 type="button"
@@ -155,11 +161,13 @@ export function ComposerFooter({
                   if (!modelOpen) setModeOpen(false)
                   setModelOpen((v) => !v)
                 }}
-                className="pointer-events-auto inline-flex max-w-[220px] min-w-0 items-center gap-1 rounded px-0.5 transition-colors hover:bg-gn-bg-highlight disabled:cursor-default disabled:hover:bg-transparent"
+                className="pointer-events-auto inline-flex min-w-0 max-w-full items-center gap-1 rounded px-0.5 transition-colors hover:bg-gn-bg-highlight disabled:cursor-default disabled:hover:bg-transparent"
                 style={{ color: captionColor }}
                 title={guest ? `${modelLabel} · 访客只读` : `${modelLabel} · 点击切换模型`}
               >
-                <span className="min-w-0 truncate">{modelCaption.base}</span>
+                <span ref={modelNameRef} className="min-w-0 truncate">
+                  {modelCaption.base}
+                </span>
                 {modelCaption.effort && (
                   <span className="shrink-0 whitespace-nowrap">
                     ({modelCaption.effort})
