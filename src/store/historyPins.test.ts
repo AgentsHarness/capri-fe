@@ -122,6 +122,7 @@ beforeEach(async () => {
       streamTextSmooth: true,
       uiMotion: true,
       thoughtLines: 4,
+      groupHoldMs: 1000,
     },
   })
   vi.mocked(transport.prefsOrigin).mockReturnValue('')
@@ -195,6 +196,7 @@ describe('本地置顶/待办', () => {
       streamTextSmooth: true,
       uiMotion: true,
       thoughtLines: 4,
+      groupHoldMs: 1000,
     })
     expect(liveKeys(localEntries())).toEqual([feKey('liteReplay')])
 
@@ -245,6 +247,18 @@ describe('本地置顶/待办', () => {
     usePins.getState().setFePrefs({ thoughtLines: 20 })
     expect(usePins.getState().fePrefs.thoughtLines).toBe(20)
     expect(localEntries()[feKey('thoughtLines')].v).toBe('20')
+  })
+
+  it('setFePrefs groupHoldMs 默认 1000，越界值投影时夹到 0–5000', () => {
+    expect(usePins.getState().fePrefs.groupHoldMs).toBe(1000)
+    usePins.getState().setFePrefs({ groupHoldMs: 1500 })
+    expect(usePins.getState().fePrefs.groupHoldMs).toBe(1500)
+    expect(localEntries()[feKey('groupHoldMs')].v).toBe('1500')
+
+    usePins.getState().setFePrefs({ groupHoldMs: -20 })
+    expect(usePins.getState().fePrefs.groupHoldMs).toBe(0)
+    usePins.getState().setFePrefs({ groupHoldMs: 99_999 })
+    expect(usePins.getState().fePrefs.groupHoldMs).toBe(5000)
   })
 
   it('hub 回 200 但没带 prefs 文档 → PENDING 保留，重试后才收口', async () => {

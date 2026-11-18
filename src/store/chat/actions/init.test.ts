@@ -52,6 +52,7 @@ vi.mock('../../settings', () => ({
   uiString: vi.fn(() => undefined),
   uiBool: vi.fn(() => false),
   uiSettings: vi.fn(() => ({})),
+  toolCallDensity: vi.fn(() => 'compact-all-grouped'),
   densityCollapsesEdits: vi.fn(() => false),
   densityCollapsesCommands: vi.fn(() => false),
 }))

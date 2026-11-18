@@ -9,13 +9,13 @@ vi.mock('../settings', () => ({
   uiString: vi.fn(() => undefined),
   uiSettings: vi.fn(() => ({})),
   uiSettingsLoaded: vi.fn(),
-  densityCollapsesEdits: vi.fn(() => false),
-  densityCollapsesCommands: vi.fn(() => false),
+  toolCallDensity: vi.fn(() => 'compact-all-grouped'),
+  densityCollapsesEdits: vi.fn(() => true),
+  densityCollapsesCommands: vi.fn(() => true),
 }))
 
 import {
-  applyCollapsedEditBlocksFlip,
-  applyCollapsedEditBlocksFromCache,
+  applyDensityDefaults,
   clearPlanMode,
   consumeAgentInstance,
   effectivePermissionLabelFromUi,
@@ -37,7 +37,6 @@ import {
   syncDefaultModeFlagsFromUi,
   PLAN_EXIT_GRACE_MS,
 } from './modePersist'
-import { densityCollapsesEdits } from '../settings'
 
 describe('normalizeModeFlags', () => {
   it('只保留有效写入；默认 ask 记录归一为空', () => {
@@ -182,56 +181,130 @@ describe('ensureDefaultModeFlags / syncDefaultModeFlagsFromUi', () => {
   })
 })
 
-describe('applyCollapsedEditBlocksFlip / FromCache', () => {
-  const editEntry = (id: string, expanded: boolean, kindName = 'edit') => ({
+describe('applyDensityDefaults', () => {
+  const toolEntry = (
+    id: string,
+    kindName: string,
+    expanded: boolean,
+    over: Record<string, unknown> = {},
+  ) => ({
     id,
     kind: 'tool',
     kindName,
     title: id,
     verb: 'v',
     expanded,
+    ...over,
   })
 
-  it('FromCache 依据密度联动（先跑：依赖模块级 lastApplied 初始 false）', () => {
-    // 密度档说「编辑收成一行」；模块默认（导入时）是 false。
-    vi.mocked(densityCollapsesEdits).mockReturnValue(true)
-    let state: { entries: Array<Record<string, unknown>>; subagentViews: Record<string, never>; expandedGroups: Set<string> } = {
-      entries: [editEntry('x', true)],
-      subagentViews: {},
-      expandedGroups: new Set(),
-    }
-    const set = (updater: (s: typeof state) => typeof state) => {
-      state = updater(state)
-    }
-    // 首次调用：缓存 true ≠ 模块默认 false → 触发一次折叠
-    applyCollapsedEditBlocksFromCache(set as never)
+  const makeState = (entries: Array<Record<string, unknown>>) => ({
+    entries,
+    subagentViews: {} as Record<string, never>,
+    expandedGroups: new Set(['old-anchor']),
+  })
+
+  const run = (
+    state: ReturnType<typeof makeState>,
+    oldDensity: 'detailed' | 'compact-shells' | 'compact-ungrouped' | 'compact-all-grouped',
+    newDensity: typeof oldDensity,
+  ) => {
+    applyDensityDefaults(
+      ((updater: (s: typeof state) => Partial<typeof state>) => {
+        state = { ...state, ...updater(state) }
+        return state
+      }) as never,
+      oldDensity,
+      newDensity,
+    )
+    return state
+  }
+
+  it('compact-all-grouped → detailed：编辑/命令展开，探查类保持折叠', () => {
+    const state = run(
+      makeState([
+        toolEntry('r', 'read', false),
+        toolEntry('e', 'edit', false),
+        toolEntry('c', 'execute', false),
+        toolEntry('user-open', 'read', true),
+      ]),
+      'compact-all-grouped',
+      'detailed',
+    )
+    // 探查类在 detailed 仍默认折叠。
     expect(state.entries[0]).toMatchObject({ expanded: false })
-    // 再次调用不重复
-    applyCollapsedEditBlocksFromCache(set as never)
-    vi.mocked(densityCollapsesEdits).mockReturnValue(false)
-  })
-
-  it('切换策略时重物化仍停留在旧默认的 edit 行', () => {
-    const applied = applyCollapsedEditBlocksFlip
-    let state: { entries: Array<Record<string, unknown>>; subagentViews: Record<string, never>; expandedGroups: Set<string> } = {
-      // oldFlag=false → 旧默认 expanded=true；newFlag=true → 新默认 expanded=false
-      entries: [editEntry('e1', false), editEntry('e2', true), { id: 'r1', kind: 'read', title: 'r', verb: 'v' }],
-      subagentViews: {},
-      expandedGroups: new Set(['g1']),
-    }
-    applied(((updater: (s: typeof state) => typeof state) => {
-      state = updater(state)
-      return state
-    }) as never, false, true)
-    expect(state.entries[0]).toMatchObject({ id: 'e1', expanded: false }) // 手动折叠的保持
-    expect(state.entries[1]).toMatchObject({ id: 'e2', expanded: false }) // 旧默认展开的翻转为折叠
-    expect(state.entries[2].kind).toBe('read')
+    expect(state.entries[1]).toMatchObject({
+      expanded: true,
+      displayMode: 'truncated',
+    })
+    expect(state.entries[2]).toMatchObject({
+      expanded: true,
+      displayMode: 'truncated',
+    })
+    // 用户手动展开过的行保持手势，不按默认重排。
+    expect(state.entries[3]).toMatchObject({ expanded: true })
     expect(state.expandedGroups).toEqual(new Set())
   })
 
-  it('old === new → 不动作；非 edit 工具不动', () => {
+  it('detailed → compact-shells：命令收回一行，编辑保持 truncated', () => {
+    const state = run(
+      makeState([
+        toolEntry('r', 'read', false),
+        toolEntry('e', 'edit', true, { displayMode: 'truncated' }),
+        toolEntry('c', 'execute', true, { displayMode: 'truncated' }),
+        toolEntry('user-open', 'read', true, { displayMode: 'expanded' }),
+      ]),
+      'detailed',
+      'compact-shells',
+    )
+    expect(state.entries[0]).toMatchObject({ expanded: false })
+    expect(state.entries[1]).toMatchObject({
+      expanded: true,
+      displayMode: 'truncated',
+    })
+    expect(state.entries[2]).toMatchObject({
+      expanded: false,
+      displayMode: 'collapsed',
+    })
+    // 用户手动展开过的探查行保持展开。
+    expect(state.entries[3]).toMatchObject({ expanded: true })
+  })
+
+  it('子代理视图与主 entries 同步重排；直连 bash 恒展开', () => {
+    let state = {
+      entries: [
+        toolEntry('bash', 'execute', true, {
+          raw: { _meta: { bash_mode: true } },
+          displayMode: 'expanded',
+        }),
+      ],
+      subagentViews: {
+        child: {
+          items: [toolEntry('e', 'edit', true, { displayMode: 'truncated' })],
+        },
+      },
+      expandedGroups: new Set<string>(),
+    }
+    applyDensityDefaults(
+      ((updater: (s: typeof state) => Partial<typeof state>) => {
+        state = { ...state, ...updater(state) }
+        return state
+      }) as never,
+      'detailed',
+      'compact-all-grouped',
+    )
+    expect(state.entries[0]).toMatchObject({
+      expanded: true,
+      displayMode: 'expanded',
+    })
+    expect(state.subagentViews.child.items[0]).toMatchObject({
+      expanded: false,
+      displayMode: 'collapsed',
+    })
+  })
+
+  it('old === new → 不写 store', () => {
     const set = vi.fn()
-    applyCollapsedEditBlocksFlip(set as never, true, true)
+    applyDensityDefaults(set as never, 'detailed', 'detailed')
     expect(set).not.toHaveBeenCalled()
   })
 })

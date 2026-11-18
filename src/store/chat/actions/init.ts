@@ -9,7 +9,7 @@ import {
   clearPeerSessionLoad,
 } from '../globals'
 import {
-  applyCollapsedEditBlocksFromCache,
+  applyToolDensityFromCache,
   applyModeFlags,
   ensureDefaultModeFlags,
   loadGlobalModeFlags,
@@ -248,11 +248,11 @@ export function initChat(
     if (mode !== 'hub') {
       uiPrefetchTimer = setTimeout(() => void ensureDefaultModeFlags(), 0)
     }
-    // TUI live flip: rematerialize Edit rows when collapsed_edit_blocks
-    // arrives (history often replays before GET /api/settings) or when
-    // the user toggles it in /settings.
-    onUiSettingsReady(() => applyCollapsedEditBlocksFromCache(set))
-    const unsubUi = onUiSettingsChange(() => applyCollapsedEditBlocksFromCache(set))
+    // Live density flip: rematerialize tool rows when the density arrives
+    // (history often replays before GET /api/settings) or when the user
+    // changes it in /settings.
+    onUiSettingsReady(() => applyToolDensityFromCache(set))
+    const unsubUi = onUiSettingsChange(() => applyToolDensityFromCache(set))
     // 置顶/待办偏好从 hub 拉取并合并（localStorage 是离线缓存；host
     // 报过的 HUB_URL 是持久层，见 historyPins.ts）。无 hub 地址时跳过。
     // 延迟到宏任务：StrictMode 的 effect 双调用（setup → cleanup →

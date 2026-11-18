@@ -32,6 +32,7 @@ function seed() {
       streamTextSmooth: true,
       uiMotion: true,
       thoughtLines: 4,
+      groupHoldMs: 1000,
     },
   })
   useChatStore.setState({

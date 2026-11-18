@@ -3,8 +3,10 @@ import type { AcpEvent, ScrollEntry } from '../../api/types'
 import {
   applySubagentViewEvent,
   sealSubagentStreaming,
+  subagentToolItem,
   subagentViewAppend,
 } from './subagentView'
+import { applyUiSettings } from '../settings'
 import { extractToolDetail } from '../../scrollback/toolDetail'
 
 type ThoughtEvent = Extract<AcpEvent, { type: 'thought' }>
@@ -335,5 +337,66 @@ describe('subagentViewAppend — 工具行更新与状态合并', () => {
     expect(tools[0]!.status).toBe('completed')
     expect(tools[0]!.title).toBe(`Read \`${READ_PATH}\``)
     expect((detail as { content?: string }).content).toContain('SubagentEntry')
+  })
+})
+describe('subagentToolItem — 密度默认与 finishedAt', () => {
+  const call = (over: Record<string, unknown> = {}) => ({
+    toolCallId: 'c1',
+    title: 'Run ls',
+    kind: 'execute',
+    status: 'in_progress',
+    rawInput: { command: 'ls' },
+    ...over,
+  })
+
+  beforeEach(() => {
+    applyUiSettings({ tool_call_density: 'compact-all-grouped' })
+  })
+
+  afterEach(() => {
+    applyUiSettings({ tool_call_density: 'compact-all-grouped' })
+  })
+
+  it('detailed：编辑/命令展开，探查类保持折叠', () => {
+    applyUiSettings({ tool_call_density: 'detailed' })
+    const running = subagentToolItem(call() as never)
+    expect(running).toMatchObject({
+      expanded: true,
+      displayMode: 'truncated',
+    })
+    const read = subagentToolItem(
+      call({ kind: 'read', title: 'Read a.py' }) as never,
+    )
+    expect(read).toMatchObject({
+      expanded: false,
+      displayMode: 'collapsed',
+    })
+    const done = subagentToolItem(
+      call({ status: 'completed' }) as never,
+      running,
+    )
+    expect(done).toMatchObject({
+      expanded: true,
+      displayMode: 'truncated',
+    })
+    expect(typeof done.finishedAt).toBe('number')
+  })
+
+  it('compact：默认折叠；运行转完成时写入 finishedAt', () => {
+    const running = subagentToolItem(call() as never)
+    expect(running).toMatchObject({
+      expanded: false,
+      displayMode: 'collapsed',
+    })
+    expect(running.finishedAt).toBeUndefined()
+    const done = subagentToolItem(
+      call({ status: 'completed' }) as never,
+      running,
+    )
+    expect(done).toMatchObject({
+      expanded: false,
+      displayMode: 'collapsed',
+    })
+    expect(typeof done.finishedAt).toBe('number')
   })
 })

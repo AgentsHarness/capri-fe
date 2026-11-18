@@ -5,6 +5,7 @@ import {
   type SettingsPayload,
   type ToolCallDensity,
 } from '../api/transport'
+import { toolDefaultDisplay } from '../scrollback/toolDefault'
 
 /**
  * `[ui]` section of GET /api/settings — cached module-wide and shared by
@@ -173,14 +174,14 @@ export function densityGroupsCommands(d: ToolCallDensity = toolCallDensity()): b
   return densityGroupsEdits(d)
 }
 
-/** Whether edit rows start folded (one-line +N/−M) instead of showing diffs. */
+/** 编辑行默认是否折叠（一行 +N/−M）；detailed / diff focus 显示 diff。 */
 export function densityCollapsesEdits(d: ToolCallDensity = toolCallDensity()): boolean {
-  return toolCallDensityRank(d) >= DENSITY_IDS.indexOf('compact-ungrouped')
+  return toolDefaultDisplay('edit', d) === 'collapsed'
 }
 
-/** Whether shell rows start folded (one-line) instead of previewing output. */
+/** shell 行默认是否折叠成一行；detailed 显示输出，diff focus 起收成一行。 */
 export function densityCollapsesCommands(d: ToolCallDensity = toolCallDensity()): boolean {
-  return toolCallDensityRank(d) >= DENSITY_IDS.indexOf('compact-shells')
+  return toolDefaultDisplay('execute', d) === 'collapsed'
 }
 
 /** Replace the cached `[ui]` section (after GET/POST /api/settings). */

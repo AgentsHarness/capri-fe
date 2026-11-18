@@ -50,6 +50,7 @@ describe('发起新对话自动设置为待办', () => {
         streamTextSmooth: true,
         uiMotion: true,
         thoughtLines: 4,
+        groupHoldMs: 1000,
       },
     })
     vi.mocked(transport.newSession).mockResolvedValue({ sessionId: NEW_SID } as never)

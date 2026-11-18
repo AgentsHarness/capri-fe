@@ -5,7 +5,6 @@ import {
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
-  type ReactNode,
 } from 'react'
 import { ChevronRight, X } from 'lucide-react'
 import { useChatStore } from '../../../store/chat'
@@ -13,7 +12,7 @@ import { Spinner } from '../../ui/Spinner'
 import { transport, type SettingsPatch, type SettingsPayload } from '../../../api/client'
 import { TOOL_CALL_DENSITY_CHOICES, TOOL_CALL_DENSITY_DEFAULT } from '../../../api/transport'
 import {
-  applyCollapsedEditBlocksFromCache,
+  applyToolDensityFromCache,
   bumpReseedGen,
   currentAgentStamp,
   effectivePermissionLabelFromUi,
@@ -26,6 +25,11 @@ import { applyUiSettings, applyToolsetSettings } from '../../../store/settings'
 import { pushToast } from '../../../store/toast'
 import { historyViaHubRelay, useFePrefs, useLiteReplay } from '../../../store/historyPins'
 import { THOUGHT_LINES_MAX, THOUGHT_LINES_MIN } from '../../../scrollback/thoughtText'
+import {
+  GROUP_HOLD_MAX_MS,
+  GROUP_HOLD_MIN_MS,
+} from '../../../scrollback/groupHold'
+import { SettingRow, SettingsGroup } from './SettingsRows'
 import { CustomModelsPanel } from '../models/CustomModelsPanel'
 import { GuestTokensPanel } from '../host/GuestTokensPanel'
 import { UsersPanel } from './UsersPanel'
@@ -103,6 +107,9 @@ const DENSITY_CHOICES = TOOL_CALL_DENSITY_CHOICES.map((c) => ({
   id: c.id,
   label: c.label,
 }))
+
+/** 工具结束后、并入折叠组前的停留时长选项（ms）。 */
+const GROUP_HOLD_CHOICES = [0, 200, 500, 800, 1000, 1500, 2000, 3000, 5000]
 
 /** 审批弹窗默认选中行四选一（canonical 与 TUI 一致；顺序对齐设置面板与
  *  审批弹窗的渲染顺序 YOLO → allow-always → allow-once → reject）。 */
@@ -354,7 +361,7 @@ export function SettingsModal({ role = 'admin' }: { role?: 'admin' | 'user' }) {
       const ui = next.ui ?? {}
       applyUiSettings(ui)
       applyToolsetSettings(next.toolset)
-      applyCollapsedEditBlocksFromCache(useChatStore.setState)
+      applyToolDensityFromCache(useChatStore.setState)
       syncDefaultModeFlagsFromUi(ui)
       if (p.permission_mode) {
         await applyLivePermission(p.permission_mode)
@@ -533,85 +540,6 @@ const NAV_MOVE_KEYS = new Set([
   'Home',
   'End',
 ])
-
-/** 分类内的小节标题 + 行组。 */
-function SettingsGroup({
-  title,
-  hint,
-  children,
-}: {
-  title: string
-  hint?: string
-  children: ReactNode
-}) {
-  return (
-    <div className="border-b border-gn-prompt-border/50 py-1 last:border-b-0">
-      <div className="flex items-baseline gap-1.5 border-b border-gn-prompt-border/30 bg-gn-bg-base px-3 pt-2 pb-1.5 sm:border-0 sm:bg-transparent sm:px-4 sm:pt-1.5 sm:pb-0.5">
-        <span className="text-[11px] font-medium tracking-wide text-gn-fg2 sm:text-[10.5px]">
-          {title}
-        </span>
-        {hint ? (
-          <span className="text-[10.5px] text-gn-gutter sm:text-[10px]">{hint}</span>
-        ) : null}
-      </div>
-      {children}
-    </div>
-  )
-}
-
-/**
- * One settings row: key + hint on the left, control on the right. Narrow
- * panes (and mobile) stack the control under the label for multi-item choices,
- * while keeping single toggles / inputs inline for a clean mobile settings layout.
- */
-function SettingRow({
-  label,
-  hint,
-  code,
-  stackOnMobile = false,
-  children,
-}: {
-  label: string
-  hint?: string
-  /** 配置键名，悬停可见，界面不直接展示。 */
-  code?: string
-  /** 移动端多选项（如 ChoiceTabs）强制换行堆叠，默认单控件左右同行。 */
-  stackOnMobile?: boolean
-  children: ReactNode
-}) {
-  return (
-    <div
-      className={`border-b border-gn-prompt-border/40 px-3 py-3 last:border-b-0 sm:px-4 sm:py-2.5 ${
-        stackOnMobile
-          ? 'flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-6'
-          : 'flex items-start justify-between gap-3 sm:gap-6'
-      }`}
-    >
-      <div className="min-w-0 flex-1">
-        <div
-          className="text-[13px] leading-snug text-gn-fg sm:text-[12px]"
-          title={code ?? label}
-        >
-          {label}
-        </div>
-        {hint ? (
-          <div className="mt-1 text-[11.5px] leading-relaxed text-gn-fg2 sm:mt-0.5 sm:text-[10.5px] sm:leading-snug">
-            {hint}
-          </div>
-        ) : null}
-      </div>
-      <div
-        className={`flex min-w-0 flex-wrap items-center gap-1.5 sm:max-w-[58%] sm:justify-end sm:gap-1 ${
-          stackOnMobile
-            ? 'w-full justify-end self-start sm:w-auto sm:self-center'
-            : 'max-w-[52%] shrink-0 justify-end self-center'
-        }`}
-      >
-        {children}
-      </div>
-    </div>
-  )
-}
 
 /** 一组线条式 tab（当前项 = 绿色下划线）。 */
 function SettingTabs<T extends string>({
@@ -975,6 +903,7 @@ function DisplaySettings({
   const streamTextSmooth = useFePrefs((s) => s.fePrefs.streamTextSmooth)
   const uiMotion = useFePrefs((s) => s.fePrefs.uiMotion) !== false
   const thoughtLines = useFePrefs((s) => s.fePrefs.thoughtLines)
+  const groupHoldMs = useFePrefs((s) => s.fePrefs.groupHoldMs)
   const liteReplay = useLiteReplay()
   const viaRelay = historyViaHubRelay()
   const setFePrefs = useFePrefs((s) => s.setFePrefs)
@@ -1014,6 +943,27 @@ function DisplaySettings({
             busyId={savingKey === 'tool_call_density' ? density : undefined}
             onPick={(id) => void onPatch({ tool_call_density: id })}
           />
+        </SettingRow>
+        <SettingRow
+          label="新块预览停留"
+          code="group_hold_ms"
+          hint={`默认折叠的新工具块运行中会展开预览；结束后再保留的时长（${GROUP_HOLD_MIN_MS}–${GROUP_HOLD_MAX_MS}ms，0 = 不预览）。是否入组都适用；默认展开的工具不受影响。`}
+        >
+          <select
+            aria-label="新块预览停留时长"
+            value={groupHoldMs}
+            onChange={(e) => setFePrefs({ groupHoldMs: Number(e.target.value) })}
+            className="min-h-8 rounded border border-gn-prompt-border bg-gn-bg-dark px-2 py-1 text-[12px] text-gn-fg outline-none sm:min-h-0"
+          >
+            {GROUP_HOLD_CHOICES.includes(groupHoldMs) ? null : (
+              <option value={groupHoldMs}>{groupHoldMs} ms</option>
+            )}
+            {GROUP_HOLD_CHOICES.map((ms) => (
+              <option key={ms} value={ms}>
+                {ms === 0 ? '0 ms（不预览）' : `${ms} ms`}
+              </option>
+            ))}
+          </select>
         </SettingRow>
         <SettingRow
           label="新块淡入"

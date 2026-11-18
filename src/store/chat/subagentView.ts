@@ -7,11 +7,13 @@ import type {
 import type { SetState } from './types'
 import { nid } from './ids'
 import { formatElapsed, imageSrc, toolVerb } from './format'
-import { extractTarget, toolCallIdOf, toolKindName } from './tools'
+import { extractTarget, isBashModeTool, toolCallIdOf, toolKindName } from './tools'
 import { liteMark } from './envelopeParse'
 import { turnEndMarkerText, wireElapsedMs } from './turnStatus'
-import { collapsedCommandBlocks, collapsedEditBlocks } from './modeFlags'
-import { isEditToolKind, toolFamily } from '../../theme/toolFamily'
+import { toolCallDensity } from '../settings'
+import { toolDefaultDisplay } from '../../scrollback/toolDefault'
+import { toolDisplayMode } from '../../scrollback/entryState'
+import { isEditToolKind } from '../../theme/toolFamily'
 
 export function sealSubagentStreaming(items: ScrollEntry[]): ScrollEntry[] {
   let changed = false
@@ -414,6 +416,21 @@ export function subagentToolItem(
   // 会把 todo 行渲染成 "Thought"——_meta 恒为 plan）。
   const kindName = toolKindName(tc, prev?.kindName)
   const running = status === 'pending' || status === 'in_progress'
+  const wasRunning =
+    prev?.status === 'pending' || prev?.status === 'in_progress'
+  // 与主 scrollback 同款：默认形态由密度决定，后续 update 保留已有折叠
+  // 手势；工具从 Other 细化成 Edit 时按新族重新取默认。直连 bash 恒展开。
+  const becameEdit =
+    !!prev && isEditToolKind(kindName) && !isEditToolKind(prev.kindName)
+  const mode = isBashModeTool(tc)
+    ? ('expanded' as const)
+    : prev
+      ? becameEdit
+        ? toolDefaultDisplay(kindName, toolCallDensity())
+        : toolDisplayMode(prev)
+      : toolDefaultDisplay(kindName, toolCallDensity())
+  const finishedAt =
+    wasRunning && !running ? Date.now() : prev?.finishedAt
   return {
     id: prev?.id ?? nid(),
     kind: 'tool',
@@ -424,15 +441,9 @@ export function subagentToolItem(
     verb: toolVerb(kindName, running),
     status,
     kindName,
-    expanded: prev
-      ? isEditToolKind(kindName) && !isEditToolKind(prev.kindName)
-        ? !collapsedEditBlocks()
-        : prev.expanded
-      : isEditToolKind(kindName)
-        ? !collapsedEditBlocks()
-        : toolFamily(kindName) === 'execute'
-          ? !collapsedCommandBlocks()
-          : false,
+    expanded: mode !== 'collapsed',
+    displayMode: mode,
+    ...(finishedAt != null ? { finishedAt } : {}),
     raw: tc,
     // 活动起点（epoch ms）——主 scrollback 相位计时器同款；运行中才打。
     ...(running && !prev ? { startedAt: Date.now() } : {}),

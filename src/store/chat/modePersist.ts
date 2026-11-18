@@ -6,14 +6,17 @@ import {
   saveStr,
 } from '../../lib/storage'
 import { transport } from '../../api/client'
+import type { ToolCallDensity } from '../../api/transport'
 import {
   densityCollapsesCommands,
   densityCollapsesEdits,
   ensureUiSettings,
   refreshUiSettings,
+  toolCallDensity,
   uiSettingsLoaded,
 } from '../settings'
-import { isEditToolKind, toolFamily } from '../../theme/toolFamily'
+import { toolDefaultDisplay } from '../../scrollback/toolDefault'
+import { isBashModeTool } from './tools'
 import type { ChatState, ModeFlags, SetState } from './types'
 import { KEY } from '../../lib/keys'
 
@@ -320,126 +323,86 @@ export function collapsedCommandBlocks(): boolean {
 }
 
 /**
- * 上次按密度重排时用的初值。启动时读缓存（GET /api/settings 往往晚于历史
- * 回放），缓存到达后 `applyCollapsedEditBlocksFromCache` 再按实际档位翻转。
+ * 上次按密度重排时用的档位。启动时读缓存（GET /api/settings 往往晚于历史
+ * 回放），缓存到达后 `applyToolDensityFromCache` 再按实际档位重排。
  */
-let lastAppliedCollapsedEdits = collapsedEditBlocks()
-let lastAppliedCollapsedCommands = collapsedCommandBlocks()
-
-/** 密度切换时要重排的一类工具行（编辑族 / 命令族）。 */
-type RemapTarget = 'edit' | 'command'
-
-function remapTarget(e: ChatState['entries'][number]): RemapTarget | null {
-  if (e.kind !== 'tool') return null
-  if (isEditToolKind(e.kindName)) return 'edit'
-  if (toolFamily(e.kindName) === 'execute') return 'command'
-  return null
-}
+let lastAppliedDensity = toolCallDensity()
 
 /** 工具行的窄类型（重排按 kind === 'tool' 过滤后使用）。 */
 type ToolRow = Extract<ChatState['entries'][number], { kind: 'tool' }>
 
-function remapCollapsedRows(
+/**
+ * 把仍停留在旧密度默认形态上的工具行重排到新档位。
+ *
+ * 只动「当前 expanded 正好等于旧默认」的行：用户显式展开/折起、且结果
+ * 偏离旧默认的行保持手势结果；恰好落在旧默认上的行与 TUI 一样随档位翻。
+ * detailed 的编辑/命令默认展开（truncated），探查类保持折叠；直连 bash
+ * 恒展开，不参与。
+ */
+function remapToolDefaults(
   entries: ChatState['entries'],
-  target: RemapTarget,
-  oldExpanded: boolean,
-  newExpanded: boolean,
+  oldDensity: ToolCallDensity,
+  newDensity: ToolCallDensity,
 ): { entries: ChatState['entries']; changed: boolean } {
+  if (oldDensity === newDensity) return { entries, changed: false }
   let changed = false
   const next = entries.map((e) => {
-    if (e.kind !== 'tool' || remapTarget(e) !== target) return e
+    if (e.kind !== 'tool') return e
     const row: ToolRow = e
-    // Still on the old policy default — a user ←/→ / click away from it
-    // survives (TUI: gesture is indistinguishable from "folded back to
-    // the old default" and those do flip).
-    if (!!row.expanded !== oldExpanded) return row
+    if (isBashModeTool(row.raw ?? {})) return row
+    const oldMode = toolDefaultDisplay(row.kindName, oldDensity)
+    if (!!row.expanded !== (oldMode !== 'collapsed')) return row
+    const newMode = toolDefaultDisplay(row.kindName, newDensity)
+    if (newMode === oldMode) return row
     changed = true
     // displayMode 与 expanded 布尔同步镜像（toolDisplayMode 读侧优先
-    // displayMode，只写布尔会把钉在三态档上的行洗错）。命令行展开到
-    // 行内截断预览即可（bash_mode 的全量正文保留）。
+    // displayMode，只写布尔会把三态行洗错）。
     return {
       ...row,
-      expanded: newExpanded,
-      displayMode: !newExpanded
-        ? ('collapsed' as const)
-        : target === 'command' && row.displayMode !== 'expanded'
-          ? ('truncated' as const)
-          : ('expanded' as const),
+      expanded: newMode !== 'collapsed',
+      displayMode: newMode,
     }
   })
   return { entries: changed ? next : entries, changed }
 }
 
 /**
- * 密度切换后重排仍停留在旧默认上的编辑 / 命令行（TUI
- * `apply_collapsed_edit_blocks_flip` 的扩展）：用户显式展开或折起的行
- * 不动；已经落地的同文件编辑合并不拆（合并在写入时就决定了）。
+ * 密度切换后重排主 scrollback 与子代理视图里的工具行。分组范围随档位
+ * 变化，因此切换时丢弃旧档位下的展开锚点。
  */
-export function applyDensityFlip(
+export function applyDensityDefaults(
   set: SetState,
-  targets: Array<{ target: RemapTarget; oldFlag: boolean; newFlag: boolean }>,
+  oldDensity: ToolCallDensity,
+  newDensity: ToolCallDensity,
 ): void {
-  const flips = targets.filter((t) => t.oldFlag !== t.newFlag)
-  if (flips.length === 0) return
+  if (oldDensity === newDensity) return
   set((s) => {
-    let entries = s.entries
-    let mainChanged = false
-    for (const f of flips) {
-      const r = remapCollapsedRows(entries, f.target, !f.oldFlag, !f.newFlag)
-      if (!r.changed) continue
-      entries = r.entries
-      mainChanged = true
-    }
+    const main = remapToolDefaults(s.entries, oldDensity, newDensity)
     let views = s.subagentViews
     let viewsChanged = false
     for (const [sid, view] of Object.entries(s.subagentViews)) {
-      let items = view.items
-      let viewChanged = false
-      for (const f of flips) {
-        const r = remapCollapsedRows(items, f.target, !f.oldFlag, !f.newFlag)
-        if (!r.changed) continue
-        items = r.entries
-        viewChanged = true
-      }
-      if (!viewChanged) continue
+      const r = remapToolDefaults(view.items, oldDensity, newDensity)
+      if (!r.changed) continue
       if (!viewsChanged) {
         views = { ...s.subagentViews }
         viewsChanged = true
       }
-      views[sid] = { ...view, items }
+      views[sid] = { ...view, items: r.entries }
     }
-    if (!mainChanged && !viewsChanged) return {}
     return {
-      ...(mainChanged ? { entries } : {}),
+      ...(main.changed ? { entries: main.entries } : {}),
       ...(viewsChanged ? { subagentViews: views } : {}),
-      // 分组范围随密度变化；丢弃旧档位下的展开锚点。
       expandedGroups: new Set(),
     }
   })
 }
 
-/** 旧入口（编辑族翻转），保留给既有调用方。 */
-export function applyCollapsedEditBlocksFlip(
-  set: SetState,
-  oldFlag: boolean,
-  newFlag: boolean,
-): void {
-  applyDensityFlip(set, [{ target: 'edit', oldFlag, newFlag }])
-}
-
 /** Rematerialize if the cached 密度 moved since last apply. */
-export function applyCollapsedEditBlocksFromCache(set: SetState): void {
-  const nextEdits = collapsedEditBlocks()
-  const nextCommands = collapsedCommandBlocks()
-  const editFlip = { target: 'edit' as const, oldFlag: lastAppliedCollapsedEdits, newFlag: nextEdits }
-  const cmdFlip = {
-    target: 'command' as const,
-    oldFlag: lastAppliedCollapsedCommands,
-    newFlag: nextCommands,
-  }
-  lastAppliedCollapsedEdits = nextEdits
-  lastAppliedCollapsedCommands = nextCommands
-  applyDensityFlip(set, [editFlip, cmdFlip])
+export function applyToolDensityFromCache(set: SetState): void {
+  const nextDensity = toolCallDensity()
+  const oldDensity = lastAppliedDensity
+  lastAppliedDensity = nextDensity
+  applyDensityDefaults(set, oldDensity, nextDensity)
 }
 
 /**

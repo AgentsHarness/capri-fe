@@ -102,7 +102,7 @@ export type ExtensionsPayload = {
  * 列目录这类探查工具在每一档都折成 `Explored …` 组）：
  *  - detailed：编辑带 diff，命令带输出；编辑段、命令段逐条显示；
  *  - compact-shells（diff focus）：编辑带 diff，命令收成一行；
- *  - compact-ungrouped（balanced）：编辑与命令都收成一行；
+ *  - compact-ungrouped（balanced）：编辑与命令都收成一行，探查类成组；
  *  - compact-grouped（grouped）：编辑段、命令段各自成组，不互相并组；
  *  - compact-all-grouped（compact，默认）：所有连续工具调用合成一组。
  */

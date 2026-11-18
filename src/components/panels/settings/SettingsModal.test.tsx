@@ -68,6 +68,7 @@ beforeEach(() => {
       streamTextSmooth: true,
       uiMotion: true,
       thoughtLines: 4,
+      groupHoldMs: 1000,
     },
   })
   vi.mocked(transport.settings).mockReset()

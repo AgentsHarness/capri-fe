@@ -6,6 +6,7 @@ import { transport } from '../api/client'
 import { isGuestActive } from './chat/guestMode'
 import { KEY } from '../lib/keys'
 import { clampThoughtLines } from '../scrollback/thoughtText'
+import { clampGroupHoldMs } from '../scrollback/groupHold'
 import {
   alive,
   createSiteId,
@@ -96,6 +97,8 @@ export type FePrefs = {
   uiMotion: boolean
   /** 思考活动区可见行数（1–20，默认 4）。 */
   thoughtLines: number
+  /** 默认折叠的新工具块结束后展开预览的停留时长（0–5000ms，默认 1000）。 */
+  groupHoldMs: number
 }
 
 /** entries 投影出的内存态（组件只认这份，不感知条目模型）。 */
@@ -144,6 +147,7 @@ function project(entries: PrefsEntries): PrefsView {
       streamTextSmooth: v.fePrefs.streamTextSmooth !== false,
       uiMotion: v.fePrefs.uiMotion !== false,
       thoughtLines: clampThoughtLines(v.fePrefs.thoughtLines),
+      groupHoldMs: clampGroupHoldMs(v.fePrefs.groupHoldMs),
     },
   }
 }

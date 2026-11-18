@@ -1,11 +1,10 @@
 import type { AcpEvent, ScrollEntry, ToolCall } from '../../../api/types'
 import type { ChatState, SetState } from '../types'
 import { nid } from '../ids'
-import {
-  collapsedCommandBlocks,
-  collapsedEditBlocks,
-} from '../modeFlags'
-import { isEditToolKind, toolFamily } from '../../../theme/toolFamily'
+import { collapsedEditBlocks } from '../modeFlags'
+import { toolCallDensity } from '../../settings'
+import { toolDefaultDisplay } from '../../../scrollback/toolDefault'
+import { isEditToolKind } from '../../../theme/toolFamily'
 import { planTodos, toolVerb } from '../format'
 import {
   absorbBashOutputIntoBgTask,
@@ -153,7 +152,9 @@ export function handleToolEvent(
         }
 
         const isBash = isBashModeTool(tc)
-        const isExec = toolFamily(kindName) === 'execute'
+        const defaultMode = isBash
+          ? ('expanded' as const)
+          : toolDefaultDisplay(kindName, toolCallDensity())
         const entry: ScrollEntry = {
           id,
           kind: 'tool',
@@ -163,18 +164,11 @@ export function handleToolEvent(
           status,
           kindName,
           detail: tc.title as string | undefined,
-          // 密度决定编辑 / shell 的初始展开态：detailed 显示 diff 与命令输出，
-          // compact-shells 起命令收成一行，compact-ungrouped 起编辑收成
-          // +N/−M 一行。直连 bash（`!` 命令）是用户主动执行的，恒显示全量
-          // 输出；普通命令展开时是行内截断预览。
-          expanded: isEditToolKind(kindName)
-            ? !collapsedEditBlocks()
-            : isBash
-              ? true
-              : isExec
-                ? !collapsedCommandBlocks()
-                : false,
-          displayMode: isBash ? ('expanded' as const) : undefined,
+          // 密度决定工具行的初始形态：detailed 的编辑/命令展开，探查类
+          // 收成一行；diff focus 的编辑展示行内 diff，其余档位收成一行。
+          // 直连 bash（`!` 命令）是用户主动执行的，恒显示全量输出。
+          expanded: defaultMode !== 'collapsed',
+          displayMode: defaultMode,
           raw: tc,
           // Activity start for the turn status line's phase timer (TUI
           // tracker started_at); replay/completed snapshots omit it.
@@ -303,11 +297,13 @@ export function handleToolEvent(
             const finishedAt =
               wasRunning && !running ? Date.now() : e.finishedAt
             // TUI replace_tool_block: Other → Edit rematerializes to the
-            // collapsed_edit_blocks default. Already-Edit keeps the
-            // current fold (user gesture).
+            // current density default (detailed/diff focus = truncated,
+            // grouped/compact = collapsed). Already-Edit keeps the current
+            // fold (user gesture).
             const becameEdit =
               isEditToolKind(kindName) && !isEditToolKind(e.kindName)
             const isBash = isBashModeTool(merged)
+            const defaultMode = toolDefaultDisplay(kindName, toolCallDensity())
             return {
               ...e,
               status,
@@ -321,7 +317,10 @@ export function handleToolEvent(
               ...(isBash
                 ? { expanded: true, displayMode: 'expanded' as const }
                 : becameEdit
-                  ? { expanded: !collapsedEditBlocks() }
+                  ? {
+                      expanded: defaultMode !== 'collapsed',
+                      displayMode: defaultMode,
+                    }
                   : {}),
             }
           }),
