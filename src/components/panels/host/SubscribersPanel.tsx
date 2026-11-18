@@ -190,6 +190,15 @@ export function SubscribersPanel({ onClose }: { onClose: () => void }) {
                                 {row.guestLabel || row.guestId || '未知令牌'}
                               </span>
                             </span>
+                          ) : row.role === 'user' ? (
+                            <span className="inline-flex items-center gap-1">
+                              <span className="rounded bg-gn-purple/15 px-1 py-px text-[10px] text-gn-purple">
+                                用户
+                              </span>
+                              <span className="max-w-[9rem] truncate" title={row.userId}>
+                                {row.userLabel || row.userId || '未知用户'}
+                              </span>
+                            </span>
                           ) : (
                             <span className="inline-flex items-center gap-1">
                               <span className="rounded bg-gn-bg-highlight px-1 py-px text-[10px] text-gn-muted">

@@ -137,12 +137,25 @@ describe('TopBar', () => {
       conn: 'ready',
       feSubscribers: 1,
     })
-    render(<TopBar />)
+    listSubscribers.mockImplementationOnce(async () => [
+      { id: 1, role: 'admin', connectedAt: Date.now() },
+      { id: 2, role: 'user', userId: 'u1', userLabel: '阿本', connectedAt: Date.now() },
+      { id: 3, role: 'guest', guestId: 'g1', guestLabel: '访客甲', connectedAt: Date.now() },
+    ])
+    const { container } = render(<TopBar />)
     fireEvent.click(screen.getByTitle(/FE 在线订阅/))
-    // 面板是独立模态：打开后列出真实行（mock 的 listSubscribers 回空表，
-    // 这里只需要确认它拉取了名单、渲染了表头）。
     expect(await screen.findByText('在线订阅者')).toBeTruthy()
     expect(listSubscribers).toHaveBeenCalled()
+    await screen.findByText('阿本')
+    const rowOf = (id: number) =>
+      container.querySelector(`[data-subscriber-id="${id}"]`) as HTMLElement
+    expect(within(rowOf(1)).getByText('管理员')).toBeTruthy()
+    // 普通用户必须显示自己的用户名，且不能落进「管理员」分支
+    expect(within(rowOf(2)).getByText('用户')).toBeTruthy()
+    expect(within(rowOf(2)).getByText('阿本')).toBeTruthy()
+    expect(within(rowOf(2)).queryByText('管理员')).toBeNull()
+    expect(within(rowOf(3)).getByText('访客')).toBeTruthy()
+    expect(within(rowOf(3)).getByText('访客甲')).toBeTruthy()
     fireEvent.keyDown(window, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByText('在线订阅者')).toBeNull())
   })
