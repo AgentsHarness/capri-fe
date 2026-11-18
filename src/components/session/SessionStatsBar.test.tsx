@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { render, act } from '@testing-library/react'
 import { useChatStore } from '../../store/chat'
 import { SessionStatsBar } from './SessionStatsBar'
@@ -8,6 +8,9 @@ beforeEach(() => {
     sessionStats: undefined,
     sessionId: undefined,
     cwd: undefined,
+    conn: 'ready',
+    turnStartedAt: undefined,
+    openThoughtId: undefined,
     refreshSessionStats: vi.fn(),
   })
 })
@@ -106,5 +109,109 @@ describe('SessionStatsBar', () => {
     act(() => useChatStore.setState({ cwd: '/b' }))
     expect(useChatStore.getState().refreshSessionStats).toHaveBeenCalledTimes(3)
     unmount()
+  })
+})
+
+describe('回合进行中的刷新', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('回合 live 时按周期拉取，回合结束后停止', async () => {
+    useChatStore.setState({
+      sessionId: 's1',
+      cwd: '/a',
+      conn: 'busy',
+      turnStartedAt: 1000,
+    })
+    const refresh = useChatStore.getState().refreshSessionStats
+    render(<SessionStatsBar />)
+    // 挂载时的锚点兜底拉取。
+    expect(refresh).toHaveBeenCalledTimes(1)
+
+    // 首拍 3s，之后每 5s 一拍。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000)
+    })
+    expect(refresh).toHaveBeenCalledTimes(2)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000)
+    })
+    expect(refresh).toHaveBeenCalledTimes(3)
+
+    // 回合收口 → 轮询解除，不再请求。
+    act(() => useChatStore.setState({ conn: 'ready', turnStartedAt: undefined }))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000)
+    })
+    expect(refresh).toHaveBeenCalledTimes(3)
+  })
+
+  it('上一发未返回时不叠加下一发', async () => {
+    let release!: () => void
+    const pending = new Promise<void>((r) => {
+      release = r
+    })
+    const refresh = vi.fn(() => pending)
+    useChatStore.setState({
+      sessionId: 's1',
+      cwd: '/a',
+      conn: 'busy',
+      turnStartedAt: 1000,
+      refreshSessionStats: refresh,
+    })
+    render(<SessionStatsBar />)
+    expect(refresh).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000)
+    })
+    expect(refresh).toHaveBeenCalledTimes(2)
+    // 请求挂住时定时器不再排下一拍。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000)
+    })
+    expect(refresh).toHaveBeenCalledTimes(2)
+    await act(async () => {
+      release()
+    })
+  })
+
+  it('标签页隐藏时跳过请求，回到前台立即补一拍', async () => {
+    let visibility: DocumentVisibilityState = 'hidden'
+    const own = Object.getOwnPropertyDescriptor(document, 'visibilityState')
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => visibility,
+    })
+    try {
+      useChatStore.setState({
+        sessionId: 's1',
+        cwd: '/a',
+        conn: 'busy',
+        turnStartedAt: 1000,
+      })
+      const refresh = useChatStore.getState().refreshSessionStats
+      render(<SessionStatsBar />)
+      expect(refresh).toHaveBeenCalledTimes(1)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8000)
+      })
+      expect(refresh).toHaveBeenCalledTimes(1)
+
+      visibility = 'visible'
+      await act(async () => {
+        document.dispatchEvent(new Event('visibilitychange'))
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(refresh).toHaveBeenCalledTimes(2)
+    } finally {
+      if (own) Object.defineProperty(document, 'visibilityState', own)
+      else delete (document as { visibilityState?: DocumentVisibilityState }).visibilityState
+    }
   })
 })
