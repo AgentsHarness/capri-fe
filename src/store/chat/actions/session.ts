@@ -23,6 +23,9 @@ import { createRefreshGate } from '../refreshGate'
 /** workspace-list-recent 每页条数（初始 limit，「加载更多」每次 +50）。 */
 const WORKSPACE_RECENT_PAGE = 50
 
+/** 失败后补试的间隔（只补一次；这段时间不占闸门）。 */
+const RETRY_DELAY_MS = 4000
+
 /** 会话列表展示模式偏好的 localStorage 键（'recent' | 'full'，缺省 recent）。 */
 const WORKSPACE_MODE_KEY = KEY.workspaceMode
 
@@ -112,14 +115,26 @@ export function sessionActions(set: SetState, get: () => ChatState) {
   const sessionsGate = createRefreshGate()
   const workspacesGate = createRefreshGate()
 
-  /** 带重试的拉取本体；闸门只包住它，重试直接递归这里而不是走 action。 */
+  /**
+   * 失败后的一次性补试：隔 `RETRY_DELAY_MS` 再排一轮刷新，等的时候不占
+   * 闸门——否则整份列表的刷新都被这一个补试堵住，期间排队的触发还得各自
+   * 再等一遍。期间切了 host / 换了会话，旧 scope 作废，补试直接丢掉。
+   */
+  const retryLater = (run: () => void, scope: ReturnType<typeof captureAsyncScope>) => {
+    setTimeout(() => {
+      if (!isAsyncScopeCurrent(get, scope)) return
+      run()
+    }, RETRY_DELAY_MS)
+  }
+
+  /** 拉取本体；闸门只包住它，失败后的补试由 retryLater 在闸门外重排。 */
   const pullSessions = async (retry: number): Promise<void> => {
     // 访客：会话列表由白名单决定（guestSessions），不拉 host 的整份 roster。
     if (isGuestState(get())) return
     const scope = captureAsyncScope(get)
     // hub 模式未选中 host：host 级请求没有 ?host= 会打到 hub 根路径
     // 404（数据不在 hub），且选中后（switchHost）自会重新拉取——跳过，
-    // 避免启动期无效请求与 4 秒后的冗余重试。
+    // 避免启动期无效请求。
     if (transport.getConnectionMode() === 'hub' && !transport.getHost()) return
     try {
       const { sessions } = await transport.listSessions()
@@ -131,17 +146,12 @@ export function sessionActions(set: SetState, get: () => ChatState) {
       set({ sessions: preserveLiveSessionSummary(get().sessions, sessions) })
     } catch (e) {
       // 主动 abort（StrictMode 双挂载的 disconnect / host 切换）：请求
-      // 作废而非失败，不重试——新一轮挂载/切换自会重新拉取，否则 dev
-      // 下每次加载都会多一次 4 秒后的冗余请求。
+      // 作废而非失败，不补试——新一轮挂载/切换自会重新拉取。
       if (e instanceof Error && e.name === 'AbortError') return
       // 启动窗口容错：host 刚重启时 agent 预热 boot（initialize +
-      // authenticate）可能超过 fetch 超时，重试一次再放弃，避免首屏
-      // 会话列表为空。
-      if (retry > 0) {
-        await new Promise((r) => setTimeout(r, 4000))
-        if (!isAsyncScopeCurrent(get, scope)) return
-        await pullSessions(retry - 1)
-      }
+      // authenticate）可能超过 fetch 超时，隔一会儿补一次再放弃，避免
+      // 首屏会话列表为空。
+      if (retry > 0) retryLater(() => void refreshSessions(0), scope)
     }
   }
 
@@ -157,6 +167,21 @@ export function sessionActions(set: SetState, get: () => ChatState) {
       return
     }
     set({ workspaceLoading: true })
+    /**
+     * 失败收口：手里已有的列表原样留着（旧数据也比只剩标题强），一份都
+     * 没有时（首屏 / 刚切 host）才用名册拼标题兜底，保证侧栏不白屏。
+     * 展示模式不动——一次失败不该把「最近」翻成「全量」。
+     */
+    const onFailure = () => {
+      if (!isCurrent()) return
+      set({
+        ...(get().workspaces.length === 0
+          ? { workspaces: fallbackGroupsFromSessions(get().sessions) }
+          : {}),
+        workspaceLoading: false,
+      })
+      if (retry > 0) retryLater(() => void refreshWorkspaces(0), scope)
+    }
     // 本地记忆的展示模式偏好：full → 直接全量；recent（默认）→ 分页。
     if (loadStr(WORKSPACE_MODE_KEY) === 'full') {
       try {
@@ -168,23 +193,15 @@ export function sessionActions(set: SetState, get: () => ChatState) {
           workspaceListMode: 'full',
           workspaceRecentHasMore: false,
         })
-        return
-      } catch {
-        if (!isCurrent()) return
-        if (retry > 0) {
-          await new Promise((r) => setTimeout(r, 4000))
-          if (!isCurrent()) return
-          await pullWorkspaces(retry - 1)
+      } catch (e) {
+        // 主动 abort：作废而非失败，不补试不兜底。
+        if (e instanceof Error && e.name === 'AbortError') {
+          if (isCurrent()) set({ workspaceLoading: false })
           return
         }
-        set({
-          workspaces: fallbackGroupsFromSessions(get().sessions),
-          workspaceLoading: false,
-          workspaceListMode: 'full',
-          workspaceRecentHasMore: false,
-        })
-        return
+        onFailure()
       }
+      return
     }
     try {
       const limit = get().workspaceRecentLimit
@@ -202,41 +219,12 @@ export function sessionActions(set: SetState, get: () => ChatState) {
       })
     } catch (e) {
       // 主动 abort（StrictMode 双挂载的 disconnect / host 切换）：作废
-      // 而非失败，不重试不降级（新一轮挂载/切换自会重新拉取）。恢复
-      // loading，避免刷新按钮/中央加载态卡住。
+      // 而非失败，不补试不兜底。恢复 loading，避免刷新按钮/中央加载态卡住。
       if (e instanceof Error && e.name === 'AbortError') {
         if (isCurrent()) set({ workspaceLoading: false })
         return
       }
-      if (!isCurrent()) return
-      // 启动窗口容错：host 刚重启时 agent 预热 boot 可能超过 fetch
-      // 超时（502），重试一次再降级，避免首屏侧边栏空白。
-      if (retry > 0) {
-        await new Promise((r) => setTimeout(r, 4000))
-        if (!isCurrent()) return
-        await pullWorkspaces(retry - 1)
-        return
-      }
-      // 降级 1：全量 workspace-list（旧 agent 无 workspace-list-recent）。
-      try {
-        const workspaces = await transport.workspaceList()
-        if (!isCurrent()) return
-        set({
-          workspaces,
-          workspaceLoading: false,
-          workspaceListMode: 'full',
-          workspaceRecentHasMore: false,
-        })
-        return
-      } catch {
-        // 降级 2：按现有 sessions 的 cwd 分组，保证侧边栏永不白屏。
-        set({
-          workspaces: fallbackGroupsFromSessions(get().sessions),
-          workspaceLoading: false,
-          workspaceListMode: 'full',
-          workspaceRecentHasMore: false,
-        })
-      }
+      onFailure()
     }
   }
 
