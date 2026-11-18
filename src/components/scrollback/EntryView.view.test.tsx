@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import type { ScrollEntry, ToolCall } from '../../api/types'
 import { useChatStore } from '../../store/chat'
+import { usePins } from '../../store/historyPins'
 import { EntryView } from './EntryView'
 import { entryExpanded } from '../../scrollback/entryState'
 
@@ -43,6 +44,8 @@ const toolExpanded = (id: string) => {
 }
 
 beforeEach(() => {
+  // 本文件断言的是折叠与查看器行为，关掉流式出字让正文同步完整渲染。
+  usePins.getState().setFePrefs({ streamTextSmooth: false })
   useChatStore.setState({
     entries: [],
     toolIndex: {},
@@ -50,6 +53,7 @@ beforeEach(() => {
     sessionId: 's1',
     conn: 'ready',
     openViewer: vi.fn(),
+    fillToolEntryDetail: vi.fn(),
   })
 })
 
@@ -239,13 +243,14 @@ describe('lite 占位行的可见范围', () => {
     expect(screen.queryByText(/输出已省略/)).toBeNull()
   })
 
-  it('展开态显示占位行，且裁掉的正文不渲染', () => {
+  it('展开态显示占位行与 [加载]，点击就地补全', () => {
     const e = liteTool({ expanded: true })
     useChatStore.setState({ entries: [e] })
     render(<EntryView e={e} selected={false} pendingFreeze={false} now={0} />)
     expect(screen.getByText(/输出已省略/)).toBeTruthy()
     expect(screen.queryByText(/total 448/)).toBeNull()
-    expect(screen.queryByRole('button', { name: '[加载]' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '[加载]' }))
+    expect(useChatStore.getState().fillToolEntryDetail).toHaveBeenCalledWith('lite1')
   })
 
   it('加载中不显示按钮；失败才出现 [重试]', () => {

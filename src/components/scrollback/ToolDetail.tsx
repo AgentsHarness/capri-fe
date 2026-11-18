@@ -26,6 +26,7 @@ import { makeRelativePath, mcpTitleizeSegment } from '../../scrollback/toolPaths
 import { useChatStore } from '../../store/chat'
 import { IconGlyph } from '../ui/IconGlyph'
 import { ZoomableImage } from '../ui/ImageLightbox'
+import { OmittedToolBody } from './LiteToolFill'
 import { fmtBytes } from '../../format'
 import { Ansi } from '../ui/Ansi'
 import {
@@ -119,6 +120,9 @@ type Props = {
    * / "(no results)" 这类假空态，改说「输出已省略」。
    */
   bodyOmitted?: boolean
+  /** 手动补全入口（无坐标时不给）；补全态决定按钮显隐与 [重试]。 */
+  onLoad?: () => void
+  loadState?: 'loading' | 'error' | 'filled'
 }
 
 export function ToolDetail({
@@ -128,6 +132,8 @@ export function ToolDetail({
   mergedRaws,
   className,
   bodyOmitted,
+  onLoad,
+  loadState,
 }: Props) {
   const d = extractToolDetail(raw, kindName)
   // Only edit rows merge (store-side rule); guard kind anyway.
@@ -138,13 +144,7 @@ export function ToolDetail({
   // (no content) / (no results) / (no diff) 一律换成省略提示。
   const omitted = bodyOmitted ?? toolBodyOmitted(raw)
   if (omitted && detailIsEmpty(d) && extras.length === 0) {
-    return (
-      <div
-        className={`min-w-0 font-ui text-[12.5px] leading-[1.45] ${className ?? 'mt-1'}`}
-      >
-        <MetaLine>输出已省略</MetaLine>
-      </div>
-    )
+    return <OmittedToolBody className={className ?? 'mt-1'} onLoad={onLoad} loadState={loadState} />
   }
   return (
     <div

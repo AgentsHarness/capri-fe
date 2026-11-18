@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import type { ToolCall } from '../../api/types'
 import { ToolDetail } from './ToolDetail'
@@ -17,10 +17,24 @@ function tc(
 function renderDetail(
   over: Parameters<typeof tc>[0],
   kindName?: string,
-  props: Partial<{ full: boolean; mergedRaws: ToolCall[]; className: string }> = {},
+  props: Partial<{
+    full: boolean
+    mergedRaws: ToolCall[]
+    className: string
+    onLoad: () => void
+    loadState: 'loading' | 'error' | 'filled'
+  }> = {},
 ) {
   return render(
-    <ToolDetail raw={tc(over)} kindName={kindName} full={props.full} mergedRaws={props.mergedRaws} className={props.className} />,
+    <ToolDetail
+      raw={tc(over)}
+      kindName={kindName}
+      full={props.full}
+      mergedRaws={props.mergedRaws}
+      className={props.className}
+      onLoad={props.onLoad}
+      loadState={props.loadState}
+    />,
   )
 }
 
@@ -514,5 +528,41 @@ describe('ToolDetail — list_dir / fetch / web_search / use_tool / generic', ()
 
     const { container: c2 } = renderDetail({ title: 'EmptyTool' }, 'custom')
     expect(c2.textContent).toContain('(no output)')
+  })
+})
+describe('ToolDetail — lite 裁空正文的占位', () => {
+  const cut = {
+    kind: 'edit',
+    rawInput: { path: 'a.ts' },
+    content: [{ type: 'diff', omitted: 4096 }],
+    _meta: { lite: { omitted: 4096, fields: ['content'] } },
+  }
+
+  it('有补全入口：输出已省略 + [加载]，点击触发 onLoad', () => {
+    const onLoad = vi.fn()
+    renderDetail(cut, 'edit', { onLoad })
+    expect(screen.getByText(/输出已省略/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '[加载]' }))
+    expect(onLoad).toHaveBeenCalledTimes(1)
+  })
+
+  it('加载中不画按钮；失败换成 [重试]', () => {
+    const onLoad = vi.fn()
+    const r = renderDetail(cut, 'edit', { onLoad, loadState: 'loading' })
+    expect(screen.getByText(/正在加载工具输出/)).toBeTruthy()
+    expect(screen.queryByRole('button')).toBeNull()
+
+    r.rerender(
+      <ToolDetail raw={tc(cut)} kindName="edit" onLoad={onLoad} loadState="error" />,
+    )
+    expect(screen.getByText(/工具输出加载失败/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '[重试]' }))
+    expect(onLoad).toHaveBeenCalledTimes(1)
+  })
+
+  it('没有补全入口：只留省略说明', () => {
+    renderDetail(cut, 'edit')
+    expect(screen.getByText(/输出已省略/)).toBeTruthy()
+    expect(screen.queryByRole('button')).toBeNull()
   })
 })

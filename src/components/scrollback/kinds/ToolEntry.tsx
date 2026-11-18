@@ -7,7 +7,7 @@ import { AnimatedCollapse } from '../../ui/AnimatedCollapse'
 import { ToolDetail } from '../ToolDetail'
 import { Bullet, EntryShell } from '../EntryShell'
 import { LiteToolFill } from '../LiteToolFill'
-import { toolEntryLitePending } from '../../../store/chat/historyFill'
+import { toolEntryLitePending, toolEntryNeedsFill } from '../../../store/chat/historyFill'
 import { HeaderWithView } from '../ViewButton'
 import type { EntryChrome } from '../chrome'
 
@@ -147,13 +147,12 @@ export function ToolEntry({
         animate={!running}
       >
         {litePending ? (
-          // lite 裁掉的正文：占位行报出省略规模；展开已经触发补全，这里
-          // 只在失败时给 [重试]。补全完成后这条自动让位给下面的正文。
+          // lite 裁掉的正文：占位行报出省略规模；展开已经自动触发补全，
+          // 这里再给手动 [加载]（失败换 [重试]）。补全完成后这条让位给正文。
           <LiteToolFill
             bytes={e.liteOmitted!}
             state={e.liteState}
             onFill={fillToolBodies ? () => fillToolBodies(e.id) : undefined}
-            className="pl-1"
           />
         ) : e.raw ? (
           <ToolDetail
@@ -161,6 +160,12 @@ export function ToolEntry({
             kindName={e.kindName}
             full={mode === 'expanded'}
             mergedRaws={e.mergedRaws}
+            onLoad={
+              fillToolBodies && toolEntryNeedsFill(e)
+                ? () => fillToolBodies(e.id)
+                : undefined
+            }
+            loadState={e.liteState}
           />
         ) : null}
       </AnimatedCollapse>

@@ -4,7 +4,7 @@ import { fmtBytes } from '../../format'
 import { Accents } from '../../theme/accents'
 import { TodoMark } from '../scrollback/todoMark'
 import { LiteToolFill } from '../scrollback/LiteToolFill'
-import { toolEntryLitePending } from '../../store/chat/historyFill'
+import { toolEntryLitePending, toolEntryNeedsFill } from '../../store/chat/historyFill'
 import { ToolDetail } from '../scrollback/ToolDetail'
 import { Markdown } from '../ui/Markdown'
 import { ZoomableImage } from '../ui/ImageLightbox'
@@ -25,7 +25,7 @@ export function ViewerBody({
   if (entry.kind === 'tool' && entry.raw) {
     if (toolEntryLitePending(entry)) {
       // 正文被 lite 裁掉：全文视图同样只给占位行（打开查看器已触发按需
-      // 补全，这里是补回来之前的过渡态）。失败才出现 [重试]。
+      // 补全，这里是补回来之前的过渡态）。占位行带手动 [加载] / [重试]。
       return (
         <LiteToolFill
           bytes={entry.liteOmitted}
@@ -42,6 +42,12 @@ export function ViewerBody({
         full
         mergedRaws={entry.mergedRaws}
         className="mt-0"
+        onLoad={
+          toolEntryNeedsFill(entry)
+            ? () => void useChatStore.getState().fillToolEntryDetail(entry.id)
+            : undefined
+        }
+        loadState={entry.liteState}
       />
     )
   }
@@ -119,10 +125,9 @@ export function ViewerBody({
             {entry.error}
           </div>
         ) : entry.answer ? (
-          <div
-            key={entry.answer}
-            className={smoothStream ? 'gn-stream-fade' : undefined}
-          >
+          // 同滚动区 BtwEntry：key 不能跟随答案文本，否则每个流式更新都
+          // 重挂载外层并把整段答案重新淡入一次。
+          <div className={smoothStream ? 'gn-stream-fade' : undefined}>
             <Markdown
               source={entry.answer}
               streaming={!!entry.streaming}
