@@ -80,7 +80,7 @@ describe('verbGroupKind / labelKind', () => {
     ).toBe('file')
   })
 
-  it('execute/edit 只在分组档参与；er 档返回 null', () => {
+  it('execute/edit 只在分组档参与；detailed 返回 null', () => {
     const scope = groupScopeForDensity('compact-all-grouped')
     expect(verbGroupKind(tool({ kindName: 'execute' }), scope)).toBe('command')
     expect(verbGroupKind(tool({ kindName: 'edit' }), scope)).toBe('edit')
@@ -109,11 +109,13 @@ describe('runStep', () => {
     ).toEqual({ kind: 'break' })
   })
 
-  it('thought：showThinking 且折叠非流式 → thought；否则 transparent', () => {
+  it('thought：showThinking 且折叠非流式 → thought；展开 → open-thought；否则 transparent', () => {
     expect(runStep(thought())).toEqual({ kind: 'thought' })
     expect(runStep(thought({ text: '' }))).toEqual({ kind: 'thought' })
     expect(runStep(thought({ streaming: true }))).toEqual({ kind: 'transparent' })
-    expect(runStep(thought({ displayMode: 'expanded' }))).toEqual({ kind: 'transparent' })
+    expect(runStep(thought({ displayMode: 'expanded' }))).toEqual({
+      kind: 'open-thought',
+    })
     expect(runStep(thought(), false)).toEqual({ kind: 'transparent' })
   })
 
@@ -236,6 +238,73 @@ describe('scanGroups — 单条与多条的折叠门槛', () => {
     expect(rows.map((row) => (row.type === 'entry' ? row.index : 'header'))).toEqual([
       'header',
       1,
+    ])
+  })
+
+  it('段首思考展开：分组锚点与行序不变，thinking 不会跑到组外', () => {
+    const th = thought({ id: 'th', text: 'hmm' })
+    const t1 = toolWithInput('read', { target_file: '/w/a.py' })
+    const entries = [th, t1, toolWithInput('read', { target_file: '/w/b.py' })]
+    const rowIds = (rows: ReturnType<typeof projectDisplayRows>) =>
+      rows.map((row) => (row.type === 'entry' ? row.entry.id : row.id))
+
+    // 分组展开时，段首思考在聚合头之后。
+    const before = scanGroups(entries, new Set(['th']))
+    expect(before).toHaveLength(1)
+    expect(before[0]).toMatchObject({
+      range: { start: 0, end: 3 },
+      anchorId: 'th',
+      expanded: true,
+    })
+    expect(rowIds(projectDisplayRows(entries, before))).toEqual([
+      'gh_th',
+      'th',
+      t1.id,
+      entries[2].id,
+    ])
+
+    // 点开思考：仍留在同一段里，聚合头不动、行序不变。
+    const opened = [
+      { ...th, displayMode: 'expanded' } as ScrollEntry,
+      t1,
+      entries[2],
+    ]
+    const after = scanGroups(opened, new Set(['th']))
+    expect(after).toHaveLength(1)
+    expect(after[0]).toMatchObject({
+      range: { start: 0, end: 3 },
+      anchorId: 'th',
+      expanded: true,
+    })
+    expect(rowIds(projectDisplayRows(opened, after))).toEqual([
+      'gh_th',
+      'th',
+      t1.id,
+      entries[2].id,
+    ])
+
+    // 收起分组时，手动展开的思考仍排在聚合头之后（不换锚点、不出组）。
+    const collapsed = scanGroups(opened, new Set())
+    expect(collapsed[0]).toMatchObject({ anchorId: 'th', expanded: false })
+    expect(rowIds(projectDisplayRows(opened, collapsed))).toEqual(['gh_th', 'th'])
+  })
+
+  it('组内末尾思考展开：仍留在段内，不另起一行到组外', () => {
+    const t1 = toolWithInput('read', { target_file: '/w/a.py' })
+    const t2 = toolWithInput('read', { target_file: '/w/b.py' })
+    const before = [t1, t2, thought({ id: 'th', text: 'hmm' })]
+    const after = [
+      t1,
+      t2,
+      { ...(before[2] as Extract<ScrollEntry, { kind: 'thought' }>), displayMode: 'expanded' as const },
+    ]
+    const spans = scanGroups(after, new Set())
+    expect(spans).toHaveLength(1)
+    expect(spans[0].range).toEqual({ start: 0, end: 3 })
+    const rows = projectDisplayRows(after, spans)
+    expect(rows.map((row) => (row.type === 'entry' ? row.entry.id : row.id))).toEqual([
+      'gh_' + t1.id,
+      'th',
     ])
   })
 

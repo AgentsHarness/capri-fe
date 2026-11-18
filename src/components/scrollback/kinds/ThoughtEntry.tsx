@@ -237,6 +237,9 @@ export function ThoughtEntry({
                   <SmoothStreamText
                     text={streamText ?? ''}
                     enabled={smoothStream}
+                    revealInitial={chrome.revealStreamInitial !== false}
+                    fadeKey={e.id}
+                    onSettledAt={chrome.onStreamSettledAt}
                   />
                 </>
               ) : truncated ? (

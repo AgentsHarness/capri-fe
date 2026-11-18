@@ -1,4 +1,6 @@
 export {
+  currentPreviewIds,
+  resolveSelectableIndex,
   selectableRowIds,
   turnIsLive,
   rosterSessionBusy,

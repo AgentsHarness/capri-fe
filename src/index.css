@@ -327,6 +327,14 @@ body.gn-queue-dragging {
   transition: none;
 }
 
+/* 块被收进聚合组的退出：正文先由内部 AnimatedCollapse 折回标题行，
+   随后外层把这一行的高度收起并淡出。平移/缩放不再参与。 */
+.gn-absorb:not(.gn-collapse-instant) {
+  transition:
+    height 0.18s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0.14s ease-out;
+}
+
 /* Composer 浮层（斜杠命令 / @ 文件）选中行底色。裸 gn-selection 在弹层里
    太抢眼（浅色主题下整行像被涂满），按 SelectionBox 的惯例先与浮层底色
    混合再用。30% 这档：浅色主题下与浮层底色仍差 ~15 个色阶（不至于看不见），
@@ -549,7 +557,7 @@ body.gn-queue-dragging {
   }
 }
 .gn-stream-fade {
-  animation: gn-stream-fade 0.16s ease-out both;
+  animation: gn-stream-fade 0.18s ease-out both;
 }
 
 /* ── 等待输入卡片（权限条 / 提问卡）入场：轻微上浮 + 淡入 ───────────── */

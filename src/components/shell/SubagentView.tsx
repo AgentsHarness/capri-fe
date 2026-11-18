@@ -7,13 +7,25 @@ import { Glyphs } from '../../theme/glyphs'
 import { useDisplayRows } from '../scrollback/useDisplayRows'
 import { useEnteringEntries } from '../scrollback/useEnteringEntries'
 import { useJunctionDissolve } from '../scrollback/useJunctionDissolve'
+import { useAbsorbingEntries, type AbsorbingEntry } from '../scrollback/useAbsorbingEntries'
+import { useGroupEnteringEntries } from '../scrollback/useGroupEnteringEntries'
+import { AbsorbingEntryRow } from '../scrollback/AbsorbingEntryRow'
 import { EntryView } from '../scrollback/EntryView'
 import { GroupHeaderView } from '../scrollback/GroupHeaderView'
 import type { EntryViewActions } from '../scrollback/chrome'
 import { fallbackStickyBandH, pickStickyPin } from '../../scrollback/stickyPin'
 import { USER_COLLAPSED_MAX_LINES, collapseUserText } from '../../scrollback/userText'
-import { displayRowKey, isDensePackableRow, spanContaining } from '../../scrollback/verbGroup'
+import {
+  displayRowKey,
+  isDensePackable,
+  spanContaining,
+  type DisplayRow,
+} from '../../scrollback/verbGroup'
 import { toolDisplayMode } from '../../scrollback/entryState'
+import { groupPreviewPatch } from '../../scrollback/groupPreview'
+import { GROUP_HOLD_DEFAULT_MS } from '../../scrollback/groupHold'
+import { withAbsorbingRows } from '../../scrollback/absorbLayout'
+import { resolveSelectionId } from '../../scrollback/selection'
 import {
   COLUMN_PAD_X_CLASS,
   CONTENT_COLUMN_CLASS,
@@ -272,9 +284,38 @@ function SubagentTimeline({
     if (bodyEl && timelineFollowsTail()) bodyEl.scrollTop = bodyEl.scrollHeight
   }, [running, items, pinTimelineTail, timelineFollowsTail])
 
-  // 主 scrollback 同款分组管线，并跟随 tool_call_density 设置。
+  // 主 scrollback 同款分组 + 新块预览管线，并跟随 tool_call_density。
   // 只用渲染窗口内的条目（renderItems），DOM 保持扁平。
-  const { rows, spans } = useDisplayRows(renderItems, expandedGroups)
+  const groupHoldMs =
+    useFePrefs((s) => s.fePrefs.groupHoldMs) ?? GROUP_HOLD_DEFAULT_MS
+  // 迷你视图的折叠是局部状态，不写回条目；把这些手势传给预览判定，
+  // 用户手动折过的行不再自动展开/停留。
+  const suppressPreviewIds = useMemo(() => new Set(folds.keys()), [folds])
+  const { rows, spans, scope, previewIds } = useDisplayRows(
+    renderItems,
+    expandedGroups,
+    groupHoldMs,
+    suppressPreviewIds,
+  )
+  const groupEnteringIds = useGroupEnteringEntries(
+    renderItems,
+    rows,
+    spans,
+    expandedGroups,
+  )
+  // 密度切换会改变可分组的范围：与主 scrollback 一样丢弃旧展开锚点。
+  const lastScopeRef = useRef(scope)
+  useEffect(() => {
+    if (lastScopeRef.current === scope) return
+    lastScopeRef.current = scope
+    setExpandedGroups(new Set())
+  }, [scope])
+  // 预览停留结束 / 分组成员被收走时，把局部选中落到组头或最近可见行。
+  useEffect(() => {
+    if (!selectedId) return
+    const next = resolveSelectionId(renderItems, rows, spans, selectedId)
+    if (next !== selectedId) setSelectedId(next)
+  }, [renderItems, rows, spans, selectedId])
   const enteringIds = useEnteringEntries(renderItems, {
     enabled: entryFadeIn && running,
     historyLoadedAt: view?.loadedStart,
@@ -334,6 +375,41 @@ function SubagentTimeline({
     return p
   }
 
+  // 新块预览补丁：与主 scrollback 同款，但局部折叠手势优先。手动折过的
+  // 行已在 useDisplayRows 的 suppressPreviewIds 里排除。
+  const previewPatches = useMemo(() => {
+    const map = new Map<string, Partial<ScrollEntry>>()
+    for (const e of renderItems) {
+      if (!previewIds.has(e.id) || folds.has(e.id)) continue
+      const patch = groupPreviewPatch(e, true)
+      if (patch) map.set(e.id, patch)
+    }
+    return map
+  }, [renderItems, previewIds, folds])
+  const patchFor = (e: ScrollEntry): Partial<ScrollEntry> | undefined =>
+    foldPatch(e) ?? previewPatches.get(e.id)
+  const previewPatchesRef = useRef(previewPatches)
+  previewPatchesRef.current = previewPatches
+  const renderedEntry = (e: ScrollEntry): ScrollEntry => {
+    const patch = patchFor(e)
+    return patch ? ({ ...e, ...patch } as ScrollEntry) : e
+  }
+  const rowDense = (row: DisplayRow): boolean =>
+    row.type === 'group_header'
+      ? true
+      : isDensePackable(renderedEntry(row.entry))
+
+  // 预览停留结束、成员被折叠组收走时，补一行旧位置快照再收起——与主
+  // scrollback 的退出动画一致。视图重建/翻页换 epoch，不重播整批动画。
+  const absorbingEntries = useAbsorbingEntries(
+    renderItems,
+    rows,
+    spans,
+    `${childSid}:${view?.loadedStart ?? ''}`,
+    previewIds,
+    suppressPreviewIds,
+  )
+
   // 「查看」全文弹窗（局部状态）：mini 条目不在主 entries 里，主 viewer 找
   // 不到目标——弹窗用 BlockBodyDialog 在组件内渲染同一套全文内容。
   const [viewerId, setViewerId] = useState<string | null>(null)
@@ -350,9 +426,15 @@ function SubagentTimeline({
     () => ({
       toggleTool: (id) => {
         const base = renderItemsRef.current.find((x) => x.id === id)
+        // 预览补丁让 store 仍为 collapsed 的行在视觉上已展开；第一次点击
+        // 应当收起（与主 scrollback 的 useMainFoldActions 同语义）。
         const cur =
           folds.get(id) ??
-          (base && base.kind === 'tool' ? toolDisplayMode(base) !== 'collapsed' : false)
+          (previewPatchesRef.current.has(id)
+            ? true
+            : base && base.kind === 'tool'
+              ? toolDisplayMode(base) !== 'collapsed'
+              : false)
         const next = !cur
         setFolds((m) => new Map(m).set(id, next))
         // 展开 = 要看正文：lite 裁掉的行按需补全（非 lite / 已补全 no-op）。
@@ -485,48 +567,75 @@ function SubagentTimeline({
                   </div>
                 )}
               </div>
-              {rows.map((row, i) => {
-                const dense = isDensePackableRow(row)
-                const densePrev = i > 0 && isDensePackableRow(rows[i - 1])
-                const denseNext =
-                  i < rows.length - 1 && isDensePackableRow(rows[i + 1])
-                if (row.type === 'group_header') {
+              {(() => {
+                const items: Array<
+                  | { kind: 'row'; row: DisplayRow; i: number }
+                  | { kind: 'ghost'; ghost: AbsorbingEntry }
+                > = rows.map((row, i) => ({ kind: 'row' as const, row, i }))
+                const withGhosts = withAbsorbingRows(
+                  items,
+                  absorbingEntries,
+                  (item) =>
+                    item.kind === 'row' ? [displayRowKey(item.row)] : [],
+                  (ghost) => ({ kind: 'ghost' as const, ghost }),
+                )
+                return withGhosts.map((item) => {
+                  if (item.kind === 'ghost') {
+                    return (
+                      <AbsorbingEntryRow
+                        key={`absorb_${item.ghost.entry.id}`}
+                        ghost={item.ghost}
+                        pendingFreeze={false}
+                        now={now}
+                      />
+                    )
+                  }
+                  const { row, i } = item
+                  const dense = rowDense(row)
+                  const prevRow = rows[i - 1]
+                  const nextRow = rows[i + 1]
+                  const densePrev = prevRow != null && rowDense(prevRow)
+                  const denseNext = nextRow != null && rowDense(nextRow)
+                  if (row.type === 'group_header') {
+                    return (
+                      <GroupHeaderView
+                        key={displayRowKey(row)}
+                        row={row}
+                        selected={row.id === selectedId}
+                        pendingFreeze={false}
+                        now={now}
+                        onToggle={() => toggleGroupExpansion(row.span.anchorId)}
+                        dense={dense}
+                        densePrev={densePrev}
+                        denseNext={denseNext}
+                        enter={groupEnter(row.span)}
+                        selectRow={setSelectedId}
+                      />
+                    )
+                  }
+                  const e = row.entry
                   return (
-                    <GroupHeaderView
+                    <EntryView
                       key={displayRowKey(row)}
-                      row={row}
-                      selected={row.id === selectedId}
+                      e={e}
+                      selected={e.id === selectedId}
                       pendingFreeze={false}
                       now={now}
-                      onToggle={() => toggleGroupExpansion(row.span.anchorId)}
+                      inGroup={spanContaining(spans, row.index) != null}
                       dense={dense}
                       densePrev={densePrev}
                       denseNext={denseNext}
-                      enter={groupEnter(row.span)}
-                      selectRow={setSelectedId}
+                      actions={actions}
+                      patch={patchFor(e)}
+                      streamBodyRef={miniStreamBodyRef}
+                      readonly={guest}
+                      enter={
+                        enteringIds.has(e.id) || groupEnteringIds.has(e.id)
+                      }
                     />
                   )
-                }
-                const e = row.entry
-                return (
-                  <EntryView
-                    key={displayRowKey(row)}
-                    e={e}
-                    selected={e.id === selectedId}
-                    pendingFreeze={false}
-                    now={now}
-                    inGroup={spanContaining(spans, row.index) != null}
-                    dense={dense}
-                    densePrev={densePrev}
-                    denseNext={denseNext}
-                    actions={actions}
-                    patch={foldPatch(e)}
-                    streamBodyRef={miniStreamBodyRef}
-                    readonly={guest}
-                    enter={enteringIds.has(e.id)}
-                  />
-                )
-              })}
+                })
+              })()}
             </div>
           )}
         </div>

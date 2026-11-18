@@ -5,12 +5,16 @@ import { useChatStore } from '../../store/chat'
 import { useFePrefs } from '../../store/historyPins'
 import {
   displayRowKey,
-  isDensePackableRow,
+  isDensePackable,
   spanContaining,
   type DisplayRow,
 } from '../../scrollback/verbGroup'
 import { buildUserNavItems } from '../../scrollback/userNav'
 import { appendImageRow } from '../../scrollback/imageGallery'
+import { groupPreviewPatch } from '../../scrollback/groupPreview'
+import { withAbsorbingRows } from '../../scrollback/absorbLayout'
+import { GROUP_HOLD_DEFAULT_MS } from '../../scrollback/groupHold'
+import { resolveSelectionId } from '../../scrollback/selection'
 import { SelectionBox } from '../ui/SelectionBox'
 import { SPINNER_FRAMES } from '../../theme/glyphs'
 import { COLUMN_PAD_X_CLASS, CONTENT_COLUMN_CLASS } from '../../theme/layout'
@@ -18,10 +22,14 @@ import { UserMessageNav, type UserMessageNavItem } from '../session/UserMessageN
 import { WorkspaceBar } from './WorkspaceBar'
 import { EmptyStatePicker } from './EmptyState'
 import { EntryView } from './EntryView'
+import { useMainFoldActions } from './useMainFoldActions'
 import { GroupHeaderView } from './GroupHeaderView'
 import { ImageLightbox, type InlineImage } from '../ui/ImageLightbox'
 import { StickyPrompt } from './StickyPrompt'
 import { useDisplayRows } from './useDisplayRows'
+import { useAbsorbingEntries, type AbsorbingEntry } from './useAbsorbingEntries'
+import { useGroupEnteringEntries } from './useGroupEnteringEntries'
+import { AbsorbingEntryRow } from './AbsorbingEntryRow'
 import { useEnteringEntries } from './useEnteringEntries'
 import { useFinishFlash } from './useFinishFlash'
 import { useFollowScroll } from './useFollowScroll'
@@ -61,6 +69,8 @@ export function Scrollback({
     (s) => s.conn === 'busy' || s.liveStream != null || s.pending.length > 0,
   )
   const entryFadeIn = useFePrefs((s) => s.fePrefs.entryFadeIn)
+  const groupHoldMs =
+    useFePrefs((s) => s.fePrefs.groupHoldMs) ?? GROUP_HOLD_DEFAULT_MS
   const expandedGroups = useChatStore((s) => s.expandedGroups)
   const historyLoadedAt = useChatStore((s) => s.historyLoadedAt)
   const historyHasMore = useChatStore((s) => s.historyHasMore)
@@ -138,7 +148,58 @@ export function Scrollback({
     userById,
   )
 
-  const { rows: displayRows, spans } = useDisplayRows(entries, expandedGroups)
+  const {
+    rows: displayRows,
+    spans,
+    previewIds,
+  } = useDisplayRows(entries, expandedGroups, groupHoldMs)
+  // 手动展开分组时新露出的成员播入场淡入（收起走 absorbingEntries）。
+  const groupEnteringIds = useGroupEnteringEntries(
+    entries,
+    displayRows,
+    spans,
+    expandedGroups,
+  )
+  // id → 新块预览的渲染补丁。停留窗口由 useDisplayRows 按块的时间窗
+  // 判定，覆盖入组与不入组的默认折叠工具；默认展开的块不在其中。
+  const previewPatches = useMemo(() => {
+    const map = new Map<string, Partial<ScrollEntry>>()
+    for (const e of entries) {
+      if (!previewIds.has(e.id)) continue
+      const patch = groupPreviewPatch(e, true)
+      if (patch) map.set(e.id, patch)
+    }
+    return map
+  }, [entries, previewIds])
+  // 默认展开的块按「点开后的间距」排版：密度要用应用补丁后的条目算，
+  // 不能继续按 store 里的 collapsed 形态当 dense 行（那会把行距和
+  // accent 都压成一行标题）。
+  const renderedEntry = (e: ScrollEntry): ScrollEntry => {
+    const patch = previewPatches.get(e.id)
+    return patch ? ({ ...e, ...patch } as ScrollEntry) : e
+  }
+  const rowDense = (row: DisplayRow): boolean =>
+    row.type === 'group_header'
+      ? true
+      : isDensePackable(renderedEntry(row.entry))
+  // 块并入折叠组时，在旧位置补一行展开态快照再收起。
+  const absorbingEntries = useAbsorbingEntries(
+    entries,
+    displayRows,
+    spans,
+    `${sessionId ?? ''}:${historyLoadedAt ?? ''}`,
+    previewIds,
+  )
+  // 主 scrollback 的单击折叠覆盖：新块预览下单击一次就钉回折叠态，
+  // 其余条目照旧走 store 的三态循环。
+  const mainActions = useMainFoldActions(previewPatches)
+  // 选中项被预览回落 / 折叠组收走 / 密度切走时，落到覆盖它的组头或最近
+  // 可见行，避免下一次 j/k 从失效 id 跳到列表首尾。
+  useEffect(() => {
+    if (!selectedId || focusMode !== 'scrollback') return
+    const next = resolveSelectionId(entries, displayRows, spans, selectedId)
+    if (next !== selectedId) selectEntry(next)
+  }, [entries, displayRows, spans, selectedId, focusMode, selectEntry])
   const now = useFinishFlash(entries)
   const pendingFreeze = pending.length > 0
   // 实时回合里新 append 的块播放半透明淡入（纯呈现，历史整批加载不播）。
@@ -526,6 +587,7 @@ export function Scrollback({
         {(() => {
           const items: Array<
             | { kind: 'row'; row: DisplayRow; i: number }
+            | { kind: 'ghost'; ghost: AbsorbingEntry }
             | {
                 kind: 'imgGroup'
                 key: string
@@ -566,14 +628,36 @@ export function Scrollback({
             }
             items.push({ kind: 'row', row, i })
           }
-          return items.map((item) => {
+          // 退出行按上一帧的锚点插回原位（普通行 / 画廊组内成员均可）。
+          const withGhosts = withAbsorbingRows(
+            items,
+            absorbingEntries,
+            (item) =>
+              item.kind === 'row'
+                ? [displayRowKey(item.row)]
+                : item.kind === 'imgGroup'
+                  ? item.rows.map(({ row }) => displayRowKey(row))
+                  : [],
+            (ghost) => ({ kind: 'ghost' as const, ghost }),
+          )
+          return withGhosts.map((item) => {
+            if (item.kind === 'ghost') {
+              return (
+                <AbsorbingEntryRow
+                  key={`absorb_${item.ghost.entry.id}`}
+                  ghost={item.ghost}
+                  pendingFreeze={pendingFreeze}
+                  now={now}
+                />
+              )
+            }
             if (item.kind === 'row') {
               const { row, i } = item
-              const dense = isDensePackableRow(row)
-              const densePrev = i > 0 && isDensePackableRow(displayRows[i - 1])
+              const dense = rowDense(row)
+              const densePrev = i > 0 && rowDense(displayRows[i - 1])
               const denseNext =
                 i < displayRows.length - 1 &&
-                isDensePackableRow(displayRows[i + 1])
+                rowDense(displayRows[i + 1])
               if (row.type === 'group_header') {
                 return (
                   <GroupHeaderView
@@ -601,8 +685,14 @@ export function Scrollback({
                   dense={dense}
                   densePrev={densePrev}
                   denseNext={denseNext}
+                  patch={previewPatches.get(row.entry.id)}
+                  actions={mainActions}
+                  mini={false}
                   readonly={guest}
-                  enter={enteringIds.has(row.entry.id)}
+                  enter={
+                    enteringIds.has(row.entry.id) ||
+                    groupEnteringIds.has(row.entry.id)
+                  }
                 />
               )
             }
@@ -637,11 +727,11 @@ export function Scrollback({
                     />
                   ) : null}
                   {item.rows.map(({ row, i }) => {
-                    const dense = isDensePackableRow(row)
-                    const densePrev = i > 0 && isDensePackableRow(displayRows[i - 1])
+                    const dense = rowDense(row)
+                    const densePrev = i > 0 && rowDense(displayRows[i - 1])
                     const denseNext =
                       i < displayRows.length - 1 &&
-                      isDensePackableRow(displayRows[i + 1])
+                      rowDense(displayRows[i + 1])
                     return (
                       <div key={displayRowKey(row)}>
                         <EntryView
@@ -655,6 +745,8 @@ export function Scrollback({
                           dense={dense}
                           densePrev={densePrev}
                           denseNext={denseNext}
+                          actions={mainActions}
+                          mini={false}
                           onOpenImage={item.onOpenImage}
                           noFrame
                           galleryItem

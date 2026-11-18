@@ -134,6 +134,11 @@ export type ScrollEntry =
        * toolDisplayMode 归一。
        */
       displayMode?: 'collapsed' | 'truncated' | 'expanded'
+      /**
+       * 用户手动折叠/展开过（与 thought 的 display_mode_pinned 同义）。
+       * 置位后不再套用「新块预览」的默认展开，折叠态归用户所有。
+       */
+      foldPinned?: boolean
       raw?: ToolCall
       /**
        * Additional EditFile calls merged into this row (TUI

@@ -943,7 +943,7 @@ export interface ChatUiState {
   /** 主动拉取 full 进行正文补全：并发补全当前视图所有包含待补全条目的 lite 轮。 */
   flushLiteFills: () => Promise<void>
   toggleTool: (id: string) => void
-  toggleThought: (id: string) => void
+  toggleThought: (id: string) => void; pinCollapsed: (id: string) => void
   /** Expand/collapse long user prompts (←/→ / click). */
   toggleUser: (id: string) => void
   /** 折叠/展开 btw 侧问区块（←/→ / click；条目默认展开，见 askBtw）。 */

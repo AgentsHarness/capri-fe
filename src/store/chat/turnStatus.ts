@@ -4,21 +4,79 @@ import {
   projectDisplayRows,
   scanGroups,
 } from '../../scrollback/verbGroup'
+import { clampGroupHoldMs, previewToolIds } from '../../scrollback/groupHold'
+import { usePins } from '../historyPins'
 import { toolCallDensity } from '../settings'
 import type { ChatState, SetState } from './types'
 import { nid } from './ids'
 import { formatTurnDuration } from './format'
 
-/** Selectable row ids in display order (entries + synthetic group headers). */
+/**
+ * 当前处于新块预览停留窗口的工具 id。滚动区、键盘选中、折叠手势共用
+ * 这一份判定，避免三处各写一套密度/时间门槛。
+ */
+export function currentPreviewIds(
+  entries: readonly ScrollEntry[],
+  now = Date.now(),
+): ReadonlySet<string> {
+  const holdMs = clampGroupHoldMs(usePins.getState().fePrefs.groupHoldMs)
+  return previewToolIds(entries, now, holdMs, toolCallDensity()).ids
+}
+
+/**
+ * Selectable row ids in display order (entries + synthetic group headers).
+ * 预览停留中的工具仍可见，必须与滚动区一样计入可选行，否则键盘 j/k、
+ * PageUp/PageDown、g/G 会跳过这些行。
+ */
 export function selectableRowIds(
   entries: ScrollEntry[],
   expandedGroups: ReadonlySet<string>,
 ): string[] {
-  const spans = scanGroups(entries, expandedGroups, {
-    scope: groupScopeForDensity(toolCallDensity()),
-  })
-  const rows = projectDisplayRows(entries, spans)
+  const density = toolCallDensity()
+  const scope = groupScopeForDensity(density)
+  const spans = scanGroups(entries, expandedGroups, { scope })
+  const rows = projectDisplayRows(
+    entries,
+    spans,
+    true,
+    undefined,
+    scope,
+    currentPreviewIds(entries),
+  )
   return rows.map((r) => (r.type === 'entry' ? r.entry.id : r.id))
+}
+
+/** Display-row id → entries[] 下标；组头落在段首条目上。 */
+function displayRowSourceIndex(
+  id: string,
+  entries: readonly ScrollEntry[],
+): number {
+  if (id.startsWith('gh_')) {
+    return entries.findIndex((e) => e.id === id.slice(3))
+  }
+  return entries.findIndex((e) => e.id === id)
+}
+
+/**
+ * 选中 id 已不在可选行里时，给 `selectDelta` 一个最近的前一条可见行，
+ * 避免 `indexOf === -1` 直接跳到首尾。返回 -1 表示没有可用锚点。
+ */
+export function resolveSelectableIndex(
+  ids: readonly string[],
+  entries: readonly ScrollEntry[],
+  selectedId: string | null,
+): number {
+  if (!selectedId) return -1
+  const direct = ids.indexOf(selectedId)
+  if (direct >= 0) return direct
+  const target = displayRowSourceIndex(selectedId, entries)
+  if (target < 0) return -1
+  let best = -1
+  for (let i = 0; i < ids.length; i++) {
+    const idx = displayRowSourceIndex(ids[i], entries)
+    if (idx >= 0 && idx < target) best = i
+  }
+  return best
 }
 
 /** Whether a turn is currently live and needs a terminal marker/finalize. */

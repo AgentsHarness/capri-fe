@@ -1,4 +1,6 @@
 import { groupScopeForDensity, scanGroups, spanContaining } from '../../../scrollback/verbGroup'
+import { groupPreviewPatch } from '../../../scrollback/groupPreview'
+import type { ScrollEntry } from '../../../api/types'
 import { toolCallDensity } from '../../settings'
 import {
   nextThoughtMode,
@@ -13,10 +15,50 @@ import {
 } from '../../../scrollback/entryState'
 import { fillEntryRange } from '../historyFill'
 import type { ChatState, SetState } from '../types'
-import { selectableRowIds } from '../turn'
+import {
+  currentPreviewIds,
+  resolveSelectableIndex,
+  selectableRowIds,
+} from '../turn'
 
 export function viewerNavActions(set: SetState, get: () => ChatState) {
+  /**
+   * 该条目当前是否以「新块预览」呈现（渲染补丁，不改 store）。
+   * 折叠手势命中它时直接钉成 collapsed，语义才是用户看到的「收起」。
+   */
+  const previewPatchOf = (
+    e: ScrollEntry,
+  ): Partial<ScrollEntry> | undefined => {
+    return groupPreviewPatch(e, currentPreviewIds(get().entries).has(e.id))
+  }
+
   return {
+  pinCollapsed: (id) => {
+    set({
+      entries: get().entries.map((e) => {
+        if (e.id !== id) return e
+        if (e.kind === 'tool') {
+          return {
+            ...e,
+            displayMode: 'collapsed' as const,
+            expanded: false,
+            foldPinned: true,
+          }
+        }
+        if (e.kind === 'thought') {
+          return {
+            ...e,
+            displayMode: 'collapsed' as const,
+            foldPinned: true,
+          }
+        }
+        return e
+      }),
+      selectedId: id,
+      focusMode: 'scrollback',
+    })
+  },
+
   toggleTool: (id) => {
     // TUI next_fold_mode 三态循环（entryState.nextToolFoldMode）：
     // read Collapsed→Truncated→Collapsed；generic（Other）流式态
@@ -38,7 +80,12 @@ export function viewerNavActions(set: SetState, get: () => ChatState) {
     set({
       entries: get().entries.map((e) =>
         e.id === id && e.kind === 'tool'
-          ? { ...e, displayMode: after, expanded: willShow }
+          ? {
+              ...e,
+              displayMode: after,
+              expanded: willShow,
+              foldPinned: true,
+            }
           : e,
       ),
       selectedId: id,
@@ -119,7 +166,7 @@ export function viewerNavActions(set: SetState, get: () => ChatState) {
     const { entries, selectedId, expandedGroups } = get()
     const ids = selectableRowIds(entries, expandedGroups)
     if (ids.length === 0) return
-    const idx = selectedId ? ids.indexOf(selectedId) : -1
+    const idx = resolveSelectableIndex(ids, entries, selectedId)
     let next = idx < 0 ? (delta > 0 ? 0 : ids.length - 1) : idx + delta
     next = Math.max(0, Math.min(ids.length - 1, next))
     set({ selectedId: ids[next], focusMode: 'scrollback' })
@@ -149,6 +196,12 @@ export function viewerNavActions(set: SetState, get: () => ChatState) {
     const idx = entries.findIndex((e) => e.id === selectedId)
     const entry = idx >= 0 ? entries[idx] : undefined
     if (!entry) return
+
+    // ←（收起）命中新块预览：直接钉回折叠态。
+    if (!expanded && previewPatchOf(entry)) {
+      get().pinCollapsed(entry.id)
+      return
+    }
 
     const memberCollapsed =
       (entry.kind === 'tool' && toolDisplayMode(entry) === 'collapsed') ||
@@ -185,6 +238,7 @@ export function viewerNavActions(set: SetState, get: () => ChatState) {
                   | 'expanded'
                   | 'collapsed',
                 expanded,
+                foldPinned: true,
               }
             : e,
         ),
@@ -254,8 +308,16 @@ export function viewerNavActions(set: SetState, get: () => ChatState) {
     }
     const e = entries.find((x) => x.id === selectedId)
     if (!e) return
+    // 新块预览命中折叠手势：视觉上的「展开」应直接收成折叠。
+    if (
+      (e.kind === 'tool' || e.kind === 'thought') &&
+      previewPatchOf(e)
+    ) {
+      get().pinCollapsed(e.id)
+      return
+    }
     // Inline fold only (←/→/click/Space). Enter uses openViewer instead.
-    if (e.kind === 'tool') get().setExpanded(toolDisplayMode(e) !== 'collapsed')
+    if (e.kind === 'tool') get().toggleTool(e.id)
     else if (e.kind === 'thought') get().toggleThought(e.id)
     else if (e.kind === 'user') get().setExpanded(!e.expanded)
     else if (e.kind === 'btw') get().toggleBtw(e.id)

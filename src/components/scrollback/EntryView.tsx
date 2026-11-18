@@ -41,6 +41,7 @@ function entryViewEqual(prev: EntryViewProps, next: EntryViewProps): boolean {
     // actions 由调用方保证稳定（主 scrollback 不传 → undefined 恒等；
     // mini 用 useMemo/useState setter 构造 → 引用稳定）。patch 同理。
     prev.actions === next.actions &&
+    prev.mini === next.mini &&
     prev.patch === next.patch &&
     prev.streamBodyRef === next.streamBodyRef &&
     prev.onOpenImage === next.onOpenImage &&
@@ -48,6 +49,8 @@ function entryViewEqual(prev: EntryViewProps, next: EntryViewProps): boolean {
     prev.galleryItem === next.galleryItem &&
     prev.readonly === next.readonly &&
     prev.enter === next.enter &&
+    prev.revealStreamInitial === next.revealStreamInitial &&
+    prev.onStreamSettledAt === next.onStreamSettledAt &&
     (prev.now === next.now ||
       (!entryFlashActive(prev.e, prev.now) && !entryFlashActive(next.e, next.now)))
   )
@@ -63,6 +66,7 @@ export const EntryView = memo(function EntryView({
   densePrev = false,
   inGroup = false,
   actions,
+  mini,
   patch,
   streamBodyRef,
   onOpenImage,
@@ -70,6 +74,8 @@ export const EntryView = memo(function EntryView({
   galleryItem = false,
   readonly = false,
   enter = false,
+  revealStreamInitial = true,
+  onStreamSettledAt,
 }: EntryViewProps) {
   // 迷你 scrollback 折叠覆盖：patch 合并进渲染条目（不写回 store）。
   const e = patch ? ({ ...eProp, ...patch } as ScrollEntry) : eProp
@@ -182,8 +188,10 @@ export const EntryView = memo(function EntryView({
     killTask,
     liveText,
     thoughtText,
+    revealStreamInitial,
+    onStreamSettledAt,
     bodyRef,
-    inMini: actions != null,
+    inMini: mini ?? actions != null,
     // 访客只读：写操作入口（cancel / kill / fork / 重启）由各行按此隐藏。
     // 迷你 scrollback 没有独立的只读开关，继承父视图（弹窗）的取值。
     readonly,

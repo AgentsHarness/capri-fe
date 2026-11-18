@@ -16,10 +16,10 @@
  * 上下条目也不会重新分组。
  *
  * 密度（`[ui] tool_call_density`）决定哪些工具参与分组：
- *  - 读取 / 搜索 / 列目录 / 其他工具在所有档位都折成 `Explored …` 段。
- *  - detailed / compact-shells / compact-ungrouped：编辑与命令逐条显示。
+ *  - detailed / compact-shells / compact-ungrouped：读取 / 搜索 / 列目录 /
+ *    其他工具折成 `Explored …` 段，编辑与命令逐条显示。
  *  - compact-grouped：编辑段、命令段各自成组（`Edited report.py +1 -1`
- *    / `Ran 2 commands`），两族之间不并组。
+ *    / `Ran 2 commands`），两族之间不并组；探查类仍单独成组。
  *  - compact-all-grouped（默认）：所有连续工具调用合成一组
  *    （`Edited report.py, explored 2 files, ran 2 commands +1 -1`）。
  *
@@ -55,12 +55,17 @@ export type RunStep =
   /** 认领进 run 的收口思考（折叠时随组隐藏）。 */
   | { kind: 'thought' }
   /**
+   * 手动展开的收口思考：仍是这段 run 的边界（段首/段尾展开不会把组劈开
+   * 或让聚合头换锚点），但自己保持可见、不计入成员数。
+   */
+  | { kind: 'open-thought' }
+  /**
    * 手动展开的工具成员：仍算这段 run 的成员（参与成员数、组边界、族判定与
    * 聚合头数字），只是自己保持可见、不随折叠头隐藏。展开因此不改变分组
    * 结构——组里 2 条时展开 1 条，组不会解散、上下也不会重新分组。
    */
   | { kind: 'open'; vg: VerbGroupKind }
-  /** 不参与分组、也不劈开 run 的行（流式 / 手动展开的思考）。 */
+  /** 不参与分组、也不劈开 run 的行（流式思考）。 */
   | { kind: 'transparent' }
   /** 分组边界（非工具行、不参与当前密度的工具）。 */
   | { kind: 'break' }
@@ -134,8 +139,8 @@ const SCOPE_EXPLORE: GroupScope = {
 }
 
 /**
- * 密度档 → 分组范围（对齐官方 density 预览）。
- *  - detailed / compact-shells / compact-ungrouped：只折探查类工具；
+ * 密度档 → 分组范围。
+ *  - detailed / compact-shells / compact-ungrouped：只折探查类工具，
  *    编辑与命令逐条显示。
  *  - compact-grouped：编辑段、命令段各自成组，与探查段互不并组。
  *  - compact-all-grouped：所有连续工具调用合成一组。
@@ -227,9 +232,12 @@ export function runStep(
     return isCollapsed(e) ? { kind: 'member', vg } : { kind: 'open', vg }
   }
   if (e.kind === 'thought') {
-    // 收口思考（含空文本噪音行）认领进 run；流式 / 手动展开保持透明。
-    if (showThinking && !isRunning(e) && isCollapsed(e)) return { kind: 'thought' }
-    return { kind: 'transparent' }
+    // 收口思考（含空文本噪音行）认领进 run；流式保持透明（收口后再入组）。
+    // 手动展开的收口思考仍算 run 的边界：只是自己保持可见，展开/收起不会
+    // 让段首换锚点、聚合头消失或整行被挪到组外。
+    if (!showThinking) return { kind: 'transparent' }
+    if (isRunning(e)) return { kind: 'transparent' }
+    return isCollapsed(e) ? { kind: 'thought' } : { kind: 'open-thought' }
   }
   return { kind: 'break' }
 }
@@ -456,7 +464,8 @@ function scanRunForward(
   if (
     step0.kind !== 'member' &&
     step0.kind !== 'open' &&
-    step0.kind !== 'thought'
+    step0.kind !== 'thought' &&
+    step0.kind !== 'open-thought'
   ) {
     return null
   }
@@ -488,6 +497,10 @@ function scanRunForward(
       lastToolOrdinal = members
     } else if (step.kind === 'thought') {
       thoughts += 1
+      end = i + 1
+    } else if (step.kind === 'open-thought') {
+      // 展开的思考留在 run 的边界内：不计成员数，但延长段的结尾，
+      // 段首展开时也不让锚点后移。
       end = i + 1
     } else if (step.kind === 'transparent') {
       // 跳过：透明行留在 run 内，既不算成员也不延长 claimed 边界
@@ -620,6 +633,12 @@ export function projectDisplayRows(
   showThinking = true,
   headerCache?: Map<GroupSpan, DisplayRow>,
   scope: GroupScope = SCOPE_ALL,
+  /**
+   * 新块预览停留中的工具 id（见 scrollback/groupHold.ts）：折叠组的成员
+   * 在本轮里继续按独立行显示。只影响隐藏，不影响成员数 / 聚合头标签；
+   * 不在折叠组内的 id 没有效果。
+   */
+  heldIds?: ReadonlySet<string>,
 ): DisplayRow[] {
   const spanByStart = new Map(spans.map((s) => [s.range.start, s]))
   const hidden = new Set<number>()
@@ -628,7 +647,12 @@ export function projectDisplayRows(
     if (span.expanded) continue
     for (let i = span.range.start; i < span.range.end; i++) {
       const step = runStep(entries[i], showThinking, scope)
-      if (step.kind === 'member' || step.kind === 'thought') hidden.add(i)
+      if (
+        (step.kind === 'member' || step.kind === 'thought') &&
+        !heldIds?.has(entries[i].id)
+      ) {
+        hidden.add(i)
+      }
     }
   }
 
@@ -671,7 +695,7 @@ export function projectDisplayRows(
  * Spans are sorted by `range.start`, so this is a binary search.
  */
 export function spanContaining(
-  spans: GroupSpan[],
+  spans: readonly GroupSpan[],
   idx: number,
 ): GroupSpan | undefined {
   let lo = 0

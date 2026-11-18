@@ -36,9 +36,16 @@ export type EntryViewProps = {
   /** 迷你 scrollback 局部动作（见 EntryViewActions）。 */
   actions?: EntryViewActions
   /**
-   * 迷你 scrollback 折叠覆盖（工具/用户 expanded、思考 displayMode 由
-   * 弹窗局部状态决定，不写回 store）。渲染前合并进条目；主 scrollback
-   * 不传 → 恒为 undefined，行为与 memo 比较完全不变。
+   * 迷你 scrollback（子代理弹窗）：隐藏会话级动作（fork）。主 scrollback
+   * 现在也会传局部折叠覆盖 actions，必须显式给 false 才不丢 fork。
+   * 缺省回退到「有 actions 即迷你」的旧判断。
+   */
+  mini?: boolean
+  /**
+   * 折叠覆盖（渲染前合并进条目，不写回 store）：
+   *  - 迷你 scrollback 用局部展开/选中状态；
+   *  - 主 scrollback 用它给新块预览窗口内的工具套默认展开（见
+   *    scrollback/groupPreview.ts）。
    */
   patch?: Partial<ScrollEntry>
   /**
@@ -50,6 +57,13 @@ export type EntryViewProps = {
   noFrame?: boolean
   /** 新出现的块播放半透明淡入（主 scrollback 的实时 append；mini 不传）。 */
   enter?: boolean
+  /**
+   * 流式正文首帧是否淡入（缺省 true）。收口退出快照传 false：它接住
+   * 收口前的正文，整块重新淡入会先暗一帧再消失。
+   */
+  revealStreamInitial?: boolean
+  /** 流式正文完全落定的时刻（streamClockNow 时钟）；退出快照据此延后收起。 */
+  onStreamSettledAt?: (at: number) => void
   /**
    * 本行是主 scrollback 画廊组的一员：缩略图按条目盒宽度铺满并裁切
    * （cover），而不是按内容比例缩小留白。缺省（迷你 scrollback 等）
@@ -110,6 +124,10 @@ export type EntryChrome = {
   killTask: (id: string, opts?: { notifyAgent?: boolean }) => Promise<void> | void
   liveText: string | undefined
   thoughtText: string | undefined
+  /** 流式正文首帧是否淡入；收口退出快照传 false，接住当前正文不再重新淡入。 */
+  revealStreamInitial?: boolean
+  /** 流式正文完全落定的时刻（streamClockNow 时钟）；退出快照据此延后收起。 */
+  onStreamSettledAt?: (at: number) => void
   bodyRef: { current: HTMLDivElement | null }
   /**
    * 相邻图片画廊：主 scrollback 聚合连续的独立 image 行后传入——点击

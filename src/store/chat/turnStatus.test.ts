@@ -9,6 +9,7 @@ import {
   isTurnEndLine,
   liveTurnStartMs,
   promptIdMismatch,
+  resolveSelectableIndex,
   selectableRowIds,
   tailHasCancellationDetail,
   tailHasRetryBanner,
@@ -37,6 +38,26 @@ describe('selectableRowIds', () => {
     const entries = [tool('r1', { kindName: 'read' })]
     const ids = selectableRowIds(entries, new Set())
     expect(ids).toEqual(['r1'])
+  })
+
+  it('预览停留中的组成员仍可见、仍可选', () => {
+    const now = Date.now()
+    const entries = [
+      tool('r1', { kindName: 'read', finishedAt: now - 5000 }),
+      tool('r2', { kindName: 'read', finishedAt: now - 100 }),
+    ]
+    expect(selectableRowIds(entries, new Set())).toEqual(['gh_r1', 'r2'])
+  })
+
+  it('选中项已隐藏时退回最近的前一条可见行', () => {
+    const entries = [
+      tool('r1', { kindName: 'read' }),
+      tool('r2', { kindName: 'read' }),
+    ]
+    const ids = selectableRowIds(entries, new Set())
+    expect(ids).toEqual(['gh_r1'])
+    expect(resolveSelectableIndex(ids, entries, 'r2')).toBe(0)
+    expect(resolveSelectableIndex(ids, entries, 'gh_r1')).toBe(0)
   })
 })
 
