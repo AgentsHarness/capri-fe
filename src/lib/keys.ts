@@ -48,6 +48,8 @@ export const KEY = {
   defaultSelectedPermission: 'capri-fe.defaultSelectedPermission',
   /** Git 面板历史 tab 的列宽（px，{author,date,hash}）。 */
   gitLogColWidths: 'capri-fe.gitLogColWidths',
+  /** 桌面会话侧边栏宽度（px，拖拽右缘调整）。 */
+  sidebarWidth: 'capri-fe.sidebarWidth',
 
   // ── 会话/权限状态 ────────────────────────────────────────────
   /** 全局权限模式（yolo/auto/permissionMode/confirmedAsk）。 */

@@ -4,6 +4,12 @@ import { useChatStore } from '../../store/chat'
 import { SessionHistoryList } from './SessionHistoryList'
 import { SessionListHeader } from './SessionListHeader'
 import { SessionSearchBox } from './SessionSearchBox'
+import { SidebarResizeHandle } from './SidebarResizeHandle'
+import {
+  clampSidebarWidth,
+  loadSidebarWidth,
+  saveSidebarWidth,
+} from '../../lib/sidebarWidth'
 
 /**
  * Desktop (lg+) history sidebar — persistent, grouped by workspace
@@ -28,6 +34,15 @@ export function HistorySidebar() {
   const refreshSessionLists = useChatStore((s) => s.refreshSessionLists)
   const resetToEmpty = useChatStore((s) => s.resetToEmpty)
   const sidebarCollapsed = useChatStore((s) => s.sidebarCollapsed)
+  // 宽度只属于这个组件：初值从 localStorage 读，拖动时钳制后写回。
+  const [sidebarWidth, setSidebarWidth] = useState(loadSidebarWidth)
+  const resizeSidebar = (width: number) => {
+    const clamped = clampSidebarWidth(width)
+    saveSidebarWidth(clamped)
+    setSidebarWidth(clamped)
+  }
+  // 拖动期间关掉 width 过渡：过渡会让每帧位移都被 200ms 缓动拖后。
+  const [resizing, setResizing] = useState(false)
   // 搜索按钮化：默认收起，点头部搜索按钮才挂载搜索框；命中打开后由
   // onRequestClose 收起。列表仅在「展开且查询生效」时让位给命中列表。
   const [searchOpen, setSearchOpen] = useState(false)
@@ -39,10 +54,19 @@ export function HistorySidebar() {
 
   return (
     <aside
-      className={`hidden shrink-0 flex-col overflow-hidden bg-gn-bg-base transition-[width] duration-200 ease-out lg:flex ${
- sidebarCollapsed ? 'w-0 border-r-0' : 'w-72 border-r border-gn-prompt-border/60'
+      className={`relative hidden shrink-0 flex-col overflow-hidden bg-gn-bg-base lg:flex ${
+        resizing ? '' : 'transition-[width] duration-200 ease-out'
       }`}
+      style={{ width: sidebarCollapsed ? 0 : sidebarWidth }}
     >
+      {!sidebarCollapsed && (
+        <SidebarResizeHandle
+          width={sidebarWidth}
+          onResize={resizeSidebar}
+          onDragStart={() => setResizing(true)}
+          onDragEnd={() => setResizing(false)}
+        />
+      )}
       {/* No border under the header — the group headers carry their own
           border-b, and removing this line lets the top edge sit flush with
           the borderless WorkspaceBar. py-2 + compact button matches the
