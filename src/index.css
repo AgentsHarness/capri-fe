@@ -537,8 +537,9 @@ body.gn-queue-dragging {
   animation: gn-entry-enter 0.24s ease-out;
 }
 
-/* 流式正文新增片段：从半透明渐显到不透明（SmoothStreamText）。大首包
-   按行切成多个片段，靠 inline animation-delay 错峰，看起来更像逐行铺开。 */
+/* 流式正文新增片段：从半透明渐显到不透明（SmoothStreamText）。文本先
+   进短缓冲，每帧只释放一小段；同一帧的片段靠 inline animation-delay
+   错峰，慢流是逐字淡入，成段文本则是连续的细波浪。 */
 @keyframes gn-stream-fade {
   from {
     opacity: 0.12;

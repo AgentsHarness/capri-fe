@@ -104,6 +104,17 @@ describe('BtwEntry', () => {
     expect(screen.getByText('等待回答…')).toBeInTheDocument()
   })
 
+  it('流式答案更新时外层淡入包装不重挂载（不会整段重新淡入）', () => {
+    const first = btw({ answer: '两步', open: true, streaming: true })
+    const r = render(<BtwEntry e={first} chrome={makeChrome(first)} />)
+    const wrapper = r.container.querySelector('.gn-stream-fade')
+    expect(wrapper).not.toBeNull()
+
+    const next = btw({ answer: '两步半', open: true, streaming: true })
+    r.rerender(<BtwEntry e={next} chrome={makeChrome(next)} />)
+    expect(r.container.querySelector('.gn-stream-fade')).toBe(wrapper)
+  })
+
   it('展开显示「查看」，点击调 openViewer；折叠态无「查看」', () => {
     const e = btw({ answer: '两步', open: true })
     const chrome = makeChrome(e)

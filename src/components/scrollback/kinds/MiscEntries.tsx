@@ -397,10 +397,10 @@ export function BtwEntry({
                       {e.error}
                     </div>
                   ) : e.answer ? (
-                    <div
-                      key={e.answer}
-                      className={smoothStream ? 'gn-stream-fade' : undefined}
-                    >
+                    // 不要用答案文本当 key：流式期间每次更新都会重挂载，
+                    // 整段答案又淡入一次。首块的入场淡入由外层一次性播放，
+                    // 后续增量交给 Markdown 内的 SmoothStreamText 逐字释放。
+                    <div className={smoothStream ? 'gn-stream-fade' : undefined}>
                       <Markdown
                         source={e.answer}
                         streaming={!!e.streaming}
