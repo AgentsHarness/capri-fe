@@ -8,6 +8,8 @@ import type { MouseEvent, ReactNode } from 'react'
  */
 const TONE_CLASS = {
   danger: 'text-gn-red/80 hover:bg-gn-diff-del-bg hover:text-gn-red',
+  /** 低频危险动作：静止时跟正文同级，hover 才亮红，避免常驻红字抢视线。 */
+  dangerQuiet: 'text-gn-muted hover:bg-gn-diff-del-bg hover:text-gn-red',
   neutral: 'text-gn-fg2 hover:bg-gn-bg-highlight hover:text-gn-fg',
   plan: 'text-gn-plan hover:bg-gn-bg-highlight hover:text-gn-fg',
 } as const

@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ArrowUpRight, Diamond, LoaderCircle, Repeat, X } from 'lucide-react'
+import { ArrowUpRight, Diamond, LoaderCircle, X } from 'lucide-react'
 import { SPINNER_FRAMES } from '../../theme/glyphs'
 import {
   fillAllLiteTurns,
@@ -19,6 +19,7 @@ import { InlineAction } from '../ui/InlineAction'
 import { ChipDropdown } from '../ui/ChipDropdown'
 import { KillTaskAction } from './KillTaskAction'
 import { fmtTok, fmtElapsedCompact, filterRunningEntries, subagentMeta, type RunningEntry } from '../../format'
+import { ScheduledTasksSection } from './ScheduledTasksSection'
 import type { TodoItem } from '../../store/chat'
 
 /**
@@ -884,7 +885,6 @@ export function RunningTasksBar({
   const running = filterRunningEntries(entries)
   const count = running.length + topTasks.length
   const scheduledTasks = useChatStore((s) => s.scheduledTasks)
-  const deleteScheduledTask = useChatStore((s) => s.deleteScheduledTask)
   const spinnerFrame = useSessionSpinner(count > 0 && open)
   const cancelSubagent = useChatStore((s) => s.cancelSubagent)
   const killTask = useChatStore((s) => s.killTask)
@@ -1016,73 +1016,10 @@ export function RunningTasksBar({
             ))}
           </>
         )}
-        {scheduledTasks.length > 0 && (
-          <>
-            <div className="flex items-center gap-2 px-1 pb-0.5 pt-1">
-              <span className="text-[10px] uppercase tracking-wider text-gn-gutter">
-                调度任务 · {scheduledTasks.length}
-              </span>
-            </div>
-            {scheduledTasks.map((t) => (
-              <div
-                key={`sched-${t.taskId}`}
-                className="group flex min-h-6 items-center gap-1.5 py-[2px] text-[12px] leading-snug hover:bg-gn-bg-highlight"
-                title={t.prompt || t.taskId}
-              >
-                <Repeat size={11} className="shrink-0 text-gn-plan" aria-hidden />
-                <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-gn-fg">
-                  {t.prompt || `Task ${t.taskId.slice(0, 8)}`}
-                </span>
-                {t.interval && (
-                  <span
-                    className="shrink-0 font-mono text-[10px] text-gn-muted"
-                    title={`间隔 ${t.interval}`}
-                  >
-                    {t.interval}
-                  </span>
-                )}
-                {t.nextFireAt && (
-                  <span
-                    className="shrink-0 font-mono text-[10px] text-gn-muted"
-                    title={`下次触发 ${t.nextFireAt}`}
-                  >
-                    {formatScheduledFire(t.nextFireAt)}
-                  </span>
-                )}
-                {!readonly && (
-                  <InlineAction
-                    label="delete"
-                    title="x.ai/scheduler/delete"
-                    onRun={() => void deleteScheduledTask(t.taskId)}
-                  />
-                )}
-              </div>
-            ))}
-          </>
-        )}
+        <ScheduledTasksSection readonly={readonly} />
       </div>
     </div>
   )
-}
-
-/**
- * Scheduled-task next-fire display: epoch seconds / epoch ms / ISO string
- * all normalize to HH:MM (TUI tasks pane shows the fire time compactly).
- */
-function formatScheduledFire(v: string): string {
-  if (!v) return ''
-  const n = Number(v)
-  if (Number.isFinite(n) && n > 0) {
-    const d = new Date(n < 1e12 ? n * 1000 : n)
-    if (!Number.isNaN(d.getTime())) {
-      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    }
-  }
-  const d = new Date(v)
-  if (!Number.isNaN(d.getTime())) {
-    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  }
-  return v
 }
 
 // ── MCP / queue / credits chips (TUI status-bar items) ───────────────

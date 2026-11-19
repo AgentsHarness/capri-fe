@@ -6,6 +6,9 @@ import {
   fmtElapsedCompact,
   fmtTok,
   fmtTokBig,
+  formatScheduleInterval,
+  formatScheduledFire,
+  formatScheduledFireFull,
   shortCwd,
   subagentMeta,
   userMessagePreview,
@@ -114,6 +117,61 @@ describe('subagentMeta', () => {
     expect(subagentMeta(undefined, undefined, 'grok-4(high)', 'high')).toBe(' (grok-4(high))')
     // 只有 effort 无 model 时回退显示 effort
     expect(subagentMeta('Builder', undefined, undefined, 'high')).toBe(' (Builder · high)')
+  })
+})
+
+describe('formatScheduleInterval', () => {
+  it('简单 every N 单位翻译成中文节奏，n=1 省略数字', () => {
+    expect(formatScheduleInterval('every 1 day')).toBe('每天')
+    expect(formatScheduleInterval('every 1 minute')).toBe('每分钟')
+    expect(formatScheduleInterval('every 5m')).toBe('每 5 分钟')
+    expect(formatScheduleInterval('every 5 minutes')).toBe('每 5 分钟')
+    expect(formatScheduleInterval('every 30 minutes')).toBe('每 30 分钟')
+    expect(formatScheduleInterval('every 2h')).toBe('每 2 小时')
+    expect(formatScheduleInterval('every 1 hour')).toBe('每小时')
+  })
+
+  it('once 翻译成一次', () => {
+    expect(formatScheduleInterval(' once ')).toBe('一次')
+  })
+
+  it('带时段、cron 或其他复合排期原样返回', () => {
+    expect(formatScheduleInterval('every 1 day at 16:16')).toBe(
+      'every 1 day at 16:16',
+    )
+    expect(formatScheduleInterval('every 1.5h')).toBe('every 1.5h')
+    expect(formatScheduleInterval('0 16 * * *')).toBe('0 16 * * *')
+  })
+
+  it('空串与非法数量不伪造周期', () => {
+    expect(formatScheduleInterval('')).toBe('')
+    expect(formatScheduleInterval('   ')).toBe('')
+    expect(formatScheduleInterval('every 0m')).toBe('every 0m')
+  })
+})
+
+describe('formatScheduledFire / formatScheduledFireFull', () => {
+  // 本地时间字面量：不写 Z，避免测试机时区把日期推到前一天。
+  const iso = '2026-11-19T16:16:00'
+
+  it('epoch 秒 / 毫秒 / ISO 都还原成本地时间', () => {
+    const ms = new Date(iso).getTime()
+    expect(formatScheduledFireFull(iso)).toBe('2026-11-19 16:16')
+    expect(formatScheduledFireFull(String(ms))).toBe('2026-11-19 16:16')
+    expect(formatScheduledFireFull(String(Math.floor(ms / 1000)))).toBe(
+      '2026-11-19 16:16',
+    )
+  })
+
+  it('任务条紧凑形式：跨天补 M/D，24h', () => {
+    expect(formatScheduledFire('2020-01-02T03:04:00')).toBe('1/2 03:04')
+  })
+
+  it('无法解析的值原样返回，不吞掉 agent 的排期文案', () => {
+    expect(formatScheduledFire('tomorrow')).toBe('tomorrow')
+    expect(formatScheduledFireFull('tomorrow')).toBe('tomorrow')
+    expect(formatScheduledFire('')).toBe('')
+    expect(formatScheduledFireFull('')).toBe('')
   })
 })
 

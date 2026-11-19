@@ -61,6 +61,67 @@ export function fmtElapsedCompact(ms: number): string {
 }
 
 /**
+ * `/loop` 的 human_schedule → 紧凑中文节奏，用于任务条。
+ * 只翻译 agent 实际产出的简单形式（`every 5 minutes` / `every 5m` /
+ * `once`）；复合排期（cron 表达式、带时段限制的文案）原样透传，避免 UI
+ * 编出一个 agent 并未承诺的周期。
+ */
+export function formatScheduleInterval(raw: string): string {
+  const s = raw.trim()
+  if (!s) return ''
+  if (s.toLowerCase() === 'once') return '一次'
+  const m =
+    /^every\s+(\d+)\s*(s|secs?|seconds?|m|mins?|minutes?|h|hrs?|hours?|d|days?)$/i.exec(
+      s,
+    )
+  if (!m) return s
+  const n = Number(m[1])
+  if (!Number.isFinite(n) || n <= 0) return s
+  const unit = m[2][0].toLowerCase() as 's' | 'm' | 'h' | 'd'
+  const zh = { s: '秒', m: '分钟', h: '小时', d: '天' }[unit]
+  return n === 1 ? `每${zh}` : `每 ${n} ${zh}`
+}
+
+/** epoch 秒 / epoch 毫秒 / ISO 字符串 → Date；无法解析返回 null。 */
+function parseScheduledFire(v: string): Date | null {
+  if (!v) return null
+  const n = Number(v)
+  const d =
+    Number.isFinite(n) && n > 0 ? new Date(n < 1e12 ? n * 1000 : n) : new Date(v)
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
+/**
+ * 任务条里的下次触发：24h HH:MM；跨天补 M/D，避免把明天的触发读成今天。
+ * 无法解析的原始字符串原样返回。
+ */
+export function formatScheduledFire(v: string): string {
+  const d = parseScheduledFire(v)
+  if (!d) return v
+  const time = d.toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+  const now = new Date()
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  return sameDay ? time : `${d.getMonth() + 1}/${d.getDate()} ${time}`
+}
+
+/** 详情弹窗里的完整触发时间：YYYY-MM-DD HH:MM（本地时区）。 */
+export function formatScheduledFireFull(v: string): string {
+  const d = parseScheduledFire(v)
+  if (!d) return v
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(
+    d.getHours(),
+  )}:${pad(d.getMinutes())}`
+}
+
+/**
  * Subagent metadata parenthetical — TUI format_subagent_meta parity
  * (xai-grok-pager app/subagent.rs): `(persona · role · model)` with the
  * persona/role deduped when they name the same title, or `''` when

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import type { ScrollEntry, ToolCall } from '../../api/types'
 import { useChatStore } from '../../store/chat'
 import { fillAllLiteTurns } from '../../store/chat/historyFill'
@@ -177,7 +177,7 @@ describe('RunningTasksBar — 子代理展示', () => {
     expect(screen.getByText('(grok-4(high))')).toBeInTheDocument()
   })
 
-  it('访客只读：任务行可点开日志，但 kill / cancel / 调度任务 delete 都不出现', () => {
+  it('访客只读：任务行可点开日志，但 kill / cancel / 调度任务删除都不出现', () => {
     const subEntry: ScrollEntry = {
       id: 'sub-row-1',
       kind: 'subagent',
@@ -195,7 +195,9 @@ describe('RunningTasksBar — 子代理展示', () => {
       taskId: 't-1',
     }
     useChatStore.setState({
-      scheduledTasks: [{ taskId: 's1', prompt: 'p', interval: '5m' }] as never,
+      scheduledTasks: [
+        { taskId: 's1', prompt: 'scheduled prompt', interval: '5m' },
+      ] as never,
     })
     const openViewer = vi.fn()
     useChatStore.setState({ openViewer })
@@ -210,13 +212,45 @@ describe('RunningTasksBar — 子代理展示', () => {
     // 只读视图里状态照旧可读、行照旧可点开日志
     expect(container.textContent).toContain('reviewer')
     expect(container.textContent).toContain('npm run build')
-    expect(container.textContent).toContain('调度任务 · 1')
+    expect(container.textContent).toContain('scheduled prompt')
     fireEvent.click(screen.getByText('npm run build'))
     expect(openViewer).toHaveBeenCalledWith('bg-row-1')
     // 写入口一个都不剩
     expect(screen.queryByRole('button', { name: /cancel/ })).toBeNull()
     expect(screen.queryByRole('button', { name: /kill/ })).toBeNull()
-    expect(screen.queryByRole('button', { name: /delete/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /删除/ })).toBeNull()
+  })
+
+  it('点击 Loop 行打开详情弹窗，删除从弹窗触发并关闭', () => {
+    const originalDelete = useChatStore.getState().deleteScheduledTask
+    const deleteScheduledTask = vi.fn(async () => {})
+    useChatStore.setState({
+      scheduledTasks: [
+        {
+          taskId: 's-detail',
+          prompt: '每天检查上游镜像',
+          interval: 'every 1 day',
+          nextFireAt: '2026-11-19T16:16:00',
+        },
+      ] as never,
+      deleteScheduledTask,
+    })
+    try {
+      render(<RunningTasksBar entries={[]} topTasks={[]} open />)
+      fireEvent.click(
+        screen.getByRole('button', { name: /查看调度任务详情/ }),
+      )
+      const dialog = screen.getByRole('dialog', { name: '调度任务详情' })
+      expect(within(dialog).getByText('每天检查上游镜像')).toBeInTheDocument()
+      expect(within(dialog).getByText(/every 1 day/)).toBeInTheDocument()
+      fireEvent.click(within(dialog).getByRole('button', { name: /删除/ }))
+      expect(deleteScheduledTask).toHaveBeenCalledWith('s-detail')
+      expect(
+        screen.queryByRole('dialog', { name: '调度任务详情' }),
+      ).toBeNull()
+    } finally {
+      useChatStore.setState({ deleteScheduledTask: originalDelete })
+    }
   })
 })
 
