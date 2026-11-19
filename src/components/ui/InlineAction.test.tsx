@@ -26,6 +26,15 @@ describe('InlineAction', () => {
     )
   })
 
+  it('ReactNode label 按节点渲染，不字符串化成 [object Object]', () => {
+    const btn = renderAction({
+      label: <span data-testid="icon-label">工作流</span>,
+      onRun: () => {},
+    })
+    expect(btn.textContent).toBe('[工作流]')
+    expect(btn.querySelector('[data-testid="icon-label"]')).not.toBeNull()
+  })
+
   it('点击触发 onRun，并阻止冒泡到所在行', () => {
     const onRun = vi.fn()
     const onRowClick = vi.fn()

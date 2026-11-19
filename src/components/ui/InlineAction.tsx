@@ -57,7 +57,13 @@ export function InlineAction({
       {/* 转圈用 braille 帧里的静止首帧：这里不做逐帧动画——按钮是瞬时
           动作，动画会让同一屏里的多个 spinner 互相打架，静态帧足以表达
           "请求在飞"。 */}
-      {busy ? `[⠋${busyLabel}]` : `[${label}]`}
+      {busy ? (
+        `[⠋${busyLabel}]`
+      ) : (
+        <>
+          [{label}]
+        </>
+      )}
     </button>
   )
 }
