@@ -10,6 +10,7 @@ import {
   liteMark,
 } from './envelopeParse'
 import { toolCallIdOf } from './tools'
+import { runtime } from './globals'
 
 function replayUpdateKind(env: unknown): string | undefined {
   const e = env as RawEnvelope
@@ -195,6 +196,21 @@ export function reorderLateAgentEvents(updates: unknown[]): unknown[] {
  * `entryLiteOmitted`（累计裁掉字节）。
  */
 export function replayUpdates(
+  getStore: () => ChatState,
+  updates: unknown[],
+  opts?: { applyUsage?: boolean },
+): ReturnType<typeof replayUpdatesInner> {
+  // 回放作用域：收口路径（工具 update / 回合终态）据此不盖 finishedAt，
+  // 历史块因此不会套上「新块预览再收起」。同步执行，不存在交错。
+  runtime.historyReplayDepth++
+  try {
+    return replayUpdatesInner(getStore, updates, opts)
+  } finally {
+    runtime.historyReplayDepth--
+  }
+}
+
+function replayUpdatesInner(
   getStore: () => ChatState,
   updates: unknown[],
   opts?: { applyUsage?: boolean },

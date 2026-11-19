@@ -63,7 +63,11 @@ export function applySubagentViewEvent(
   set((s) => {
     const prev = s.subagentViews[childSid]
     // 防御：spawn 尚未处理（索引已建但视图缺失）时惰性初始化。
-    const items = subagentViewAppend(prev?.items ?? [], withLocalElapsed(childSid, ev))
+    const items = subagentViewAppend(
+      prev?.items ?? [],
+      withLocalElapsed(childSid, ev),
+      { live: true },
+    )
     const view: SubagentViewState = { ...(prev ?? { items: [], fetchState: 'idle' }), items }
     if (prev && prev.items === items) return {}
     return { subagentViews: { ...s.subagentViews, [childSid]: view } }
@@ -112,6 +116,7 @@ function withLocalElapsed(sid: string, ev: AcpEvent): AcpEvent {
 export function subagentViewAppend(
   items: ScrollEntry[],
   ev: AcpEvent,
+  opts: { live?: boolean } = {},
 ): ScrollEntry[] {
   switch (ev.type) {
     case 'user_message': {
@@ -203,7 +208,7 @@ export function subagentViewAppend(
       // 运行中的每段 thinking 都挂着 "Thinking…" 直到回合终态。
       const sealed = sealSubagentStreaming(items)
       const tc = ev.toolCall || {}
-      const item = stampLiteSeq(subagentToolItem(tc), ev)
+      const item = stampLiteSeq(subagentToolItem(tc, undefined, opts), ev)
       // 同 toolCallId 重复到达时原地替换，避免双行。
       const idx = item.toolCallId
         ? sealed.findIndex(
@@ -235,16 +240,24 @@ export function subagentViewAppend(
           // 与主 scrollback 相同：update 的字段合并进 raw，标题/动词重算。
           const merged: ToolCall = { ...(existing.raw || {}), ...tc }
           const next = [...sealed]
-          next[idx] = stampLiteSeq(subagentToolItem(merged, existing), ev, existing)
+          next[idx] = stampLiteSeq(
+            subagentToolItem(merged, existing, opts),
+            ev,
+            existing,
+          )
           return next
         }
       }
       // 未找到对应条目（回放分页边界）：按首次 tool_call 追加。
-      return subagentViewAppend(sealed, {
-        type: 'tool_call',
-        toolCall: tc,
-        ...(ev.msgSeq != null ? { msgSeq: ev.msgSeq } : {}),
-      })
+      return subagentViewAppend(
+        sealed,
+        {
+          type: 'tool_call',
+          toolCall: tc,
+          ...(ev.msgSeq != null ? { msgSeq: ev.msgSeq } : {}),
+        },
+        opts,
+      )
     }
     case 'plan':
       // plan 展示 = 流切换（主 scrollback plan 分支同样收口思考段）。
@@ -409,6 +422,7 @@ function stampLiteSeq(
 export function subagentToolItem(
   tc: ToolCall,
   prev?: Extract<ScrollEntry, { kind: 'tool' }>,
+  opts: { live?: boolean } = {},
 ): Extract<ScrollEntry, { kind: 'tool' }> {
   const status = (tc.status as string) || prev?.status || 'pending'
   // 与主 scrollback 同款优先序：_meta["x.ai/tool"].kind 权威，再顶层
@@ -429,8 +443,9 @@ export function subagentToolItem(
         ? toolDefaultDisplay(kindName, toolCallDensity())
         : toolDisplayMode(prev)
       : toolDefaultDisplay(kindName, toolCallDensity())
+  // 完成时刻只在直播路径盖：回放/按需历史填充的块不参与新块预览。
   const finishedAt =
-    wasRunning && !running ? Date.now() : prev?.finishedAt
+    wasRunning && !running && opts.live ? Date.now() : prev?.finishedAt
   return {
     id: prev?.id ?? nid(),
     kind: 'tool',

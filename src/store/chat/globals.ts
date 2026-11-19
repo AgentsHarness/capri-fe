@@ -79,6 +79,17 @@ export const runtime = {
    * again with the same notice.
    */
   historyGapToastedKeys: new Set<string>(),
+  /**
+   * 历史信封回放作用域（`replayUpdates` 执行期间 > 0）。回放块不属于
+   * 「刚结束的新块」：收口路径据此不盖 `finishedAt`，避免历史内容套上
+   * 新块预览再收起（见 scrollback/groupHold.ts）。
+   */
+  historyReplayDepth: 0,
+}
+
+/** 当前是否在回放存储的历史信封（只覆盖 replayUpdates 的同步执行期）。 */
+export function historyReplayActive(): boolean {
+  return runtime.historyReplayDepth > 0
 }
 
 /** 缓冲上限：超限丢弃新事件（窗口正常只有几十条，防异常场景膨胀）。 */

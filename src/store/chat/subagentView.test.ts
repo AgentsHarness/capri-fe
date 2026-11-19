@@ -374,6 +374,7 @@ describe('subagentToolItem — 密度默认与 finishedAt', () => {
     const done = subagentToolItem(
       call({ status: 'completed' }) as never,
       running,
+      { live: true },
     )
     expect(done).toMatchObject({
       expanded: true,
@@ -382,7 +383,7 @@ describe('subagentToolItem — 密度默认与 finishedAt', () => {
     expect(typeof done.finishedAt).toBe('number')
   })
 
-  it('compact：默认折叠；运行转完成时写入 finishedAt', () => {
+  it('compact：默认折叠；直播运行转完成时写入 finishedAt', () => {
     const running = subagentToolItem(call() as never)
     expect(running).toMatchObject({
       expanded: false,
@@ -392,11 +393,22 @@ describe('subagentToolItem — 密度默认与 finishedAt', () => {
     const done = subagentToolItem(
       call({ status: 'completed' }) as never,
       running,
+      { live: true },
     )
     expect(done).toMatchObject({
       expanded: false,
       displayMode: 'collapsed',
     })
     expect(typeof done.finishedAt).toBe('number')
+  })
+
+  it('回放/历史填充不写 finishedAt：完成块不进入新块预览窗口', () => {
+    const running = subagentToolItem(call() as never)
+    const done = subagentToolItem(
+      call({ status: 'completed' }) as never,
+      running,
+    )
+    expect(done).toMatchObject({ status: 'completed', displayMode: 'collapsed' })
+    expect(done.finishedAt).toBeUndefined()
   })
 })

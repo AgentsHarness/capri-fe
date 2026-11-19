@@ -51,8 +51,8 @@ const NONE: ReadonlySet<string> = new Set()
  *  - 用户没有手动折叠/展开过；
  *  - 运行中，或结束后仍在 `holdMs` 窗口内。
  *
- * 已完成但没有 `finishedAt`（历史/回放条目）的块不预览：它们不属于
- * 「刚结束的新块」，直播与回放用同一套规则。
+ * 已完成但没有 `finishedAt` 的块不预览：回放路径（replayUpdates / 历史
+ * 分页收口）不盖这个时间戳，只有直播中新收口的块算「刚结束的新块」。
  */
 export function previewToolIds(
   entries: readonly ScrollEntry[],

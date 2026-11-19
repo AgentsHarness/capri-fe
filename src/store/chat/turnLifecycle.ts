@@ -13,6 +13,7 @@ import {
 } from './stream'
 import { isTurnEndLine, tailHasRetryBanner, turnIsLive, turnMarker } from './turnStatus'
 import { isBashBlocks, userRowText } from '../promptQueue'
+import { historyReplayActive } from './globals'
 import type { StreamBufKind } from './stream'
 
 export type { StreamBufKind }
@@ -428,8 +429,18 @@ export function turnFailureMarkerSuppressed(
  * for restored tasks. Live rows always pair 'started' with running: true,
  * so counting `running` alone covers the live path.
  */
-/** Settle streaming/running entries at turn end (assistant/thought/tool). */
-export function settleTurnEntries(entries: ScrollEntry[]): ScrollEntry[] {
+/**
+ * Settle streaming/running entries at turn end (assistant/thought/tool).
+ *
+ * `replay` marks historical content settled outside `replayUpdates`
+ * (snapshot rebuild / paging): its tools stay without `finishedAt`, so the
+ * new-block preview never plays on replayed rows.
+ */
+export function settleTurnEntries(
+  entries: ScrollEntry[],
+  opts: { replay?: boolean } = {},
+): ScrollEntry[] {
+  const replay = opts.replay === true || historyReplayActive()
   const kept: ScrollEntry[] = []
   for (const e of entries) {
     if (e.kind === 'assistant') {
@@ -462,7 +473,7 @@ export function settleTurnEntries(entries: ScrollEntry[]): ScrollEntry[] {
         ...e,
         status: 'completed',
         verb: toolVerb(e.kindName, false),
-        finishedAt: Date.now(),
+        ...(replay ? {} : { finishedAt: Date.now() }),
       })
       continue
     }

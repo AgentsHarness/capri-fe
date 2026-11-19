@@ -3,6 +3,8 @@ import type { AcpEvent, ScrollEntry, ToolCall } from '../../../api/types'
 import type { ChatState, SetState } from '../types'
 import { handleToolEvent } from './tools'
 import { clearSuppressedTools } from '../tools'
+import { runtime } from '../globals'
+import { previewToolIds } from '../../../scrollback/groupHold'
 
 /**
  * Wire payloads recorded from a session whose gateway returned function
@@ -225,5 +227,37 @@ describe('tool_call_update 带 id 走 toolIndex', () => {
     const ro = tool()?.raw?.rawOutput as { output?: unknown; truncated?: boolean }
     expect(new TextDecoder().decode(Uint8Array.from(ro.output as number[]))).toBe(full)
     expect(ro.truncated).toBe(false)
+  })
+})
+
+describe('完成时刻只盖在直播路径', () => {
+  const start = { ...callStart(LS), toolCallId: 'call_live' } as ToolCall
+  const done = { ...callDone(LS, 'ok\n'), toolCallId: 'call_live' } as ToolCall
+
+  it('回放收口不写 finishedAt：历史块不进入新块预览窗口', () => {
+    const { feed, tool } = makeStore()
+    runtime.historyReplayDepth++
+    try {
+      feed({ type: 'tool_call', toolCall: start } as AcpEvent)
+      feed({ type: 'tool_call_update', toolCallUpdate: done } as AcpEvent)
+    } finally {
+      runtime.historyReplayDepth--
+    }
+    expect(tool()).toMatchObject({ status: 'completed' })
+    expect(tool()?.finishedAt).toBeUndefined()
+    expect(
+      previewToolIds([tool()!], Date.now(), 1000, 'compact-all-grouped').ids.size,
+    ).toBe(0)
+  })
+
+  it('直播收口写 finishedAt：预览停留窗口从这里起算', () => {
+    const { feed, tool } = makeStore()
+    feed({ type: 'tool_call', toolCall: start } as AcpEvent)
+    feed({ type: 'tool_call_update', toolCallUpdate: done } as AcpEvent)
+    expect(tool()).toMatchObject({ status: 'completed' })
+    expect(typeof tool()?.finishedAt).toBe('number')
+    expect(
+      previewToolIds([tool()!], Date.now(), 1000, 'compact-all-grouped').ids.size,
+    ).toBe(1)
   })
 })

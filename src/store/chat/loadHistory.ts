@@ -372,7 +372,7 @@ export async function loadHistory(
         applyThoughtHoist(
           replayMeta.turnOpen
             ? sortedEntries
-            : settleTurnEntries(sortedEntries),
+            : settleTurnEntries(sortedEntries, { replay: true }),
         ),
         r.btw ?? [],
       )

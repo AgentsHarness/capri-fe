@@ -26,6 +26,7 @@ import {
 } from '../turn'
 import { appendEntry } from '../entries'
 import { appendTurnMarker } from './notifHooks'
+import { historyReplayActive } from '../globals'
 export function handleTurnEndEvent(
   set: SetState,
   get: () => ChatState,
@@ -319,7 +320,10 @@ export function handleTurnEndEvent(
                   ...e,
                   status: 'cancelled',
                   verb: toolVerb(e.kindName, false),
-                  finishedAt: Date.now(),
+                  // 回放取消的旧回合同样不盖完成时刻（不触发新块预览）。
+                  ...(historyReplayActive()
+                    ? {}
+                    : { finishedAt: Date.now() }),
                 }
               }
               return e

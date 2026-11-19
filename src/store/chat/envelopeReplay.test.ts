@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { envelopeTotalTokens, reorderLateAgentEvents, replayUpdates } from './envelopeReplay'
+import { historyReplayActive } from './globals'
 import type { ChatState } from './types'
 
 function env(kind: string, over: Record<string, unknown> = {}, paramsMeta?: Record<string, unknown>): Record<string, unknown> {
@@ -108,6 +109,36 @@ describe('replayUpdates', () => {
     expect(handled[0]).toMatchObject({ type: 'user_message', text: '你好' })
     expect(handled[1]).toMatchObject({ type: 'chunk', text: '回复' })
     expect(res.turnOpen).toBe(true)
+  })
+
+  it('回放期间置位历史回放作用域，结束后（含抛错）复位', () => {
+    const seen: boolean[] = []
+    const getStore = () =>
+      ({
+        handleEvent: () => seen.push(historyReplayActive()),
+        appendLocalEntry: () => {},
+        topTasks: [],
+      }) as unknown as ChatState
+    replayUpdates(getStore as never, [
+      env('agent_message_chunk', { content: 'a' }),
+    ])
+    expect(seen).toEqual([true])
+    expect(historyReplayActive()).toBe(false)
+
+    const throwing = () =>
+      ({
+        handleEvent: () => {
+          throw new Error('boom')
+        },
+        appendLocalEntry: () => {},
+        topTasks: [],
+      }) as unknown as ChatState
+    expect(() =>
+      replayUpdates(throwing as never, [
+        env('agent_message_chunk', { content: 'b' }),
+      ]),
+    ).toThrow('boom')
+    expect(historyReplayActive()).toBe(false)
   })
 
   it('direct-bash 的 user chunk（块 _meta.bash_command）聚合后仍带 isShell', () => {

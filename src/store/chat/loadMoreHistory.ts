@@ -196,7 +196,7 @@ export async function loadMoreHistory(
         // 让回放在干净指针上起步。）
         const pre = sealThought(flushLiveStream(get()))
         set({
-          entries: settleTurnEntries(pre.entries),
+          entries: settleTurnEntries(pre.entries, { replay: true }),
           openAssistantId: undefined,
           openThoughtId: undefined,
           currentStreamStartMs: undefined,
@@ -334,7 +334,7 @@ export async function loadMoreHistory(
           flushLiveStream({ ...get(), entries: merged }),
         )
         set({
-          entries: settleTurnEntries(sealedMerged.entries),
+          entries: settleTurnEntries(sealedMerged.entries, { replay: true }),
           openAssistantId: undefined,
           openThoughtId: undefined,
           currentStreamStartMs: undefined,

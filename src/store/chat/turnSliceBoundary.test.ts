@@ -36,6 +36,32 @@ describe('真实回放切片（turnIndex:1）→ 工具行内容', () => {
   })
 })
 
+describe('回放收口的时间戳', () => {
+  const runningTool = (): ScrollEntry =>
+    ({
+      id: 't-replay',
+      kind: 'tool',
+      title: 'Read a.py',
+      verb: 'Read',
+      status: 'in_progress',
+      kindName: 'read',
+      expanded: false,
+      displayMode: 'collapsed',
+    }) as ScrollEntry
+
+  it('replay 收口只改状态、不盖 finishedAt（不触发新块预览）', () => {
+    const [out] = settleTurnEntries([runningTool()], { replay: true })
+    expect(out).toMatchObject({ status: 'completed' })
+    expect((out as { finishedAt?: number }).finishedAt).toBeUndefined()
+  })
+
+  it('直播收口照旧盖 finishedAt', () => {
+    const [out] = settleTurnEntries([runningTool()])
+    expect(out).toMatchObject({ status: 'completed' })
+    expect(typeof (out as { finishedAt?: number }).finishedAt).toBe('number')
+  })
+})
+
 describe('分页边界拆分：rich update 与新页工具行各在不同抓取', () => {
   function toEvents(envsSlice: unknown[]): AcpEvent[] {
     const evs: AcpEvent[] = []

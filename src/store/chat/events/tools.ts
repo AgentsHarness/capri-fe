@@ -26,6 +26,7 @@ import {
   busyPlausibleForView,
 } from '../turn'
 import { liteAfterLiveBody } from '../historyFill'
+import { historyReplayActive } from '../globals'
 
 export function handleToolEvent(
   set: SetState,
@@ -272,8 +273,11 @@ export function handleToolEvent(
               const status = (tc.status as string) || e.status
               const kindName = toolKindName(tc, e.kindName)
               const running = status === 'pending' || status === 'in_progress'
+              // 回放收口不盖完成时刻：历史块不参与「新块预览再收起」。
               const finishedAt =
-                wasRunningBefore && !running ? Date.now() : e.finishedAt
+                wasRunningBefore && !running && !historyReplayActive()
+                  ? Date.now()
+                  : e.finishedAt
               return {
                 ...e,
                 status,
@@ -294,8 +298,11 @@ export function handleToolEvent(
             const wasRunning =
               e.status === 'pending' || e.status === 'in_progress'
             // Finish flash: stamp finishedAt when a running tool settles
+            // live; replay settles must stay stamp-free (no block preview).
             const finishedAt =
-              wasRunning && !running ? Date.now() : e.finishedAt
+              wasRunning && !running && !historyReplayActive()
+                ? Date.now()
+                : e.finishedAt
             // TUI replace_tool_block: Other → Edit rematerializes to the
             // current density default (detailed/diff focus = truncated,
             // grouped/compact = collapsed). Already-Edit keeps the current
