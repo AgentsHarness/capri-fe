@@ -5,6 +5,7 @@ import { useChatStore } from '../chat'
 vi.mock('../../api/client', () => ({
   transport: {
     loadSessionHistory: vi.fn(),
+    goalStatus: vi.fn().mockResolvedValue({ goal: null }),
     queueStatus: vi.fn().mockResolvedValue({ queue: [] }),
     sessionResume: vi.fn(),
     loadSession: vi.fn(),

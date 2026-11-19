@@ -15,6 +15,7 @@ vi.mock('../../api/client', () => ({
     sessionStats: vi.fn(),
     sessionRunningTasks: vi.fn(),
     loadSessionHistory: vi.fn(),
+    goalStatus: vi.fn().mockResolvedValue({ goal: null }),
     queueStatus: vi.fn(),
     status: vi.fn(),
     onEvent: vi.fn(() => () => {}),

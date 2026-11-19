@@ -7,6 +7,7 @@ import { clearTopTaskTimer } from './topTasks'
 vi.mock('../../api/client', () => ({
   transport: {
     loadSessionHistory: vi.fn(),
+    goalStatus: vi.fn().mockResolvedValue({ goal: null }),
     sessionRunningTasks: vi.fn().mockResolvedValue({ events: [] }),
     // 顶栏的唯一来源：agent 的活动注册表（syncLiveTasks）
     listTasks: vi.fn().mockResolvedValue([]),

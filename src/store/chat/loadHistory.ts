@@ -223,9 +223,19 @@ export async function loadHistory(
       awaitingNext: false,
       sessionTitle: undefined,
       goalState: undefined,
+      goalReceivedAt: undefined,
       workflowRuns: {},
       scheduledTasks: [],
     })
+    // Goal 状态只活在 host 侧 goal 引擎的内存里：goal_updated 不会写进
+    // updates.jsonl，回放里没有它。换会话 / 刷新后不主动拉一次，右上角
+    // 的 GoalChip 就会一直缺席，直到下一条 live goal_updated 到达。
+    // 访客没有该端点的中继白名单（hub 403），跳过。
+    const goalPullAt = Date.now()
+    const goalP =
+      get().guestIdentity == null
+        ? transport.goalStatus(sessionId).catch(() => undefined)
+        : Promise.resolve(undefined)
     try {
       // 首页始终只拉最后 1 轮（turnIndex: INITIAL_TURNS），渲染这一轮。
       // 上一条由用户上滑 loadMoreHistory 按需加载——不再为 sticky 预取
@@ -438,6 +448,22 @@ export async function loadHistory(
         // 权限徽标是进程级、只信 agent 回声，历史回放不覆盖。
         // plan 是会话态，从 per-session 副本补充。
         ...restorePlanMode(sessionId),
+      })
+      void goalP.then((data) => {
+        if (staleLoad()) return
+        const goal = data?.goal
+        if (!goal || typeof goal !== 'object') return
+        // cleared 目标等同于没有目标：GoalChip 不渲染，但残留的
+        // total/completed_deliverables 会让 TodoChip 回退显示旧进度。
+        if (goal.status === 'cleared') return
+        // 加载窗口里已经到达的 live goal_updated 比这份快照新：
+        // 不能用请求发出时的旧状态把它覆盖回去。
+        const liveAt = get().goalReceivedAt
+        if (liveAt != null && liveAt >= goalPullAt) return
+        set({
+          goalState: goal as Record<string, unknown>,
+          goalReceivedAt: Date.now(),
+        })
       })
       // 方案 A：快照重建完成，回放窗口期（historyLoading 期间）缓冲的
       // live 内容事件——busy 会话切换时快照拉取间隙产生的 chunk/

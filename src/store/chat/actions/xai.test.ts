@@ -20,6 +20,7 @@ vi.mock('../../../api/client', () => ({
       totalCount: 2,
       updates: [],
     }),
+    goalStatus: vi.fn().mockResolvedValue({ goal: null }),
     gitWorktreeResumeSession: vi
       .fn()
       .mockResolvedValue({ sessionId: 'wt-1', worktreePath: '/wt', effectiveCwd: '/wt/x' }),

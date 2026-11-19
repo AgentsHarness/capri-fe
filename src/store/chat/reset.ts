@@ -99,6 +99,7 @@ export function resetSessionState(
     // 旧会话的标题、目标芯片与工作流面板。
     sessionTitle: undefined,
     goalState: undefined,
+    goalReceivedAt: undefined,
     workflowRuns: {},
     historySessionId: undefined,
     historyCwd: undefined,
