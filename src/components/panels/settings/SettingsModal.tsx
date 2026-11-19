@@ -443,35 +443,40 @@ export function SettingsModal({ role = 'admin' }: { role?: 'admin' | 'user' }) {
           <span className="hidden truncate text-[12px] text-gn-fg2 sm:inline">
             {current.label}
           </span>
-          <span className="ml-auto hidden items-center gap-1 font-mono text-[10.5px] text-gn-gutter sm:inline-flex">
-            <span>FE</span>
-            <span>v{__APP_VERSION__}</span>
-            {hubVersion ? (
-              <>
-                <span aria-hidden>·</span>
-                <span>Hub {hubVersion}</span>
-              </>
-            ) : null}
-          </span>
-          <button
-            type="button"
-            onClick={close}
-            className="ml-auto inline-flex min-h-9 min-w-9 items-center justify-center rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg sm:ml-0 sm:min-h-0 sm:min-w-0"
-            aria-label="关闭"
-            title="关闭 (Esc)"
-          >
-            <X size={16} className="sm:h-3.5 sm:w-3.5" aria-hidden />
-          </button>
+          <div className="ml-auto flex min-w-0 items-center gap-2">
+            <span
+              className="inline-flex min-w-0 items-center gap-1 whitespace-nowrap font-mono text-[10.5px] text-gn-gutter"
+              title={`FE v${__APP_VERSION__}${hubVersion ? ` · Hub ${hubVersion}` : ''}`}
+            >
+              <span className="hidden sm:inline">FE</span>
+              <span>v{__APP_VERSION__}</span>
+              {hubVersion ? (
+                <>
+                  <span aria-hidden>·</span>
+                  <span className="truncate">Hub {hubVersion}</span>
+                </>
+              ) : null}
+            </span>
+            <button
+              type="button"
+              onClick={close}
+              className="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded p-1 text-gn-muted transition-colors hover:bg-gn-bg-highlight hover:text-gn-fg sm:min-h-0 sm:min-w-0"
+              aria-label="关闭"
+              title="关闭 (Esc)"
+            >
+              <X size={16} className="sm:h-3.5 sm:w-3.5" aria-hidden />
+            </button>
+          </div>
         </header>
 
-        {/* 顶栏之下：移动端为顶部 Tab 栏（等宽短标签，无需横向滑动），桌面端为左侧边栏。 */}
+        {/* 顶栏之下：移动端为顶部 Tab 栏（等宽短标签 + 下划线选中，无需横向滑动），桌面端为左侧边栏。 */}
         <div className="flex min-h-0 min-w-0 flex-1 flex-col sm:flex-row">
           <nav
             ref={navRef}
             role="tablist"
             aria-label="设置分类"
             onKeyDown={onNavKeyDown}
-            className="gn-no-scrollbar shrink-0 overflow-x-auto border-b border-gn-prompt-border bg-gn-bg-dark/30 p-1.5 sm:w-[186px] sm:overflow-x-hidden sm:overflow-y-auto sm:border-b-0 sm:border-r sm:border-gn-prompt-border/60 sm:bg-transparent sm:p-2"
+            className="gn-no-scrollbar shrink-0 overflow-x-auto px-2 sm:w-[186px] sm:overflow-x-hidden sm:overflow-y-auto sm:border-r sm:border-gn-prompt-border/60 sm:bg-transparent sm:p-2"
           >
             <div className="flex w-full gap-1 sm:min-w-0 sm:flex-col sm:gap-0.5">
               {cats.map((c) => {
@@ -485,15 +490,21 @@ export function SettingsModal({ role = 'admin' }: { role?: 'admin' | 'user' }) {
                     aria-label={c.label}
                     aria-selected={on}
                     onClick={() => setActive(c.key)}
-                    className={`flex min-h-10 min-w-0 flex-1 items-center justify-center truncate rounded-md px-1 text-center text-[12.5px] transition-colors focus:outline-none sm:min-h-0 sm:w-full sm:flex-none sm:justify-start sm:rounded sm:px-2 sm:py-1.5 sm:text-left sm:text-[12px] ${
+                    className={`relative flex min-h-10 min-w-0 flex-1 items-center justify-center truncate px-1 text-center text-[12.5px] transition-colors focus:outline-none sm:min-h-0 sm:w-full sm:flex-none sm:justify-start sm:rounded sm:px-2 sm:py-1.5 sm:text-left sm:text-[12px] ${
                       on
-                        ? 'bg-gn-bg-highlight font-medium text-gn-fg'
-                        : 'text-gn-muted hover:bg-gn-bg-highlight/60 hover:text-gn-fg2'
+                        ? 'font-medium text-gn-fg sm:bg-gn-bg-highlight'
+                        : 'text-gn-muted hover:text-gn-fg2 sm:hover:bg-gn-bg-highlight/60'
                     }`}
                     title={c.label}
                   >
                     <span className="sm:hidden">{c.shortLabel}</span>
                     <span className="hidden sm:inline">{c.label}</span>
+                    <span
+                      aria-hidden
+                      className={`absolute inset-x-3 bottom-0 h-0.5 rounded-full transition-colors sm:hidden ${
+                        on ? 'bg-gn-green' : 'bg-transparent'
+                      }`}
+                    />
                   </button>
                 )
               })}
@@ -579,7 +590,7 @@ function SettingTabs<T extends string>({
               if (on) return
               onPick(c.id)
             }}
-            className={`inline-flex min-h-8 shrink-0 items-center justify-center gap-1 rounded-full border px-2.5 py-1 text-[11.5px] leading-none transition-colors disabled:cursor-not-allowed sm:min-h-0 sm:px-3 sm:py-1 sm:text-[11px] ${
+            className={`inline-flex min-h-8 shrink-0 items-center justify-center gap-1 rounded-md border px-2.5 py-1 text-[11.5px] leading-none transition-colors disabled:cursor-not-allowed sm:min-h-0 sm:px-3 sm:py-1 sm:text-[11px] ${
               on
                 ? 'border-gn-green/50 bg-gn-bg-highlight font-medium text-gn-green cursor-default'
                 : 'border-gn-prompt-border/60 text-gn-muted hover:bg-gn-bg-highlight hover:text-gn-fg'
