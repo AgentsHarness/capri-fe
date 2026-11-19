@@ -3,6 +3,7 @@ import { useChatStore } from '../../store/chat'
 import { isMultilineEnabled } from '../../commands/registry'
 import { Glyphs } from '../../theme/glyphs'
 import { useFittedModeLabel } from './useFittedModeLabel'
+import { useMinWidth } from '../../hooks/useMinWidth'
 import { ModelMenu } from './ModelMenu'
 import { ModeMenu } from './ModeMenu'
 import type { AnchoredMenuPos } from '../../hooks/useAnchoredMenu'
@@ -99,8 +100,10 @@ export function ComposerFooter({
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [statusText])
 
-  // 底栏（模型名 · 模式 · 其它 flag）是 right-2、max-w-[calc(100%-0.5rem)]
-  // 的绝对定位 flex。
+  // 底栏（模型名 · 模式 · 其它 flag）由外层定位框 + 内层可收缩 flex 组成。
+  // 窄屏（< lg）定位框左边界放在 ❯ 图标右侧（14px 内边距 + 1.25em 图标
+  // ≈ 30px，取 32px），模型名不进入左侧图标列；lg 起定位框从 0 开始，
+  // 内层仍靠右对齐，桌面底栏行为不变。
   // 模型名不再有固定像素上限：整行放得下就用完整名，只在整个行宽不够时
   // 由 flex 收缩并截断。模式名继续按实测宽度在完整名与短名之间选
   // （composer/useFittedModeLabel.ts）。探针只在行内量文本宽度，不参与布局。
@@ -111,7 +114,7 @@ export function ComposerFooter({
   const footerContentKey = [modelLabel, ...otherFlags.map((f) => f.text)].join(
     '\u0001',
   )
-  const modeLabel = useFittedModeLabel({
+  const fittedModeLabel = useFittedModeLabel({
     rowRef: footerRowRef,
     fullProbeRef: modeFullProbeRef,
     shortProbeRef: modeShortProbeRef,
@@ -120,16 +123,20 @@ export function ComposerFooter({
     short: currentModeShortLabel,
     contentKey: footerContentKey,
   })
+  // 桌面（≥ lg）固定用完整模式名：模型名再长也只截模型名，不把
+  // always-approve 降成 always；只有窄屏空间不足时才用实测短名兜底。
+  const modeLabel = useMinWidth(1024) ? currentModeLabel : fittedModeLabel
 
   return (
-          <div
-            ref={footerRowRef}
-            className="pointer-events-none absolute -bottom-[5px] right-2 flex max-w-[calc(100%_-_0.5rem)] items-center gap-0 text-[11px] leading-none"
-            style={{
-              background: 'var(--color-gn-bg-base)',
-            }}
-            title={[modelLabel, currentModeLabel, ...otherFlags.map((f) => f.text)].filter(Boolean).join(' · ')}
-          >
+          <div className="pointer-events-none absolute -bottom-[5px] left-8 right-2 flex justify-end lg:left-0">
+            <div
+              ref={footerRowRef}
+              className="flex min-w-0 max-w-full items-center gap-0 text-[11px] leading-none"
+              style={{
+                background: 'var(--color-gn-bg-base)',
+              }}
+              title={[modelLabel, currentModeLabel, ...otherFlags.map((f) => f.text)].filter(Boolean).join(' · ')}
+            >
             {/* 模式名宽度探针：量完整名/短名各自占多少 px（绝对定位，不
                 参与布局；data-probe 让内容宽度测量跳过它们）。 */}
             <span
@@ -227,6 +234,7 @@ export function ComposerFooter({
                 </span>
               ))}
             </span>
+          </div>
           </div>
   )
 }
