@@ -248,9 +248,13 @@ export function TopBar({
   return (
     <header className="relative z-40 w-full min-w-0 max-w-[100vw] select-none border-b border-gn-prompt-border bg-gn-bg-base touch-pan-x overscroll-none">
       {/* Main row: host switcher + subscribers + actions. 固定单行、宽度
-          不超过视口：窄屏时由 host 名称与层错误文案截断让位，new/history/
-          更多 永不换行。 */}
-      <div className="flex w-full min-w-0 shrink-0 flex-nowrap items-center gap-2 px-3 py-[6px] sm:px-4 text-[12px] text-gn-muted">
+          不超过视口：窄屏时由 host 名称截断让位，new/history/更多 永不
+          换行。层错误 / 警告在窄屏（< lg）独占第二行，桌面才回到行内。 */}
+      <div
+        className={`flex w-full min-w-0 shrink-0 items-center gap-2 px-3 py-[6px] sm:px-4 text-[12px] text-gn-muted ${
+          layerErr ? 'flex-wrap lg:flex-nowrap' : 'flex-nowrap'
+        }`}
+      >
         {/* Desktop-only sidebar collapse toggle — sits left of the host switcher. */}
         <button
           type="button"
@@ -557,14 +561,14 @@ export function TopBar({
         )}
         {subscribersOpen && <SubscribersPanel onClose={() => setSubscribersOpen(false)} />}
 
-        {/* hub / host 层错误：就贴在订阅数右侧同一行（窄屏截断，✕ 常驻），
-            不单独占一条。 */}
+        {/* hub / host 层错误 / 警告：窄屏单独占第二行（整行放宽，消息可
+            换行）；lg 起回到订阅数右侧的行内提示。 */}
         {layerErr && (
           <LayerErrNotice
             key={`${layerErr.layer}:${layerErr.err.at}`}
             layer={layerErr.layer}
             err={layerErr.err}
-            className="min-w-0 max-w-[26rem]"
+            className="order-last w-full pb-1 lg:order-none lg:w-auto lg:max-w-[26rem] lg:pb-0"
           />
         )}
 

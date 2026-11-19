@@ -292,8 +292,8 @@ describe('TopBar', () => {
     expect(screen.getByText('error')).not.toBeNull()
     // conn error 同样由当前 Host 的红点指示
     expect(container.querySelector('[data-host-dot="current"]')?.className).toContain('bg-gn-red')
-    // error 级：host 名照常显示，红点指示错误；消息仍是顶栏内的一条
-    // 行内提示（在 header 里），不再另占整条横幅。
+    // error 级：host 名照常显示，红点指示错误；提示在 header 内，
+    // 窄屏独占一行，桌面回到行内。
     resetChat({
       mode: 'hub',
       conn: 'ready',

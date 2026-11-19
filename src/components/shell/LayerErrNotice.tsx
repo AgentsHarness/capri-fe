@@ -4,15 +4,16 @@ import { useChatStore } from '../../store/chat'
 import type { LayerErr } from '../../store/chat/types'
 
 /**
- * hub / host 层错误的顶栏内联提示——挂在 host 切换器右侧：host 名字保持
- * 原样（前面加告警图标），错误文案单独一条跟在右边，不另占整行。
+ * hub / host 层错误的顶栏提示——host 名字保持原样（前面加告警图标），
+ * 错误文案单独一条跟在右边：桌面（≥ lg）贴在 host 切换器右侧的行内，
+ * 窄屏独占一整行（消息断行显示）。
  *
  * - 带层级徽标 hub / host：一眼分清是中继还是这台 host 坏了；
  * - action 为 restart-agent 时提供「重启」按钮（杀进程 + 重新 boot +
  *   恢复上次会话），无需再钻进 host 菜单；
  * - 恢复事件（ready/busy/新回合/重连成功）自动清除对应层，也可手动 ✕。
  *
- * 布局：自身不定宽，由调用方（顶栏）决定宽度上限；消息单行截断
+ * 布局：自身不定宽，由调用方（顶栏）决定宽度上限；桌面消息单行截断
  * （title 兜底全文），✕ / 重启按钮保持常驻可点。
  */
 export function LayerErrNotice({
@@ -58,9 +59,12 @@ export function LayerErrNotice({
       >
         {layer}
       </span>
-      {/* 占满提示内余宽并单行截断（完整文案在 title），保证整条提示
-          永远留在父级那一行里。 */}
-      <span className="min-w-0 flex-1 truncate" title={err.message}>
+      {/* 窄屏整行时撑满余宽换行显示；lg 回到行内：flex-initial +
+          truncate 恢复单行截断（完整文案在 title）。 */}
+      <span
+        className="min-w-0 flex-1 break-words lg:flex-initial lg:truncate"
+        title={err.message}
+      >
         {err.message}
       </span>
       {allowRestart && err.action === 'restart-agent' && (
