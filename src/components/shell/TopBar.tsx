@@ -246,12 +246,11 @@ export function TopBar({
   // context on this chrome, absolute z-40 children still lose to later
   // siblings and chat text "shows through" the history panel.
   return (
-    <header className="relative z-40 select-none border-b border-gn-prompt-border bg-gn-bg-base touch-pan-x overscroll-none">
-      {/* Main row: host switcher + actions. flex-wrap 只为分层错误提示：
-          窄屏（< lg）它整行落到第二行，不与 host 切换器和 new/history/更多
-          抢同一行的宽度。lg 起回到不换行——桌面一行的按钮簇不能因为一条
-          长错误被挤到第二行，让消息自己截断即可。 */}
-      <div className="flex shrink-0 flex-wrap items-center gap-2 px-3 py-[6px] sm:px-4 text-[12px] text-gn-muted lg:flex-nowrap">
+    <header className="relative z-40 w-full min-w-0 max-w-[100vw] select-none border-b border-gn-prompt-border bg-gn-bg-base touch-pan-x overscroll-none">
+      {/* Main row: host switcher + subscribers + actions. 固定单行、宽度
+          不超过视口：窄屏时由 host 名称与层错误文案截断让位，new/history/
+          更多 永不换行。 */}
+      <div className="flex w-full min-w-0 shrink-0 flex-nowrap items-center gap-2 px-3 py-[6px] sm:px-4 text-[12px] text-gn-muted">
         {/* Desktop-only sidebar collapse toggle — sits left of the host switcher. */}
         <button
           type="button"
@@ -275,14 +274,14 @@ export function TopBar({
             <path d="M2.4 5h1.4M2.4 8h1.4" />
           </svg>
         </button>
-        <div className="relative min-w-0">
+        <div className="relative min-w-0 shrink">
           {mode === 'local' ? (
             // 本地模式：锁定本机 —— 静态 Localhost 标签，不可点击、无下拉。
             <div
               className="flex min-h-8 max-w-[40vw] items-center gap-1.5 truncate rounded px-2 py-0.5 sm:max-w-xs"
               title="本地模式（仅本机 capri-host，无 host 切换）"
             >
-              <span className="truncate text-gn-fg">Localhost</span>
+              <span className="min-w-0 truncate text-gn-fg">Localhost</span>
             </div>
           ) : (
             <button
@@ -316,7 +315,7 @@ export function TopBar({
                   className={`h-1.5 w-1.5 rounded-full ${HOST_SIGNAL_DOT_CLASS[currentSignal]}`}
                 />
               </span>
-              <span className="truncate">{hostLabel}</span>
+              <span className="min-w-0 truncate">{hostLabel}</span>
               <ChevronDown
                 size={12}
                 strokeWidth={2}
@@ -558,23 +557,21 @@ export function TopBar({
         )}
         {subscribersOpen && <SubscribersPanel onClose={() => setSubscribersOpen(false)} />}
 
-        {/* hub / host 层错误：紧跟在 host 名字右侧的一条内联消息（不另占整行）。
-            窄屏（< lg）另起一行占满整行：与 host 切换器 + new/history/更多
-            挤在一行时，消息会被压到 0 宽——只剩层级徽标和 ✕，错误内容完全
-            看不见。lg 起恢复行内，宽度上限 26rem。 */}
+        {/* hub / host 层错误：就贴在订阅数右侧同一行（窄屏截断，✕ 常驻），
+            不单独占一条。 */}
         {layerErr && (
           <LayerErrNotice
             key={`${layerErr.layer}:${layerErr.err.at}`}
             layer={layerErr.layer}
             err={layerErr.err}
-            className="order-last w-full pb-1 lg:order-none lg:w-auto lg:max-w-[26rem] lg:pb-0"
+            className="min-w-0 max-w-[26rem]"
           />
         )}
 
-        <div className="flex-1" />
+        <div className="min-w-0 flex-1" />
 
         {/* Desktop-only inline actions — on mobile they fold into the ⋮ menu below. */}
-        <div className="hidden items-center gap-2 lg:flex">
+        <div className="hidden shrink-0 items-center gap-2 lg:flex">
           <ThemePicker />
           {onOpenMcp && (
             <button
@@ -644,7 +641,7 @@ export function TopBar({
         </div>
         {/* Mobile-only new — sits left of history (no ⋮ dive needed).
             Desktop relies on the sidebar "会话 new" header button. */}
-        <div className="lg:hidden">
+        <div className="shrink-0 lg:hidden">
           <button
             type="button"
             onClick={() => resetToEmpty()}
@@ -656,7 +653,7 @@ export function TopBar({
           </button>
         </div>
         {/* Mobile-only history trigger — desktop history lives in the persistent left sidebar. */}
-        <div ref={historyAnchorRef} className="relative lg:hidden">
+        <div ref={historyAnchorRef} className="relative shrink-0 lg:hidden">
           <button
             type="button"
             onClick={() => (historyOpen ? closeMobileHistory() : void openHistory())}
@@ -737,7 +734,7 @@ export function TopBar({
 
         {/* Mobile-only "更多" — the secondary action buttons fold into one ⋮
             trigger; clicking expands them vertically under the button. */}
-        <div ref={moreAnchorRef} className="relative lg:hidden">
+        <div ref={moreAnchorRef} className="relative shrink-0 lg:hidden">
           <button
             type="button"
             onClick={() => setMoreOpen((v) => !v)}

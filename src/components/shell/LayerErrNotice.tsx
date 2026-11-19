@@ -12,8 +12,8 @@ import type { LayerErr } from '../../store/chat/types'
  *   恢复上次会话），无需再钻进 host 菜单；
  * - 恢复事件（ready/busy/新回合/重连成功）自动清除对应层，也可手动 ✕。
  *
- * 布局：自身不定宽，由调用方（顶栏）放行内还是整行；消息在窄屏换行、
- * lg 起单行截断（title 兜底全文），窄屏的 ✕ / 重启按钮加大触点。
+ * 布局：自身不定宽，由调用方（顶栏）决定宽度上限；消息单行截断
+ * （title 兜底全文），✕ / 重启按钮保持常驻可点。
  */
 export function LayerErrNotice({
   layer,
@@ -47,7 +47,7 @@ export function LayerErrNotice({
   return (
     <div
       role="alert"
-      className={`flex min-w-0 items-center gap-1.5 ${tone} ${className ?? ''}`}
+      className={`flex min-w-0 items-center gap-1.5 text-[12px] leading-tight ${tone} ${className ?? ''}`}
     >
       <span
         className={`shrink-0 rounded border px-1.5 font-mono text-[10px] font-bold uppercase leading-[16px] tracking-wider ${
@@ -58,12 +58,9 @@ export function LayerErrNotice({
       >
         {layer}
       </span>
-      {/* 窄屏整行时撑满余宽换行显示；lg 回到行内（父级 w-auto 上限
-          26rem）：flex-initial + truncate 就是原来的单行截断行为。 */}
-      <span
-        className="min-w-0 flex-1 break-words lg:flex-initial lg:truncate"
-        title={err.message}
-      >
+      {/* 占满提示内余宽并单行截断（完整文案在 title），保证整条提示
+          永远留在父级那一行里。 */}
+      <span className="min-w-0 flex-1 truncate" title={err.message}>
         {err.message}
       </span>
       {allowRestart && err.action === 'restart-agent' && (
