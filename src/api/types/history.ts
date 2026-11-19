@@ -54,4 +54,10 @@ export type SessionHistoryPage = {
   btw?: import('./scroll').BtwHistoryRecord[]
   /** host 的投影能力回显；缺省 = 旧 host 不认识 detail。 */
   projected?: SessionHistoryProjected
+  /**
+   * 本会话当前的 goal 快照（host 引擎内存态；null = 没有 goal）。
+   * 键恒存在（新 host 总是带该键），缺键 = 旧 host：调用方回退到
+   * 一次 /api/goal/status，避免旧 host 上 GoalChip 缺席。
+   */
+  goal?: Record<string, unknown> | null
 }

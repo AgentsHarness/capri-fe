@@ -227,15 +227,13 @@ export async function loadHistory(
       workflowRuns: {},
       scheduledTasks: [],
     })
-    // Goal 状态只活在 host 侧 goal 引擎的内存里：goal_updated 不会写进
-    // updates.jsonl，回放里没有它。换会话 / 刷新后不主动拉一次，右上角
-    // 的 GoalChip 就会一直缺席，直到下一条 live goal_updated 到达。
-    // 访客没有该端点的中继白名单（hub 403），跳过。
-    const goalPullAt = Date.now()
-    const goalP =
-      get().guestIdentity == null
-        ? transport.goalStatus(sessionId).catch(() => undefined)
-        : Promise.resolve(undefined)
+    // 新 host 的 /api/session-updates 响应自带本会话的 goal 快照
+    // （goal 键；null = 没有），回放直接用它恢复 GoalChip，不再每个会话
+    // 单独打 /api/goal/status。旧 host 没有该键时才回退到一次状态查询
+    // （访客没有该端点的中继白名单，不查询）。
+    // goalSnapAt 是快照的保守时间锚：加载窗口里到达的 live goal_updated
+    // 若晚于它，就不能被这份更旧的快照覆盖。
+    const goalSnapAt = Date.now()
     try {
       // 首页始终只拉最后 1 轮（turnIndex: INITIAL_TURNS），渲染这一轮。
       // 上一条由用户上滑 loadMoreHistory 按需加载——不再为 sticky 预取
@@ -449,22 +447,28 @@ export async function loadHistory(
         // plan 是会话态，从 per-session 副本补充。
         ...restorePlanMode(sessionId),
       })
-      void goalP.then((data) => {
+      const applyGoalSnapshot = (goal: unknown) => {
         if (staleLoad()) return
-        const goal = data?.goal
         if (!goal || typeof goal !== 'object') return
+        const g = goal as Record<string, unknown>
         // cleared 目标等同于没有目标：GoalChip 不渲染，但残留的
         // total/completed_deliverables 会让 TodoChip 回退显示旧进度。
-        if (goal.status === 'cleared') return
+        if (g.status === 'cleared') return
         // 加载窗口里已经到达的 live goal_updated 比这份快照新：
-        // 不能用请求发出时的旧状态把它覆盖回去。
+        // 不能用快照把它覆盖回去。
         const liveAt = get().goalReceivedAt
-        if (liveAt != null && liveAt >= goalPullAt) return
-        set({
-          goalState: goal as Record<string, unknown>,
-          goalReceivedAt: Date.now(),
-        })
-      })
+        if (liveAt != null && liveAt >= goalSnapAt) return
+        set({ goalState: g, goalReceivedAt: Date.now() })
+      }
+      if ('goal' in r) {
+        applyGoalSnapshot(r.goal)
+      } else if (get().guestIdentity == null) {
+        // 旧 host：响应没有 goal 键，回退到一次按会话查询。
+        void transport.goalStatus(sessionId).then(
+          (data) => applyGoalSnapshot(data?.goal),
+          () => {},
+        )
+      }
       // 方案 A：快照重建完成，回放窗口期（historyLoading 期间）缓冲的
       // live 内容事件——busy 会话切换时快照拉取间隙产生的 chunk/
       // thought 不丢。会话已切走时丢弃残留（回放会污染新会话视图）。
