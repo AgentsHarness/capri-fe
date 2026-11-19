@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { hostState, hostStateLabel, type HostState } from './hostState'
+import {
+  hostSignal,
+  hostSignalLabel,
+  hostState,
+  hostStateLabel,
+  otherHostsSignal,
+  type HostSignal,
+  type HostState,
+} from './hostState'
 
 const base = { hostId: 'h1', hostName: 'H', online: true }
 
@@ -36,5 +44,57 @@ describe('hostState', () => {
     for (const [s, label] of Object.entries(want)) {
       expect(hostStateLabel(s as HostState)).toBe(label)
     }
+  })
+})
+
+describe('hostSignal（顶栏状态点）', () => {
+  it('离线优先于 busy；在线时 busy → 正忙，否则空闲', () => {
+    expect(hostSignal({ online: false, busy: true })).toBe('offline')
+    expect(hostSignal({ online: true, busy: true })).toBe('busy')
+    expect(hostSignal({ online: true, busy: false })).toBe('idle')
+    expect(hostSignal({ online: true })).toBe('idle')
+  })
+
+  it('label 映射完整', () => {
+    const want: Record<HostSignal, string> = {
+      error: '错误',
+      warning: '警告',
+      busy: '正忙',
+      idle: '空闲',
+      offline: '离线',
+    }
+    for (const [s, label] of Object.entries(want)) {
+      expect(hostSignalLabel(s as HostSignal)).toBe(label)
+    }
+  })
+})
+
+describe('otherHostsSignal（左侧聚合点）', () => {
+  const h = (hostId: string, online: boolean, busy = false) => ({
+    hostId,
+    hostName: hostId,
+    online,
+    busy,
+  })
+
+  it('任意其他 Host 正忙 → 正忙（优先级最高，哪怕同时有离线）', () => {
+    expect(
+      otherHostsSignal([h('a', false, true), h('b', true), h('c', true, true)], 'a'),
+    ).toBe('busy')
+  })
+
+  it('没有正忙但有在线 → 空闲', () => {
+    expect(otherHostsSignal([h('a', true), h('b', true), h('c', false)], 'a')).toBe('idle')
+  })
+
+  it('没有其他 Host 或全部离线 → 离线', () => {
+    expect(otherHostsSignal([], 'a')).toBe('offline')
+    expect(otherHostsSignal([h('a', true)], 'a')).toBe('offline')
+    expect(otherHostsSignal([h('a', true), h('b', false)], 'a')).toBe('offline')
+  })
+
+  it('排除当前 Host 自己的状态', () => {
+    expect(otherHostsSignal([h('a', true, true), h('b', true)], 'a')).toBe('idle')
+    expect(otherHostsSignal([h('a', true, true)], 'a')).toBe('offline')
   })
 })

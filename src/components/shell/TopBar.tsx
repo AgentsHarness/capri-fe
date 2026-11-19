@@ -14,7 +14,6 @@ import {
   Puzzle,
   Settings,
   ShieldQuestion,
-  TriangleAlert,
 } from 'lucide-react'
 import { useChatStore } from '../../store/chat'
 import { useAnchoredPanel } from '../../hooks/useAnchoredPanel'
@@ -25,7 +24,15 @@ import { SessionListHeader } from '../session/SessionListHeader'
 import { SessionSearchBox } from '../session/SessionSearchBox'
 import type { HostInfo } from '../../api/types'
 import { transport } from '../../api/client'
-import { hostState, hostStateLabel, type HostState } from '../../lib/hostState'
+import {
+  hostSignal,
+  hostSignalLabel,
+  hostState,
+  hostStateLabel,
+  otherHostsSignal,
+  type HostSignal,
+  type HostState,
+} from '../../lib/hostState'
 import { pickLayerError } from '../../lib/layerErr'
 import { LayerErrNotice } from './LayerErrNotice'
 import { SubscribersPanel } from '../panels/host/SubscribersPanel'
@@ -78,6 +85,15 @@ const HOST_STATE_TEXT_CLASS: Record<HostState, string> = {
   pending: 'text-gn-orange',
   booting: 'text-gn-yellow',
   idle: 'text-gn-green1',
+}
+
+/** 顶栏 host 名称前的两个点：左 = 其他 Host 聚合，右 = 当前 Host。 */
+const HOST_SIGNAL_DOT_CLASS: Record<HostSignal, string> = {
+  error: 'bg-gn-red',
+  warning: 'bg-gn-warning',
+  busy: 'bg-gn-blue animate-pulse',
+  idle: 'bg-gn-green',
+  offline: 'bg-gn-muted',
 }
 
 /**
@@ -179,16 +195,38 @@ export function TopBar({
   const currentHost =
     hosts.find((h) => h.hostId === selectedHostId) ??
     (hosts.length ? hosts[0] : null)
+  const layerErr = pickLayerError(layerErrors)
+  // 名称前的两个状态点：左点汇总其他 Host（正忙优先 > 在线 > 离线），
+  // 右点只看当前 Host。分层错误/警告覆盖在右点上，优先级高于正忙；
+  // 注册表还没有当前 Host 时按连接状态兜底。
+  const otherHosts = hosts.filter((h) => h.hostId !== currentHost?.hostId)
+  const othersSignal = otherHostsSignal(hosts, currentHost?.hostId)
+  const currentSignal: HostSignal =
+    layerErr?.err.level === 'error' || conn === 'error'
+      ? 'error'
+      : layerErr
+        ? 'warning'
+        : currentHost
+          ? hostSignal(currentHost)
+          : conn === 'busy'
+            ? 'busy'
+            : conn === 'ready'
+              ? 'idle'
+              : 'offline'
+  // 只有一台 Host 时左点没有意义：只画当前 Host 一个点。
+  const hostSignalsTitle =
+    otherHosts.length > 0
+      ? `其他 Host：${hostSignalLabel(othersSignal)} · 当前 Host：${hostSignalLabel(currentSignal)}`
+      : `当前 Host：${hostSignalLabel(currentSignal)}`
   // 退出登录：hub 模式下它在 host 下拉里（「添加 Host」下面，两端共用）。
   // 纯 local 模式左上角是静态 Localhost 标签、没有 host 下拉，退出留在
   // 右上角（桌面）/ ⋮ 菜单（移动端），否则无处可点。
   const logoutInChrome = mode === 'local' && !!onLogout && !!transport.getAccessToken()
 
   // Host label reflects connection health: abnormal → "connecting" / "error".
-  // 分层错误（hub/host 层）不改写这里的文案：host 名字保持原样并前置一个
-  // 告警图标，错误文案单独一条跟在右边（LayerErrNotice）——错误既不挤掉
-  // host 名字，也不另占一整条。
-  const layerErr = pickLayerError(layerErrors)
+  // 分层错误（hub/host 层）不改写这里的文案：host 名字保持原样，错误/警告
+  // 由名称前的状态点与右侧 LayerErrNotice 指示——错误既不挤掉 host 名字，
+  // 也不另占一整条。
   const hostLabel = layerErr
     ? hostName || 'Local Host'
     : conn === 'connecting'
@@ -203,16 +241,6 @@ export function TopBar({
       : conn === 'error' || conn === 'offline'
         ? 'text-gn-red'
         : ''
-  // host 名字前的告警图标与右侧消息同色：error 红、warning 黄。
-  const errIcon = layerErr ? (
-    <TriangleAlert
-      size={12}
-      strokeWidth={2}
-      className={`shrink-0 ${layerErr.err.level === 'error' ? 'text-gn-red' : 'text-gn-warning'}`}
-      aria-hidden
-    />
-  ) : null
-
   // relative z-40 so host/history/more dropdowns stack above WorkspaceBar
   // (sticky z-30) and scrollback sticky prompts (z-10). Without a stacking
   // context on this chrome, absolute z-40 children still lose to later
@@ -251,10 +279,9 @@ export function TopBar({
           {mode === 'local' ? (
             // 本地模式：锁定本机 —— 静态 Localhost 标签，不可点击、无下拉。
             <div
-              className="flex min-h-8 max-w-[40vw] items-center gap-1 truncate rounded px-1.5 py-0.5 sm:max-w-xs"
+              className="flex min-h-8 max-w-[40vw] items-center gap-1.5 truncate rounded px-2 py-0.5 sm:max-w-xs"
               title="本地模式（仅本机 capri-host，无 host 切换）"
             >
-              {errIcon}
               <span className="truncate text-gn-fg">Localhost</span>
             </div>
           ) : (
@@ -270,14 +297,25 @@ export function TopBar({
                   setOpenHosts(true)
                 }
               }}
-              className={`flex max-w-[40vw] sm:max-w-xs items-center gap-1 truncate rounded px-1.5 py-0.5 hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8 ${hostLabelColor}`}
+              className={`flex max-w-[40vw] sm:max-w-xs items-center gap-1.5 truncate rounded px-2 py-0.5 hover:bg-gn-bg-highlight hover:text-gn-fg min-h-8 ${hostLabelColor}`}
               title={
                 conn === 'connecting' || conn === 'error' || conn === 'offline'
-                  ? `连接状态: ${conn}${hostName ? ` · ${hostName}` : ''}`
-                  : `${hostName || 'Local Host'}（右键可管理 Host）`
+                  ? `连接状态: ${conn}${hostName ? ` · ${hostName}` : ''} · ${hostSignalsTitle}`
+                  : `${hostName || 'Local Host'}（右键可管理 Host） · ${hostSignalsTitle}`
               }
             >
-              {errIcon}
+              <span className="mr-0.5 flex shrink-0 items-center gap-1" aria-hidden>
+                {otherHosts.length > 0 && (
+                  <span
+                    data-host-dot="others"
+                    className={`h-1.5 w-1.5 rounded-full ${HOST_SIGNAL_DOT_CLASS[othersSignal]}`}
+                  />
+                )}
+                <span
+                  data-host-dot="current"
+                  className={`h-1.5 w-1.5 rounded-full ${HOST_SIGNAL_DOT_CLASS[currentSignal]}`}
+                />
+              </span>
               <span className="truncate">{hostLabel}</span>
               <ChevronDown
                 size={12}

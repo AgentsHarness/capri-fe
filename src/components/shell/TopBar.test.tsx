@@ -221,10 +221,47 @@ describe('TopBar', () => {
     expect(screen.getByText('空闲')).not.toBeNull()
     // 离线 host 不显示状态文字（also title 不带状态）
     expect(container.textContent).not.toContain('h5 · 思考中')
-    // 思考中行：蓝色呼吸点
-    const dots = container.querySelectorAll('span.h-1\\.5')
+    // 思考中行：蓝色呼吸点（只看下拉行，顶栏名称前同样有两颗点）
+    const dots = screen.getByTitle(/切换到 H1/).querySelectorAll('span.h-1\\.5')
     expect(dots[0]?.className).toContain('bg-gn-blue')
     expect(dots[0]?.className).toContain('animate-pulse')
+  })
+
+  it('host 名称前两颗点：左点汇总其他 Host，右点反映当前 Host', () => {
+    resetChat({
+      mode: 'hub',
+      hostName: 'H1',
+      selectedHostId: 'h1',
+      hosts: [
+        { hostId: 'h1', hostName: 'H1', online: true, busy: true },
+        { hostId: 'h2', hostName: 'H2', online: true },
+        { hostId: 'h3', hostName: 'H3', online: false },
+      ],
+      conn: 'busy',
+    })
+    const { container } = render(<TopBar />)
+    const others = container.querySelector('[data-host-dot="others"]')
+    const current = container.querySelector('[data-host-dot="current"]')
+    expect(others?.className).toContain('bg-gn-green')
+    expect(current?.className).toContain('bg-gn-blue')
+    expect(current?.className).toContain('animate-pulse')
+    expect(screen.getByTitle(/其他 Host：空闲 · 当前 Host：正忙/)).not.toBeNull()
+  })
+
+  it('只有一台 Host 时只画当前 Host 一个点', () => {
+    resetChat({
+      mode: 'hub',
+      hostName: 'H1',
+      selectedHostId: 'h1',
+      hosts: [{ hostId: 'h1', hostName: 'H1', online: true }],
+      conn: 'ready',
+    })
+    const { container } = render(<TopBar />)
+    expect(container.querySelector('[data-host-dot="current"]')).not.toBeNull()
+    expect(container.querySelector('[data-host-dot="others"]')).toBeNull()
+    const btn = screen.getByTitle(/右键可管理/)
+    expect(btn.getAttribute('title')).not.toContain('其他 Host')
+    expect(btn.getAttribute('title')).toContain('当前 Host：空闲')
   })
 
   it('hosts 为空时的合成兜底行不标实时状态（没有数据，别假装「空闲」）', () => {
@@ -234,7 +271,7 @@ describe('TopBar', () => {
     expect(screen.queryByText('空闲')).toBeNull()
   })
 
-  it('conn error → error 标签；layerErrors → host 名保持不变 + 前置告警图标 + 顶栏内联消息', () => {
+  it('conn error / 分层错误改用状态点指示：红错误、黄警告，且压过正忙', () => {
     const { rerender, container } = render(<TopBar />)
     expect(screen.getByText('Localhost')).not.toBeNull()
     resetChat({
@@ -253,8 +290,10 @@ describe('TopBar', () => {
     })
     rerender(<TopBar />)
     expect(screen.getByText('error')).not.toBeNull()
-    // error 级：host 名照常显示、前置 lucide 告警图标；消息是顶栏内的一条
-    // 行内提示（在 header 里），不再另占整条横幅，配色为红。
+    // conn error 同样由当前 Host 的红点指示
+    expect(container.querySelector('[data-host-dot="current"]')?.className).toContain('bg-gn-red')
+    // error 级：host 名照常显示，红点指示错误；消息仍是顶栏内的一条
+    // 行内提示（在 header 里），不再另占整条横幅。
     resetChat({
       mode: 'hub',
       conn: 'ready',
@@ -268,23 +307,29 @@ describe('TopBar', () => {
     expect(errRow?.textContent).toContain('host')
     expect(errRow?.closest('header')).not.toBeNull()
     expect(screen.getByText('H')).not.toBeNull()
-    expect(container.querySelector('svg.lucide-triangle-alert')).not.toBeNull()
-    // warning 级：同一图标，配色换成黄色；host 名仍不变。
+    expect(container.querySelector('[data-host-dot="current"]')?.className).toContain('bg-gn-red')
+    expect(screen.getByTitle(/当前 Host：错误/)).not.toBeNull()
+    expect(container.querySelector('svg.lucide-triangle-alert')).toBeNull()
+    // warning 级：黄点，且优先级高于正忙（host 仍 busy）
     resetChat({
       mode: 'hub',
       conn: 'ready',
       hostName: 'H',
-      hosts: [{ hostId: 'h1', hostName: 'H', online: true }],
+      hosts: [{ hostId: 'h1', hostName: 'H', online: true, busy: true }],
       layerErrors: { host: { level: 'warning', message: 'host slow', at: 2 } },
     })
     rerender(<TopBar />)
     const warnRow = screen.getByText('host slow').closest('[role=alert]')
     expect(warnRow?.className).toContain('text-gn-warning')
-    expect(container.querySelectorAll('svg.lucide-triangle-alert')).toHaveLength(1)
+    const current = container.querySelector('[data-host-dot="current"]')
+    expect(current?.className).toContain('bg-gn-warning')
+    expect(current?.className).not.toContain('bg-gn-blue')
+    expect(screen.getByTitle(/当前 Host：警告/)).not.toBeNull()
+    expect(container.querySelectorAll('svg.lucide-triangle-alert')).toHaveLength(0)
     expect(screen.getByText('H')).not.toBeNull()
   })
 
-  it('local 模式也有内联提示：host 名不变 + 徽标为 hub', () => {
+  it('local 模式保留内联提示（没有状态点，也不再画单独告警图标）', () => {
     resetChat({
       mode: 'local',
       conn: 'ready',
@@ -296,7 +341,8 @@ describe('TopBar', () => {
     const row = screen.getByText('与 hub 的连接已断开').closest('[role=alert]')
     expect(row?.closest('header')).not.toBeNull()
     expect(row?.textContent).toContain('hub')
-    expect(container.querySelector('svg.lucide-triangle-alert')).not.toBeNull()
+    expect(container.querySelector('[data-host-dot]')).toBeNull()
+    expect(container.querySelector('svg.lucide-triangle-alert')).toBeNull()
   })
 
   it('host 下拉：右键当前 host 弹出操作菜单 → 打开修改名称弹窗', () => {
