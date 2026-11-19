@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { render, act } from '@testing-library/react'
+import { render, act, fireEvent, screen } from '@testing-library/react'
 import { useChatStore } from '../../store/chat'
 import { SessionStatsBar } from './SessionStatsBar'
 
@@ -93,6 +93,65 @@ describe('SessionStatsBar', () => {
     const text = container.textContent ?? ''
     expect(text).toContain('2 轮 1 步')
     expect(text).not.toContain('|')
+  })
+
+  it('移动端摘要 chip：点击展开会话统计明细，再点收起', () => {
+    setStats({
+      turns: 3,
+      steps: 5,
+      llmDurationMs: 183000,
+      toolDurationMs: 121000,
+      firstTokenAvgMs: 3000,
+      tokensPerSec: 5711.3,
+    })
+    render(<SessionStatsBar />)
+    const chip = screen.getByRole('button', { name: /会话统计：3 轮 5 步 · 5\.7K tok\/s/ })
+    expect(chip).toHaveAttribute('aria-expanded', 'false')
+
+    fireEvent.click(chip)
+    expect(chip).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('模型用时')).toBeInTheDocument()
+    expect(screen.getByText('工具调用用时')).toBeInTheDocument()
+    expect(screen.getByText('首 token 平均（TTFT）')).toBeInTheDocument()
+    expect(screen.getByText('输出速度（TPS）')).toBeInTheDocument()
+
+    fireEvent.click(chip)
+    expect(chip).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText('模型用时')).not.toBeInTheDocument()
+  })
+
+  it('移动端 Token chip：汇总为总量 + 命中率，明细拆出未缓存输入', () => {
+    setStats({
+      turns: 2,
+      steps: 15,
+      cacheHitRate: 0.75,
+      inputTokens: 673_000,
+      cachedReadTokens: 507_904,
+      outputTokens: 76_810,
+      totalTokens: 749_771,
+    })
+    render(<SessionStatsBar />)
+    const chip = screen.getByRole('button', { name: /Token 用量：750K tok · 缓存命中 75%/ })
+    fireEvent.click(chip)
+
+    expect(screen.getByText('749,771 tok')).toBeInTheDocument()
+    expect(screen.getByText('75%')).toBeInTheDocument()
+    expect(screen.getByText('165,096 tok')).toBeInTheDocument() // 673,000 − 507,904
+    expect(screen.getByText('507,904 tok')).toBeInTheDocument()
+    expect(screen.getByText('76,810 tok')).toBeInTheDocument()
+  })
+
+  it('移动端 chip 按可用指标降级：无 token 不出 Token chip，无命中率不显示缓存段', () => {
+    setStats({ turns: 2, steps: 1 })
+    const first = render(<SessionStatsBar />)
+    expect(screen.getByRole('button', { name: /会话统计：2 轮 1 步/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Token 用量/ })).not.toBeInTheDocument()
+    first.unmount()
+
+    setStats({ turns: 1, steps: 2, inputTokens: 100, outputTokens: 200, totalTokens: 300 })
+    render(<SessionStatsBar />)
+    expect(screen.getByRole('button', { name: /Token 用量：300 tok/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /缓存命中/ })).not.toBeInTheDocument()
   })
 
   it('挂载 + 会话锚点变化时拉取统计', () => {
