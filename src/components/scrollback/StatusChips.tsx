@@ -1,5 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { useEffect, useRef, useState } from 'react'
 import { ArrowUpRight, Diamond, LoaderCircle, X } from 'lucide-react'
 import { SPINNER_FRAMES } from '../../theme/glyphs'
 import {
@@ -131,9 +130,9 @@ export function SessionCostChip() {
 /**
  * Todo badge — TUI render_todo_badge_spans default format "2/5 ✓".
  * Primary source: plan-update items (chat store TodoItem[], cancelled
- * excluded). Fallback: goal_updated deliverables. Click expands an inline
- * block under the status bar (TUI todo pane) listing every item with its
- * status mark; click again to collapse. Hidden when empty.
+ * excluded). Fallback: goal_updated deliverables. Click opens a compact
+ * dropdown (same ChipDropdown surface as the goal chip) listing every item
+ * with its status mark; the scrollback keeps its height. Hidden when empty.
  */
 export function TodoChip({
   todos,
@@ -143,16 +142,7 @@ export function TodoChip({
   goalState?: Record<string, unknown>
 }) {
   const [open, setOpen] = useState(false)
-  // The expanded list is portaled into the sticky status-bar wrapper
-  // (RunningTasksBar lives there too) so it renders as an in-flow block
-  // BELOW the bar — pushing the scrollback down like RunningTasksBar,
-  // never a floating overlay — while the chip itself stays aligned in
-  // the bar row.
-  const btnRef = useRef<HTMLButtonElement>(null)
-  // Host 定位必须在点击后的同一帧完成：useLayoutEffect 在绘制前同步执行，
-  // setHost 触发的重渲染也在该帧内完成；若只写进 ref（不触发渲染），面板
-  // 要等下一次无关的状态更新才会出现。
-  const [host, setHost] = useState<HTMLElement | null>(null)
+  const wrapRef = useRef<HTMLDivElement>(null)
   let total = 0
   let completed = 0
   let objective = ''
@@ -166,20 +156,13 @@ export function TodoChip({
   }
   // 展开面板只是读出待办列表（没有任何写入口），访客同样可以展开。
   const expandable = !!todos && todos.length > 0
-  // Locate the sticky bar wrapper once the panel is about to open.
-  useLayoutEffect(() => {
-    if (!open || !expandable) return
-    setHost(btnRef.current?.closest<HTMLElement>('.sticky') ?? null)
-  }, [open, expandable])
   if (!(total > 0)) return null
   return (
-    <>
+    <div className="relative shrink-0" ref={wrapRef}>
       <button
-        ref={btnRef}
         type="button"
         onClick={() => expandable && setOpen((v) => !v)}
         aria-expanded={expandable ? open : undefined}
-        aria-controls={expandable ? 'todo-inline-panel' : undefined}
         className={`flex items-center gap-0.5 rounded px-1 py-0.5 font-mono text-[12px] leading-none tabular-nums text-gn-fg2 hover:bg-gn-bg-highlight whitespace-nowrap ${expandable ? 'cursor-pointer' : 'cursor-default'} ${ open && expandable ? 'bg-gn-bg-highlight' : '' }`}
         title={objective ? `目标: ${objective}` : '待办进度'}
       >
@@ -190,42 +173,30 @@ export function TodoChip({
           <CheckMarkIcon />
         </span>
       </button>
-      {open && expandable && host
-        ? createPortal(
-            <div
-              id="todo-inline-panel"
-              role="region"
-              aria-label={`todo · ${completed}/${total} 完成`}
-              className="shrink-0 border-b border-gn-prompt-border/50 bg-gn-bg-base select-none"
+      <ChipDropdown
+        open={open && expandable}
+        onClose={() => setOpen(false)}
+        label={`todo · ${completed}/${total} 完成`}
+        widthClass="w-80"
+        anchorRef={wrapRef}
+      >
+        {todos!.map((t, i) => (
+          <div
+            key={t.id ?? i}
+            className="flex items-start gap-2 px-3 py-1 text-[12px] leading-snug hover:bg-gn-bg-highlight"
+          >
+            <span className="mt-[1px] shrink-0 font-mono text-[11px]" aria-hidden>
+              <TodoMark status={t.status} />
+            </span>
+            <span
+              className={`min-w-0 flex-1 break-words ${t.status === 'completed' || t.status === 'cancelled' ? 'text-gn-muted' : 'text-gn-fg'}`}
             >
-              {/* Content column matches scrollback/composer (mx-auto max-w-[960px]) */}
-              <div
-                className={`${CONTENT_COLUMN_CLASS} ${COLUMN_PAD_X_CLASS} max-h-[min(32vh,16rem)] overflow-y-auto`}
-              >
-                <div className="px-1 pb-0.5 pt-1 text-[10px] uppercase tracking-wider text-gn-gutter">
-                  todo · {completed}/{total} 完成
-                </div>
-                {todos!.map((t, i) => (
-                  <div
-                    key={t.id ?? i}
-                    className="flex items-start gap-2 px-1 py-1 text-[12px] leading-snug hover:bg-gn-bg-highlight"
-                  >
-                    <span className="mt-[1px] shrink-0 font-mono text-[11px]" aria-hidden>
-                      <TodoMark status={t.status} />
-                    </span>
-                    <span
-                      className={`min-w-0 flex-1 break-words ${t.status === 'completed' || t.status === 'cancelled' ? 'text-gn-muted' : 'text-gn-fg'}`}
-                    >
-                      {t.content}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>,
-            host,
-          )
-        : null}
-    </>
+              {t.content}
+            </span>
+          </div>
+        ))}
+      </ChipDropdown>
+    </div>
   )
 }
 

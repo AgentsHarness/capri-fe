@@ -291,9 +291,12 @@ describe('访客只读芯片', () => {
     expect(useChatStore.getState().queuePanelOpen).toBe(true)
     fireEvent.click(screen.getByTitle(/收起排队消息/))
     expect(useChatStore.getState().queuePanelOpen).toBe(false)
-    // 待办：可点开只读列表
+    // 待办：点击弹出只读列表（dropdown，不再撑开滚动区高度），再点收起
     fireEvent.click(screen.getByTitle('待办进度'))
-    expect(screen.getByLabelText(/todo · 0\/1 完成/)).toBeInTheDocument()
+    expect(screen.getByText('do it')).toBeInTheDocument()
+    expect(screen.getByText('todo · 0/1 完成')).toBeInTheDocument()
+    fireEvent.click(screen.getByTitle('待办进度'))
+    expect(screen.queryByText('do it')).toBeNull()
     // MCP 仍是只读读数，不打开面板
     expect(screen.queryByTitle(/点击打开 MCP 面板/)).toBeNull()
   })
