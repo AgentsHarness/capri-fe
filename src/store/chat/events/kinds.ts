@@ -32,7 +32,7 @@ export const ACP_STANDARD_KINDS = [
   'usage_update',
 ] as const
 
-/** xAI 扩展 `SessionUpdate`（52 个有效变体 + `Unknown` 兜底）。 */
+/** xAI 扩展 `SessionUpdate`（1.0.45 的 52 个 + 1.0.89 新增 7 个 + `Unknown` 兜底）。 */
 export const EXTENSION_KINDS = [
   // 执行流
   'turn_completed',
@@ -57,6 +57,9 @@ export const EXTENSION_KINDS = [
   'relay_sync_status',
   'auto_recovery_started',
   'auto_recovery_exhausted',
+  // 认证/后端状态（grok 1.0.89 新增；FE 暂未建对应 UI，登记为未消费）
+  'login_refused',
+  'backend_responsive',
   // Hook / 插件 / 子代理
   'hook_run_started',
   'hook_execution',
@@ -81,18 +84,23 @@ export const EXTENSION_KINDS = [
   'memory_dream_completed',
   'memory_session_saved',
   'memory_files',
+  'memory_browse',
   'image_compressed',
   'image_dropped',
+  'links_left_out',
   // 会话状态
   'session_status',
   'session_summary_generated',
   'session_recap',
   'session_recap_unavailable',
   'last_turn_summary',
+  'session_ended',
+  'resume_notice',
   'model_auto_switched',
   'model_changed',
   'goal_updated',
   'workflow_updated',
+  'workflow_log',
   // 计划审阅信号（TUI 用它们开/关「回合后计划审阅」、提交已批准计划）。
   // FE 的审阅卡走 x.ai/exit_plan_mode client_request，是另一条路径；
   // 当前 shell 检出里这三个变体只有枚举与 serde 测试，没有生产者。
@@ -244,6 +252,15 @@ export const UNCONSUMED_KINDS: ReadonlyMap<string, string> = new Map([
   ['plan_executing', '同上；接受计划走同一张审阅卡的 RPC 响应'],
   ['served_model', '实际应答模型的显示名，暂无生产者；会话模型显示走模型目录'],
   ['turn_usage', '单回合用量，仅 TUI headless 消费；会话用量走 session_status'],
+  // grok 1.0.89 新增（二进制枚举确认，1.0.45 源码尚无）。先登记为未消费，
+  // 避免 DEV 告警把「已知但未建 UI」和「漏接」混在一起；payload 形状
+  // 见 1.0.89 的 SessionUpdate 枚举，待有真实 wire 样本再建卡。
+  ['resume_notice', '1.0.89 新增；session/load 恢复提示，FE 走 historyLoad 状态'],
+  ['memory_browse', '1.0.89 新增；/memory 浏览信号，FE 的记忆面板手动打开'],
+  ['links_left_out', '1.0.89 新增；工具输出链接裁剪计数，FE 未渲染'],
+  ['workflow_log', '1.0.89 新增；工作流日志，FE 未建工作流日志面板'],
+  ['login_refused', '1.0.89 新增；登录被拒信号，登录 UI 走 hub/FE gate'],
+  ['backend_responsive', '1.0.89 新增；登录后端恢复信号，FE 无对应 UI'],
 ])
 
 /**

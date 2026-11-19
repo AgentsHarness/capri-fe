@@ -113,3 +113,35 @@ describe('handleNotifCore — current_mode_update', () => {
   // 跨会话过滤已上移到分发层（events/sessionNotif.ts + attribution.ts），
   // 对应用例见 sessionDispatch.test.ts。
 })
+
+describe('handleNotifCore — session_ended（grok 1.0.89 新增）', () => {
+  it('写一行会话结束提示并带上 reason', () => {
+    const { set, get, state } = makeStore({ entries: [] })
+    const handled = handleNotifCore(
+      set,
+      get,
+      { type: 'session_notification', sessionId: 's1' } as WireEvent,
+      'session_ended',
+      { sessionUpdate: 'session_ended', reason: 'closed by another client' },
+    )
+    expect(handled).toBe(true)
+    const last = state().entries[state().entries.length - 1]
+    expect(last?.kind).toBe('session_event')
+    expect(String(last && 'text' in last ? last.text : '')).toContain('会话已结束')
+    expect(String(last && 'text' in last ? last.text : '')).toContain('closed by another client')
+  })
+
+  it('缺 reason 时仍写一行通用提示', () => {
+    const { set, get, state } = makeStore({ entries: [] })
+    handleNotifCore(
+      set,
+      get,
+      { type: 'session_notification', sessionId: 's1' } as WireEvent,
+      'session_ended',
+      { sessionUpdate: 'session_ended' },
+    )
+    const last = state().entries[state().entries.length - 1]
+    expect(last?.kind).toBe('session_event')
+    expect(String(last && 'text' in last ? last.text : '')).toContain('会话已结束')
+  })
+})

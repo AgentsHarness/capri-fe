@@ -173,6 +173,23 @@ export function handleNotifCore(
             })
             break
           }
+          case 'session_ended': {
+            // grok 1.0.89 adds this kind (the session is gone: closed by
+            // another client, agent teardown, or an ended relay session).
+            // The payload carries one field; accept the likely spellings
+            // and always leave a scrollback line so the view does not look
+            // live after the agent stopped.
+            const reason =
+              (typeof fields.reason === 'string' && fields.reason) ||
+              (typeof fields.message === 'string' && fields.message) ||
+              (typeof fields.summary === 'string' && fields.summary) ||
+              ''
+            appendEntry(set, {
+              kind: 'session_event',
+              text: reason ? `会话已结束：${reason}` : '会话已结束',
+            })
+            break
+          }
           case 'image_compressed':
             appendEntry(set, {
               kind: 'session_event',
