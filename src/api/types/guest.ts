@@ -73,3 +73,23 @@ export type SubscriberRow = {
   /** 连接建立时刻（epoch ms）。 */
   connectedAt: number
 }
+
+/** GET /api/stats 的 relay 段：hub 侧 relay 延迟/结果汇总。 */
+export type HubRelayStats = {
+  requests: number
+  completed: number
+  errors: number
+  inflight: number
+  avgMs: number
+  maxMs: number
+  p50Ms: number
+  p95Ms: number
+  p99Ms: number
+  buckets?: Array<{ leMs: number; count: number }>
+  overflow?: number
+}
+
+/** GET /api/stats 的 FE 可见子集（老 hub 可能没有 relay 字段）。 */
+export type HubStats = {
+  relay?: HubRelayStats
+}

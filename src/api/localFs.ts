@@ -1,4 +1,5 @@
 import { transport } from './client'
+import { newIdempotencyKey } from './idempotency'
 
 /**
  * 宿主本地目录浏览 / 新建（host 的 POST /api/local/dirs、/api/local/mkdir）。
@@ -57,12 +58,20 @@ function entriesFrom(data: LocalFsPayload): LocalDirEntry[] {
   return out
 }
 
-async function postLocalFs(path: string, body: Record<string, unknown>) {
-  const res = await transport.apiFetch(path, {
+async function postLocalFs(
+  path: string,
+  body: Record<string, unknown>,
+  idempotencyKey?: string,
+) {
+  const init: RequestInit = {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-  })
+  }
+  // 只读 POST 保持两参调用（不发幂等头，也不改变既有 wire 形状）。
+  const res = idempotencyKey
+    ? await transport.apiFetch(path, init, { idempotencyKey })
+    : await transport.apiFetch(path, init)
   const data = (await res.json().catch(() => ({}))) as LocalFsPayload
   return { res, data }
 }
@@ -102,10 +111,10 @@ export async function listLocalDirs(path?: string): Promise<ListLocalDirsResult>
 export async function createLocalDir(
   parent: string,
   name: string,
+  idempotencyKey: string = newIdempotencyKey(),
 ): Promise<CreateLocalDirResult> {
-  const route = '/api/local/mkdir'
   try {
-    const { res, data } = await postLocalFs(route, { parent, name })
+    const { res, data } = await postLocalFs('/api/local/mkdir', { parent, name }, idempotencyKey)
     if (!res.ok || data.ok === false) {
       return {
         ok: false,

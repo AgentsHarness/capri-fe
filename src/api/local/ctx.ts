@@ -133,7 +133,7 @@ export interface TransportCtx {
   url(path: string): string
   apiUrl(path: string): string
   urlForHost(hostId: string, path: string): string | null
-  apiFetch(path: string, init?: RequestInit, opts?: { timeoutMs?: number; signal?: AbortSignal }): Promise<Response>
+  apiFetch(path: string, init?: RequestInit, opts?: { timeoutMs?: number; signal?: AbortSignal; idempotencyKey?: string }): Promise<Response>
   isLocalRequest(input: string): boolean
   routeOwner(input: string): string | null
   tokenFor(input: string): string | null
@@ -218,7 +218,7 @@ export interface TransportApi extends RpcApi {
   isLiveOpen(): boolean
   apiUrl(path: string): string
   urlForHost(hostId: string, path: string): string | null
-  apiFetch(path: string, init?: RequestInit, opts?: { timeoutMs?: number; signal?: AbortSignal }): Promise<Response>
+  apiFetch(path: string, init?: RequestInit, opts?: { timeoutMs?: number; signal?: AbortSignal; idempotencyKey?: string }): Promise<Response>
   connect(): void
   disconnect(): void
 }

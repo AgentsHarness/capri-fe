@@ -40,6 +40,15 @@ export async function sendPrompt(
   opts?: { fromShell?: boolean; promptId?: string }
 ): Promise<void> {
     if (blockGuestWrite(get())) return
+    // 回合身份在建会话之前 mint：无会话时 send() 会先 POST /api/session，
+    // newSession 用 `promptId + ":session"` 作幂等键，prompt 用 promptId
+    // ——同一次用户发送的「建会话 + 发 prompt」共享一个操作身份。promptId
+    // 同时走 wire（TUI 同款——agent 在 PromptResponse / SessionNotification
+    // 的 `_meta` 上回显），终端事件按它做 exact-pid 匹配，杜绝上一回合的
+    // 迟到 prompt_complete/done 收口新回合（"Worked for 0.0s" 假标记）。
+    // 降级行重发沿用原 id（agent queue_meta 身份一致）；v2 host 保证回显
+    // 该字段（缺失按不匹配处理）。与队列 promptId 同源（promptQueue 的 qid）。
+    const promptId = opts?.promptId ?? qid()
     const t = text.trim()
     // Image-only prompts (Composer thumbnails, no text) are sendable —
     // the images are the content. Without image blocks an empty prompt
@@ -86,7 +95,9 @@ export async function sendPrompt(
         if (get().hostId !== hostAtStart) return
       }
       try {
-        const createdSessionId = await get().newSession(startCwd || undefined)
+        const createdSessionId = await get().newSession(startCwd || undefined, {
+          idempotencyKey: `${promptId}:session`,
+        })
         // A new-session response is only usable by the request that created
         // it. A host switch can otherwise leave this prompt targeting the new
         // host's unrelated active session.
@@ -147,6 +158,9 @@ export async function sendPrompt(
             blocks && blocks.length > 0 ? blocks : [{ type: 'text', text: t }],
         },
         live.sessionId,
+        // 重发（resendUndeliveredPrompt 带 promptId）走忙时入队也要沿用
+        // 同一身份：队列行 id = promptId = Idempotency-Key。
+        { promptId },
       )
       return
     }
@@ -162,13 +176,6 @@ export async function sendPrompt(
     const sealedAsst = sealAssistantStream(get())
     const sealed = sealThought(sealedAsst)
     const userId = nid()
-    // 回合身份：mint 一个 promptId 走 wire（TUI 同款——agent 在
-    // PromptResponse / SessionNotification 的 `_meta` 上回显），终端事件
-    // 按它做 exact-pid 匹配，杜绝上一回合的迟到 prompt_complete/done
-    // 收口新回合（"Worked for 0.0s" 假标记）。降级行重发沿用原 id
-    // （agent queue_meta 身份一致）；v2 host 保证回显该字段（缺失按不匹配
-    // 处理）。与队列 promptId 同源（promptQueue 的 qid）。
-    const promptId = opts?.promptId ?? qid()
     // Shell-mode submissions (Composer `!` mode → prompt path) mark the
     // user row so the scrollback renders it with the TUI `$ ` prefix.
     // 块里带 `bash_command` 也算（调用方没传 fromShell 时不至于掉标）。

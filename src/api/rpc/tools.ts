@@ -1,5 +1,6 @@
 import type { TransportCore } from '../transport'
 import { findArrayField, findField, unwrapExtResult, xaiCall } from './core'
+import { idempotentBody, newIdempotencyKey } from '../idempotency'
 import type { AgentSkill, CustomModelConfig, CustomModelFilters, ExtensionHook, WorkflowInfo } from '../types'
 import type { ExtensionsPayload, McpListServer, McpToolInfo, SettingsPatch, SettingsPayload, TerminalOutput } from '../transport'
 
@@ -123,12 +124,13 @@ export const toolsRpc = {
     serverName: string,
     toolName: string,
     enabled: boolean,
+    idempotencyKey?: string,
   ): Promise<Record<string, unknown>> {
     const res = await this.fetch(this.url('/api/mcp/toggle-tool'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ serverName, toolName, enabled }),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await res.json().catch(() => ({}))
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || `mcp toggle tool failed (${res.status})`)
@@ -139,12 +141,13 @@ export const toolsRpc = {
   async mcpToggle(this: TransportCore, 
     name: string,
     enabled: boolean,
+    idempotencyKey?: string,
   ): Promise<Record<string, unknown>> {
     const res = await this.fetch(this.url('/api/mcp-toggle'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, enabled }),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await res.json().catch(() => ({}))
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || `mcp toggle failed (${res.status})`)
@@ -161,12 +164,12 @@ export const toolsRpc = {
     /** HTTP transport marker ("http" | "sse"); persisted as `[mcp_servers.*]` `type`. */
     type?: string
     headers?: Record<string, string>
-  }): Promise<Record<string, unknown>> {
+  }, idempotencyKey?: string): Promise<Record<string, unknown>> {
     const res = await this.fetch(this.url('/api/mcp-add'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ server }),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await res.json().catch(() => ({}))
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || `mcp add failed (${res.status})`)
@@ -174,12 +177,12 @@ export const toolsRpc = {
     return data
   },
 
-  async mcpRemove(this: TransportCore, name: string): Promise<Record<string, unknown>> {
+  async mcpRemove(this: TransportCore, name: string, idempotencyKey?: string): Promise<Record<string, unknown>> {
     const res = await this.fetch(this.url('/api/mcp-remove'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await res.json().catch(() => ({}))
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || `mcp remove failed (${res.status})`)
@@ -187,12 +190,12 @@ export const toolsRpc = {
     return data
   },
 
-  async mcpAuthTrigger(this: TransportCore, name: string): Promise<Record<string, unknown>> {
+  async mcpAuthTrigger(this: TransportCore, name: string, idempotencyKey?: string): Promise<Record<string, unknown>> {
     const res = await this.fetch(this.url('/api/mcp-auth-trigger'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await res.json().catch(() => ({}))
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || `mcp auth failed (${res.status})`)
@@ -226,12 +229,12 @@ export const toolsRpc = {
     serverUrl?: string
     tool: string
     args?: unknown
+    idempotencyKey?: string
   }): Promise<unknown> {
-    const body: Record<string, unknown> = { server: opts.server, tool: opts.tool }
-    if (opts.sessionId) body.sessionId = opts.sessionId
-    if (opts.serverUrl) body.serverUrl = opts.serverUrl
-    if (opts.args !== undefined) body.arguments = opts.args
-    return unwrapExtResult(await xaiCall(this, '/api/mcp/call', body))
+    const { idempotencyKey, args, ...params } = opts
+    const body: Record<string, unknown> = { ...params }
+    if (args !== undefined) body.arguments = args
+    return unwrapExtResult(await xaiCall(this, '/api/mcp/call', body, { idempotencyKey }))
   },
 
   async mcpReadResource(this: TransportCore, opts: {
@@ -242,8 +245,9 @@ export const toolsRpc = {
     return unwrapExtResult(await xaiCall(this, '/api/mcp/read-resource', opts))
   },
 
-  async mcpSetup(this: TransportCore, opts: { serverName: string; values: Record<string, string> }): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/mcp/setup', opts))
+  async mcpSetup(this: TransportCore, opts: { serverName: string; values: Record<string, string>; idempotencyKey?: string }): Promise<unknown> {
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return unwrapExtResult(await xaiCall(this, '/api/mcp/setup', body, { idempotencyKey }))
   },
 
   async mcpAuthStatus(this: TransportCore, opts: { sessionId?: string } = {}): Promise<unknown> {
@@ -258,9 +262,12 @@ export const toolsRpc = {
    * waits for it without a cap, so a 30s cap here only produced a bogus
    * failure line while the flush was still running.
    */
-  async memoryFlush(this: TransportCore, sessionId: string) {
+  async memoryFlush(this: TransportCore, sessionId: string, idempotencyKey?: string) {
     return unwrapExtResult<Record<string, unknown>>(
-      await xaiCall(this, '/api/memory-flush', { sessionId }, { timeoutMs: 0 }),
+      await xaiCall(this, '/api/memory-flush', { sessionId }, {
+        timeoutMs: 0,
+        idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
+      }),
     )
   },
 
@@ -269,7 +276,7 @@ export const toolsRpc = {
    * rewriter). No transport deadline, like flush/dream: the rewrite is an LLM
    * call and the pager runs it through its no-deadline memory command helper.
    */
-  async memoryRewrite(this: TransportCore, sessionId: string, rawText: string, contextSummary?: string) {
+  async memoryRewrite(this: TransportCore, sessionId: string, rawText: string, contextSummary?: string, idempotencyKey?: string) {
     const res = await this.fetch(
       this.url('/api/memory-rewrite'),
       {
@@ -281,7 +288,7 @@ export const toolsRpc = {
           ...(contextSummary ? { contextSummary } : {}),
         }),
       },
-      { timeoutMs: 0 },
+      { timeoutMs: 0, idempotencyKey: idempotencyKey ?? newIdempotencyKey() },
     )
     const data = await res.json()
     if (!res.ok || data.ok === false) {
@@ -296,12 +303,12 @@ export const toolsRpc = {
     env?: Record<string, string>
     cwd?: string
     outputByteLimit?: number
-  }): Promise<{ terminalId: string }> {
+  }, idempotencyKey?: string): Promise<{ terminalId: string }> {
     const res = await this.fetch(this.url('/api/terminal/create'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await res.json().catch(() => ({}))
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || `terminal create failed (${res.status})`)
@@ -345,24 +352,24 @@ export const toolsRpc = {
     }
   },
 
-  async terminalRelease(this: TransportCore, terminalId: string): Promise<void> {
+  async terminalRelease(this: TransportCore, terminalId: string, idempotencyKey?: string): Promise<void> {
     const res = await this.fetch(this.url('/api/terminal/release'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ terminalId }),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await res.json().catch(() => ({}))
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || `terminal release failed (${res.status})`)
     }
   },
 
-  async terminalBackground(this: TransportCore, terminalId: string): Promise<void> {
+  async terminalBackground(this: TransportCore, terminalId: string, idempotencyKey?: string): Promise<void> {
     const res = await this.fetch(this.url('/api/terminal/background'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ terminalId }),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await res.json().catch(() => ({}))
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || `terminal background failed (${res.status})`)
@@ -402,24 +409,32 @@ export const toolsRpc = {
       .filter((s) => s.name)
   },
 
-  async skillsToggle(this: TransportCore, opts: { name: string; enabled: boolean; cwd?: string }): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/skills/toggle', opts))
+  async skillsToggle(this: TransportCore, opts: { name: string; enabled: boolean; cwd?: string; idempotencyKey?: string }): Promise<unknown> {
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return unwrapExtResult(await xaiCall(this, '/api/skills/toggle', body, { idempotencyKey }))
   },
 
-  async skillsAdd(this: TransportCore, params: Record<string, unknown> = {}): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/skills/add', params))
+  async skillsAdd(this: TransportCore, params: Record<string, unknown> & { idempotencyKey?: string } = {}): Promise<unknown> {
+    const { body, idempotencyKey } = idempotentBody(params)
+    return unwrapExtResult(await xaiCall(this, '/api/skills/add', body, { idempotencyKey }))
   },
 
-  async skillsRemove(this: TransportCore, opts: { name: string; cwd?: string }): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/skills/remove', opts))
+  async skillsRemove(this: TransportCore, opts: { name: string; cwd?: string; idempotencyKey?: string }): Promise<unknown> {
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return unwrapExtResult(await xaiCall(this, '/api/skills/remove', body, { idempotencyKey }))
   },
 
-  async skillsRefreshBaseline(this: TransportCore): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/skills/refresh-baseline', {}))
+  async skillsRefreshBaseline(this: TransportCore, idempotencyKey?: string): Promise<unknown> {
+    return unwrapExtResult(
+      await xaiCall(this, '/api/skills/refresh-baseline', {}, {
+        idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
+      }),
+    )
   },
 
-  async skillsReset(this: TransportCore, opts: { cwd?: string } = {}): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/skills/reset', opts))
+  async skillsReset(this: TransportCore, opts: { cwd?: string; idempotencyKey?: string } = {}): Promise<unknown> {
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return unwrapExtResult(await xaiCall(this, '/api/skills/reset', body, { idempotencyKey }))
   },
 
   async skillsConfig(this: TransportCore, opts: { cwd?: string } = {}): Promise<unknown> {
@@ -430,16 +445,22 @@ export const toolsRpc = {
     return unwrapExtResult(await xaiCall(this, '/api/plugins/list', opts))
   },
 
-  async pluginsAction(this: TransportCore, opts: { sessionId?: string; action: unknown }): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/plugins/action', opts))
+  async pluginsAction(this: TransportCore, opts: { sessionId?: string; action: unknown; idempotencyKey?: string }): Promise<unknown> {
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return unwrapExtResult(await xaiCall(this, '/api/plugins/action', body, { idempotencyKey }))
   },
 
-  async pluginsReload(this: TransportCore): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/plugins/reload', {}))
+  async pluginsReload(this: TransportCore, idempotencyKey?: string): Promise<unknown> {
+    return unwrapExtResult(
+      await xaiCall(this, '/api/plugins/reload', {}, {
+        idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
+      }),
+    )
   },
 
-  async pluginsNotifyUpdates(this: TransportCore, opts: { sessionId?: string; updates: unknown[] }): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/plugins/notify-updates', opts))
+  async pluginsNotifyUpdates(this: TransportCore, opts: { sessionId?: string; updates: unknown[]; idempotencyKey?: string }): Promise<unknown> {
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return unwrapExtResult(await xaiCall(this, '/api/plugins/notify-updates', body, { idempotencyKey }))
   },
 
   /**
@@ -494,16 +515,18 @@ export const toolsRpc = {
    * an open extensions modal (hooksVersion bump). Host merge: sessionId
    * + action; the active session is filled when absent.
    */
-  async hooksAction(this: TransportCore, opts: { sessionId?: string; action: unknown }): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/hooks/action', opts))
+  async hooksAction(this: TransportCore, opts: { sessionId?: string; action: unknown; idempotencyKey?: string }): Promise<unknown> {
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return unwrapExtResult(await xaiCall(this, '/api/hooks/action', body, { idempotencyKey }))
   },
 
   async marketplaceList(this: TransportCore): Promise<unknown> {
     return unwrapExtResult(await xaiCall(this, '/api/marketplace/list', {}))
   },
 
-  async marketplaceAction(this: TransportCore, opts: { action: unknown }): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/marketplace/action', opts))
+  async marketplaceAction(this: TransportCore, opts: { action: unknown; idempotencyKey?: string }): Promise<unknown> {
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return unwrapExtResult(await xaiCall(this, '/api/marketplace/action', body, { idempotencyKey }))
   },
 
   /** x.ai/workflows/list — 已安装 workflow 目录（会话级注册表）。
@@ -538,24 +561,24 @@ export const toolsRpc = {
     return parseCustomModels(res)
   },
 
-  async upsertCustomModel(this: TransportCore, cfg: CustomModelConfig) {
+  async upsertCustomModel(this: TransportCore, cfg: CustomModelConfig, idempotencyKey?: string) {
     const { id, ...values } = cfg
     const res = await this.fetch(this.url('/api/custom-model'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, values }),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'save custom model failed')
     return data
   },
 
-  async deleteCustomModel(this: TransportCore, id: string) {
+  async deleteCustomModel(this: TransportCore, id: string, idempotencyKey?: string) {
     const res = await this.fetch(this.url('/api/custom-model-delete'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id }),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'delete custom model failed')
     return data
@@ -575,12 +598,12 @@ export const toolsRpc = {
    * 新），空数组表示清空该名单（host 侧会删掉对应的键）。host 写完会重载
    * 模型目录，改动随即反映到模型列表。
    */
-  async setModelFilters(this: TransportCore, filters: Partial<CustomModelFilters>) {
+  async setModelFilters(this: TransportCore, filters: Partial<CustomModelFilters>, idempotencyKey?: string) {
     const res = await this.fetch(this.url('/api/set-model-filters'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(filters),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'save model filters failed')
     return data
@@ -598,12 +621,13 @@ export const toolsRpc = {
     reasoningEffort?: string,
     sessionId?: string,
     contextWindow?: number,
+    idempotencyKey?: string,
   ): Promise<{ warning?: string }> {
     const res = await this.fetch(this.url('/api/set-model'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(modelPatchBody(modelId, reasoningEffort, sessionId, contextWindow)),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'set model failed')
     return typeof data.warning === 'string' && data.warning ? { warning: data.warning } : {}
@@ -615,12 +639,13 @@ export const toolsRpc = {
     reasoningEffort?: string,
     sessionId?: string,
     contextWindow?: number,
+    idempotencyKey?: string,
   ) {
     const res = await this.fetch(this.url('/api/set-default-model'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(modelPatchBody(modelId, reasoningEffort, sessionId, contextWindow)),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'set default model failed')
     return data
@@ -673,12 +698,13 @@ export const toolsRpc = {
   async updateSettings(
     this: TransportCore,
     patch: SettingsPatch,
+    idempotencyKey?: string,
   ): Promise<SettingsPayload> {
     const res = await this.fetch(this.url('/api/settings'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await res.json().catch(() => ({}))
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || `update settings failed (${res.status})`)
@@ -704,12 +730,17 @@ async function postJsonRpc(
   core: TransportCore,
   url: string,
   body: Record<string, unknown>,
+  idempotencyKey?: string,
 ): Promise<Response> {
-  return core.fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
+  return core.fetch(
+    url,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+    idempotencyKey ? { idempotencyKey } : undefined,
+  )
 }
 
 /** 解析 `{ok, models}` 信封：失败抛出 host 自己的说法。 */

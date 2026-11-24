@@ -364,6 +364,8 @@ type PromptQueueState = {
   enqueue: (
     item: Omit<QueuedPrompt, 'id' | 'ts' | 'version' | 'optimistic' | 'degraded' | 'errorText'>,
     sessionId: string,
+    /** 指定行 id（= promptId）；重发路径传原 id 复用幂等键，不传则现 mint。 */
+    opts?: { promptId?: string },
   ) => void
   /** Put an item back at the front of a session's stash (send rejected). */
   requeueFront: (sessionId: string, item: QueuedPrompt) => void
@@ -413,15 +415,24 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
   editIndex: null,
   editDraft: '',
   editImages: [],
-  enqueue: (item, sessionId) => {
-    const promptId = qid()
+  enqueue: (item, sessionId, opts) => {
+    const promptId = opts?.promptId ?? qid()
     const entry: QueuedPrompt = {
       ...item,
       id: promptId,
       ts: Date.now(),
       optimistic: true,
     }
-    set((s) => ({ queue: [...s.queue, entry], sessionId }))
+    set((s) => {
+      if (!opts?.promptId) return { queue: [...s.queue, entry], sessionId }
+      // 重发的行可能刚被「立即发送」removeAt 过（drain 登记还在）：沿用
+      // 同一 id 重新入队时解除登记，否则后续广播会把这一行过滤掉。
+      const drainedIds = new Set(s.drainedIds)
+      drainedIds.delete(promptId)
+      const deletedRows = new Map(s.deletedRows)
+      deletedRows.delete(promptId)
+      return { queue: [...s.queue, entry], sessionId, drainedIds, deletedRows }
+    })
     // Server-authoritative: prompt RPC 本身就是入队（agent 从
     // `_meta.promptId` 提取 queue_meta 插进 pending_inputs；busy 排队、
     // idle 直接运行）。fire-and-forget：不 await 回合完成。
@@ -619,7 +630,21 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
       textBlockWithMeta(row.blocks[0], text),
       ...images,
     ]
-    set({ editIndex: null, editDraft: '', editImages: [] })
+    // degraded 行是 FE-owned：agent 从没见过这个 promptId。编辑后必须换
+    // 新 id —— 旧 id 的幂等键可能已被 host 以旧 body 缓存（网络失败但请求
+    // 实际受理），沿用旧 id 重发会 409 conflict 且 24h 内发不出去。
+    const rekeyed = row.degraded === true && (text !== row.text || imagesChanged)
+    const nextId = rekeyed ? qid() : id
+    set((s) => {
+      const queue = s.queue.map((q, i) =>
+        i === editIndex ? { ...q, ...(rekeyed ? { id: nextId } : {}), text, blocks } : q,
+      )
+      const cleared = { editIndex: null, editDraft: '', editImages: [] }
+      if (!rekeyed) return { queue, ...cleared }
+      const deletedRows = new Map(s.deletedRows) // 旧 id 退役：摘掉残留的删除登记
+      deletedRows.delete(id)
+      return { queue, deletedRows, ...cleared }
+    })
     if (dropImageEdit) pushToast('这条还在发送中，等它进入队列后再改附图')
 
     if (imagesChanged && !row.degraded && !row.optimistic) {
@@ -632,14 +657,13 @@ export const usePromptQueue = create<PromptQueueState>((set, get) => ({
       pushToast('附图已更新：这条重新排队到队尾')
       return
     }
-    // 本端镜像：正文重建为 text block，附图按草稿顺序重排（degraded 行
-    // 是本端真身，手动重发用的就是这份 blocks）。
-    set((s) => ({
-      queue: s.queue.map((q, i) => (i === editIndex ? { ...q, text, blocks } : q)),
-    }))
-    if (text !== row.text) {
+    // 本端镜像已在上面重建为 text block + 草稿附图（degraded 行是本端
+    // 真身，手动重发用的就是这份 blocks）。
+    if (text !== row.text && !row.degraded) {
       syncQueue(() => transport.queueEdit({ id, newText: text }, sid))
     }
+    // 编辑锁是在旧 id 上拿的（startEdit 的 hold-edit）：换 id 后仍按旧 id
+    // 释放，新 id 从未 hold。
     syncQueue(() => transport.queueReleaseEdit({ id }, sid))
   },
   cancelEdit: () => {
@@ -703,47 +727,23 @@ function findQueueArray(root: unknown): unknown[] | null {
   return walk(root, 0)
 }
 
-/**
- * 在广播 params 中找 `running_prompt_id`（新 agent：QueueChanged wire
- * 顶层 `runningPromptId`，camelCase；旧形状/信封走查兜底 snake_case
- * `running_prompt_id` / `runningId`）。与 findQueueArray 同款 envelope
- * 走查（result/data/payload/params）。
- */
-function findRunningPromptId(root: unknown): string | undefined {
-  const seen = new Set<unknown>()
-  const walk = (v: unknown, depth: number): string | undefined => {
-    if (v == null || depth > 5) return undefined
-    if (typeof v !== 'object' || Array.isArray(v)) return undefined
-    if (seen.has(v)) return undefined
-    seen.add(v)
-    const o = v as Record<string, unknown>
-    for (const k of ['runningPromptId', 'running_prompt_id', 'runningId', 'running_prompt']) {
-      const val = o[k]
-      if (typeof val === 'string' && val) return val
-    }
-    for (const k of ['result', 'data', 'payload', 'params']) {
-      const found = walk(o[k], depth + 1)
-      if (found) return found
-    }
-    return undefined
-  }
-  return walk(root, 0)
-}
+/** running 标记的字段名：新 agent camelCase，旧形状 / 信封走查兜底 snake_case。 */
+const RUNNING_ID_KEYS = ['runningPromptId', 'running_prompt_id', 'runningId', 'running_prompt']
+const RUNNING_TEXT_KEYS = ['runningText', 'running_text']
 
 /**
- * QueueChanged wire 的 `runningText`（camelCase；snake_case 兜底）——
- * 运行中行不在 entries 里，客户端用它做 turn-start 用户行 / 乐观行 text
- * 对齐。与 findRunningPromptId 同款 envelope 走查。
+ * 在广播 params 中深度优先找第一个非空字符串字段（result / data / payload /
+ * params 信封都走查——广播形状不属任何约定，随 agent 版本变化）。
  */
-function findRunningText(root: unknown): string | undefined {
+function findStringField(root: unknown, keys: readonly string[]): string | undefined {
   const seen = new Set<unknown>()
   const walk = (v: unknown, depth: number): string | undefined => {
-    if (v == null || depth > 5) return undefined
-    if (typeof v !== 'object' || Array.isArray(v)) return undefined
-    if (seen.has(v)) return undefined
+    if (v == null || depth > 5 || typeof v !== 'object' || Array.isArray(v) || seen.has(v)) {
+      return undefined
+    }
     seen.add(v)
     const o = v as Record<string, unknown>
-    for (const k of ['runningText', 'running_text']) {
+    for (const k of keys) {
       const val = o[k]
       if (typeof val === 'string' && val) return val
     }
@@ -803,7 +803,7 @@ export function applyQueueChanged(
   const toStash = sessionId != null && st.sessionId !== sessionId
   const prev = toStash ? st.queues[sessionId ?? ''] ?? [] : st.queue
   const { drainedIds } = st
-  const runningId = findRunningPromptId(params)
+  const runningId = findStringField(params, RUNNING_ID_KEYS)
   const list = findQueueArray(params)
   // 既没有可识别的快照数组、也没有 running 标记 → 不是我们的形状。
   if (!list && !runningId) return null
@@ -903,7 +903,7 @@ export function applyQueueChanged(
     if (!row) {
       // running id 与本地乐观 id 不同时（meta.promptId 丢失）仍按 text
       // 对齐：QueueChanged 带 runningText。
-      const runningText = findRunningText(params)
+      const runningText = findStringField(params, RUNNING_TEXT_KEYS)
       if (runningText) {
         row = adoptableByText.find(
           (q) => !claimedLocalIds.has(q.id) && q.text === runningText,

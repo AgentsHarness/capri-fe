@@ -1,5 +1,6 @@
 import type { TransportCore } from '../transport'
 import { assertRpcOk, findField, readRpcJson, unwrapExtResult, xaiCall } from './core'
+import { newIdempotencyKey } from '../idempotency'
 import type { MemoryListing } from '../../lib/memory'
 import { normalizeMemoryListing } from '../../lib/memory'
 
@@ -43,9 +44,12 @@ export const memoryRpc = {
     this: TransportCore,
     sessionId: string,
     enabled: boolean,
+    idempotencyKey?: string,
   ): Promise<MemoryToggleResult> {
     const raw = unwrapExtResult<Record<string, unknown>>(
-      await xaiCall(this, '/api/memory-toggle', { sessionId, enabled }),
+      await xaiCall(this, '/api/memory-toggle', { sessionId, enabled }, {
+        idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
+      }),
     )
     const o = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
     const listing = o.listing ?? o.Listing
@@ -62,10 +66,11 @@ export const memoryRpc = {
    * /flush, consolidation is model work the pager waits on without a cap, so
    * no transport deadline (`timeoutMs: 0`).
    */
-  async memoryDream(this: TransportCore, sessionId?: string) {
+  async memoryDream(this: TransportCore, sessionId?: string, idempotencyKey?: string) {
     return unwrapExtResult<Record<string, unknown>>(
       await xaiCall(this, '/api/memory-dream', sessionId ? { sessionId } : {}, {
         timeoutMs: 0,
+        idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
       }),
     )
   },
@@ -81,9 +86,12 @@ export const memoryRpc = {
     sessionId: string,
     path: string,
     expectedContentHash: string,
+    idempotencyKey?: string,
   ): Promise<MemoryForgetResult> {
     const raw = unwrapExtResult<Record<string, unknown>>(
-      await xaiCall(this, '/api/memory-forget', { sessionId, path, expectedContentHash }),
+      await xaiCall(this, '/api/memory-forget', { sessionId, path, expectedContentHash }, {
+        idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
+      }),
     )
     const o = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
     if (o.outcome === 'forgotten') {

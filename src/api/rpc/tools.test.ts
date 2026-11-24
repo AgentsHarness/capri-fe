@@ -32,7 +32,7 @@ describe('toolsRpc.memoryFlush', () => {
   it('关掉传输硬超时（timeoutMs: 0）——刷新是模型工作，pager 侧也无截止', async () => {
     const core = coreWithBody({ ok: true, result: { disposition: 'flushed' } })
     await toolsRpc.memoryFlush.call(core, 's1')
-    expect(core.fetch.mock.calls[0][2]).toEqual({ timeoutMs: 0 })
+    expect(core.fetch.mock.calls[0][2]).toMatchObject({ timeoutMs: 0, idempotencyKey: expect.any(String) })
   })
 
   it('host 报错 → 抛出它自己的说法', async () => {
@@ -57,7 +57,7 @@ describe('toolsRpc.memoryRewrite', () => {
   it('关掉传输硬超时（timeoutMs: 0）——改写是模型调用，pager 侧也无截止', async () => {
     const core = coreWithBody({ ok: true, result: { rewritten: 'x' } })
     await toolsRpc.memoryRewrite.call(core, 's1', 'note')
-    expect(core.fetch.mock.calls[0][2]).toEqual({ timeoutMs: 0 })
+    expect(core.fetch.mock.calls[0][2]).toMatchObject({ timeoutMs: 0, idempotencyKey: expect.any(String) })
     // 无 contextSummary 时不下发该键（agent 侧必填字段之外不塞空串）
     expect(JSON.parse(String(core.fetch.mock.calls[0][1]?.body))).toEqual({
       sessionId: 's1',

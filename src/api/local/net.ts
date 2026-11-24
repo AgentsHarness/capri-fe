@@ -76,7 +76,7 @@ export const netMixin = {
     this: TransportCtx,
     path: string,
     init: RequestInit = {},
-    opts: { timeoutMs?: number; signal?: AbortSignal } = {},
+    opts: { timeoutMs?: number; signal?: AbortSignal; idempotencyKey?: string } = {},
   ): Promise<Response> {
     return this.fetch(this.url(path), init, opts)
   },
@@ -126,6 +126,11 @@ export const netMixin = {
       if (!headers.has('Authorization')) headers.set('Authorization', `Bearer ${token}`)
     } else {
       headers.delete('Authorization')
+    }
+    // 写操作幂等键：调用方显式设了同名头就以调用方为准（重试路径可能
+    // 自己管理 header），不覆盖。
+    if (opts.idempotencyKey && !headers.has('Idempotency-Key')) {
+      headers.set('Idempotency-Key', opts.idempotencyKey)
     }
     const ac = new AbortController()
     // 三条在途队列：探测请求（authProbe）谁都不许 abort（见 probeInflight）；

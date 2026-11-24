@@ -95,6 +95,8 @@ export type {
   GuestIdentity,
   GuestSessionItem,
   GuestTokenRecord,
+  HubRelayStats,
+  HubStats,
   SubscriberRow,
 } from './types/guest'
 export type { UserHostRecord, UserRecord, UserTokenIssue } from './types/user'

@@ -36,6 +36,7 @@ vi.mock('../../api/client', () => ({
     setRouteChoice: vi.fn(),
     getAccessToken: () => accessToken,
     sessionSearch: vi.fn(async () => ({ results: [] })),
+    hubStats: vi.fn(async () => ({})),
     listSubscribers,
   },
 }))

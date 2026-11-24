@@ -1,8 +1,9 @@
 import type { TransportCore } from '../transport'
+import { newIdempotencyKey } from '../idempotency'
 
 /** goal 跟踪控制（host 拥有 goal 引擎，/api/goal/* 端点）。 */
 export const goalRpc = {
-  async goalSet(this: TransportCore, objective: string, tokenBudget?: number, sessionId?: string) {
+  async goalSet(this: TransportCore, objective: string, tokenBudget?: number, sessionId?: string, idempotencyKey?: string) {
     const res = await this.fetch(this.url('/api/goal/set'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -11,7 +12,7 @@ export const goalRpc = {
         ...(tokenBudget && tokenBudget > 0 ? { tokenBudget } : {}),
         ...(sessionId ? { sessionId } : {}),
       }),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'goal set failed')
     return data
@@ -28,34 +29,34 @@ export const goalRpc = {
     return data
   },
 
-  async goalPause(this: TransportCore, sessionId?: string) {
+  async goalPause(this: TransportCore, sessionId?: string, idempotencyKey?: string) {
     const res = await this.fetch(this.url('/api/goal/pause'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(sessionId ? { sessionId } : {}),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'goal pause failed')
     return data
   },
 
-  async goalResume(this: TransportCore, sessionId?: string) {
+  async goalResume(this: TransportCore, sessionId?: string, idempotencyKey?: string) {
     const res = await this.fetch(this.url('/api/goal/resume'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(sessionId ? { sessionId } : {}),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'goal resume failed')
     return data
   },
 
-  async goalClear(this: TransportCore, sessionId?: string) {
+  async goalClear(this: TransportCore, sessionId?: string, idempotencyKey?: string) {
     const res = await this.fetch(this.url('/api/goal/clear'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(sessionId ? { sessionId } : {}),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'goal clear failed')
     return data

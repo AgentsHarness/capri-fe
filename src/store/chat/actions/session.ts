@@ -379,7 +379,7 @@ export function sessionActions(set: SetState, get: () => ChatState) {
     }
   },
 
-  newSession: async (cwd?: string) => {
+  newSession: async (cwd?: string, opts: { idempotencyKey?: string } = {}) => {
     if (blockGuestWrite(get())) return undefined
     // Any in-flight session switch (grace-window callback / async loads)
     // must not re-anchor after a fresh session starts.
@@ -419,6 +419,7 @@ export function sessionActions(set: SetState, get: () => ChatState) {
       res = await transport.newSession({
         ...(startCwd ? { cwd: startCwd } : {}),
         ...(inheritMeta ? { meta: inheritMeta } : {}),
+        ...(opts.idempotencyKey ? { idempotencyKey: opts.idempotencyKey } : {}),
       })
     } finally {
       if (runtime.newSessionInFlightGeneration === newSessionGen) {

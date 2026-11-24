@@ -1,40 +1,52 @@
 import type { TransportCore } from '../transport'
 import { xaiCall } from './core'
+import { newIdempotencyKey } from '../idempotency'
 
 /** server-authoritative 队列管理：增删改序、插话、暂存编辑、状态查询。 */
 export const queueRpc = {
   async queueRemove(this: TransportCore,
-    opts: { id: string; expectedVersion?: number },
+    opts: { id: string; expectedVersion?: number; idempotencyKey?: string },
     sessionId?: string,
   ): Promise<void> {
-    const body: Record<string, unknown> = { id: opts.id }
-    if (opts.expectedVersion !== undefined && opts.expectedVersion !== 0) {
-      body.expectedVersion = opts.expectedVersion
+    const { idempotencyKey, ...params } = opts
+    const body: Record<string, unknown> = { id: params.id }
+    if (params.expectedVersion !== undefined && params.expectedVersion !== 0) {
+      body.expectedVersion = params.expectedVersion
     }
     if (sessionId) body.sessionId = sessionId
-    await xaiCall(this, '/api/queue/remove', body)
+    await xaiCall(this, '/api/queue/remove', body, {
+      idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
+    })
   },
 
-  async queueClear(this: TransportCore, sessionId?: string): Promise<void> {
+  async queueClear(this: TransportCore, sessionId?: string, idempotencyKey?: string): Promise<void> {
     const body: Record<string, unknown> = {}
     if (sessionId) body.sessionId = sessionId
-    await xaiCall(this, '/api/queue/clear', body)
+    await xaiCall(this, '/api/queue/clear', body, {
+      idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
+    })
   },
 
-  async queueReorder(this: TransportCore, opts: { ids: string[] }, sessionId?: string): Promise<void> {
+  async queueReorder(this: TransportCore, opts: { ids: string[]; idempotencyKey?: string }, sessionId?: string): Promise<void> {
+    const { idempotencyKey, ...params } = opts
     const body: Record<string, unknown> = {}
-    if (opts.ids.length > 0) body.ids = opts.ids
+    if (params.ids.length > 0) body.ids = params.ids
     if (sessionId) body.sessionId = sessionId
-    await xaiCall(this, '/api/queue/reorder', body)
+    await xaiCall(this, '/api/queue/reorder', body, {
+      idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
+    })
   },
 
   async queueEdit(this: TransportCore,
-    opts: { id: string; newText: string },
+    opts: { id: string; newText: string; idempotencyKey?: string },
     sessionId?: string,
   ): Promise<void> {
-    const body: Record<string, unknown> = { id: opts.id, newText: opts.newText }
+    const { idempotencyKey, ...params } = opts
+    const body: Record<string, unknown> = { id: params.id, newText: params.newText }
     if (sessionId) body.sessionId = sessionId
-    await xaiCall(this, '/api/queue/edit', body)
+    await xaiCall(this, '/api/queue/edit', body, {
+      idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
+    })
   },
 
   async queueInterject(this: TransportCore,
@@ -42,28 +54,38 @@ export const queueRpc = {
       id: string
       newText?: string
       expectedVersion?: number
+      idempotencyKey?: string
     },
     sessionId?: string,
   ): Promise<void> {
-    const body: Record<string, unknown> = { id: opts.id }
-    if (opts.newText) body.newText = opts.newText
-    if (opts.expectedVersion !== undefined && opts.expectedVersion !== 0) {
-      body.expectedVersion = opts.expectedVersion
+    const { idempotencyKey, ...params } = opts
+    const body: Record<string, unknown> = { id: params.id }
+    if (params.newText) body.newText = params.newText
+    if (params.expectedVersion !== undefined && params.expectedVersion !== 0) {
+      body.expectedVersion = params.expectedVersion
     }
     if (sessionId) body.sessionId = sessionId
-    await xaiCall(this, '/api/queue/interject', body)
+    await xaiCall(this, '/api/queue/interject', body, {
+      idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
+    })
   },
 
-  async queueHoldEdit(this: TransportCore, opts: { id: string }, sessionId?: string): Promise<void> {
-    const body: Record<string, unknown> = { id: opts.id }
+  async queueHoldEdit(this: TransportCore, opts: { id: string; idempotencyKey?: string }, sessionId?: string): Promise<void> {
+    const { idempotencyKey, ...params } = opts
+    const body: Record<string, unknown> = { id: params.id }
     if (sessionId) body.sessionId = sessionId
-    await xaiCall(this, '/api/queue/hold-edit', body)
+    await xaiCall(this, '/api/queue/hold-edit', body, {
+      idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
+    })
   },
 
-  async queueReleaseEdit(this: TransportCore, opts: { id: string }, sessionId?: string): Promise<void> {
-    const body: Record<string, unknown> = { id: opts.id }
+  async queueReleaseEdit(this: TransportCore, opts: { id: string; idempotencyKey?: string }, sessionId?: string): Promise<void> {
+    const { idempotencyKey, ...params } = opts
+    const body: Record<string, unknown> = { id: params.id }
     if (sessionId) body.sessionId = sessionId
-    await xaiCall(this, '/api/queue/release-edit', body)
+    await xaiCall(this, '/api/queue/release-edit', body, {
+      idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
+    })
   },
 
   async queueStatus(this: TransportCore,

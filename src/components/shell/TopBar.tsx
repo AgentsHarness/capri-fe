@@ -17,6 +17,7 @@ import {
 } from 'lucide-react'
 import { useChatStore } from '../../store/chat'
 import { useAnchoredPanel } from '../../hooks/useAnchoredPanel'
+import { useMinWidth } from '../../hooks/useMinWidth'
 import { ThemeOptions, ThemePicker } from './ThemePicker'
 import { chromeBtnClass } from '../../theme/layout'
 import { SessionHistoryList } from '../session/SessionHistoryList'
@@ -171,6 +172,9 @@ export function TopBar({
     maxWidth: 256,
     vwFraction: 0.9,
   })
+  // 层错误提示在窄屏独立成行、lg 起回到主行内联。用与 Tailwind lg 相同的
+  // 1024px 断点只在两个位置间挂载一份提示，避免重复的 role=alert。
+  const isDesktop = useMinWidth(1024)
   // history 下拉的会话搜索（与桌面侧边栏同一套 SessionSearchBox：按钮
   // 展开 → 命中接管列表；打开命中或收起下拉后归位）。
   const [historySearchOpen, setHistorySearchOpen] = useState(false)
@@ -247,14 +251,11 @@ export function TopBar({
   // siblings and chat text "shows through" the history panel.
   return (
     <header className="relative z-40 w-full min-w-0 max-w-[100vw] select-none border-b border-gn-prompt-border bg-gn-bg-base touch-pan-x overscroll-none">
-      {/* Main row: host switcher + subscribers + actions. 固定单行、宽度
+      {/* Main row: host switcher + subscribers + actions. 始终单行、宽度
           不超过视口：窄屏时由 host 名称截断让位，new/history/更多 永不
-          换行。层错误 / 警告在窄屏（< lg）独占第二行，桌面才回到行内。 */}
-      <div
-        className={`flex w-full min-w-0 shrink-0 items-center gap-2 px-3 py-[6px] sm:px-4 text-[12px] text-gn-muted ${
-          layerErr ? 'flex-wrap lg:flex-nowrap' : 'flex-nowrap'
-        }`}
-      >
+          换行。层错误 / 警告在窄屏（< lg）由下方独立块占第二行，lg 起
+          才回到本行内联。 */}
+      <div className="flex w-full min-w-0 shrink-0 flex-nowrap items-center gap-2 px-3 py-[6px] sm:px-4 text-[12px] text-gn-muted">
         {/* Desktop-only sidebar collapse toggle — sits left of the host switcher. */}
         <button
           type="button"
@@ -561,14 +562,14 @@ export function TopBar({
         )}
         {subscribersOpen && <SubscribersPanel onClose={() => setSubscribersOpen(false)} />}
 
-        {/* hub / host 层错误 / 警告：窄屏单独占第二行（整行放宽，消息可
-            换行）；lg 起回到订阅数右侧的行内提示。 */}
-        {layerErr && (
+        {/* hub / host 层错误 / 警告：lg 起贴在订阅数右侧的行内提示；
+            窄屏由 header 末尾的独立块渲染为第二行。 */}
+        {layerErr && isDesktop && (
           <LayerErrNotice
             key={`${layerErr.layer}:${layerErr.err.at}`}
             layer={layerErr.layer}
             err={layerErr.err}
-            className="order-last w-full pb-1 lg:order-none lg:w-auto lg:max-w-[26rem] lg:pb-0"
+            className="min-w-0 max-w-[26rem]"
           />
         )}
 
@@ -876,6 +877,17 @@ export function TopBar({
           )}
         </div>
       </div>
+      {/* 窄屏层错误 / 警告：主行始终 nowrap，提示单独占第二行。 */}
+      {layerErr && !isDesktop && (
+        <div className="px-3 pb-1 sm:px-4">
+          <LayerErrNotice
+            key={`${layerErr.layer}:${layerErr.err.at}`}
+            layer={layerErr.layer}
+            err={layerErr.err}
+            className="w-full"
+          />
+        </div>
+      )}
     </header>
   )
 }

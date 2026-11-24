@@ -1505,3 +1505,55 @@ describe('reconnectDelayMs（指数退避 + 抖动）', () => {
     expect(Math.max(...samples)).toBeLessThanOrEqual(36_000)
   })
 })
+
+describe('写操作幂等头（Idempotency-Key）', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    localStorage.clear()
+  })
+
+  function stubFetch() {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
+      new Response('{}', { status: 200 }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+
+  it('opts.idempotencyKey → 请求头', async () => {
+    const t = makeTransport()
+    const fetchMock = stubFetch()
+
+    await t.apiFetch('/api/prompt', { method: 'POST' }, { idempotencyKey: 'idem-1' })
+
+    expect(
+      new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get('Idempotency-Key'),
+    ).toBe('idem-1')
+  })
+
+  it('调用方显式设置的 Idempotency-Key 不被覆盖', async () => {
+    const t = makeTransport()
+    const fetchMock = stubFetch()
+
+    await t.apiFetch(
+      '/api/prompt',
+      { method: 'POST', headers: { 'Idempotency-Key': 'caller-key' } },
+      { idempotencyKey: 'opts-key' },
+    )
+
+    expect(
+      new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get('Idempotency-Key'),
+    ).toBe('caller-key')
+  })
+
+  it('没有 idempotencyKey 时不发该头（只读请求零额外开销）', async () => {
+    const t = makeTransport()
+    const fetchMock = stubFetch()
+
+    await t.apiFetch('/api/sessions', { method: 'POST' })
+
+    expect(
+      new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get('Idempotency-Key'),
+    ).toBeNull()
+  })
+})

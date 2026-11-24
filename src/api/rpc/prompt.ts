@@ -4,6 +4,35 @@ import { assertRpcOk, readRpcJson } from './core'
 import type { ContentBlock, PermissionScope } from '../types'
 
 import { DEFAULT_FETCH_TIMEOUT_MS } from '../local/types'
+import { newIdempotencyKey } from '../idempotency'
+
+/**
+ * requestId → 首次应答用的幂等键 + 请求指纹。权限/客户端请求应答失败时
+ * 卡片会保留供重试（store 的 respondPermission / respondXai），同一个
+ * payload 的重试必须沿用同一个键，否则 host 会把同一张卡执行两次；
+ * 用户改点别的选项（payload 变了）则必须换新键——同键不同 body 会被
+ * host 判成 409 conflict。成功即注销；上限防止长会话里反复失败的卡片
+ * 无限累积。
+ */
+type ResponseKey = { fingerprint: string; key: string }
+const responseKeys = new Map<string, ResponseKey>()
+
+function respondKey(requestId: string, fingerprint: string, explicit?: string): string {
+  if (explicit) return explicit
+  const hit = responseKeys.get(requestId)
+  if (hit && hit.fingerprint === fingerprint) return hit.key
+  const key = newIdempotencyKey()
+  if (responseKeys.size >= 64) {
+    const oldest = responseKeys.keys().next().value
+    if (oldest !== undefined) responseKeys.delete(oldest)
+  }
+  responseKeys.set(requestId, { fingerprint, key })
+  return key
+}
+
+function clearRespondKey(requestId: string): void {
+  responseKeys.delete(requestId)
+}
 
 /** 回合控制：发送 prompt、取消回合、权限/转发请求应答。 */
 export const promptRpc = {
@@ -47,8 +76,13 @@ export const promptRpc = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       },
-      // 受理响应毫秒级返回；默认上限只用来兜底死 relay。
-      { timeoutMs: opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS },
+      {
+        // 受理响应毫秒级返回；默认上限只用来兜底死 relay。
+        timeoutMs: opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS,
+        // promptId 就是这条 prompt 的幂等身份：同一条消息的重发（含
+        // 降级行手动重发 / 队列重投）沿用同一个键，host 只执行一次。
+        idempotencyKey: opts.promptId ?? newIdempotencyKey(),
+      },
     )
     const data = (await res.json().catch(() => ({}))) as Record<string, unknown>
     if (!res.ok || data.ok === false) {
@@ -76,7 +110,7 @@ export const promptRpc = {
    * "Stop running" / rewind), `false` keeps them running (send-now,
    * Ctrl+C, "Always continue" preference).
    */
-  async cancel(this: TransportCore, opts: { cancelSubagents?: boolean } = {}, sessionId?: string): Promise<void> {
+  async cancel(this: TransportCore, opts: { cancelSubagents?: boolean; idempotencyKey?: string } = {}, sessionId?: string): Promise<void> {
     const res = await this.fetch(this.url('/api/cancel'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -85,7 +119,7 @@ export const promptRpc = {
         // 可选：指定目标会话（缺省 = host active 会话）。
         ...(sessionId ? { sessionId } : {}),
       }),
-    })
+    }, { idempotencyKey: opts.idempotencyKey ?? newIdempotencyKey() })
     const data = await readRpcJson(res)
     // Empty/invalid success bodies remain valid for this command-style RPC;
     // non-2xx and explicit {ok:false} responses must still reach callers.
@@ -105,28 +139,37 @@ export const promptRpc = {
     scope?: PermissionScope,
     /** Optional followup message on a reject (TUI RejectOnce followup). */
     followupMessage?: string,
+    /** 显式幂等键（缺省 = 按 requestId 记住首次键，重试复用）。 */
+    idempotencyKey?: string,
   ) {
+    const body = JSON.stringify({
+      requestId,
+      optionId,
+      cancelled,
+      ...(scope ? { scope } : {}),
+      ...(followupMessage ? { followupMessage } : {}),
+    })
     const res = await this.fetch(this.url('/api/permission-response'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        requestId,
-        optionId,
-        cancelled,
-        ...(scope ? { scope } : {}),
-        ...(followupMessage ? { followupMessage } : {}),
-      }),
-    })
+      body,
+    }, { idempotencyKey: respondKey(requestId, body, idempotencyKey) })
+    // 拿到 HTTP 应答 = 请求已到 host（无论成败）：卡片要么已定论、要么
+    // 用户重试算新一次尝试，换新键。网络级失败（fetch reject）到不了
+    // 这里，键留着给重试复用。
+    clearRespondKey(requestId)
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'permission failed')
   },
 
-  async respondClientRequest(this: TransportCore, requestId: string, result?: Record<string, unknown>, error?: string) {
+  async respondClientRequest(this: TransportCore, requestId: string, result?: Record<string, unknown>, error?: string, idempotencyKey?: string) {
+    const body = JSON.stringify({ requestId, result, error })
     const res = await this.fetch(this.url('/api/client-response'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ requestId, result, error }),
-    })
+      body,
+    }, { idempotencyKey: respondKey(requestId, body, idempotencyKey) })
+    clearRespondKey(requestId)
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'client response failed')
   },

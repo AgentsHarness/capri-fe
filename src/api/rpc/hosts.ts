@@ -1,6 +1,7 @@
 import type { TransportCore } from '../transport'
 import { assertHubOk, readRpcJson, responseError } from './core'
-import type { HostInfo, HubPrefsDoc } from '../types'
+import { newIdempotencyKey } from '../idempotency'
+import type { HostInfo, HubPrefsDoc, HubStats } from '../types'
 
 /**
  * 启动期注册表交接缓存。同一个 `GET {apiBase}/api/hosts` 在一次启动里要被
@@ -62,6 +63,20 @@ export const hostsRpc = {
       | undefined
     assertHubOk(res, data, 'hub info failed')
     return { service: data?.service, version: data?.version }
+  },
+
+  /**
+   * GET /api/stats — hub 的调试快照。订阅者面板只消费 relay 段；
+   * 老 hub 没有该字段时返回空对象，不阻塞订阅者名单。
+   */
+  async hubStats(this: TransportCore): Promise<HubStats> {
+    const origin = this.prefsOrigin()
+    if (!origin) throw new Error('仅 Hub 模式支持读取 Hub 统计')
+    const statsPath = '/api/stats'
+    const res = await this.fetch(`${origin}${statsPath}`, {}, { hubLevel: true })
+    const data = (await readRpcJson(res)) as HubStats | undefined
+    assertHubOk(res, data, 'hub stats failed')
+    return { relay: data?.relay }
   },
 
   async listHosts(this: TransportCore): Promise<{ hosts: HostInfo[]; defaultHostId?: string }> {
@@ -143,7 +158,7 @@ export const hostsRpc = {
    * 杀进程 + boot（host 侧 2min 上限）+ 恢复会话可能超过默认 30s
    * fetch 超时，这里给足 120s。在飞回合会被中断且不重试。
    */
-  async restartAgent(this: TransportCore): Promise<void> {
+  async restartAgent(this: TransportCore, idempotencyKey?: string): Promise<void> {
     const res = await this.fetch(
       this.url('/api/agent-restart'),
       {
@@ -151,7 +166,7 @@ export const hostsRpc = {
         headers: { 'Content-Type': 'application/json' },
         body: '{}',
       },
-      { timeoutMs: 120_000 },
+      { timeoutMs: 120_000, idempotencyKey: idempotencyKey ?? newIdempotencyKey() },
     )
     assertHubOk(res, await readRpcJson(res), 'agent restart failed')
   },

@@ -55,6 +55,11 @@ export type FetchOpts = {
    * host 的近路」自动判定，否则可能把请求发到本机另一台上。
    */
   forceRelay?: boolean
+  /**
+   * 写操作幂等键（v3 relay）：有则发 `Idempotency-Key` 头。同一个逻辑写
+   * 操作的重试必须复用同一个键；只读请求不发（避免大响应进幂等缓存）。
+   */
+  idempotencyKey?: string
 }
 
 /** detectMode 的结论。`mode: null` = 不可知（网络失败），调用方不得改状态。 */

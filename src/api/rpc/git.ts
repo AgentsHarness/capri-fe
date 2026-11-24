@@ -1,5 +1,6 @@
 import type { TransportCore } from '../transport'
 import { findArrayField, unwrapExtResult, xaiCall } from './core'
+import { idempotentBody, newIdempotencyKey } from '../idempotency'
 import type { GitBranch, GitBranchesData, GitLogEntry, GitRepoStateData, GitStashItem } from '../types'
 
 type HostShellResponse = {
@@ -66,12 +67,21 @@ async function runHostGitLog(
   return { ok: true, commits }
 }
 
-async function postGitEndpoint<T>(core: TransportCore, path: string, body: Record<string, unknown>): Promise<T> {
-  const res = await core.fetch(core.url(path), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
+async function postGitEndpoint<T>(
+  core: TransportCore,
+  path: string,
+  body: Record<string, unknown>,
+  idempotencyKey?: string,
+): Promise<T> {
+  const res = await core.fetch(
+    core.url(path),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+    idempotencyKey ? { idempotencyKey } : undefined,
+  )
   const data = (await res.json()) as T & { ok?: boolean; error?: string }
   if (!res.ok || data.ok === false) {
     throw new Error(data.error || `${path} failed (${res.status})`)
@@ -110,8 +120,9 @@ export const gitRpc = {
     )
   },
 
-  async gitInit(this: TransportCore, opts: { cwd?: string } = {}): Promise<{ ok: boolean; output?: string }> {
-    return postGitEndpoint<{ ok: boolean; output?: string }>(this, '/api/git/init', opts)
+  async gitInit(this: TransportCore, opts: { cwd?: string; idempotencyKey?: string } = {}): Promise<{ ok: boolean; output?: string }> {
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return postGitEndpoint<{ ok: boolean; output?: string }>(this, '/api/git/init', body, idempotencyKey)
   },
 
   async gitPush(this: TransportCore, opts: {
@@ -120,8 +131,11 @@ export const gitRpc = {
     branch?: string
     force?: boolean
     setUpstream?: boolean
+    /** 幂等键：同一次推送重试复用。 */
+    idempotencyKey?: string
   } = {}): Promise<{ ok: boolean; output?: string }> {
-    return postGitEndpoint<{ ok: boolean; output?: string }>(this, '/api/git/push', opts)
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return postGitEndpoint<{ ok: boolean; output?: string }>(this, '/api/git/push', body, idempotencyKey)
   },
 
   async gitPull(this: TransportCore, opts: {
@@ -129,16 +143,22 @@ export const gitRpc = {
     remote?: string
     branch?: string
     rebase?: boolean
+    /** 幂等键：同一次拉取重试复用。 */
+    idempotencyKey?: string
   } = {}): Promise<{ ok: boolean; output?: string }> {
-    return postGitEndpoint<{ ok: boolean; output?: string }>(this, '/api/git/pull', opts)
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return postGitEndpoint<{ ok: boolean; output?: string }>(this, '/api/git/pull', body, idempotencyKey)
   },
 
   async gitFetch(this: TransportCore, opts: {
     cwd?: string
     remote?: string
     prune?: boolean
+    /** 幂等键：同一次 fetch 重试复用。 */
+    idempotencyKey?: string
   } = {}): Promise<{ ok: boolean; output?: string }> {
-    return postGitEndpoint<{ ok: boolean; output?: string }>(this, '/api/git/fetch', opts)
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return postGitEndpoint<{ ok: boolean; output?: string }>(this, '/api/git/fetch', body, idempotencyKey)
   },
 
   async gitLog(this: TransportCore, opts: {
@@ -175,44 +195,57 @@ export const gitRpc = {
     return postGitEndpoint<{ ok: boolean; stashes: GitStashItem[] }>(this, '/api/git/stash/list', opts)
   },
 
-  async gitStashPop(this: TransportCore, opts: { cwd?: string; index?: string } = {}): Promise<{ ok: boolean; output?: string }> {
-    return postGitEndpoint<{ ok: boolean; output?: string }>(this, '/api/git/stash/pop', opts)
+  async gitStashPop(this: TransportCore, opts: { cwd?: string; index?: string; idempotencyKey?: string } = {}): Promise<{ ok: boolean; output?: string }> {
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return postGitEndpoint<{ ok: boolean; output?: string }>(this, '/api/git/stash/pop', body, idempotencyKey)
   },
 
-  async gitStashDrop(this: TransportCore, opts: { cwd?: string; index?: string } = {}): Promise<{ ok: boolean; output?: string }> {
-    return postGitEndpoint<{ ok: boolean; output?: string }>(this, '/api/git/stash/drop', opts)
+  async gitStashDrop(this: TransportCore, opts: { cwd?: string; index?: string; idempotencyKey?: string } = {}): Promise<{ ok: boolean; output?: string }> {
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return postGitEndpoint<{ ok: boolean; output?: string }>(this, '/api/git/stash/drop', body, idempotencyKey)
   },
 
   async gitBranchCreate(this: TransportCore, opts: {
     cwd?: string
     branch: string
     checkout?: boolean
+    /** 幂等键：同一次建分支重试复用。 */
+    idempotencyKey?: string
   }): Promise<{ ok: boolean; output?: string }> {
-    return postGitEndpoint<{ ok: boolean; output?: string }>(this, '/api/git/branch/create', opts)
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return postGitEndpoint<{ ok: boolean; output?: string }>(this, '/api/git/branch/create', body, idempotencyKey)
   },
 
   async gitBranchDelete(this: TransportCore, opts: {
     cwd?: string
     branch: string
     force?: boolean
+    /** 幂等键：同一次删分支重试复用。 */
+    idempotencyKey?: string
   }): Promise<{ ok: boolean; output?: string }> {
-    return postGitEndpoint<{ ok: boolean; output?: string }>(this, '/api/git/branch/delete', opts)
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return postGitEndpoint<{ ok: boolean; output?: string }>(this, '/api/git/branch/delete', body, idempotencyKey)
   },
 
-  async gitStage(this: TransportCore, opts: { cwd?: string; paths?: string[] }): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/git/stage', opts))
+  async gitStage(this: TransportCore, opts: { cwd?: string; paths?: string[]; idempotencyKey?: string }): Promise<unknown> {
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return unwrapExtResult(await xaiCall(this, '/api/git/stage', body, { idempotencyKey }))
   },
 
-  async gitUnstage(this: TransportCore, opts: { cwd?: string; paths?: string[] }): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/git/unstage', opts))
+  async gitUnstage(this: TransportCore, opts: { cwd?: string; paths?: string[]; idempotencyKey?: string }): Promise<unknown> {
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return unwrapExtResult(await xaiCall(this, '/api/git/unstage', body, { idempotencyKey }))
   },
 
   async gitDiscard(this: TransportCore, opts: {
     cwd?: string
     paths?: string[]
     includeUntracked?: boolean
+    /** 幂等键：同一次丢弃重试复用。 */
+    idempotencyKey?: string
   }): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/git/discard', opts))
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return unwrapExtResult(await xaiCall(this, '/api/git/discard', body, { idempotencyKey }))
   },
 
   async gitCommit(this: TransportCore, opts: {
@@ -221,8 +254,11 @@ export const gitRpc = {
     amend?: boolean
     signoff?: boolean
     push?: boolean
+    /** 幂等键：同一次提交重试复用。 */
+    idempotencyKey?: string
   }): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/git/commit', opts))
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return unwrapExtResult(await xaiCall(this, '/api/git/commit', body, { idempotencyKey }))
   },
 
   async gitFiles(this: TransportCore, opts: {
@@ -253,27 +289,35 @@ export const gitRpc = {
     return repoRoot ? { branches, repoRoot } : { branches }
   },
 
-  async gitCheckout(this: TransportCore, opts: { cwd?: string; branch: string; create?: boolean }): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/git/checkout', opts))
+  async gitCheckout(this: TransportCore, opts: { cwd?: string; branch: string; create?: boolean; idempotencyKey?: string }): Promise<unknown> {
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return unwrapExtResult(await xaiCall(this, '/api/git/checkout', body, { idempotencyKey }))
   },
 
   async gitCheckoutCommit(this: TransportCore, opts: {
     cwd?: string
     commit: string
     stashIfDirty?: boolean
+    /** 幂等键：同一次 checkout 重试复用。 */
+    idempotencyKey?: string
   }): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/git/checkout-commit', opts))
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return unwrapExtResult(await xaiCall(this, '/api/git/checkout-commit', body, { idempotencyKey }))
   },
 
   async gitCheckoutSessionHead(this: TransportCore, opts: {
     cwd?: string
     stashIfDirty?: boolean
+    /** 幂等键：同一次 checkout 重试复用。 */
+    idempotencyKey?: string
   }): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/git/checkout-session-head', opts))
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return unwrapExtResult(await xaiCall(this, '/api/git/checkout-session-head', body, { idempotencyKey }))
   },
 
-  async gitStash(this: TransportCore, opts: { cwd?: string; includeUntracked?: boolean } = {}): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/git/stash', opts))
+  async gitStash(this: TransportCore, opts: { cwd?: string; includeUntracked?: boolean; idempotencyKey?: string } = {}): Promise<unknown> {
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return unwrapExtResult(await xaiCall(this, '/api/git/stash', body, { idempotencyKey }))
   },
 
   async gitCurrentCommit(this: TransportCore, opts: { cwd?: string } = {}): Promise<unknown> {
@@ -284,8 +328,9 @@ export const gitRpc = {
     return unwrapExtResult(await xaiCall(this, '/api/git/repo-root', opts))
   },
 
-  async gitStageContent(this: TransportCore, opts: { cwd?: string; path: string; content: string }): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/git/stage-content', opts))
+  async gitStageContent(this: TransportCore, opts: { cwd?: string; path: string; content: string; idempotencyKey?: string }): Promise<unknown> {
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return unwrapExtResult(await xaiCall(this, '/api/git/stage-content', body, { idempotencyKey }))
   },
 
   async gitWorktreeCreate(this: TransportCore, opts: {
@@ -297,8 +342,11 @@ export const gitRpc = {
     ignoredSkipPatterns?: string[]
     worktreeType?: string
     label?: string
+    /** 幂等键：同一次建 worktree 重试复用。 */
+    idempotencyKey?: string
   }): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/git/worktree/create', opts))
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return unwrapExtResult(await xaiCall(this, '/api/git/worktree/create', body, { idempotencyKey }))
   },
 
   async gitWorktreeRemove(this: TransportCore, opts: {
@@ -306,20 +354,26 @@ export const gitRpc = {
     idOrPath?: string
     force?: boolean
     dryRun?: boolean
+    /** 幂等键：同一次删除重试复用。 */
+    idempotencyKey?: string
   }): Promise<unknown> {
+    const { idempotencyKey, ...params } = opts
     const body: Record<string, unknown> = {
-      ...(opts.worktreePath ? { worktreePath: opts.worktreePath } : {}),
-      ...(opts.idOrPath ? { idOrPath: opts.idOrPath } : {}),
-      ...(opts.force !== undefined ? { force: opts.force } : {}),
-      ...(opts.dryRun !== undefined ? { dryRun: opts.dryRun } : {}),
+      ...(params.worktreePath ? { worktreePath: params.worktreePath } : {}),
+      ...(params.idOrPath ? { idOrPath: params.idOrPath } : {}),
+      ...(params.force !== undefined ? { force: params.force } : {}),
+      ...(params.dryRun !== undefined ? { dryRun: params.dryRun } : {}),
     }
-    return unwrapExtResult(await xaiCall(this, '/api/git/worktree/remove', body))
+    return unwrapExtResult(
+      await xaiCall(this, '/api/git/worktree/remove', body, {
+        idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
+      }),
+    )
   },
 
-  async gitWorktreeApply(this: TransportCore, opts: { worktreePath: string; mode?: string }): Promise<unknown> {
-    const body: Record<string, unknown> = { worktreePath: opts.worktreePath }
-    if (opts.mode) body.mode = opts.mode
-    return unwrapExtResult(await xaiCall(this, '/api/git/worktree/apply', body))
+  async gitWorktreeApply(this: TransportCore, opts: { worktreePath: string; mode?: string; idempotencyKey?: string }): Promise<unknown> {
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return unwrapExtResult(await xaiCall(this, '/api/git/worktree/apply', body, { idempotencyKey }))
   },
 
   async gitWorktreeCreateFromWorktree(this: TransportCore, opts: {
@@ -329,8 +383,11 @@ export const gitRpc = {
     gitRef?: string
     worktreeType?: string
     label?: string
+    /** 幂等键：同一次建 worktree 重试复用。 */
+    idempotencyKey?: string
   }): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/git/worktree/create-from-worktree', opts))
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return unwrapExtResult(await xaiCall(this, '/api/git/worktree/create-from-worktree', body, { idempotencyKey }))
   },
 
   async gitWorktreeCreateFromWorktreeSync(this: TransportCore, opts: {
@@ -340,8 +397,11 @@ export const gitRpc = {
     gitRef?: string
     worktreeType?: string
     label?: string
+    /** 幂等键：同一次建 worktree 重试复用。 */
+    idempotencyKey?: string
   }): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/git/worktree/create-from-worktree-sync', opts))
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return unwrapExtResult(await xaiCall(this, '/api/git/worktree/create-from-worktree-sync', body, { idempotencyKey }))
   },
 
   async gitWorktreeResumeSession(this: TransportCore, opts: {
@@ -350,8 +410,11 @@ export const gitRpc = {
     worktreeType?: string
     restoreCode?: boolean
     gitRef?: string
+    /** 幂等键：同一次恢复重试复用。 */
+    idempotencyKey?: string
   }): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/git/worktree/resume-session', opts))
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return unwrapExtResult(await xaiCall(this, '/api/git/worktree/resume-session', body, { idempotencyKey }))
   },
 
   async gitWorktreeList(this: TransportCore, opts: {
@@ -370,20 +433,29 @@ export const gitRpc = {
     return unwrapExtResult(await xaiCall(this, '/api/git/worktree/show', opts))
   },
 
-  async gitWorktreeGc(this: TransportCore, opts: { dryRun?: boolean; maxAge?: string; force?: boolean } = {}): Promise<unknown> {
+  async gitWorktreeGc(this: TransportCore, opts: { dryRun?: boolean; maxAge?: string; force?: boolean; idempotencyKey?: string } = {}): Promise<unknown> {
+    const { idempotencyKey, ...params } = opts
     const body: Record<string, unknown> = {}
-    if (opts.dryRun !== undefined) body.dryRun = opts.dryRun
-    if (opts.maxAge) body.maxAge = opts.maxAge
-    if (opts.force !== undefined) body.force = opts.force
-    return unwrapExtResult(await xaiCall(this, '/api/git/worktree/gc', body))
+    if (params.dryRun !== undefined) body.dryRun = params.dryRun
+    if (params.maxAge) body.maxAge = params.maxAge
+    if (params.force !== undefined) body.force = params.force
+    return unwrapExtResult(
+      await xaiCall(this, '/api/git/worktree/gc', body, {
+        idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
+      }),
+    )
   },
 
   async gitWorktreeDbStats(this: TransportCore): Promise<unknown> {
     return unwrapExtResult(await xaiCall(this, '/api/git/worktree/db/stats', {}))
   },
 
-  async gitWorktreeDbRebuild(this: TransportCore): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/git/worktree/db/rebuild', {}))
+  async gitWorktreeDbRebuild(this: TransportCore, idempotencyKey?: string): Promise<unknown> {
+    return unwrapExtResult(
+      await xaiCall(this, '/api/git/worktree/db/rebuild', {}, {
+        idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
+      }),
+    )
   },
 
   async gitWorktreeDbPath(this: TransportCore): Promise<unknown> {

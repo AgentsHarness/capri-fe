@@ -270,7 +270,7 @@ describe('QueueEditModal', () => {
     expect(st.editImages).toEqual([])
   })
 
-  it('degraded 行改附图：就地更新 blocks，不重新入队', () => {
+  it('degraded 行改附图：就地更新 blocks 并换新 promptId，不重新入队', () => {
     usePromptQueue.setState({
       queue: [imgRow('q1', '带图', ['AA', 'BB'], { degraded: true, errorText: 'boom' })],
     })
@@ -280,7 +280,8 @@ describe('QueueEditModal', () => {
     fireEvent.click(screen.getByRole('button', { name: '保存' }))
 
     const st = usePromptQueue.getState()
-    expect(st.queue[0]?.id).toBe('q1')
+    // 换新 id：旧 id 的 Idempotency-Key 可能已被 host 以旧 body 缓存。
+    expect(st.queue[0]?.id).not.toBe('q1')
     expect(st.queue[0]?.blocks.filter((b) => b.type === 'image')).toHaveLength(1)
     expect(transport.queueRemove).not.toHaveBeenCalled()
     expect(transport.prompt).not.toHaveBeenCalled()

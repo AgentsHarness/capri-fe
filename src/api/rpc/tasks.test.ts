@@ -23,6 +23,7 @@ describe('tasksRpc.killTask', () => {
       expect.objectContaining({
         body: JSON.stringify({ taskId: 't-1', sessionId: 's-1', source: 'teardown' }),
       }),
+      expect.objectContaining({ idempotencyKey: expect.any(String) }),
     )
     expect(res).toBe('killed')
   })
@@ -35,6 +36,7 @@ describe('tasksRpc.killTask', () => {
       expect.objectContaining({
         body: JSON.stringify({ taskId: 't-1', sessionId: 's-1' }),
       }),
+      expect.objectContaining({ idempotencyKey: expect.any(String) }),
     )
   })
 

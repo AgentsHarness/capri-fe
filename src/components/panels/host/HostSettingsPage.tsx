@@ -16,9 +16,9 @@ import {
 } from 'lucide-react'
 import { Spinner } from '../../ui/Spinner'
 import { transport } from '../../../api/client'
+import { newIdempotencyKey } from '../../../api/idempotency'
 import { settingsHostTarget } from '../../../lib/settingsHost'
 import { pushToast } from '../../../store/toast'
-
 interface HostConfig {
   bind?: string
   port?: number
@@ -241,7 +241,7 @@ export function HostSettingsPage() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(config),
-        })
+        }, { idempotencyKey: newIdempotencyKey() })
         .then((r) => r.json())
 
       if (!res.ok) {
@@ -274,7 +274,7 @@ export function HostSettingsPage() {
             hubUrl: config.hub_url,
             code: pairCode.trim(),
           }),
-        })
+        }, { idempotencyKey: newIdempotencyKey() })
         .then((r) => r.json())
 
       if (!res.ok) {
@@ -300,7 +300,7 @@ export function HostSettingsPage() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ hubUrl: config.hub_url }),
-        })
+        }, { idempotencyKey: newIdempotencyKey() })
         .then((r) => r.json())
 
       if (!res.ok) {
@@ -324,7 +324,7 @@ export function HostSettingsPage() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: '{}',
-        })
+        }, { idempotencyKey: newIdempotencyKey() })
         .then((r) => r.json())
 
       if (!res.ok) {

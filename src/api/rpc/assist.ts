@@ -1,5 +1,6 @@
 import type { TransportCore } from '../transport'
 import { unwrapExtResult, xaiCall } from './core'
+import { newIdempotencyKey } from '../idempotency'
 
 /** busy 期间的插话/辅助输入：/btw 小话、interject 插话、suggest 补全建议。 */
 export const assistRpc = {
@@ -11,8 +12,13 @@ export const assistRpc = {
     return unwrapExtResult(await xaiCall(this, '/api/btw', body))
   },
 
-  async interject(this: TransportCore, opts: { text: string; sessionId: string }): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/interject', opts))
+  async interject(this: TransportCore, opts: { text: string; sessionId: string; idempotencyKey?: string }): Promise<unknown> {
+    const { idempotencyKey, ...body } = opts
+    return unwrapExtResult(
+      await xaiCall(this, '/api/interject', body, {
+        idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
+      }),
+    )
   },
 
   async suggest(this: TransportCore, opts: {

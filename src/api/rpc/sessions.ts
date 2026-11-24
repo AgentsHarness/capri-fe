@@ -1,6 +1,7 @@
 import type { TransportCore } from '../transport'
 import type { SessionHistoryDetail, SessionHistoryPage, SessionHistoryProjected } from '../types'
 import { assertRpcOk, findArrayField, findObjectField, pickSummaryActivityAt, readRpcJson, requireRpcObject, unwrapExtResult, xaiCall } from './core'
+import { idempotentBody, newIdempotencyKey } from '../idempotency'
 import type {
   HostStatus,
   RewindMode,
@@ -135,12 +136,18 @@ export const sessionsRpc = {
     mcpServers?: unknown[]
     /** Permission-mode seeds (TUI's yoloMode/autoMode) → session/new `_meta`. */
     meta?: Record<string, unknown>
+    /**
+     * 幂等键。空状态发送时用 `promptId + ":session"`：同一次用户发送的
+     * 「建会话 + 发 prompt」共享一个操作身份，重试不会多建一个会话。
+     */
+    idempotencyKey?: string
   } = {}) {
+    const { idempotencyKey, ...body } = config
     const res = await this.fetch(this.url('/api/session'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(config),
-    })
+      body: JSON.stringify(body),
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'session failed')
     return data
@@ -237,6 +244,7 @@ export const sessionsRpc = {
     sessionId: string,
     cwd: string,
     meta?: Record<string, unknown>,
+    idempotencyKey?: string,
   ): Promise<{
     models?: unknown
     modes?: unknown
@@ -247,7 +255,7 @@ export const sessionsRpc = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId, cwd, ...(meta ? { meta } : {}) }),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await res.json()
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || `load session failed (${res.status})`)
@@ -370,7 +378,7 @@ export const sessionsRpc = {
     return typeof data.content === 'string' ? data.content : ''
   },
 
-  async forkSession(this: TransportCore, params: Record<string, unknown> = {}, sessionId?: string) {
+  async forkSession(this: TransportCore, params: Record<string, unknown> = {}, sessionId?: string, idempotencyKey?: string) {
     const res = await this.fetch(this.url('/api/session-fork'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -379,13 +387,13 @@ export const sessionsRpc = {
         // 可选：源会话（缺省 = host active 会话）。
         ...(sessionId ? { sessionId } : {}),
       }),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'fork failed')
     return data
   },
 
-  async renameSession(this: TransportCore, title: string, sessionId?: string) {
+  async renameSession(this: TransportCore, title: string, sessionId?: string, idempotencyKey?: string) {
     const res = await this.fetch(this.url('/api/session-rename'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -393,13 +401,13 @@ export const sessionsRpc = {
         title,
         ...(sessionId ? { sessionId } : {}),
       }),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'rename failed')
     return data
   },
 
-  async recap(this: TransportCore, auto = false, sessionId?: string) {
+  async recap(this: TransportCore, auto = false, sessionId?: string, idempotencyKey?: string) {
     const res = await this.fetch(this.url('/api/recap'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -407,18 +415,18 @@ export const sessionsRpc = {
         auto,
         ...(sessionId ? { sessionId } : {}),
       }),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'recap failed')
     return data
   },
 
-  async sessionDelete(this: TransportCore, sessionId: string, cwd: string) {
+  async sessionDelete(this: TransportCore, sessionId: string, cwd: string, idempotencyKey?: string) {
     const res = await this.fetch(this.url('/api/session-delete'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId, cwd }),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await res.json()
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || `session delete failed (${res.status})`)
@@ -426,12 +434,12 @@ export const sessionsRpc = {
     return data
   },
 
-  async compact(this: TransportCore, sessionId: string, note?: string) {
+  async compact(this: TransportCore, sessionId: string, note?: string, idempotencyKey?: string) {
     const res = await this.fetch(this.url('/api/compact'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId, ...(note ? { note } : {}) }),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'compact failed')
     return data
@@ -470,6 +478,7 @@ export const sessionsRpc = {
     sessionId: string,
     targetIndex: number,
     mode?: RewindMode,
+    idempotencyKey?: string,
   ): Promise<import('../types').RewindExecuteResult> {
     const res = await this.fetch(this.url('/api/rewind-execute'), {
       method: 'POST',
@@ -481,7 +490,7 @@ export const sessionsRpc = {
         // (TUI /rewind behavior).
         ...(mode ? { mode } : {}),
       }),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await res.json()
     if (!res.ok || data.ok === false) throw new Error(data.error || 'rewind failed')
     // The agent reports rewind failure inside `result.success` (TUI
@@ -542,12 +551,12 @@ export const sessionsRpc = {
     }
   },
 
-  async schedulerDelete(this: TransportCore, sessionId: string, taskId: string) {
+  async schedulerDelete(this: TransportCore, sessionId: string, taskId: string, idempotencyKey?: string) {
     const res = await this.fetch(this.url('/api/scheduler-delete'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId, taskId }),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await res.json()
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || 'scheduler delete failed')
@@ -595,16 +604,18 @@ export const sessionsRpc = {
     sessionId: string
     cwd: string
     meta?: Record<string, unknown>
+    /** 幂等键：同一次「恢复会话」重试复用。 */
+    idempotencyKey?: string
   }): Promise<{
     models?: unknown
     modes?: unknown
     configOptions?: unknown
     busy?: boolean
   }> {
-    const res = (await unwrapExtResult(await xaiCall(this, '/api/session-resume', opts))) as
-      | Record<string, unknown>
-      | null
-      | undefined
+    const { body, idempotencyKey } = idempotentBody(opts)
+    const res = (await unwrapExtResult(
+      await xaiCall(this, '/api/session-resume', body, { idempotencyKey }),
+    )) as Record<string, unknown> | null | undefined
     return {
       models: res?.models,
       modes: res?.modes,
@@ -613,45 +624,51 @@ export const sessionsRpc = {
     }
   },
 
-  async sessionClose(this: TransportCore, opts: { sessionId?: string } = {}): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/session-close', opts))
+  async sessionClose(this: TransportCore, opts: { sessionId?: string; idempotencyKey?: string } = {}): Promise<unknown> {
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return unwrapExtResult(await xaiCall(this, '/api/session-close', body, { idempotencyKey }))
   },
 
   async sessionImport(this: TransportCore, opts: {
     cwd: string
     state?: Record<string, unknown>
     updates?: unknown[]
+    /** 幂等键：同一次导入重试复用。 */
+    idempotencyKey?: string
   }): Promise<unknown> {
-    const body: Record<string, unknown> = { cwd: opts.cwd }
-    if (opts.state) body.state = opts.state
-    if (opts.updates && opts.updates.length > 0) body.updates = opts.updates
-    return unwrapExtResult(await xaiCall(this, '/api/session-import', body))
+    const { body, idempotencyKey } = idempotentBody(opts)
+    if (opts.updates && opts.updates.length === 0) delete body.updates
+    return unwrapExtResult(await xaiCall(this, '/api/session-import', body, { idempotencyKey }))
   },
 
-  async sessionRepair(this: TransportCore, opts: { dryRun?: boolean } = {}): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/session-repair', opts))
+  async sessionRepair(this: TransportCore, opts: { dryRun?: boolean; idempotencyKey?: string } = {}): Promise<unknown> {
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return unwrapExtResult(await xaiCall(this, '/api/session-repair', body, { idempotencyKey }))
   },
 
   async sessionRehydrate(this: TransportCore, opts: {
     sourceCwd: string
     repoRoot: string
     worktreePath?: string
+    /** 幂等键：同一次 rehydrate 重试复用。 */
+    idempotencyKey?: string
   }): Promise<unknown> {
-    const body: Record<string, unknown> = { sourceCwd: opts.sourceCwd, repoRoot: opts.repoRoot }
-    if (opts.worktreePath) body.worktreePath = opts.worktreePath
-    return unwrapExtResult(await xaiCall(this, '/api/session-rehydrate', body))
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return unwrapExtResult(await xaiCall(this, '/api/session-rehydrate', body, { idempotencyKey }))
   },
 
   async sessionLoadHistory(this: TransportCore, opts: { beforeId?: string } = {}): Promise<unknown> {
     return unwrapExtResult(await xaiCall(this, '/api/session-load-history', opts))
   },
 
-  async sessionUpdateMcpServers(this: TransportCore, opts: { mcpServers: unknown[] }): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/session-update-mcp-servers', opts))
+  async sessionUpdateMcpServers(this: TransportCore, opts: { mcpServers: unknown[]; idempotencyKey?: string }): Promise<unknown> {
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return unwrapExtResult(await xaiCall(this, '/api/session-update-mcp-servers', body, { idempotencyKey }))
   },
 
-  async sessionAddLocalWorkspace(this: TransportCore, opts: { meta?: Record<string, unknown> } = {}): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/session-add-local-workspace', opts))
+  async sessionAddLocalWorkspace(this: TransportCore, opts: { meta?: Record<string, unknown>; idempotencyKey?: string } = {}): Promise<unknown> {
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return unwrapExtResult(await xaiCall(this, '/api/session-add-local-workspace', body, { idempotencyKey }))
   },
 
   async sessionResolveWorktreeResume(this: TransportCore, opts: { cwd: string }): Promise<unknown> {
@@ -723,8 +740,9 @@ export const sessionsRpc = {
     return unwrapExtResult(await xaiCall(this, '/api/session/search', body))
   },
 
-  async sessionShare(this: TransportCore, opts: { sessionId?: string } = {}): Promise<unknown> {
-    return unwrapExtResult(await xaiCall(this, '/api/session/share', opts))
+  async sessionShare(this: TransportCore, opts: { sessionId?: string; idempotencyKey?: string } = {}): Promise<unknown> {
+    const { body, idempotencyKey } = idempotentBody(opts)
+    return unwrapExtResult(await xaiCall(this, '/api/session/share', body, { idempotencyKey }))
   },
 
   async sessionsListExt(this: TransportCore): Promise<unknown> {

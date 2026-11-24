@@ -1,5 +1,6 @@
 import type { TransportCore } from '../transport'
 import { assertRpcOk, readRpcJson } from './core'
+import { newIdempotencyKey } from '../idempotency'
 
 export type AgentRow = {
   name: string
@@ -58,12 +59,21 @@ async function getJson(core: TransportCore, path: string): Promise<Record<string
   return (data ?? {}) as Record<string, unknown>
 }
 
-async function postJson(core: TransportCore, path: string, body: Record<string, unknown>) {
-  const res = await core.fetch(core.url(path), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
+async function postJson(
+  core: TransportCore,
+  path: string,
+  body: Record<string, unknown>,
+  idempotencyKey?: string,
+) {
+  const res = await core.fetch(
+    core.url(path),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+    idempotencyKey ? { idempotencyKey } : undefined,
+  )
   const data = await readRpcJson(res)
   assertRpcOk(res, data, path + ' failed')
 }
@@ -77,11 +87,11 @@ export const agentsRpc = {
       configuredDefault: typeof data.configuredDefault === 'string' ? data.configuredDefault : '',
     }
   },
-  async agentsSetDefault(this: TransportCore, name: string) {
-    await postJson(this, '/api/agents/default', { name })
+  async agentsSetDefault(this: TransportCore, name: string, idempotencyKey?: string) {
+    await postJson(this, '/api/agents/default', { name }, idempotencyKey ?? newIdempotencyKey())
   },
-  async agentsToggle(this: TransportCore, name: string, enabled: boolean) {
-    await postJson(this, '/api/agents/toggle', { name, enabled })
+  async agentsToggle(this: TransportCore, name: string, enabled: boolean, idempotencyKey?: string) {
+    await postJson(this, '/api/agents/toggle', { name, enabled }, idempotencyKey ?? newIdempotencyKey())
   },
   async personasList(this: TransportCore, cwd?: string): Promise<PersonaRow[]> {
     const q = cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''
@@ -91,10 +101,11 @@ export const agentsRpc = {
   async personasCreate(
     this: TransportCore,
     body: { name: string; description: string; instructions: string; scope: 'user' | 'project'; cwd?: string },
+    idempotencyKey?: string,
   ) {
-    await postJson(this, '/api/personas', body)
+    await postJson(this, '/api/personas', body, idempotencyKey ?? newIdempotencyKey())
   },
-  async personasDelete(this: TransportCore, path: string) {
-    await postJson(this, '/api/personas/delete', { path })
+  async personasDelete(this: TransportCore, path: string, idempotencyKey?: string) {
+    await postJson(this, '/api/personas/delete', { path }, idempotencyKey ?? newIdempotencyKey())
   },
 }

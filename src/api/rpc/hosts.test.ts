@@ -103,6 +103,26 @@ describe('hubInfo', () => {
   })
 })
 
+describe('hubStats', () => {
+  it('GET /api/stats → 解析 relay 段，且走 hub origin', async () => {
+    const fetchMock = vi.fn(() =>
+      json({
+        ok: true,
+        relay: { requests: 12, avgMs: 46, p95Ms: 180, errors: 1, inflight: 0 },
+      }),
+    )
+    const stats = await hostsRpc.hubStats.call(core('https://hub.example', fetchMock))
+    expect(stats.relay?.p95Ms).toBe(180)
+    expect(fetchMock).toHaveBeenCalledWith('https://hub.example/api/stats')
+  })
+
+  it('老 hub 没有 relay 字段 → 返回空对象', async () => {
+    const fetchMock = vi.fn(() => json({ ok: true, hosts: [] }))
+    const stats = await hostsRpc.hubStats.call(core('https://hub.example', fetchMock))
+    expect(stats).toEqual({})
+  })
+})
+
 describe('prefs RPC', () => {
   it('putPrefs 回包没有 prefs 文档 → 返回 undefined，而不是伪造空文档', async () => {
     const fetchMock = vi.fn(() => json({ ok: true, version: 7 }))

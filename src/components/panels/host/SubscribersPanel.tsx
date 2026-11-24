@@ -3,8 +3,8 @@ import { Eye, RefreshCw, X } from 'lucide-react'
 import { Spinner } from '../../ui/Spinner'
 import { transport } from '../../../api/client'
 import { useChatStore } from '../../../store/chat'
-import type { SubscriberRow } from '../../../api/types'
-import { describeUserAgent, fmtConnectedFor } from '../../../lib/subscriberFormat'
+import type { HubRelayStats, SubscriberRow } from '../../../api/types'
+import { describeUserAgent, fmtConnectedFor, shortenIP } from '../../../lib/subscriberFormat'
 
 /**
  * 在线订阅者详情（顶栏那个数字点开的面板）。
@@ -34,6 +34,7 @@ export function SubscribersPanel({ onClose }: { onClose: () => void }) {
   const workspaces = useChatStore((s) => s.workspaces)
   const hosts = useChatStore((s) => s.hosts)
   const [rows, setRows] = useState<SubscriberRow[] | null>(null)
+  const [relayStats, setRelayStats] = useState<HubRelayStats | null>(null)
   const [error, setError] = useState<string>()
   const [loading, setLoading] = useState(false)
 
@@ -41,7 +42,12 @@ export function SubscribersPanel({ onClose }: { onClose: () => void }) {
     if (mode !== 'hub') return
     setLoading(true)
     try {
-      setRows(await transport.listSubscribers())
+      const [nextRows, hubStats] = await Promise.all([
+        transport.listSubscribers(),
+        transport.hubStats().catch(() => null),
+      ])
+      setRows(nextRows)
+      setRelayStats(hubStats?.relay ?? null)
       setError(undefined)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -150,6 +156,33 @@ export function SubscribersPanel({ onClose }: { onClose: () => void }) {
           </button>
         </header>
 
+        {relayStats && (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-gn-prompt-border/30 px-3 py-1.5 text-[10.5px] text-gn-muted sm:px-4">
+            <span className="font-mono text-[10px] tracking-wide text-gn-gutter">RELAY</span>
+            <span>
+              请求 <span className="font-mono text-gn-fg2">{relayStats.requests ?? 0}</span>
+            </span>
+            <span>
+              平均 <span className="font-mono text-gn-fg2">{relayStats.avgMs ?? 0}ms</span>
+            </span>
+            <span>
+              P50 <span className="font-mono text-gn-fg2">{relayStats.p50Ms ?? 0}ms</span>
+            </span>
+            <span>
+              P95 <span className="font-mono text-gn-fg2">{relayStats.p95Ms ?? 0}ms</span>
+            </span>
+            <span>
+              P99 <span className="font-mono text-gn-fg2">{relayStats.p99Ms ?? 0}ms</span>
+            </span>
+            <span className={relayStats.errors ? 'text-gn-red' : undefined}>
+              错误 <span className="font-mono">{relayStats.errors ?? 0}</span>
+            </span>
+            <span>
+              进行中 <span className="font-mono text-gn-fg2">{relayStats.inflight ?? 0}</span>
+            </span>
+          </div>
+        )}
+
         <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2 sm:px-4">
           {error && <div className="py-2 text-[11.5px] text-gn-red">{error}</div>}
           {!error && rows == null && (
@@ -212,8 +245,8 @@ export function SubscribersPanel({ onClose }: { onClose: () => void }) {
                             </span>
                           )}
                         </td>
-                        <td className="whitespace-nowrap py-1.5 pr-2 font-mono text-[10.5px]" title={row.ip}>
-                          {row.ip || '—'}
+                        <td className="max-w-[10rem] py-1.5 pr-2 font-mono text-[10.5px]" title={row.ip}>
+                          <span className="block truncate">{shortenIP(row.ip)}</span>
                         </td>
                         <td className="max-w-[12rem] py-1.5 pr-2" title={row.userAgent}>
                           <span className="block truncate">{describeUserAgent(row.userAgent)}</span>

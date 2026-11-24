@@ -64,6 +64,27 @@ describe('队列基础操作', () => {
     })
   })
 
+  it('enqueue 指定 promptId 时解除同 id 的 drain 登记（重发行不被广播滤掉）', () => {
+    usePromptQueue.setState({
+      sessionId: 's1',
+      drainedIds: new Set(['pid-1']),
+      deletedRows: new Map([['pid-1', row('pid-1', 'old')]]),
+    })
+    const blocks: ContentBlock[] = [{ type: 'text', text: 'again' }]
+    usePromptQueue.getState().enqueue({ text: 'again', blocks }, 's1', {
+      promptId: 'pid-1',
+    })
+
+    const st = usePromptQueue.getState()
+    expect(st.queue[0]?.id).toBe('pid-1')
+    expect(st.drainedIds.has('pid-1')).toBe(false)
+    expect(st.deletedRows.has('pid-1')).toBe(false)
+    expect(transport.prompt).toHaveBeenCalledWith(blocks, {
+      sessionId: 's1',
+      promptId: 'pid-1',
+    })
+  })
+
   it('removeAt 删除指定行并 drain（stale 广播不得复活）', () => {
     usePromptQueue.setState({ queue: [row('p1', 'a'), row('p2', 'b')], sessionId: 's' })
     usePromptQueue.getState().removeAt('p1')
@@ -137,6 +158,75 @@ describe('行编辑（TUI queue_edit 对齐）', () => {
     q.setEditDraft('   ')
     q.saveEdit()
     expect(usePromptQueue.getState().queue[0]?.text).toBe('keep')
+  })
+
+  it('degraded 行编辑正文 → 换新 id（旧 key 可能已被 host 以旧 body 缓存）', () => {
+    usePromptQueue.setState({
+      queue: [row('old-id', 'old text', { degraded: true, errorText: 'net' })],
+      sessionId: 's1',
+    })
+    const q = usePromptQueue.getState()
+    q.startEdit(0)
+    q.setEditDraft('new text')
+    q.saveEdit()
+
+    const st = usePromptQueue.getState()
+    const edited = st.queue[0]
+    expect(edited?.id).not.toBe('old-id')
+    expect(edited).toMatchObject({ text: 'new text', degraded: true, errorText: 'net' })
+    expect(edited?.blocks[0]).toEqual({ type: 'text', text: 'new text' })
+    // agent 从没见过旧 id：不发 queueEdit；编辑锁按旧 id 释放。
+    expect(transport.queueEdit).not.toHaveBeenCalled()
+    expect(transport.queueReleaseEdit).toHaveBeenCalledWith({ id: 'old-id' }, 's1')
+  })
+
+  it('degraded 行只改附图也换新 id', () => {
+    const img = { type: 'image', data: 'AAAA', mimeType: 'image/png' } as ContentBlock
+    usePromptQueue.setState({
+      queue: [
+        row('old-id', 'pic', {
+          degraded: true,
+          blocks: [{ type: 'text', text: 'pic' }, img],
+        }),
+      ],
+      sessionId: 's1',
+    })
+    const q = usePromptQueue.getState()
+    q.startEdit(0)
+    q.setEditImages([])
+    q.saveEdit()
+
+    const edited = usePromptQueue.getState().queue[0]
+    expect(edited?.id).not.toBe('old-id')
+    expect(edited?.blocks).toEqual([{ type: 'text', text: 'pic' }])
+  })
+
+  it('degraded 行内容没变则不换 id', () => {
+    usePromptQueue.setState({
+      queue: [row('same-id', 'keep', { degraded: true })],
+      sessionId: 's1',
+    })
+    const q = usePromptQueue.getState()
+    q.startEdit(0)
+    q.saveEdit()
+
+    expect(usePromptQueue.getState().queue[0]?.id).toBe('same-id')
+    expect(transport.queueEdit).not.toHaveBeenCalled()
+  })
+
+  it('换 id 时清掉旧 id 的删除登记（行还在，不该被当成已删）', () => {
+    const old = row('old-id', 'old', { degraded: true })
+    usePromptQueue.setState({
+      queue: [row('old-id', 'old', { degraded: true })],
+      sessionId: 's1',
+      deletedRows: new Map([['old-id', old]]),
+    })
+    const q = usePromptQueue.getState()
+    q.startEdit(0)
+    q.setEditDraft('new')
+    q.saveEdit()
+
+    expect(usePromptQueue.getState().deletedRows.has('old-id')).toBe(false)
   })
 
   it('cancelEdit 丢弃草稿并释放编辑锁', () => {

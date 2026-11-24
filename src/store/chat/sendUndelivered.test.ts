@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { transport } from '../../api/client'
+import { usePromptQueue } from '../promptQueue'
 import { useChatStore } from '../chat'
 
 vi.mock('../../api/client', async () => {
@@ -31,6 +32,17 @@ vi.mock('../toast', () => ({ pushToast: vi.fn(), dismissToast: vi.fn() }))
 describe('host 离线时发出的消息可重试', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    usePromptQueue.setState({
+      queues: {},
+      queue: [],
+      sending: false,
+      drainedIds: new Set(),
+      deletedRows: new Map(),
+      editIndex: null,
+      editDraft: '',
+      editImages: [],
+      sessionId: undefined,
+    })
     useChatStore.setState({
       sessionId: 's1',
       cwd: '/repo',
@@ -86,7 +98,10 @@ describe('host 离线时发出的消息可重试', () => {
     await vi.waitFor(() => {
       expect(vi.mocked(transport.prompt)).toHaveBeenCalledTimes(2)
     })
-    // 重发沿用同一条 promptId（host 侧同号去重）。
+    // 两次发送用同一条 promptId（prompt() 把它原样作为 Idempotency-Key）。
+    expect(vi.mocked(transport.prompt).mock.calls[0]?.[1]).toMatchObject({
+      promptId,
+    })
     expect(vi.mocked(transport.prompt).mock.calls[1]?.[1]).toMatchObject({
       promptId,
     })
@@ -135,5 +150,28 @@ describe('host 离线时发出的消息可重试', () => {
       state.entries.some((e) => e.kind === 'user' && e.undelivered),
     ).toBe(false)
     expect(state.entries.some((e) => e.kind === 'error')).toBe(true)
+  })
+
+  it('忙时重发：队列行沿用原 promptId（幂等键不换）', async () => {
+    const { AgentTurnError } = await import('../../api/transport')
+    vi.mocked(transport.prompt).mockRejectedValueOnce(
+      new AgentTurnError('unreachable', 'host 不在线', 503),
+    )
+    await useChatStore.getState().send('忙时重发')
+
+    const promptId = useChatStore.getState().currentPromptId
+    expect(promptId).toBeTruthy()
+
+    // 原回合在 host 侧仍在跑：重发走忙时入队。
+    useChatStore.setState({ conn: 'busy', turnStartedAt: Date.now() })
+    vi.mocked(transport.prompt).mockResolvedValue(undefined as never)
+    expect(useChatStore.getState().resendUndeliveredPrompt()).toBe(true)
+
+    const q = usePromptQueue.getState().queue
+    expect(q).toHaveLength(1)
+    expect(q[0]?.id).toBe(promptId)
+    expect(vi.mocked(transport.prompt).mock.calls[1]?.[1]).toMatchObject({
+      promptId,
+    })
   })
 })

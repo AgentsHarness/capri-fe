@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { describeUserAgent, fmtConnectedFor } from './subscriberFormat'
+import { describeUserAgent, fmtConnectedFor, shortenIP } from './subscriberFormat'
 
 /**
  * 订阅者面板的展示换算。这两个函数决定面板上「设备」和「已连接」两列
@@ -49,5 +49,13 @@ describe('fmtConnectedFor', () => {
   it('未来时间戳（时钟偏差）给占位而不是负数', () => {
     expect(fmtConnectedFor(-5)).toBe('—')
     expect(fmtConnectedFor(Number.NaN)).toBe('—')
+  })
+})
+
+describe('shortenIP', () => {
+  it('短地址原样显示，长 IPv6 保留头尾', () => {
+    expect(shortenIP(undefined)).toBe('—')
+    expect(shortenIP('203.0.113.9')).toBe('203.0.113.9')
+    expect(shortenIP('2001:0db8:85a3:0000:0000:8a2e:0370:7334')).toBe('2001:0db8…0370:7334')
   })
 })

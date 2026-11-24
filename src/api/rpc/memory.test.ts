@@ -137,7 +137,7 @@ describe('memoryRpc.memoryDream', () => {
   it('关掉传输硬超时（timeoutMs: 0）——整合是模型工作，pager 侧也无截止', async () => {
     const core = coreWithBody(hostBody({ disposition: 'completed' }))
     await memoryRpc.memoryDream.call(core, 's1')
-    expect(core.fetch.mock.calls[0][2]).toEqual({ timeoutMs: 0 })
+    expect(core.fetch.mock.calls[0][2]).toMatchObject({ timeoutMs: 0, idempotencyKey: expect.any(String) })
   })
 })
 

@@ -222,6 +222,13 @@ export interface TransportCore {
   fetch(
     path: string,
     init?: RequestInit,
-    opts?: { timeoutMs?: number; signal?: AbortSignal; hubLevel?: boolean; forceRelay?: boolean },
+    opts?: {
+      timeoutMs?: number
+      signal?: AbortSignal
+      hubLevel?: boolean
+      forceRelay?: boolean
+      /** 写操作幂等键（v3 relay）；只读请求不传。 */
+      idempotencyKey?: string
+    },
   ): Promise<Response>
 }

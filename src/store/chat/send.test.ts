@@ -6,23 +6,29 @@ import { adoptTurn } from './turnLifecycle'
 import { useChatStore } from '../chat'
 import { pushToast } from '../toast'
 
-vi.mock('../../api/client', () => ({
-  transport: {
-    prompt: vi.fn(),
-    newSession: vi.fn(),
-    gitInfo: vi.fn(),
-    sessionResume: vi.fn(),
-    sessionStats: vi.fn(),
-    sessionRunningTasks: vi.fn(),
-    loadSessionHistory: vi.fn(),
-    goalStatus: vi.fn().mockResolvedValue({ goal: null }),
-    queueStatus: vi.fn(),
-    status: vi.fn(),
-    onEvent: vi.fn(() => () => {}),
-    getConnectionMode: vi.fn(() => 'local'),
-    lastLiveEventAt: vi.fn(() => undefined),
-  },
-}))
+vi.mock('../../api/client', async () => {
+  const actual = await vi.importActual<typeof import('../../api/transport')>(
+    '../../api/transport',
+  )
+  return {
+    AgentTurnError: actual.AgentTurnError,
+    transport: {
+      prompt: vi.fn(),
+      newSession: vi.fn(),
+      gitInfo: vi.fn(),
+      sessionResume: vi.fn(),
+      sessionStats: vi.fn(),
+      sessionRunningTasks: vi.fn(),
+      loadSessionHistory: vi.fn(),
+      goalStatus: vi.fn().mockResolvedValue({ goal: null }),
+      queueStatus: vi.fn(),
+      status: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      getConnectionMode: vi.fn(() => 'local'),
+      lastLiveEventAt: vi.fn(() => undefined),
+    },
+  }
+})
 
 vi.mock('../toast', () => ({
   pushToast: vi.fn(),
@@ -58,6 +64,106 @@ describe('sendPrompt 切换会话守卫', () => {
 
     expect(pushToast).not.toHaveBeenCalled()
     expect(transport.prompt).toHaveBeenCalled()
+  })
+})
+
+describe('无会话发送：建会话与 prompt 复用同一次操作身份', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useChatStore.setState({
+      sessionId: undefined,
+      cwd: undefined,
+      emptyCwd: undefined,
+      emptyWorktree: false,
+      emptyWorktreeBusy: false,
+      entries: [],
+      pending: [],
+      historyLoading: false,
+      conn: 'ready',
+      turnStartedAt: undefined,
+      pendingOptimisticUserId: undefined,
+      openAssistantId: undefined,
+      openThoughtId: undefined,
+    })
+    vi.mocked(transport.newSession).mockResolvedValue({ sessionId: 'sess-new' } as never)
+    vi.mocked(transport.prompt).mockResolvedValue(undefined as never)
+  })
+
+  it('newSession 用 promptId:session，prompt 用同一个 promptId', async () => {
+    await useChatStore.getState().send('第一条消息')
+
+    const nsOpts = vi.mocked(transport.newSession).mock.calls[0]?.[0] as
+      | { idempotencyKey?: string }
+      | undefined
+    const promptOpts = vi.mocked(transport.prompt).mock.calls[0]?.[1] as
+      | { promptId?: string; sessionId?: string }
+      | undefined
+
+    expect(promptOpts?.promptId).toEqual(expect.any(String))
+    expect(promptOpts?.sessionId).toBe('sess-new')
+    expect(nsOpts?.idempotencyKey).toBe(`${promptOpts?.promptId}:session`)
+  })
+
+  it('重发沿用同一个 promptId（以及同一个 newSession 键）', async () => {
+    const { AgentTurnError } = await import('../../api/transport')
+    vi.mocked(transport.prompt).mockRejectedValueOnce(
+      new AgentTurnError('unreachable', 'host 离线', 503),
+    )
+    await useChatStore.getState().send('会失败的一条')
+
+    const promptId = useChatStore.getState().currentPromptId
+    expect(promptId).toEqual(expect.any(String))
+    expect(useChatStore.getState().resendUndeliveredPrompt()).toBe(true)
+    await vi.waitFor(() => {
+      expect(vi.mocked(transport.prompt)).toHaveBeenCalledTimes(2)
+    })
+
+    expect(vi.mocked(transport.prompt).mock.calls[1]?.[1]).toMatchObject({ promptId })
+    expect(vi.mocked(transport.newSession).mock.calls[0]?.[0]).toMatchObject({
+      idempotencyKey: `${promptId}:session`,
+    })
+  })
+})
+
+describe('忙时入队复用调用方 promptId', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    usePromptQueue.setState({
+      queues: {},
+      queue: [],
+      sending: false,
+      drainedIds: new Set(),
+      deletedRows: new Map(),
+      editIndex: null,
+      editDraft: '',
+      editImages: [],
+      sessionId: undefined,
+    })
+    useChatStore.setState({
+      sessionId: 'sess-busy',
+      cwd: '/workspace',
+      conn: 'busy',
+      turnStartedAt: Date.now(),
+      historyLoading: false,
+      entries: [],
+      pending: [],
+      pendingOptimisticUserId: undefined,
+      openAssistantId: undefined,
+      openThoughtId: undefined,
+    })
+    vi.mocked(transport.prompt).mockResolvedValue(undefined as never)
+  })
+
+  it('重发送的 promptId 成为队列行 id 与 wire promptId（不换幂等键）', async () => {
+    await useChatStore.getState().send('忙时重发', undefined, { promptId: 'pid-resend' })
+
+    const q = usePromptQueue.getState().queue
+    expect(q).toHaveLength(1)
+    expect(q[0]?.id).toBe('pid-resend')
+    expect(transport.prompt).toHaveBeenCalledWith(
+      [{ type: 'text', text: '忙时重发' }],
+      { sessionId: 'sess-busy', promptId: 'pid-resend' },
+    )
   })
 })
 

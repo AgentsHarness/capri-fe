@@ -1,5 +1,6 @@
 import type { TransportCore } from '../transport'
 import { assertRpcOk, findArrayField, readRpcJson } from './core'
+import { newIdempotencyKey } from '../idempotency'
 
 /** 后台任务 / subagent 控制：取消、终止、查询输出。 */
 
@@ -13,7 +14,7 @@ import { assertRpcOk, findArrayField, readRpcJson } from './core'
 export type TaskKillSource = 'clientUi' | 'teardown'
 
 export const tasksRpc = {
-  async cancelSubagent(this: TransportCore, subagentId: string, sessionId?: string) {
+  async cancelSubagent(this: TransportCore, subagentId: string, sessionId?: string, idempotencyKey?: string) {
     const res = await this.fetch(this.url('/api/subagent-cancel'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -21,7 +22,7 @@ export const tasksRpc = {
         subagentId,
         ...(sessionId ? { sessionId } : {}),
       }),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await readRpcJson(res)
     assertRpcOk(res, data, 'subagent cancel failed')
     return data
@@ -31,18 +32,19 @@ export const tasksRpc = {
     this: TransportCore,
     agentAddress: string,
     text: string,
-    opts: { queue?: boolean; sessionId?: string } = {}
+    opts: { queue?: boolean; sessionId?: string; idempotencyKey?: string } = {}
   ) {
+    const { idempotencyKey, ...rest } = opts
     const res = await this.fetch(this.url('/api/subagent/message'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         agentAddress,
         text,
-        queue: opts.queue ?? false,
-        ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
+        queue: rest.queue ?? false,
+        ...(rest.sessionId ? { sessionId: rest.sessionId } : {}),
       }),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await readRpcJson(res)
     assertRpcOk(res, data, 'subagent message failed')
     return data
@@ -62,6 +64,7 @@ export const tasksRpc = {
     taskId: string,
     sessionId?: string,
     source?: TaskKillSource,
+    idempotencyKey?: string,
   ): Promise<'killed' | 'already_exited' | 'not_found' | 'unknown'> {
     const res = await this.fetch(this.url('/api/task-kill'), {
       method: 'POST',
@@ -71,7 +74,7 @@ export const tasksRpc = {
         ...(sessionId ? { sessionId } : {}),
         ...(source ? { source } : {}),
       }),
-    })
+    }, { idempotencyKey: idempotencyKey ?? newIdempotencyKey() })
     const data = await readRpcJson(res)
     assertRpcOk(res, data, 'task kill failed')
     return parseKillOutcome(data)

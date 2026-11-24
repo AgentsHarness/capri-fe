@@ -97,7 +97,7 @@ export type Transport = {
   apiFetch(
     path: string,
     init?: RequestInit,
-    opts?: { timeoutMs?: number; signal?: AbortSignal },
+    opts?: { timeoutMs?: number; signal?: AbortSignal; idempotencyKey?: string },
   ): Promise<Response>
   connect(): void
   disconnect(): void

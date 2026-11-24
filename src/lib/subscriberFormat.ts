@@ -40,6 +40,19 @@ export function describeUserAgent(ua?: string): string {
   return ua.length > 40 ? `${ua.slice(0, 40)}…` : ua
 }
 
+/** 地址列：长 IPv6 只显示头尾，完整值放 title。 */
+export function shortenIP(ip?: string): string {
+  if (!ip) return '—'
+  if (ip.length <= 32) return ip
+  if (ip.includes(':')) {
+    const parts = ip.split(':')
+    if (parts.length > 4) {
+      return `${parts.slice(0, 2).join(':')}…${parts.slice(-2).join(':')}`
+    }
+  }
+  return `${ip.slice(0, 16)}…${ip.slice(-10)}`
+}
+
 /** 连接时长：<1 分钟 / N 分钟 / N 小时 M 分。 */
 export function fmtConnectedFor(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '—'

@@ -8,6 +8,7 @@ const { transportMock } = vi.hoisted(() => ({
   transportMock: {
     getConnectionMode: vi.fn(() => 'hub'),
     listSubscribers: vi.fn(),
+    hubStats: vi.fn(async () => ({}) as unknown),
     // store 模块加载时会注册若干模块级订阅，传输面必须存在。
     onEvent: vi.fn(() => () => {}),
   },
@@ -29,6 +30,19 @@ const row = (over: Partial<SubscriberRow> = {}): SubscriberRow => ({
 beforeEach(() => {
   vi.clearAllMocks()
   vi.useRealTimers()
+  transportMock.hubStats.mockResolvedValue({
+    relay: {
+      requests: 12,
+      completed: 11,
+      errors: 1,
+      inflight: 0,
+      avgMs: 46,
+      maxMs: 900,
+      p50Ms: 31,
+      p95Ms: 180,
+      p99Ms: 500,
+    },
+  })
   useChatStore.setState({
     mode: 'hub',
     feSubscribers: 2,
@@ -72,6 +86,18 @@ describe('SubscribersPanel', () => {
     expect(screen.getByText('5 分钟')).toBeInTheDocument()
     expect(screen.getByText('2 小时')).toBeInTheDocument()
     expect(screen.getByText('2 个连接')).toBeInTheDocument()
+    // relay 统计来自 /api/stats；面板顶部要能看到延迟摘要。
+    expect(screen.getByText('RELAY')).toBeInTheDocument()
+    expect(screen.getByText('180ms')).toBeInTheDocument()
+  })
+
+  it('长 IPv6 地址截断显示，title 保留完整值', async () => {
+    const ip = '2001:0db8:85a3:0000:0000:8a2e:0370:7334'
+    transportMock.listSubscribers.mockResolvedValue([row({ ip })])
+    render(<SubscribersPanel onClose={() => {}} />)
+
+    expect(await screen.findByText('2001:0db8…0370:7334')).toBeInTheDocument()
+    expect(screen.getByTitle(ip)).toBeInTheDocument()
   })
 
   it('拉取失败：显示原因，数字仍留在标题', async () => {

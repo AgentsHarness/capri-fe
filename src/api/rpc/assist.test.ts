@@ -12,9 +12,11 @@ describe('assistRpc.interject', () => {
     for (const sessionId of ['session-A', 'session-B']) {
       const opts = { text: `only ${sessionId}`, sessionId }
       expect(await assistRpc.interject.call(core, opts)).toEqual({ status: 'queued' })
-      expect(fetch).toHaveBeenLastCalledWith('/api/interject', expect.objectContaining({
-        body: JSON.stringify(opts),
-      }))
+      expect(fetch).toHaveBeenLastCalledWith(
+        '/api/interject',
+        expect.objectContaining({ body: JSON.stringify(opts) }),
+        expect.objectContaining({ idempotencyKey: expect.any(String) }),
+      )
     }
   })
 })

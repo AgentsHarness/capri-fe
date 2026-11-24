@@ -31,6 +31,7 @@ describe('sessionsRpc.rewindExecute', () => {
       expect.objectContaining({
         body: JSON.stringify({ sessionId: 's1', targetIndex: 2, mode: 'all' }),
       }),
+      expect.objectContaining({ idempotencyKey: expect.any(String) }),
     )
     expect(res.targetPromptIndex).toBe(2)
     expect(res.promptText).toBe('回退点 prompt')
@@ -57,6 +58,19 @@ describe('sessionsRpc.rewindExecute', () => {
     await expect(sessionsRpc.rewindExecute.call(t, 's1', 9)).rejects.toThrow(
       'Cannot rewind to prompt #9',
     )
+  })
+})
+
+describe('sessionsRpc.newSession', () => {
+  it('idempotencyKey 进 fetch opts，且不混进请求体', async () => {
+    const t = rpcThis({ ok: true, sessionId: 's1' })
+    await sessionsRpc.newSession.call(t, { cwd: '/w', idempotencyKey: 'pid-1:session' })
+
+    const calls = vi.mocked(t.fetch).mock.calls
+    expect(calls[0]?.[2]).toMatchObject({
+      idempotencyKey: 'pid-1:session',
+    })
+    expect(JSON.parse(String(calls[0]?.[1]?.body))).toEqual({ cwd: '/w' })
   })
 })
 
