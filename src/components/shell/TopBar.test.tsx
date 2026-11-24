@@ -534,9 +534,12 @@ describe('TopBar', () => {
   it('移动端历史下拉：搜索按钮展开搜索框，命中接管列表，收起后归位', async () => {
     render(<TopBar />)
     fireEvent.click(screen.getByTitle('加载历史会话'))
-    await vi.waitFor(() => {
-      expect(screen.getByText('没有历史会话')).not.toBeNull()
-    })
+    await vi.waitFor(
+      () => {
+        expect(screen.getByText('没有历史会话')).not.toBeNull()
+      },
+      { interval: 5 },
+    )
     // 下拉头部有搜索按钮（与桌面侧边栏同款，移动端带文字大热区）。
     const searchBtn = screen.getByRole('button', { name: '搜索历史会话' })
     expect(searchBtn.textContent).toContain('搜索')
@@ -545,17 +548,23 @@ describe('TopBar', () => {
     const input = screen.getByPlaceholderText('全文搜索历史会话…')
     // 查询生效 → 分组列表让位给命中列表（空结果文案来自搜索框）。
     fireEvent.change(input, { target: { value: 'foo' } })
-    await vi.waitFor(() => {
-      expect(screen.queryByText('没有历史会话')).toBeNull()
-      expect(screen.getByText('没有匹配的会话')).not.toBeNull()
-    })
+    await vi.waitFor(
+      () => {
+        expect(screen.queryByText('没有历史会话')).toBeNull()
+        expect(screen.getByText('没有匹配的会话')).not.toBeNull()
+      },
+      { interval: 5 },
+    )
     // 收起下拉后重新打开：搜索归位为收起态（无输入框）。
     fireEvent.click(screen.getByRole('button', { name: 'close' }))
     fireEvent.click(screen.getByTitle('加载历史会话'))
     expect(screen.queryByPlaceholderText('全文搜索历史会话…')).toBeNull()
-    await vi.waitFor(() => {
-      expect(screen.getByText('没有历史会话')).not.toBeNull()
-    })
+    await vi.waitFor(
+      () => {
+        expect(screen.getByText('没有历史会话')).not.toBeNull()
+      },
+      { interval: 5 },
+    )
   })
 
   it('窄屏 ⋮ 菜单按视口夹取，不跑到屏幕左侧外', async () => {

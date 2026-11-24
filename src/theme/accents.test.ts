@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import { FINISH_FLASH_MS } from './wave'
 import { Accents, resolveAccent, resolveBullet, type AccentResolveOpts } from './accents'

@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatState, SetState } from '../types'
 import type { GuestIdentity } from '../../../api/types'

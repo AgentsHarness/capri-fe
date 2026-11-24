@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import { Glyphs, toolHeader } from './glyphs'
 import { SPINNER_FRAMES, SPINNER_INTERVAL_MS, MONITOR_PULSE_FRAMES, MONITOR_PULSE_INTERVAL_MS } from './glyphs'

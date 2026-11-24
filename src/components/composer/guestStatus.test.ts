@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import { guestWaitingLabel, guestWaitingSince } from './guestStatus'
 import type { GuestSessionState } from '../../api/types'

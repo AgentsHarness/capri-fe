@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import { envelopeTotalTokens, reorderLateAgentEvents, replayUpdates } from './envelopeReplay'
 import { historyReplayActive } from './globals'

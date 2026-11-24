@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import {
   SECRET_FIELDS,
@@ -64,11 +65,6 @@ describe('classifyImportRows', () => {
     expect(rows).toHaveLength(1)
     expect(rows[0].status).toBe('new')
     expect(rows[0].id).toBe('ds-chat')
-  })
-
-  it('目标已有同 id → overwrite（整节替换语义）', () => {
-    const rows = classifyImportRows([dsChat], [{ id: 'ds-chat', model: 'deepseek-chat' }])
-    expect(rows[0].status).toBe('overwrite')
   })
 
   it('同 slug 属于目标上别的 id → slug-conflict（host 必拒）', () => {

@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import { SILENT_HOST_EVENT_TYPES, SESSION_UPDATE_TAGS, TYPED_CARRIER_TAGS } from './kinds'
 

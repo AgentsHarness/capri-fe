@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { AcpEvent, ScrollEntry, ToolCall } from '../../../api/types'
 import type { ChatState, SetState } from '../types'

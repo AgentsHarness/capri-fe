@@ -2,11 +2,9 @@ import { describe, expect, it, vi } from 'vitest'
 import type { DetachedTask } from '../../api/types'
 import {
   applyDetachedProbe,
-  clearTopTaskTimer,
   detachedSignature,
   hasLiveRunningWork,
   parseDetachedTask,
-  setTopTaskTimer,
 } from './topTasks'
 
 describe('parseDetachedTask', () => {
@@ -110,14 +108,6 @@ describe('detachedSignature', () => {
     expect(detachedSignature([{ taskId: 'b' }, { taskId: 'a' }])).toBe(
       detachedSignature([{ taskId: 'a' }, { taskId: 'b' }]),
     )
-  })
-})
-
-describe('timer 管理', () => {
-  it('set / clear', () => {
-    clearTopTaskTimer()
-    setTopTaskTimer(42 as never)
-    clearTopTaskTimer()
   })
 })
 

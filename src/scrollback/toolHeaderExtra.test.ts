@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import type { ToolCall } from '../api/types'
 import { discoveredToolAction, extractToolDetail } from './toolDetail'

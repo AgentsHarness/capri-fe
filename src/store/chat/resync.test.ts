@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it, vi } from 'vitest'
 import { handleResyncRebuild } from './resync'
 import type { ChatState } from './types'

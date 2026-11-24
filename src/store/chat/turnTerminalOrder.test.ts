@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import type { ScrollEntry } from '../../api/types'
 import { useChatStore } from '../chat'

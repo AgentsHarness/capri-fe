@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import { useChatStore } from './store'
 import { atTokenAt } from '../../lib/atToken'

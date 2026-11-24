@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import { HOST_EVENT_TRAITS, SILENT_HOST_TYPES } from '../../../api/types/events.generated'
 import { SILENT_HOST_EVENT_TYPES } from './kinds'

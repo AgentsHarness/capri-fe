@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import { sealThought, sealThoughtVisual } from './stream'
 import type { ChatState } from './types'

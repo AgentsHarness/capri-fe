@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { hostActions, probeHostHeartbeat, resendUndeliveredPrompt, HOST_HEARTBEAT_STALE_MS } from './hosts'
 import { handleConnEvent } from '../events/conn'

@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetSessionState } from './reset'
 import { runtime, clearHistoryWindowBuffer } from './globals'

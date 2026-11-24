@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { beforeEach, describe, expect, it } from 'vitest'
 import { useChatStore } from '../../store/chat'
 import { replayUpdates, applyEntryMsgSeq, sortEntriesByMsgSeq } from '../../store/chat/history'

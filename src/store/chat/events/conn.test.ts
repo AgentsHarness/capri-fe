@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it, vi } from 'vitest'
 import { handleConnEvent } from './conn'
 import type { AcpEvent, ScrollEntry } from '../../../api/types'

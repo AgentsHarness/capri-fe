@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import { preambleDescLines, taskViewToEntry } from './bgTaskView'
 import type { ViewerTask } from '../store/chat/typesPublic'

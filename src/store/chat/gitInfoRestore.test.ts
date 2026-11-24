@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { transport } from '../../api/client'
 import { useChatStore } from '../chat'
@@ -102,9 +103,6 @@ describe('会话切换后恢复状态栏 git 分支', () => {
     )
 
     await useChatStore.getState().continueSession(SID, CWD)
-    // 跨过 continueSession 的 500ms 防串话宽限窗口，模拟用户实际看到的
-    // 稳定态。
-    await wait(700)
 
     expect(useChatStore.getState().gitInfo?.branch).toBe('main')
   })

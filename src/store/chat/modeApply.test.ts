@@ -1,10 +1,16 @@
-import { beforeEach, describe, expect, it } from 'vitest'
-import { applyModeFlags, extractModeFlags, sessionModesPatch } from './modeApply'
+// @vitest-environment node
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { applyModeFlags, extractModeFlags, sessionModesPatch, turnOnAlwaysApprove } from './modeApply'
+import { transport } from '../../api/client'
 import {
   markPlanExitApproved,
   resetPlanExitApprovedForTest,
 } from './modePersist'
 import type { ChatState } from './types'
+
+vi.mock('../../api/client', () => ({
+  transport: { setMode: vi.fn() },
+}))
 
 function getState(patch: Partial<ChatState> = {}): () => ChatState {
   const s = { planMode: false, permissionMode: undefined, ...patch } as ChatState
@@ -85,5 +91,46 @@ describe('applyModeFlags — 权限广播', () => {
       permissionMode: 'ask',
       yoloMode: true,
     })
+  })
+})
+
+describe('turnOnAlwaysApprove — host 版本回退链', () => {
+  beforeEach(() => {
+    vi.mocked(transport.setMode).mockReset()
+  })
+
+  it('先置本地 flags；always-approve 失败后继续尝试 always_approve', async () => {
+    vi.mocked(transport.setMode)
+      .mockRejectedValueOnce(new Error('old host'))
+      .mockResolvedValueOnce(undefined)
+
+    const patches: unknown[] = []
+    const set = ((patch: unknown) => {
+      patches.push(patch)
+    }) as never
+
+    await expect(turnOnAlwaysApprove(set, false, 's1')).resolves.toBe(true)
+    expect(vi.mocked(transport.setMode).mock.calls.map(([mode]) => mode)).toEqual([
+      'always-approve',
+      'always_approve',
+    ])
+    expect(patches[0]).toMatchObject({
+      yoloMode: true,
+      autoMode: false,
+      permissionMode: undefined,
+      statusText: '已切换到 always-approve 模式',
+    })
+  })
+
+  it('三个 mode id 全部失败 → false', async () => {
+    vi.mocked(transport.setMode).mockRejectedValue(new Error('unsupported'))
+
+    const set = (() => {}) as never
+    await expect(turnOnAlwaysApprove(set, true, 's1')).resolves.toBe(false)
+    expect(vi.mocked(transport.setMode).mock.calls.map(([mode]) => mode)).toEqual([
+      'always-approve',
+      'always_approve',
+      'yolo',
+    ])
   })
 })

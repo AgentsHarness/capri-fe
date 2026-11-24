@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it, vi } from 'vitest'
 import { EventSequencer, LIVE_INTERRUPT_GAP, type SequencedEvent } from './liveSequencing'
 

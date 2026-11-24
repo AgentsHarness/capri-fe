@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it, vi } from 'vitest'
 import { toolsRpc } from './tools'
 import type { TransportCore } from '../transport'

@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import type { PendingReq, ScrollEntry } from '../api/types'
 import { planDocFromEntries, planDocFromRequests } from './planDoc'

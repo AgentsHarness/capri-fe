@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import type { ScrollEntry, ToolCall } from '../api/types'
 import { FINISH_FLASH_MS } from '../theme/wave'

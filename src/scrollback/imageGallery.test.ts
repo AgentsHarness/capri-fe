@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import type { DisplayRow } from './verbGroup'
 import { appendImageRow } from './imageGallery'

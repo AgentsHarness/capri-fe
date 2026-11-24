@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import type { SessionInfo } from '../../api/types'
 import { busySnapshot, completedSessionIds } from './sessionCompletion'

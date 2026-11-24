@@ -11,7 +11,10 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify('test'),
   },
   test: {
+    // 默认 jsdom；纯逻辑测试用文件头 `// @vitest-environment node` 切到 node，
+    // 避免为每个 store/lib 测试文件启动一套 jsdom（环境初始化是本套件最大开销）。
     environment: 'jsdom',
+    pool: 'threads',
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
     setupFiles: ['src/test/setup.ts'],
     coverage: {

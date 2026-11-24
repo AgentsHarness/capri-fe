@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it, vi } from 'vitest'
 import { handleChatEvent } from './events'
 import type { AcpEvent } from '../../api/types'

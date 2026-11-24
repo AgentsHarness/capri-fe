@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ContentBlock, ScrollEntry } from '../../api/types'
 import { transport } from '../../api/client'

@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import { USER_COLLAPSED_MAX_LINES } from './userText'
 import { fallbackStickyBandH, pickStickyPin, type StickyUserPos } from './stickyPin'

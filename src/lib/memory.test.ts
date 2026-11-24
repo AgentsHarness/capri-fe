@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import {
   MEMORY_FORGET_MAX_FILE_BYTES,

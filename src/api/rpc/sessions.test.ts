@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it, vi } from 'vitest'
 import { parseSessionUsage, sessionsRpc } from './sessions'
 import type { TransportCore } from '../transport'

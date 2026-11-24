@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import { pickLayerError } from './layerErr'
 import type { LayerErr } from '../store/chat/types'

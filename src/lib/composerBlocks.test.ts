@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import { buildComposerBlocks } from './composerBlocks'
 import type { PasteChip } from '../components/composer/pasteChips'

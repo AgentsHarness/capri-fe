@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 // 参数要写出元组，否则 mock.calls[0][1] 会被 tsc -b 判越界（见 AGENTS.md）。
